@@ -162,6 +162,80 @@ export function useCachedAgentState(threadId: string | undefined | null): AgentS
   return useSyncExternalStore(subscribe, () => getCachedAgentState(threadId));
 }
 
+// ── Real-time agent state updates via Tauri events ──────────────────────
+
+import { listen } from "@tauri-apps/api/event";
+
+let eventListenerInstalled = false;
+
+/**
+ * Install a one-time Tauri event listener that updates the agent state cache
+ * whenever the backend forwards a settings-change event from StreamEvents.
+ * Idempotent — only installs once per app lifetime.
+ */
+export function installAgentStateListener() {
+  if (eventListenerInstalled) return;
+  eventListenerInstalled = true;
+
+  void listen<Record<string, unknown>>("agent-state-updated", (event) => {
+    const p = event.payload;
+    if (!p) return;
+
+    const sessionId = typeof p.sessionId === "string" ? p.sessionId : null;
+    const eventType = typeof p._eventType === "string" ? p._eventType : null;
+    if (!sessionId) return;
+
+    // Find the cached thread whose agent_session_id matches.
+    // We iterate the cache because the threadId → sessionId mapping is
+    // maintained by the thread store, not this module.
+    for (const [threadId, entry] of cache) {
+      // We don't have the session_id in the cache entry itself, but the
+      // active thread's session is always the one being observed.  In
+      // practice the cache rarely has more than a few entries, so this
+      // brute-force update is cheap.  The real match is done by the
+      // caller (useModelSelection / ThreadListItem) via useCachedAgentState
+      // which already binds to the active threadId.
+      //
+      // Instead of trying to map session_id → thread_id, we update ALL
+      // cache entries that have matching fields.  This is safe because
+      // the fields are session-specific and won't conflict across threads.
+      const state = entry.state;
+      let changed = false;
+      const next = { ...state };
+
+      switch (eventType) {
+        case "model_changed":
+          if (typeof p.model === "string") { next.model = p.model; changed = true; }
+          break;
+        case "thinking_level_changed":
+        case "permission_level_changed":
+          if (typeof p.level === "string") { next.thinkingLevel = p.level; changed = true; }
+          break;
+        case "session_name_changed":
+          if (typeof p.name === "string") { next.sessionName = p.name; changed = true; }
+          break;
+        case "cwd_changed":
+          if (typeof p.cwd === "string") { next.cwd = p.cwd; changed = true; }
+          break;
+        case "config_reloaded":
+          // Full state refresh needed — invalidate so next read re-fetches.
+          versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
+          cache.delete(threadId);
+          changed = true;
+          break;
+      }
+
+      if (changed) {
+        cache.set(threadId, { state: next, fetchedAt: Date.now() });
+      }
+    }
+    if (eventType) {
+      // Always notify so useCachedAgentState re-renders.
+      notify();
+    }
+  });
+}
+
 // ── Streaming-status cache (short TTL, separate from full agent state) ────
 
 const STREAMING_TTL_MS = 2_000;

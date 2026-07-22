@@ -253,3 +253,12 @@ pub async fn attach_remote_stream(
     let run_id = crate::agent_bridge::attach_remote_stream(&thread_id).await?;
     Ok(serde_json::json!({ "runId": run_id }))
 }
+
+/// Start observing a session's settings changes in the background.  The agent
+/// broadcasts model_changed, thinking_level_changed, etc. via StreamEvents;
+/// this command subscribes to those events and forwards them to the frontend.
+/// Call on every thread switch — old observation is automatically cancelled.
+#[tauri::command]
+pub fn observe_session(session_id: String) {
+    crate::agent_bridge::start_observing_session(session_id);
+}

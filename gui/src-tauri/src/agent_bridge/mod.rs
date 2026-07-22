@@ -623,3 +623,109 @@ async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), Str
     }
     Ok(())
 }
+
+// ── Session observer (real-time settings-change events) ───────────────────
+
+use tokio::sync::oneshot;
+use tauri::Emitter;
+
+/// Handle to the currently-running session observation task.  When a new
+/// observation starts, the old one is cancelled via this channel.
+static OBSERVER_CANCEL: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
+
+/// Start observing a session's settings changes in the background.  Subscribes
+/// to the agent's StreamEvents and forwards settings-change events to the
+/// frontend via Tauri `agent-state-updated` events so the UI reflects model /
+/// thinking / name / cwd changes in near real-time (< 1s).
+///
+/// Cancels any previous observation for this window.  Safe to call on every
+/// thread switch — only one observation runs at a time.
+pub fn start_observing_session(session_id: String) {
+    // Cancel the previous observation.
+    if let Ok(mut guard) = OBSERVER_CANCEL.lock() {
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    if let Ok(mut guard) = OBSERVER_CANCEL.lock() {
+        *guard = Some(cancel_tx);
+    }
+
+    tokio::spawn(async move {
+        let app_handle = match crate::APP_HANDLE.get() {
+            Some(h) => h.clone(),
+            None => return,
+        };
+
+        // Reconnect loop: if the agent restarts, re-subscribe.
+        loop {
+            let mut client = match connect_agent().await {
+                Ok(c) => c,
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+
+            let mut stream = match client
+                .stream_events(StreamRequest {
+                    event_types: vec![],
+                    session_id: session_id.clone(),
+                })
+                .await
+            {
+                Ok(s) => s.into_inner(),
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+
+            // Process events until cancelled or stream ends.
+            loop {
+                tokio::select! {
+                    _ = &mut cancel_rx => {
+                        return;
+                    }
+                    result = stream.message() => {
+                        let event = match result {
+                            Ok(Some(e)) => e,
+                            _ => break, // stream ended or error — reconnect
+                        };
+
+                        // Forward only settings-change events to the frontend.
+                        // Include session_id and type so the frontend can
+                        // find the right thread and disambiguate fields.
+                        let is_settings_event = matches!(
+                            event.r#type.as_str(),
+                            "model_changed"
+                                | "thinking_level_changed"
+                                | "permission_level_changed"
+                                | "session_name_changed"
+                                | "cwd_changed"
+                                | "auto_compaction_changed"
+                                | "tools_changed"
+                                | "sandbox_policy_changed"
+                                | "config_reloaded"
+                        );
+                        if is_settings_event {
+                            if let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&event.data) {
+                                if let serde_json::Value::Object(ref mut map) = payload {
+                                    map.insert("sessionId".to_string(),
+                                        serde_json::Value::String(session_id.clone()));
+                                    map.insert("_eventType".to_string(),
+                                        serde_json::Value::String(event.r#type.clone()));
+                                }
+                                let _ = app_handle.emit("agent-state-updated", &payload);
+                            }
+                        }
+                    }
+                }
+            }
+            // Stream ended — reconnect after a short delay.
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
+}

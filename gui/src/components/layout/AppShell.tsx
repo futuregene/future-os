@@ -30,6 +30,8 @@ import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
 import { useUnreadThreads } from "./hooks/useUnreadThreads";
+import { installAgentStateListener } from "../../integrations/agent/agentStateCache";
+import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
@@ -80,6 +82,12 @@ export function AppShell() {
     reclampRightPanel();
   }, [leftExpanded, reclampRightPanel]);
 
+  // Install the Tauri event listener for real-time agent state updates
+  // (settings changes from other clients).  Only runs once.
+  useEffect(() => {
+    installAgentStateListener();
+  }, []);
+
   const {
     threads,
     workspaces,
@@ -93,6 +101,16 @@ export function AppShell() {
     storeError,
     refreshStore,
   } = useThreadStore();
+
+  // Start observing the active thread's agent session for real-time
+  // settings-change events (model, thinking, name, cwd, etc.).
+  useEffect(() => {
+    const sessionId = activeThread?.agentSessionId;
+    if (sessionId) {
+      invokeCommand("observe_session", { sessionId }).catch(() => {});
+    }
+  }, [activeThread?.agentSessionId]);
+
   const { activeApproval, decideApproval } = useApprovals(activeThread?.id ?? null);
   const {
     agentConnection,
