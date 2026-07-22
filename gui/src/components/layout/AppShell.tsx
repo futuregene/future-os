@@ -111,6 +111,16 @@ export function AppShell() {
     }
   }, [activeThread?.agentSessionId]);
 
+  // Refresh the store when the agent session's cwd changes (e.g. TUI /cwd),
+  // so the thread moves to the correct workspace in the sidebar.
+  useEffect(() => {
+    const handler = () => {
+      refreshStore().catch(() => {});
+    };
+    window.addEventListener("future:cwd-changed", handler);
+    return () => window.removeEventListener("future:cwd-changed", handler);
+  }, [refreshStore]);
+
   const { activeApproval, decideApproval } = useApprovals(activeThread?.id ?? null);
   const {
     agentConnection,

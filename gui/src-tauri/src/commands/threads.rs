@@ -263,3 +263,13 @@ pub async fn attach_remote_stream(
 pub fn observe_session(session_id: String) {
     crate::agent_bridge::start_observing_session(session_id);
 }
+
+/// Move a thread to the workspace matching a new cwd (e.g. after TUI /cwd).
+#[tauri::command]
+pub fn reconcile_thread_workspace(
+    session_id: String,
+    cwd: String,
+) -> Result<(), crate::AppError> {
+    crate::agent_bridge::reconcile_thread_workspace(&session_id, &cwd)
+        .map_err(crate::AppError::from)
+}

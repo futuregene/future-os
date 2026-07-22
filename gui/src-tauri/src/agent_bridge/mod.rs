@@ -729,3 +729,63 @@ pub fn start_observing_session(session_id: String) {
         }
     });
 }
+
+/// When the agent session's cwd changes (via TUI /cwd or another client),
+/// move the thread to the workspace that matches the new cwd.
+pub fn reconcile_thread_workspace(session_id: &str, new_cwd: &str) -> Result<(), String> {
+    let thread = crate::store::find_thread_by_agent_session(session_id)
+        .map_err(|e| format!("find_thread: {e}"))?
+        .ok_or_else(|| "No thread found for this session".to_string())?;
+
+    let cwd = new_cwd.trim().trim_end_matches(['/', '\\']);
+    if cwd.is_empty() {
+        return Ok(());
+    }
+
+    // Determine workspace type.
+    let is_chat = {
+        let cwd_normalized = cwd.replace('\\', "/");
+        let chat_dir = format!(
+            "{}/.future/workspaces/chat/",
+            crate::home_dir().unwrap_or_default()
+        );
+        cwd_normalized.starts_with(&chat_dir) || cwd_normalized == chat_dir.trim_end_matches('/')
+    };
+
+    if is_chat {
+        crate::store::update_chat_workspace_path(&thread.id, cwd)
+            .map_err(|e| format!("update_workspace: {e}"))?;
+        return Ok(());
+    }
+
+    // Project workspace: find or create by cwd path.
+    let workspace_name = std::path::Path::new(cwd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(cwd)
+        .to_string();
+
+    let existing = crate::store::list_workspaces()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|w| w.path == cwd);
+
+    let workspace_id = if let Some(ws) = existing {
+        ws.id
+    } else {
+        let ws = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some(workspace_name),
+            path: cwd.to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .map_err(|e| format!("create_workspace: {e}"))?;
+        ws.id
+    };
+
+    // Update the thread's workspace assignment.
+    crate::store::move_thread_to_workspace(&thread.id, &workspace_id)
+        .map_err(|e| format!("move_thread: {e}"))?;
+
+    Ok(())
+}

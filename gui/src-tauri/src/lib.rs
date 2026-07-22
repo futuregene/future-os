@@ -262,6 +262,7 @@ pub fn run() {
             get_thread_cleanup_summary,
             attach_remote_stream,
             observe_session,
+            reconcile_thread_workspace,
             list_messages,
             append_message,
             create_run,

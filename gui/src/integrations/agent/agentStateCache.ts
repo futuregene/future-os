@@ -210,7 +210,18 @@ export function installAgentStateListener() {
           if (typeof p.name === "string") { next.sessionName = p.name; changed = true; }
           break;
         case "cwd_changed":
-          if (typeof p.cwd === "string") { next.cwd = p.cwd; changed = true; }
+          if (typeof p.cwd === "string") {
+            next.cwd = p.cwd;
+            changed = true;
+            // Move the thread to the workspace matching the new cwd.
+            invokeCommand("reconcile_thread_workspace", {
+              sessionId: p.sessionId,
+              cwd: p.cwd,
+            }).then(() => {
+              // Notify AppShell to refresh the thread/workspace lists.
+              window.dispatchEvent(new CustomEvent("future:cwd-changed"));
+            }).catch(() => {});
+          }
           break;
         case "config_reloaded":
           // Full state refresh needed — invalidate so next read re-fetches.
