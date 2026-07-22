@@ -516,3 +516,110 @@ async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), St
     }
     Ok(())
 }
+
+// ── Remote-stream attach (cross-client streaming) ─────────────────────────
+
+/// Called when the GUI opens a thread whose agent session is being driven by
+/// another client (TUI, CLI, phone).  Creates a synthetic run and subscribes
+/// to the agent's event stream in the background so the existing reattach
+/// machinery picks up live previews and message updates automatically.
+pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
+    let thread = crate::store::get_thread(thread_id)
+        .map_err(|e| format!("get_thread: {e}"))?
+        .ok_or_else(|| "Thread not found".to_string())?;
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Thread has no agent session".to_string())?;
+
+    // Don't create a duplicate run if one is already collecting for this
+    // thread (e.g. the user clicked twice or the frontend poll ticked before
+    // the first run appeared in listRuns).
+    let existing_runs = crate::store::list_runs(thread_id).unwrap_or_default();
+    if existing_runs.iter().any(|r| r.status == "running") {
+        return Ok(existing_runs
+            .iter()
+            .find(|r| r.status == "running")
+            .map(|r| r.id.clone())
+            .unwrap_or_default());
+    }
+
+    let run = crate::store::create_run(crate::store::CreateRunInput {
+        thread_id: thread_id.to_string(),
+        trigger_message_id: None,
+        model_provider: None,
+        model_id: None,
+    })
+    .map_err(|e| format!("create_run: {e}"))?;
+
+    let run_id = run.id.clone();
+    let sid = session_id.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = collect_remote_stream(&sid, &run_id).await {
+            eprintln!("FutureOS remote-stream collector for {run_id} failed: {e}");
+            let _ = crate::store::update_run_status_if_active(
+                crate::store::UpdateRunStatusInput {
+                    run_id,
+                    status: "failed".to_string(),
+                    error_message: Some(e),
+                    error_type: None,
+                },
+            );
+        }
+    });
+
+    Ok(run.id)
+}
+
+async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), String> {
+    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    let mut stream = client
+        .stream_events(StreamRequest {
+            event_types: vec![],
+            session_id: session_id.to_string(),
+        })
+        .await
+        .map_err(|e| format!("stream_events: {e}"))?
+        .into_inner();
+
+    let mut sequence = 0i64;
+
+    loop {
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(600),
+            stream.message(),
+        )
+        .await
+        .map_err(|_| "agent response timed out".to_string())?
+        .map_err(|e| format!("stream failed: {e}"))?;
+
+        let Some(event) = event else {
+            break;
+        };
+
+        crate::store::append_run_event(crate::store::AppendRunEventInput {
+            run_id: run_id.to_string(),
+            event_type: event.r#type.clone(),
+            payload: Some(event.data.clone()),
+            sequence,
+        })
+        .map_err(|e| format!("append_event: {e}"))?;
+
+        sequence += 1;
+
+        if event.r#type == "agent_end" {
+            crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+                run_id: run_id.to_string(),
+                status: "completed".to_string(),
+                error_message: None,
+                error_type: None,
+            })
+            .map_err(|e| format!("update_status: {e}"))?;
+            crate::store::clear_run_event_buffer(run_id);
+            break;
+        }
+    }
+    Ok(())
+}

@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
 import { getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
+import { fetchSessionStreaming } from "../../integrations/agent/agentStateCache";
+import { invokeCommand } from "../../integrations/tauri/invoke";
 import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun } from "./agentMessageFormatters";
@@ -253,6 +255,38 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     },
     1500,
     { enabled: Boolean(threadId) && isRunActive, deps: [threadId, workspaceId, refreshRecentRun] },
+  );
+
+  // When another client (TUI, CLI, phone) is streaming on this thread's
+  // session, ask the Tauri backend to create a synthetic run and subscribe to
+  // the agent's live event stream.  Events are persisted locally, so the
+  // existing reattach machinery (refreshRecentRun → useRunReattach) picks up
+  // the streaming bubble automatically.  No local StoredRun existed before.
+  const attachedRef = useRef(false);
+  usePolling(
+    async () => {
+      if (!threadId) return;
+      // Only attach once per streaming session; detach when streaming stops
+      // so a new remote prompt triggers a fresh attach.
+      const streaming = await fetchSessionStreaming(threadId);
+      if (streaming && !attachedRef.current) {
+        try {
+          await invokeCommand("attach_remote_stream", { threadId });
+          attachedRef.current = true;
+          // Kick a refresh so listRuns picks up the new synthetic run immediately.
+          await refreshRecentRun(threadId, workspaceId);
+        } catch {
+          // Agent unreachable — will retry next tick.
+        }
+      } else if (!streaming) {
+        attachedRef.current = false;
+      }
+    },
+    3000,
+    {
+      enabled: Boolean(threadId) && !isRunActive,
+      deps: [threadId, refreshRecentRun, workspaceId, isRunActive],
+    },
   );
 
   return {

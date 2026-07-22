@@ -242,3 +242,14 @@ pub fn get_thread_cleanup_summary(
 ) -> Result<store::ThreadCleanupSummary, crate::AppError> {
     store::get_thread_cleanup_summary(&thread_id)
 }
+
+/// Attach to a remote agent session stream: create a synthetic run and
+/// subscribe to live events so the GUI shows real-time streaming content
+/// for prompts initiated by other clients (TUI, CLI, phone).
+#[tauri::command]
+pub async fn attach_remote_stream(
+    thread_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let run_id = crate::agent_bridge::attach_remote_stream(&thread_id).await?;
+    Ok(serde_json::json!({ "runId": run_id }))
+}
