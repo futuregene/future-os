@@ -75,8 +75,8 @@ endif
 install-gui: install-cli install-agent
 ifeq ($(OS),windows)
 	cmd /c "if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries"
-	$(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) gui\src-tauri\binaries\future-agent-$(TARGET)
-	$(COPY_CMD) cli\dist\future$(EXE_SUFFIX) gui\src-tauri\binaries\future-$(TARGET)
+	$(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)"
+	$(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
 else
 	@mkdir -p gui/src-tauri/binaries
 	cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
@@ -246,10 +246,10 @@ run-cli:
 run-gui: build-gui
 ifeq ($(OS),windows)
 	@if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries
-	@if not exist "gui\src-tauri\binaries\future-agent-$(TARGET)" $(MAKE) build-agent
-	@if not exist "gui\src-tauri\binaries\future-agent-$(TARGET)" $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)"
-	@if not exist "gui\src-tauri\binaries\future-$(TARGET)" $(MAKE) build-cli
-	@if not exist "gui\src-tauri\binaries\future-$(TARGET)" $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)"
+	@if not exist "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)" "$(MAKE)" build-agent
+	@if not exist "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)" $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)"
+	@if not exist "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" "$(MAKE)" build-cli
+	@if not exist "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
 	cd gui && npm run tauri:dev
 else
 	@mkdir -p gui/src-tauri/binaries

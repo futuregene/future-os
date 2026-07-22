@@ -114,13 +114,24 @@ async fn fetch_session_entries(session_id: &str) -> Vec<serde_json::Value> {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+/// Strip trailing whitespace AND path separators (`/` and `\`) so the
+/// final directory name is always meaningful regardless of platform.
+fn clean_cwd(raw: &str) -> &str {
+    raw.trim().trim_end_matches(['/', '\\'])
+}
+
 /// Derive a display title for a session. Prefer the first user message, then
 /// the agent-stored name (unless it's just the workspace directory name),
 /// then the cwd basename.
 fn session_title(summary: &AgentSessionSummary) -> String {
-    let cwd_basename = std::path::Path::new(&summary.cwd)
+    // Trim trailing whitespace / separators so the basename is meaningful
+    // (a lone space from "project/ " would otherwise leak into the title).
+    let cwd = clean_cwd(&summary.cwd);
+    let cwd_basename = std::path::Path::new(cwd)
         .file_name()
         .and_then(|n| n.to_str())
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
         .unwrap_or("");
 
     // First user message is the most descriptive title.
@@ -177,18 +188,27 @@ fn create_historical_run(
 /// - `$HOME/.future/workspaces/chat/…` → chat (GUI-managed)
 /// - empty cwd                            → chat (assign a chat cwd, best-effort write-back)
 /// - anything else                        → workspace (real project directory)
+///
+/// The cwd from the agent may carry trailing whitespace or separators
+/// (e.g. `"~/project/ "`), which would make `Path::file_name()` return a
+/// lone space instead of the directory name — producing a workspace name
+/// that looks empty in the UI.  Trim and canonicalise early.
 fn thread_mode(
     summary: &AgentSessionSummary,
     title: &str,
 ) -> (String, Option<String>, Option<String>, Option<String>) {
-    if is_gui_chat_cwd(&summary.cwd) {
+    // Normalise: trim trailing whitespace + separators so the path
+    // behaves as the user intended and `file_name()` is meaningful.
+    let cwd = clean_cwd(&summary.cwd);
+
+    if is_gui_chat_cwd(cwd) {
         match store::get_or_create_chat_workspace(&summary.id, Some(title.to_string())) {
             Ok(ws) => return ("chat".to_string(), Some(ws.id), None, None),
             Err(_) => return ("chat".to_string(), None, None, None),
         }
     }
 
-    if summary.cwd.is_empty() {
+    if cwd.is_empty() {
         match store::get_or_create_chat_workspace(&summary.id, Some(title.to_string())) {
             Ok(ws) => return ("chat".to_string(), Some(ws.id), None, None),
             Err(_) => return ("chat".to_string(), None, None, None),
@@ -196,15 +216,17 @@ fn thread_mode(
     }
 
     // Real project directory → workspace thread.
-    let name = std::path::Path::new(&summary.cwd)
+    let name = std::path::Path::new(cwd)
         .file_name()
         .and_then(|n| n.to_str())
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
         .unwrap_or(title)
         .to_string();
     (
         "workspace".to_string(),
         None,
-        Some(summary.cwd.clone()),
+        Some(cwd.to_string()),
         Some(name),
     )
 }

@@ -145,17 +145,30 @@ pub async fn delete_thread(thread_id: String) -> Result<store::ThreadRecord, cra
 
 /// Fetch a thread's session state from the agent (model, thinking, name, cwd).
 /// Falls back to the stored DB values when the agent is unreachable.
+///
+/// A thread without an agent session has no agent state to fetch.  Must not
+/// resolve the bare `thread.id` as a session_id — the agent's `get_session`
+/// fallback returns the default session's state, leaking another
+/// conversation's model/thinking into the wrong thread.
 #[tauri::command]
 pub async fn get_thread_agent_state(
     thread_id: String,
 ) -> Result<serde_json::Value, crate::AppError> {
     let thread = store::get_thread(&thread_id)?.ok_or_else(|| "Thread not found.".to_string())?;
-    let session_id = thread
+    let Some(session_id) = thread
         .agent_session_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
-        .unwrap_or(&thread.id);
+    else {
+        return Ok(serde_json::json!({
+            "model": null,
+            "thinkingLevel": null,
+            "session_name": thread.title,
+            "cwd": null,
+            "parentSessionId": null,
+        }));
+    };
 
     if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
         let cmd = crate::agent_bridge::get_state_command(session_id.to_string());
@@ -181,6 +194,11 @@ pub async fn get_thread_agent_state(
 
 /// Fetch session entries from the agent (user, assistant, tool messages).
 /// Used as the primary message source — SQLite messages are a fallback.
+///
+/// A thread without an agent session (no `agent_session_id`) has no entries yet.
+/// Must not query the agent with the bare `thread_id`: the agent's
+/// `get_session` fallback leaks the default session's entries into an
+/// unrelated thread, cross-contaminating conversations.
 #[tauri::command]
 pub async fn get_session_entries(thread_id: String) -> Result<serde_json::Value, crate::AppError> {
     let thread = store::get_thread(&thread_id)?.ok_or_else(|| "Thread not found.".to_string())?;
@@ -188,8 +206,14 @@ pub async fn get_session_entries(thread_id: String) -> Result<serde_json::Value,
         .agent_session_id
         .as_deref()
         .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .unwrap_or(&thread.id);
+        .filter(|id| !id.is_empty());
+
+    // A thread with no agent session has no entries.  Never fall back to
+    // `thread.id` as a session_id — the agent resolves unrecognised ids to
+    // its default session, leaking another conversation's history.
+    let Some(session_id) = session_id else {
+        return Ok(serde_json::json!({ "entries": [] }));
+    };
 
     let mut client = crate::agent_bridge::connect_agent()
         .await

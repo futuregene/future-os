@@ -388,7 +388,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 serde_json::json!({"messages": user_entries}),
             )
         }
-        "get_session_entries" => cmd_get_session_entries(&session, id),
+        "get_session_entries" => {
+            // Must not fall back to the default session when the requested id is
+            // unrecognised — that leaks another conversation's entries into the
+            // wrong caller (e.g. a GUI thread with no agent session yet would
+            // see whichever session happens to be the default).
+            if let Some(sess) = state.find_session(&cmd.session_id) {
+                cmd_get_session_entries(&sess, id)
+            } else {
+                RpcResponse::ok(id, "get_session_entries", serde_json::json!({"entries": []}))
+            }
+        }
         "get_last_assistant_text" => {
             let text = rlock!(session, id).get_last_assistant_text();
             RpcResponse::ok(
@@ -571,9 +581,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "reload_config" => cmd_reload_config(state, &session, id),
         "set_cwd" => {
+            // Trim trailing whitespace / separators so the saved cwd is
+            // always a clean directory path — "project/ " produces a
+            // phantom workspace name (" ") on import.
+            let cwd: String = cmd
+                .cwd
+                .trim()
+                .trim_end_matches(['/', '\\'])
+                .to_string();
             let (session_manager, session_id) = {
                 let mut sess = wlock!(session, id);
-                sess.set_cwd(&cmd.cwd);
+                sess.set_cwd(&cwd);
                 (sess.session_manager.clone(), sess.session_id.clone())
             };
             // Persist to session JSONL so the cwd survives restarts.
@@ -585,12 +603,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
                     .and_then(|e| e.content.as_mut())
                 {
-                    info["cwd"] = serde_json::Value::String(cmd.cwd.clone());
+                    info["cwd"] = serde_json::Value::String(cwd.clone());
                 }
-                s.cwd = cmd.cwd.clone();
+                s.cwd = cwd.clone();
                 let _ = session_manager.save(&s);
             }
-            RpcResponse::ok(id, "set_cwd", serde_json::json!({"cwd": cmd.cwd}))
+            RpcResponse::ok(id, "set_cwd", serde_json::json!({"cwd": cwd}))
         }
         "add_session_rule" => {
             // Same-run "allow in this workspace/chat": message = path glob,
@@ -714,9 +732,11 @@ fn list_models_response(id: &str) -> String {
 
 fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // Create a new session with shared agent_loop, preserving model/thinking
-    // Use TUI-provided cwd if available, otherwise default workspace
+    // Use TUI-provided cwd if available, otherwise default workspace.
+    // Trim trailing whitespace / separators so the saved cwd doesn't
+    // produce a phantom workspace name (e.g. "project/ " → name " ").
     let session_cwd = if !cmd.cwd.is_empty() {
-        cmd.cwd.clone()
+        cmd.cwd.trim().trim_end_matches(['/', '\\']).to_string()
     } else {
         super::session::default_workspace()
     };
