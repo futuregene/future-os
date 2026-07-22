@@ -488,13 +488,10 @@ async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), St
     let mut sequence = 0i64;
 
     loop {
-        let event = tokio::time::timeout(
-            std::time::Duration::from_secs(600),
-            stream.message(),
-        )
-        .await
-        .map_err(|_| "Future Agent response timed out.".to_string())?
-        .map_err(|e| format!("stream failed: {e}"))?;
+        let event = tokio::time::timeout(std::time::Duration::from_secs(600), stream.message())
+            .await
+            .map_err(|_| "Future Agent response timed out.".to_string())?
+            .map_err(|e| format!("stream failed: {e}"))?;
 
         let Some(event) = event else {
             break;

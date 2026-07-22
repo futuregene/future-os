@@ -27,7 +27,7 @@ pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
          FROM runs r
          JOIN threads t ON t.id = r.thread_id
          WHERE r.error_type = 'interrupted'
-           AND r.status = 'cancelled'"
+           AND r.status = 'cancelled'",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(InterruptedRun {

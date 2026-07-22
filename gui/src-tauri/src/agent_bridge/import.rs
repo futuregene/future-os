@@ -7,7 +7,9 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-use super::client::{connect_agent, get_session_entries_command, list_sessions_command, set_session_name_command};
+use super::client::{
+    connect_agent, get_session_entries_command, list_sessions_command, set_session_name_command,
+};
 use crate::store;
 
 // ─── agent RPC types ────────────────────────────────────────────────────────
