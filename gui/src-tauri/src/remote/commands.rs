@@ -155,13 +155,18 @@ async fn handle_command(client: &async_nats::Client, _pair_id: &str, msg: async_
         }
         "new_session" => match crate::store::create_thread(new_chat_thread_input()) {
             Ok(thread) => {
-                // Write thread.id as agent_session_id so the subsequent `prompt`
-                // can find this thread via `find_thread_by_agent_session` —
-                // otherwise the fresh thread (agent_session_id=NULL) is invisible
-                // and `prepare_remote_prompt` creates a second blank thread.
-                let _ = crate::store::update_thread_session_id(&thread.id, &thread.id);
-                crate::emit_remote_activity(&thread.id);
-                reply(client, &msg, true, json!({ "sessionId": thread.id }), None).await;
+                // Provision a real agent session now so the client gets the
+                // agent-generated id (not the thread id). Otherwise the prompt
+                // runs under a different id and events/history mismatch.
+                match crate::agent_bridge::provision_agent_session(&thread.id).await {
+                    Ok(sid) => {
+                        crate::emit_remote_activity(&thread.id);
+                        reply(client, &msg, true, json!({ "sessionId": sid }), None).await;
+                    }
+                    Err(e) => {
+                        reply(client, &msg, false, Value::Null, Some(&e.to_string())).await;
+                    }
+                }
             }
             Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
         },

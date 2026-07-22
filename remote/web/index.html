@@ -325,6 +325,19 @@ function sessionTitle(sid) {
   return sessions.find((s) => s.sessionId === sid)?.title || "会话";
 }
 
+// run 结束后 agent 会按首条用户消息 auto-name 线程。web 没有 GUI 那套 store
+// 事件监听，标题会停在新建时的 "New Chat"。这里在 agent_end 时主动刷新列表 +
+// 标题。无竞态：auto-name 在 publish agent_end 之后同步落库，而 web 收到
+// agent_end 要走一跳 NATS，届时 rename 早已提交。
+async function refreshSessionTitle() {
+  if (!session) return;
+  try {
+    await listSessions();
+    const entry = sessions.find((s) => s.sessionId === session);
+    if (entry?.title) $("chatTitle").textContent = entry.title;
+  } catch { /* 刷新失败不影响主流程 */ }
+}
+
 // 切换到某会话：清屏 + 重置状态 + 拉历史 + 回放进行中轮 + 移动端切到对话视图。
 async function selectSession(sid) {
   session = sid;
@@ -572,7 +585,7 @@ function onEvent(ev, subject) {
     // 审批 / 错误：始终显示（需要操作/知情）。
     case "approval_request": renderApproval(data); break;
     case "error": line("✖ error: " + (data.error || ev.data), "err bubble"); break;
-    case "agent_end": updateStreamingState(false); if (verbose) line(data.error ? ("■ agent_end (error)") : "■ agent_end"); break;
+    case "agent_end": updateStreamingState(false); refreshSessionTitle(); if (verbose) line(data.error ? ("■ agent_end (error)") : "■ agent_end"); break;
     default: if (verbose) line("· " + ev.type);
   }
 }

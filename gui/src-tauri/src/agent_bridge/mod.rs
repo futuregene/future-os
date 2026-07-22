@@ -193,6 +193,24 @@ pub async fn rename_session(session_id: String, name: String) -> Result<(), crat
     Ok(())
 }
 
+/// Create a fresh agent session for a just-created thread and persist the
+/// agent-generated session id back onto the thread. Used by the remote
+/// `new_session` command so the client receives the *real* agent session id up
+/// front. If we instead handed the client the thread id, the agent would run
+/// the subsequent prompt under a different (agent-generated) id and every
+/// event subject / history lookup on the client would mismatch — events get
+/// filtered out and `get_messages` finds nothing.
+pub(crate) async fn provision_agent_session(thread_id: &str) -> Result<String, crate::AppError> {
+    let cwd = workspace_path_for_thread(thread_id)?;
+    let mut client = connect_agent().await?;
+    // Empty stored id → the agent generates a real session id.
+    let session_id = ensure_agent_session(&mut client, "", &cwd, None, None).await?;
+    set_agent_permission_level(&mut client, &session_id, "workspace").await?;
+    set_agent_sandbox_policy(&mut client, &session_id, thread_id).await?;
+    crate::store::update_thread_session_id(thread_id, &session_id)?;
+    Ok(session_id)
+}
+
 /// Tell the running agent to re-read `auth.json` and refresh every live
 /// session's in-memory API key. Call after the GUI mutates credentials
 /// (FutureGene login/logout, custom-provider key edits): the agent caches the
