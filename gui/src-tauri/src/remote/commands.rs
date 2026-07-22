@@ -153,31 +153,25 @@ async fn handle_command(client: &async_nats::Client, _pair_id: &str, msg: async_
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
-        "new_session" => match crate::store::create_thread(new_chat_thread_input()) {
-            Ok(thread) => {
-                // Provision a real agent session now so the client gets the
-                // agent-generated id (not the thread id). Otherwise the prompt
-                // runs under a different id and events/history mismatch.
-                match crate::agent_bridge::provision_agent_session(&thread.id).await {
-                    Ok(sid) => {
-                        crate::emit_remote_activity(&thread.id);
-                        reply(client, &msg, true, json!({ "sessionId": sid }), None).await;
-                    }
-                    Err(e) => {
-                        reply(client, &msg, false, Value::Null, Some(&e.to_string())).await;
-                    }
-                }
-            }
-            Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-        },
         "prompt" => {
-            // Resolve the thread and persist user message + run synchronously,
-            // so the accept-ack can carry the identifiers the events will be
-            // published under. This matters when `session_id` is unknown/stale:
-            // a NEW thread gets a freshly generated agent_session_id, and a
-            // client still keyed to the session it sent would otherwise never
-            // find the event subject for the run it just started.
-            match prepare_remote_prompt(&cmd.session_id, cmd.message.clone()) {
+            // Lazy creation (matches the GUI new-chat flow): the web client's
+            // "new" button only stages a local draft and sends the first message
+            // with an empty `session_id`. Here an empty/unknown id creates the
+            // thread + a real agent session on the fly, so the accept-ack can
+            // carry the identifiers the events will be published under and the
+            // client can latch onto the real session id. Model / thinking level
+            // travel with the first prompt so the freshly-created session is
+            // seeded with the user's draft selections.
+            let model_id = (!cmd.model_id.trim().is_empty()).then(|| cmd.model_id.clone());
+            let thinking_level = (!cmd.level.trim().is_empty()).then(|| cmd.level.clone());
+            match prepare_remote_prompt(
+                &cmd.session_id,
+                cmd.message.clone(),
+                model_id,
+                thinking_level,
+            )
+            .await
+            {
                 Ok(prepared) => {
                     let ack = json!({
                         "sessionId": prepared.session_id,
@@ -291,18 +285,62 @@ fn new_chat_thread_input() -> crate::store::CreateThreadInput {
 
 /// Find the thread for `session_id` (create a new chat thread when unknown —
 /// remote policy), then persist user message + run via `agent_bridge::headless`.
-fn prepare_remote_prompt(
+async fn prepare_remote_prompt(
     session_id: &str,
     message: String,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
 ) -> Result<crate::agent_bridge::PreparedPrompt, crate::AppError> {
     let thread = match crate::store::find_thread_by_agent_session(session_id)? {
         Some(thread) => thread,
-        None => crate::store::create_thread(new_chat_thread_input())?,
+        None => {
+            // Lazy creation: the thread is born with the first message, titled
+            // from it (mirrors the GUI new-chat draft), and immediately gets a
+            // real agent session id so the ack, the event subjects, and history
+            // all agree from the start (no empty row, no id drift).
+            let mut input = new_chat_thread_input();
+            input.title = Some(derive_thread_title(&message));
+            let mut thread = crate::store::create_thread(input)?;
+            match crate::agent_bridge::provision_agent_session(
+                &thread.id,
+                model_id.clone(),
+                thinking_level.clone(),
+            )
+            .await
+            {
+                Ok(sid) => thread.agent_session_id = Some(sid),
+                Err(e) => {
+                    // Thread exists but has no agent session → it would show as
+                    // an orphan empty row in the GUI list. Remove it best-effort.
+                    let _ = crate::store::delete_thread(&thread.id);
+                    return Err(e);
+                }
+            }
+            thread
+        }
     };
-    let prepared = crate::agent_bridge::prepare_prompt_persisted(&thread, message)?;
+    let prepared =
+        crate::agent_bridge::prepare_prompt_persisted(&thread, message, model_id, thinking_level)?;
     // Notify frontend: new thread/run appeared (trigger list refresh).
     crate::emit_remote_activity(&thread.id);
     Ok(prepared)
+}
+
+/// Derive a thread title from the first message, matching the GUI new-chat
+/// draft (`deriveThreadTitle`): collapse whitespace, take 28 chars, ellipsize.
+/// Empty input falls back to the default chat title so the row isn't blank.
+fn derive_thread_title(content: &str) -> String {
+    let compact = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let compact = compact.trim();
+    if compact.is_empty() {
+        return "New Chat".to_string();
+    }
+    let chars: Vec<char> = compact.chars().collect();
+    if chars.len() > 28 {
+        format!("{}...", chars.into_iter().take(28).collect::<String>())
+    } else {
+        compact.to_string()
+    }
 }
 
 /// Send a unified request-reply response (in `RpcResponse` shape), and flush to ensure timely delivery.

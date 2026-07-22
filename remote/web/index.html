@@ -273,16 +273,27 @@ async function watchConnStatus() {
   } catch { /* 连接关闭时迭代结束，正常退出 */ }
 }
 
-async function newSession() {
-  try {
-    const r = await request({ type: "new_session", cwd: "/tmp" }, "new");
-    const sid = r?.data?.sessionId || "";
-    if (!sid) return;
-    await listSessions();
-    selectSession(sid);
-  } catch (e) {
-    setStatus("新建会话失败（Bridge/GUI 在处理命令？）", "err");
-  }
+// 懒创建（对齐 GUI 新建对话）：点"新建"不写库，只把本地切到"待输入"态。
+// thread + agent session 在用户发首条消息时由 bridge 的 prompt 路径创建，
+// 所以列表里不会出现空 "New Chat" 条目，也不存在 id 错位。
+function newSession() {
+  session = "";                 // 占位：尚无 DB 条目 / agent session
+  curRun = null; seenEvents.clear();
+  clearLog();
+  $("chatTitle").textContent = "新对话";
+  updateStreamingState(false);  // 显示"发送"、隐藏引导/排队
+  $("app").classList.add("show-chat");
+  // 模型/思考选择器作为草稿显示；无 session 时 onchange 不会发命令，
+  // 选中的值在 send 时随首条 prompt 一起发给 bridge seed 新 session。
+  const def = availableModels.find(m => m.isDefault) || availableModels[0];
+  populateModelSelect(def?.id || "");
+  populateThinkingSelect("off");
+  $("modelSelect").style.display = "";
+  $("thinkingSelect").style.display = "";
+  $("renameBtn").style.display = "none";   // 无 session 不能重命名
+  $("msg").disabled = false; $("send").disabled = false; $("abort").disabled = true;
+  document.querySelectorAll(".srow").forEach(r => r.classList.remove("active"));
+  $("msg").focus?.();
 }
 
 async function listSessions() {
@@ -490,13 +501,31 @@ async function onRename() {
 function ensureSession() { return session; }
 
 async function send() {
-  if (!ensureSession()) { setStatus("请先选择会话", "err"); return; }
   const text = $("msg").value.trim(); if (!text) return;
+  const wasNew = !session;        // 懒创建首条：当前还没有 DB 条目
   $("msg").value = "";
-  renderUser(text); // 立即显示本端发的 prompt（历史保留，不清屏）
+  renderUser(text); // 立即显示本端发的 prompt
   bubble = null; thinkEl = null; toolChips.clear();
-  try { await request({ type: "prompt", sessionId: session, message: text }); }
-  catch (e) { line("发送失败: " + e.message, "err"); }
+  // 草稿的模型/思考等级随首条 prompt 一起发，bridge 在新建 session 时 seed 它们。
+  const modelId = $("modelSelect")?.value || "";
+  const level = $("thinkingSelect")?.value || "";
+  let ack;
+  try {
+    ack = await request({ type: "prompt", sessionId: session, message: text, modelId, level });
+  } catch (e) { line("发送失败: " + e.message, "err"); return; }
+  // 懒创建首条：bridge 刚建好 thread + 真实 agent session，ack 回传真实 id。
+  // 把本地 session 切到真实 id，刷新列表/标题，否则后续事件/历史会对不上。
+  const sid = ack?.data?.sessionId;
+  if (sid && sid !== session) {
+    session = sid;
+    await listSessions();
+    const entry = sessions.find(s => s.sessionId === sid);
+    if (entry?.title) $("chatTitle").textContent = entry.title;
+    document.querySelectorAll(".srow").forEach(r => r.classList.toggle("active", r.dataset.sid === sid));
+    $("renameBtn").style.display = "";   // 有真 session 了，可重命名
+  }
+  // ack 回来前 session 还是占位，onEvent 按 subject 过滤丢掉了早期事件，补齐当前 run。
+  if (wasNew && sid) await backfillActiveRun(sid);
 }
 
 async function sendSteer() {

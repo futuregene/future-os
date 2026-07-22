@@ -200,11 +200,23 @@ pub async fn rename_session(session_id: String, name: String) -> Result<(), crat
 /// the subsequent prompt under a different (agent-generated) id and every
 /// event subject / history lookup on the client would mismatch — events get
 /// filtered out and `get_messages` finds nothing.
-pub(crate) async fn provision_agent_session(thread_id: &str) -> Result<String, crate::AppError> {
+pub(crate) async fn provision_agent_session(
+    thread_id: &str,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
+) -> Result<String, crate::AppError> {
     let cwd = workspace_path_for_thread(thread_id)?;
     let mut client = connect_agent().await?;
-    // Empty stored id → the agent generates a real session id.
-    let session_id = ensure_agent_session(&mut client, "", &cwd, None, None).await?;
+    // Empty stored id → the agent generates a real session id, seeded with the
+    // caller's model / thinking selections (matches the GUI new-chat draft).
+    let session_id = ensure_agent_session(
+        &mut client,
+        "",
+        &cwd,
+        model_id.as_deref(),
+        thinking_level.as_deref(),
+    )
+    .await?;
     set_agent_permission_level(&mut client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut client, &session_id, thread_id).await?;
     crate::store::update_thread_session_id(thread_id, &session_id)?;
