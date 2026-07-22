@@ -845,13 +845,14 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     };
     let active_id = state.get_active_session_id();
     let session = state.get_session(&active_id);
-    // Snapshot everything we need from the active session up front, then
-    // drop its lock — nothing below should keep the active ServerSession
-    // borrowed while we fall back to other loops for the config template.
-    let (active_loop, inherit_model, event_bus, broadcaster, approval_gate, session_manager) = {
+    // Snapshot what we need from the active session up front, then drop its
+    // lock.  The new session's loop comes from the template (never used for
+    // runs), so creation succeeds even while every existing session is
+    // mid-stream — previously this failed with "agent is busy" whenever the
+    // shared loop was read-locked by a run.
+    let (inherit_model, event_bus, broadcaster, approval_gate, session_manager) = {
         let sess = rlock!(session, id);
         (
-            sess.agent_loop.clone(),
             sess.model.clone(),
             sess.event_bus.clone(),
             sess.broadcaster.clone(),
@@ -860,49 +861,7 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         )
     };
 
-    // Build the fresh loop's config template from an *idle* loop. The
-    // active session's loop is held under a write lock for the whole turn
-    // while it streams, so a `try_read` on it fails mid-run — which used to
-    // make "start a second conversation while the first is running" fail
-    // outright. Fall back to the default session's loop (never used for
-    // prompts by the GUI, so effectively always idle) so concurrent
-    // sessions can be created. Clients call `set_model` on the new session
-    // right after, so this template is only a seed.
-    let snapshot = |loop_arc: &Arc<tokio::sync::RwLock<crate::agent::Loop>>| {
-        loop_arc.try_read().ok().map(|loop_guard| {
-            let config = crate::types::AgentConfig {
-                system_prompt: loop_guard.config.system_prompt.clone(),
-                max_turns: loop_guard.config.max_turns,
-                thinking_budget: loop_guard.config.thinking_budget,
-                max_retries: loop_guard.config.max_retries,
-                tools_execution_mode: loop_guard.config.tools_execution_mode.clone(),
-                ..Default::default()
-            };
-            (
-                loop_guard.provider.clone(),
-                loop_guard.model.clone(),
-                loop_guard.tools.clone(),
-                config,
-                loop_guard.verbose,
-            )
-        })
-    };
-
-    let template = snapshot(&active_loop).or_else(|| {
-        let default_loop = state.session.read().agent_loop.clone();
-        snapshot(&default_loop)
-    });
-    let Some((provider, model, tools, config, verbose)) = template else {
-        return RpcResponse::build_fail(
-            id,
-            "new_session",
-            "agent is busy; wait for the current run to finish before starting a new session",
-        );
-    };
-    let mut fresh_loop = crate::agent::Loop::new(provider, &model)
-        .with_tools(tools)
-        .with_config(config);
-    fresh_loop.verbose = verbose;
+    let fresh_loop = state.loop_template.independent_copy();
 
     let new_session_id = if cmd.session_id.is_empty() {
         crate::utils::generate_id()
@@ -918,7 +877,7 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         .filter(|s| !s.entries.is_empty())
         .map(|s| (s.entries, s.model.clone()));
 
-    let mut new_sess = ServerSession::new_with_shared_loop(
+    let mut new_sess = ServerSession::new(
         new_session_id.clone(),
         Arc::new(tokio::sync::RwLock::new(fresh_loop)),
         Arc::new(crate::session::Manager::default_for(&session_cwd)),
@@ -1147,10 +1106,9 @@ fn cmd_fork(
     }
 
     // Extract needed data from session
-    let (agent_loop, session_manager, event_bus, broadcaster, _cwd, current_session_id) = {
+    let (session_manager, event_bus, broadcaster, _cwd, current_session_id) = {
         let sess = rlock!(session, id);
         (
-            sess.agent_loop.clone(),
             sess.session_manager.clone(),
             sess.event_bus.clone(),
             sess.broadcaster.clone(),
@@ -1158,6 +1116,11 @@ fn cmd_fork(
             sess.session_id.clone(),
         )
     };
+    // The fork gets its own agent loop — sharing the parent's loop would let
+    // a run in one session block (or be aborted by) the other.
+    let agent_loop = Arc::new(tokio::sync::RwLock::new(
+        state.loop_template.independent_copy(),
+    ));
 
     // Resolve parent session: use cmd.parent_session if provided,
     // otherwise fork from the current session.
@@ -1197,7 +1160,7 @@ fn cmd_fork(
     // the saved history on disk — session_prompt.rs saves
     // self.messages back to disk (via File::create), truncating
     // anything not held in memory.
-    let mut new_sess = ServerSession::new_with_shared_loop(
+    let mut new_sess = ServerSession::new(
         forked_id.clone(),
         agent_loop,
         session_manager,
@@ -1211,8 +1174,8 @@ fn cmd_fork(
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
         new_sess.model = forked.model.clone();
-        // Sync the shared agent loop so the fork's first prompt uses the
-        // forked model, not whatever the previous session left behind.
+        // Sync the fork's own agent loop so the first prompt uses the
+        // forked model, not whatever the template seeded.
         if let Err(e) = new_sess.set_model(&new_sess.model.clone()) {
             tracing::warn!("[fork] could not sync agent loop model: {e}");
         }
@@ -1228,7 +1191,7 @@ fn cmd_clone(
     id: &str,
 ) -> String {
     // Extract needed data from session
-    let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
+    let (session_manager, event_bus, broadcaster, _cwd, session_id) = {
         let sess = rlock!(session, id);
         if sess.messages.read().is_empty() {
             return RpcResponse::build_fail(
@@ -1238,7 +1201,6 @@ fn cmd_clone(
             );
         }
         (
-            sess.agent_loop.clone(),
             sess.session_manager.clone(),
             sess.event_bus.clone(),
             sess.broadcaster.clone(),
@@ -1246,6 +1208,10 @@ fn cmd_clone(
             sess.session_id.clone(),
         )
     };
+    // Own agent loop for the clone (same reasoning as fork).
+    let agent_loop = Arc::new(tokio::sync::RwLock::new(
+        state.loop_template.independent_copy(),
+    ));
 
     // Get parent session from manager
     let parent = match session_manager.load(&session_id) {
@@ -1288,7 +1254,7 @@ fn cmd_clone(
     // Add to sessions map.  Load the cloned entries into
     // in-memory messages (same reason as fork — prevents
     // the first prompt from truncating history on disk).
-    let mut new_sess = ServerSession::new_with_shared_loop(
+    let mut new_sess = ServerSession::new(
         forked_id.clone(),
         agent_loop,
         session_manager,
@@ -1469,6 +1435,7 @@ mod tests {
             verbose: false,
             shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             model_registry: Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+            loop_template: Arc::new(Loop::new(Arc::new(EmptyProvider), "mock")),
         }
     }
 

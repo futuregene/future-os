@@ -46,6 +46,13 @@ pub struct AppState {
     /// Cached model registry populated once at startup.  Avoids repeated
     /// blocking network I/O on every get_state → Registry::new() call.
     pub model_registry: Arc<RwLock<ModelRegistry>>,
+    /// Template for minting per-session agent loops (`Loop::independent_copy`).
+    /// Every session gets its OWN loop — never a shared one — so a streaming
+    /// run's long-held read lock can't block another session's `set_model`
+    /// (`try_write`), and interrupt flags / steering queues / tool hooks /
+    /// token counters stay session-local.  The template itself is never used
+    /// to run prompts.
+    pub loop_template: Arc<crate::agent::Loop>,
 }
 
 impl AppState {
@@ -73,13 +80,12 @@ impl AppState {
         }
 
         // Check whether the session exists on disk before doing expensive I/O.
-        let (agent_loop, session_manager, event_bus, cwd, approval_gate) = {
+        let (session_manager, event_bus, cwd, approval_gate) = {
             let sess = self.session.read();
             if sess.session_manager.find(session_id).is_none() {
                 return self.session.clone(); // not on disk either
             }
             (
-                sess.agent_loop.clone(),
                 sess.session_manager.clone(),
                 sess.event_bus.clone(),
                 sess.cwd.clone(),
@@ -89,10 +95,19 @@ impl AppState {
 
         // Load session from disk OUTSIDE any lock — switch_session parses
         // the JSONL file and can be slow for large histories.
+        //
+        // The hydrated session gets its OWN agent loop (minted from the
+        // template), not the default session's loop.  switch_session below
+        // calls set_model, which replaces the seeded provider with a fresh
+        // client for this session's model — and can no longer fail with
+        // "agent is currently streaming" just because ANOTHER session is
+        // mid-run.
         let broadcaster = Arc::new(SseBroadcaster::new());
-        let mut new_sess = ServerSession::new_with_shared_loop(
+        let mut new_sess = ServerSession::new(
             session_id.to_string(),
-            agent_loop,
+            Arc::new(tokio::sync::RwLock::new(
+                self.loop_template.independent_copy(),
+            )),
             session_manager.clone(),
             &cwd,
             event_bus,

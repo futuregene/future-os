@@ -24,9 +24,11 @@ pub struct ServerSession {
     /// Stable unique session identifier (UUID v4).  Used as the JSONL filename
     /// on disk and as the key in `AppState::sessions`.
     pub session_id: String,
-    /// The agent run-loop: LLM provider + tool registry + turn counter.  Shared
-    /// across forked sessions via `new_with_shared_loop` (the loop carries its
-    /// own token counters and message queue per-session).
+    /// The agent run-loop: LLM provider + tool registry + turn counter.
+    /// Each session owns an independent loop minted from
+    /// `AppState::loop_template` (`Loop::independent_copy`) — never a shared
+    /// one — so concurrent runs, `set_model` calls and aborts stay
+    /// session-local.
     pub agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
     /// Full message history as persisted to/loaded from the session JSONL.
     pub messages: Arc<parking_lot::RwLock<Vec<crate::types::AgentMessage>>>,
@@ -190,63 +192,6 @@ impl ServerSession {
             tokens_cache_w: tcw,
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: lpt,
-            steering_tx: stx,
-            follow_up_tx: ftx,
-            interrupt_tx: None,
-            interrupt_flag: None,
-            approval_gate,
-            permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
-            sandbox_policy: None,
-            session_rules: std::sync::Arc::new(parking_lot::Mutex::new(vec![])),
-        }
-    }
-
-    /// Create a new session with the same agent_loop but cleared state
-    pub fn new_with_shared_loop(
-        session_id: String,
-        agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
-        manager: Arc<Manager>,
-        cwd: &str,
-        event_bus: Arc<EventBus>,
-        broadcaster: Arc<SseBroadcaster>,
-        approval_gate: ApprovalGate,
-    ) -> Self {
-        let (stx, ftx) = if let Ok(loop_) = agent_loop.try_read() {
-            (
-                loop_.steering_queue.tx.clone(),
-                loop_.follow_up_queue.tx.clone(),
-            )
-        } else {
-            let (stx, _) = tokio::sync::mpsc::channel(64);
-            let (ftx, _) = tokio::sync::mpsc::channel(64);
-            (stx, ftx)
-        };
-        Self {
-            session_id: session_id.clone(),
-            agent_loop,
-            messages: Arc::new(parking_lot::RwLock::new(vec![])),
-            model: String::new(),
-            thinking_level: "xhigh".to_string(),
-            steering_mode: "one-at-a-time".to_string(),
-            follow_up_mode: "one-at-a-time".to_string(),
-            auto_compaction: true,
-            auto_retry: true,
-            session_manager: manager,
-            cwd: cwd.to_string(),
-            is_streaming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            session_name: String::new(),
-            parent_session_id: String::new(),
-            created_by: String::new(),
-            source_meta: serde_json::Value::Null,
-            event_bus,
-            broadcaster,
-            ephemeral: false,
-            tokens_in: Arc::new(std::sync::atomic::AtomicI64::new(0)),
-            tokens_out: Arc::new(std::sync::atomic::AtomicI64::new(0)),
-            tokens_cache_r: Arc::new(std::sync::atomic::AtomicI64::new(0)),
-            tokens_cache_w: Arc::new(std::sync::atomic::AtomicI64::new(0)),
-            cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
-            last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             steering_tx: stx,
             follow_up_tx: ftx,
             interrupt_tx: None,
@@ -645,7 +590,10 @@ impl ServerSession {
     }
 
     pub fn list_sessions(&self) -> Result<Vec<serde_json::Value>> {
-        let sessions = self.session_manager.list(&self.cwd)?;
+        // Lightweight summaries: scans each JSONL without deserializing
+        // large tool/assistant payloads, so listing stays fast even with
+        // thousands of sessions on disk.
+        let sessions = self.session_manager.list_summaries(&self.cwd)?;
         Ok(sessions
             .into_iter()
             .map(|s| {
@@ -1189,13 +1137,13 @@ mod tests {
         assert_eq!(session.thinking_level, "off");
     }
 
-    // ─── new_with_shared_loop ───────────────────────────────────────────────
+    // ─── new (per-session loop) ─────────────────────────────────────────
 
     #[test]
-    fn new_with_shared_loop_defaults() {
+    fn new_with_own_loop_defaults() {
         let cwd = test_workspace();
-        let session = ServerSession::new_with_shared_loop(
-            "shared_test".to_string(),
+        let session = ServerSession::new(
+            "own_loop_test".to_string(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
                 Arc::new(EmptyProvider),
                 "mock",
@@ -1206,10 +1154,31 @@ mod tests {
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
         );
-        assert_eq!(session.session_id(), "shared_test");
+        assert_eq!(session.session_id(), "own_loop_test");
         assert_eq!(session.thinking_level, "xhigh");
         assert_eq!(session.get_permission_level(), "all");
         assert!(session.auto_compaction);
+    }
+
+    /// Sessions mint independent loops from the template: queues, counters
+    /// and interrupt flags must not be shared across sessions.
+    #[test]
+    fn independent_loop_copies_have_isolated_state() {
+        let template = Loop::new(Arc::new(EmptyProvider), "mock").with_system_prompt("tpl");
+        let a = template.independent_copy();
+        let b = template.independent_copy();
+        assert_eq!(a.system_prompt, "tpl");
+        assert_eq!(b.model, "mock");
+        // Interrupt flag: fresh Arc per copy.
+        assert!(!std::sync::Arc::ptr_eq(
+            &a.interrupt_flag,
+            &b.interrupt_flag
+        ));
+        // Token counters: fresh Arc per copy.
+        assert!(!std::sync::Arc::ptr_eq(
+            &a.cumulative_input_tokens,
+            &b.cumulative_input_tokens
+        ));
     }
 
     // ─── compact ────────────────────────────────────────────────────────────

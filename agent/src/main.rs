@@ -377,6 +377,11 @@ async fn async_main(
     let broadcaster: Arc<future_agent::rpc::SseBroadcaster> =
         Arc::new(future_agent::rpc::SseBroadcaster::new());
     let approval_gate = future_agent::rpc::ApprovalGate::default();
+    // Template for minting per-session agent loops.  Sessions no longer
+    // share one global loop — each hydrated/created session gets an
+    // independent copy so concurrent runs, model switches and aborts stay
+    // session-local.  The template itself never runs prompts.
+    let loop_template = Arc::new(engine.agent_loop.independent_copy());
     let mut server_session = ServerSession::new(
         future_agent::utils::generate_id(),
         Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
@@ -414,6 +419,7 @@ async fn async_main(
         verbose: cli.verbose,
         shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         model_registry: model_registry.clone(),
+        loop_template,
     };
 
     // Graceful shutdown on Ctrl+C: set the shutting_down flag so new prompts

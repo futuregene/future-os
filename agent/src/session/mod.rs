@@ -759,26 +759,199 @@ impl Manager {
         Ok(session)
     }
 
-    pub fn list(&self, cwd: &str) -> Result<Vec<Session>> {
-        fs::create_dir_all(&self.dir).ok();
-        let mut sessions = vec![];
-        if self.dir.exists() {
-            for entry in fs::read_dir(&self.dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-                    continue;
+    /// Extract the `"type":"..."` value from a serialized entry line without
+    /// parsing the whole JSON.  `SessionEntry` serializes `id` first and
+    /// `type` second (struct field order is deterministic), so the marker
+    /// always appears within the first ~80 bytes regardless of how large the
+    /// `content` payload is.
+    fn cheap_entry_type(line: &str) -> Option<&str> {
+        // Boundary-safe head slice: a multi-byte char may straddle byte 96.
+        let head = line.get(..96).unwrap_or(line);
+        let start = head.find("\"type\":\"")? + 8;
+        let end = head[start..].find('"')? + start;
+        Some(&head[start..end])
+    }
+
+    /// Extract the last `"timestamp":"..."` occurrence from a line without
+    /// parsing the whole JSON.  Used for `updated_at` from the final entry,
+    /// which may itself be a huge tool-result line.
+    fn cheap_timestamp(line: &str) -> Option<DateTime<Local>> {
+        let start = line.rfind("\"timestamp\":\"")? + 13;
+        let end = line[start..].find('"')? + start;
+        let ts = chrono::DateTime::parse_from_rfc3339(&line[start..end]).ok()?;
+        Some(ts.with_timezone(&Local))
+    }
+
+    /// Extract the display text of a user entry's content (first text block),
+    /// trimmed and truncated to ~40 visible columns for the session list.
+    fn summary_first_message(entry: &SessionEntry) -> Option<String> {
+        let content_val = entry.content.as_ref()?;
+        let text: String = if let Some(arr) = content_val.as_array() {
+            // First text block only — a later one is the agent-injected
+            // attachment-path list, not the user's message.
+            arr.iter()
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .next()
+                .unwrap_or("")
+                .to_string()
+        } else if let Some(s) = content_val.as_str() {
+            s.to_string()
+        } else {
+            String::new()
+        };
+        let truncated: String = truncate_visible(text.trim(), 40);
+        if truncated.is_empty() {
+            None
+        } else {
+            Some(truncated)
+        }
+    }
+
+    /// Build a summary from a fully-loaded session (fallback path for files
+    /// whose structure the cheap scanner doesn't recognise).
+    fn summary_from_session(sess: &Session) -> SessionSummary {
+        let mut first_message: Option<String> = None;
+        let mut query_count: usize = 0;
+        let mut session_info_name: Option<String> = None;
+        for entry in &sess.entries {
+            if entry.role == "user" {
+                query_count += 1;
+                if first_message.is_none() {
+                    first_message = Self::summary_first_message(entry);
                 }
-                let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                if let Ok(sess) = self.load_path(&path, id) {
-                    if sess.cwd == cwd || cwd.is_empty() {
-                        sessions.push(sess);
+            } else if entry.entry_type == ENTRY_TYPE_SESSION_INFO && session_info_name.is_none() {
+                if let Some(ref content_val) = entry.content {
+                    if let Some(n) = content_val.get("session_name").and_then(|v| v.as_str()) {
+                        let trimmed = n.trim();
+                        if !trimmed.is_empty() {
+                            session_info_name = Some(trimmed.to_string());
+                        }
                     }
                 }
             }
         }
-        sessions.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
-        Ok(sessions)
+        SessionSummary {
+            id: sess.id.clone(),
+            cwd: sess.cwd.clone(),
+            updated_at: sess.updated_at,
+            model: sess.model.clone(),
+            name: if !sess.name.is_empty() {
+                Some(sess.name.clone())
+            } else {
+                session_info_name
+            },
+            parent_session_id: sess.parent_session_id.clone(),
+            first_message,
+            query_count,
+        }
+    }
+
+    /// Build a SessionSummary by scanning the JSONL cheaply: fully parse only
+    /// the small metadata lines (session_info / model_change / label) and the
+    /// first user entry; every other line is inspected via a `"type"` prefix
+    /// scan, so multi-hundred-KB tool/assistant lines are never deserialized.
+    /// Returns None when the file has no usable session_info or a metadata
+    /// line fails to parse — callers should fall back to a full `load_path`.
+    fn read_summary(&self, path: &Path, id: &str) -> Option<SessionSummary> {
+        let file = File::open(path).ok()?;
+        let reader = BufReader::new(file);
+        let mut cwd = String::new();
+        let mut model = String::new();
+        let mut name = String::new();
+        let mut parent_session_id = String::new();
+        let mut first_message: Option<String> = None;
+        let mut query_count: usize = 0;
+        let mut saw_session_info = false;
+        let mut last_line = String::new();
+
+        for line in reader.lines() {
+            let line = line.ok()?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            last_line = line;
+            match Self::cheap_entry_type(&last_line) {
+                Some(ENTRY_TYPE_SESSION_INFO) => {
+                    let e: SessionEntry = serde_json::from_str(&last_line).ok()?;
+                    saw_session_info = true;
+                    if let Some(ref content) = e.content {
+                        if let Some(c) = content.get("cwd").and_then(|v| v.as_str()) {
+                            cwd = c.to_string();
+                        }
+                        if name.is_empty() {
+                            if let Some(n) = content
+                                .get("session_name")
+                                .and_then(|v| v.as_str())
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            {
+                                name = n.to_string();
+                            }
+                        }
+                        if let Some(p) = content.get("parent_session_id").and_then(|v| v.as_str()) {
+                            parent_session_id = p.to_string();
+                        }
+                    }
+                    if model.is_empty() && !e.model.is_empty() {
+                        model = e.model.clone();
+                    }
+                }
+                Some(ENTRY_TYPE_MODEL_CHANGE) => {
+                    let e: SessionEntry = serde_json::from_str(&last_line).ok()?;
+                    if !e.model.is_empty() {
+                        model = e.model.clone(); // last one wins
+                    }
+                }
+                Some(ENTRY_TYPE_LABEL) => {
+                    let e: SessionEntry = serde_json::from_str(&last_line).ok()?;
+                    if !e.label.is_empty() {
+                        name = e.label.clone(); // last one wins
+                    }
+                }
+                Some(ENTRY_TYPE_USER) => {
+                    query_count += 1;
+                    if first_message.is_none() {
+                        if let Ok(e) = serde_json::from_str::<SessionEntry>(&last_line) {
+                            first_message = Self::summary_first_message(&e);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !saw_session_info || last_line.is_empty() {
+            return None;
+        }
+        // updated_at: timestamp of the final entry (cheap extraction — the
+        // last line may be a huge tool result), falling back to file mtime.
+        let updated_at = Self::cheap_timestamp(&last_line).or_else(|| {
+            std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(DateTime::<Local>::from)
+        })?;
+
+        Some(SessionSummary {
+            id: id.to_string(),
+            cwd,
+            updated_at,
+            model,
+            name: if name.is_empty() { None } else { Some(name) },
+            parent_session_id,
+            first_message,
+            query_count,
+        })
+    }
+
+    /// List sessions for a cwd as lightweight summaries (no full JSONL
+    /// parse per file — see `read_summary`).
+    pub fn list_summaries(&self, cwd: &str) -> Result<Vec<SessionSummary>> {
+        let mut summaries = self.list_all()?;
+        if !cwd.is_empty() {
+            summaries.retain(|s| s.cwd == cwd);
+        }
+        Ok(summaries)
     }
 
     /// List all sessions in the flat sessions directory
@@ -801,66 +974,13 @@ impl Manager {
             return;
         }
         let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        if let Ok(sess) = self.load_path(path, id) {
-            // Scan entries for user messages: first user message and total count.
-            // Also read session_name from the session_info entry as a fallback
-            // for the name when the Session-level name field is empty (older
-            // sessions saved before the name was plumbed through).
-            let mut first_message: Option<String> = None;
-            let mut query_count: usize = 0;
-            let mut session_info_name: Option<String> = None;
-            for entry in &sess.entries {
-                if entry.role == "user" {
-                    query_count += 1;
-                    if first_message.is_none() {
-                        if let Some(ref content_val) = entry.content {
-                            let text: String = if let Some(arr) = content_val.as_array() {
-                                // First text block only — a later one is the agent-
-                                // injected attachment-path list, not the user's message.
-                                arr.iter()
-                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                    .next()
-                                    .unwrap_or("")
-                                    .to_string()
-                            } else if let Some(s) = content_val.as_str() {
-                                s.to_string()
-                            } else {
-                                String::new()
-                            };
-                            // Trim, then truncate to ~40 visible-width (≈20 CJK chars)
-                            let trimmed = text.trim();
-                            let truncated: String = truncate_visible(trimmed, 40);
-                            if !truncated.is_empty() {
-                                first_message = Some(truncated);
-                            }
-                        }
-                    }
-                } else if entry.entry_type == ENTRY_TYPE_SESSION_INFO && session_info_name.is_none()
-                {
-                    if let Some(ref content_val) = entry.content {
-                        if let Some(n) = content_val.get("session_name").and_then(|v| v.as_str()) {
-                            let trimmed = n.trim();
-                            if !trimmed.is_empty() {
-                                session_info_name = Some(trimmed.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            summaries.push(SessionSummary {
-                id: sess.id,
-                cwd: sess.cwd,
-                updated_at: sess.updated_at,
-                model: sess.model,
-                name: if !sess.name.is_empty() {
-                    Some(sess.name)
-                } else {
-                    session_info_name.clone()
-                },
-                parent_session_id: sess.parent_session_id.clone(),
-                first_message,
-                query_count,
-            });
+        // Fast path: cheap line scan that never deserializes large
+        // tool/assistant payloads.  Falls back to a full load for files the
+        // scanner can't handle (legacy layouts, missing session_info).
+        if let Some(summary) = self.read_summary(path, id) {
+            summaries.push(summary);
+        } else if let Ok(sess) = self.load_path(path, id) {
+            summaries.push(Self::summary_from_session(&sess));
         }
     }
 
@@ -1593,6 +1713,101 @@ mod tests {
     }
 
     // ─── Manager save/load/delete ───────────────────────────────────────────
+
+    /// The lightweight summary scanner must produce the same SessionSummary
+    /// as the full load_path-based fallback — including on files with huge
+    /// tool payloads, model changes and labels.
+    #[test]
+    fn list_summaries_matches_full_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_summary_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session.entries.push(SessionEntry::session_info(
+            serde_json::json!({"session_name": "named-session", "cwd": "/tmp/test"}),
+            "gpt-4o".to_string(),
+            "high".to_string(),
+        ));
+        session.entries.push(SessionEntry::new_user(
+            "user",
+            serde_json::json!("first question"),
+        ));
+        // A huge tool payload — the cheap scanner must skip it.
+        session.entries.push(SessionEntry::new_assistant(
+            serde_json::json!("calling tool"),
+            vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "read".to_string(),
+                    arguments: serde_json::json!({"path": "/big"}),
+                },
+            }],
+        ));
+        session
+            .entries
+            .push(SessionEntry::new_tool("tc1", &"x".repeat(500_000)));
+        session.entries.push(SessionEntry::new_user(
+            "user",
+            serde_json::json!("second question"),
+        ));
+        manager.save(&session).unwrap();
+
+        let summaries = manager.list_all().unwrap();
+        assert_eq!(summaries.len(), 1);
+        let fast = &summaries[0];
+
+        let full = Manager::summary_from_session(&manager.load(&session.id).unwrap());
+        assert_eq!(fast.id, full.id);
+        assert_eq!(fast.cwd, full.cwd);
+        assert_eq!(fast.model, full.model);
+        assert_eq!(fast.name, full.name);
+        assert_eq!(fast.first_message, full.first_message);
+        assert_eq!(fast.query_count, full.query_count);
+        assert_eq!(fast.updated_at, full.updated_at);
+        // Sanity: the expected values themselves.
+        assert_eq!(fast.query_count, 2);
+        assert_eq!(fast.first_message.as_deref(), Some("first question"));
+        assert_eq!(fast.name.as_deref(), Some("named-session"));
+        assert_eq!(fast.model, "gpt-4o");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file without session_info falls back to the full-load summary path
+    /// instead of being dropped from the list.
+    #[test]
+    fn list_summaries_falls_back_without_session_info() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_summary_fb_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        // No session_info entry — legacy/corrupt layout.
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        manager.save(&session).unwrap();
+
+        let summaries = manager.list_all().unwrap();
+        assert_eq!(
+            summaries.len(),
+            1,
+            "session must still be listed via fallback"
+        );
+        assert_eq!(summaries[0].first_message.as_deref(), Some("hello"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn manager_save_and_load() {
