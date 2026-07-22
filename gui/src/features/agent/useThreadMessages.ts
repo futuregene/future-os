@@ -2,9 +2,7 @@ import type { StoredRun } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
-import { fetchSessionStreaming } from "../../integrations/agent/agentStateCache";
 import { getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
-import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
 import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
@@ -15,7 +13,6 @@ import { applyRunMetadata, recoverAbortedTurns } from "./threadRunProjection";
 interface UseThreadMessagesInput {
   threadId: string | null;
   workspaceId?: string | null;
-  agentSessionId?: string | null;
 }
 
 interface ThreadCacheEntry {
@@ -43,7 +40,7 @@ const LOADING_INDICATOR_MIN_MS = 200;
  * thread switch, keeps a live run polling while one is active, and caches
  * recently-visited threads so switching back is instant.
  */
-export function useThreadMessages({ threadId, workspaceId, agentSessionId }: UseThreadMessagesInput) {
+export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesInput) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   // Truthful data-loading state: gates pendingPrompt delivery (useAgentThreadState)
   // and must flip the instant a load starts/ends. The UI reads the debounced
@@ -257,95 +254,6 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
     1500,
     { enabled: Boolean(threadId) && isRunActive, deps: [threadId, workspaceId, refreshRecentRun] },
   );
-
-  // When another client (TUI, CLI, phone) is streaming on this thread's
-  // session, ask the Tauri backend to create a synthetic run and subscribe to
-  // the agent's live event stream.  Events are persisted locally, so the
-  // existing reattach machinery (refreshRecentRun → useRunReattach) picks up
-  // the streaming bubble automatically.  No local StoredRun existed before.
-  //
-  // Guards:
-  //   attachedRef — don't re-attach while the same streaming session is active
-  //   isRunActive — don't attach while a local run (incl. our own synthetic
-  //     one) is still in flight; the existing reattach poll handles it
-  const attachedRef = useRef(false);
-  usePolling(
-    async () => {
-      if (!threadId || isRunActive)
-        return;
-      const streaming = await fetchSessionStreaming(threadId);
-      if (streaming && !attachedRef.current) {
-        try {
-          const result = await invokeCommand<{ runId?: string }>("attach_remote_stream", { threadId });
-          // An empty runId means a run was already recently settled — don't
-          // retry until the agent confirms streaming has stopped.
-          attachedRef.current = true;
-          if (result?.runId) {
-            // Reload agent entries so user message + history are visible,
-            // then kick refreshRecentRun so useRunReattach picks up the
-            // synthetic run and starts the streaming bubble on its own.
-            await reloadMessagesQuiet(threadId);
-            await refreshRecentRun(threadId, workspaceId);
-          }
-        }
-        catch {
-          // Agent unreachable — will retry next tick.
-        }
-      }
-      else if (!streaming) {
-        attachedRef.current = false;
-      }
-    },
-    2000,
-    {
-      enabled: Boolean(threadId),
-      deps: [threadId, refreshRecentRun, reloadMessagesQuiet, workspaceId, isRunActive],
-    },
-  );
-
-  // ── Real-time user_message from StreamEvents observer ────────────
-  // Inserts the user message directly from the Tauri event stream
-  // for zero-latency display.  All other events (text_chunk, thinking,
-  // tools, agent_end) continue through the synthetic run → useRunReattach
-  // path to avoid conflicting with the existing streaming bubble logic.
-  useEffect(() => {
-    if (!threadId || !agentSessionId)
-      return;
-    const handler = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail as {
-        sessionId: string;
-        eventType: string;
-        payload: Record<string, unknown>;
-      } | undefined;
-      if (!detail || detail.sessionId !== agentSessionId)
-        return;
-      if (detail.eventType !== "user_message")
-        return;
-
-      const text = typeof detail.payload.text === "string" ? detail.payload.text : "";
-      if (!text)
-        return;
-      setMessages((prev) => {
-        // Dedup: skip if the last user message has identical text.
-        // Checking only the last message avoids suppressing legitimate
-        // repeated prompts (e.g. sending "continue" twice).
-        const userMsgs = prev.filter(m => m.role === "user");
-        const lastUser = userMsgs[userMsgs.length - 1];
-        if (lastUser && lastUser.content === text)
-          return prev;
-        return [...prev, {
-          id: `user_${Date.now()}`,
-          role: "user",
-          authorKey: "author.you",
-          content: text,
-          status: "complete",
-          createdAt: new Date().toISOString(),
-        } satisfies AgentMessage];
-      });
-    };
-    window.addEventListener("future:agent-event", handler);
-    return () => window.removeEventListener("future:agent-event", handler);
-  }, [threadId, agentSessionId]);
 
   return {
     loadingThread,

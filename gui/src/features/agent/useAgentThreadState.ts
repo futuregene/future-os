@@ -52,7 +52,7 @@ export function useAgentThreadState({
     refreshRecentRun,
     setMessages,
     setRecentRun,
-  } = useThreadMessages({ threadId, workspaceId, agentSessionId: thread?.agentSessionId });
+  } = useThreadMessages({ threadId, workspaceId });
 
   // The run this thread is currently executing, if any. Runs stream server-side
   // and persist their events regardless of which thread is in the foreground, so

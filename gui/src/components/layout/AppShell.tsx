@@ -9,13 +9,11 @@ import { NewConversation } from "../../features/agent/NewConversation";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
-import { installAgentEventListener } from "../../integrations/agent/agentStateCache";
 import {
   createWorkspace,
   pinThread,
   restoreThread,
 } from "../../integrations/storage/threadStore";
-import { invokeCommand } from "../../integrations/tauri/invoke";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { ToastHost } from "../ui/ToastHost";
@@ -82,12 +80,6 @@ export function AppShell() {
     reclampRightPanel();
   }, [leftExpanded, reclampRightPanel]);
 
-  // Install the Tauri event listener for real-time agent state updates
-  // (settings changes from other clients).  Only runs once.
-  useEffect(() => {
-    installAgentEventListener();
-  }, []);
-
   const {
     threads,
     workspaces,
@@ -96,31 +88,10 @@ export function AppShell() {
     activeThreadId,
     setActiveThreadId,
     threadRunStatuses,
-    threadStreamingStatuses,
     loadingStore,
     storeError,
     refreshStore,
   } = useThreadStore();
-
-  // Start observing the active thread's agent session for real-time
-  // settings-change events (model, thinking, name, cwd, etc.).
-  useEffect(() => {
-    const sessionId = activeThread?.agentSessionId;
-    if (sessionId) {
-      invokeCommand("observe_session", { sessionId }).catch(() => {});
-    }
-  }, [activeThread?.agentSessionId]);
-
-  // Refresh the store when the agent session's cwd changes (e.g. TUI /cwd),
-  // so the thread moves to the correct workspace in the sidebar.
-  useEffect(() => {
-    const handler = () => {
-      refreshStore().catch(() => {});
-    };
-    window.addEventListener("future:cwd-changed", handler);
-    return () => window.removeEventListener("future:cwd-changed", handler);
-  }, [refreshStore]);
-
   const { activeApproval, decideApproval } = useApprovals(activeThread?.id ?? null);
   const {
     agentConnection,
@@ -320,7 +291,6 @@ export function AppShell() {
     activeThreadId,
     threads,
     threadRunStatuses,
-    threadStreamingStatuses,
     unreadThreadIds,
     workspaces,
     onChange: handleSectionChange,

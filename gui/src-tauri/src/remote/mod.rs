@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Mutex;
 
+/// Port for the embedded web client HTTP server.
+const WEB_PORT: u16 = 8022;
+
 /// Active remote connection. Holds async-nats client + JetStream context + command subscription task;
 /// on stop, aborts the task and drops the client.
 struct RemoteState {
@@ -26,6 +29,8 @@ struct RemoteState {
     nats_url: String,
     pair_id: String,
     cmd_task: tokio::task::JoinHandle<()>,
+    heartbeat_task: tokio::task::JoinHandle<()>,
+    web_task: tokio::task::JoinHandle<()>,
 }
 
 static STATE: Mutex<Option<RemoteState>> = Mutex::new(None);
@@ -51,6 +56,7 @@ pub struct RemoteStatus {
     pub connected: bool,
     pub nats_url: String,
     pub pair_id: String,
+    pub web_url: Option<String>,
     pub error: Option<String>,
 }
 
@@ -60,6 +66,7 @@ fn empty() -> RemoteStatus {
         connected: false,
         nats_url: String::new(),
         pair_id: String::new(),
+        web_url: None,
         error: None,
     }
 }
@@ -91,11 +98,18 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
         input.pair_id.clone(),
     ));
 
+    // Presence heartbeat: write KV `pairs` so clients can see desktop online state.
+    let heartbeat_task = spawn_presence_heartbeat(js.clone(), input.pair_id.clone());
+
+    // Web client HTTP server: serve remote/web/ on localhost:8022.
+    let web_task = spawn_web_server();
+
     let status = RemoteStatus {
         running: true,
         connected: true,
         nats_url: input.nats_url.clone(),
         pair_id: input.pair_id.clone(),
+        web_url: Some(format!("http://localhost:{WEB_PORT}")),
         error: None,
     };
     *STATE.lock().unwrap() = Some(RemoteState {
@@ -104,13 +118,31 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
         nats_url: input.nats_url,
         pair_id: input.pair_id,
         cmd_task,
+        heartbeat_task,
+        web_task,
     });
     Ok(status)
 }
 
 pub fn stop() -> RemoteStatus {
     if let Some(state) = STATE.lock().unwrap().take() {
+        // Clear presence so web clients see "offline" immediately (not after TTL).
+        // `stop()` is reached from the synchronous `remote_stop` command, which
+        // Tauri dispatches on the main thread — outside any tokio runtime
+        // context — so `tokio::spawn` here panics ("no reactor running") and
+        // aborts the app. `tauri::async_runtime::spawn` uses Tauri's global
+        // runtime handle instead, which needs no current-thread context. The
+        // cloned `js` keeps the NATS connection alive until the delete lands.
+        let pair_id = state.pair_id.clone();
+        let js = state.js.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Ok(kv) = js.get_key_value("pairs").await {
+                let _ = kv.delete(&pair_id).await;
+            }
+        });
         state.cmd_task.abort();
+        state.heartbeat_task.abort();
+        state.web_task.abort();
     }
     empty()
 }
@@ -131,6 +163,7 @@ pub fn status() -> RemoteStatus {
                 connected,
                 nats_url: s.nats_url.clone(),
                 pair_id: s.pair_id.clone(),
+                web_url: Some(format!("http://localhost:{WEB_PORT}")),
                 error: loop_dead.then(|| {
                     "Command subscription stopped; restart the remote bridge.".to_string()
                 }),
@@ -174,4 +207,159 @@ pub async fn publish_event(session_id: &str, event_type: &str, data: &str, run_i
             .publish_with_headers(subject, headers, payload.into())
             .await;
     }
+}
+
+/// Spawn a periodic presence heartbeat that writes session state to the KV
+/// bucket `pairs` under key `{pairId}`. Clients read/watch this to know the
+/// desktop is online and which sessions are streaming.
+///
+/// The bucket is created if missing (L0 dev: no separate provisioning step).
+/// The heartbeat task aborts when `stop()` is called.
+fn spawn_presence_heartbeat(
+    js: async_nats::jetstream::Context,
+    pair_id: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // Best-effort bucket creation; if it fails (e.g. JetStream not enabled
+        // or bucket already managed externally), heartbeat writes are silently
+        // skipped — presence is non-critical.
+        let kv = match js
+            .create_or_update_key_value(async_nats::jetstream::kv::Config {
+                bucket: "pairs".to_string(),
+                max_age: std::time::Duration::from_secs(120),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(kv) => kv,
+            Err(e) => {
+                eprintln!("remote: presence KV bucket creation failed: {e}");
+                return;
+            }
+        };
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(20));
+        loop {
+            interval.tick().await;
+            let payload = build_presence_payload(&pair_id);
+            let Ok(bytes) = serde_json::to_vec(&payload) else {
+                continue;
+            };
+            if let Err(e) = kv.put(pair_id.as_str(), bytes.into()).await {
+                eprintln!("remote: presence heartbeat write failed: {e}");
+            }
+        }
+    })
+}
+
+/// Build the presence JSON for the current state.
+fn build_presence_payload(pair_id: &str) -> serde_json::Value {
+    let active_sessions: Vec<String> = crate::store::active_run_sessions().unwrap_or_default();
+    let threads = crate::store::list_threads().unwrap_or_default();
+    let sessions: Vec<serde_json::Value> = threads
+        .iter()
+        .map(|t| {
+            let sid = t.agent_session_id.as_deref().unwrap_or(&t.id);
+            json!({
+                "id": sid,
+                "name": t.title,
+                "streaming": active_sessions.contains(&sid.to_string()),
+            })
+        })
+        .collect();
+    json!({
+        "online": true,
+        "pairId": pair_id,
+        "lastHeartbeatTs": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default(),
+        "sessions": sessions,
+    })
+}
+
+/// Spawn a minimal HTTP server on `127.0.0.1:8022` that serves the web client
+/// from `remote/web/` on disk. Reads the file on every request so edits are
+/// picked up on browser refresh without rebuilding. Aborts on `stop()`.
+fn spawn_web_server() -> tokio::task::JoinHandle<()> {
+    // CARGO_MANIFEST_DIR = gui/src-tauri/ at compile time → repo root is two levels up.
+    let web_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../remote/web")
+        .canonicalize()
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../remote/web")
+        });
+
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = match tokio::net::TcpListener::bind(("127.0.0.1", WEB_PORT)).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("remote: web server bind failed on port {WEB_PORT}: {e}");
+                return;
+            }
+        };
+        eprintln!(
+            "remote: web client at http://localhost:{WEB_PORT} (serving {})",
+            web_dir.display()
+        );
+
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(_) => continue,
+            };
+            let web_dir = web_dir.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = match stream.read(&mut buf).await {
+                    Ok(n) => n,
+                    Err(_) => return,
+                };
+                let request = String::from_utf8_lossy(&buf[..n]);
+                // Parse path from "GET /path HTTP/1.1" — default to index.html.
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("/")
+                    .trim_start_matches('/');
+                let path = if path.is_empty() { "index.html" } else { path };
+                // Prevent directory traversal.
+                if path.contains("..") {
+                    let resp =
+                        "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    return;
+                }
+                let file_path = web_dir.join(path);
+                match tokio::fs::read(&file_path).await {
+                    Ok(content) => {
+                        let content_type = if path.ends_with(".html") {
+                            "text/html; charset=utf-8"
+                        } else if path.ends_with(".js") {
+                            "application/javascript"
+                        } else if path.ends_with(".css") {
+                            "text/css"
+                        } else {
+                            "application/octet-stream"
+                        };
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            content.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        let _ = stream.write_all(&content).await;
+                    }
+                    Err(_) => {
+                        let body = "Not Found";
+                        let resp = format!(
+                            "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                    }
+                }
+            });
+        }
+    })
 }

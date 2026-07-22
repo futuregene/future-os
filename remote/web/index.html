@@ -28,6 +28,10 @@
   button:disabled { opacity:.5; cursor:not-allowed; }
   #status { margin-left:auto; font-size:12px; padding:3px 8px; border-radius:999px; background:#333; white-space:nowrap; }
   #status.ok { background:#1f6f3f; } #status.err { background:#7f2b2b; }
+  #presenceStatus { font-size:12px; padding:3px 8px; border-radius:999px; white-space:nowrap; }
+  #presenceStatus.online { background:#1f6f3f; color:#fff; }
+  #presenceStatus.offline { background:#4a4a4a; color:#9aa4b2; }
+  .srow .streaming-dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:#2b6cff; margin-right:4px; vertical-align:middle; }
 
   /* ── 主体：会话列表 + 对话区 ─────────────────────────────── */
   #app { flex:1; display:flex; min-height:0; }
@@ -92,6 +96,7 @@
   <input id="url" class="url" value="ws://localhost:8080" />
   <input id="pair" class="pair" value="DEVPAIR" />
   <button id="connect">连接</button>
+  <span id="presenceStatus" class="offline">桌面离线</span>
   <span id="status">未连接</span>
 </header>
 
@@ -118,6 +123,8 @@
       <textarea id="msg" placeholder="输入 prompt，Cmd/Ctrl+Enter 发送" disabled></textarea>
       <div class="composer-btns">
         <button id="send" disabled>发送</button>
+        <button id="steer" disabled style="display:none">引导</button>
+        <button id="followUp" disabled style="display:none">排队</button>
         <button id="abort" class="ghost" disabled>中断</button>
       </div>
     </div>
@@ -135,6 +142,9 @@ let nc = null, pair = "DEVPAIR", session = "", bubble = null, thinkEl = null;
 let curRun = null; const seenEvents = new Set();
 const toolChips = new Map();
 let sessions = []; // 最近一次 list_sessions 结果，用于标题查找 + 高亮
+let presence = null; // KV presence：桌面在线状态 + 每 session streaming
+let isStreaming = false; // 当前选中会话是否在流式中（从事件或 presence 推断）
+let presenceTimer = null; // 本地定时器：周期重算 presence 是否过期（watch 无事件时的兜底）
 
 function setStatus(t, cls) { const s = $("status"); s.textContent = t; s.className = cls || ""; }
 function log(el) { $("log").appendChild(el); el.scrollIntoView({ block: "end" }); }
@@ -160,8 +170,82 @@ async function doConnect() {
     const sub = nc.subscribe(`p.${pair}.evt.>`);
     (async () => { for await (const m of sub) onEvent(dec(m), m.subject); })();
     watchConnStatus();   // P1：断线/重连感知 → 重连后重放当前轮
+    watchPresence();     // P1：KV presence → 桌面在线状态 + 每 session streaming
+    // 本地兜底：watch 是事件驱动的，桌面停止后 KV 不再写入就收不到事件，
+    // 指示器会卡在"在线"。每 10s 按 lastHeartbeatTs 重算一次过期。
+    if (presenceTimer) clearInterval(presenceTimer);
+    presenceTimer = setInterval(refreshPresenceIndicator, 10000);
     await listSessions(); // 自动加载会话列表
   } catch (e) { setStatus("连接失败: " + e.message, "err"); }
+}
+
+// KV presence：读 pairs 桶，感知桌面在线/离线 + 每 session streaming 态。
+async function watchPresence() {
+  try {
+    const js = nc.jetstream();
+    const kv = await js.views.kv("pairs");
+    // 先读一次当前值
+    try {
+      const entry = await kv.get(pair);
+      if (entry) onPresenceUpdate(JSON.parse(new TextDecoder().decode(entry.value)));
+    } catch { /* key 不存在 = 桌面未上报 */ }
+    // watch 后续变化
+    const watch = await kv.watch(pair);
+    (async () => {
+      for await (const e of watch) {
+        if (e.operation === "DEL" || e.operation === "PURGE") {
+          onPresenceUpdate(null);
+        } else {
+          try { onPresenceUpdate(JSON.parse(new TextDecoder().decode(e.value))); } catch {}
+        }
+      }
+    })();
+  } catch { /* KV 不可用（JetStream 未启用等）：presence 功能静默降级 */ }
+}
+
+function onPresenceUpdate(data) {
+  presence = data;
+  refreshPresenceIndicator();
+  // 更新当前会话 streaming 态
+  if (data?.sessions && session) {
+    const s = data.sessions.find(x => x.id === session);
+    if (s) updateStreamingState(s.streaming);
+  }
+  renderSessionList(); // 刷新列表上的 streaming 指示
+}
+
+// 重算并渲染桌面在线/离线指示器。watch 是事件驱动的——桌面停止后 KV 不再
+// 写入，watch 收不到任何事件，所以仅靠 onPresenceUpdate 无法让指示器随时间
+// 翻转为离线。本地定时器周期调用本函数，按 lastHeartbeatTs 检测过期。
+function refreshPresenceIndicator() {
+  const el = $("presenceStatus");
+  if (!el) return;
+  const data = presence;
+  const online = data?.online ?? false;
+  const ts = data?.lastHeartbeatTs;
+  // 超过 60s 未心跳视为离线（心跳间隔 20s，容忍丢 2 次）
+  const stale = !ts || (Date.now() / 1000 - ts) > 60;
+  if (!online || stale) {
+    el.textContent = "桌面离线";
+    el.className = "offline";
+  } else {
+    el.textContent = "桌面在线";
+    el.className = "online";
+  }
+}
+
+function updateStreamingState(streaming) {
+  isStreaming = streaming;
+  const sendBtn = $("send"), steerBtn = $("steer"), followBtn = $("followUp");
+  if (streaming) {
+    sendBtn.style.display = "none";
+    steerBtn.style.display = "";
+    followBtn.style.display = "";
+  } else {
+    sendBtn.style.display = "";
+    steerBtn.style.display = "none";
+    followBtn.style.display = "none";
+  }
 }
 
 // core pub/sub 在断连期间的事件会丢；nats.ws 会自动重连并恢复订阅，但那段空窗的
@@ -212,7 +296,14 @@ function renderSessionList() {
     const row = document.createElement("div");
     row.className = "srow" + (s.sessionId === session ? " active" : "");
     row.dataset.sid = s.sessionId;
-    const t = document.createElement("div"); t.className = "st"; t.textContent = s.title || "(未命名)";
+    const t = document.createElement("div"); t.className = "st";
+    // presence 里有该 session 的 streaming 态 → 显示蓝点
+    const pInfo = presence?.sessions?.find(x => x.id === s.sessionId);
+    if (pInfo?.streaming) {
+      const dot = document.createElement("span"); dot.className = "streaming-dot";
+      t.appendChild(dot);
+    }
+    t.appendChild(document.createTextNode(s.title || "(未命名)"));
     const sub = document.createElement("div"); sub.className = "ss"; sub.textContent = s.sessionId;
     row.append(t, sub);
     row.onclick = () => selectSession(s.sessionId);
@@ -231,11 +322,20 @@ async function selectSession(sid) {
   clearLog();
   $("chatTitle").textContent = sessionTitle(sid);
   $("msg").disabled = false; $("send").disabled = false; $("abort").disabled = false;
+  $("steer").disabled = false; $("followUp").disabled = false;
+  // 从 presence 恢复 streaming 态（切换按钮显示）
+  const pInfo = presence?.sessions?.find(x => x.id === sid);
+  updateStreamingState(pInfo?.streaming ?? false);
   $("app").classList.add("show-chat"); // 移动端进入对话；宽屏无副作用
   // 高亮列表
   document.querySelectorAll(".srow").forEach((r) => r.classList.toggle("active", r.dataset.sid === sid));
   await loadHistory(sid);
-  await backfillActiveRun(sid);
+  // Only backfill the in-progress run — completed runs are already fully rendered
+  // by loadHistory (the agent persists the final assistant message). Replaying
+  // them would duplicate every text_chunk.
+  if (pInfo?.streaming) {
+    await backfillActiveRun(sid);
+  }
 }
 
 // P1c：若该会话正有一轮在进行，回放其缓冲事件（从 idx 0），补齐中途加入丢掉的前缀。
@@ -251,17 +351,35 @@ async function backfillActiveRun(sid) {
   } catch { /* 无进行中轮次 / 老版 Bridge 不支持：忽略 */ }
 }
 
-// 从 Bridge 拉该会话的持久化消息（get_messages）并按气泡渲染。
+// 从 Bridge 拉该会话的持久化消息（get_messages，LLM Message 形状）并按气泡渲染。
+// content 可能是字符串，也可能是 content blocks 数组（[{type:"text",text:…},…]）；
+// tool 角色消息和纯工具调用的 assistant 消息（无文本）在聊天视图里跳过。
+// 返回已加载消息中最大的 runId（供 backfillActiveRun 判断是否已包含当前轮）。
+function messageText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.filter(b => b && b.type === "text").map(b => b.text || "").join("");
+  }
+  return "";
+}
+
 async function loadHistory(sid) {
   try {
     const r = await request({ type: "get_messages", sessionId: sid }, sid);
     const msgs = r?.data?.messages || [];
-    if (!msgs.length) { line("（无历史消息）"); return; }
+    if (!msgs.length) { line("（无历史消息）"); return null; }
+    let shown = 0;
+    let maxRunId = null;
     for (const m of msgs) {
-      if (m.role === "user") renderUser(m.content || "");
-      else renderAssistantStatic(m.content || "");
+      const text = messageText(m.content);
+      if (!text.trim()) continue;
+      if (m.run_id) maxRunId = m.run_id;
+      if (m.role === "user") { renderUser(text); shown++; }
+      else if (m.role === "assistant") { renderAssistantStatic(text); shown++; }
     }
-  } catch (e) { line("加载历史失败: " + (e?.message || e), "err"); }
+    if (!shown) line("（无可显示的历史消息）");
+    return maxRunId;
+  } catch (e) { line("加载历史失败: " + (e?.message || e), "err"); return null; }
 }
 
 function ensureSession() { return session; }
@@ -274,6 +392,25 @@ async function send() {
   bubble = null; thinkEl = null; toolChips.clear();
   try { await request({ type: "prompt", sessionId: session, message: text }); }
   catch (e) { line("发送失败: " + e.message, "err"); }
+}
+
+async function sendSteer() {
+  if (!ensureSession()) return;
+  const text = $("msg").value.trim(); if (!text) return;
+  $("msg").value = "";
+  renderUser(text);
+  bubble = null; thinkEl = null; toolChips.clear();
+  try { await request({ type: "steer", sessionId: session, message: text }); }
+  catch (e) { line("引导失败: " + e.message, "err"); }
+}
+
+async function sendFollowUp() {
+  if (!ensureSession()) return;
+  const text = $("msg").value.trim(); if (!text) return;
+  $("msg").value = "";
+  renderUser(text);
+  try { await request({ type: "follow_up", sessionId: session, message: text }); line("已排队"); }
+  catch (e) { line("排队失败: " + e.message, "err"); }
 }
 
 async function abort() {
@@ -324,7 +461,7 @@ function onEvent(ev, subject) {
   const verbose = $("verbose")?.checked;
   switch (ev.type) {
     case "ping": break;
-    case "agent_start": if (verbose) line("▶ agent_start"); break;
+    case "agent_start": updateStreamingState(true); if (verbose) line("▶ agent_start"); break;
     // 助手文本：始终显示（这是主内容）。
     case "text_chunk": { const b = assistantBubble(); b._span.textContent += (data.text || ""); break; }
     case "thinking_start": break;
@@ -343,7 +480,7 @@ function onEvent(ev, subject) {
     // 审批 / 错误：始终显示（需要操作/知情）。
     case "approval_request": renderApproval(data); break;
     case "error": line("✖ error: " + (data.error || ev.data), "err bubble"); break;
-    case "agent_end": if (verbose) line(data.error ? ("■ agent_end (error)") : "■ agent_end"); break;
+    case "agent_end": updateStreamingState(false); if (verbose) line(data.error ? ("■ agent_end (error)") : "■ agent_end"); break;
     default: if (verbose) line("· " + ev.type);
   }
 }
@@ -371,10 +508,12 @@ $("connect").onclick = doConnect;
 $("newsess").onclick = newSession;
 $("refresh").onclick = listSessions;
 $("send").onclick = send;
+$("steer").onclick = sendSteer;
+$("followUp").onclick = sendFollowUp;
 $("abort").onclick = abort;
 $("back").onclick = () => $("app").classList.remove("show-chat");
 $("msg").addEventListener("input", autoGrow);
-$("msg").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") send(); });
+$("msg").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { isStreaming ? sendSteer() : send(); } });
 </script>
 </body>
 </html>

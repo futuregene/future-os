@@ -60,7 +60,6 @@ pub use threads::{
     archive_thread, create_thread, delete_thread, find_thread_by_agent_session, get_recent_thread,
     get_thread, list_threads, pin_thread, purge_soft_deleted_threads, rename_thread,
     restore_thread, update_thread_model, update_thread_session_id, update_thread_thinking_level,
-    move_thread_to_workspace,
     ThreadRecord,
 };
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};

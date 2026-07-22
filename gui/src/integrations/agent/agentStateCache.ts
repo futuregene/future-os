@@ -1,8 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
 import { useSyncExternalStore } from "react";
-
-// ── Real-time agent state updates via Tauri events ──────────────────────
-
 import { invokeCommand } from "../tauri/invoke";
 
 /** Agent-side session state, fetched via get_state RPC. */
@@ -10,11 +6,8 @@ export interface AgentSessionState {
   model?: string | null;
   thinkingLevel?: string | null;
   sessionName?: string | null;
-  sessionId?: string | null;
   cwd?: string | null;
   parentSessionId?: string | null;
-  /** Whether the agent is currently streaming a response for this session. */
-  isStreaming?: boolean;
 }
 
 interface CacheEntry {
@@ -72,10 +65,8 @@ export async function getAgentState(threadId: string): Promise<AgentSessionState
         model: typeof raw.model === "string" ? raw.model : null,
         thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
         sessionName: typeof raw.session_name === "string" ? raw.session_name : null,
-        sessionId: typeof raw.sessionId === "string" ? raw.sessionId : null,
         cwd: typeof raw.cwd === "string" ? raw.cwd : null,
         parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
-        isStreaming: typeof raw.isStreaming === "boolean" ? raw.isStreaming : undefined,
       };
       if ((versions.get(threadId) ?? 0) === requestVersion) {
         cache.set(threadId, { state, fetchedAt: Date.now() });
@@ -166,183 +157,4 @@ export function prefetchAgentState(threadId: string | undefined | null) {
  */
 export function useCachedAgentState(threadId: string | undefined | null): AgentSessionState | undefined {
   return useSyncExternalStore(subscribe, () => getCachedAgentState(threadId));
-}
-
-let eventListenerInstalled = false;
-
-/**
- * Install a one-time Tauri event listener that processes ALL agent events
- * (user_message, text_chunk, settings changes, etc.) forwarded from the
- * StreamEvents observer.  This gives the GUI the same real-time latency
- * as the TUI — no polling, no synthetic run delay.
- */
-export function installAgentEventListener() {
-  if (eventListenerInstalled)
-    return;
-  eventListenerInstalled = true;
-
-  void listen<Record<string, unknown>>("agent-event", (event) => {
-    const p = event.payload;
-    if (!p)
-      return;
-
-    const sessionId = typeof p.sessionId === "string" ? p.sessionId : null;
-    const eventType = typeof p._eventType === "string" ? p._eventType : null;
-    if (!sessionId || !eventType)
-      return;
-
-    switch (eventType) {
-      // ── Settings-change events: update cache ──
-      case "model_changed":
-      case "thinking_level_changed":
-      case "permission_level_changed":
-      case "session_name_changed":
-      case "cwd_changed":
-      case "config_reloaded":
-        applySettingsEvent(sessionId, eventType, p);
-        break;
-
-      // ── Content events: forward to the active AgentThread via a
-      //     window custom event so the message list updates in real-time.
-      case "user_message":
-      case "text_chunk":
-      case "agent_start":
-      case "agent_end":
-      case "thinking_start":
-      case "thinking_delta":
-      case "thinking_end":
-      case "tool_start":
-      case "tool_delta":
-      case "tool_end":
-        window.dispatchEvent(new CustomEvent("future:agent-event", {
-          detail: { sessionId, eventType, payload: p },
-        }));
-        break;
-    }
-  });
-}
-
-/** Apply a settings-change event to the agent state cache. */
-function applySettingsEvent(
-  sessionId: string,
-  eventType: string,
-  p: Record<string, unknown>,
-) {
-  for (const [threadId, entry] of cache) {
-    if (entry.state.sessionId !== sessionId)
-      continue;
-
-    const next = { ...entry.state };
-    let changed = false;
-
-    switch (eventType) {
-      case "model_changed":
-        if (typeof p.model === "string") {
-          next.model = p.model;
-          changed = true;
-        }
-        break;
-      case "thinking_level_changed":
-        if (typeof p.level === "string") {
-          next.thinkingLevel = p.level;
-          changed = true;
-        }
-        break;
-      case "session_name_changed":
-        if (typeof p.name === "string") {
-          next.sessionName = p.name;
-          changed = true;
-        }
-        break;
-      case "cwd_changed":
-        if (typeof p.cwd === "string") {
-          next.cwd = p.cwd;
-          changed = true;
-          invokeCommand("reconcile_thread_workspace", {
-            sessionId,
-            cwd: p.cwd,
-          }).then(() => {
-            window.dispatchEvent(new CustomEvent("future:cwd-changed"));
-          }).catch(() => {});
-        }
-        break;
-      case "config_reloaded":
-        versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
-        cache.delete(threadId);
-        changed = true;
-        break;
-    }
-
-    if (changed) {
-      cache.set(threadId, { state: next, fetchedAt: Date.now() });
-    }
-    // Don't break — multiple threads can share the same agent session.
-  }
-  notify();
-}
-
-// ── Streaming-status cache (short TTL, separate from full agent state) ────
-
-const STREAMING_TTL_MS = 1_000;
-const streamingCache = new Map<string, { streaming: boolean; fetchedAt: number }>();
-
-/**
- * Lightweight check: is this session currently streaming?
- * Uses a short-lived cache (1s) so the thread list picks up TUI-initiated
- * streaming quickly without hammering the agent with get_state RPCs.
- */
-export async function fetchSessionStreaming(threadId: string): Promise<boolean> {
-  const cached = streamingCache.get(threadId);
-  if (cached && Date.now() - cached.fetchedAt < STREAMING_TTL_MS) {
-    return cached.streaming;
-  }
-  try {
-    const raw = await invokeCommand<Record<string, unknown>>("get_thread_agent_state", { threadId });
-    const streaming = raw.isStreaming === true;
-    streamingCache.set(threadId, { streaming, fetchedAt: Date.now() });
-    // Always update the full agent-state cache so settings changes
-    // (model, thinking, name, cwd) are reflected in near real-time,
-    // not just when streaming starts.
-    const state: AgentSessionState = {
-      model: typeof raw.model === "string" ? raw.model : null,
-      thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
-      sessionName: typeof raw.session_name === "string" ? raw.session_name : null,
-      sessionId: typeof raw.sessionId === "string" ? raw.sessionId : null,
-      cwd: typeof raw.cwd === "string" ? raw.cwd : null,
-      parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
-      isStreaming: streaming,
-    };
-    cache.set(threadId, { state, fetchedAt: Date.now() });
-    pruneCache();
-    notify();
-    return streaming;
-  }
-  catch {
-    return cached?.streaming ?? false;
-  }
-}
-
-/**
- * Poll streaming status for a batch of threads and return a map of
- * threadId → isStreaming. Fires all requests in parallel.
- */
-export async function pollStreamingStatuses(
-  threadIds: string[],
-): Promise<Record<string, boolean>> {
-  const entries = await Promise.all(
-    threadIds.map(async (id) => {
-      try {
-        const streaming = await fetchSessionStreaming(id);
-        return { id, streaming };
-      }
-      catch {
-        return { id, streaming: false };
-      }
-    }),
-  );
-  const result: Record<string, boolean> = {};
-  for (const entry of entries) {
-    result[entry.id] = entry.streaming;
-  }
-  return result;
 }

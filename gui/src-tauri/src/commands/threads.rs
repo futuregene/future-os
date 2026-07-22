@@ -165,10 +165,8 @@ pub async fn get_thread_agent_state(
             "model": null,
             "thinkingLevel": null,
             "session_name": thread.title,
-            "sessionId": null,
             "cwd": null,
             "parentSessionId": null,
-            "isStreaming": false,
         }));
     };
 
@@ -242,34 +240,4 @@ pub fn get_thread_cleanup_summary(
     thread_id: String,
 ) -> Result<store::ThreadCleanupSummary, crate::AppError> {
     store::get_thread_cleanup_summary(&thread_id)
-}
-
-/// Attach to a remote agent session stream: create a synthetic run and
-/// subscribe to live events so the GUI shows real-time streaming content
-/// for prompts initiated by other clients (TUI, CLI, phone).
-#[tauri::command]
-pub async fn attach_remote_stream(
-    thread_id: String,
-) -> Result<serde_json::Value, crate::AppError> {
-    let run_id = crate::agent_bridge::attach_remote_stream(&thread_id).await?;
-    Ok(serde_json::json!({ "runId": run_id }))
-}
-
-/// Start observing a session's settings changes in the background.  The agent
-/// broadcasts model_changed, thinking_level_changed, etc. via StreamEvents;
-/// this command subscribes to those events and forwards them to the frontend.
-/// Call on every thread switch — old observation is automatically cancelled.
-#[tauri::command]
-pub fn observe_session(session_id: String) {
-    crate::agent_bridge::start_observing_session(session_id);
-}
-
-/// Move a thread to the workspace matching a new cwd (e.g. after TUI /cwd).
-#[tauri::command]
-pub fn reconcile_thread_workspace(
-    session_id: String,
-    cwd: String,
-) -> Result<(), crate::AppError> {
-    crate::agent_bridge::reconcile_thread_workspace(&session_id, &cwd)
-        .map_err(crate::AppError::from)
 }

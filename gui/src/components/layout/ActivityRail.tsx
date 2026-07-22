@@ -36,7 +36,6 @@ interface ActivityRailProps {
   activeThreadId: string | null;
   threads: StoredThread[];
   threadRunStatuses: Record<string, ThreadRunInfo | undefined>;
-  threadStreamingStatuses: Record<string, boolean>;
   unreadThreadIds: Set<string>;
   workspaces: StoredWorkspace[];
   onChange: (section: ActivitySection) => void;
@@ -73,7 +72,6 @@ export function ActivityRail({
   floating,
   threads,
   threadRunStatuses,
-  threadStreamingStatuses,
   unreadThreadIds,
   workspaces,
   onChange,
@@ -369,7 +367,6 @@ export function ActivityRail({
                           key={thread.id}
                           menuOpen={openThreadMenuId === thread.id}
                           runStatus={threadRunStatuses[thread.id]}
-                          isStreaming={threadStreamingStatuses[thread.id]}
                           thread={thread}
                           unread={unreadThreadIds.has(thread.id)}
                           onDeleteThread={onDeleteThread}

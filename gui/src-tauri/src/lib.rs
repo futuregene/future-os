@@ -260,9 +260,6 @@ pub fn run() {
             get_session_entries,
             get_thread_agent_state,
             get_thread_cleanup_summary,
-            attach_remote_stream,
-            observe_session,
-            reconcile_thread_workspace,
             list_messages,
             append_message,
             create_run,
@@ -294,7 +291,8 @@ pub fn run() {
             uninstall_skill,
             remote_start,
             remote_stop,
-            remote_status
+            remote_status,
+            open_url
         ])
         .build(tauri::generate_context!())
         .expect("error while running FutureOS")

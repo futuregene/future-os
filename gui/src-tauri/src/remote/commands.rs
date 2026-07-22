@@ -16,6 +16,9 @@ struct IncomingCmd {
     cmd_type: String,
     session_id: String,
     message: String,
+    // approval_decision
+    entry_id: String,
+    mode: String,
     // get_events_since (P1c backfill)
     run_id: String,
     since_idx: i64,
@@ -28,6 +31,8 @@ impl Default for IncomingCmd {
             cmd_type: String::new(),
             session_id: String::new(),
             message: String::new(),
+            entry_id: String::new(),
+            mode: String::new(),
             run_id: String::new(),
             since_idx: -1,
         }
@@ -95,18 +100,36 @@ async fn handle_command(client: &async_nats::Client, _pair_id: &str, msg: async_
             Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
         },
         "get_messages" => {
-            let result = (|| -> Result<Value, crate::AppError> {
-                match crate::store::find_thread_by_agent_session(&cmd.session_id)? {
-                    Some(thread) => {
-                        let messages = crate::store::list_messages(&thread.id)?;
-                        Ok(json!({ "messages": messages }))
-                    }
-                    None => Ok(json!({ "messages": [] })),
-                }
-            })();
-            match result {
+            // Serve history from the agent (source of truth for all sessions).
+            // The GUI store only has message rows for GUI-native threads —
+            // TUI/CLI sessions imported as thread stubs would show empty history.
+            // Fall back to the store when the agent is unreachable.
+            match crate::agent_bridge::get_session_messages(cmd.session_id.clone()).await {
                 Ok(data) => reply(client, &msg, true, data, None).await,
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+                Err(agent_err) => {
+                    let fallback = (|| -> Result<Value, crate::AppError> {
+                        match crate::store::find_thread_by_agent_session(&cmd.session_id)? {
+                            Some(thread) => {
+                                let messages = crate::store::list_messages(&thread.id)?;
+                                Ok(json!({ "messages": messages }))
+                            }
+                            None => Ok(json!({ "messages": [] })),
+                        }
+                    })();
+                    match fallback {
+                        Ok(data) => reply(client, &msg, true, data, None).await,
+                        Err(e) => {
+                            reply(
+                                client,
+                                &msg,
+                                false,
+                                Value::Null,
+                                Some(&format!("{agent_err}; store fallback also failed: {e}")),
+                            )
+                            .await;
+                        }
+                    }
+                }
             }
         }
         "get_events_since" => {
@@ -154,6 +177,34 @@ async fn handle_command(client: &async_nats::Client, _pair_id: &str, msg: async_
                     });
                     reply(client, &msg, true, ack, None).await;
                 }
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "abort" => match crate::agent_bridge::abort_session(&cmd.session_id).await {
+            Ok(()) => reply(client, &msg, true, json!({}), None).await,
+            Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+        },
+        "approval_decision" => {
+            let input = crate::store::DecideApprovalRequestInput {
+                approval_request_id: cmd.entry_id.clone(),
+                status: cmd.mode.clone(),
+                decision_note: None,
+            };
+            match crate::agent_bridge::decide_approval(input).await {
+                Ok(_) => reply(client, &msg, true, json!({}), None).await,
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "steer" => {
+            match crate::agent_bridge::steer_session(&cmd.session_id, cmd.message.clone()).await {
+                Ok(()) => reply(client, &msg, true, json!({}), None).await,
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "follow_up" => {
+            match crate::agent_bridge::follow_up_session(&cmd.session_id, cmd.message.clone()).await
+            {
+                Ok(()) => reply(client, &msg, true, json!({}), None).await,
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }

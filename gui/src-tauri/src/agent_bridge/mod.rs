@@ -21,7 +21,7 @@ pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, Prepared
 pub(crate) use self::import::import_missing_sessions;
 pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;
-pub(crate) use self::run_control::abort_session;
+pub(crate) use self::run_control::{abort_session, follow_up_session, steer_session};
 pub use self::session::fork_agent_session;
 pub use self::skills::{list_installed_skills, InstalledSkill};
 pub use review::retry as retry_run_review;
@@ -82,6 +82,29 @@ pub async fn get_events_since(
         .ok_or_rpc_error("get_events_since returned an error")?;
     if response.data.is_empty() {
         Ok(serde_json::json!({ "events": [] }))
+    } else {
+        Ok(serde_json::from_str(&response.data)?)
+    }
+}
+
+/// Fetch a session's full message history from the agent (LLM Message shape:
+/// `{role, content, tool_calls?}` where `content` is a string or an array of
+/// content blocks). The agent's JSONL is the source of truth for ALL sessions —
+/// including TUI/CLI sessions the GUI store only holds as imported thread stubs
+/// with no message rows — so the remote bridge serves history from here rather
+/// than from the store.
+pub async fn get_session_messages(
+    session_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(base_command("get_messages", session_id))
+        .await
+        .map_err(|status| format!("get_messages failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_messages returned an error")?;
+    if response.data.is_empty() {
+        Ok(serde_json::json!({ "messages": [] }))
     } else {
         Ok(serde_json::from_str(&response.data)?)
     }
@@ -494,9 +517,6 @@ async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), St
             .map_err(|e| format!("stream failed: {e}"))?;
 
         let Some(event) = event else {
-            // Stream ended without agent_end — settle the run.
-            let _ = crate::store::settle_interrupted_run(run_id, "failed");
-            let _ = crate::store::clear_run_event_buffer(run_id);
             break;
         };
 
@@ -517,310 +537,5 @@ async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), St
             break;
         }
     }
-    Ok(())
-}
-
-// ── Remote-stream attach (cross-client streaming) ─────────────────────────
-
-/// Called when the GUI opens a thread whose agent session is being driven by
-/// another client (TUI, CLI, phone).  Creates a synthetic run and subscribes
-/// to the agent's event stream in the background so the existing reattach
-/// machinery picks up live previews and message updates automatically.
-pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
-    let thread = crate::store::get_thread(thread_id)
-        .map_err(|e| format!("get_thread: {e}"))?
-        .ok_or_else(|| "Thread not found".to_string())?;
-    let session_id = thread
-        .agent_session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "Thread has no agent session".to_string())?;
-
-    // Don't create a duplicate run if one is already collecting or was
-    // recently settled.  The frontend polls get_state for is_streaming and
-    // the run settlement races with that poll — a just-settled run can look
-    // like "no active run" for a tick, causing a duplicate creation.
-    let existing_runs = crate::store::list_runs(thread_id).unwrap_or_default();
-    if existing_runs.iter().any(|r| r.status == "running") {
-        return Ok(existing_runs
-            .iter()
-            .find(|r| r.status == "running")
-            .map(|r| r.id.clone())
-            .unwrap_or_default());
-    }
-    // Also skip if a run completed in the last 10s — the agent's is_streaming
-    // flag may not have cleared yet and the frontend poll would trigger a
-    // redundant attach.
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-    if existing_runs.iter().any(|r| {
-        r.status == "completed"
-            && r.ended_at.map_or(false, |ended| now_ms - ended < 10_000)
-    }) {
-        return Ok(String::new()); // empty = already handled
-    }
-
-    let run = crate::store::create_run(crate::store::CreateRunInput {
-        thread_id: thread_id.to_string(),
-        trigger_message_id: None,
-        model_provider: None,
-        model_id: None,
-    })
-    .map_err(|e| format!("create_run: {e}"))?;
-
-    let run_id = run.id.clone();
-    let sid = session_id.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = collect_remote_stream(&sid, &run_id).await {
-            eprintln!("FutureOS remote-stream collector for {run_id} failed: {e}");
-            let _ = crate::store::update_run_status_if_active(
-                crate::store::UpdateRunStatusInput {
-                    run_id,
-                    status: "failed".to_string(),
-                    error_message: Some(e),
-                    error_type: None,
-                },
-            );
-        }
-    });
-
-    Ok(run.id)
-}
-
-async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), String> {
-    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
-
-    // Backfill: when the GUI enters mid-stream, pull past events the agent
-    // still holds in memory so upsertStreamingPreview sees a complete
-    // history instead of starting from the subscription point.
-    let mut sequence = 0i64;
-    if let Ok(backfill) = get_events_since(session_id.to_string(), run_id.to_string(), -1).await {
-        if let Some(events) = backfill.get("events").and_then(|v| v.as_array()) {
-            for item in events {
-                let evt_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let evt_data = item.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                crate::store::append_run_event(crate::store::AppendRunEventInput {
-                    run_id: run_id.to_string(),
-                    event_type: evt_type.to_string(),
-                    payload: if evt_data.is_empty() { None } else { Some(evt_data.to_string()) },
-                    sequence,
-                })
-                .map_err(|e| format!("append_backfill: {e}"))?;
-                sequence += 1;
-            }
-        }
-    }
-
-    let mut stream = client
-        .stream_events(StreamRequest {
-            event_types: vec![],
-            session_id: session_id.to_string(),
-        })
-        .await
-        .map_err(|e| format!("stream_events: {e}"))?
-        .into_inner();
-
-    loop {
-        let event = tokio::time::timeout(
-            std::time::Duration::from_secs(600),
-            stream.message(),
-        )
-        .await
-        .map_err(|_| "agent response timed out".to_string())?
-        .map_err(|e| format!("stream failed: {e}"))?;
-
-        let Some(event) = event else {
-            // Stream ended without agent_end — settle the run so it doesn't
-            // stay "running" forever.
-            let _ = crate::store::update_run_status_if_active(
-                crate::store::UpdateRunStatusInput {
-                    run_id: run_id.to_string(),
-                    status: "failed".to_string(),
-                    error_message: Some("stream ended without agent_end".to_string()),
-                    error_type: None,
-                },
-            );
-            let _ = crate::store::clear_run_event_buffer(run_id);
-            break;
-        };
-
-        crate::store::append_run_event(crate::store::AppendRunEventInput {
-            run_id: run_id.to_string(),
-            event_type: event.r#type.clone(),
-            payload: Some(event.data.clone()),
-            sequence,
-        })
-        .map_err(|e| format!("append_event: {e}"))?;
-
-        sequence += 1;
-
-        if event.r#type == "agent_end" {
-            crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
-                run_id: run_id.to_string(),
-                status: "completed".to_string(),
-                error_message: None,
-                error_type: None,
-            })
-            .map_err(|e| format!("update_status: {e}"))?;
-            crate::store::clear_run_event_buffer(run_id);
-            break;
-        }
-    }
-    Ok(())
-}
-
-// ── Session observer (real-time settings-change events) ───────────────────
-
-use tokio::sync::oneshot;
-use tauri::Emitter;
-
-/// Handle to the currently-running session observation task.  When a new
-/// observation starts, the old one is cancelled via this channel.
-static OBSERVER_CANCEL: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
-
-/// Start observing a session's settings changes in the background.  Subscribes
-/// to the agent's StreamEvents and forwards settings-change events to the
-/// frontend via Tauri `agent-event` events so the UI reflects model /
-/// thinking / name / cwd changes in near real-time (< 1s).
-///
-/// Cancels any previous observation for this window.  Safe to call on every
-/// thread switch — only one observation runs at a time.
-pub fn start_observing_session(session_id: String) {
-    // Cancel the previous observation.
-    if let Ok(mut guard) = OBSERVER_CANCEL.lock() {
-        if let Some(tx) = guard.take() {
-            let _ = tx.send(());
-        }
-    }
-
-    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
-    if let Ok(mut guard) = OBSERVER_CANCEL.lock() {
-        *guard = Some(cancel_tx);
-    }
-
-    tauri::async_runtime::spawn(async move {
-        let app_handle = match crate::APP_HANDLE.get() {
-            Some(h) => h.clone(),
-            None => return,
-        };
-
-        // Reconnect loop: if the agent restarts, re-subscribe.
-        loop {
-            let mut client = match connect_agent().await {
-                Ok(c) => c,
-                Err(_) => {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    continue;
-                }
-            };
-
-            let mut stream = match client
-                .stream_events(StreamRequest {
-                    event_types: vec![],
-                    session_id: session_id.clone(),
-                })
-                .await
-            {
-                Ok(s) => s.into_inner(),
-                Err(_) => {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    continue;
-                }
-            };
-
-            // Process events until cancelled or stream ends.
-            loop {
-                tokio::select! {
-                    _ = &mut cancel_rx => {
-                        return;
-                    }
-                    result = stream.message() => {
-                        let event = match result {
-                            Ok(Some(e)) => e,
-                            _ => break, // stream ended or error — reconnect
-                        };
-
-                        // Forward ALL events to the frontend so content
-                        // (user_message, text_chunk, agent_start, etc.) and
-                        // settings changes are received in real-time without
-                        // polling.  The frontend dispatches by event type.
-                        if let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&event.data) {
-                            if let serde_json::Value::Object(ref mut map) = payload {
-                                map.insert("sessionId".to_string(),
-                                    serde_json::Value::String(session_id.clone()));
-                                map.insert("_eventType".to_string(),
-                                    serde_json::Value::String(event.r#type.clone()));
-                            }
-                            let _ = app_handle.emit("agent-event", &payload);
-                        }
-                    }
-                }
-            }
-            // Stream ended — reconnect after a short delay.
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-    });
-}
-
-/// When the agent session's cwd changes (via TUI /cwd or another client),
-/// move the thread to the workspace that matches the new cwd.
-pub fn reconcile_thread_workspace(session_id: &str, new_cwd: &str) -> Result<(), String> {
-    let thread = crate::store::find_thread_by_agent_session(session_id)
-        .map_err(|e| format!("find_thread: {e}"))?
-        .ok_or_else(|| "No thread found for this session".to_string())?;
-
-    let cwd = new_cwd.trim().trim_end_matches(['/', '\\']);
-    if cwd.is_empty() {
-        return Ok(());
-    }
-
-    // Determine workspace type.
-    let is_chat = {
-        let cwd_normalized = cwd.replace('\\', "/");
-        let chat_dir = format!(
-            "{}/.future/workspaces/chat/",
-            crate::home_dir().unwrap_or_default()
-        );
-        cwd_normalized.starts_with(&chat_dir) || cwd_normalized == chat_dir.trim_end_matches('/')
-    };
-
-    if is_chat {
-        crate::store::update_chat_workspace_path(&thread.id, cwd)
-            .map_err(|e| format!("update_workspace: {e}"))?;
-        return Ok(());
-    }
-
-    // Project workspace: find or create by cwd path.
-    let workspace_name = std::path::Path::new(cwd)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(cwd)
-        .to_string();
-
-    let existing = crate::store::list_workspaces()
-        .unwrap_or_default()
-        .into_iter()
-        .find(|w| w.path == cwd);
-
-    let workspace_id = if let Some(ws) = existing {
-        ws.id
-    } else {
-        let ws = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
-            name: Some(workspace_name),
-            path: cwd.to_string(),
-            description: None,
-            create_directory: Some(false),
-        })
-        .map_err(|e| format!("create_workspace: {e}"))?;
-        ws.id
-    };
-
-    // Update the thread's workspace assignment.
-    crate::store::move_thread_to_workspace(&thread.id, &workspace_id)
-        .map_err(|e| format!("move_thread: {e}"))?;
-
     Ok(())
 }

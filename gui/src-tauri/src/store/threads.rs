@@ -204,18 +204,6 @@ pub fn update_thread_session_id(thread_id: &str, session_id: &str) -> Result<(),
     Ok(())
 }
 
-/// Move a thread to a different workspace (e.g. when cwd changes).
-pub fn move_thread_to_workspace(thread_id: &str, workspace_id: &str) -> Result<(), crate::AppError> {
-    let now = now_millis();
-    let conn = connect()?;
-    conn.execute(
-        "UPDATE threads SET workspace_id = ?1, updated_at = ?2
-         WHERE id = ?3 AND status != 'deleted'",
-        params![workspace_id, now, thread_id],
-    )?;
-    Ok(())
-}
-
 pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError> {
     let now = now_millis();
     let conn = connect()?;

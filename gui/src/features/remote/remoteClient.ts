@@ -5,6 +5,7 @@ export interface RemoteStatus {
   connected: boolean;
   natsUrl: string;
   pairId: string;
+  webUrl: string | null;
   error: string | null;
 }
 
@@ -18,4 +19,8 @@ export async function stopRemote() {
 
 export async function getRemoteStatus() {
   return invokeCommand<RemoteStatus>("remote_status");
+}
+
+export async function openUrl(url: string) {
+  return invokeCommand<void>("open_url", { url });
 }

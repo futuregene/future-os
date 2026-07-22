@@ -108,17 +108,6 @@ export function AgentThread({
     onContentSettled: () => updateFloatingScrollbar(false),
   });
 
-  // When loading completes (initial load or thread switch), scroll to the
-  // latest message.  useStickyAutoScroll's useLayoutEffect fires on contentKey
-  // (messages) changes, but during loading the MessageList isn't in the DOM yet
-  // — so that scroll is a no-op.  This catches the transition.
-  useEffect(() => {
-    if (!loadingThread) {
-      // Wait one tick for the MessageList to render.
-      requestAnimationFrame(() => scrollToLatest());
-    }
-  }, [loadingThread, scrollToLatest]);
-
   // A run is in flight while its assistant bubble is still streaming; the agent
   // rejects a concurrent prompt, so the composer is disabled until it settles.
   const isSending = messages.some(

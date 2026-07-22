@@ -2,7 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { pollStreamingStatuses, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
+import { prefetchAgentState } from "../../../integrations/agent/agentStateCache";
 import {
   getRecentOrCreateDefaultThread,
   initializeAppStore,
@@ -19,7 +19,6 @@ export interface ThreadRunInfo {
 }
 
 type ThreadRunStatuses = Record<string, ThreadRunInfo | undefined>;
-type ThreadStreamingStatuses = Record<string, boolean>;
 
 export interface ThreadStore {
   threads: StoredThread[];
@@ -30,7 +29,6 @@ export interface ThreadStore {
   activeThreadId: string | null;
   setActiveThreadId: Dispatch<SetStateAction<string | null>>;
   threadRunStatuses: ThreadRunStatuses;
-  threadStreamingStatuses: ThreadStreamingStatuses;
   loadingStore: boolean;
   storeError: string | null;
   /**
@@ -49,7 +47,6 @@ export interface ThreadStore {
 export function useThreadStore(): ThreadStore {
   const [threads, setThreads] = useState<StoredThread[]>([]);
   const [threadRunStatuses, setThreadRunStatuses] = useState<ThreadRunStatuses>({});
-  const [threadStreamingStatuses, setThreadStreamingStatuses] = useState<ThreadStreamingStatuses>({});
   const [workspaces, setWorkspaces] = useState<StoredWorkspace[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [loadingStore, setLoadingStore] = useState(true);
@@ -189,18 +186,6 @@ export function useThreadStore(): ThreadStore {
     enabled: activeThreads.length > 0,
     deps: [activeThreads, refreshThreadRunStatuses],
   });
-  // Poll agent streaming status so threads that are being prompted by other
-  // clients (TUI, CLI) show a running indicator without waiting for a local
-  // StoredRun entry.
-  usePolling(async () => {
-    if (activeThreads.length === 0)
-      return;
-    const streaming = await pollStreamingStatuses(activeThreads.map(t => t.id));
-    setThreadStreamingStatuses(streaming);
-  }, 1000, {
-    enabled: activeThreads.length > 0,
-    deps: [activeThreads],
-  });
   useEffect(() => {
     if (activeThreads.length === 0) {
       setThreadRunStatuses({});
@@ -225,7 +210,6 @@ export function useThreadStore(): ThreadStore {
     setActiveThreadId,
     storeError,
     threadRunStatuses,
-    threadStreamingStatuses,
     threads,
     workspaces,
   };

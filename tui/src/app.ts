@@ -221,9 +221,14 @@ export class App extends Container {
       this.chat.scrollDown(3); this.requestRender(); return true;
     }, "Scroll chat down (line)");
 
-    // Event subscription is deferred to start() — subscribing here with an
-    // empty currentSessionId would risk receiving events from other sessions
-    // (e.g. a GUI session streaming concurrently).
+    // Subscribe to SSE events
+    this.client.subscribe((event) => {
+      // If we were showing "not connected", refresh state on first event
+      if (this.state.model === "(not connected)") {
+        this.refresh().catch(() => {});
+      }
+      this.handleAgentEvent(event);
+    });
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -316,16 +321,6 @@ export class App extends Container {
         this.client.prompt(this.cliOptions.initialPrompt!);
       }, 100);
     }
-
-    // Subscribe to events only after session is established — prevents
-    // cross-session event leakage (e.g. GUI streaming bleeding into TUI).
-    this.client.subscribe((event) => {
-      // If we were showing "not connected", refresh state on first event
-      if (this.state.model === "(not connected)") {
-        this.refresh().catch(() => {});
-      }
-      this.handleAgentEvent(event);
-    });
 
     await this.applyTuiDefaults();
     this.showWelcome();
@@ -504,58 +499,6 @@ export class App extends Container {
         // cumulative cost right before emitting this event, so the state
         // read reflects the call that just finished.
         this.refresh().then(() => this.requestRender());
-        break;
-      }
-
-      // ── Settings-change events (broadcast by agent so other clients stay in sync) ──
-
-      case "model_changed": {
-        const e = event as { model?: string };
-        if (e.model) this.state.model = e.model;
-        break;
-      }
-      case "thinking_level_changed": {
-        const e = event as { level?: string };
-        if (e.level) this.state.thinking = e.level;
-        break;
-      }
-      case "permission_level_changed": {
-        // Reflected in /status only — no footer field, but refresh to stay accurate.
-        this.refresh().catch(() => {});
-        break;
-      }
-      case "cwd_changed": {
-        const e = event as { cwd?: string };
-        if (e.cwd) this.state.cwd = e.cwd;
-        break;
-      }
-      case "session_name_changed": {
-        // No immediate TUI action needed — name is shown in session list.
-        break;
-      }
-      case "auto_compaction_changed": {
-        const e = event as { enabled?: boolean };
-        if (typeof e.enabled === "boolean") this.state.autoCompactionEnabled = e.enabled;
-        break;
-      }
-      case "tools_changed":
-      case "steering_mode_changed":
-      case "follow_up_mode_changed":
-      case "sandbox_policy_changed":
-      case "ephemeral_changed": {
-        // Reflected in /status; refresh to keep accurate.
-        this.refresh().catch(() => {});
-        break;
-      }
-      case "config_reloaded": {
-        const e = event as { skills?: string[]; contextFiles?: string[] };
-        if (e.skills) this.state.skills = e.skills.slice().sort((a, b) => a.localeCompare(b));
-        if (e.contextFiles) this.state.contextFiles = e.contextFiles;
-        this.chat.addMessage({
-          id: crypto.randomUUID(),
-          role: "system",
-          content: `Config reloaded: ${e.skills?.length ?? 0} skills, ${e.contextFiles?.join(", ") || "no context files"}`,
-        });
         break;
       }
 
@@ -1092,8 +1035,7 @@ export class App extends Container {
                   prefix += isLast ? "└─ " : "├─ ";
                 }
                 const currentMarker = s.id === this.state.sessionId ? "▶ " : "  ";
-                const streamingMark = (s as any).is_streaming ? "● " : "";
-                const label = `${currentMarker}${streamingMark}${prefix}${s.session_name || (s as any).first_message || s.id}`;
+                const label = `${currentMarker}${prefix}${s.session_name || (s as any).first_message || s.id}`;
                 items.push({
                   value: s.id,
                   label,
@@ -1859,7 +1801,7 @@ export class App extends Container {
   }
 
   async showSessions(): Promise<void> {
-    let sessions: { id: string; session_name?: string; first_message?: string; query_count?: number; model: string; updated_at: string; is_streaming?: boolean }[] = [];
+    let sessions: { id: string; session_name?: string; first_message?: string; query_count?: number; model: string; updated_at: string }[] = [];
     try {
       const r = await this.client.listSessions();
       sessions = r.sessions;
@@ -1875,7 +1817,7 @@ export class App extends Container {
     const items: SelectItem[] = sessions.map((s) => ({
       value: s.id,
       label: s.session_name || (s as any).first_message || s.id,
-      description: `${s.is_streaming ? "● " : ""}${s.model} · ${s.query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
+      description: `${s.model} · ${s.query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
     }));
 
     const sl = new SelectList({
