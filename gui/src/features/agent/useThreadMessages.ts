@@ -279,9 +279,9 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
           // retry until the agent confirms streaming has stopped.
           attachedRef.current = true;
           if (result?.runId) {
-            // Directly start the streaming preview so it renders immediately,
-            // then let the existing refreshRecentRun → useRunReattach pipeline
-            // take over on the next tick.
+            // Load agent entries first so the user message is visible,
+            // then add the streaming bubble and let useRunReattach own it.
+            await reloadMessagesQuiet(threadId);
             upsertStreamingPreview(
               result.runId,
               Date.now(),
@@ -289,7 +289,6 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
               () => true,
             ).catch(() => {});
             await refreshRecentRun(threadId, workspaceId);
-            await reloadMessagesQuiet(threadId);
           }
         } catch {
           // Agent unreachable — will retry next tick.
