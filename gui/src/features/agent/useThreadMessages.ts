@@ -275,6 +275,9 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
           attachedRef.current = true;
           // Kick a refresh so listRuns picks up the new synthetic run immediately.
           await refreshRecentRun(threadId, workspaceId);
+          // Reload messages so the user prompt (sent by the other client)
+          // appears alongside the streaming assistant bubble.
+          await reloadMessagesQuiet(threadId);
         } catch {
           // Agent unreachable — will retry next tick.
         }
@@ -285,7 +288,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     3000,
     {
       enabled: Boolean(threadId) && !isRunActive,
-      deps: [threadId, refreshRecentRun, workspaceId, isRunActive],
+      deps: [threadId, refreshRecentRun, reloadMessagesQuiet, workspaceId, isRunActive],
     },
   );
 
