@@ -209,10 +209,20 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         let event_types: std::collections::HashSet<String> = req.event_types.into_iter().collect();
         let filter_enabled = !event_types.is_empty();
 
-        let rx = if session_id.is_empty() {
-            self.state.broadcaster.subscribe()
-        } else {
-            let session = self.state.get_session(&session_id);
+        // Sessions are equal peers — every subscription must name its
+        // session.  An empty id previously subscribed to a global/default
+        // broadcaster, which could leak other sessions' events.
+        if session_id.is_empty() {
+            return Err(tonic::Status::failed_precondition(
+                "session_id is required for StreamEvents",
+            ));
+        }
+        let Some(session) = self.state.get_session(&session_id) else {
+            return Err(tonic::Status::not_found(format!(
+                "session {session_id} not found"
+            )));
+        };
+        let rx = {
             let sess = session.read();
             if self.state.verbose {
                 tracing::debug!(

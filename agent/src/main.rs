@@ -4,7 +4,7 @@ use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
 use future_agent::{
-    Engine, EngineConfig, Manager, ModelRegistry, ServerSession, AGENTS_SKILLS_DIR, APP_SKILLS_DIR,
+    Engine, EngineConfig, Manager, ModelRegistry, AGENTS_SKILLS_DIR, APP_SKILLS_DIR,
     PROJECT_SKILLS_DIR,
 };
 use std::sync::Arc;
@@ -374,47 +374,27 @@ async fn async_main(
     engine.agent_loop.config.system_prompt = system_prompt;
 
     let manager = Arc::new(Manager::default_for(&cwd));
-    let broadcaster: Arc<future_agent::rpc::SseBroadcaster> =
-        Arc::new(future_agent::rpc::SseBroadcaster::new());
     let approval_gate = future_agent::rpc::ApprovalGate::default();
     // Template for minting per-session agent loops.  Sessions no longer
     // share one global loop — each hydrated/created session gets an
     // independent copy so concurrent runs, model switches and aborts stay
     // session-local.  The template itself never runs prompts.
     let loop_template = Arc::new(engine.agent_loop.independent_copy());
-    let mut server_session = ServerSession::new(
-        future_agent::utils::generate_id(),
-        Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
-        manager,
-        &cwd,
-        event_bus.clone(),
-        broadcaster.clone(),
-        approval_gate.clone(),
-        model_registry.clone(),
-    );
-    server_session.model = resolved_model.clone();
 
-    server_session.set_steering_mode(&settings.steering_mode);
-    server_session.set_follow_up_mode(&settings.follow_up_mode);
-    if !settings.default_permission_level.is_empty() {
-        server_session.set_permission_level(&settings.default_permission_level);
-    }
-    server_session.set_auto_compaction(settings.compaction_enabled());
-    server_session.set_auto_retry(settings.retry_enabled());
-
-    let session = Arc::new(parking_lot::RwLock::new(server_session));
-
+    // The agent starts with ZERO sessions.  There is no privileged
+    // "default"/"current" session — clients (TUI, GUI, CLI, channels)
+    // create or switch to sessions explicitly, and the agent hydrates
+    // them on demand.  Settings that used to be applied to the startup
+    // default session are applied per-session in cmd_new_session.
     let app_state = future_agent::rpc::AppState {
-        session: session.clone(),
         sessions: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
-        active_session_id: Arc::new(parking_lot::RwLock::new(String::new())),
+        session_manager: manager,
         welcome_version: future_agent::utils::VERSION.to_string(),
         welcome_cwd: cwd.clone(),
         welcome_skills: Arc::new(parking_lot::RwLock::new(skill_names.clone())),
         welcome_context: Arc::new(parking_lot::RwLock::new(context_lines)),
         welcome_exts: vec![],
         explicit_session: false,
-        broadcaster: broadcaster.clone(),
         event_bus: event_bus.clone(),
         approval_gate,
         verbose: cli.verbose,
@@ -427,7 +407,6 @@ async fn async_main(
     // are rejected, then wait up to 30 s for active streams to finish.
     let shutting_down = app_state.shutting_down.clone();
     let sessions = app_state.sessions.clone();
-    let default_session = app_state.session.clone();
     let shutdown_timeout = std::time::Duration::from_secs(30);
 
     let server = future_agent::grpc::serve(app_state, grpc_host, grpc_port);
@@ -441,7 +420,6 @@ async fn async_main(
             // Actively interrupt in-flight runs. Without this, a long LLM
             // stream keeps running and the wait loop below only exits via the
             // 30 s timeout — making Ctrl-C look like a hang.
-            default_session.read().abort();
             for s in sessions.read().values() {
                 s.read().abort();
             }
@@ -449,27 +427,19 @@ async fn async_main(
             // Wait for active streams to settle
             let deadline = tokio::time::Instant::now() + shutdown_timeout;
             loop {
-                let any_streaming = {
-                    let active = default_session
-                        .read()
+                let any_streaming = sessions
+                    .read()
+                    .values()
+                    .any(|s| s.read()
                         .is_streaming
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    if active { true } else {
-                        sessions.read()
-                            .values()
-                            .any(|s| s.read()
-                                .is_streaming
-                                .load(std::sync::atomic::Ordering::Relaxed))
-                    }
-                };
+                        .load(std::sync::atomic::Ordering::Relaxed));
                 if !any_streaming {
                     tracing::info!("All streams finished — exiting");
                     break;
                 }
                 if tokio::time::Instant::now() >= deadline {
                     tracing::warn!("Shutdown timeout (30s) — forcing exit with {} active stream(s)",
-                        if default_session.read().is_streaming.load(std::sync::atomic::Ordering::Relaxed) { 1 } else { 0 }
-                        + sessions.read().values()
+                        sessions.read().values()
                             .filter(|s| s.read().is_streaming.load(std::sync::atomic::Ordering::Relaxed))
                             .count());
                     break;
