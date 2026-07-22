@@ -198,3 +198,164 @@ fn home_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("~"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── AgentConfig defaults ────────────────────────────────────────────────
+
+    #[test]
+    fn agent_config_defaults() {
+        let c = AgentConfig::default();
+        assert_eq!(c.grpc_addr, "http://127.0.0.1:50051");
+        assert_eq!(c.model, "future/deepseek-v4-pro");
+        assert_eq!(c.thinking_level, "xhigh");
+        assert_eq!(c.permission_level, "all");
+        assert!(!c.cwd.is_empty());
+    }
+
+    // ─── FeishuChannelConfig defaults ────────────────────────────────────────
+
+    #[test]
+    fn feishu_config_defaults() {
+        let c = FeishuChannelConfig::default();
+        assert!(!c.enabled);
+        assert!(c.app_id.is_empty());
+        assert!(c.app_secret.is_empty());
+        assert_eq!(c.domain, "feishu");
+        assert_eq!(c.dm_policy, "allowlist");
+        assert_eq!(c.group_policy, "disabled");
+        assert!(c.require_mention);
+        assert!(c.streaming);
+        assert!(c.resolve_sender_names);
+        assert_eq!(c.max_image_mb, 10);
+        assert!(!c.typing_indicator);
+    }
+
+    // ─── DingtalkChannelConfig defaults ──────────────────────────────────────
+
+    #[test]
+    fn dingtalk_config_defaults() {
+        let c = DingtalkChannelConfig::default();
+        assert!(!c.enabled);
+        assert!(c.client_id.is_empty());
+        assert!(c.client_secret.is_empty());
+        assert_eq!(c.domain, "api.dingtalk.com");
+    }
+
+    // ─── ChannelConfig defaults ──────────────────────────────────────────────
+
+    #[test]
+    fn channel_config_default() {
+        let c = ChannelConfig::default();
+        assert_eq!(c.agent.grpc_addr, "http://127.0.0.1:50051");
+        assert!(c.feishu.is_none());
+        assert!(c.dingtalk.is_none());
+    }
+
+    // ─── JSON deserialization ────────────────────────────────────────────────
+
+    #[test]
+    fn deserialize_empty_json() {
+        let c: ChannelConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(c.agent.grpc_addr, "http://127.0.0.1:50051");
+        assert!(c.feishu.is_none());
+        assert!(c.dingtalk.is_none());
+    }
+
+    #[test]
+    fn deserialize_full_config() {
+        let json = r#"{
+            "agent": {
+                "grpc_addr": "http://localhost:50051",
+                "cwd": "/home/user",
+                "model": "openai/gpt-4o",
+                "thinking_level": "high",
+                "permission_level": "workspace"
+            },
+            "feishu": {
+                "enabled": true,
+                "app_id": "cli_test",
+                "app_secret": "secret_test",
+                "domain": "feishu",
+                "dm_policy": "open",
+                "dm_allowlist": ["user1"],
+                "group_policy": "open",
+                "group_allowlist": ["chat1"],
+                "require_mention": false,
+                "streaming": false,
+                "resolve_sender_names": false,
+                "max_image_mb": 5,
+                "typing_indicator": true
+            },
+            "dingtalk": {
+                "enabled": true,
+                "client_id": "ding_id",
+                "client_secret": "ding_secret",
+                "domain": "custom.dingtalk.com"
+            }
+        }"#;
+        let c: ChannelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(c.agent.model, "openai/gpt-4o");
+        assert_eq!(c.agent.thinking_level, "high");
+        let feishu = c.feishu.unwrap();
+        assert!(feishu.enabled);
+        assert_eq!(feishu.app_id, "cli_test");
+        assert!(!feishu.require_mention);
+        assert!(!feishu.streaming);
+        assert_eq!(feishu.max_image_mb, 5);
+        assert!(feishu.typing_indicator);
+        let dingtalk = c.dingtalk.unwrap();
+        assert!(dingtalk.enabled);
+        assert_eq!(dingtalk.domain, "custom.dingtalk.com");
+    }
+
+    #[test]
+    fn deserialize_partial_feishu() {
+        let json = r#"{"feishu": {"enabled": true, "app_id": "test"}}"#;
+        let c: ChannelConfig = serde_json::from_str(json).unwrap();
+        let feishu = c.feishu.unwrap();
+        assert!(feishu.enabled);
+        assert_eq!(feishu.app_id, "test");
+        assert!(feishu.app_secret.is_empty()); // default
+        assert!(feishu.streaming); // default true
+    }
+
+    // ─── Roundtrip ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn config_roundtrip() {
+        let original = ChannelConfig {
+            agent: AgentConfig {
+                grpc_addr: "http://test:9999".into(),
+                cwd: "/tmp".into(),
+                model: "test/model".into(),
+                thinking_level: "low".into(),
+                permission_level: "none".into(),
+            },
+            feishu: Some(FeishuChannelConfig {
+                enabled: true,
+                app_id: "app1".into(),
+                app_secret: "sec1".into(),
+                ..Default::default()
+            }),
+            dingtalk: None,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: ChannelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.agent.grpc_addr, "http://test:9999");
+        assert_eq!(restored.agent.model, "test/model");
+        assert!(restored.feishu.as_ref().unwrap().enabled);
+    }
+
+    // ─── default_path ────────────────────────────────────────────────────────
+
+    #[test]
+    fn default_path_contains_channels() {
+        let path = ChannelConfig::default_path();
+        assert!(path.to_string_lossy().contains(".future"));
+        assert!(path.to_string_lossy().contains("channels"));
+        assert!(path.to_string_lossy().ends_with("config.json"));
+    }
+}

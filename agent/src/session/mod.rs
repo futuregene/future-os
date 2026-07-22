@@ -1188,6 +1188,448 @@ pub fn truncate_visible(s: &str, max_vis: usize) -> String {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── truncate_visible ───────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_visible_ascii() {
+        assert_eq!(truncate_visible("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_visible_cjk() {
+        assert_eq!(truncate_visible("你好世界", 4), "你好");
+    }
+
+    #[test]
+    fn truncate_visible_mixed() {
+        assert_eq!(truncate_visible("ab你好cd", 4), "ab你");
+    }
+
+    #[test]
+    fn truncate_visible_emoji() {
+        assert_eq!(truncate_visible("a🦀b", 3), "a🦀");
+    }
+
+    #[test]
+    fn truncate_visible_exact_fit() {
+        assert_eq!(truncate_visible("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_visible_zero() {
+        assert_eq!(truncate_visible("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_visible_empty_string() {
+        assert_eq!(truncate_visible("", 10), "");
+    }
+
+    #[test]
+    fn truncate_visible_cjk_never_splits() {
+        // "中" is 2 cols. 3 cols budget → only "中" fits
+        assert_eq!(truncate_visible("中文中文", 3), "中");
+    }
+
+    // ─── SessionEntry constructors ──────────────────────────────────────────
+
+    #[test]
+    fn new_user_entry() {
+        let e = SessionEntry::new_user("user", serde_json::json!("hello"));
+        assert_eq!(e.entry_type, ENTRY_TYPE_USER);
+        assert_eq!(e.role, "user");
+        assert!(e.parent_id.is_empty());
+        assert!(!e.id.is_empty());
+        assert_eq!(e.output_tokens, 0);
+        assert_eq!(e.duration_ms, 0);
+    }
+
+    #[test]
+    fn new_assistant_entry() {
+        let tool_calls = vec![crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"cmd": "ls"}),
+            },
+        }];
+        let e = SessionEntry::new_assistant(serde_json::json!("answer"), tool_calls);
+        assert_eq!(e.entry_type, ENTRY_TYPE_ASSISTANT);
+        assert_eq!(e.role, "assistant");
+        assert_eq!(e.tool_calls.len(), 1);
+        assert_eq!(e.tool_calls[0].function.name, "shell");
+    }
+
+    #[test]
+    fn new_tool_entry() {
+        let e = SessionEntry::new_tool("call_123", "file contents here");
+        assert_eq!(e.entry_type, ENTRY_TYPE_TOOL);
+        assert_eq!(e.role, "tool");
+        assert_eq!(e.tool_call_id, "call_123");
+    }
+
+    #[test]
+    fn session_info_entry() {
+        let content = serde_json::json!({"session_name": "test", "model": "gpt-4o"});
+        let e = SessionEntry::session_info(content, "gpt-4o".to_string(), "high".to_string());
+        assert_eq!(e.entry_type, ENTRY_TYPE_SESSION_INFO);
+        assert_eq!(e.role, ENTRY_TYPE_SYSTEM);
+        assert_eq!(e.model, "gpt-4o");
+        assert_eq!(e.thinking_level, "high");
+    }
+
+    #[test]
+    fn entry_ids_are_unique() {
+        let e1 = SessionEntry::new_user("user", serde_json::json!("a"));
+        let e2 = SessionEntry::new_user("user", serde_json::json!("b"));
+        assert_ne!(e1.id, e2.id);
+    }
+
+    // ─── Session basics ─────────────────────────────────────────────────────
+
+    #[test]
+    fn session_new_fields() {
+        let s = Session::new("/tmp/test", "gpt-4o", "https://api.openai.com");
+        assert_eq!(s.cwd, "/tmp/test");
+        assert_eq!(s.model, "gpt-4o");
+        assert_eq!(s.base_url, "https://api.openai.com");
+        assert!(s.entries.is_empty());
+        assert!(s.parent_session_id.is_empty());
+    }
+
+    #[test]
+    fn session_name_get_set() {
+        let mut s = Session::new("/tmp", "model", "");
+        assert_eq!(s.get_session_name(), "");
+        s.set_session_name("My Chat");
+        assert_eq!(s.get_session_name(), "My Chat");
+    }
+
+    #[test]
+    fn session_base_url_get_set() {
+        let mut s = Session::new("/tmp", "model", "https://old.com");
+        assert_eq!(s.get_base_url(), "https://old.com");
+        s.set_base_url("https://new.com");
+        assert_eq!(s.get_base_url(), "https://new.com");
+    }
+
+    // ─── build_context ──────────────────────────────────────────────────────
+
+    #[test]
+    fn build_context_from_entries() {
+        let entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("hello")),
+            SessionEntry::new_assistant(serde_json::json!("hi"), vec![]),
+            SessionEntry::new_tool("c1", "output"),
+        ];
+        let msgs = build_context(&entries);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+        assert_eq!(msgs[2].role, "tool");
+        assert_eq!(msgs[2].tool_call_id, "c1");
+    }
+
+    #[test]
+    fn build_context_skips_non_message_types() {
+        let mut compaction = SessionEntry::new_user("user", serde_json::json!("x"));
+        compaction.entry_type = ENTRY_TYPE_COMPACTION.to_string();
+        let entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("hello")),
+            compaction,
+        ];
+        let msgs = build_context(&entries);
+        assert_eq!(msgs.len(), 1); // compaction skipped
+    }
+
+    #[test]
+    fn build_context_preserves_thinking() {
+        let mut e = SessionEntry::new_assistant(serde_json::json!("answer"), vec![]);
+        e.thinking = "let me think...".to_string();
+        let msgs = build_context(&[e]);
+        assert_eq!(msgs[0].reasoning_content, "let me think...");
+    }
+
+    #[test]
+    fn build_context_empty_entries() {
+        let msgs = build_context(&[]);
+        assert!(msgs.is_empty());
+    }
+
+    // ─── agent_message_to_entry ─────────────────────────────────────────────
+
+    #[test]
+    fn agent_message_to_entry_user() {
+        let msg = crate::types::AgentMessage {
+            role: "user".to_string(),
+            content: vec![crate::types::ContentBlock::text("hello")],
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert_eq!(entry.entry_type, ENTRY_TYPE_USER);
+        assert_eq!(entry.role, "user");
+    }
+
+    #[test]
+    fn agent_message_to_entry_assistant_with_tool_calls() {
+        let msg = crate::types::AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![crate::types::ContentBlock::text("answer")],
+            tool_calls: vec![crate::types::AgentToolCall {
+                id: "c1".to_string(),
+                name: "shell".to_string(),
+                args: serde_json::json!({"cmd": "ls"}),
+            }],
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert_eq!(entry.entry_type, ENTRY_TYPE_ASSISTANT);
+        assert_eq!(entry.tool_calls.len(), 1);
+        assert_eq!(entry.tool_calls[0].function.name, "shell");
+    }
+
+    #[test]
+    fn agent_message_to_entry_tool() {
+        let msg = crate::types::AgentMessage {
+            role: "tool".to_string(),
+            content: vec![crate::types::ContentBlock::text("result")],
+            tool_call_id: "c1".to_string(),
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert_eq!(entry.entry_type, ENTRY_TYPE_TOOL);
+        assert_eq!(entry.tool_call_id, "c1");
+    }
+
+    #[test]
+    fn agent_message_to_entry_preserves_thinking() {
+        let msg = crate::types::AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![crate::types::ContentBlock::text("answer")],
+            thinking: "reasoning here".to_string(),
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert_eq!(entry.thinking, "reasoning here");
+    }
+
+    #[test]
+    fn agent_message_to_entry_preserves_meta() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("key".to_string(), serde_json::json!("value"));
+        let msg = crate::types::AgentMessage {
+            role: "user".to_string(),
+            content: vec![crate::types::ContentBlock::text("hi")],
+            metadata: Some(meta),
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert!(entry.meta.is_some());
+        assert_eq!(entry.meta.unwrap()["key"], "value");
+    }
+
+    #[test]
+    fn agent_message_to_entry_unknown_role_defaults_user() {
+        let msg = crate::types::AgentMessage {
+            role: "custom_role".to_string(),
+            content: vec![crate::types::ContentBlock::text("x")],
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert_eq!(entry.entry_type, ENTRY_TYPE_USER);
+    }
+
+    // ─── entries_to_agent_messages ──────────────────────────────────────────
+
+    #[test]
+    fn entries_to_messages_basic() {
+        let entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("hello")),
+            SessionEntry::new_assistant(serde_json::json!("hi"), vec![]),
+        ];
+        let msgs = entries_to_agent_messages(&entries, false);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+    }
+
+    #[test]
+    fn entries_to_messages_skips_non_standard_types() {
+        let mut compaction = SessionEntry::new_user("user", serde_json::json!("x"));
+        compaction.entry_type = ENTRY_TYPE_COMPACTION.to_string();
+        let entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("hello")),
+            compaction,
+        ];
+        let msgs = entries_to_agent_messages(&entries, false);
+        assert_eq!(msgs.len(), 1);
+    }
+
+    #[test]
+    fn entries_to_messages_string_content() {
+        let entries = vec![SessionEntry::new_user(
+            "user",
+            serde_json::json!("plain string"),
+        )];
+        let msgs = entries_to_agent_messages(&entries, false);
+        assert_eq!(msgs[0].text(), "plain string");
+    }
+
+    #[test]
+    fn entries_to_messages_array_content() {
+        let entries = vec![SessionEntry::new_user(
+            "user",
+            serde_json::json!([
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": " second"},
+            ]),
+        )];
+        let msgs = entries_to_agent_messages(&entries, false);
+        assert_eq!(msgs[0].text(), "first second");
+    }
+
+    #[test]
+    fn entries_to_messages_tool_calls() {
+        let tool_calls = vec![crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "read".to_string(),
+                arguments: serde_json::json!({"path": "/tmp"}),
+            },
+        }];
+        let entries = vec![SessionEntry::new_assistant(
+            serde_json::json!("reading..."),
+            tool_calls,
+        )];
+        let msgs = entries_to_agent_messages(&entries, false);
+        assert_eq!(msgs[0].tool_calls.len(), 1);
+        assert_eq!(msgs[0].tool_calls[0].name, "read");
+    }
+
+    #[test]
+    fn entries_to_messages_empty_entries() {
+        let msgs = entries_to_agent_messages(&[], false);
+        assert!(msgs.is_empty());
+    }
+
+    // ─── Manager save/load/delete ───────────────────────────────────────────
+
+    #[test]
+    fn manager_save_and_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_session_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        // Add session_info entry (model is persisted here, not at session level)
+        session.entries.push(SessionEntry::session_info(
+            serde_json::json!({"session_name": "test", "cwd": "/tmp/test"}),
+            "gpt-4o".to_string(),
+            "high".to_string(),
+        ));
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        manager.save(&session).unwrap();
+
+        let loaded = manager.load(&session.id).unwrap();
+        assert_eq!(loaded.id, session.id);
+        assert_eq!(loaded.model, "gpt-4o");
+        assert_eq!(loaded.entries.len(), 2);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manager_delete() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_delete_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let session = Session::new("/tmp/test", "model", "");
+        manager.save(&session).unwrap();
+        assert!(manager.find(&session.id).is_some());
+
+        manager.delete(&session.id).unwrap();
+        assert!(manager.find(&session.id).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manager_find_nonexistent() {
+        let dir = std::env::temp_dir().join("future_test_find_none");
+        let manager = Manager::new(dir);
+        assert!(manager.find("nonexistent_id").is_none());
+    }
+
+    // ─── fork_session edge cases ────────────────────────────────────────────
+
+    #[test]
+    fn fork_session_bad_entry_id_clones_all() {
+        let mut parent = Session::new("/tmp", "model", "");
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        let forked = fork_session(&parent, "nonexistent_id");
+        // Should still produce a session with entries (fallback behavior)
+        assert!(!forked.entries.is_empty());
+    }
+
+    #[test]
+    fn fork_session_preserves_model() {
+        let mut parent = Session::new("/tmp", "my-model", "");
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        let forked = fork_session(&parent, &parent.entries[0].id);
+        assert_eq!(forked.model, "my-model");
+    }
+
+    #[test]
+    fn fork_session_generates_new_ids() {
+        let mut parent = Session::new("/tmp", "model", "");
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        let original_id = parent.entries[0].id.clone();
+        let forked = fork_session(&parent, &original_id);
+        // Forked entries should have different IDs
+        let forked_user_entry = forked
+            .entries
+            .iter()
+            .find(|e| e.entry_type == ENTRY_TYPE_USER)
+            .unwrap();
+        assert_ne!(forked_user_entry.id, original_id);
+    }
+
+    #[test]
+    fn fork_session_name_suffix() {
+        let mut parent = Session::new("/tmp", "model", "");
+        parent.set_session_name("Original Chat");
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        let forked = fork_session(&parent, &parent.entries[0].id);
+        assert!(forked.name.contains("fork"));
+    }
+}
+
+#[cfg(test)]
 mod image_persistence_tests {
     use super::*;
     use crate::types::{AgentMessage, ContentBlock};

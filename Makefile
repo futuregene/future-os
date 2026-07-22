@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
+.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help test-gui-rust
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -173,7 +173,7 @@ build-channels:
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent test-channels test-remote test-cli test-tui test-gui
+test: test-agent test-channels test-remote test-cli test-tui test-gui test-gui-rust
 
 test-agent:
 	cd agent && cargo test
@@ -195,6 +195,9 @@ test-tui:
 test-gui:
 	$(call npm-install-if-needed,gui)
 	cd gui && npm test
+
+test-gui-rust:
+	cd gui/src-tauri && cargo test
 
 # ─── Lint ───────────────────────────────────────────────────────────────────
 
