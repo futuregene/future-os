@@ -10,11 +10,12 @@ import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun } from "./agentMessageFormatters";
 import { entriesToMessages } from "./entryProjection";
-import { applyRunMetadata, recoverAbortedTurns, upsertStreamingPreview } from "./threadRunProjection";
+import { applyRunMetadata, recoverAbortedTurns } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
   threadId: string | null;
   workspaceId?: string | null;
+  agentSessionId?: string | null;
 }
 
 interface ThreadCacheEntry {
@@ -42,7 +43,7 @@ const LOADING_INDICATOR_MIN_MS = 200;
  * thread switch, keeps a live run polling while one is active, and caches
  * recently-visited threads so switching back is instant.
  */
-export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesInput) {
+export function useThreadMessages({ threadId, workspaceId, agentSessionId }: UseThreadMessagesInput) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   // Truthful data-loading state: gates pendingPrompt delivery (useAgentThreadState)
   // and must flip the instant a load starts/ends. The UI reads the debounced
@@ -279,15 +280,10 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
           // retry until the agent confirms streaming has stopped.
           attachedRef.current = true;
           if (result?.runId) {
-            // Load agent entries first so the user message is visible,
-            // then add the streaming bubble and let useRunReattach own it.
+            // Reload agent entries so user message + history are visible,
+            // then kick refreshRecentRun so useRunReattach picks up the
+            // synthetic run and starts the streaming bubble on its own.
             await reloadMessagesQuiet(threadId);
-            upsertStreamingPreview(
-              result.runId,
-              Date.now(),
-              setMessages,
-              () => true,
-            ).catch(() => {});
             await refreshRecentRun(threadId, workspaceId);
           }
         } catch {
@@ -304,29 +300,30 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     },
   );
 
-  // ── Real-time content events from StreamEvents observer ──────────
-  // When another client (TUI) sends a message, the user_message event
-  // arrives via Tauri before reloadMessagesQuiet completes.  Insert it
-  // immediately so there's zero perceived delay.
+  // ── Real-time user_message from StreamEvents observer ────────────
+  // Inserts the user message directly from the Tauri event stream
+  // for zero-latency display.  All other events (text_chunk, thinking,
+  // tools, agent_end) continue through the synthetic run → useRunReattach
+  // path to avoid conflicting with the existing streaming bubble logic.
   useEffect(() => {
-    if (!threadId) return;
+    if (!threadId || !agentSessionId) return;
     const handler = (ev: Event) => {
       const detail = (ev as CustomEvent).detail as {
         sessionId: string;
         eventType: string;
         payload: Record<string, unknown>;
       } | undefined;
-      if (!detail || detail.eventType !== "user_message") return;
+      if (!detail || detail.sessionId !== agentSessionId) return;
+      if (detail.eventType !== "user_message") return;
+
       const text = typeof detail.payload.text === "string" ? detail.payload.text : "";
       if (!text) return;
       setMessages((prev) => {
-        // Dedup: don't add if already present (reloadMessagesQuiet may have
-        // already loaded it).
         if (prev.some((m) => m.role === "user" && m.content === text)) return prev;
         return [...prev, {
           id: `user_${Date.now()}`,
           role: "user",
-          authorKey: "author.user",
+          authorKey: "author.you",
           content: text,
           status: "complete",
           createdAt: new Date().toISOString(),
@@ -335,7 +332,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     };
     window.addEventListener("future:agent-event", handler);
     return () => window.removeEventListener("future:agent-event", handler);
-  }, [threadId]);
+  }, [threadId, agentSessionId]);
 
   return {
     loadingThread,

@@ -592,6 +592,28 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
 
 async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), String> {
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+
+    // Backfill: when the GUI enters mid-stream, pull past events the agent
+    // still holds in memory so upsertStreamingPreview sees a complete
+    // history instead of starting from the subscription point.
+    let mut sequence = 0i64;
+    if let Ok(backfill) = get_events_since(session_id.to_string(), run_id.to_string(), -1).await {
+        if let Some(events) = backfill.get("events").and_then(|v| v.as_array()) {
+            for item in events {
+                let evt_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let evt_data = item.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                crate::store::append_run_event(crate::store::AppendRunEventInput {
+                    run_id: run_id.to_string(),
+                    event_type: evt_type.to_string(),
+                    payload: if evt_data.is_empty() { None } else { Some(evt_data.to_string()) },
+                    sequence,
+                })
+                .map_err(|e| format!("append_backfill: {e}"))?;
+                sequence += 1;
+            }
+        }
+    }
+
     let mut stream = client
         .stream_events(StreamRequest {
             event_types: vec![],
@@ -600,8 +622,6 @@ async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), Str
         .await
         .map_err(|e| format!("stream_events: {e}"))?
         .into_inner();
-
-    let mut sequence = 0i64;
 
     loop {
         let event = tokio::time::timeout(
