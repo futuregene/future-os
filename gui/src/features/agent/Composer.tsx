@@ -64,7 +64,14 @@ interface ComposerProps {
   onThinkingLevelChange?: (thinkingLevel: string) => void;
   approvalTier?: ApprovalTier;
   onChangeApprovalTier?: (value: ApprovalTier) => void;
-  /** A reply is streaming: the send button becomes an interrupt button. */
+  /**
+   * A reply is streaming. The send button becomes an interrupt button and
+   * submission (button + Enter) is blocked until the stream ends — but the
+   * editor stays editable so the user can draft the next turn early. Keep this
+   * separate from `disabled`: `disabled` locks the editor, so folding the
+   * streaming state into it (as the call site used to do) would prevent that
+   * early drafting.
+   */
   sending?: boolean;
   /** Interrupt the in-flight reply (only meaningful while `sending`). */
   onAbort?: () => void;
@@ -191,13 +198,16 @@ export function Composer({
   }), []);
 
   // Autofocus so the user can type immediately: on mount, when switching
-  // conversations (draftKey changes), and when the composer re-enables after a
-  // send settles (disabled: true → false). A disabled editor is
-  // contentEditable=false and can't hold a caret, so only focus while enabled.
+  // conversations (draftKey changes), and when a send settles. The streaming
+  // lock lives on `sending` now (the editor stays editable mid-stream so the
+  // user can draft the next turn), so we key off `sending` here: don't steal
+  // focus while a reply streams, but re-focus the moment it ends. A hard-
+  // disabled editor is contentEditable=false and can't hold a caret, so only
+  // focus while enabled.
   useEffect(() => {
-    if (!disabled)
+    if (!disabled && !sending)
       editorRef.current?.focus();
-  }, [disabled, draftKey]);
+  }, [disabled, sending, draftKey]);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -206,7 +216,10 @@ export function Composer({
 
   function submitValue() {
     const trimmed = (editorRef.current?.getContent() ?? "").trim();
-    if ((!trimmed && attachments.length === 0) || disabled || sendPending)
+    // Block submission while a reply streams (the send button is already an
+    // abort button then; this guard stops Enter from firing a new turn) and
+    // while an async send is in flight.
+    if ((!trimmed && attachments.length === 0) || disabled || sendPending || sending)
       return;
     const clearComposer = () => {
       editorRef.current?.clear();

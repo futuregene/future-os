@@ -265,7 +265,7 @@ export function AgentThread({
               : null}
             <Composer
               className="pointer-events-auto mx-auto w-full max-w-3xl"
-              disabled={!thread || loadingThread || loadingStore || isSending}
+              disabled={!thread || loadingThread || loadingStore}
               modelId={modelId}
               modelOptions={modelOptions}
               modelsEmptyReason={agentConnection.readiness === "all_disabled" ? "all_disabled" : "no_models"}
