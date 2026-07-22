@@ -2,7 +2,6 @@ import type { StoredRun } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
-import { fetchSessionStreaming } from "../../integrations/agent/agentStateCache";
 import { getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
@@ -273,7 +272,17 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
     async () => {
       if (!threadId || isRunActive)
         return;
-      const streaming = await fetchSessionStreaming(threadId);
+      // Per-thread streaming check for the OPEN thread only (reattach).
+      // Deliberately uncached: attach decisions need fresh truth, unlike
+      // the thread-list indicator which uses the bulk poll.
+      let streaming = false;
+      try {
+        const raw = await invokeCommand<Record<string, unknown>>("get_thread_agent_state", { threadId });
+        streaming = raw.isStreaming === true;
+      }
+      catch {
+        // Agent unreachable — treat as not streaming; retry next tick.
+      }
       if (streaming && !attachedRef.current) {
         try {
           const result = await invokeCommand<{ runId?: string }>("attach_remote_stream", { threadId });

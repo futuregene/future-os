@@ -358,6 +358,41 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 serde_json::json!({"sessions": sessions}),
             )
         }
+        // Lightweight streaming-status query: scans ONLY the in-memory
+        // session map (hydrated sessions) — never touches disk and never
+        // hydrates.  A session that isn't in the map can't be streaming
+        // (runs are always started through a hydrated ServerSession), so
+        // this is the exact set of active runs.  Lets clients (GUI thread
+        // list) poll "who is streaming" for all sessions in ONE call
+        // instead of one get_state per session (which also hydrated every
+        // polled session on the agent).
+        "list_streaming_sessions" => {
+            let mut ids: Vec<String> = vec![];
+            {
+                let default_sess = state.session.read();
+                if default_sess
+                    .is_streaming
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    ids.push(default_sess.session_id.clone());
+                }
+            }
+            for (sid, sess) in state.sessions.read().iter() {
+                if sess
+                    .read()
+                    .is_streaming
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    && !ids.contains(sid)
+                {
+                    ids.push(sid.clone());
+                }
+            }
+            RpcResponse::ok(
+                id,
+                "list_streaming_sessions",
+                serde_json::json!({"sessionIds": ids}),
+            )
+        }
         "switch_session" => {
             if cmd.session_id.is_empty() {
                 return RpcResponse::build_fail(
@@ -1718,6 +1753,32 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert!(resp["data"]["sessions"].is_array());
+    }
+
+    #[test]
+    fn list_streaming_sessions_reports_only_streaming() {
+        let state = make_app_state();
+        let cmd = make_cmd("list_streaming_sessions");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(
+            resp["data"]["sessionIds"].as_array().unwrap().len(),
+            0,
+            "nothing streams at startup"
+        );
+
+        state
+            .session
+            .read()
+            .is_streaming
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("list_streaming_sessions"),
+        ));
+        let ids = resp["data"]["sessionIds"].as_array().unwrap();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], "default");
     }
 
     #[test]

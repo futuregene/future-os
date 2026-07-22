@@ -954,17 +954,62 @@ impl Manager {
         Ok(summaries)
     }
 
-    /// List all sessions in the flat sessions directory
+    /// List all sessions in the flat sessions directory.
+    ///
+    /// Files are scanned in parallel (each JSONL is an independent cheap
+    /// line-scan via `read_summary`); with thousands of sessions on disk a
+    /// sequential scan is the dominant startup cost for the GUI/TUI list.
     pub fn list_all(&self) -> Result<Vec<SessionSummary>> {
         if !self.dir.exists() {
             return Ok(vec![]);
         }
-        let mut summaries = vec![];
+        let mut paths = vec![];
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
             let path = entry.path();
-            self.try_push_summary(&path, &mut summaries);
+            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                paths.push(path);
+            }
         }
+        let mut summaries = if paths.len() <= 8 {
+            // Few files: thread-spawn overhead outweighs the scan time.
+            let mut summaries = vec![];
+            for path in &paths {
+                self.try_push_summary(path, &mut summaries);
+            }
+            summaries
+        } else {
+            // Work-stealing over a shared index; capped worker count to
+            // avoid I/O thrash on spinning disks.
+            let workers = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .min(8)
+                .min(paths.len());
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let per_worker: Vec<Vec<SessionSummary>> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..workers)
+                    .map(|_| {
+                        s.spawn(|| {
+                            let mut local = vec![];
+                            loop {
+                                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if i >= paths.len() {
+                                    break;
+                                }
+                                self.try_push_summary(&paths[i], &mut local);
+                            }
+                            local
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or_default())
+                    .collect()
+            });
+            per_worker.into_iter().flatten().collect()
+        };
         summaries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(summaries)
     }
