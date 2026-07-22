@@ -181,10 +181,20 @@ export async function fetchSessionStreaming(threadId: string): Promise<boolean> 
     const raw = await invokeCommand<Record<string, unknown>>("get_thread_agent_state", { threadId });
     const streaming = raw.isStreaming === true;
     streamingCache.set(threadId, { streaming, fetchedAt: Date.now() });
-    // Also update the full cache so useCachedAgentState stays in sync
-    if (streaming) {
-      invalidateAgentState(threadId);
-    }
+    // Always update the full agent-state cache so settings changes
+    // (model, thinking, name, cwd) are reflected in near real-time,
+    // not just when streaming starts.
+    const state: AgentSessionState = {
+      model: typeof raw.model === "string" ? raw.model : null,
+      thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
+      sessionName: typeof raw.session_name === "string" ? raw.session_name : null,
+      cwd: typeof raw.cwd === "string" ? raw.cwd : null,
+      parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
+      isStreaming: streaming,
+    };
+    cache.set(threadId, { state, fetchedAt: Date.now() });
+    pruneCache();
+    notify();
     return streaming;
   } catch {
     return cached?.streaming ?? false;
