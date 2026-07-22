@@ -653,7 +653,7 @@ pub fn start_observing_session(session_id: String) {
         *guard = Some(cancel_tx);
     }
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let app_handle = match crate::APP_HANDLE.get() {
             Some(h) => h.clone(),
             None => return,
