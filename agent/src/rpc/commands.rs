@@ -773,455 +773,6 @@ fn get_agent_info_response(id: &str) -> String {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        agent::Loop,
-        rpc::ApprovalGate,
-        types::{LLMProvider, Message, StreamEvent, ToolDef},
-    };
-    use std::collections::HashMap;
-    use tokio::sync::mpsc;
-    use tokio_stream::wrappers::ReceiverStream;
-
-    struct EmptyProvider;
-
-    #[async_trait::async_trait]
-    impl LLMProvider for EmptyProvider {
-        async fn stream_chat(
-            &self,
-            _model: String,
-            _messages: Vec<Message>,
-            _tools: Vec<ToolDef>,
-            _system_prompt: String,
-        ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
-            let (_tx, rx) = mpsc::channel(1);
-            Ok(ReceiverStream::new(rx))
-        }
-    }
-
-    fn test_workspace() -> String {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir()
-            .join(format!("futureos-cmd-test-{stamp}"))
-            .to_string_lossy()
-            .to_string()
-    }
-
-    fn make_app_state() -> AppState {
-        let cwd = test_workspace();
-        let session = ServerSession::new(
-            "default".to_string(),
-            Arc::new(tokio::sync::RwLock::new(Loop::new(
-                Arc::new(EmptyProvider),
-                "mock",
-            ))),
-            Arc::new(crate::session::Manager::default_for(&cwd)),
-            &cwd,
-            Arc::new(crate::events::EventBus::new()),
-            Arc::new(SseBroadcaster::new()),
-            ApprovalGate::default(),
-        );
-        AppState {
-            session: Arc::new(parking_lot::RwLock::new(session)),
-            sessions: Arc::new(parking_lot::RwLock::new(HashMap::new())),
-            active_session_id: Arc::new(parking_lot::RwLock::new("default".to_string())),
-            welcome_version: "0.0.0".to_string(),
-            welcome_cwd: cwd.clone(),
-            welcome_skills: Arc::new(parking_lot::RwLock::new(vec![])),
-            welcome_context: Arc::new(parking_lot::RwLock::new(vec![])),
-            welcome_exts: vec![],
-            explicit_session: false,
-            broadcaster: Arc::new(SseBroadcaster::new()),
-            event_bus: Arc::new(crate::events::EventBus::new()),
-            approval_gate: ApprovalGate::default(),
-            verbose: false,
-            shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            model_registry: Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
-        }
-    }
-
-    fn make_cmd(cmd_type: &str) -> RpcCommand {
-        serde_json::from_str(&format!(
-            r#"{{"id":"test_cmd","type":"{}","sessionId":""}}"#,
-            cmd_type
-        ))
-        .unwrap()
-    }
-
-    fn parse_response(json: &str) -> serde_json::Value {
-        serde_json::from_str(json).unwrap()
-    }
-
-    // ─── Unknown command ────────────────────────────────────────────────────
-
-    #[test]
-    fn unknown_command_returns_error() {
-        let state = make_app_state();
-        let cmd = make_cmd("nonexistent_command");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("unknown command"));
-    }
-
-    // ─── get_agent_info ─────────────────────────────────────────────────────
-
-    #[test]
-    fn get_agent_info_returns_version() {
-        let state = make_app_state();
-        let cmd = make_cmd("get_agent_info");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert!(resp["data"]["version"].is_string());
-    }
-
-    // ─── get_state ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn get_state_returns_session_info() {
-        let state = make_app_state();
-        let cmd = make_cmd("get_state");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert!(resp["data"]["sessionId"].is_string());
-    }
-
-    // ─── shutdown ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn shutdown_sets_flag() {
-        let state = make_app_state();
-        let cmd = make_cmd("shutdown");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert!(state
-            .shutting_down
-            .load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[test]
-    fn prompt_rejected_after_shutdown() {
-        let state = make_app_state();
-        // First shutdown
-        let cmd = make_cmd("shutdown");
-        handle_command_internal(&state, cmd);
-        // Then try to prompt
-        let mut cmd = make_cmd("prompt");
-        cmd.message = "hello".to_string();
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("shutting down"));
-    }
-
-    // ─── set_permission_level ───────────────────────────────────────────────
-
-    #[test]
-    fn set_permission_level_valid() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("set_permission_level");
-        cmd.level = "workspace".to_string();
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert_eq!(resp["data"]["permissionLevel"], "workspace");
-    }
-
-    #[test]
-    fn set_permission_level_invalid() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("set_permission_level");
-        cmd.level = "invalid_level".to_string();
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("invalid level"));
-    }
-
-    // ─── set_thinking_level ─────────────────────────────────────────────────
-
-    #[test]
-    fn set_thinking_level_works() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("set_thinking_level");
-        cmd.level = "high".to_string();
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    // ─── set_auto_compaction ────────────────────────────────────────────────
-
-    #[test]
-    fn set_auto_compaction_works() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("set_auto_compaction");
-        cmd.enabled = false;
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    // ─── set_auto_retry ─────────────────────────────────────────────────────
-
-    #[test]
-    fn set_auto_retry_works() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("set_auto_retry");
-        cmd.enabled = true;
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    // ─── set_ephemeral ──────────────────────────────────────────────────────
-
-    #[test]
-    fn set_ephemeral_works() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("set_ephemeral");
-        cmd.ephemeral = true;
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert_eq!(resp["data"]["ephemeral"], true);
-    }
-
-    // ─── abort ──────────────────────────────────────────────────────────────
-
-    #[test]
-    fn abort_works() {
-        let state = make_app_state();
-        let cmd = make_cmd("abort");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    // ─── get_messages ───────────────────────────────────────────────────────
-
-    #[test]
-    fn get_messages_returns_empty() {
-        let state = make_app_state();
-        let cmd = make_cmd("get_messages");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert!(resp["data"]["messages"].is_array());
-    }
-
-    // ─── get_session_stats ──────────────────────────────────────────────────
-
-    #[test]
-    fn get_session_stats_works() {
-        let state = make_app_state();
-        let cmd = make_cmd("get_session_stats");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert!(resp["data"]["sessionId"].is_string());
-    }
-
-    // ─── cycle_thinking_level ───────────────────────────────────────────────
-
-    #[test]
-    fn cycle_thinking_level_advances() {
-        let state = make_app_state();
-        let cmd = make_cmd("cycle_thinking_level");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert!(resp["data"]["level"].is_string());
-    }
-
-    // ─── set_enabled_models ─────────────────────────────────────────────────
-
-    #[test]
-    fn set_enabled_models_accepted() {
-        let state = make_app_state();
-        let cmd = make_cmd("set_enabled_models");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    // ─── disable_tools / disable_builtin_tools ──────────────────────────────
-
-    #[test]
-    fn disable_tools_works() {
-        let state = make_app_state();
-        let cmd = make_cmd("disable_tools");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    #[test]
-    fn disable_builtin_tools_works() {
-        let state = make_app_state();
-        let cmd = make_cmd("disable_builtin_tools");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    // ─── set_system_prompt / append_system_prompt ───────────────────────────
-
-    #[test]
-    fn set_system_prompt_works() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("set_system_prompt");
-        cmd.system_prompt = "You are helpful".to_string();
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    #[test]
-    fn append_system_prompt_works() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("append_system_prompt");
-        cmd.system_prompt = "Extra instructions".to_string();
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    // ─── set_cwd ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn set_cwd_trims_trailing_slash() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("set_cwd");
-        cmd.cwd = "/tmp/project/ ".to_string();
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert_eq!(resp["data"]["cwd"], "/tmp/project");
-    }
-
-    // ─── set_sandbox_policy ─────────────────────────────────────────────────
-
-    #[test]
-    fn set_sandbox_policy_missing_payload() {
-        let state = make_app_state();
-        let cmd = make_cmd("set_sandbox_policy");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], false);
-        assert!(resp["error"]
-            .as_str()
-            .unwrap()
-            .contains("missing sandbox_policy"));
-    }
-
-    // ─── compact ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn compact_empty_session() {
-        let state = make_app_state();
-        let cmd = make_cmd("compact");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert_eq!(resp["data"]["messagesRemoved"], 0);
-    }
-
-    // ─── approval_decision ──────────────────────────────────────────────────
-
-    #[test]
-    fn approval_decision_invalid_mode() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("approval_decision");
-        cmd.mode = "invalid".to_string();
-        cmd.entry_id = "req_1".to_string();
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], false);
-        assert!(resp["error"]
-            .as_str()
-            .unwrap()
-            .contains("approved, rejected, or cancelled"));
-    }
-
-    // ─── shell ──────────────────────────────────────────────────────────────
-
-    #[test]
-    fn shell_echo() {
-        let state = make_app_state();
-        std::fs::create_dir_all(&state.session.read().cwd).unwrap();
-        let mut cmd = make_cmd("shell");
-        cmd.command = "echo test_output".to_string();
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert!(resp["data"]["output"]
-            .as_str()
-            .unwrap()
-            .contains("test_output"));
-        assert_eq!(resp["data"]["exitCode"], 0);
-    }
-
-    // ─── abort_retry / abort_shell ──────────────────────────────────────────
-
-    #[test]
-    fn abort_retry_works() {
-        let state = make_app_state();
-        let cmd = make_cmd("abort_retry");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    #[test]
-    fn abort_shell_works() {
-        let state = make_app_state();
-        let cmd = make_cmd("abort_shell");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    // ─── list_sessions ──────────────────────────────────────────────────────
-
-    #[test]
-    fn list_sessions_returns_array() {
-        let state = make_app_state();
-        let cmd = make_cmd("list_sessions");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert!(resp["data"]["sessions"].is_array());
-    }
-
-    // ─── reload_auth ────────────────────────────────────────────────────────
-
-    #[test]
-    fn reload_auth_works() {
-        let state = make_app_state();
-        let cmd = make_cmd("reload_auth");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    // ─── get_events_since ───────────────────────────────────────────────────
-
-    #[test]
-    fn get_events_since_empty() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("get_events_since");
-        cmd.run_id = "run_1".to_string();
-        cmd.since_idx = -1;
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert!(resp["data"]["events"].is_array());
-    }
-
-    // ─── get_commands ───────────────────────────────────────────────────────
-
-    #[test]
-    fn get_commands_returns_list() {
-        let state = make_app_state();
-        let cmd = make_cmd("get_commands");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        let commands = resp["data"]["commands"].as_array().unwrap();
-        assert!(!commands.is_empty());
-    }
-
-    // ─── add_session_rule ───────────────────────────────────────────────────
-
-    #[test]
-    fn add_session_rule_works() {
-        let state = make_app_state();
-        let mut cmd = make_cmd("add_session_rule");
-        cmd.message = "/tmp/**".to_string();
-        cmd.mode = "read".to_string();
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-}
-
 fn list_models_response(id: &str) -> String {
     let registry = crate::models::Registry::new();
     let auth = crate::AuthStore::load();
@@ -1848,4 +1399,396 @@ fn cmd_reload_config(
             "contextFiles": if agent_content.is_empty() { vec![] } else { vec!["CLAUDE.md".to_string()] },
         }),
     )
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        agent::Loop,
+        rpc::ApprovalGate,
+        types::{LLMProvider, Message, StreamEvent, ToolDef},
+    };
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    struct EmptyProvider;
+
+    #[async_trait::async_trait]
+    impl LLMProvider for EmptyProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDef>,
+            _system_prompt: String,
+        ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(ReceiverStream::new(rx))
+        }
+    }
+
+    fn test_workspace() -> String {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("futureos-cmd-test-{stamp}"))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn make_app_state() -> AppState {
+        let cwd = test_workspace();
+        let session = ServerSession::new(
+            "default".to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(EmptyProvider),
+                "mock",
+            ))),
+            Arc::new(crate::session::Manager::default_for(&cwd)),
+            &cwd,
+            Arc::new(crate::events::EventBus::new()),
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+        );
+        AppState {
+            session: Arc::new(parking_lot::RwLock::new(session)),
+            sessions: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            active_session_id: Arc::new(parking_lot::RwLock::new("default".to_string())),
+            welcome_version: "0.0.0".to_string(),
+            welcome_cwd: cwd.clone(),
+            welcome_skills: Arc::new(parking_lot::RwLock::new(vec![])),
+            welcome_context: Arc::new(parking_lot::RwLock::new(vec![])),
+            welcome_exts: vec![],
+            explicit_session: false,
+            broadcaster: Arc::new(SseBroadcaster::new()),
+            event_bus: Arc::new(crate::events::EventBus::new()),
+            approval_gate: ApprovalGate::default(),
+            verbose: false,
+            shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            model_registry: Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        }
+    }
+
+    fn make_cmd(cmd_type: &str) -> RpcCommand {
+        serde_json::from_str(&format!(
+            r#"{{"id":"test_cmd","type":"{}","sessionId":""}}"#,
+            cmd_type
+        ))
+        .unwrap()
+    }
+
+    fn parse_response(json: &str) -> serde_json::Value {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn unknown_command_returns_error() {
+        let state = make_app_state();
+        let cmd = make_cmd("nonexistent_command");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("unknown command"));
+    }
+
+    #[test]
+    fn get_agent_info_returns_version() {
+        let state = make_app_state();
+        let cmd = make_cmd("get_agent_info");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["version"].is_string());
+    }
+
+    #[test]
+    fn get_state_returns_session_info() {
+        let state = make_app_state();
+        let cmd = make_cmd("get_state");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["sessionId"].is_string());
+    }
+
+    #[test]
+    fn shutdown_sets_flag() {
+        let state = make_app_state();
+        let cmd = make_cmd("shutdown");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(state
+            .shutting_down
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn prompt_rejected_after_shutdown() {
+        let state = make_app_state();
+        let cmd = make_cmd("shutdown");
+        handle_command_internal(&state, cmd);
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "hello".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("shutting down"));
+    }
+
+    #[test]
+    fn set_permission_level_valid() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_permission_level");
+        cmd.level = "workspace".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["permissionLevel"], "workspace");
+    }
+
+    #[test]
+    fn set_permission_level_invalid() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_permission_level");
+        cmd.level = "invalid_level".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("invalid level"));
+    }
+
+    #[test]
+    fn set_thinking_level_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_thinking_level");
+        cmd.level = "high".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn set_auto_compaction_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_auto_compaction");
+        cmd.enabled = false;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn set_auto_retry_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_auto_retry");
+        cmd.enabled = true;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn set_ephemeral_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_ephemeral");
+        cmd.ephemeral = true;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["ephemeral"], true);
+    }
+
+    #[test]
+    fn abort_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("abort");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn get_messages_returns_empty() {
+        let state = make_app_state();
+        let cmd = make_cmd("get_messages");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["messages"].is_array());
+    }
+
+    #[test]
+    fn get_session_stats_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("get_session_stats");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["sessionId"].is_string());
+    }
+
+    #[test]
+    fn cycle_thinking_level_advances() {
+        let state = make_app_state();
+        let cmd = make_cmd("cycle_thinking_level");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["level"].is_string());
+    }
+
+    #[test]
+    fn set_enabled_models_accepted() {
+        let state = make_app_state();
+        let cmd = make_cmd("set_enabled_models");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn disable_tools_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("disable_tools");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn disable_builtin_tools_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("disable_builtin_tools");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn set_system_prompt_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_system_prompt");
+        cmd.system_prompt = "You are helpful".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn append_system_prompt_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("append_system_prompt");
+        cmd.system_prompt = "Extra instructions".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn set_cwd_trims_trailing_slash() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_cwd");
+        cmd.cwd = "/tmp/project/ ".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["cwd"], "/tmp/project");
+    }
+
+    #[test]
+    fn set_sandbox_policy_missing_payload() {
+        let state = make_app_state();
+        let cmd = make_cmd("set_sandbox_policy");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing sandbox_policy"));
+    }
+
+    #[test]
+    fn compact_empty_session() {
+        let state = make_app_state();
+        let cmd = make_cmd("compact");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["messagesRemoved"], 0);
+    }
+
+    #[test]
+    fn approval_decision_invalid_mode() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("approval_decision");
+        cmd.mode = "invalid".to_string();
+        cmd.entry_id = "req_1".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("approved, rejected, or cancelled"));
+    }
+
+    #[test]
+    fn shell_echo() {
+        let state = make_app_state();
+        std::fs::create_dir_all(&state.session.read().cwd).unwrap();
+        let mut cmd = make_cmd("shell");
+        cmd.command = "echo test_output".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["output"]
+            .as_str()
+            .unwrap()
+            .contains("test_output"));
+        assert_eq!(resp["data"]["exitCode"], 0);
+    }
+
+    #[test]
+    fn abort_retry_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("abort_retry");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn abort_shell_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("abort_shell");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn list_sessions_returns_array() {
+        let state = make_app_state();
+        let cmd = make_cmd("list_sessions");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["sessions"].is_array());
+    }
+
+    #[test]
+    fn reload_auth_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("reload_auth");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn get_events_since_empty() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("get_events_since");
+        cmd.run_id = "run_1".to_string();
+        cmd.since_idx = -1;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["events"].is_array());
+    }
+
+    #[test]
+    fn get_commands_returns_list() {
+        let state = make_app_state();
+        let cmd = make_cmd("get_commands");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let commands = resp["data"]["commands"].as_array().unwrap();
+        assert!(!commands.is_empty());
+    }
+
+    #[test]
+    fn add_session_rule_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("add_session_rule");
+        cmd.message = "/tmp/**".to_string();
+        cmd.mode = "read".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
 }

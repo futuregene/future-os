@@ -587,6 +587,24 @@ impl PendingMessageQueue {
     }
 }
 
+impl Default for crate::types::AgentConfig {
+    fn default() -> Self {
+        Self {
+            system_prompt: String::new(),
+            max_turns: DEFAULT_MAX_TURNS,
+            thinking_budget: 0,
+            max_retries: 3,
+            transform_context: None,
+            stop_condition: None,
+            before_tool_call: None,
+            prepare_tool_call: None,
+            finalize_tool_call: None,
+            after_tool_call: None,
+            tools_execution_mode: String::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,23 +694,5 @@ mod tests {
         assert_eq!(q.drain(), vec!["b"]);
         assert_eq!(q.drain(), vec!["c"]);
         assert!(q.drain().is_empty());
-    }
-}
-
-impl Default for crate::types::AgentConfig {
-    fn default() -> Self {
-        Self {
-            system_prompt: String::new(),
-            max_turns: DEFAULT_MAX_TURNS,
-            thinking_budget: 0,
-            max_retries: 3,
-            transform_context: None,
-            stop_condition: None,
-            before_tool_call: None,
-            prepare_tool_call: None,
-            finalize_tool_call: None,
-            after_tool_call: None,
-            tools_execution_mode: String::new(),
-        }
     }
 }
