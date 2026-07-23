@@ -850,10 +850,9 @@ mod tests {
         assert_eq!(copy.model, loop_.model);
         assert_eq!(copy.system_prompt, "original prompt");
         // Independent state: interrupt flag, queues should be fresh
-        assert!(
-            !copy.interrupt_flag()
-                .load(std::sync::atomic::Ordering::SeqCst)
-        );
+        assert!(!copy
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(copy.pending_message_count(), 0);
         // Modify original's queue, copy should be unaffected
         loop_.steer("test".to_string());
