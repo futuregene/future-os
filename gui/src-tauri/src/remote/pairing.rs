@@ -38,7 +38,6 @@ pub struct PairingCreds {
 #[serde(rename_all = "camelCase")]
 pub struct PairingCode {
     pub v: u8,
-    pub nats_url: String,
     pub pair_id: String,
     pub token: String,
     /// Unix seconds; the code's display/admission window (the token itself is long-lived).
@@ -87,11 +86,12 @@ pub fn new_device_id() -> String {
     format!("dev_{}", random_hex(10))
 }
 
-/// Encode the pairing code (base64url JSON) handed to a client.
-pub fn encode_pairing_code(nats_url: &str, pair_id: &str, token: &str) -> String {
+/// Encode the pairing code (base64url JSON) handed to a client. Carries only
+/// pairId + token (+ expiry) — NOT a NATS address: the web client's websocket
+/// URL differs from the Bridge's client URL and is entered by the user.
+pub fn encode_pairing_code(pair_id: &str, token: &str) -> String {
     let code = PairingCode {
         v: 1,
-        nats_url: nats_url.to_string(),
         pair_id: pair_id.to_string(),
         token: token.to_string(),
         exp: now_secs().saturating_add(PAIRING_CODE_TTL_SECS),
@@ -217,11 +217,10 @@ mod tests {
 
     #[test]
     fn pairing_code_roundtrip_and_expiry() {
-        let code = encode_pairing_code("ws://h:8080", "pair_abc", "tok");
+        let code = encode_pairing_code("pair_abc", "tok");
         let dec = decode_pairing_code(&code).unwrap();
         assert_eq!(dec.pair_id, "pair_abc");
         assert_eq!(dec.token, "tok");
-        assert_eq!(dec.nats_url, "ws://h:8080");
         assert!(decode_pairing_code("not!valid").is_none());
     }
 

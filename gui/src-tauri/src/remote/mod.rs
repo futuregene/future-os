@@ -140,7 +140,7 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
             device_id,
             nats_url: input.nats_url.clone(),
         });
-        let code = pairing::encode_pairing_code(&input.nats_url, &pair_id, t);
+        let code = pairing::encode_pairing_code(&pair_id, t);
         (pair_id, Some(code))
     } else {
         (input.pair_id.clone(), None)

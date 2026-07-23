@@ -31,11 +31,6 @@
   #presenceStatus { font-size:12px; padding:3px 8px; border-radius:999px; white-space:nowrap; }
   #presenceStatus.online { background:#1f6f3f; color:#fff; }
   #presenceStatus.offline { background:#4a4a4a; color:#9aa4b2; }
-  #pairbar {
-    display:flex; gap:8px; align-items:center;
-    padding:0 12px 8px; background:#171a21; border-bottom:1px solid #262a33; flex:none;
-  }
-  #pairbar input { flex:1; background:#0f1115; color:#e6e6e6; border:1px solid #333; border-radius:6px; padding:6px 8px; font-size:12px; }
   .srow .streaming-dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:#2b6cff; margin-right:4px; vertical-align:middle; }
 
   /* ── 主体：会话列表 + 对话区 ─────────────────────────────── */
@@ -109,11 +104,6 @@
   <span id="presenceStatus" class="offline">桌面离线</span>
   <span id="status">未连接</span>
 </header>
-<div id="pairbar">
-  <input id="pair" value="DEVPAIR" placeholder="pairId（手动 / 解析填充）" />
-  <input id="token" placeholder="接入 token（手动 / 解析填充）" />
-  <button id="applyCode" class="ghost sm">解析配对码</button>
-</div>
 
 <div id="app">
   <aside id="sidebar">
@@ -198,28 +188,16 @@ function getDeviceId() {
   return id;
 }
 
-function applyPairingCode() {
-  const pc = decodePairingCode($("paircode").value);
-  if (!pc) { setStatus("配对码无效或已过期", "err"); return; }
-  // 只填 pair/token，不碰 url：配对码里的 natsUrl 是 Bridge 的 client 地址
-  // (nats://…:4222)，而 web 必须用 websocket 地址 (ws://…:8080)，二者不同，
-  // url 由上方地址框决定。
-  $("pair").value = pc.pairId; $("token").value = pc.token;
-  setStatus("已解析配对码，点连接", "");
-}
-
 async function doConnect() {
-  let url = $("url").value.trim();
-  let token = $("token").value.trim();
-  pair = $("pair").value.trim() || "DEVPAIR";
-  // 配对码（若有）提供 pair/token；不覆盖 url（配对码的 natsUrl 是 Bridge 的
-  // client 地址 nats://，web 须用上方地址框的 ws:// 地址）。
+  const url = $("url").value.trim();
+  // pair/token 只来自配对码（手填框已移除）；无配对码 = dev / no-auth，pair 默认 DEVPAIR。
+  let pair = "DEVPAIR";
+  let token = "";
   const code = $("paircode").value.trim();
   if (code) {
     const pc = decodePairingCode(code);
     if (!pc) { setStatus("配对码无效或已过期", "err"); return; }
     pair = pc.pairId; token = pc.token;
-    $("pair").value = pair; $("token").value = token;
   }
   if (!url) { setStatus("请填写 NATS websocket 地址", "err"); return; }
   try {
@@ -698,7 +676,6 @@ function renderApproval(data) {
 function autoGrow() { const t = $("msg"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 140) + "px"; }
 
 $("connect").onclick = doConnect;
-$("applyCode").onclick = applyPairingCode;
 $("newsess").onclick = newSession;
 $("refresh").onclick = listSessions;
 $("send").onclick = send;
