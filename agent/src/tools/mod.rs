@@ -828,7 +828,7 @@ async fn spawn_shell(
         // signal, or it would recreate the same hang.
         drop(stderr_task);
 
-        return match result {
+        match result {
             Ok(Ok(())) => {
                 let combined = String::from_utf8_lossy(&output_buf);
                 Ok(format_shell_output(&combined, combined.len(), 0))
@@ -847,7 +847,7 @@ async fn spawn_shell(
                     Ok(format_shell_output(&combined, total, 0))
                 }
             }
-        };
+        }
     }
 
     #[cfg(not(windows))]

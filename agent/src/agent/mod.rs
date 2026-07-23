@@ -108,6 +108,29 @@ impl Loop {
         self
     }
 
+    /// Create an independent copy of this loop: same provider, model, tools,
+    /// config, system prompt and event bus, but FRESH steering/follow-up
+    /// queues, token counters, interrupt flag and compaction state.
+    ///
+    /// Every `ServerSession` gets its own copy instead of sharing one global
+    /// loop, so a streaming run (which holds `loop.read()` for its whole
+    /// duration) never blocks another session's `set_model`/
+    /// `set_thinking_level` (`try_write`), and per-session state — interrupt
+    /// flag, steering queues, token counters, tool-execution hooks — can no
+    /// longer leak across sessions.  The provider `Arc` is cloned only as a
+    /// seed: `ServerSession::set_model` replaces it with a freshly-built
+    /// client for the session's own model before the first prompt.
+    pub fn independent_copy(&self) -> Loop {
+        let mut copy = Loop::new(self.provider.clone(), &self.model)
+            .with_tools(self.tools.clone())
+            .with_system_prompt(&self.system_prompt)
+            .with_config(self.config.clone());
+        copy.verbose = self.verbose;
+        copy.parallel_tools = self.parallel_tools;
+        copy.event_bus = self.event_bus.clone();
+        copy
+    }
+
     pub fn with_transform_context(
         mut self,
         f: Arc<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>,

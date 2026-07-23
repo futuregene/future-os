@@ -259,6 +259,7 @@ pub fn run() {
             fork_thread,
             get_session_entries,
             get_thread_agent_state,
+            list_streaming_thread_ids,
             get_thread_cleanup_summary,
             attach_remote_stream,
             observe_session,

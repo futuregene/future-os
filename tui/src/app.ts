@@ -5,7 +5,7 @@
 
 import { GrpcClient } from "./rpc/index.js";
 import { VERSION } from "./version.generated.js";
-import type { SessionSummary } from "./rpc/types.js";
+import type { SessionSummary, ThinkingLevel } from "./rpc/types.js";
 import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
@@ -451,6 +451,10 @@ export class App extends Container {
         this.chat.finishTool(e.tool_id ?? "", e.text);
         this.state.activeToolCount = Math.max(0, this.state.activeToolCount - 1);
         if (this.state.activeToolCount === 0) this.state.toolStartTime = 0;
+        // Each LLM turn may have its own cost (which was finalised before
+        // tools executed).  Pull the latest cumulative cost/token totals so
+        // the footer updates after every tool call, not just at agent_end.
+        this.refresh().then(() => this.requestRender());
         break;
       }
 
@@ -833,7 +837,7 @@ export class App extends Container {
 
   private handleInterrupt(): void {
     if (this.state.streaming) {
-      this.client.abort();
+      this.client.abort().catch(() => { /* connection may close before abort completes */ });
       this.state.streaming = false;
       // Mark the in-progress assistant message as stopped so the partial
       // content (thinking, text, tool calls) is preserved and visible —
@@ -1148,7 +1152,13 @@ export class App extends Container {
 
       if (cmd === "new") {
         try {
-          const result = await this.client.newSession();
+          // Inherit cwd, model, and thinking level from the current session
+          // so /new feels like a clean continuation instead of a reset.
+          const result = await this.client.newSession({
+            cwd: this.state.cwd || undefined,
+            modelId: this.state.model || undefined,
+            level: (this.state.thinking || undefined) as ThinkingLevel | undefined,
+          });
           if (result.sessionId) {
             await this.refresh();
             this.chat.addMessage({
