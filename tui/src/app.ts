@@ -1602,8 +1602,10 @@ export class App extends Container {
         role: "system",
         content: "✅  Reconnected to agent",
       });
-      // Refresh state after reconnect so footer shows correct model/tokens
-      this.refresh().catch(() => {});
+      // Delay refresh — after stream reconnect the gRPC channel may need
+      // a moment to become ready for unary RPCs (the stream delivers data
+      // before the channel finishes its HTTP/2 handshake).
+      setTimeout(() => this.refresh().catch(() => {}), 500);
     }
     this.requestRender();
   }

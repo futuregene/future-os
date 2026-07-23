@@ -437,6 +437,7 @@ export type ConnectionChangeListener = (connected: boolean) => void;
 
 export class GrpcClient {
   private client: any;
+  private readonly address: string;
   private eventListeners: EventListener[] = [];
   private streamCall: any = null;
   private connected = false;
@@ -448,9 +449,25 @@ export class GrpcClient {
   private connectResolve: ((value: boolean) => void) | null = null;
   private connectionChangeListeners: ConnectionChangeListener[] = [];
 
+  // ─── Reconnect bookkeeping ───────────────────────────────────────────
+
+  /// Counts consecutive tryConnect() failures during reconnect polling.
+  /// After 3 failures the gRPC channel is likely stuck in TRANSIENT_FAILURE
+  /// and we recreate the client to force a fresh channel.
+  private reconnectFailures = 0;
+  /// Periodic health-check that calls tryConnect() to detect silent
+  /// disconnections (agent process killed without the stream emitting
+  /// an error/end event).
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(address = "localhost:50051") {
+    this.address = address;
+    this.client = this.createClient();
+  }
+
+  private createClient(): any {
     const credentials = grpc.credentials.createInsecure();
-    this.client = new proto.FutureAgent(address, credentials);
+    return new proto.FutureAgent(this.address, credentials);
   }
 
   // ─── Connection state callbacks ──────────────────────────────────────
@@ -532,13 +549,32 @@ export class GrpcClient {
       if (!this.reconnectTimer) {
         const wasConnected = this.connected;
         this.connected = false;
+        this.stopHeartbeat(); // stop health-checks while disconnected
         this.connectResolve?.(false); // let call() proceed with timeout
         if (wasConnected) {
           this.notifyConnectionChange(false);
         }
-        this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = setTimeout(async () => {
           this.reconnectTimer = null;
-          this.connectEvents();
+          // Poll via unary RPC (3 s deadline) instead of blindly calling
+          // StreamEvents.  When the agent is down the gRPC channel may
+          // return a stream object that never emits data/error/end — the
+          // reconnect loop would stall forever.  tryConnect() fails fast
+          // when the server is unreachable, so we only attempt the
+          // streaming handshake when the agent is confirmed alive.
+          if (await this.tryConnect()) {
+            this.reconnectFailures = 0;
+            this.connectEvents();
+          } else {
+            this.reconnectFailures++;
+            // After 3 consecutive failures the gRPC channel is likely stuck
+            // in TRANSIENT_FAILURE — recreate the client for a fresh channel.
+            if (this.reconnectFailures >= 3) {
+              this.reconnectFailures = 0;
+              this.client = this.createClient();
+            }
+            scheduleReconnect();
+          }
         }, 1000);
       }
     };
@@ -555,12 +591,26 @@ export class GrpcClient {
     }
     this.streamCall = call;
 
+    // Watchdog: if StreamEvents created a stream but no data arrives
+    // within 5 s the underlying channel is likely stuck.  Cancel the
+    // stream so the reconnect loop can try again from scratch.
+    let connectWatchdog: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      connectWatchdog = null;
+      if (this.streamCall === call) {
+        this.streamCall = null;
+        call.cancel();
+        scheduleReconnect();
+      }
+    }, 5000);
+
     call.on("data", (response: any) => {
+      if (connectWatchdog) { clearTimeout(connectWatchdog); connectWatchdog = null; }
       if (!this.connected) {
         this.connected = true;
         this.connectResolve?.(true);
         this.connectResolve = null;
         this.notifyConnectionChange(true);
+        this.startHeartbeat();
       }
       try {
         const rawData = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
@@ -583,6 +633,7 @@ export class GrpcClient {
     });
 
     call.on("end", () => {
+      if (connectWatchdog) { clearTimeout(connectWatchdog); connectWatchdog = null; }
       if (this.streamCall === call) {
         this.streamCall = null;
         scheduleReconnect();
@@ -590,6 +641,7 @@ export class GrpcClient {
     });
 
     call.on("error", (_err: Error) => {
+      if (connectWatchdog) { clearTimeout(connectWatchdog); connectWatchdog = null; }
       if (this.streamCall === call) {
         this.streamCall = null;
         scheduleReconnect();
@@ -614,6 +666,7 @@ export class GrpcClient {
   }
 
   disconnect(): void {
+    this.stopHeartbeat();
     this.streamCall?.cancel();
     this.streamCall = null;
     if (this.reconnectTimer) {
@@ -621,6 +674,43 @@ export class GrpcClient {
       this.reconnectTimer = null;
     }
     this.connected = false;
+  }
+
+  // ─── Heartbeat ──────────────────────────────────────────────────────
+
+  /// Start a periodic health-check that calls tryConnect() every 10 s.
+  /// If the agent is unreachable but the stream didn't emit error/end
+  /// (e.g. the process was SIGKILL'd), the heartbeat detects the silent
+  /// disconnection and triggers the reconnect loop.
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(async () => {
+      if (!this.connected) return;
+      try {
+        const alive = await this.tryConnect();
+        if (!alive && this.connected) {
+          // Agent is down — cancel the stale stream and kick off reconnect.
+          this.streamCall?.cancel();
+          this.streamCall = null;
+          const wasConnected = this.connected;
+          this.connected = false;
+          this.connectResolve?.(false);
+          if (wasConnected) {
+            this.notifyConnectionChange(false);
+          }
+          this.connectEvents();
+        }
+      } catch {
+        // tryConnect threw — treat as unreachable.
+      }
+    }, 10_000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 
   // ─── RPC Call Helper ─────────────────────────────────────────────────
@@ -676,16 +766,22 @@ export class GrpcClient {
       // Don't retry the call itself — for non-idempotent commands like
       // 'prompt', the request may have already reached the agent and
       // we'd create a duplicate. The stream will deliver events either way.
+      //
+      // IMPORTANT: when the stream already reports we're connected (data
+      // arrived via StreamEvents), a transient unary RPC failure must NOT
+      // override `connected` and tear down the working stream.  The stream
+      // may be alive while the unary channel is still warming up after a
+      // reconnect.  Let the heartbeat or stream error/end handlers detect
+      // a real disconnection instead.
       const msg = err?.message || String(err);
       const isTransport = msg.includes("transport") || msg.includes("14 UNAVAILABLE")
         || msg.includes("Connect Failed") || msg.includes("ECONNREFUSED");
       if (isTransport) {
-        const wasConnected = this.connected;
-        this.connected = false;
-        this.connectEvents();
-        if (wasConnected) {
-          this.notifyConnectionChange(false);
+        if (!this.connected) {
+          // Stream also reports disconnected — full reconnect needed.
+          this.connectEvents();
         }
+        // else: stream is alive, transient unary failure — don't tear it down.
       }
       throw err;
     }
