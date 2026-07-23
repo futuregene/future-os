@@ -451,6 +451,10 @@ export class App extends Container {
         this.chat.finishTool(e.tool_id ?? "", e.text);
         this.state.activeToolCount = Math.max(0, this.state.activeToolCount - 1);
         if (this.state.activeToolCount === 0) this.state.toolStartTime = 0;
+        // Each LLM turn may have its own cost (which was finalised before
+        // tools executed).  Pull the latest cumulative cost/token totals so
+        // the footer updates after every tool call, not just at agent_end.
+        this.refresh().then(() => this.requestRender());
         break;
       }
 
