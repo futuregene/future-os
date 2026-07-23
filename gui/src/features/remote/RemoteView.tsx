@@ -162,35 +162,22 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
           <div className="flex flex-wrap items-center gap-2">
             <span className={cn("inline-block size-2 rounded-full", running ? "bg-accent" : "bg-ink-muted/60")} />
             <span className="text-sm font-medium text-ink">{running ? t("running") : t("notRunning")}</span>
-            {running
+            {running && status?.webUrl
               ? (
-                  <span className="text-xs text-ink-muted">
+                  <span className="flex items-center gap-1 text-xs text-ink-muted">
                     ·
-                    {" "}
-                    {status?.natsUrl}
-                    {" "}
-                    · pair
-                    {" "}
-                    {status?.pairId}
+                    <span>{t("webClient")}</span>
+                    <button
+                      className="text-accent underline"
+                      onClick={() => void openUrl(status.webUrl!)}
+                      type="button"
+                    >
+                      {status.webUrl}
+                    </button>
                   </span>
                 )
               : null}
           </div>
-          {running && status?.webUrl
-            ? (
-                <div className="mt-2 text-xs text-ink-muted">
-                  {t("webClient")}
-                  {": "}
-                  <button
-                    className="text-accent underline"
-                    onClick={() => void openUrl(status.webUrl!)}
-                    type="button"
-                  >
-                    {status.webUrl}
-                  </button>
-                </div>
-              )
-            : null}
         </div>
 
         <div className="space-y-4">
