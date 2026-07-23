@@ -39,10 +39,10 @@
     - Web 端：chat header 显示模型下拉 + 思考等级下拉（off/low/medium/high）+ 重命名按钮；切换会话时从 `get_state` 拉当前值填充；重命名同步更新列表标题。
 
 - **Phase 1 简单配对 + 审批归属（已完成，落地见 [auth §8/§9](remote-control-auth.md)）**：
-  - **单一 paired 模式（dev / 无鉴权直连已移除）**：`RemoteStartInput { nats_url, access_token(必需), pair_id?(覆盖), device_id? }`。**pairId 解析** = 显式覆盖 > 已持久化配对的 pairId > 随机生成——已配对桌面重启**复用**同一 pairId（配对码稳定），首次才随机；deviceId 同理复用。
-  - **简单配对凭证** `remote/pairing.rs`：复用或随机的 pairId + 共享 NATS 接入 token + 每设备 deviceId，凭证落 `~/.future/remote_pairing.json`（0600）；配对码 = base64url JSON（10min 窗口，**只含 pairId+token，不含 NATS 地址**——web 的 ws 地址由用户手填）。base64url 编解码无依赖；Rust 解码仅 `cfg(test)`（客户端在 JS 解码，浏览器无 Tauri 桥）。
-  - **GUI 配对 UI**：Remote 页加接入 token 输入 +「配对并启动」+ 配对码显示/复制 + 已配对/解绑（`remote_pairing_status` / `remote_unpair` 命令）。
-  - **Web 配对**：粘贴配对码（JS 自解）或手填 url/pair/token；connect 带 token + `inboxPrefix = p.{pairId}.rep.{deviceId}` —— **回复 inbox 已收敛**到 pair 命名空间，不再用默认 `_INBOX.>`。
+  - **单一 paired 模式（dev / 无鉴权直连已移除）**：`RemoteStartInput { access_token(必需), pair_id?(覆盖), device_id? }`。NATS 地址不再手填——bridge `nats://host:4222` 和 web `ws://host:8080` 从 `current_platform_url()`（环境切换逻辑）取 host 派生,协议端口固定。**pairId 解析** = 显式覆盖 > 已持久化配对的 pairId > 随机生成——已配对桌面重启**复用**同一 pairId（配对码稳定），首次才随机；deviceId 同理复用。
+  - **简单配对凭证** `remote/pairing.rs`：复用或随机的 pairId + 共享 NATS 接入 token + 每设备 deviceId，凭证落 `~/.future/remote_pairing.json`（0600）；配对码 = base64url JSON（10min 窗口，含 `wsUrl` + `pairId` + `token`——web 粘码即得全部连接信息,无需手填任何输入）。base64url 编解码无依赖；Rust 解码仅 `cfg(test)`（客户端在 JS 解码，浏览器无 Tauri 桥）。
+  - **GUI 配对 UI**：Remote 页只保留接入 token 输入 + pairId 可选覆盖 +「配对并启动」+ 配对码显示/复制 + 已配对/解绑（`remote_pairing_status` / `remote_unpair` 命令）。URL 框已移除（地址内置派生）。
+  - **Web 配对**：只保留配对码粘贴框,粘码即得 `{wsUrl, pairId, token}`；connect 带 token + `inboxPrefix = p.{pairId}.rep.{deviceId}` —— **回复 inbox 已收敛**到 pair 命名空间,不再用默认 `_INBOX.>`。URL 框已移除（ws 地址由配对码提供）。
   - **NATS dev token auth**：`deploy/nats/nats.conf` 启用共享接入 token（client 4222 + websocket 8080 同值），README 同步。conf 保留 no-auth 注释替代方案（仅 NATS 层；**GUI/web 已不支持 no-auth 连接**——dev 模式已移除）。
   - **审批 session 归属校验**（agent crate）：`ApprovalGate::decide` 加 `session_id` 参数，与 `PendingApproval.session_id` 比对，跨 session 拒绝（auth I1 例外，防 `entry_id` 泄漏越权批准）；2 个单测。
   - **publish fire-and-forget**：`publish_event` 原先 `await` JetStream ack（与自身注释矛盾；无匹配流时会阻塞 agent 事件循环）改为 `tokio::spawn` 发包。故 Phase 1 **无需为每 pair 建流**——实时走 core pub/sub，重连/中途加入走 `get_events_since`（agent 侧 buffer，与 NATS 流无关）。
@@ -69,21 +69,24 @@
 ```bash
 # 1) NATS（nats.conf 默认启用共享接入 token = devpairingtoken；client+ws 同值）
 cd deploy/nats && docker compose up -d
-#    要纯无鉴权 NATS：注释掉 nats.conf 里两个 authorization 块（仅 NATS 层；
-#    GUI/web 已不支持 no-auth 连接，dev 模式已移除，故此路径仅供其他 NATS 客户端测试）。
-# 2) GUI：Remote → 填 NATS 地址 + 接入 token（devpairingtoken）→「配对并启动」
+#    （要纯无鉴权 NATS 测试：注释掉 nats.conf 里两个 authorization 块——仅限其他 NATS 客户端；
+#     GUI/web 已不支持 no-auth 连接，dev 模式已移除。）
+# 2) GUI：Remote → 填接入 token（devpairingtoken），可选填 pairId 覆盖 →「配对并启动」
+#    NATS 地址自动从平台环境派生（dev build → test.future-os.cn,生产 → future-os.cn）。
 #    配对成功后页面显示配对码，点复制。
 make run-gui
 # 3) Web 验证端（GUI 启动远程后自动在 localhost:8022 起服务）
 open http://localhost:8022
-#    粘贴配对码 →「解析配对码」→「连接」；或手填 ws://localhost:8080 / pairId / token。
+#    粘贴配对码 → 点「连接」。配对码含 wsUrl + pairId + token,无需手填任何地址或 token。
 ```
 
-> **无 NATS 流也能跑**：事件走 core pub/sub，重连/中途加入靠 `get_events_since`（agent 侧 buffer）。JetStream 流 + consumer 回放延后；要手动建流做持久化见 `deploy/nats/README.md`（仅固定 pairId 适用，随机 paired pairId 的流由后续 phase 的 Bridge 自建）。
+> **无 NATS 流也能跑**：事件走 core pub/sub，重连/中途加入靠 `get_events_since`（agent 侧 buffer）。JetStream 流 + consumer 回放延后。
 
 ## 下一步
-1. **L1 鉴权 Phase 2（最后做）**：future-server 签发服务（`/pair/nonce` + `/pair/claim` + `/pair/revoke`）+ 扫码配对 + scoped user JWT + **服务端逐 subject 强制隔离** + 流/桶生命周期迁签发服务 + 短期 JWT 刷新/撤销（[auth §9](remote-control-auth.md)）。
-2. **JetStream 回放**：Bridge 自建 `EVT_{pairId}` 流 + web 升级 `deliver=all` consumer（替代当前 core sub + `get_events_since`）。
-3. **真手机 App / PWA**：替代 `remote/web` 调试页（历史 / 流式 / 审批 / abort UI 复用）。
-4. **右侧面板**：附件上传/预览、文件列表、工具调用详情。
+1. **L1 鉴权 Phase 2（最后做）**：future-server 签发服务（`/pair/nonce` + `/pair/claim` + `/pair/revoke`）+ scoped user JWT + **服务端逐 subject 强制隔离** + 流/桶生命周期迁签发服务 + 短期 JWT 刷新/撤销 + 已链接设备列表（[auth §9](remote-control-auth.md)）。
+2. **JetStream 回放**：Bridge 自建 `EVT_{pairId}` 流 + web 升级 `deliver=all` consumer（替代当前 core sub + `get_events_since`；当前已可回放/重连,consumer 是增强）。
+3. **真手机 App / PWA**：替代 `remote/web` 调试页（历史 / 流式 / 审批 / abort UI 复用）。Web 验证端现已是完整远程客户端——会话列表 / 新建 / 发 prompt / 中断 / 审批 / 切模型 / 切思考 / 重命名 / presence / 简单配对接入控制。
+4. **`pairId` 持久化**：bridge 每次 start 时保存 pairId 到 app_settings 在 GUI 发生时机异步,须确保 GUI 重启后 pairId 与配对码一致，可考虑在 save_creds 时同时写回。
 5. **run 边界对齐**：`steer`/`follow_up` 路径也分配独立 `run_id`（P1 review C2）。
+6. **附件 / 文件列表 / 右侧面板**：后续开发。
+7. **web 移动端适配 / UI 精修**：`remote/web/index.html` 目前以桌面浏览器为主，可进一步调整触屏交互和布局。
