@@ -90,9 +90,6 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
         CreateIconFromResourceEx, SendMessageW, ICON_BIG, ICON_SMALL, WM_SETICON,
     };
 
-    // The ICO is bundled next to the exe at dev time (src-tauri/icons/icon.ico).
-    // At release time it is embedded in the exe resources, but Tauri already
-    // handles that path — this function is primarily for dev-mode clarity.
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -101,12 +98,7 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
     };
     let hwnd = HWND(hwnd.0 as _);
 
-    // Read the ICO file — try a few candidate paths (dev mode).
-    let ico_data = find_icon_ico_bytes();
-    let Some(ico_data) = ico_data else {
-        eprintln!("set_windows_taskbar_icon: icon.ico not found");
-        return;
-    };
+    let ico_data = icon_ico_bytes();
 
     // Parse the ICO directory and pick the best entry for a given target size.
     fn find_best_entry(data: &[u8], target: u32) -> Option<(u32, u32)> {
@@ -191,24 +183,15 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
     }
 }
 
-/// Locate `icon.ico` on disk (dev mode). Tries candidate paths relative to
-/// the current working directory and the executable.
+/// The multi-size ICO, embedded into the binary at compile time.
+///
+/// Reading it from disk at runtime would depend on the process working
+/// directory, which is unreliable for installed release builds (e.g. launched
+/// from the Start menu). Embedding costs ~230KB in the exe but makes the icon
+/// setup behave identically in dev, release, and packaged installs.
 #[cfg(target_os = "windows")]
-fn find_icon_ico_bytes() -> Option<Vec<u8>> {
-    let candidates = [
-        // Dev: working directory is gui/ or gui/src-tauri/
-        std::path::Path::new("src-tauri/icons/icon.ico"),
-        std::path::Path::new("icons/icon.ico"),
-        // Relative to exe: gui/src-tauri/target/{debug,release}/futureos.exe
-        std::path::Path::new("../../icons/icon.ico"),
-        std::path::Path::new("../../../icons/icon.ico"),
-    ];
-    for path in &candidates {
-        if let Ok(data) = std::fs::read(path) {
-            return Some(data);
-        }
-    }
-    None
+fn icon_ico_bytes() -> &'static [u8] {
+    include_bytes!("../icons/icon.ico")
 }
 
 /// Notify the frontend that a Thread's "previous turn changes" changeset has updated. The
@@ -293,6 +276,15 @@ pub fn run() {
             // size — the ICO contains 16,20,24,30,32,36,40,48,64,72,96,128,256.
             #[cfg(target_os = "windows")]
             set_windows_taskbar_icon(app);
+            // The window is created hidden (`"visible": false` in tauri.conf.json)
+            // so the taskbar never flashes Tauri's default (blurry, upscaled) icon
+            // before the crisp one above is in place. Reveal it now.
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                }
+            }
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
             }
