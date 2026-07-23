@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/cn";
-import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { usePolling } from "../../lib/usePolling";
 import {
@@ -43,6 +42,11 @@ export function RemoteView(_: RemoteViewProps) {
   const [pairing, setPairing] = useState<RemotePairingStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A machine-readable category for the last local action failure (e.g. a
+  // start that threw an uncategorized error). Kept mutually exclusive with
+  // `error`: when this is set we show `error.<code>`, when `error` is set we
+  // show its literal text (an already-localized message like copyFailed).
+  const [errorCode, setErrorCode] = useState<string | null>(null);
 
   useEffect(() => {
     if (loadedStatus)
@@ -56,6 +60,14 @@ export function RemoteView(_: RemoteViewProps) {
 
   const running = status?.running ?? false;
   const isPaired = pairing?.paired ?? false;
+
+  // Resolve the single error banner: a local action code wins, then a literal
+  // localized message (e.g. copyFailed), then the status's own code. A literal
+  // `error` suppresses the status code so an inline message isn't shadowed by a
+  // stale running-state code (e.g. copyFailed while web_bind is active).
+  const activeErrorCode = errorCode ?? (error ? null : status?.errorCode ?? null);
+  const errorText = activeErrorCode ? t(`error.${activeErrorCode}`) : error;
+  const showError = Boolean(activeErrorCode || error);
 
   // While running, poll so a dropped connection (or a stop from elsewhere) is
   // reflected instead of staying stuck on "running". Best-effort: a failed poll
@@ -88,13 +100,17 @@ export function RemoteView(_: RemoteViewProps) {
   async function handleStart() {
     setBusy(true);
     setError(null);
+    setErrorCode(null);
     try {
       const next = await startRemote({});
       setStatus(next);
       setPairing(await getRemotePairingStatus());
     }
-    catch (caught) {
-      setError(errorMessage(caught));
+    catch {
+      // A categorized remote/network failure returns as a not-running status
+      // (with `errorCode`) above, not as a throw. A throw here is an
+      // uncategorized local fault — show a neutral localized message.
+      setErrorCode("generic");
     }
     finally {
       setBusy(false);
@@ -104,11 +120,12 @@ export function RemoteView(_: RemoteViewProps) {
   async function handleStop() {
     setBusy(true);
     setError(null);
+    setErrorCode(null);
     try {
       setStatus(await stopRemote());
     }
-    catch (caught) {
-      setError(errorMessage(caught));
+    catch {
+      setErrorCode("generic");
     }
     finally {
       setBusy(false);
@@ -118,12 +135,13 @@ export function RemoteView(_: RemoteViewProps) {
   async function handleUnpair() {
     setBusy(true);
     setError(null);
+    setErrorCode(null);
     try {
       setStatus(await unpairRemote());
       setPairing(await getRemotePairingStatus());
     }
-    catch (caught) {
-      setError(errorMessage(caught));
+    catch {
+      setErrorCode("generic");
     }
     finally {
       setBusy(false);
@@ -139,6 +157,7 @@ export function RemoteView(_: RemoteViewProps) {
       setTimeout(setCopied, 1500, false);
     }
     catch {
+      setErrorCode(null);
       setError(t("copyFailed"));
     }
   }
@@ -199,17 +218,13 @@ export function RemoteView(_: RemoteViewProps) {
             )
           : null}
 
-        {error
+        {/* One banner for every failure mode. Categorized causes (offline,
+            revoked, a dead command loop, a busy web port) render a localized
+            message via `error.<code>`; a literal `error` (e.g. copyFailed) or
+            an uncategorized local throw shows its text directly. */}
+        {showError
           ? (
-              <div className="rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>
-            )
-          : null}
-
-        {/* A bridge that stopped on its own (e.g. pairing revoked by the web
-            client) explains itself here instead of a bare "not running". */}
-        {status?.error
-          ? (
-              <div className="rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">{status.error}</div>
+              <div className="rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">{errorText}</div>
             )
           : null}
 

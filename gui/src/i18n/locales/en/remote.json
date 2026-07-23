@@ -15,5 +15,13 @@
   "copy": "Copy",
   "copied": "Copied",
   "copyFailed": "Copy failed — copy the code manually.",
-  "note": "Remote control requires the desktop (GUI + agent) to be online and awake. Desktop and web use separate NKey private keys with short-lived JWTs; NATS enforces pairId-scoped subject isolation."
+  "note": "Remote control requires the desktop (GUI + agent) to be online and awake. Desktop and web use separate NKey private keys with short-lived JWTs; NATS enforces pairId-scoped subject isolation.",
+  "error": {
+    "network": "Cannot reach the Future server. Check your network connection and try again.",
+    "revoked": "This pairing was revoked or is no longer valid. Pair again to continue.",
+    "server": "The Future server returned an error. Please try again later.",
+    "loop_dead": "The command subscription stopped. Restart remote control to recover.",
+    "web_bind": "The local web client could not start (its port may already be in use). The bridge is still running.",
+    "generic": "The remote control action failed. Please try again."
+  }
 }

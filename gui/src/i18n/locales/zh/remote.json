@@ -15,5 +15,13 @@
   "copy": "复制",
   "copied": "已复制",
   "copyFailed": "复制失败，请手动复制配对码。",
-  "note": "注：远程依赖桌面（GUI + Agent）在线且未睡眠。桌面和 Web 使用各自的 NKey 私钥与短期 JWT；NATS 在服务端按 pairId 强制 subject 隔离。"
+  "note": "注：远程依赖桌面（GUI + Agent）在线且未睡眠。桌面和 Web 使用各自的 NKey 私钥与短期 JWT；NATS 在服务端按 pairId 强制 subject 隔离。",
+  "error": {
+    "network": "无法连接到 Future 服务器，请检查网络连接后重试。",
+    "revoked": "该配对已被撤销或已失效，请重新配对。",
+    "server": "Future 服务器返回错误，请稍后重试。",
+    "loop_dead": "命令订阅已停止，请重新启动远程控制以恢复。",
+    "web_bind": "本地 Web 客户端无法启动（端口可能已被占用），桥接仍在运行。",
+    "generic": "远程操作失败，请重试。"
+  }
 }

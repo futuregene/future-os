@@ -85,6 +85,26 @@ pub fn is_invalid_or_revoked_error(error: &crate::AppError) -> bool {
     )
 }
 
+/// Map a remote-control failure to a stable, machine-readable category the UI
+/// localizes (`error.<code>`). Returns `None` for errors that aren't
+/// remote-control failures (local IO, NKey, SQLite) — those keep surfacing as a
+/// raw string. Never sniff the human message: only the variant / server code is
+/// authoritative.
+///
+/// - `network` — the call never got a response (offline, DNS, refused, timeout).
+/// - `revoked` — the server rejected the credential (web unpair / re-pair).
+/// - `server`  — the server responded with an error status.
+pub fn error_code(error: &crate::AppError) -> Option<&'static str> {
+    match error {
+        crate::AppError::RemoteTransport(_) => Some("network"),
+        crate::AppError::Remote { code, .. } => match code.as_deref() {
+            Some("invalid_remote_credential") => Some("revoked"),
+            _ => Some("server"),
+        },
+        _ => None,
+    }
+}
+
 pub async fn create_pairing() -> Result<(PairingCreds, String, Option<i64>), crate::AppError> {
     let key_pair = nkeys::KeyPair::new_user();
     let nkey_seed = key_pair
@@ -104,9 +124,7 @@ pub async fn create_pairing() -> Result<(PairingCreds, String, Option<i64>), cra
         }))
         .send()
         .await
-        .map_err(|error| {
-            crate::AppError::Message(format!("Failed to create pairing code: {error}"))
-        })?;
+        .map_err(|error| transport_or_message("create pairing code", error))?;
     let response: CreatePairCodeResponse = parse_response(response, "create pairing code").await?;
     let jwt_expires_at = jwt_expiry(&response.user_jwt)?;
     let code_expires_at = pairing_code_expiry(&response.pairing_code);
@@ -148,9 +166,7 @@ pub async fn refresh_bridge_jwt(mut creds: PairingCreds) -> Result<PairingCreds,
         }))
         .send()
         .await
-        .map_err(|error| {
-            crate::AppError::Message(format!("Failed to refresh remote credential: {error}"))
-        })?;
+        .map_err(|error| transport_or_message("refresh remote credential", error))?;
     let response: RefreshTokenResponse =
         parse_response(response, "refresh remote credential").await?;
     creds.jwt_expires_at = jwt_expiry(&response.user_jwt)?;
@@ -168,9 +184,7 @@ pub async fn revoke_pairing(creds: &PairingCreds) -> Result<(), crate::AppError>
         .json(&json!({ "pair_id": creds.pair_id }))
         .send()
         .await
-        .map_err(|error| {
-            crate::AppError::Message(format!("Failed to revoke remote pairing: {error}"))
-        })?;
+        .map_err(|error| transport_or_message("revoke remote pairing", error))?;
     if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(());
     }
@@ -201,6 +215,27 @@ fn http_client() -> Result<reqwest::Client, crate::AppError> {
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|error| crate::AppError::Message(format!("Failed to create HTTP client: {error}")))
+}
+
+/// Build the error for a failed `.send()`: a [`RemoteTransport`] when no HTTP
+/// response was possible (so the UI can say "check your network"), a plain
+/// [`Message`] otherwise. The original reqwest detail is preserved in both for
+/// logs.
+fn transport_or_message(action: &str, error: reqwest::Error) -> crate::AppError {
+    let message = format!("Failed to {action}: {error}");
+    if is_transport_error(&error) {
+        crate::AppError::RemoteTransport(message)
+    } else {
+        crate::AppError::Message(message)
+    }
+}
+
+/// A send failure that never produced an HTTP response — i.e. the network path
+/// itself failed (offline, DNS, connection refused, timeout). Status / body /
+/// decode errors mean we *did* reach the server, so they aren't transport
+/// failures.
+fn is_transport_error(error: &reqwest::Error) -> bool {
+    error.is_connect() || error.is_timeout() || error.is_request() || error.is_redirect()
 }
 
 async fn parse_response<T: serde::de::DeserializeOwned>(
@@ -273,5 +308,39 @@ mod tests {
         assert!(!is_invalid_or_revoked_error(&crate::AppError::Message(
             "Failed to refresh remote credential: timeout".to_string(),
         )));
+    }
+
+    #[test]
+    fn classifies_error_codes_without_sniffing_messages() {
+        // Offline / unreachable → network, regardless of the human message.
+        assert_eq!(
+            error_code(&crate::AppError::RemoteTransport(
+                "Failed to create pairing code: error sending request".to_string(),
+            )),
+            Some("network"),
+        );
+        // Server revocation is read from the machine code, not the message.
+        assert_eq!(
+            error_code(&crate::AppError::Remote {
+                status: 401,
+                code: Some("invalid_remote_credential".to_string()),
+                message: "gone".to_string(),
+            }),
+            Some("revoked"),
+        );
+        // Any other server status → generic server category.
+        assert_eq!(
+            error_code(&crate::AppError::Remote {
+                status: 500,
+                code: None,
+                message: "boom".to_string(),
+            }),
+            Some("server"),
+        );
+        // Local failures carry no remote category.
+        assert_eq!(
+            error_code(&crate::AppError::Message("disk full".to_string())),
+            None,
+        );
     }
 }

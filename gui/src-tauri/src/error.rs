@@ -35,6 +35,14 @@ pub enum AppError {
         code: Option<String>,
         message: String,
     },
+    /// A remote-control platform call never reached a response (DNS failure,
+    /// refused connection, timeout, offline). Distinct from [`AppError::Remote`]
+    /// — which carries an HTTP status — so the UI can show a "check your
+    /// network" message instead of a raw transport error. The display string
+    /// stays the plain message, so the serialized contract the frontend sees is
+    /// unchanged.
+    #[error("{0}")]
+    RemoteTransport(String),
     #[error("{0}")]
     Message(String),
 }

@@ -62,9 +62,6 @@ struct RemoteState {
     /// Web client URL a phone on the same LAN can reach; `None` when bind
     /// failed or no LAN route was found.
     web_lan_url: Option<String>,
-    /// Why the web server failed to bind (port busy, etc.); surfaced via
-    /// [`status()`] so a running bridge with no web client explains itself.
-    web_error: Option<String>,
     /// The one-shot pairing code issued at start, kept (with its expiry) so the
     /// UI can re-show it after navigation until it expires — no longer a
     /// fire-once value lost the moment you switch views.
@@ -75,9 +72,10 @@ struct RemoteState {
 static STATE: Mutex<Option<RemoteState>> = Mutex::new(None);
 
 /// Why the bridge last stopped on its own (e.g. the pairing was revoked by
-/// the web client). Surfaced through [`status()`] so the GUI can explain a
+/// the web client), as a machine-readable category the UI localizes
+/// (`error.<code>`). Surfaced through [`status()`] so the GUI can explain a
 /// bridge that is no longer running instead of showing a bare "not running".
-static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+static LAST_ERROR_CODE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Serializes concurrent `start()` calls: `STATE` can't be held across the
 /// connect `await`, so without this two racing starts both pass `stop()`, both
@@ -106,6 +104,13 @@ pub struct RemoteStatus {
     pub web_url: Option<String>,
     /// Web client URL a phone on the same LAN can reach; `None` if unavailable.
     pub web_lan_url: Option<String>,
+    /// Machine-readable reason the bridge isn't healthy (e.g. `network`,
+    /// `revoked`, `server`, `loop_dead`, `web_bind`). The UI localizes this via
+    /// `error.<code>`; it is the preferred signal over [`Self::error`].
+    pub error_code: Option<String>,
+    /// Human-readable error text, used only when [`Self::error_code`] is `None`
+    /// (an uncategorized local failure). When a code is present the UI shows
+    /// the localized message and ignores this field.
     pub error: Option<String>,
 }
 
@@ -119,6 +124,7 @@ fn empty() -> RemoteStatus {
         pairing_code_expires_at: None,
         web_url: None,
         web_lan_url: None,
+        error_code: None,
         error: None,
     }
 }
@@ -126,28 +132,20 @@ fn empty() -> RemoteStatus {
 pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
     let _start_guard = START_LOCK.lock().await;
     let _ = stop();
-    *LAST_ERROR.lock().unwrap() = None;
+    *LAST_ERROR_CODE.lock().unwrap() = None;
 
-    let (creds, pairing_code, pairing_code_expires_at) = match pairing::load_creds() {
-        Some(creds) => match pairing::refresh_bridge_jwt(creds).await {
-            Ok(creds) => (creds, None, None),
-            Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
-                // A web client can revoke this pairing. Forget its unusable
-                // local credential and immediately issue a replacement code
-                // instead of leaving the GUI permanently stuck on startup.
-                eprintln!("remote: persisted pairing was revoked; creating a new pairing");
-                pairing::clear_creds()?;
-                let (creds, code, exp) = pairing::create_pairing().await?;
-                (creds, Some(code), exp)
-            }
-            Err(error) => return Err(error),
-        },
-        None => {
-            let (creds, code, exp) = pairing::create_pairing().await?;
-            (creds, Some(code), exp)
-        }
+    // A remote/server failure here (offline, revoked, HTTP error) is not a
+    // program fault — surface it as a localized, not-running status instead of
+    // throwing a raw transport string at the UI. Local failures (NKey, disk)
+    // keep propagating as `Err`.
+    let (creds, pairing_code, pairing_code_expires_at) = match establish().await {
+        Ok(value) => value,
+        Err(error) => return start_failure(error),
     };
-    let client = connect_nats(&creds).await?;
+    let client = match connect_nats(&creds).await {
+        Ok(client) => client,
+        Err(error) => return start_failure(error),
+    };
     pairing::save_creds(&creds)?;
     let js = async_nats::jetstream::new(client.clone());
     let pair_id = creds.pair_id.clone();
@@ -169,18 +167,20 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
     let refresh_task = spawn_credential_refresh(pair_id.clone(), reply_slots);
     // Bind the web server up front so a busy port is reported, not silent. A
     // failed bind is non-fatal: the bridge still runs, it just has no web UI.
-    let (web_task, web_url, web_lan_url, web_error) = match bind_web_listener().await {
+    let (web_task, web_url, web_lan_url) = match bind_web_listener().await {
         Ok(listener) => (
             Some(spawn_web_server(listener)),
             Some(format!("http://localhost:{WEB_PORT}")),
             lan_ip().map(|ip| format!("http://{ip}:{WEB_PORT}")),
-            None,
         ),
         Err(error) => {
-            eprintln!("remote: {error}");
-            (None, None, None, Some(error.to_string()))
+            eprintln!("remote: web client bind failed: {error}");
+            (None, None, None)
         }
     };
+    // A failed web bind is non-fatal (the bridge still runs) but the UI should
+    // explain why there's no local web client to point at.
+    let web_bind_failed = web_task.is_none();
 
     let status = RemoteStatus {
         running: true,
@@ -191,7 +191,8 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
         pairing_code_expires_at,
         web_url: web_url.clone(),
         web_lan_url: web_lan_url.clone(),
-        error: web_error.clone(),
+        error_code: web_bind_failed.then(|| "web_bind".to_string()),
+        error: None,
     };
     *STATE.lock().unwrap() = Some(RemoteState {
         client,
@@ -205,11 +206,55 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
         web_task,
         web_url,
         web_lan_url,
-        web_error,
         pairing_code,
         pairing_code_expires_at,
     });
     Ok(status)
+}
+
+/// Resolve a usable credential: refresh the persisted pairing, or — if it was
+/// revoked server-side — drop it and mint a fresh pairing code. Pure control
+/// plane; the NATS connect happens in [`start`] so its failure can be reported
+/// the same way.
+async fn establish() -> Result<(pairing::PairingCreds, Option<String>, Option<i64>), crate::AppError>
+{
+    match pairing::load_creds() {
+        Some(creds) => match pairing::refresh_bridge_jwt(creds).await {
+            Ok(creds) => Ok((creds, None, None)),
+            Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
+                // A web client can revoke this pairing. Forget its unusable
+                // local credential and immediately issue a replacement code
+                // instead of leaving the GUI permanently stuck on startup.
+                eprintln!("remote: persisted pairing was revoked; creating a new pairing");
+                pairing::clear_creds()?;
+                let (creds, code, exp) = pairing::create_pairing().await?;
+                Ok((creds, Some(code), exp))
+            }
+            Err(error) => Err(error),
+        },
+        None => {
+            let (creds, code, exp) = pairing::create_pairing().await?;
+            Ok((creds, Some(code), exp))
+        }
+    }
+}
+
+/// Turn a start-time failure into either a localized not-running status (when
+/// the cause is a categorized remote/network/server error) or an `Err` for an
+/// uncategorized local fault. Records the code so a later [`status`] poll stays
+/// consistent with the value returned here.
+fn start_failure(error: crate::AppError) -> Result<RemoteStatus, crate::AppError> {
+    match pairing::error_code(&error) {
+        Some(code) => {
+            eprintln!("remote: start failed [{code}]: {error}");
+            *LAST_ERROR_CODE.lock().unwrap() = Some(code.to_string());
+            Ok(RemoteStatus {
+                error_code: Some(code.to_string()),
+                ..empty()
+            })
+        }
+        None => Err(error),
+    }
 }
 
 async fn connect_nats(
@@ -224,10 +269,9 @@ async fn connect_nats(
         async move { key_pair.sign(&nonce).map_err(async_nats::AuthError::new) }
     })
     .custom_inbox_prefix(format!("p.{}.rep.{}", creds.pair_id, creds.desktop_id));
-    options
-        .connect(&creds.nats_url)
-        .await
-        .map_err(|error| crate::AppError::Message(format!("Failed to connect to NATS: {error}")))
+    options.connect(&creds.nats_url).await.map_err(|error| {
+        crate::AppError::RemoteTransport(format!("Failed to connect to NATS: {error}"))
+    })
 }
 
 /// Drop the persisted pairing and stop the bridge (the desktop "unpair").
@@ -297,17 +341,20 @@ pub fn status() -> RemoteStatus {
                 pairing_code_expires_at,
                 web_url: s.web_url.clone(),
                 web_lan_url: s.web_lan_url.clone(),
-                error: loop_dead
-                    .then(|| {
-                        "Command subscription stopped; restart the remote bridge.".to_string()
-                    })
-                    .or_else(|| s.web_error.clone()),
+                error_code: if loop_dead {
+                    Some("loop_dead".to_string())
+                } else if s.web_task.is_none() {
+                    Some("web_bind".to_string())
+                } else {
+                    None
+                },
+                error: None,
             }
         }
         // A bridge that stopped on its own (revoked pairing) explains itself
-        // through the last recorded error instead of a bare "not running".
+        // through the last recorded error code instead of a bare "not running".
         None => RemoteStatus {
-            error: LAST_ERROR.lock().unwrap().clone(),
+            error_code: LAST_ERROR_CODE.lock().unwrap().clone(),
             ..empty()
         },
     }
@@ -448,10 +495,7 @@ fn spawn_credential_refresh(
                     // and stop the bridge. `stop()` aborts this very task, but
                     // abort only lands at the next await and we return here.
                     eprintln!("remote: pairing was revoked on the server; stopping bridge");
-                    *LAST_ERROR.lock().unwrap() = Some(
-                        "Pairing was revoked (web unpair or re-pair). Start again to create a new pairing."
-                            .to_string(),
-                    );
+                    *LAST_ERROR_CODE.lock().unwrap() = Some("revoked".to_string());
                     let _ = pairing::clear_creds();
                     let _ = stop();
                     return;

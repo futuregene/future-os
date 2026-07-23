@@ -13,6 +13,13 @@ export interface RemoteStatus {
   webUrl: string | null;
   /** Web client URL a phone on the same LAN can reach; null if unavailable. */
   webLanUrl: string | null;
+  /**
+   * Machine-readable reason the bridge isn't healthy (`network` / `revoked` /
+   * `server` / `loop_dead` / `web_bind`). Localized via `error.<code>`; preferred
+   * over `error` when present.
+   */
+  errorCode: string | null;
+  /** Human-readable error, shown only when `errorCode` is null. */
   error: string | null;
 }
 
