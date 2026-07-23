@@ -1026,6 +1026,182 @@ mod tests {
         assert!(d.url.is_none());
     }
 
+    #[test]
+    fn image_url_data_serialize_empty() {
+        let d = ImageUrlData { url: None };
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json.is_object());
+    }
+
+    // ─── deserialize_credit_cost additional visitors ────────────────────────
+
+    #[test]
+    fn usage_credit_cost_as_i64() {
+        let json = r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":0}"#;
+        let u: Usage = serde_json::from_str(json).unwrap();
+        assert_eq!(u.credit_cost, Some(0.0));
+    }
+
+    #[test]
+    fn usage_credit_cost_as_bool_returns_none() {
+        let json =
+            r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":true}"#;
+        let u: Usage = serde_json::from_str(json).unwrap();
+        assert!(u.credit_cost.is_none());
+    }
+
+    // ─── ContentBlock visitor ──────────────────────────────────────────────
+
+    #[test]
+    fn content_block_visit_seq_errors() {
+        let json = r#"["not", "an", "object"]"#;
+        let result: Result<ContentBlock, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    // ─── StreamEvent tc_index ──────────────────────────────────────────────
+
+    #[test]
+    fn stream_event_tc_index_serialization() {
+        let event = StreamEvent {
+            event_type: "toolcall_delta".to_string(),
+            tc_index: 2,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["tc_index"], 2);
+    }
+
+    #[test]
+    fn stream_event_tc_index_zero_skipped() {
+        let event = StreamEvent {
+            event_type: "toolcall_delta".to_string(),
+            tc_index: 0,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("tc_index").is_none());
+    }
+
+    // ─── AgentTool / ToolCallFn ────────────────────────────────────────────
+
+    #[test]
+    fn agent_tool_call_args_string_preserved() {
+        let msg = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![],
+            tool_calls: vec![AgentToolCall {
+                id: "c1".to_string(),
+                name: "shell".to_string(),
+                args: serde_json::json!("string-args"),
+            }],
+            ..Default::default()
+        };
+        let llm = msg.to_llm();
+        let tcs = llm.tool_calls.unwrap();
+        assert_eq!(tcs[0].function.arguments, serde_json::json!("string-args"));
+    }
+
+    // ─── ImageContent / ImageSource ────────────────────────────────────────
+
+    #[test]
+    fn image_content_serialization() {
+        let ic = ImageContent {
+            content_type: "image".to_string(),
+            mime_type: Some("image/png".to_string()),
+            data: Some("base64data".to_string()),
+            source: None,
+            file_path: Some("/tmp/img.png".to_string()),
+        };
+        let json = serde_json::to_value(&ic).unwrap();
+        assert_eq!(json["type"], "image");
+        assert_eq!(json["mime_type"], "image/png");
+        assert_eq!(json["file_path"], "/tmp/img.png");
+    }
+
+    #[test]
+    fn image_source_serialization() {
+        let src = ImageSource {
+            source_type: "base64".to_string(),
+            media_type: "image/png".to_string(),
+            data: "encoded".to_string(),
+        };
+        let json = serde_json::to_value(&src).unwrap();
+        assert_eq!(json["type"], "base64");
+        assert_eq!(json["media_type"], "image/png");
+    }
+
+    // ─── ToolCallResult ────────────────────────────────────────────────────
+
+    #[test]
+    fn tool_call_result_debug() {
+        let r = ToolCallResult {
+            result: "output".to_string(),
+            is_error: false,
+        };
+        let debug = format!("{r:?}");
+        assert!(debug.contains("output"));
+    }
+
+    // ─── AgentConfig default ───────────────────────────────────────────────
+
+    #[test]
+    fn agent_config_default_values() {
+        let c = AgentConfig {
+            system_prompt: "prompt".to_string(),
+            max_turns: 10,
+            thinking_budget: 0,
+            max_retries: 3,
+            transform_context: None,
+            stop_condition: None,
+            before_tool_call: None,
+            prepare_tool_call: None,
+            finalize_tool_call: None,
+            after_tool_call: None,
+            tools_execution_mode: "parallel".to_string(),
+        };
+        assert_eq!(c.max_turns, 10);
+        assert_eq!(c.max_retries, 3);
+        assert_eq!(c.tools_execution_mode, "parallel");
+    }
+
+    // ─── Model serialization extras ────────────────────────────────────────
+
+    #[test]
+    fn model_with_headers_and_compat() {
+        let json = r#"{
+            "id": "custom-model",
+            "name": "Custom",
+            "provider": "custom",
+            "api": "openai",
+            "baseUrl": "https://api.example.com",
+            "contextWindow": 32000,
+            "maxTokens": 8192,
+            "reasoning": true,
+            "hide": true,
+            "headers": {"X-Custom": "value"},
+            "compat": {"force_json": true}
+        }"#;
+        let m: Model = serde_json::from_str(json).unwrap();
+        assert!(m.hide);
+        assert!(m.reasoning);
+        assert!(m.headers.is_some());
+        assert!(m.compat.is_some());
+    }
+
+    // ─── TextContent ───────────────────────────────────────────────────────
+
+    #[test]
+    fn text_content_serialization() {
+        let tc = TextContent {
+            content_type: "text".to_string(),
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_value(&tc).unwrap();
+        assert_eq!(json["type"], "text");
+        assert_eq!(json["text"], "hello");
+    }
+
     // ─── AgentMessage ──────────────────────────────────────────────────────
 
     #[test]

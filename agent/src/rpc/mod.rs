@@ -333,3 +333,198 @@ fn argument_path(arguments: &serde_json::Value) -> Option<String> {
         .find_map(|key| normalized.get(*key).and_then(|value| value.as_str()))
         .map(str::to_string)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── escape_html ───────────────────────────────────────────────────────
+
+    #[test]
+    fn escape_html_escapes_all_specials() {
+        assert_eq!(
+            escape_html("<script>alert('xss')</script>"),
+            "&lt;script&gt;alert(&apos;xss&apos;)&lt;/script&gt;"
+        );
+    }
+
+    #[test]
+    fn escape_html_escapes_ampersand_first() {
+        assert_eq!(escape_html("a & b"), "a &amp; b");
+    }
+
+    #[test]
+    fn escape_html_escapes_quotes() {
+        assert_eq!(escape_html("\"quoted\""), "&quot;quoted&quot;");
+        assert_eq!(escape_html("'single'"), "&apos;single&apos;");
+    }
+
+    #[test]
+    fn escape_html_empty_string() {
+        assert_eq!(escape_html(""), "");
+    }
+
+    #[test]
+    fn escape_html_no_specials() {
+        assert_eq!(escape_html("hello world"), "hello world");
+    }
+
+    // ─── argument_path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn argument_path_extracts_path() {
+        let args = serde_json::json!({"path": "/tmp/file.txt"});
+        assert_eq!(argument_path(&args), Some("/tmp/file.txt".to_string()));
+    }
+
+    #[test]
+    fn argument_path_extracts_file_path() {
+        let args = serde_json::json!({"file_path": "/tmp/file.txt"});
+        assert_eq!(argument_path(&args), Some("/tmp/file.txt".to_string()));
+    }
+
+    #[test]
+    fn argument_path_extracts_camel_case() {
+        let args = serde_json::json!({"filePath": "/tmp/file.txt"});
+        assert_eq!(argument_path(&args), Some("/tmp/file.txt".to_string()));
+    }
+
+    #[test]
+    fn argument_path_prefers_path_over_others() {
+        let args = serde_json::json!({"path": "/tmp/a.txt", "file_path": "/tmp/b.txt"});
+        assert_eq!(argument_path(&args), Some("/tmp/a.txt".to_string()));
+    }
+
+    #[test]
+    fn argument_path_from_string_json() {
+        let args = serde_json::json!("{\"path\": \"/tmp/file.txt\"}");
+        assert_eq!(argument_path(&args), Some("/tmp/file.txt".to_string()));
+    }
+
+    #[test]
+    fn argument_path_no_path_returns_none() {
+        let args = serde_json::json!({"command": "ls"});
+        assert_eq!(argument_path(&args), None);
+    }
+
+    #[test]
+    fn argument_path_empty_json_returns_none() {
+        let args = serde_json::json!({});
+        assert_eq!(argument_path(&args), None);
+    }
+
+    // ─── generate_session_html ─────────────────────────────────────────────
+
+    #[test]
+    fn generate_session_html_contains_title() {
+        let html = generate_session_html("sess-123", "gpt-4o", "/tmp/test", &[]);
+        assert!(html.contains("FutureAgent session sess-123"));
+        assert!(html.contains("gpt-4o"));
+        assert!(html.contains("/tmp/test"));
+    }
+
+    #[test]
+    fn generate_session_html_with_messages() {
+        let messages = vec![
+            crate::types::Message {
+                role: "user".to_string(),
+                content: Some(serde_json::json!("hello")),
+                ..Default::default()
+            },
+            crate::types::Message {
+                role: "assistant".to_string(),
+                content: Some(serde_json::json!("hi there")),
+                ..Default::default()
+            },
+            crate::types::Message {
+                role: "tool".to_string(),
+                content: Some(serde_json::json!("result")),
+                ..Default::default()
+            },
+        ];
+        let html = generate_session_html("s1", "model", "/cwd", &messages);
+        assert!(html.contains("class=\"user\""));
+        assert!(html.contains("class=\"assistant\""));
+        assert!(html.contains("class=\"tool\""));
+        assert!(html.contains("hello"));
+        assert!(html.contains("hi there"));
+    }
+
+    #[test]
+    fn generate_session_html_escapes_content() {
+        let messages = vec![crate::types::Message {
+            role: "user".to_string(),
+            content: Some(serde_json::json!("<script>alert('xss')</script>")),
+            ..Default::default()
+        }];
+        let html = generate_session_html("s1", "model", "/cwd", &messages);
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(!html.contains("<script>alert"));
+    }
+
+    #[test]
+    fn generate_session_html_empty_messages() {
+        let html = generate_session_html("s1", "model", "/cwd", &[]);
+        assert!(html.contains("<body>"));
+        assert!(html.contains("</body>"));
+    }
+
+    #[test]
+    fn generate_session_html_null_content() {
+        let messages = vec![crate::types::Message {
+            role: "assistant".to_string(),
+            content: None,
+            ..Default::default()
+        }];
+        let html = generate_session_html("s1", "model", "/cwd", &messages);
+        assert!(html.contains("assistant"));
+    }
+
+    // ─── AppState helpers ──────────────────────────────────────────────────
+
+    #[test]
+    fn app_state_get_session_empty_id_returns_none() {
+        // Use EmptyProvider from session tests (defined in the same crate)
+        struct EmptyP;
+        #[async_trait::async_trait]
+        impl crate::types::LLMProvider for EmptyP {
+            async fn stream_chat(
+                &self,
+                _model: String,
+                _messages: Vec<crate::types::Message>,
+                _tools: Vec<crate::types::ToolDef>,
+                _system_prompt: String,
+            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
+            {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+            }
+        }
+        let state = AppState {
+            sessions: std::sync::Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            session_manager: std::sync::Arc::new(crate::session::Manager::new(
+                std::path::PathBuf::from("/tmp/futureos-test-sessions"),
+            )),
+            welcome_version: "1.0".to_string(),
+            welcome_cwd: "/tmp".to_string(),
+            welcome_skills: std::sync::Arc::new(parking_lot::RwLock::new(vec![])),
+            welcome_context: std::sync::Arc::new(parking_lot::RwLock::new(vec![])),
+            welcome_exts: vec![],
+            explicit_session: false,
+            event_bus: std::sync::Arc::new(crate::events::EventBus::new()),
+            approval_gate: crate::rpc::ApprovalGate::default(),
+            verbose: false,
+            shutting_down: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            model_registry: std::sync::Arc::new(parking_lot::RwLock::new(
+                crate::models::Registry::new(),
+            )),
+            loop_template: std::sync::Arc::new(crate::agent::Loop::new(
+                std::sync::Arc::new(EmptyP),
+                "test-model",
+            )),
+        };
+        assert!(state.get_session("").is_none());
+    }
+}

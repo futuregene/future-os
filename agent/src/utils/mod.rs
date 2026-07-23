@@ -233,3 +233,188 @@ mod image_prep_tests {
         assert!(image_data_url_for_model("/no/such/file-xyz.png").is_none());
     }
 }
+
+#[cfg(test)]
+mod util_tests {
+    use super::*;
+
+    #[test]
+    fn generate_id_is_unique() {
+        let id1 = generate_id();
+        let id2 = generate_id();
+        assert_ne!(id1, id2);
+        assert!(id1.contains('-'));
+        assert!(id1.len() > 12);
+    }
+
+    #[test]
+    fn generate_entry_id_format() {
+        let id = generate_entry_id();
+        // Format: YYYYMMDD-HHMMSS-hex
+        assert!(id.len() >= 21);
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(parts.len(), 3);
+    }
+
+    #[test]
+    fn encode_cwd_basic() {
+        let encoded = encode_cwd("/home/user/projects/my-app");
+        assert!(!encoded.is_empty());
+        assert_eq!(encoded, encoded.to_lowercase());
+    }
+
+    #[test]
+    fn encode_cwd_root_fallback() {
+        let encoded = encode_cwd("");
+        assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn encode_cwd_dot_fallback() {
+        let encoded = encode_cwd(".");
+        assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn detect_image_mime_type_from_extension_all_formats() {
+        use std::path::Path;
+        assert_eq!(
+            detect_image_mime_type_from_extension(Path::new("test.png")),
+            Some("image/png".to_string())
+        );
+        assert_eq!(
+            detect_image_mime_type_from_extension(Path::new("test.jpg")),
+            Some("image/jpeg".to_string())
+        );
+        assert_eq!(
+            detect_image_mime_type_from_extension(Path::new("test.jpeg")),
+            Some("image/jpeg".to_string())
+        );
+        assert_eq!(
+            detect_image_mime_type_from_extension(Path::new("test.gif")),
+            Some("image/gif".to_string())
+        );
+        assert_eq!(
+            detect_image_mime_type_from_extension(Path::new("test.webp")),
+            Some("image/webp".to_string())
+        );
+        assert_eq!(
+            detect_image_mime_type_from_extension(Path::new("test.svg")),
+            Some("image/svg+xml".to_string())
+        );
+        assert_eq!(
+            detect_image_mime_type_from_extension(Path::new("test.bmp")),
+            Some("image/bmp".to_string())
+        );
+        assert_eq!(
+            detect_image_mime_type_from_extension(Path::new("test.txt")),
+            None
+        );
+        assert_eq!(
+            detect_image_mime_type_from_extension(Path::new("noext")),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_image_mime_type_by_magic() {
+        use std::io::Write;
+        // Create a real PNG file and test magic detection
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.png");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0])
+                .unwrap();
+        }
+        assert_eq!(detect_image_mime_type(&path), Some("image/png".to_string()));
+
+        // JPEG magic
+        let path2 = dir.path().join("test.jpg");
+        {
+            let mut f = std::fs::File::create(&path2).unwrap();
+            f.write_all(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap();
+        }
+        assert_eq!(
+            detect_image_mime_type(&path2),
+            Some("image/jpeg".to_string())
+        );
+
+        // GIF magic
+        let path3 = dir.path().join("test.gif");
+        {
+            let mut f = std::fs::File::create(&path3).unwrap();
+            f.write_all(&[0x47, 0x49, 0x46, 0x38, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap();
+        }
+        assert_eq!(
+            detect_image_mime_type(&path3),
+            Some("image/gif".to_string())
+        );
+
+        // WEBP magic
+        let path4 = dir.path().join("test.webp");
+        {
+            let mut f = std::fs::File::create(&path4).unwrap();
+            f.write_all(&[0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50])
+                .unwrap();
+        }
+        assert_eq!(
+            detect_image_mime_type(&path4),
+            Some("image/webp".to_string())
+        );
+
+        // Unknown magic
+        let path5 = dir.path().join("test.unk");
+        {
+            let mut f = std::fs::File::create(&path5).unwrap();
+            f.write_all(&[0x00, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap();
+        }
+        assert_eq!(detect_image_mime_type(&path5), None);
+    }
+
+    #[test]
+    fn default_session_dir_exists() {
+        let dir = default_session_dir("/any/path");
+        assert!(dir.to_string_lossy().contains("sessions"));
+    }
+
+    #[test]
+    fn default_config_dir_exists() {
+        let dir = default_config_dir();
+        assert!(dir.to_string_lossy().contains(".future"));
+    }
+
+    #[test]
+    fn default_settings_paths_are_valid() {
+        let (global, project) = default_settings_paths();
+        assert!(global.to_string_lossy().contains("settings.json"));
+        assert!(project.to_string_lossy().contains("settings.json"));
+        assert_ne!(global, project);
+    }
+
+    #[test]
+    fn canonical_path_resolves() {
+        let result = canonical_path(Path::new("/tmp"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn is_tty_returns_bool() {
+        // Just verify it doesn't panic
+        let _ = is_tty();
+    }
+
+    #[test]
+    fn ansi_constants_are_non_empty() {
+        assert!(!ansi::RESET.is_empty());
+        assert!(!ansi::BOLD.is_empty());
+        assert!(!ansi::RED.is_empty());
+        assert!(!ansi::GREEN.is_empty());
+        assert!(!ansi::YELLOW.is_empty());
+        assert!(!ansi::BLUE.is_empty());
+        assert!(!ansi::MAGENTA.is_empty());
+    }
+}
