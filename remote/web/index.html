@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<!-- Defense in depth (the device seed lives in localStorage): scripts only from
+     this page + the pinned CDN origin; no base/form hijack. connect-src stays
+     open because the platform/NATS hosts come from the pairing code. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; connect-src https: http: wss: ws:; base-uri 'none'; form-action 'none'" />
 <title>Remote Control · Web 验证端</title>
 <style>
   :root { color-scheme: dark; }
@@ -150,6 +155,7 @@ const toolChips = new Map();
 let sessions = []; // 最近一次 list_sessions 结果，用于标题查找 + 高亮
 let presence = null; // 桌面在线状态 + 每 session streaming
 let isStreaming = false; // 当前选中会话是否在流式中（从事件或 presence 推断）
+let sending = false;     // 正在等待 prompt 的 ack：防双击/超时重发产生重复消息
 let presenceTimer = null; // 本地定时器：周期重算 presence 是否过期（watch 无事件时的兜底）
 let availableModels = []; // list_models 结果缓存，连接时拉一次
 let credentialRefreshTimer = null;
@@ -164,7 +170,12 @@ function cmdSubject(sid) { return `p.${pair}.cmd.${sid || "new"}`; }
 async function request(obj, sid) {
   if (!obj.id) obj.id = crypto.randomUUID();
   const m = await nc.request(cmdSubject(sid ?? session), enc(obj), { timeout: 10000 });
-  return dec(m);
+  const r = dec(m);
+  // The bridge answers every command with an RpcResponse-shaped envelope;
+  // surface success=false as a thrown error so callers' catch blocks show it
+  // (e.g. a prompt rejected because the session is still running).
+  if (r && r.success === false) throw new Error(r.error || "命令执行失败");
+  return r;
 }
 
 function decodePairingCode(s) {
@@ -548,19 +559,31 @@ function messageText(content) {
 
 async function loadHistory(sid) {
   try {
-    const r = await request({ type: "get_messages", sessionId: sid }, sid);
-    const msgs = r?.data?.messages || [];
-    if (!msgs.length) { line("（无历史消息）"); return null; }
+    // The bridge pages history so no single NATS reply exceeds the ~1MB
+    // payload cap; follow the nextOffset cursor until exhausted. nextOffset
+    // never moves backward, so a bad cursor can't loop forever.
+    let offset = 0;
     let shown = 0;
+    let hadAny = false;
     let maxRunId = null;
-    for (const m of msgs) {
-      const text = messageText(m.content);
-      if (!text.trim()) continue;
-      if (m.run_id) maxRunId = m.run_id;
-      if (m.role === "user") { renderUser(text); shown++; }
-      else if (m.role === "assistant") { renderAssistantStatic(text); shown++; }
+    for (;;) {
+      const r = await request({ type: "get_messages", sessionId: sid, offset }, sid);
+      const data = r?.data || {};
+      if (data.total) hadAny = true;
+      for (const m of data.messages || []) {
+        const text = messageText(m.content);
+        if (!text.trim()) continue;
+        if (m.run_id) maxRunId = m.run_id;
+        if (m.role === "user") { renderUser(text); shown++; }
+        else if (m.role === "assistant") { renderAssistantStatic(text); shown++; }
+      }
+      if (!data.hasMore) break;
+      const next = data.nextOffset;
+      if (typeof next !== "number" || next <= offset) break;
+      offset = next;
     }
-    if (!shown) line("（无可显示的历史消息）");
+    if (!hadAny) { line("（无历史消息）"); }
+    else if (!shown) line("（无可显示的历史消息）");
     return maxRunId;
   } catch (e) { line("加载历史失败: " + (e?.message || e), "err"); return null; }
 }
@@ -654,6 +677,9 @@ async function send() {
   // 对齐 GUI：streaming 时禁止新的 plain prompt（GUI 弹 alreadyRunning toast）。
   // 运行中与 GUI 一致：拒绝新的 prompt，可先停止再发送。
   if (isStreaming) { line("正在回复中，请先停止或等待结束", "badge"); return; }
+  // 上一条 prompt 的 ack 还没回来时忽略重发：双击或超时重试会用新的命令 id
+  // 绕过 bridge 的单飞去重，产生重复的用户消息 + run。
+  if (sending) return;
   const text = $("msg").value.trim(); if (!text) return;
   const wasNew = !session;        // 懒创建首条：当前还没有 DB 条目
   $("msg").value = "";
@@ -662,10 +688,18 @@ async function send() {
   // 草稿的模型/思考等级随首条 prompt 一起发，bridge 在新建 session 时 seed 它们。
   const modelId = $("modelSelect")?.value || "";
   const level = $("thinkingSelect")?.value || "";
+  sending = true;
+  $("send").disabled = true;
   let ack;
   try {
     ack = await request({ type: "prompt", sessionId: session, message: text, modelId, level });
-  } catch (e) { line("发送失败: " + e.message, "err"); return; }
+  } catch (e) {
+    line("发送失败: " + (e?.message || e), "err");
+    return;
+  } finally {
+    sending = false;
+    updateStreamingState(isStreaming); // 恢复发送键（send/stop 由 streaming 态决定）
+  }
   // 懒创建首条：bridge 刚建好 thread + 真实 agent session，ack 回传真实 id。
   // 把本地 session 切到真实 id，刷新列表/标题，否则后续事件/历史会对不上。
   const sid = ack?.data?.sessionId;
@@ -754,13 +788,26 @@ function onEvent(ev, subject) {
 }
 
 function renderApproval(data) {
+  // SECURITY: approval fields come from agent events and embed workspace-
+  // controlled content (command lines, file paths). Build the DOM with
+  // textContent only — never innerHTML — because this page stores the device
+  // NKey seed + refresh token in localStorage and an injected script would
+  // steal the full device identity.
   const box = document.createElement("div"); box.className = "approval";
-  box.innerHTML = `<div class="role">需要审批：${data.tool_name || ""} (${data.risk_level || ""})</div>
-    <div>${data.title || ""} — ${data.summary || ""}</div>`;
+  const role = document.createElement("div"); role.className = "role";
+  role.textContent = `需要审批：${data.tool_name || ""} (${data.risk_level || ""})`;
+  const detail = document.createElement("div");
+  detail.textContent = `${data.title || ""} — ${data.summary || ""}`;
+  box.append(role, detail);
   const approve = document.createElement("button"); approve.textContent = "批准";
   const reject = document.createElement("button"); reject.textContent = "拒绝"; reject.className = "ghost";
   const decide = async (mode) => {
-    await request({ type: "approval_decision", sessionId: session, entryId: data.approval_request_id, mode });
+    try {
+      await request({ type: "approval_decision", sessionId: session, entryId: data.approval_request_id, mode });
+    } catch (e) {
+      line("审批提交失败: " + (e?.message || e), "err");
+      return;
+    }
     box.querySelectorAll("button").forEach(b => b.disabled = true);
     box.appendChild(document.createTextNode("  → " + mode));
   };

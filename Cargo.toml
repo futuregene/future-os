@@ -1,4 +1,9 @@
-# Workspace root for the three Rust binaries (agent / channels / remote).
+# Workspace root for the two Rust binaries (agent / channels).
+#
+# The remote-control bridge is embedded in the GUI Tauri backend
+# (gui/src-tauri/src/remote/) — see gui/DEV_MD/remote-control-*.md. The former
+# standalone `remote/` crate is gone; only `remote/web/` (the verification web
+# client served by the embedded bridge) remains.
 #
 # gui/src-tauri is deliberately NOT a member: the Tauri app builds on its own
 # schedule via npm/tauri tooling, and membership would force it into every
@@ -6,11 +11,11 @@
 # can pull it in either.
 #
 # Versions for dependencies shared by ≥2 members live here, once — bump in
-# one place instead of chasing drift across three Cargo.tomls. Members opt in
+# one place instead of chasing drift across the Cargo.tomls. Members opt in
 # with `{ workspace = true }` and may add features (cargo unifies them).
 [workspace]
-members = ["agent", "channels", "remote"]
-default-members = ["agent", "channels", "remote"]
+members = ["agent", "channels"]
+default-members = ["agent", "channels"]
 exclude = ["gui"]
 resolver = "2"
 

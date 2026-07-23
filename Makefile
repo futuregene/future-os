@@ -173,16 +173,13 @@ build-channels:
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent test-channels test-remote test-cli test-tui test-gui
+test: test-agent test-channels test-cli test-tui test-gui
 
 test-agent:
 	cd agent && cargo test
 
 test-channels:
 	cd channels && cargo test
-
-test-remote:
-	cd remote && cargo test
 
 test-cli:
 	$(call npm-install-if-needed,cli)
@@ -198,16 +195,13 @@ test-gui:
 
 # ─── Lint ───────────────────────────────────────────────────────────────────
 
-lint: lint-agent lint-channels lint-remote lint-tui lint-cli lint-gui stylelint-gui
+lint: lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui
 
 lint-agent:
 	cd agent && cargo fmt --check && cargo clippy
 
 lint-channels:
 	cd channels && cargo fmt --check && cargo clippy
-
-lint-remote:
-	cd remote && cargo fmt --check && cargo clippy
 
 lint-tui:
 	cd tui && npm run gen-version && npx tsc --noEmit

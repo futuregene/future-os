@@ -70,7 +70,22 @@ pub fn clear_creds() -> Result<(), crate::AppError> {
     Ok(())
 }
 
-pub async fn create_pairing() -> Result<(PairingCreds, String), crate::AppError> {
+/// Whether a refresh failure means the server has revoked (or no longer
+/// recognizes) this pairing. Transport, login, and other transient failures
+/// must not be treated as a revocation: keeping the persisted pairing lets a
+/// later retry recover normally. Matched on the server's machine-readable
+/// error code (`invalid_remote_credential`), not the human message.
+pub fn is_invalid_or_revoked_error(error: &crate::AppError) -> bool {
+    matches!(
+        error,
+        crate::AppError::Remote {
+            code: Some(code),
+            ..
+        } if code == "invalid_remote_credential"
+    )
+}
+
+pub async fn create_pairing() -> Result<(PairingCreds, String, Option<i64>), crate::AppError> {
     let key_pair = nkeys::KeyPair::new_user();
     let nkey_seed = key_pair
         .seed()
@@ -94,6 +109,7 @@ pub async fn create_pairing() -> Result<(PairingCreds, String), crate::AppError>
         })?;
     let response: CreatePairCodeResponse = parse_response(response, "create pairing code").await?;
     let jwt_expires_at = jwt_expiry(&response.user_jwt)?;
+    let code_expires_at = pairing_code_expiry(&response.pairing_code);
     let creds = PairingCreds {
         pair_id: response.pair_id,
         desktop_id,
@@ -103,7 +119,18 @@ pub async fn create_pairing() -> Result<(PairingCreds, String), crate::AppError>
         nats_ws_url: response.nats_ws_url,
         jwt_expires_at,
     };
-    Ok((creds, response.pairing_code))
+    Ok((creds, response.pairing_code, code_expires_at))
+}
+
+/// Decode a v2 pairing code's `exp` (unix seconds). Self-contained — the
+/// expiry travels inside the code payload the web client also validates, so
+/// there's a single source of truth. `None` if the code can't be decoded.
+pub fn pairing_code_expiry(code: &str) -> Option<i64> {
+    let bytes = URL_SAFE_NO_PAD.decode(code).ok()?;
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()?
+        .get("exp")
+        .and_then(Value::as_i64)
 }
 
 pub async fn refresh_bridge_jwt(mut creds: PairingCreds) -> Result<PairingCreds, crate::AppError> {
@@ -191,6 +218,13 @@ async fn parse_response<T: serde::de::DeserializeOwned>(
 async fn response_error(response: reqwest::Response, action: &str) -> crate::AppError {
     let status = response.status();
     let body = response.json::<Value>().await.ok();
+    // The platform error body is `{error: <machine code>, message: <human text>}`.
+    let code = body
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|code| !code.trim().is_empty());
     let message = body
         .as_ref()
         .and_then(|value| value.get("message"))
@@ -198,7 +232,11 @@ async fn response_error(response: reqwest::Response, action: &str) -> crate::App
         .filter(|message| !message.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| format!("Failed to {action} (HTTP {})", status.as_u16()));
-    crate::AppError::Message(message)
+    crate::AppError::Remote {
+        status: status.as_u16(),
+        code,
+        message,
+    }
 }
 
 fn jwt_expiry(jwt: &str) -> Result<i64, crate::AppError> {
@@ -212,4 +250,28 @@ fn jwt_expiry(jwt: &str) -> Result<i64, crate::AppError> {
         .ok()
         .and_then(|value| value.get("exp").and_then(Value::as_i64))
         .ok_or_else(|| crate::AppError::Message("Remote JWT is missing its expiry.".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifies_revoked_credential_error() {
+        assert!(is_invalid_or_revoked_error(&crate::AppError::Remote {
+            status: 401,
+            code: Some("invalid_remote_credential".to_string()),
+            message: "Remote credential is invalid or revoked.".to_string(),
+        }));
+        // A human message that merely reads like a revocation must NOT match —
+        // only the machine code is authoritative.
+        assert!(!is_invalid_or_revoked_error(&crate::AppError::Remote {
+            status: 401,
+            code: Some("unauthorized".to_string()),
+            message: "Remote credential is invalid or revoked.".to_string(),
+        }));
+        assert!(!is_invalid_or_revoked_error(&crate::AppError::Message(
+            "Failed to refresh remote credential: timeout".to_string(),
+        )));
+    }
 }

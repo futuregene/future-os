@@ -13,7 +13,17 @@ use std::{
 };
 
 type ReplySlot = Arc<tokio::sync::Mutex<Option<Vec<u8>>>>;
-type ReplySlots = Arc<Mutex<HashMap<String, ReplySlot>>>;
+
+/// Command-id → in-flight/completed response cache (single-flight). Created
+/// once per bridge start and SHARED across command loops: credential refresh
+/// swaps the loop every JWT TTL, and a cache local to the loop would be wiped
+/// on every swap — a client retrying right after a swap would re-execute a
+/// command the old loop had already run (for `prompt`, a duplicated message).
+pub(super) type ReplySlots = Arc<Mutex<HashMap<String, ReplySlot>>>;
+
+pub(super) fn new_reply_slots() -> ReplySlots {
+    Arc::new(Mutex::new(HashMap::new()))
+}
 
 tokio::task_local! {
     static REPLY_CAPTURE: Arc<Mutex<Option<Vec<u8>>>>;
@@ -34,6 +44,9 @@ struct IncomingCmd {
     // get_events_since (P1c backfill)
     run_id: String,
     since_idx: i64,
+    // get_messages pagination (NATS payload-limit guard)
+    offset: i64,
+    limit: i64,
     // set_model / set_thinking_level
     model_id: String,
     level: String,
@@ -52,6 +65,8 @@ impl Default for IncomingCmd {
             mode: String::new(),
             run_id: String::new(),
             since_idx: -1,
+            offset: 0,
+            limit: 0,
             model_id: String::new(),
             level: String::new(),
             name: String::new(),
@@ -59,7 +74,11 @@ impl Default for IncomingCmd {
     }
 }
 
-pub(super) async fn command_loop(client: async_nats::Client, pair_id: String) {
+pub(super) async fn command_loop(
+    client: async_nats::Client,
+    pair_id: String,
+    reply_slots: ReplySlots,
+) {
     let subject = format!("p.{pair_id}.cmd.>");
     let queue = format!("bridge.{pair_id}");
     let mut sub = match client.queue_subscribe(subject.clone(), queue).await {
@@ -69,7 +88,6 @@ pub(super) async fn command_loop(client: async_nats::Client, pair_id: String) {
             return;
         }
     };
-    let reply_slots: ReplySlots = Arc::new(Mutex::new(HashMap::new()));
     eprintln!("remote: subscribed to commands {subject}");
     while let Some(msg) = sub.next().await {
         let client = client.clone();
@@ -180,33 +198,57 @@ async fn handle_command(client: &async_nats::Client, msg: async_nats::Message) {
             // The GUI store only has message rows for GUI-native threads —
             // TUI/CLI sessions imported as thread stubs would show empty history.
             // Fall back to the store when the agent is unreachable.
-            match crate::agent_bridge::get_session_messages(cmd.session_id.clone()).await {
-                Ok(data) => reply(client, &msg, true, data, None).await,
-                Err(agent_err) => {
-                    let fallback = (|| -> Result<Value, crate::AppError> {
-                        match crate::store::find_thread_by_agent_session(&cmd.session_id)? {
-                            Some(thread) => {
-                                let messages = crate::store::list_messages(&thread.id)?;
-                                Ok(json!({ "messages": messages }))
+            //
+            // The whole history is fetched locally (gRPC/store have no payload
+            // limit) then paged here, because NATS rejects any single reply over
+            // the 1MB user-JWT payload cap — a long session's full history would
+            // otherwise fail silently (client times out with no response).
+            let offset = cmd.offset.max(0) as usize;
+            let limit = if cmd.limit > 0 {
+                cmd.limit as usize
+            } else {
+                DEFAULT_MESSAGE_PAGE_LIMIT
+            };
+            let messages =
+                match crate::agent_bridge::get_session_messages(cmd.session_id.clone()).await {
+                    Ok(data) => messages_vec(data),
+                    Err(agent_err) => {
+                        let fallback = (|| -> Result<Vec<Value>, crate::AppError> {
+                            match crate::store::find_thread_by_agent_session(&cmd.session_id)? {
+                                Some(thread) => {
+                                    let rows = crate::store::list_messages(&thread.id)?;
+                                    Ok(serde_json::to_value(&rows)
+                                        .ok()
+                                        .and_then(|value| value.as_array().cloned())
+                                        .unwrap_or_default())
+                                }
+                                None => Ok(Vec::new()),
                             }
-                            None => Ok(json!({ "messages": [] })),
-                        }
-                    })();
-                    match fallback {
-                        Ok(data) => reply(client, &msg, true, data, None).await,
-                        Err(e) => {
-                            reply(
-                                client,
-                                &msg,
-                                false,
-                                Value::Null,
-                                Some(&format!("{agent_err}; store fallback also failed: {e}")),
-                            )
-                            .await;
+                        })();
+                        match fallback {
+                            Ok(messages) => messages,
+                            Err(e) => {
+                                reply(
+                                    client,
+                                    &msg,
+                                    false,
+                                    Value::Null,
+                                    Some(&format!("{agent_err}; store fallback also failed: {e}")),
+                                )
+                                .await;
+                                return;
+                            }
                         }
                     }
-                }
-            }
+                };
+            reply(
+                client,
+                &msg,
+                true,
+                paginate_messages(messages, offset, limit),
+                None,
+            )
+            .await;
         }
         "get_events_since" => {
             // P1c: replay buffered events for the current in-progress run, so late-joining clients can catch up on missed prefix events.
@@ -391,6 +433,25 @@ async fn prepare_remote_prompt(
             thread
         }
     };
+    // Reject a prompt for a session that is already running BEFORE persisting
+    // anything (matches GUI semantics: no steer/follow-up/queue). The agent
+    // refuses a concurrent prompt too, but only after the ack — checking here
+    // keeps a busy session from accumulating a phantom user message, a failed
+    // run, and a fake "Future Agent error" assistant reply. Residual race: two
+    // clients prompting the same idle session within milliseconds can both pass
+    // this check; the agent's is_streaming refusal stays as the backstop.
+    let resolved_session_id = thread
+        .agent_session_id
+        .clone()
+        .unwrap_or_else(|| thread.id.clone());
+    if crate::store::active_run_sessions()?
+        .iter()
+        .any(|active| active == &resolved_session_id)
+    {
+        return Err(crate::AppError::Message(
+            "This session is still running; wait for it to finish or abort it first.".to_string(),
+        ));
+    }
     let prepared =
         crate::agent_bridge::prepare_prompt_persisted(&thread, message, model_id, thinking_level)?;
     // Notify frontend: new thread/run appeared (trigger list refresh).
@@ -413,6 +474,120 @@ fn derive_thread_title(content: &str) -> String {
     } else {
         compact.to_string()
     }
+}
+
+/// Reply budget for a `get_messages` page: comfortably under NATS's 1MB
+/// user-JWT payload limit, leaving headroom for the reply envelope.
+const MESSAGES_PAGE_BYTES: usize = 512 * 1024;
+/// A single persisted message can embed a huge tool result; cap its content so
+/// one oversized message can't push a page past the payload limit on its own.
+const MESSAGE_CONTENT_CAP_BYTES: usize = 256 * 1024;
+/// Default page size when the client doesn't ask for one.
+const DEFAULT_MESSAGE_PAGE_LIMIT: usize = 100;
+
+/// Extract the `messages` array from an agent `get_messages` reply.
+fn messages_vec(data: Value) -> Vec<Value> {
+    data.get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Page a full message list into a reply that fits the NATS payload cap.
+///
+/// Each message is content-capped first (so no single message is huge), then
+/// messages are accumulated from `offset` until the serialized page would
+/// exceed [`MESSAGES_PAGE_BYTES`] or `limit` is reached (always at least one
+/// message — it's already capped). Returns the page plus cursor fields the
+/// client uses to fetch the remainder.
+fn paginate_messages(mut messages: Vec<Value>, offset: usize, limit: usize) -> Value {
+    for message in messages.iter_mut() {
+        truncate_message_content(message, MESSAGE_CONTENT_CAP_BYTES);
+    }
+    let total = messages.len();
+    let start = offset.min(total);
+    let mut end = start;
+    let mut bytes = 0usize;
+    for (index, message) in messages.iter().skip(start).enumerate() {
+        let size = serde_json::to_vec(message)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        if index > 0 && (index >= limit || bytes + size > MESSAGES_PAGE_BYTES) {
+            break;
+        }
+        bytes += size;
+        end += 1;
+    }
+    let page: Vec<Value> = messages.drain(start..end).collect();
+    json!({
+        "messages": page,
+        "offset": start,
+        "nextOffset": end,
+        "total": total,
+        "hasMore": end < total,
+    })
+}
+
+/// Cap the serialized size of a single message by truncating its `content`
+/// (a string or an array of `{type:"text", text}` blocks). Non-text blocks
+/// (tool_use etc.) are left intact so the shape stays renderable.
+fn truncate_message_content(message: &mut Value, cap: usize) {
+    let oversized = serde_json::to_vec(message)
+        .map(|bytes| bytes.len() > cap)
+        .unwrap_or(false);
+    if !oversized {
+        return;
+    }
+    let Some(content) = message.get_mut("content") else {
+        return;
+    };
+    match content {
+        Value::String(text) => {
+            let (end, truncated) = byte_cut(text, cap);
+            if truncated {
+                let mut cut = text[..end].to_string();
+                cut.push_str("\n\n[…内容过长，远程端已截断，完整内容见本机会话…]");
+                *text = cut;
+            }
+        }
+        Value::Array(blocks) => {
+            let mut remaining = cap;
+            for block in blocks.iter_mut() {
+                if remaining == 0 {
+                    break;
+                }
+                let is_text = block.get("type").and_then(Value::as_str) == Some("text");
+                if !is_text {
+                    continue;
+                }
+                if let Some(Value::String(text)) = block.get_mut("text") {
+                    let (end, truncated) = byte_cut(text, remaining);
+                    if truncated {
+                        let mut cut = text[..end].to_string();
+                        cut.push('…');
+                        *text = cut;
+                        remaining = 0;
+                    } else {
+                        remaining = remaining.saturating_sub(text.len());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Return a byte index at a char boundary, not exceeding `max_bytes`, and
+/// whether the string had to be cut.
+fn byte_cut(text: &str, max_bytes: usize) -> (usize, bool) {
+    if text.len() <= max_bytes {
+        return (text.len(), false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (end, true)
 }
 
 /// Send a unified request-reply response (in `RpcResponse` shape), and flush to ensure timely delivery.
@@ -450,4 +625,117 @@ async fn publish_reply_payload(
     };
     let _ = client.publish(reply_subject, payload.into()).await;
     let _ = client.flush().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text_message(text: &str) -> Value {
+        json!({ "role": "assistant", "content": text })
+    }
+
+    #[test]
+    fn paginate_small_list_is_one_page() {
+        let messages = vec![text_message("a"), text_message("b"), text_message("c")];
+        let page = paginate_messages(messages, 0, 100);
+        assert_eq!(page["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(page["offset"], 0);
+        assert_eq!(page["nextOffset"], 3);
+        assert_eq!(page["total"], 3);
+        assert_eq!(page["hasMore"], false);
+    }
+
+    #[test]
+    fn paginate_respects_limit_and_cursors() {
+        let messages = vec![text_message("a"), text_message("b"), text_message("c")];
+        let first = paginate_messages(messages.clone(), 0, 2);
+        assert_eq!(first["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(first["nextOffset"], 2);
+        assert_eq!(first["hasMore"], true);
+        let second = paginate_messages(messages, 2, 2);
+        assert_eq!(second["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(second["nextOffset"], 3);
+        assert_eq!(second["hasMore"], false);
+    }
+
+    #[test]
+    fn paginate_bounds_by_byte_budget() {
+        // ~100KB messages; a 512KB budget fits ~5 of them, forcing a second page.
+        let big = "x".repeat(100 * 1024);
+        let messages: Vec<Value> = (0..6).map(|_| text_message(&big)).collect();
+        let page = paginate_messages(messages, 0, 100);
+        let arr = page["messages"].as_array().unwrap();
+        assert!(
+            arr.len() < 6,
+            "expected byte budget to cap the page, got {}",
+            arr.len()
+        );
+        assert_eq!(page["hasMore"], true);
+        // The page itself stays comfortably under the 1MB NATS payload cap.
+        let size = serde_json::to_vec(&page).map(|b| b.len()).unwrap();
+        assert!(size < 1024 * 1024, "page too large: {size}");
+    }
+
+    #[test]
+    fn paginate_caps_and_includes_oversized_message() {
+        // A message larger than the page budget is content-capped (cap < budget)
+        // so it fits, and the page never exceeds the payload cap.
+        let huge = "y".repeat(MESSAGES_PAGE_BYTES + 1024);
+        let messages = vec![text_message(&huge), text_message("small")];
+        let page = paginate_messages(messages, 0, 100);
+        let arr = page["messages"].as_array().unwrap();
+        assert!(!arr.is_empty());
+        // The oversized message's content was truncated to the cap.
+        let content = arr[0]["content"].as_str().unwrap();
+        assert!(content.len() <= MESSAGE_CONTENT_CAP_BYTES + 128);
+        let size = serde_json::to_vec(&page).map(|b| b.len()).unwrap();
+        assert!(size < 1024 * 1024, "page too large: {size}");
+    }
+
+    #[test]
+    fn truncate_caps_string_content() {
+        let mut message = text_message(&"z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2));
+        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
+        let content = message["content"].as_str().unwrap();
+        assert!(content.len() <= MESSAGE_CONTENT_CAP_BYTES + 128);
+        assert!(content.contains("截断"));
+    }
+
+    #[test]
+    fn truncate_caps_text_blocks_and_keeps_others() {
+        let mut message = json!({
+            "role": "assistant",
+            "content": [
+                { "type": "text", "text": "a".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
+                { "type": "tool_use", "id": "t1", "name": "shell" },
+            ]
+        });
+        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
+        let blocks = message["content"].as_array().unwrap();
+        // Tool block untouched.
+        assert_eq!(blocks[1]["type"], "tool_use");
+        assert_eq!(blocks[1]["name"], "shell");
+        // Text block truncated.
+        let text = blocks[0]["text"].as_str().unwrap();
+        assert!(text.len() <= MESSAGE_CONTENT_CAP_BYTES + 8);
+    }
+
+    #[test]
+    fn truncate_leaves_small_messages_alone() {
+        let mut message = text_message("small");
+        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
+        assert_eq!(message["content"], "small");
+    }
+
+    #[test]
+    fn byte_cut_is_char_boundary_safe() {
+        let s = "中文内容"; // multi-byte chars
+        let (end, truncated) = byte_cut(s, 4);
+        assert!(s.is_char_boundary(end));
+        assert!(truncated);
+        let (end, truncated) = byte_cut(s, 1024);
+        assert_eq!(end, s.len());
+        assert!(!truncated);
+    }
 }

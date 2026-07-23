@@ -1106,7 +1106,10 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         // The owning session's decision goes through and is delivered.
         assert!(gate.decide("req1", "sessA", decision).is_ok());
         assert!(!gate.pending.lock().contains_key("req1"));
-        assert_eq!(rx.try_recv().unwrap().status, ApprovalDecisionStatus::Approved);
+        assert_eq!(
+            rx.try_recv().unwrap().status,
+            ApprovalDecisionStatus::Approved
+        );
     }
 
     #[test]

@@ -6,8 +6,6 @@ export type ApprovalTier = "off" | "manual" | "sandbox";
 export interface AppSettings {
   approvalTier: ApprovalTier;
   hiddenModels: string[];
-  /** Remote control: pairing id (isolation unit / subject prefix). */
-  remotePairId: string;
   /** Show the model's thinking/reasoning content in the chat. On by default. */
   showThinking: boolean;
   /**
@@ -21,7 +19,6 @@ export interface AppSettings {
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   approvalTier: "off",
   hiddenModels: [],
-  remotePairId: "",
   showThinking: true,
   autoUpgradeSkills: false,
 };
@@ -33,7 +30,6 @@ export async function getAppSettings() {
 export async function updateAppSettings(input: {
   approvalTier?: ApprovalTier;
   hiddenModels?: string[];
-  remotePairId?: string;
   showThinking?: boolean;
   autoUpgradeSkills?: boolean;
 }) {

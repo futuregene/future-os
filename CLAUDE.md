@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Rust (agent, channel, remote) + TypeScript (TUI, CLI) + Tauri/React GUI. The Rust agent is the backend; the TS TUI provides the terminal interface. The TS CLI (`future`) handles auth, one-shot prompts (`run`), MCP tool calls, skills management, environment diagnostics (`doctor`), and account management. The GUI module (`gui/`) is a desktop app that connects to the agent over gRPC via its Tauri backend. The channel binary bridges external messaging platforms (Feishu, DingTalk) to the agent via gRPC. The remote binary (`remote/`) is a NATS bridge for desktop-to-agent relay.
+Rust (agent, channel) + TypeScript (TUI, CLI) + Tauri/React GUI. The Rust agent is the backend; the TS TUI provides the terminal interface. The TS CLI (`future`) handles auth, one-shot prompts (`run`), MCP tool calls, skills management, environment diagnostics (`doctor`), and account management. The GUI module (`gui/`) is a desktop app that connects to the agent over gRPC via its Tauri backend. The channel binary bridges external messaging platforms (Feishu, DingTalk) to the agent via gRPC. The remote-control bridge is embedded in the GUI Tauri backend (`gui/src-tauri/src/remote/`) and relays desktop↔agent over NATS; `remote/web/` is the verification web client it serves (design: `gui/DEV_MD/remote-control-*.md`).
 
 After `make install`, five independent binaries are available: `future-agent`, `future-channel`, `future-tui`, `future-gui`, `future`. Start components directly (e.g. `future-agent`) rather than through the CLI.
 
@@ -119,8 +119,7 @@ Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from s
 
 Provider model: `LLMProvider` trait (`stream_chat`). Uses OpenAI-compatible HTTP+SSE. Thinking/reasoning extraction via compat format parameters (deepseek, openrouter, zai, qwen).
 
-Additional Rust crates:
-- `remote/` — NATS bridge: subscribes to `p.{pairId}.cmd.>` → forwards to agent gRPC → publishes responses. Pumps agent SSE events to NATS `p.{pairId}.evt.{session}` subjects.
+The remote-control bridge is embedded in the GUI Tauri backend (`gui/src-tauri/src/remote/`), not a separate crate: it subscribes to `p.{pairId}.cmd.>` → routes commands through the GUI persistence/agent path → publishes responses, and mirrors agent events to NATS `p.{pairId}.evt.{session}`. `remote/web/` holds the verification web client it serves over a local HTTP server. See `gui/DEV_MD/remote-control-*.md`. (The former standalone `remote/` Rust crate was removed — it was an auth-less L0 skeleton superseded by the embedded bridge.)
 
 API key resolution order: `auth.json` (by model ID) → `auth.json` (by provider) → model built-in key → `auth.json` default key.
 

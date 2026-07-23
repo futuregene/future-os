@@ -7,7 +7,12 @@ export interface RemoteStatus {
   pairId: string;
   /** One-shot pairing code (base64url) returned only by a successful start. */
   pairingCode: string | null;
+  /** Unix-seconds expiry of pairingCode (for the countdown); null when no code. */
+  pairingCodeExpiresAt: number | null;
+  /** Web client URL for this machine (localhost); null if the web server failed to bind. */
   webUrl: string | null;
+  /** Web client URL a phone on the same LAN can reach; null if unavailable. */
+  webLanUrl: string | null;
   error: string | null;
 }
 

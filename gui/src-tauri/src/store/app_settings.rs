@@ -14,8 +14,6 @@ pub struct AppSettings {
     pub approval_tier: String,
     /// Model identifiers (`provider/id`) hidden from the model picker.
     pub hidden_models: Vec<String>,
-    /// Remote control: pairing id (isolation unit / subject prefix).
-    pub remote_pair_id: String,
     /// Show the model's thinking/reasoning content in the chat. On by default.
     pub show_thinking: bool,
     /// Silently upgrade installed skills to their latest catalogue version on
@@ -28,14 +26,12 @@ pub struct AppSettings {
 pub struct UpdateAppSettingsInput {
     pub approval_tier: Option<String>,
     pub hidden_models: Option<Vec<String>>,
-    pub remote_pair_id: Option<String>,
     pub show_thinking: Option<bool>,
     pub auto_upgrade_skills: Option<bool>,
 }
 
 const KEY_APPROVAL_TIER: &str = "approval_tier";
 const KEY_HIDDEN_MODELS: &str = "hidden_models";
-const KEY_REMOTE_PAIR_ID: &str = "remote_pair_id";
 const KEY_SHOW_THINKING: &str = "show_thinking";
 const KEY_AUTO_UPGRADE_SKILLS: &str = "auto_upgrade_skills";
 /// One-shot marker: the GUI has run the built-in skill bootstrap once. Set only
@@ -59,9 +55,6 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
     if let Some(hidden_models) = input.hidden_models {
         let json = serde_json::to_string(&hidden_models)?;
         write_value(&tx, KEY_HIDDEN_MODELS, &json, now)?;
-    }
-    if let Some(remote_pair_id) = input.remote_pair_id {
-        write_value(&tx, KEY_REMOTE_PAIR_ID, &remote_pair_id, now)?;
     }
     if let Some(show_thinking) = input.show_thinking {
         write_value(
@@ -106,9 +99,6 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let hidden_models = read_value(conn, KEY_HIDDEN_MODELS)?
         .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
         .unwrap_or_default();
-    let remote_pair_id = read_value(conn, KEY_REMOTE_PAIR_ID)?
-        .filter(|value| !value.is_empty())
-        .unwrap_or_default();
     let show_thinking = read_value(conn, KEY_SHOW_THINKING)?
         .map(|value| value == "true")
         .unwrap_or(true);
@@ -118,7 +108,6 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     Ok(AppSettings {
         approval_tier,
         hidden_models,
-        remote_pair_id,
         show_thinking,
         auto_upgrade_skills,
     })
