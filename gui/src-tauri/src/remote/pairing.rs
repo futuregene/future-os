@@ -40,7 +40,7 @@ pub struct PairingCode {
     pub v: u8,
     pub pair_id: String,
     pub token: String,
-    /// WebSocket URL the web client connects to (e.g. ws://test.future-os.cn:8080).
+    /// WebSocket URL the web client connects to (e.g. ws://test.future-os.cn:9090).
     pub ws_url: String,
     /// Unix seconds; the code's display/admission window (the token itself is long-lived).
     pub exp: u64,
@@ -219,11 +219,11 @@ mod tests {
 
     #[test]
     fn pairing_code_roundtrip_and_expiry() {
-        let code = encode_pairing_code("pair_abc", "tok", "ws://h:8080");
+        let code = encode_pairing_code("pair_abc", "tok", "ws://h:9090");
         let dec = decode_pairing_code(&code).unwrap();
         assert_eq!(dec.pair_id, "pair_abc");
         assert_eq!(dec.token, "tok");
-        assert_eq!(dec.ws_url, "ws://h:8080");
+        assert_eq!(dec.ws_url, "ws://h:9090");
         assert!(decode_pairing_code("not!valid").is_none());
     }
 

@@ -150,14 +150,14 @@ for await (const e of kv_pairs.watch(pairId)) updateSessionList(e);  // 每 sess
 ## 8. 立即可测（L0，本周端到端）
 ```bash
 # 起 NATS（JetStream + WebSocket，无鉴权）；websocket 与 jetstream 在 nats.conf 开启
-docker run -p 4222:4222 -p 8080:8080 -v $PWD/nats.conf:/nats.conf nats -js -c /nats.conf
+docker run -p 4222:4222 -p 9090:9090 -v $PWD/nats.conf:/nats.conf nats -js -c /nats.conf
 
 # 联调期先手动建一个 pair 的事件流（正式期由签发服务建）
 nats stream add EVT_DEVPAIR --subjects 'p.DEVPAIR.evt.>' \
   --max-age 30m --max-bytes 64MB --max-msg-size 1MB --dupe-window 10m --discard old --storage file
 
 # 桌面: Bridge(async-nats) 连 nats://localhost:4222，桥接本地 agent:50051，pairId=DEVPAIR
-# 网页: nats.ws 连 ws://<host>:8080，request p.DEVPAIR.cmd.{session} / 消费 EVT_DEVPAIR
+# 网页: nats.ws 连 ws://<host>:9090，request p.DEVPAIR.cmd.{session} / 消费 EVT_DEVPAIR
 ```
 → 无需等中枢正式部署、无需鉴权即可验证通路。配对/签发/推送后续叠加。
 

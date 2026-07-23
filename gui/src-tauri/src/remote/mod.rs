@@ -97,10 +97,10 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
 
     // NATS addresses are derived from the current platform host (environment
     // switch — test / production), not typed by the user. Protocol + ports follow
-    // the dev conventions: client bridge → nats://:4222, web client → ws://:8080.
+    // the dev conventions: client bridge → nats://:4222, web client → ws://:9090.
     let host = platform_host();
     let bridge_url = format!("nats://{host}:4222");
-    let ws_url = format!("ws://{host}:8080");
+    let ws_url = format!("ws://{host}:9090");
 
     let _start_guard = START_LOCK.lock().await;
 

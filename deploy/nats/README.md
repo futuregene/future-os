@@ -25,7 +25,7 @@ nats server check jetstream        # defaults to nats://localhost:4222
 
 ## Simple-pairing access token (Phase 1)
 `nats.conf` enables a **shared access token** (`devpairingtoken` by default) on both
-the client port (4222) and the WebSocket (8080). This is the Phase 1 *simple
+the client port (4222) and the WebSocket (9090). This is the Phase 1 *simple
 pairing* admission gate: the desktop (paired mode) and web clients must present it
 to connect. The random `pairId` partitions subjects; the token gates admission.
 

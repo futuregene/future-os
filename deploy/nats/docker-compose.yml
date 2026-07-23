@@ -6,7 +6,7 @@ services:
     command: ["-c", "/etc/nats/nats.conf"]
     ports:
       - "4222:4222"   # NATS client port (Bridge / async-nats)
-      - "8080:8080"   # WebSocket (browser / nats.ws)
+      - "9090:9090"   # WebSocket (browser / nats.ws)
       - "8222:8222"   # Monitoring HTTP (optional)
     volumes:
       - ./nats.conf:/etc/nats/nats.conf:ro

@@ -39,11 +39,11 @@
     - Web 端：chat header 显示模型下拉 + 思考等级下拉（off/low/medium/high）+ 重命名按钮；切换会话时从 `get_state` 拉当前值填充；重命名同步更新列表标题。
 
 - **Phase 1 简单配对 + 审批归属（已完成，落地见 [auth §8/§9](remote-control-auth.md)）**：
-  - **单一 paired 模式（dev / 无鉴权直连已移除）**：`RemoteStartInput { access_token(必需), pair_id?(覆盖), device_id? }`。NATS 地址不再手填——bridge `nats://host:4222` 和 web `ws://host:8080` 从 `current_platform_url()`（环境切换逻辑）取 host 派生,协议端口固定。**pairId 解析** = 显式覆盖 > 已持久化配对的 pairId > 随机生成——已配对桌面重启**复用**同一 pairId（配对码稳定），首次才随机；deviceId 同理复用。
+  - **单一 paired 模式（dev / 无鉴权直连已移除）**：`RemoteStartInput { access_token(必需), pair_id?(覆盖), device_id? }`。NATS 地址不再手填——bridge `nats://host:4222` 和 web `ws://host:9090` 从 `current_platform_url()`（环境切换逻辑）取 host 派生,协议端口固定。**pairId 解析** = 显式覆盖 > 已持久化配对的 pairId > 随机生成——已配对桌面重启**复用**同一 pairId（配对码稳定），首次才随机；deviceId 同理复用。
   - **简单配对凭证** `remote/pairing.rs`：复用或随机的 pairId + 共享 NATS 接入 token + 每设备 deviceId，凭证落 `~/.future/remote_pairing.json`（0600）；配对码 = base64url JSON（10min 窗口，含 `wsUrl` + `pairId` + `token`——web 粘码即得全部连接信息,无需手填任何输入）。base64url 编解码无依赖；Rust 解码仅 `cfg(test)`（客户端在 JS 解码，浏览器无 Tauri 桥）。
   - **GUI 配对 UI**：Remote 页只保留接入 token 输入 + pairId 可选覆盖 +「配对并启动」+ 配对码显示/复制 + 已配对/解绑（`remote_pairing_status` / `remote_unpair` 命令）。URL 框已移除（地址内置派生）。
   - **Web 配对**：只保留配对码粘贴框,粘码即得 `{wsUrl, pairId, token}`；connect 带 token + `inboxPrefix = p.{pairId}.rep.{deviceId}` —— **回复 inbox 已收敛**到 pair 命名空间,不再用默认 `_INBOX.>`。URL 框已移除（ws 地址由配对码提供）。
-  - **NATS dev token auth**：`deploy/nats/nats.conf` 启用共享接入 token（client 4222 + websocket 8080 同值），README 同步。conf 保留 no-auth 注释替代方案（仅 NATS 层；**GUI/web 已不支持 no-auth 连接**——dev 模式已移除）。
+  - **NATS dev token auth**：`deploy/nats/nats.conf` 启用共享接入 token（client 4222 + websocket 9090 同值），README 同步。conf 保留 no-auth 注释替代方案（仅 NATS 层；**GUI/web 已不支持 no-auth 连接**——dev 模式已移除）。
   - **审批 session 归属校验**（agent crate）：`ApprovalGate::decide` 加 `session_id` 参数，与 `PendingApproval.session_id` 比对，跨 session 拒绝（auth I1 例外，防 `entry_id` 泄漏越权批准）；2 个单测。
   - **publish fire-and-forget**：`publish_event` 原先 `await` JetStream ack（与自身注释矛盾；无匹配流时会阻塞 agent 事件循环）改为 `tokio::spawn` 发包。故 Phase 1 **无需为每 pair 建流**——实时走 core pub/sub，重连/中途加入走 `get_events_since`（agent 侧 buffer，与 NATS 流无关）。
   - **JetStream consumer 升级（原计划 1.8）延后**：流 provision + web `deliver=all` consumer 回放推到简单配对之后；当前 core sub + backfill 已覆盖重连/中途加入。
@@ -55,7 +55,7 @@
 - **弱网/重连健壮**：中途加入某轮补齐前缀；断线重连自动重放；同一事件多次到达按 `(runId,idx)` 去重。
 
 ## 边界 / 未做
-- **简单配对接入控制**（L0，无服务端 subject 强制）：仅本地/受控网络，**禁公网**。GUI 后端连 `nats://…:4222`（客户端口）；网页连 `ws://…:8080`。无 dev/无鉴权直连路径（已移除）。
+- **简单配对接入控制**（L0，无服务端 subject 强制）：仅本地/受控网络，**禁公网**。GUI 后端连 `nats://…:4222`（客户端口）；网页连 `ws://…:9090`。无 dev/无鉴权直连路径（已移除）。
 - **run 边界仅对 prompt 精确（P1 review C2，已知，暂缓）**：`start_run` 只在初始 `prompt` 调；流式中 `steer`/`follow_up` 复用同一 `run_id`（会多发一个 `agent_start`），手机端会把追加回答并进同一气泡。当前手机/网页只发 `prompt`，不受影响；真手机 App 阶段再改 run 模型。
 - **agent_start 非严格 idx 0（review M3）**：客户端以 `runId` 变化判新轮，不依赖 idx 0，故无实际影响。
 - **超长轮（>20000 事件）回放丢前缀**：`truncated` 已提示，不静默；必要时再调大或按时长裁剪。
