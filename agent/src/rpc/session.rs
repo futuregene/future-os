@@ -377,6 +377,19 @@ impl ServerSession {
 
             loop_.provider = std::sync::Arc::new(client);
         }
+
+        // Persist model change to session JSONL so it survives restarts
+        if let Ok(mut s) = self.session_manager.load(&self.session_id) {
+            if let Some(info_entry) = s.entries.iter_mut().find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO) {
+                if let Some(ref mut content) = info_entry.content {
+                    if let Some(obj) = content.as_object_mut() {
+                        obj.insert("model".to_string(), serde_json::Value::String(self.model.clone()));
+                    }
+                }
+                let _ = self.session_manager.save(&s);
+            }
+        }
+
         Ok(())
     }
 
@@ -440,6 +453,18 @@ impl ServerSession {
         if let Ok(mut loop_) = self.agent_loop.try_write() {
             loop_.config.thinking_budget = budget;
             loop_.provider.update_thinking(level, budget);
+        }
+
+        // Persist thinking level change to session JSONL so it survives restarts
+        if let Ok(mut s) = self.session_manager.load(&self.session_id) {
+            if let Some(info_entry) = s.entries.iter_mut().find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO) {
+                if let Some(ref mut content) = info_entry.content {
+                    if let Some(obj) = content.as_object_mut() {
+                        obj.insert("thinking_level".to_string(), serde_json::Value::String(self.thinking_level.clone()));
+                    }
+                }
+                let _ = self.session_manager.save(&s);
+            }
         }
     }
 

@@ -1,4 +1,4 @@
-//! Session management — 1:1 compatible with Go internal/session/
+﻿//! Session management — 1:1 compatible with Go internal/session/
 
 use crate::types::{Message, ToolCall};
 use crate::utils::{default_session_dir, generate_entry_id, generate_id};
@@ -21,27 +21,12 @@ pub const ENTRY_TYPE_MODEL_CHANGE: &str = "model_change";
 pub const ENTRY_TYPE_LABEL: &str = "label";
 pub const ENTRY_TYPE_SESSION_INFO: &str = "session_info";
 pub const ENTRY_TYPE_THINKING_LEVEL_CHANGE: &str = "thinking_level_change";
-pub const ENTRY_TYPE_BRANCH_SUMMARY: &str = "branch_summary";
 pub const ENTRY_TYPE_CUSTOM: &str = "custom";
 pub const ENTRY_TYPE_CUSTOM_MESSAGE: &str = "custom_message";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BranchSummaryMeta {
-    #[serde(rename = "from_id", skip_serializing_if = "Option::is_none")]
-    pub from_id: Option<String>,
-    #[serde(rename = "from_hook", skip_serializing_if = "Option::is_none")]
-    pub from_hook: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
     pub id: String,
-    #[serde(
-        rename = "parent_id",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub parent_id: String,
     #[serde(rename = "type")]
     pub entry_type: String,
     #[serde(rename = "role", default, skip_serializing_if = "String::is_empty")]
@@ -55,40 +40,6 @@ pub struct SessionEntry {
         default = "default_timestamp"
     )]
     pub timestamp: DateTime<Local>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub model: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub label: String,
-    #[serde(
-        rename = "thinking_level",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub thinking_level: String,
-    #[serde(
-        rename = "branch_summary",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub branch_summary: Option<BranchSummaryMeta>,
-    #[serde(
-        rename = "custom_type",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub custom_type: String,
-    #[serde(
-        rename = "custom_data",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub custom_data: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub display: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub provider: String,
     #[serde(
         rename = "tool_call_id",
         default,
@@ -101,15 +52,6 @@ pub struct SessionEntry {
     pub tool_args: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub thinking: String,
-    /// Output (completion) tokens for the reply this entry belongs to. Only the
-    /// final assistant entry of a run carries a non-zero value; used by the GUI
-    /// to show per-reply token counts when reloading history from JSONL.
-    #[serde(rename = "output_tokens", default, skip_serializing_if = "is_zero_i64")]
-    pub output_tokens: i64,
-    /// Wall-clock duration of the run this entry belongs to, in milliseconds.
-    /// Set alongside `output_tokens` on the final assistant entry of a run.
-    #[serde(rename = "duration_ms", default, skip_serializing_if = "is_zero_i64")]
-    pub duration_ms: i64,
     /// Structured per-entry metadata (not model-visible). For user entries this
     /// carries `{ "attachments": [{ path, kind, name }] }` — the files the user
     /// attached, referenced by original absolute path (never copied). Populated
@@ -161,35 +103,19 @@ fn default_timestamp() -> DateTime<Local> {
     chrono::Local::now()
 }
 
-fn is_zero_i64(v: &i64) -> bool {
-    *v == 0
-}
-
 impl SessionEntry {
     pub fn new_user(role: &str, content: serde_json::Value) -> Self {
         Self {
             id: generate_entry_id(),
-            parent_id: String::new(),
             entry_type: ENTRY_TYPE_USER.to_string(),
             role: role.to_string(),
             content: Some(content),
             tool_calls: vec![],
             timestamp: Local::now(),
-            summary: String::new(),
-            model: String::new(),
-            label: String::new(),
-            thinking_level: String::new(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         }
     }
@@ -197,27 +123,15 @@ impl SessionEntry {
     pub fn new_assistant(content: serde_json::Value, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             id: generate_entry_id(),
-            parent_id: String::new(),
             entry_type: ENTRY_TYPE_ASSISTANT.to_string(),
             role: "assistant".to_string(),
             content: Some(content),
             tool_calls,
             timestamp: Local::now(),
-            summary: String::new(),
-            model: String::new(),
-            label: String::new(),
-            thinking_level: String::new(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         }
     }
@@ -225,27 +139,15 @@ impl SessionEntry {
     pub fn new_tool(call_id: &str, content: &str) -> Self {
         Self {
             id: generate_entry_id(),
-            parent_id: String::new(),
             entry_type: ENTRY_TYPE_TOOL.to_string(),
             role: "tool".to_string(),
             content: Some(serde_json::json!(content)),
             tool_calls: vec![],
             timestamp: Local::now(),
-            summary: String::new(),
-            model: String::new(),
-            label: String::new(),
-            thinking_level: String::new(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: call_id.to_string(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         }
     }
@@ -253,30 +155,18 @@ impl SessionEntry {
     /// Build the `session_info` metadata entry prepended to every saved session.
     /// `content` holds the token/cost/name JSON snapshot; `model`/`thinking_level`
     /// pin the session's active settings. All other fields take entry defaults.
-    pub fn session_info(content: serde_json::Value, model: String, thinking_level: String) -> Self {
+    pub fn session_info(content: serde_json::Value, _model: String, _thinking_level: String) -> Self {
         Self {
             id: generate_entry_id(),
-            parent_id: String::new(),
             entry_type: ENTRY_TYPE_SESSION_INFO.to_string(),
             role: ENTRY_TYPE_SYSTEM.to_string(),
             content: Some(content),
             tool_calls: vec![],
             timestamp: Local::now(),
-            summary: String::new(),
-            model,
-            label: String::new(),
-            thinking_level,
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         }
     }
@@ -576,7 +466,7 @@ impl Manager {
             .iter()
             .map(|tc| (tc.id.clone(), tc.function.name.clone()))
             .collect();
-        let parent_id = entries[last_idx].id.clone();
+        let _parent_id = entries[last_idx].id.clone();
         let now = chrono::Local::now();
         for (tc_id, tc_name) in &tool_calls {
             let placeholder = format!(
@@ -585,27 +475,15 @@ impl Manager {
             );
             entries.push(SessionEntry {
                 id: crate::utils::generate_id(),
-                parent_id: parent_id.clone(),
                 entry_type: ENTRY_TYPE_TOOL.to_string(),
                 role: "tool".to_string(),
                 content: Some(serde_json::Value::String(placeholder)),
                 tool_calls: vec![],
                 timestamp: now,
-                summary: String::new(),
-                model: String::new(),
-                label: String::new(),
-                thinking_level: String::new(),
-                branch_summary: None,
-                custom_type: String::new(),
-                custom_data: None,
-                display: String::new(),
-                provider: String::new(),
                 tool_call_id: tc_id.clone(),
                 name: tc_name.clone(),
                 tool_args: String::new(),
                 thinking: String::new(),
-                output_tokens: 0,
-                duration_ms: 0,
                 meta: None,
             });
         }
@@ -689,8 +567,12 @@ impl Manager {
             .iter()
             .rev()
             .find_map(|e| {
-                if e.entry_type == ENTRY_TYPE_MODEL_CHANGE && !e.model.is_empty() {
-                    Some(e.model.clone())
+                if e.entry_type == ENTRY_TYPE_MODEL_CHANGE {
+                    e.content.as_ref()
+                        .and_then(|c| c.get("model"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
                 } else {
                     None
                 }
@@ -701,33 +583,21 @@ impl Manager {
                 entries
                     .iter()
                     .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
-                    .and_then(|e| {
-                        if !e.model.is_empty() {
-                            Some(e.model.clone())
-                        } else {
-                            None
-                        }
-                    })
-            })
-            .unwrap_or_default();
-        let name = entries
-            .iter()
-            .rev()
-            .find(|e| e.entry_type == ENTRY_TYPE_LABEL && !e.label.is_empty())
-            .map(|e| e.label.clone())
-            .or_else(|| {
-                // Fall back to session_info.session_name when no LABEL entry
-                // exists (e.g. sessions that were auto-named but never
-                // explicitly renamed).
-                entries
-                    .iter()
-                    .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
                     .and_then(|e| e.content.as_ref())
-                    .and_then(|c| c.get("session_name"))
+                    .and_then(|c| c.get("model"))
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string())
             })
+            .unwrap_or_default();
+        let name = entries
+            .iter()
+            .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .and_then(|e| e.content.as_ref())
+            .and_then(|c| c.get("session_name"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
             .unwrap_or_default();
         let parent_session_id = entries
             .iter()
@@ -892,20 +762,20 @@ impl Manager {
                             parent_session_id = p.to_string();
                         }
                     }
-                    if model.is_empty() && !e.model.is_empty() {
-                        model = e.model.clone();
+                    if model.is_empty() {
+                        if let Some(ref content) = e.content {
+                            if let Some(m) = content.get("model").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                                model = m.to_string();
+                            }
+                        }
                     }
                 }
                 Some(ENTRY_TYPE_MODEL_CHANGE) => {
                     let e: SessionEntry = serde_json::from_str(&last_line).ok()?;
-                    if !e.model.is_empty() {
-                        model = e.model.clone(); // last one wins
-                    }
-                }
-                Some(ENTRY_TYPE_LABEL) => {
-                    let e: SessionEntry = serde_json::from_str(&last_line).ok()?;
-                    if !e.label.is_empty() {
-                        name = e.label.clone(); // last one wins
+                    if let Some(ref content) = e.content {
+                        if let Some(m) = content.get("model").and_then(|v| v.as_str()) {
+                            model = m.to_string(); // last one wins
+                        }
                     }
                 }
                 Some(ENTRY_TYPE_USER) => {
@@ -1062,9 +932,6 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     let mut entries: Vec<SessionEntry> = chain.into_iter().cloned().collect();
     for e in &mut entries {
         e.id = generate_entry_id();
-        // Reset parent_id too — the old references point into the
-        // parent session and are meaningless (orphaned) in the fork.
-        e.parent_id.clear();
     }
     // Read parent metadata from the session_info entry.  The values live on
     // the SessionEntry struct fields (model, thinking_level) and also inside
@@ -1079,25 +946,17 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     // when neither is set, so a `low`/`medium` parent doesn't silently fork to
     // `high`.
     let parent_thinking_level = parent_info
-        .map(|e| e.thinking_level.as_str())
+        .and_then(|e| e.content.as_ref())
+        .and_then(|c| c.get("thinking_level"))
+        .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            parent_info
-                .and_then(|e| e.content.as_ref())
-                .and_then(|c| c.get("thinking_level"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-        })
         .unwrap_or("high");
 
     let parent_model = parent_info
-        .and_then(|e| {
-            if !e.model.is_empty() {
-                Some(e.model.as_str())
-            } else {
-                None
-            }
-        })
+        .and_then(|e| e.content.as_ref())
+        .and_then(|c| c.get("model"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
         .unwrap_or(&parent.model)
         .to_string();
 
@@ -1107,7 +966,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         .and_then(|v| v.as_str())
         .unwrap_or("tui");
 
-    // Derive fork name: read from session_info content first, then LABEL.
+    // Derive fork name: read from session_info content.
     let parent_name = parent_info
         .and_then(|e| e.content.as_ref())
         .and_then(|c| c.get("session_name"))
@@ -1134,27 +993,15 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         0,
         SessionEntry {
             id: generate_entry_id(),
-            parent_id: String::new(),
             entry_type: ENTRY_TYPE_SESSION_INFO.to_string(),
             role: "system".to_string(),
             content: Some(info),
             tool_calls: vec![],
             timestamp: Local::now(),
-            summary: String::new(),
-            model: parent_model.clone(),
-            label: String::new(),
-            thinking_level: parent_thinking_level.to_string(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         },
     );
@@ -1364,21 +1211,11 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
 
     SessionEntry {
         id: generate_entry_id(),
-        parent_id: String::new(),
         entry_type: entry_type.to_string(),
         role: msg.role.clone(),
         content,
         tool_calls,
         timestamp: Local::now(),
-        summary: String::new(),
-        model: String::new(),
-        label: String::new(),
-        thinking_level: String::new(),
-        branch_summary: None,
-        custom_type: String::new(),
-        custom_data: None,
-        display: String::new(),
-        provider: String::new(),
         tool_call_id: msg.tool_call_id.clone(),
         name: msg.name.clone(),
         tool_args: msg.tool_args.clone(),
@@ -1386,8 +1223,6 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         // Populated at the save site (session_prompt.rs): only the final
         // assistant entry of a run gets a non-zero value, and prior entries'
         // values are preserved from the previously-saved session.
-        output_tokens: 0,
-        duration_ms: 0,
         // Carry structured metadata (e.g. user attachments) into the JSONL so it
         // survives reload; the reverse mapping restores it in
         // entries_to_agent_messages.
@@ -1481,10 +1316,7 @@ mod tests {
         let e = SessionEntry::new_user("user", serde_json::json!("hello"));
         assert_eq!(e.entry_type, ENTRY_TYPE_USER);
         assert_eq!(e.role, "user");
-        assert!(e.parent_id.is_empty());
         assert!(!e.id.is_empty());
-        assert_eq!(e.output_tokens, 0);
-        assert_eq!(e.duration_ms, 0);
     }
 
     #[test]
@@ -1514,12 +1346,13 @@ mod tests {
 
     #[test]
     fn session_info_entry() {
-        let content = serde_json::json!({"session_name": "test", "model": "gpt-4o"});
+        let content = serde_json::json!({"session_name": "test", "model": "gpt-4o", "thinking_level": "high"});
         let e = SessionEntry::session_info(content, "gpt-4o".to_string(), "high".to_string());
         assert_eq!(e.entry_type, ENTRY_TYPE_SESSION_INFO);
         assert_eq!(e.role, ENTRY_TYPE_SYSTEM);
-        assert_eq!(e.model, "gpt-4o");
-        assert_eq!(e.thinking_level, "high");
+        let c = e.content.as_ref().unwrap();
+        assert_eq!(c["model"], "gpt-4o");
+        assert_eq!(c["thinking_level"], "high");
     }
 
     #[test]
@@ -1774,7 +1607,7 @@ mod tests {
         let manager = Manager::new(dir.clone());
         let mut session = Session::new("/tmp/test", "gpt-4o", "");
         session.entries.push(SessionEntry::session_info(
-            serde_json::json!({"session_name": "named-session", "cwd": "/tmp/test"}),
+            serde_json::json!({"session_name": "named-session", "cwd": "/tmp/test", "model": "gpt-4o", "thinking_level": "high"}),
             "gpt-4o".to_string(),
             "high".to_string(),
         ));
@@ -1865,9 +1698,9 @@ mod tests {
         ));
         let manager = Manager::new(dir.clone());
         let mut session = Session::new("/tmp/test", "gpt-4o", "");
-        // Add session_info entry (model is persisted here, not at session level)
+        // Add session_info entry (model/thinking_level are in content JSON)
         session.entries.push(SessionEntry::session_info(
-            serde_json::json!({"session_name": "test", "cwd": "/tmp/test"}),
+            serde_json::json!({"session_name": "test", "cwd": "/tmp/test", "model": "gpt-4o", "thinking_level": "high"}),
             "gpt-4o".to_string(),
             "high".to_string(),
         ));
@@ -2251,27 +2084,15 @@ mod fork_tests {
     fn make_entry(id: &str, entry_type: &str, role: &str, content: &str) -> SessionEntry {
         SessionEntry {
             id: id.to_string(),
-            parent_id: String::new(),
             entry_type: entry_type.to_string(),
             role: role.to_string(),
             content: Some(serde_json::json!(content)),
             tool_calls: vec![],
             timestamp: chrono::Local::now(),
-            summary: String::new(),
-            model: String::new(),
-            label: String::new(),
-            thinking_level: String::new(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         }
     }

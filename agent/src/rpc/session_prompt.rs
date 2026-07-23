@@ -400,8 +400,13 @@ impl ServerSession {
                                 entries.iter_mut().zip(old_msg_entries.iter())
                             {
                                 new_entry.timestamp = old_entry.timestamp;
-                                new_entry.output_tokens = old_entry.output_tokens;
-                                new_entry.duration_ms = old_entry.duration_ms;
+                                // Preserve run stats from old entry's content
+                                if let Some(ref old_content) = old_entry.content {
+                                    if let Some(obj) = new_entry.content.as_mut().and_then(|c| c.as_object_mut()) {
+                                        if let Some(v) = old_content.get("run_tokens") { obj.insert("run_tokens".to_string(), v.clone()); }
+                                        if let Some(v) = old_content.get("run_duration_ms") { obj.insert("run_duration_ms".to_string(), v.clone()); }
+                                    }
+                                }
                             }
 
                             // Attach this run's output tokens + wall-clock duration
@@ -417,8 +422,13 @@ impl ServerSession {
                                 .rev()
                                 .find(|e| e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT)
                             {
-                                last_assistant.output_tokens = run_output_tokens;
-                                last_assistant.duration_ms = run_duration_ms;
+                                // Store run stats in the last assistant's content JSON
+                                if let Some(ref mut content) = last_assistant.content {
+                                    if let Some(obj) = content.as_object_mut() {
+                                        obj.insert("run_tokens".to_string(), serde_json::json!(run_output_tokens));
+                                        obj.insert("run_duration_ms".to_string(), serde_json::json!(run_duration_ms));
+                                    }
+                                }
                             }
                         }
 
@@ -526,7 +536,6 @@ impl ServerSession {
                                     "tokens_in": tokens_in.load(Ordering::Relaxed),
                                     "tokens_out": tokens_out.load(Ordering::Relaxed),
                                 }));
-                                comp_entry.label = "compacted".to_string();
                                 entries.insert(idx + 1, comp_entry);
                                 entries.remove(idx);
                             }

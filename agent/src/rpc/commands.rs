@@ -362,33 +362,16 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 sess.set_session_name(&cmd.name);
                 (sess.session_manager.clone(), sess.session_id.clone())
             };
-            // Persist label entry to session JSONL so name survives restarts
+            // Update session_info so name survives restarts
             if let Ok(mut s) = session_manager.load(&session_id) {
-                s.entries.push(crate::session::SessionEntry {
-                    id: crate::utils::generate_entry_id(),
-                    parent_id: String::new(),
-                    entry_type: crate::session::ENTRY_TYPE_LABEL.to_string(),
-                    role: String::new(),
-                    content: None,
-                    tool_calls: vec![],
-                    timestamp: chrono::Local::now(),
-                    summary: String::new(),
-                    model: String::new(),
-                    label: cmd.name.clone(),
-                    thinking_level: String::new(),
-                    branch_summary: None,
-                    custom_type: String::new(),
-                    custom_data: None,
-                    display: String::new(),
-                    provider: String::new(),
-                    tool_call_id: String::new(),
-                    name: String::new(),
-                    tool_args: String::new(),
-                    thinking: String::new(),
-                    output_tokens: 0,
-                    duration_ms: 0,
-                    meta: None,
-                });
+                // Update session_info entry's session_name field
+                if let Some(info_entry) = s.entries.iter_mut().find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO) {
+                    if let Some(ref mut content) = info_entry.content {
+                        if let Some(obj) = content.as_object_mut() {
+                            obj.insert("session_name".to_string(), serde_json::Value::String(cmd.name.clone()));
+                        }
+                    }
+                }
                 s.name = cmd.name.clone();
                 let _ = session_manager.save(&s);
             }
@@ -1098,12 +1081,7 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     // Per-reply metadata for the GUI's message footer
                     // ("time · N tokens"); set on the final assistant
                     // entry of each run.
-                    if e.output_tokens > 0 {
-                        entry["output_tokens"] = serde_json::json!(e.output_tokens);
-                    }
-                    if e.duration_ms > 0 {
-                        entry["duration_ms"] = serde_json::json!(e.duration_ms);
-                    }
+                    // Run stats are in content JSON (run_tokens / run_duration_ms)
                     // For session_info entries, include the original content
                     // JSON (session_name, cwd, parent_session_id, …) and the
                     // model / thinking_level struct fields so callers can
@@ -1111,13 +1089,6 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
                         if let Some(ref content) = e.content {
                             entry["content"] = content.clone();
-                        }
-                        if !e.model.is_empty() {
-                            entry["model"] = serde_json::Value::String(e.model.clone());
-                        }
-                        if !e.thinking_level.is_empty() {
-                            entry["thinking_level"] =
-                                serde_json::Value::String(e.thinking_level.clone());
                         }
                     }
                     entry
