@@ -629,7 +629,7 @@ mod apply_thinking_params_tests {
 mod message_conversion_tests {
     use super::Client;
     use crate::types::{Message, ToolCall, ToolCallFn};
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     #[test]
     fn convert_system_and_user() {

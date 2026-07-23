@@ -366,7 +366,7 @@ mod tests {
         let path = dir.path().join("flush.log");
         let mirror = init(&path, 100).unwrap();
         {
-            let mut writer = (&mirror).make_writer();
+            let mut writer = mirror.make_writer();
             writer.write_all(b"flushed content\n").unwrap();
             writer.flush().unwrap();
         }

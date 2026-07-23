@@ -851,9 +851,8 @@ mod tests {
         assert_eq!(copy.system_prompt, "original prompt");
         // Independent state: interrupt flag, queues should be fresh
         assert!(
-            copy.interrupt_flag()
+            !copy.interrupt_flag()
                 .load(std::sync::atomic::Ordering::SeqCst)
-                == false
         );
         assert_eq!(copy.pending_message_count(), 0);
         // Modify original's queue, copy should be unaffected
@@ -910,7 +909,7 @@ mod tests {
                 arguments: serde_json::json!({}),
             },
         };
-        let (result, err, name) =
+        let (_result, err, name) =
             Loop::execute_one_tool_impl_static(&tc, &[], &crate::types::AgentConfig::default())
                 .await;
         assert_eq!(name, "nonexistent_tool");
@@ -929,7 +928,7 @@ mod tests {
                 arguments: serde_json::json!("{\"command\": \"echo works\"}"),
             },
         };
-        let (result, err, name) =
+        let (result, _err, name) =
             Loop::execute_one_tool_impl_static(&tc, &tools, &crate::types::AgentConfig::default())
                 .await;
         assert_eq!(name, "shell");
