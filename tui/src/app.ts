@@ -55,6 +55,7 @@ export class App extends Container {
   private acManager = new AutocompleteManager();
   private keybindings = new KeybindingManager();
   private enabledModelIds: string[] | null = null;  // client-side scoped models
+  private connectionLost = false;  // true when agent RPC stream is down
 
   // ── TUI-local settings (persisted to disk, not on agent) ──────────────
   private tuiSettings: { defaultModel?: string; defaultThinkingLevel?: string; defaultPermissionLevel?: string; enabledModelIds?: string[] } = {};
@@ -228,6 +229,38 @@ export class App extends Container {
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
+  /// Poll the agent every 1 s until it responds (or the TUI is stopped).
+  /// Shows a single "Connecting…" message on first failure; clears it on success.
+  private async waitForAgent(): Promise<void> {
+    let firstAttempt = true;
+    while (this.running) {
+      if (await this.client.tryConnect()) {
+        if (!firstAttempt) {
+          // Remove the "Connecting..." placeholder if we added one earlier
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "✅  Connected to agent",
+          });
+          this.requestRender();
+        }
+        return;
+      }
+      if (firstAttempt) {
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: "Connecting to agent… (retrying every 1s)",
+        });
+        this.requestRender();
+        // Yield to the event loop so the "Connecting…" message renders
+        await new Promise((r) => setTimeout(r, 50));
+        firstAttempt = false;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+
   async start(): Promise<void> {
     this.loadTuiSettings();
     this.terminal.hideCursor();
@@ -239,6 +272,10 @@ export class App extends Container {
       (data: string) => this.handleInput(data),
       () => this.requestResizeRender(),
     );
+
+    // Wait for agent to be reachable (retries every 1 s).
+    await this.waitForAgent();
+    if (!this.running) return;
 
     // Handle CLI session options
     if (this.cliOptions.session) {
@@ -316,6 +353,11 @@ export class App extends Container {
         this.client.prompt(this.cliOptions.initialPrompt!);
       }, 100);
     }
+
+    // Listen for connection state changes (runtime disconnects / reconnects).
+    this.client.onConnectionChange((connected) => {
+      this.setConnectionLost(!connected);
+    });
 
     // Subscribe to events only after session is established — prevents
     // cross-session event leakage (e.g. GUI streaming bleeding into TUI).
@@ -1545,6 +1587,27 @@ export class App extends Container {
     } catch { /* ok if agent doesn't support a command yet */ }
   }
 
+  private setConnectionLost(lost: boolean): void {
+    if (this.connectionLost === lost) return;
+    this.connectionLost = lost;
+    if (lost) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "⚠️  Connection to agent lost — retrying every 1s...",
+      });
+    } else {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "✅  Reconnected to agent",
+      });
+      // Refresh state after reconnect so footer shows correct model/tokens
+      this.refresh().catch(() => {});
+    }
+    this.requestRender();
+  }
+
   private async refresh(): Promise<void> {
     try {
       const s = await this.client.getState();
@@ -1574,6 +1637,17 @@ export class App extends Container {
       if (s.sessionId && s.sessionId !== this.client.getCurrentSessionId()) {
         this.client.setCurrentSessionId(s.sessionId);
         this.client.connectEvents();
+      }
+
+      // Clear connection-lost flag if we successfully reached the agent.
+      if (this.connectionLost) {
+        this.connectionLost = false;
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: "✅  Reconnected to agent",
+        });
+        this.requestRender();
       }
     } catch {
       // Keep last known model; footer briefly showing "(not connected)" is
