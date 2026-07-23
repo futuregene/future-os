@@ -48,14 +48,14 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     // system (shutdown, lists), create sessions (new/switch/delete), or read
     // straight from disk (fork messages).
     match cmd_type.as_str() {
-        "shutdown" => return cmd_shutdown(state, &id),
-        "list_sessions" => return cmd_list_sessions(state, &cmd, &id),
-        "list_streaming_sessions" => return cmd_list_streaming_sessions(state, &id),
-        "new_session" => return cmd_new_session(state, &cmd, &id),
-        "switch_session" => return cmd_switch_session(state, &cmd, &id),
-        "delete_session" => return cmd_delete_session(state, &cmd, &id),
-        "get_fork_messages" => return cmd_get_fork_messages(state, &cmd, &id),
-        "get_commands" => return cmd_get_commands(&id),
+        "shutdown" => return cmd_shutdown(state, id),
+        "list_sessions" => return cmd_list_sessions(state, &cmd, id),
+        "list_streaming_sessions" => return cmd_list_streaming_sessions(state, id),
+        "new_session" => return cmd_new_session(state, &cmd, id),
+        "switch_session" => return cmd_switch_session(state, &cmd, id),
+        "delete_session" => return cmd_delete_session(state, &cmd, id),
+        "get_fork_messages" => return cmd_get_fork_messages(state, &cmd, id),
+        "get_commands" => return cmd_get_commands(id),
         "set_enabled_models" => {
             // Scoped models are managed entirely by the TUI/client; the agent
             // returns all available models. Kept as a no-op for compatibility.
@@ -69,8 +69,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     // explicit error, never a silent redirect into another conversation.
     let Some(session) = state.get_session(&cmd.session_id) else {
         return RpcResponse::build_fail(
-            &id,
-            &cmd_type,
+            id,
+            cmd_type,
             "session not found — pass a valid session_id (new_session creates one)",
         );
     };

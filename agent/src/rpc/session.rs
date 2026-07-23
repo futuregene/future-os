@@ -138,6 +138,7 @@ fn resolve_api_key(
 }
 
 impl ServerSession {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_id: String,
         agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,

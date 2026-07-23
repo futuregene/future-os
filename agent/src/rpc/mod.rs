@@ -76,9 +76,7 @@ impl AppState {
                 return Some(sess.clone());
             }
         }
-        if self.session_manager.find(session_id).is_none() {
-            return None;
-        }
+        self.session_manager.find(session_id)?;
 
         // Load session from disk OUTSIDE any lock — switch_session parses
         // the JSONL file and can be slow for large histories.
