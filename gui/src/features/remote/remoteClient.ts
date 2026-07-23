@@ -14,7 +14,6 @@ export interface RemoteStatus {
 export interface RemotePairingStatus {
   paired: boolean;
   pairId: string | null;
-  natsUrl: string | null;
 }
 
 export interface RemoteStartInput {

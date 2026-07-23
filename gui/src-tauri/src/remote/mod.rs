@@ -130,12 +130,11 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
         .map(str::to_string)
         .or_else(|| persisted.as_ref().map(|c| c.device_id.clone()))
         .unwrap_or_else(pairing::new_device_id);
-    let _ = pairing::save_creds(&pairing::PairingCreds {
+    pairing::save_creds(&pairing::PairingCreds {
         pair_id: pair_id.clone(),
         token: token.clone(),
         device_id,
-        nats_url: bridge_url.clone(),
-    });
+    })?;
     let pairing_code = pairing::encode_pairing_code(&pair_id, &token, &ws_url);
 
     // Start the command subscription task (Step C).

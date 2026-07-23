@@ -30,7 +30,6 @@ pub struct PairingCreds {
     /// NATS shared access token (server-configured). Stored 0600.
     pub token: String,
     pub device_id: String,
-    pub nats_url: String,
 }
 
 /// Payload encoded into the pairing code handed to clients.

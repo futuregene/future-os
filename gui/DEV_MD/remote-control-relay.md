@@ -111,7 +111,7 @@ const nc = await connect({ servers: wsUrl, inboxPrefix: `p.${pairId}.rep.${devic
                            /*, authenticator: creds (L1) */ });
 const js = jetstream(nc);
 
-// 命令：流式命令（prompt/steer）reply 只是 accept-ack；完成看事件流的 agent_end
+// 命令：prompt reply 只是 accept-ack；完成看事件流的 agent_end
 await nc.request(`p.${pairId}.cmd.${session}`, enc(promptCmd), { timeout: 5000 });
 
 // 事件：deliver=all → 按 currentRunId 选当前轮渲染 + (run_id,idx) 去重
@@ -142,24 +142,19 @@ for await (const e of kv_pairs.watch(pairId)) updateSessionList(e);  // 每 sess
 - **核心**：单 NATS account + 按 `pairId` 的 JWT subject 权限（服务端强制）；account-per-user 硬隔离为升级路径。
 - **签发服务**：校验 Future 账号（`cli/src/commands/auth.ts` 已有）后签 scoped creds（限 `p.{pairId}.>`）+ **配对时创建 `EVT_{pairId}` 流**；吊销即撤 creds。
 - **Bridge 最小授权**：pub `p.{pairId}.evt.>`/`p.{pairId}.rep.>`、sub `p.{pairId}.cmd.>` + 自己的 `$JS.ACK.>`；**不给 STREAM.CREATE/PURGE/DELETE**。
-- **L0 测试**：NATS 无鉴权直连（仅本地/可信网络）。
+- **L0 测试**：使用已部署公网 Relay 的共享 token；仅限持有凭证的受控联调，不视为不受信任多租户隔离。
 - **落地实现 / 分阶段计划**：见 [auth §8](remote-control-auth.md)（对照代码的 gap 表、mode 共存、connect+inboxPrefix、consumer 升级、流/桶分工、审批 session 校验）与 [auth §9](remote-control-auth.md)（Phase 1 简单配对=随机 pairId+接入 token+命名分区，**无**服务端 subject 强制；Phase 2 才上 JWT 签发+服务端强制隔离）。Bridge/客户端的 `connect` 在 L1 带 creds+`inboxPrefix`（§5/§6 骨架已留位）；事件订阅 L1 升级 JetStream consumer 以获回放（§6）。
 
 ---
 
-## 8. 立即可测（L0，本周端到端）
+## 8. 立即可测（L0）
 ```bash
-# 起 NATS（JetStream + WebSocket，无鉴权）；websocket 与 jetstream 在 nats.conf 开启
-docker run -p 4222:4222 -p 9090:9090 -v $PWD/nats.conf:/nats.conf nats -js -c /nats.conf
-
-# 联调期先手动建一个 pair 的事件流（正式期由签发服务建）
-nats stream add EVT_DEVPAIR --subjects 'p.DEVPAIR.evt.>' \
-  --max-age 30m --max-bytes 64MB --max-msg-size 1MB --dupe-window 10m --discard old --storage file
-
-# 桌面: Bridge(async-nats) 连 nats://localhost:4222，桥接本地 agent:50051，pairId=DEVPAIR
-# 网页: nats.ws 连 ws://<host>:9090，request p.DEVPAIR.cmd.{session} / 消费 EVT_DEVPAIR
+# GUI Remote 页填写已部署 Relay 的共享接入 token并启动。
+# dev build 自动派生 test.future-os.cn:4222 / :9090；
+# production 环境自动派生 future-os.cn:4222 / :9090。
+# Web 验证端打开 http://localhost:8022，粘贴 GUI 生成的配对码。
 ```
-→ 无需等中枢正式部署、无需鉴权即可验证通路。配对/签发/推送后续叠加。
+→ Relay 已部署，无需本地启动 NATS。当前用共享 token 做受控联调；scoped JWT 与服务端 subject 隔离在 Phase 2。
 
 ---
 

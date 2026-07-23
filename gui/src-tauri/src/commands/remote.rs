@@ -33,7 +33,6 @@ pub fn remote_unpair() -> Result<remote::RemoteStatus, crate::AppError> {
 pub struct RemotePairingStatus {
     pub paired: bool,
     pub pair_id: Option<String>,
-    pub nats_url: Option<String>,
 }
 
 #[tauri::command]
@@ -42,12 +41,10 @@ pub fn remote_pairing_status() -> Result<RemotePairingStatus, crate::AppError> {
         Some(c) => RemotePairingStatus {
             paired: true,
             pair_id: Some(c.pair_id),
-            nats_url: Some(c.nats_url),
         },
         None => RemotePairingStatus {
             paired: false,
             pair_id: None,
-            nats_url: None,
         },
     })
 }

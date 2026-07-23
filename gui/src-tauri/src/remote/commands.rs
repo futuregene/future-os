@@ -6,6 +6,18 @@
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+type ReplySlot = Arc<tokio::sync::Mutex<Option<Vec<u8>>>>;
+type ReplySlots = Arc<Mutex<HashMap<String, ReplySlot>>>;
+
+tokio::task_local! {
+    static REPLY_CAPTURE: Arc<Mutex<Option<Vec<u8>>>>;
+}
 
 /// Command sent by the client via NATS (camelCase JSON, only the fields the bridge needs).
 #[derive(Debug, Deserialize)]
@@ -57,26 +69,82 @@ pub(super) async fn command_loop(client: async_nats::Client, pair_id: String) {
             return;
         }
     };
+    let reply_slots: ReplySlots = Arc::new(Mutex::new(HashMap::new()));
     eprintln!("remote: subscribed to commands {subject}");
     while let Some(msg) = sub.next().await {
         let client = client.clone();
-        let pair_id = pair_id.clone();
+        let reply_slots = reply_slots.clone();
         // Spawn per command: prevent a slow command from blocking others.
         tokio::spawn(async move {
-            handle_command(&client, &pair_id, msg).await;
+            handle_command_singleflight(&client, msg, reply_slots).await;
         });
     }
 }
 
-// SECURITY (remote feature is still dev-gated — non-release builds only,
-// enforced backend-side in `super::start`): these commands have NO
-// authentication. The only isolation is the NATS subject prefix
-// `p.{pairId}.cmd.>`, the default pair id is a constant, and the connection
-// requires no TLS/credentials. `prompt` drives the local agent (read/write files,
-// run shell commands) — i.e. equivalent to RCE for anyone who can publish on that subject.
-// Before this feature is un-gated for release, this MUST gain: a random pair id,
-// connection credentials or per-message signing, and subject ACLs.
-async fn handle_command(client: &async_nats::Client, _pair_id: &str, msg: async_nats::Message) {
+/// Merge concurrent/retried deliveries carrying the same command id. The first
+/// delivery executes the command; followers wait for and receive the exact same
+/// response bytes. Completed responses stay cached for ten minutes, matching
+/// the planned NATS duplicate window, then expire without blocking unrelated ids.
+async fn handle_command_singleflight(
+    client: &async_nats::Client,
+    msg: async_nats::Message,
+    reply_slots: ReplySlots,
+) {
+    let command_id = serde_json::from_slice::<IncomingCmd>(&msg.payload)
+        .ok()
+        .map(|cmd| cmd.id)
+        .filter(|id| !id.is_empty());
+    let Some(command_id) = command_id else {
+        handle_command(client, msg).await;
+        return;
+    };
+
+    let (slot, inserted) = {
+        let mut slots = reply_slots.lock().unwrap();
+        match slots.get(&command_id) {
+            Some(slot) => (slot.clone(), false),
+            None => {
+                let slot = Arc::new(tokio::sync::Mutex::new(None));
+                slots.insert(command_id.clone(), slot.clone());
+                (slot, true)
+            }
+        }
+    };
+
+    if inserted {
+        let slots = reply_slots.clone();
+        let id = command_id.clone();
+        let expected = slot.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(600)).await;
+            let mut slots = slots.lock().unwrap();
+            if slots
+                .get(&id)
+                .is_some_and(|current| Arc::ptr_eq(current, &expected))
+            {
+                slots.remove(&id);
+            }
+        });
+    }
+
+    let mut cached = slot.lock().await;
+    if let Some(payload) = cached.as_ref() {
+        publish_reply_payload(client, &msg, payload.clone()).await;
+        return;
+    }
+
+    let capture = Arc::new(Mutex::new(None));
+    REPLY_CAPTURE
+        .scope(capture.clone(), handle_command(client, msg))
+        .await;
+    *cached = capture.lock().unwrap().clone();
+}
+
+// SECURITY: Phase 1 authenticates NATS admission with one shared token and
+// partitions traffic with a random pairId. It does not enforce per-pair subject
+// ACLs; scoped user JWTs remain required before treating the public relay as a
+// hostile multi-tenant boundary.
+async fn handle_command(client: &async_nats::Client, msg: async_nats::Message) {
     let cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
         Ok(cmd) => cmd,
         Err(e) => {
@@ -196,6 +264,23 @@ async fn handle_command(client: &async_nats::Client, _pair_id: &str, msg: async_
             Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
         },
         "approval_decision" => {
+            let ownership = (|| -> Result<(), crate::AppError> {
+                let approval = crate::store::get_approval_request(&cmd.entry_id)?
+                    .ok_or_else(|| "Approval request could not be loaded.".to_string())?;
+                let thread = crate::store::get_thread(&approval.thread_id)?
+                    .ok_or_else(|| "Approval thread could not be loaded.".to_string())?;
+                let owner_session_id = thread.agent_session_id.unwrap_or(thread.id);
+                if cmd.session_id != owner_session_id {
+                    return Err(crate::AppError::Message(
+                        "Approval request does not belong to this session.".to_string(),
+                    ));
+                }
+                Ok(())
+            })();
+            if let Err(error) = ownership {
+                reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
+                return;
+            }
             let input = crate::store::DecideApprovalRequestInput {
                 approval_request_id: cmd.entry_id.clone(),
                 status: cmd.mode.clone(),
@@ -203,19 +288,6 @@ async fn handle_command(client: &async_nats::Client, _pair_id: &str, msg: async_
             };
             match crate::agent_bridge::decide_approval(input).await {
                 Ok(_) => reply(client, &msg, true, json!({}), None).await,
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "steer" => {
-            match crate::agent_bridge::steer_session(&cmd.session_id, cmd.message.clone()).await {
-                Ok(()) => reply(client, &msg, true, json!({}), None).await,
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "follow_up" => {
-            match crate::agent_bridge::follow_up_session(&cmd.session_id, cmd.message.clone()).await
-            {
-                Ok(()) => reply(client, &msg, true, json!({}), None).await,
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
@@ -351,9 +423,9 @@ async fn reply(
     data: Value,
     error: Option<&str>,
 ) {
-    let Some(reply_subject) = msg.reply.clone() else {
+    if msg.reply.is_none() {
         return;
-    };
+    }
     let body = json!({
         "type": "response",
         "success": success,
@@ -361,7 +433,21 @@ async fn reply(
         "error": error,
     });
     if let Ok(payload) = serde_json::to_vec(&body) {
-        let _ = client.publish(reply_subject, payload.into()).await;
-        let _ = client.flush().await;
+        let _ = REPLY_CAPTURE.try_with(|capture| {
+            *capture.lock().unwrap() = Some(payload.clone());
+        });
+        publish_reply_payload(client, msg, payload).await;
     }
+}
+
+async fn publish_reply_payload(
+    client: &async_nats::Client,
+    msg: &async_nats::Message,
+    payload: Vec<u8>,
+) {
+    let Some(reply_subject) = msg.reply.clone() else {
+        return;
+    };
+    let _ = client.publish(reply_subject, payload.into()).await;
+    let _ = client.flush().await;
 }

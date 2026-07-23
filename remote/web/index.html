@@ -159,6 +159,7 @@ function clearLog() { $("log").innerHTML = ""; bubble = null; thinkEl = null; to
 function cmdSubject(sid) { return `p.${pair}.cmd.${sid || "new"}`; }
 
 async function request(obj, sid) {
+  if (!obj.id) obj.id = crypto.randomUUID();
   const m = await nc.request(cmdSubject(sid ?? session), enc(obj), { timeout: 10000 });
   return dec(m);
 }
@@ -272,8 +273,7 @@ function refreshPresenceIndicator() {
 }
 
 // 对齐 GUI：streaming 时发送键变"停止"(点击=abort)，composer 仍可编辑；
-// 非 streaming 时为"发送"。没有独立的引导/排队/中断按钮——GUI 桌面端也没有，
-// steer/follow_up 只服务 remote bridge，桌面 UI 从不使用。
+// 非 streaming 时为"发送"。没有独立的引导或排队入口，与 GUI 桌面端保持一致。
 function updateStreamingState(streaming) {
   isStreaming = streaming;
   const btn = $("send");
@@ -314,7 +314,7 @@ function newSession() {
   curRun = null; seenEvents.clear();
   clearLog();
   $("chatTitle").textContent = "新对话";
-  updateStreamingState(false);  // 显示"发送"、隐藏引导/排队
+  updateStreamingState(false);  // 恢复为可发送状态
   $("app").classList.add("show-chat");
   // 模型/思考选择器作为草稿显示；无 session 时 onchange 不会发命令，
   // 选中的值在 send 时随首条 prompt 一起发给 bridge seed 新 session。
@@ -543,7 +543,7 @@ function ensureSession() { return session; }
 
 async function send() {
   // 对齐 GUI：streaming 时禁止新的 plain prompt（GUI 弹 alreadyRunning toast）。
-  // 要插话用"停止"键先中断；steer/follow_up 桌面端不用，web 也不暴露。
+  // 运行中与 GUI 一致：拒绝新的 prompt，可先停止再发送。
   if (isStreaming) { line("正在回复中，请先停止或等待结束", "badge"); return; }
   const text = $("msg").value.trim(); if (!text) return;
   const wasNew = !session;        // 懒创建首条：当前还没有 DB 条目

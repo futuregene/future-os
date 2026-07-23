@@ -606,7 +606,7 @@ Object Reference 表示某个对象引用了另一个对象。
 - `workspace_files`
 - `reference_targets`
 - `object_references`
-- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_enabled`、`remote_pair_id`、`remote_nats_url`、`show_thinking`，见 `store/app_settings.rs`）
+- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`、`show_thinking`，见 `store/app_settings.rs`；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
 
 > `research_collections`、`research_resources` 曾在此清单，因 Research 延后于第一版发布前从 schema 移除（详见 §4.12–4.13）。
 >

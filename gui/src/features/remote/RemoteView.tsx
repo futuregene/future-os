@@ -87,9 +87,9 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
       setStatus(next);
       if (next.pairingCode)
         setPairingCode(next.pairingCode);
-      // Persist only after a successful start, so a failed attempt doesn't leave
-      // `remoteEnabled` true.
-      onChangeSettings({ remotePairId: pairId, remoteEnabled: true });
+      // Persist only an explicit override. The generated/reused pairing identity
+      // remains sourced from the owner-only pairing file.
+      onChangeSettings({ remotePairId: pairId });
       setPairing(await getRemotePairingStatus());
     }
     catch (caught) {
@@ -105,7 +105,6 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
     setError(null);
     try {
       setStatus(await stopRemote());
-      onChangeSettings({ remoteEnabled: false });
     }
     catch (caught) {
       setError(errorMessage(caught));
@@ -122,7 +121,6 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
       setStatus(await unpairRemote());
       setPairingCode(null);
       setPairing(await getRemotePairingStatus());
-      onChangeSettings({ remoteEnabled: false });
     }
     catch (caught) {
       setError(errorMessage(caught));
@@ -183,7 +181,7 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
             <TextInput
               disabled={running || busy}
               onChange={event => setToken(event.target.value)}
-              placeholder="devpairingtoken"
+              placeholder={t("tokenPlaceholder")}
               type="password"
               value={token}
             />
@@ -195,7 +193,7 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
             <TextInput
               disabled={running || busy}
               onChange={event => setPairId(event.target.value)}
-              placeholder="DEVPAIR"
+              placeholder={t("pairIdPlaceholder")}
               value={pairId}
             />
             <span className="block text-xs text-ink-muted">{t("pairIdHint")}</span>

@@ -134,7 +134,7 @@ App 登出       → 删本地 .creds + 通知签发服务撤销
 
 - **形态**：`nats.ws` 网页（可挂在现有 GUI/React 一个路由）。
 - **输入"设备验证信息"**：L0 = NATS WS URL + `pairId`/`session`（或粘贴 dev creds）；L1/L2 = 浏览器 OAuth 换临时 creds。
-- **能力**：读 KV `pairs` → 选会话 → 分页 `get_messages`（历史 renderer）→ consumer 订 `EVT_{pairId}`（按 currentRunId 选轮 + 去重，流 renderer）→ composer 发 prompt/steer/abort、审批。
+- **能力**：读 KV `pairs` → 选会话 → 分页 `get_messages`（历史 renderer）→ consumer 订 `EVT_{pairId}`（按 currentRunId 选轮 + 去重，流 renderer）→ composer 发 prompt/abort、审批；运行中行为与 GUI 一致，不提供排队。
 - **复用**：GUI 现有 React 渲染组件（流 + 历史两套）+ `proto` 派生 TS 类型。代码骨架见 [中枢 §6](remote-control-relay.md)。
 
 **双重价值**：① 当下 = P2/P3 端到端测试台（无 App Store 摩擦）；② 未来 = 演进为正式 **"Remote Control on Web"**。建议 Web 端提前到 **P2**，原生 App（P4）复用同一渲染层。
@@ -154,27 +154,27 @@ App 登出       → 删本地 .creds + 通知签发服务撤销
 > 本节**不改动** §1–§7 的高层模型（不变量、分级、权限矩阵、配对时序、签发服务落点均为 `[已定]`），只补"对照当前代码、把 L0→L1 接到现有结构上"的实现层设计。标注：`[已定]`=§1–§7 已锁；`[设计]`=落地建议（已 review 确认）；`[待定→默认]`=开放项的默认取值。
 
 ### 8.1 已确认的落地决策
-- **D1 单一 paired 模式（dev 已移除；非两条代码路径）** `[设计-确认]`：远程只走 simple pairing（共享接入 token + 配对码），**dev / 无鉴权直连已取消**——它让 pairId/配对语义混乱且不安全。L0/L1 仍用**一套**主流程（订 cmd、发 evt、命令路由、presence、去重、审批转发、web 渲染），凭证作**必需**输入 `RemoteStartInput { nats_url, access_token, pair_id?, device_id? }`。理由同前：鉴权只改变"连接怎么建立 + subject 权限由谁强制"，**不**改变连上后的业务逻辑，故无需两条代码路径。**pairId 解析顺序**：显式覆盖 > 已持久化配对的 pairId > 随机生成——已配对桌面重启**复用**同一 pairId（配对码稳定），首次才随机；deviceId 同理复用。
+- **D1 单一 paired 模式（dev 已移除；非两条代码路径）** `[设计-确认]`：远程只走 simple pairing（共享接入 token + 配对码），**dev / 无鉴权直连已取消**——它让 pairId/配对语义混乱且不安全。L0/L1 仍用**一套**主流程（订 cmd、发 evt、命令路由、presence、去重、审批转发、web 渲染），凭证作**必需**输入 `RemoteStartInput { access_token, pair_id?, device_id? }`；NATS 地址从当前平台环境派生。理由同前：鉴权只改变"连接怎么建立 + subject 权限由谁强制"，**不**改变连上后的业务逻辑，故无需两条代码路径。**pairId 解析顺序**：显式覆盖 > 已持久化配对的 pairId > 随机生成——已配对桌面重启**复用**同一 pairId（配对码稳定），首次才随机；deviceId 同理复用。
 - **D2 分阶段：简单配对先行，JWT 签发最后** `[设计-确认]`：Phase 1 做"简单配对"（无签发服务、无 JWT，见 §8.11 + §9），Phase 2 才上签发服务 + 服务端强制隔离。
 - **D3 Web 验证端 L1 仅联调** `[设计-确认]`：浏览器无 keychain，creds 存 localStorage（明文，文档写实风险），正式凭证走 App。
-- **D4 审批 session 归属校验放 agent 侧** `[已定+确认]`：`ApprovalGate::decide` 加 `session_id`（见 §8.8）。
+- **D4 审批 session 归属双层校验** `[已定+确认]`：Bridge 先验证远程命令 `sessionId` 与审批所属 thread 一致，Agent 的 `ApprovalGate::decide` 再校验 pending approval 的 `session_id`。
 
 ### 8.2 现状（L0）gap 表（对照代码）
 | Gap | 代码位置 | 现状 | 未满足 |
 |---|---|---|---|
-| G1 无凭证连接 | `remote/mod.rs:90` `async_nats::connect(&nats_url)` | 无 creds、无 TLS 强制 | I2/I4 |
-| G2 pairId 为输入常量 | `RemoteStartInput.pair_id`（默认 `DEVPAIR`） | 猜中即接入 | I1/I2 |
-| G3 reply 用默认 inbox | `remote/commands.rs:354` `msg.reply` | 客户端未设 `inboxPrefix` → `_INBOX.>` | I4 |
+| G1 共享凭证连接 | `remote/mod.rs` token connect | 已有共享 token，但无 TLS 强制、无 scoped JWT | I2/I4 |
+| G2 pairId 随机与复用 | `remote/pairing.rs` | 已完成：显式覆盖 > 持久化 > 随机 | — |
+| G3 reply inbox 收敛 | web connect | 已完成：`p.{pairId}.rep.{deviceId}` | — |
 | G4 流/桶由 Bridge 自建 | `remote/mod.rs:227` `create_or_update_key_value("pairs")` | §3 要求**签发服务**建桶/建流 | I4 |
 | G5 无配对/签发对接 | 无 nonce/QR/claim | I2/I3 |
-| G6 审批无 session 校验 | agent `approval.rs:309` `decide(request_id, decision)` | `entry_id` 泄漏可越权批准 | I1 例外 |
-| G7 release 门禁过粗 | `remote/mod.rs:79` `is_release()` 直接拒 | L1 后应**强制 creds** 而非全拒 | — |
+| G6 审批 session 校验 | Bridge + agent | 已完成双层校验，跨 session decision 被拒 | — |
+| G7 release 后端门禁 | 前端当前隐藏入口，Tauri 命令仍注册 | 暂不处理；正式发布策略需在 L1 前重新确认 | — |
 | G8 web 用 core sub | web `nc.subscribe(p.{pair}.evt.>)` | 无 JetStream consumer → 无回放 | [relay §4/§6](remote-control-relay.md) |
 
 ### 8.3 组件新增面
 | 组件 | 新增 | 标注 |
 |---|---|---|
-| Bridge `remote/` | connect 封装 dev/paired；`inboxPrefix`；publish/subscribe subject 落授权集；permission-denied 可观测；presence 桶 paired 时不建 | [设计] |
+| Bridge `remote/` | Phase 1 token connect 演进为 Phase 2 scoped creds；publish/subscribe subject 落授权集；permission-denied 可观测；presence 桶 Phase 2 时不建 | [设计] |
 | GUI 配对控制面 `features/remote/` + 命令 | 配对按钮→生成 pairId+凭证→QR→已配对/解绑；creds 落安全存储 | [设计] |
 | 客户端 Web `remote/web/` | 输入从 url+pairId 扩为贴码/扫码；connect 带 authenticator+inboxPrefix；事件订阅升级 consumer | [设计] |
 | 签发服务 `future-server` | `/pair/nonce`、`/pair/claim`（原子消费 nonce+建流+签 JWT）、`/pair/revoke` | [已定]落点，**Phase 2** |
@@ -188,25 +188,25 @@ App 登出       → 删本地 .creds + 通知签发服务撤销
 
 ### 8.5 流/桶生命周期分工 `[设计]`
 - Phase 2：`EVT_{pairId}` 与桶 `pairs` 由**签发服务** `/pair/claim` 建、`/pair/revoke` 删；Bridge 移除建桶，桶不存在则 presence 标 degraded（[relay §5](remote-control-relay.md) 要求不崩）。
-- Phase 1：Bridge 保留自建桶（`mode=dev`/简单配对均自建），`mode=paired`(Phase 2) 不建。
+- Phase 1：Bridge 保留自建桶；Phase 2 scoped JWT 模式不建。
 
 ### 8.6 agent 审批 session 归属校验 `[设计]`（跨 crate，Phase 1）
 - `ApprovalGate::decide(&self, request_id, decision, session_id)`：lookup `PendingApproval`（已含 `session_id`，`approval.rs:32`）后比对，不符返回 `Err`。
-- 调用链：remote `approval_decision` 已带 `cmd.session_id` → `agent_bridge::decide_approval` → gRPC `approval_decision` → agent `commands.rs` 把 `cmd.session_id` 透传 `decide`。1:1 天然 pair-scoped；此为防 `entry_id` 泄漏 + 为 1:N 铺路。
+- 调用链：remote `approval_decision` 先用 `cmd.session_id` 校验 GUI 中审批所属 thread；通过后，通用 `agent_bridge::decide_approval` 用 owner session 发 gRPC `approval_decision`；agent `commands.rs` 再把 session 透传 `decide` 做第二层校验。此为防 `entry_id` 泄漏 + 为 1:N 铺路。
 
 ### 8.7 撤销/登出 `[设计]`
 - Phase 1：解绑 = 删本地 creds + `remote_stop` + 换 pairId（无服务端撤销，靠 token 作废 + pairId 失效）。
 - Phase 2 `[已定]`：短期 user JWT + 刷新（停刷新即下次重连失效，≤TTL）；不做 server kick（二期再议）；"已链接设备列表 + 远程登出"二期。
 
-### 8.8 L0 门禁演进 `[设计]`
-- `start()`：`if is_release() { reject }` → `if is_release() && mode != "paired" { reject }`。release 必须 paired+creds；dev 仍可 dev 直连。
+### 8.8 release 门禁 `[暂缓]`
+- 当前前端在 release 构建隐藏 Remote 入口，Tauri 后端命令仍注册。此项本阶段不改；进入正式发布前需结合 L1 scoped JWT 再确定后端门禁策略。
 
 ### 8.9 简单配对的安全边界（写实，重要）`[设计]`
 简单配对（Phase 1）**不**提供 §1 I1 的"服务端 subject 强制隔离"——那需要 JWT（Phase 2）。它提供的是：
 - **接入控制**：NATS 启用基于 token/password 的接入，配对 token 作连接凭证，外人无 token 连不上。
 - **命名分区**：pairId 随机不可猜，subject 按 `p.{pairId}.>` 分区，应用层约定不互串。
 - **不提供的（写实）**：同一 NATS 实例下，简单配对用**全局接入 token**（静态配置无法承载运行时随机 per-pair 用户），故**恶意**多租户隔离不成立——知道全局 token 者理论上可猜 subject（但 pairId 随机，实际猜不中）。**强隔离留 Phase 2 JWT**。
-- 结论：简单配对 = L0 的"粗鉴权"实质升级（随机 pairId + 接入 token + 命名分区），适合本地/受控联调；**公开发布仍须 Phase 2（≥L1）**，发布纪律不变（[总纲 §6](remote-control-plan.md)）。
+- 结论：简单配对 = L0 的"粗鉴权"实质升级（随机 pairId + 接入 token + 命名分区）。当前 Relay 已公网部署用于持 token 的受控联调，但它不是不受信任多租户的安全边界；**正式公开发布仍须 Phase 2（≥L1）**。
 
 ### 8.10 待定项默认 `[待定→默认]`
 | 项 | 默认 | 理由 |
