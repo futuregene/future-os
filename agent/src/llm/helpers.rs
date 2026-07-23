@@ -645,7 +645,8 @@ mod message_conversion_tests {
                 ..Default::default()
             },
         ];
-        let converted = Client::convert_messages_to_openai(msgs, "system prompt".to_string(), false);
+        let converted =
+            Client::convert_messages_to_openai(msgs, "system prompt".to_string(), false);
         assert_eq!(converted.len(), 3); // system prompt + system msg + user msg
         assert_eq!(converted[0]["role"], "system");
         assert_eq!(converted[1]["role"], "system");

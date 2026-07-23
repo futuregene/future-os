@@ -731,7 +731,8 @@ mod tests {
             _messages: Vec<crate::types::Message>,
             _tools: Vec<crate::types::ToolDef>,
             _system_prompt: String,
-        ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>> {
+        ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
+        {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
             Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
         }
@@ -783,11 +784,17 @@ mod tests {
     #[test]
     fn loop_interrupt_and_clear() {
         let loop_ = make_loop();
-        assert!(!loop_.interrupt_flag().load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!loop_
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
         loop_.abort();
-        assert!(loop_.interrupt_flag().load(std::sync::atomic::Ordering::SeqCst));
+        assert!(loop_
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
         loop_.clear_interrupt();
-        assert!(!loop_.interrupt_flag().load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!loop_
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
@@ -843,7 +850,11 @@ mod tests {
         assert_eq!(copy.model, loop_.model);
         assert_eq!(copy.system_prompt, "original prompt");
         // Independent state: interrupt flag, queues should be fresh
-        assert!(copy.interrupt_flag().load(std::sync::atomic::Ordering::SeqCst) == false);
+        assert!(
+            copy.interrupt_flag()
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == false
+        );
         assert_eq!(copy.pending_message_count(), 0);
         // Modify original's queue, copy should be unaffected
         loop_.steer("test".to_string());
@@ -871,7 +882,9 @@ mod tests {
     fn loop_interrupt_combines_steer_and_abort() {
         let loop_ = make_loop();
         loop_.interrupt("stop and steer".to_string());
-        assert!(loop_.interrupt_flag().load(std::sync::atomic::Ordering::SeqCst));
+        assert!(loop_
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(loop_.queued_counts().0, 1);
     }
 
@@ -879,7 +892,9 @@ mod tests {
     fn loop_steer_does_not_abort() {
         let loop_ = make_loop();
         loop_.steer("steer only".to_string());
-        assert!(!loop_.interrupt_flag().load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!loop_
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(loop_.queued_counts().0, 1);
     }
 
@@ -1036,14 +1051,12 @@ mod tests {
     #[tokio::test]
     async fn execute_one_tool_after_hook_transforms() {
         let config = crate::types::AgentConfig {
-            after_tool_call: Some(std::sync::Arc::new(
-                |_name, _id, _args, _result, _err| {
-                    Some(crate::types::ToolCallResult {
-                        result: "after-hook".to_string(),
-                        is_error: false,
-                    })
-                },
-            )),
+            after_tool_call: Some(std::sync::Arc::new(|_name, _id, _args, _result, _err| {
+                Some(crate::types::ToolCallResult {
+                    result: "after-hook".to_string(),
+                    is_error: false,
+                })
+            })),
             ..Default::default()
         };
         let tc = crate::types::ToolCall {
@@ -1062,14 +1075,12 @@ mod tests {
     #[tokio::test]
     async fn execute_one_tool_after_hook_error() {
         let config = crate::types::AgentConfig {
-            after_tool_call: Some(std::sync::Arc::new(
-                |_name, _id, _args, _result, _err| {
-                    Some(crate::types::ToolCallResult {
-                        result: "hook error".to_string(),
-                        is_error: true,
-                    })
-                },
-            )),
+            after_tool_call: Some(std::sync::Arc::new(|_name, _id, _args, _result, _err| {
+                Some(crate::types::ToolCallResult {
+                    result: "hook error".to_string(),
+                    is_error: true,
+                })
+            })),
             ..Default::default()
         };
         let tc = crate::types::ToolCall {
@@ -1138,9 +1149,7 @@ mod tests {
             chunks: vec!["Hello ".to_string(), "world".to_string()],
         };
         let loop_ = Loop::new(std::sync::Arc::new(provider), "test-model");
-        let result = loop_
-            .run_streaming("test prompt".to_string(), |_| {})
-            .await;
+        let result = loop_.run_streaming("test prompt".to_string(), |_| {}).await;
         assert!(result.is_ok());
         let final_text = result.unwrap();
         assert!(final_text.contains("Hello world"));
@@ -1154,9 +1163,7 @@ mod tests {
         let loop_ = Loop::new(std::sync::Arc::new(provider), "test-model");
         // Inject a steer before running
         loop_.steer("steered message".to_string());
-        let result = loop_
-            .run_streaming("original".to_string(), |_| {})
-            .await;
+        let result = loop_.run_streaming("original".to_string(), |_| {}).await;
         assert!(result.is_ok());
     }
 

@@ -384,7 +384,13 @@ version: "1.0.0"
     #[test]
     fn extract_yaml_block_scalar_folded() {
         // Lines with more indent than parent
-        let lines = ["    line one", "    line two", "    ", "    line three", "  stop"];
+        let lines = [
+            "    line one",
+            "    line two",
+            "    ",
+            "    line three",
+            "  stop",
+        ];
         let result = extract_yaml_block_scalar(&lines, "  description: >", '>');
         assert_eq!(result, "line one line two\n\nline three");
     }

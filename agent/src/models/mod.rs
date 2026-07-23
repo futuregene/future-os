@@ -1169,7 +1169,9 @@ mod tests {
 
     #[test]
     fn model_accepts_images_unknown_returns_false() {
-        assert!(!super::model_accepts_images("definitely-not-a-real-model-xyz"));
+        assert!(!super::model_accepts_images(
+            "definitely-not-a-real-model-xyz"
+        ));
     }
 
     // ─── builtin_models / user_models_path / settings_path / get_default_model ──
@@ -1340,10 +1342,8 @@ mod tests {
         }"#;
         std::fs::write(&path, content).unwrap();
 
-        let (models, overrides) = super::load_user_models_with_overrides(
-            path.to_str().unwrap(),
-        )
-        .unwrap();
+        let (models, overrides) =
+            super::load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "custom-model");
@@ -1373,10 +1373,8 @@ mod tests {
         let path = dir.path().join("empty.json");
         std::fs::write(&path, r#"{}"#).unwrap();
 
-        let (models, overrides) = super::load_user_models_with_overrides(
-            path.to_str().unwrap(),
-        )
-        .unwrap();
+        let (models, overrides) =
+            super::load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
 
         assert!(models.is_empty());
         assert!(overrides.is_empty());
@@ -1386,19 +1384,21 @@ mod tests {
     fn load_user_models_provider_without_models() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("override-only.json");
-        std::fs::write(&path, r#"{
+        std::fs::write(
+            &path,
+            r#"{
             "providers": {
                 "test": {
                     "baseUrl": "https://test.api.com/v1",
                     "apiKey": "key123"
                 }
             }
-        }"#).unwrap();
-
-        let (models, overrides) = super::load_user_models_with_overrides(
-            path.to_str().unwrap(),
+        }"#,
         )
         .unwrap();
+
+        let (models, overrides) =
+            super::load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
 
         assert!(models.is_empty());
         assert_eq!(overrides.len(), 1);

@@ -494,13 +494,16 @@ mod tests {
                 _messages: Vec<crate::types::Message>,
                 _tools: Vec<crate::types::ToolDef>,
                 _system_prompt: String,
-            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>> {
+            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
+            {
                 let (_tx, rx) = tokio::sync::mpsc::channel(1);
                 Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
             }
         }
         let state = AppState {
-            sessions: std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+            sessions: std::sync::Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             session_manager: std::sync::Arc::new(crate::session::Manager::new(
                 std::path::PathBuf::from("/tmp/futureos-test-sessions"),
             )),

@@ -1044,7 +1044,8 @@ mod tests {
 
     #[test]
     fn usage_credit_cost_as_bool_returns_none() {
-        let json = r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":true}"#;
+        let json =
+            r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":true}"#;
         let u: Usage = serde_json::from_str(json).unwrap();
         assert!(u.credit_cost.is_none());
     }

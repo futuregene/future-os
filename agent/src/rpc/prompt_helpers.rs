@@ -380,13 +380,9 @@ mod tests {
             name: "photo.png".to_string(),
             thumbnail: None,
         }];
-        let msg = build_user_message(
-            "check image",
-            &[],
-            &attachments,
-            true,
-            &|path| Some(format!("data:image/png;base64,loaded-{path}")),
-        );
+        let msg = build_user_message("check image", &[], &attachments, true, &|path| {
+            Some(format!("data:image/png;base64,loaded-{path}"))
+        });
         // Should have text + image (from loader)
         assert!(msg.content.len() >= 2);
     }
@@ -430,11 +426,8 @@ mod tests {
 
     #[test]
     fn prepare_session_tool_call_non_path_tool() {
-        let args = prepare_session_tool_call(
-            "/workspace",
-            "shell",
-            &serde_json::json!({"command": "ls"}),
-        );
+        let args =
+            prepare_session_tool_call("/workspace", "shell", &serde_json::json!({"command": "ls"}));
         // Shell tool doesn't get path rewritten
         assert_eq!(args["command"], "ls");
     }
@@ -464,14 +457,26 @@ mod tests {
     #[test]
     fn approve_tool_path_write_and_edit() {
         // Should not panic
-        approve_tool_path_if_present("/workspace", "write", &serde_json::json!({"path": "test.txt"}));
-        approve_tool_path_if_present("/workspace", "edit", &serde_json::json!({"path": "test.txt"}));
+        approve_tool_path_if_present(
+            "/workspace",
+            "write",
+            &serde_json::json!({"path": "test.txt"}),
+        );
+        approve_tool_path_if_present(
+            "/workspace",
+            "edit",
+            &serde_json::json!({"path": "test.txt"}),
+        );
     }
 
     #[test]
     fn approve_tool_path_other_tools_noop() {
         // read and shell don't approve paths
-        approve_tool_path_if_present("/workspace", "read", &serde_json::json!({"path": "test.txt"}));
+        approve_tool_path_if_present(
+            "/workspace",
+            "read",
+            &serde_json::json!({"path": "test.txt"}),
+        );
         approve_tool_path_if_present("/workspace", "shell", &serde_json::json!({"command": "ls"}));
     }
 

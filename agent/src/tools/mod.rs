@@ -1831,9 +1831,7 @@ mod tests {
         let result = with_workspace_scope(
             workspace.to_string_lossy().to_string(),
             "all".to_string(),
-            async {
-                shell_handler(serde_json::json!({"command": "echo handler-works"})).await
-            },
+            async { shell_handler(serde_json::json!({"command": "echo handler-works"})).await },
         )
         .await;
         assert!(result.is_ok());
@@ -1850,9 +1848,7 @@ mod tests {
         let result = with_workspace_scope(
             workspace.to_string_lossy().to_string(),
             "all".to_string(),
-            async {
-                read_handler(serde_json::json!({"path": "data.txt"})).await
-            },
+            async { read_handler(serde_json::json!({"path": "data.txt"})).await },
         )
         .await;
         assert!(result.is_ok());
@@ -1904,10 +1900,7 @@ mod tests {
         )
         .await;
         assert!(result.is_ok());
-        assert_eq!(
-            std::fs::read_to_string(&file).unwrap(),
-            "after text"
-        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "after text");
     }
 
     // ─── coding_tools / all_tools ──────────────────────────────────────────

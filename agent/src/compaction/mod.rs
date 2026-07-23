@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn estimate_context_tokens_sums_messages() {
         let msgs = vec![
-            text_msg("user", &"a".repeat(100)), // 25 tokens
+            text_msg("user", &"a".repeat(100)),     // 25 tokens
             text_msg("assistant", &"b".repeat(40)), // 10 tokens
         ];
         assert_eq!(estimate_context_tokens(&msgs), 35);
@@ -536,9 +536,9 @@ mod tests {
     #[test]
     fn find_cut_point_returns_first_useful_cut() {
         let msgs = vec![
-            text_msg("user", &"a".repeat(400)),   // ~100 tokens
+            text_msg("user", &"a".repeat(400)),     // ~100 tokens
             text_msg("assistant", &"b".repeat(40)), // ~10 tokens
-            text_msg("user", &"c".repeat(100)),    // ~25 tokens
+            text_msg("user", &"c".repeat(100)),     // ~25 tokens
         ];
         // keep_recent 20 → keep last ~20 tokens → should cut before last msg
         let cut = find_cut_point(&msgs, 20);
@@ -585,16 +585,14 @@ mod tests {
         let msgs = vec![Message {
             role: "assistant".to_string(),
             content: None,
-            tool_calls: Some(vec![
-                crate::types::ToolCall {
-                    id: "tc1".to_string(),
-                    call_type: "function".to_string(),
-                    function: crate::types::ToolCallFn {
-                        name: "edit".to_string(),
-                        arguments: serde_json::json!(r#"{"path":"/tmp/edit.txt"}"#),
-                    },
+            tool_calls: Some(vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "edit".to_string(),
+                    arguments: serde_json::json!(r#"{"path":"/tmp/edit.txt"}"#),
                 },
-            ]),
+            }]),
             ..Default::default()
         }];
         let (reads, writes) = extract_file_operations(&msgs);
@@ -646,7 +644,12 @@ mod tests {
         // Need enough messages so that should_compact triggers
         let mut msgs = vec![];
         for i in 0..200 {
-            msgs.push(text_msg("user", &format!("message number {i} with extra text to push token count up higher and higher")));
+            msgs.push(text_msg(
+                "user",
+                &format!(
+                    "message number {i} with extra text to push token count up higher and higher"
+                ),
+            ));
         }
         let opts = CompactOptions {
             reserve_tokens: 50,

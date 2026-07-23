@@ -324,18 +324,17 @@ mod util_tests {
         let path = dir.path().join("test.png");
         {
             let mut f = std::fs::File::create(&path).unwrap();
-            f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0]).unwrap();
+            f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0])
+                .unwrap();
         }
-        assert_eq!(
-            detect_image_mime_type(&path),
-            Some("image/png".to_string())
-        );
+        assert_eq!(detect_image_mime_type(&path), Some("image/png".to_string()));
 
         // JPEG magic
         let path2 = dir.path().join("test.jpg");
         {
             let mut f = std::fs::File::create(&path2).unwrap();
-            f.write_all(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+            f.write_all(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap();
         }
         assert_eq!(
             detect_image_mime_type(&path2),
@@ -346,7 +345,8 @@ mod util_tests {
         let path3 = dir.path().join("test.gif");
         {
             let mut f = std::fs::File::create(&path3).unwrap();
-            f.write_all(&[0x47, 0x49, 0x46, 0x38, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+            f.write_all(&[0x47, 0x49, 0x46, 0x38, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap();
         }
         assert_eq!(
             detect_image_mime_type(&path3),
@@ -357,7 +357,8 @@ mod util_tests {
         let path4 = dir.path().join("test.webp");
         {
             let mut f = std::fs::File::create(&path4).unwrap();
-            f.write_all(&[0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]).unwrap();
+            f.write_all(&[0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50])
+                .unwrap();
         }
         assert_eq!(
             detect_image_mime_type(&path4),
@@ -368,7 +369,8 @@ mod util_tests {
         let path5 = dir.path().join("test.unk");
         {
             let mut f = std::fs::File::create(&path5).unwrap();
-            f.write_all(&[0x00, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+            f.write_all(&[0x00, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap();
         }
         assert_eq!(detect_image_mime_type(&path5), None);
     }
