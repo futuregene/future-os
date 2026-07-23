@@ -3,21 +3,15 @@
   "description": "让手机/网页远程接管本机会话（工具在本机执行）。开启后，本地对话会镜像给手机，手机也可驱动同一会话。",
   "running": "运行中",
   "notRunning": "未运行",
-  "tokenLabel": "接入 token",
-  "tokenHint": "已部署 Relay 的共享 NATS 接入 token（简单配对 Phase 1）。",
-  "tokenPlaceholder": "Relay 接入 token",
-  "pairIdLabel": "Pair ID",
-  "pairIdHint": "可选的 subject 命名分区覆盖；留空会复用已有配对，首次配对则随机生成。",
-  "pairIdPlaceholder": "留空则自动配对",
   "webClient": "Web 客户端",
   "stop": "停止远程",
   "pairAndStart": "配对并启动",
   "pairedAs": "已配对 {{pairId}}",
   "unpair": "解除配对",
   "pairingCodeLabel": "配对码（粘贴到 web 客户端）",
-  "pairingCodeHint": "把此码交给 web/手机客户端并在那里粘贴，10 分钟内有效。它含 NATS 地址、pairId 与接入 token——请当作密码对待。",
+  "pairingCodeHint": "把此码交给 web/手机客户端并在那里粘贴，5 分钟内且仅可使用一次。配对码只含领取凭证所需的短期 nonce，不含账号密钥或设备私钥。",
   "copy": "复制",
   "copied": "已复制",
   "copyFailed": "复制失败，请手动复制配对码。",
-  "note": "注：远程依赖桌面（GUI + Agent）在线且未睡眠——这是固有前提，非云故障。简单配对（Phase 1）仅提供接入控制 + 随机 pairId 分区，不提供服务端逐 subject 隔离（那需要 Phase 2 的 JWT）。"
+  "note": "注：远程依赖桌面（GUI + Agent）在线且未睡眠。桌面和 Web 使用各自的 NKey 私钥与短期 JWT；NATS 在服务端按 pairId 强制 subject 隔离。"
 }

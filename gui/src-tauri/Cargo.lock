@@ -1166,6 +1166,7 @@ dependencies = [
  "fuzzy-matcher",
  "ignore",
  "image",
+ "nkeys",
  "open",
  "prost",
  "reqwest",

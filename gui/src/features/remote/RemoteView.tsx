@@ -3,7 +3,6 @@ import type { RemotePairingStatus, RemoteStatus } from "./remoteClient";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
-import { TextInput } from "../../components/ui/TextInput";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
@@ -22,10 +21,8 @@ interface RemoteViewProps {
   onChangeSettings: (patch: Partial<AppSettings>) => void;
 }
 
-export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
+export function RemoteView(_: RemoteViewProps) {
   const { t } = useTranslation("remote");
-  const [pairId, setPairId] = useState(appSettings.remotePairId);
-  const [token, setToken] = useState("");
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   // Mirror the loaded status locally so start/stop can apply their returned
@@ -52,14 +49,6 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
       setPairing(loadedPairing);
   }, [loadedPairing]);
 
-  // Seed the form once settings load — the useState initializers ran before the
-  // async settings arrived. Keyed on the persisted values, so it won't clobber
-  // in-progress edits (typing changes local state, not appSettings, and this
-  // component is the only writer of these fields).
-  useEffect(() => {
-    setPairId(appSettings.remotePairId);
-  }, [appSettings.remotePairId]);
-
   const running = status?.running ?? false;
   const isPaired = pairing?.paired ?? false;
 
@@ -80,16 +69,10 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
     setError(null);
     setPairingCode(null);
     try {
-      const next = await startRemote({
-        pairId: pairId.trim() || undefined,
-        accessToken: token.trim(),
-      });
+      const next = await startRemote({});
       setStatus(next);
       if (next.pairingCode)
         setPairingCode(next.pairingCode);
-      // Persist only an explicit override. The generated/reused pairing identity
-      // remains sourced from the owner-only pairing file.
-      onChangeSettings({ remotePairId: pairId });
       setPairing(await getRemotePairingStatus());
     }
     catch (caught) {
@@ -175,31 +158,6 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
           </div>
         </div>
 
-        <div className="space-y-4">
-          <label className="block space-y-1">
-            <span className="text-sm font-medium text-ink-soft">{t("tokenLabel")}</span>
-            <TextInput
-              disabled={running || busy}
-              onChange={event => setToken(event.target.value)}
-              placeholder={t("tokenPlaceholder")}
-              type="password"
-              value={token}
-            />
-            <span className="block text-xs text-ink-muted">{t("tokenHint")}</span>
-          </label>
-
-          <label className="block space-y-1">
-            <span className="text-sm font-medium text-ink-soft">{t("pairIdLabel")}</span>
-            <TextInput
-              disabled={running || busy}
-              onChange={event => setPairId(event.target.value)}
-              placeholder={t("pairIdPlaceholder")}
-              value={pairId}
-            />
-            <span className="block text-xs text-ink-muted">{t("pairIdHint")}</span>
-          </label>
-        </div>
-
         {isPaired && !running
           ? (
               <div className="rounded-lg border border-line-soft bg-surface-subtle p-4 text-sm">
@@ -252,7 +210,7 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
               )
             : (
                 <Button
-                  disabled={busy || !token.trim()}
+                  disabled={busy}
                   onClick={() => void handleStart()}
                   variant="primary"
                 >

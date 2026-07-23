@@ -22,8 +22,8 @@ pub fn remote_status() -> Result<remote::RemoteStatus, crate::AppError> {
 
 /// Drop the persisted pairing credentials and stop the bridge (desktop "unpair").
 #[tauri::command]
-pub fn remote_unpair() -> Result<remote::RemoteStatus, crate::AppError> {
-    Ok(remote::unpair())
+pub async fn remote_unpair() -> Result<remote::RemoteStatus, crate::AppError> {
+    remote::unpair().await
 }
 
 /// Whether a pairing is persisted (for the UI's paired/unpaired indicator).

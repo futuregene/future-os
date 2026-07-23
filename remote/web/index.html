@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Remote Control · Web 验证端 (L0)</title>
+<title>Remote Control · Web 验证端</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -100,6 +100,7 @@
 <header>
   <input id="paircode" class="code" placeholder="粘贴配对码" />
   <button id="connect">连接</button>
+  <button id="unlink" class="ghost" disabled>解绑</button>
   <span id="presenceStatus" class="offline">桌面离线</span>
   <span id="status">未连接</span>
 </header>
@@ -136,20 +137,22 @@
 </div>
 
 <script type="module">
-import { connect } from "https://cdn.jsdelivr.net/npm/nats.ws@1/+esm";
+import { connect, jwtAuthenticator } from "https://cdn.jsdelivr.net/npm/nats.ws@1/+esm";
+import { createUser, fromSeed } from "https://cdn.jsdelivr.net/npm/nkeys.js@1/+esm";
 
 const $ = (id) => document.getElementById(id);
 const enc = (o) => new TextEncoder().encode(JSON.stringify(o));
 const dec = (m) => JSON.parse(new TextDecoder().decode(m.data));
 
-let nc = null, pair = "DEVPAIR", session = "", bubble = null, thinkEl = null;
+let nc = null, pair = "", session = "", bubble = null, thinkEl = null;
 let curRun = null; const seenEvents = new Set();
 const toolChips = new Map();
 let sessions = []; // 最近一次 list_sessions 结果，用于标题查找 + 高亮
-let presence = null; // KV presence：桌面在线状态 + 每 session streaming
+let presence = null; // 桌面在线状态 + 每 session streaming
 let isStreaming = false; // 当前选中会话是否在流式中（从事件或 presence 推断）
 let presenceTimer = null; // 本地定时器：周期重算 presence 是否过期（watch 无事件时的兜底）
 let availableModels = []; // list_models 结果缓存，连接时拉一次
+let credentialRefreshTimer = null;
 
 function setStatus(t, cls) { const s = $("status"); s.textContent = t; s.className = cls || ""; }
 function log(el) { $("log").appendChild(el); el.scrollIntoView({ block: "end" }); }
@@ -164,20 +167,17 @@ async function request(obj, sid) {
   return dec(m);
 }
 
-// 解码桌面生成的配对码（base64url JSON）。web 是纯浏览器，没有 Tauri 桥，
-// 故自行解码（配对码全 ASCII，atob 足够）。无效/过期返回 null。
 function decodePairingCode(s) {
   try {
     let b64 = s.trim().replace(/-/g, "+").replace(/_/g, "/");
     while (b64.length % 4) b64 += "=";
     const pc = JSON.parse(atob(b64));
-    if (pc?.v !== 1) return null;
+    if (pc?.v !== 2) return null;
     if (pc.exp && Math.floor(Date.now() / 1000) > pc.exp) return null;
     return pc;
   } catch { return null; }
 }
 
-// 本浏览器设备的稳定 id，用于 inboxPrefix（p.{pairId}.rep.{deviceId}）。无点。
 function getDeviceId() {
   let id = localStorage.getItem("remote.deviceId");
   if (!id) {
@@ -188,57 +188,166 @@ function getDeviceId() {
   return id;
 }
 
+function storedCredentials() {
+  try { return JSON.parse(localStorage.getItem("remote.credentials") || "null"); }
+  catch { return null; }
+}
+
+function storeCredentials(creds) {
+  localStorage.setItem("remote.credentials", JSON.stringify(creds));
+}
+
+function jwtExpiry(jwt) {
+  try {
+    let b64 = jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    return JSON.parse(atob(b64)).exp || 0;
+  } catch { return 0; }
+}
+
+async function responseJson(response) {
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.message || `HTTP ${response.status}`);
+  return body;
+}
+
+async function claimPairing(code) {
+  const pc = decodePairingCode(code);
+  if (!pc?.nonce || !pc?.claim_url) throw new Error("配对码无效或已过期");
+  const kp = createUser();
+  const seed = new TextDecoder().decode(kp.getSeed());
+  const deviceId = getDeviceId();
+  const body = await responseJson(await fetch(pc.claim_url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      nonce: pc.nonce,
+      device_id: deviceId,
+      device_public_key: kp.getPublicKey(),
+      device_name: navigator.userAgentData?.platform || navigator.platform || "Web client",
+    }),
+  }));
+  const creds = {
+    pairId: body.pair_id,
+    deviceId,
+    seed,
+    userJwt: body.user_jwt,
+    refreshToken: body.refresh_token,
+    natsWsUrl: body.nats_ws_url,
+    tokenUrl: pc.claim_url.replace(/\/pair\/claim$/, "/auth/token"),
+  };
+  storeCredentials(creds);
+  return creds;
+}
+
+async function refreshCredentials(creds) {
+  const kp = fromSeed(new TextEncoder().encode(creds.seed));
+  const body = await responseJson(await fetch(creds.tokenUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      pair_id: creds.pairId,
+      device_id: creds.deviceId,
+      public_key: kp.getPublicKey(),
+      role: "client",
+      refresh_token: creds.refreshToken,
+    }),
+  }));
+  const refreshed = { ...creds, userJwt: body.user_jwt, natsWsUrl: body.nats_ws_url };
+  storeCredentials(refreshed);
+  return refreshed;
+}
+
+function scheduleCredentialRefresh(creds) {
+  if (credentialRefreshTimer) clearTimeout(credentialRefreshTimer);
+  const delay = Math.max(5000, (jwtExpiry(creds.userJwt) * 1000) - Date.now() - 60000);
+  credentialRefreshTimer = setTimeout(async () => {
+    try {
+      setStatus("更新凭证中…");
+      const refreshed = await refreshCredentials(creds);
+      if (nc) await nc.close();
+      await connectWithCredentials(refreshed);
+    } catch (e) {
+      setStatus("凭证已失效: " + (e?.message || String(e)), "err");
+    }
+  }, delay);
+}
+
+async function connectWithCredentials(creds) {
+  pair = creds.pairId;
+  const seed = new TextEncoder().encode(creds.seed);
+  const opts = {
+    servers: creds.natsWsUrl,
+    inboxPrefix: `p.${pair}.rep.${creds.deviceId}`,
+    authenticator: jwtAuthenticator(creds.userJwt, seed),
+  };
+  nc = await connect(opts);
+  setStatus("已连接", "ok");
+  $("newsess").disabled = false; $("refresh").disabled = false; $("connect").disabled = true;
+  $("unlink").disabled = false;
+  const sub = nc.subscribe(`p.${pair}.evt.>`);
+  (async () => { for await (const m of sub) onEvent(dec(m), m.subject); })();
+  watchConnStatus();
+  watchPresence();
+  if (presenceTimer) clearInterval(presenceTimer);
+  presenceTimer = setInterval(refreshPresenceIndicator, 10000);
+  scheduleCredentialRefresh(creds);
+  await loadModels();
+  await listSessions();
+}
+
+async function revokeClient() {
+  const creds = storedCredentials();
+  if (!creds || !confirm("解绑后需要桌面重新生成配对码，确定继续？")) return;
+  try {
+    setStatus("正在解绑…");
+    const kp = fromSeed(new TextEncoder().encode(creds.seed));
+    const revokeUrl = creds.tokenUrl.replace(/\/auth\/token$/, "/pair/revoke");
+    const response = await fetch(revokeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pair_id: creds.pairId,
+        device_id: creds.deviceId,
+        public_key: kp.getPublicKey(),
+        refresh_token: creds.refreshToken,
+      }),
+    });
+    if (!response.ok && response.status !== 401) await responseJson(response);
+    if (credentialRefreshTimer) clearTimeout(credentialRefreshTimer);
+    if (presenceTimer) clearInterval(presenceTimer);
+    if (nc) await nc.close();
+    nc = null; pair = ""; session = ""; presence = null;
+    localStorage.removeItem("remote.credentials");
+    $("connect").disabled = false; $("unlink").disabled = true;
+    $("newsess").disabled = true; $("refresh").disabled = true; $("msg").disabled = true;
+    $("presenceStatus").textContent = "桌面离线";
+    $("presenceStatus").className = "offline";
+    setStatus("已解绑");
+  } catch (e) {
+    setStatus("解绑失败: " + (e?.message || String(e)), "err");
+  }
+}
+
 async function doConnect() {
   const code = $("paircode").value.trim();
-  if (!code) { setStatus("请粘贴配对码", "err"); return; }
-  const pc = decodePairingCode(code);
-  if (!pc) { setStatus("配对码无效或已过期", "err"); return; }
-  const url = pc.wsUrl;
-  if (!url) { setStatus("配对码缺少 wsUrl 字段，请重新生成配对码", "err"); return; }
-  const pair = pc.pairId;
-  const token = pc.token;
   try {
-    setStatus("连接中…");
-    const opts = { servers: url, inboxPrefix: `p.${pair}.rep.${getDeviceId()}`, token };
-    nc = await connect(opts);
-    setStatus("已连接", "ok");
-    $("newsess").disabled = false; $("refresh").disabled = false; $("connect").disabled = true;
-    // 订阅本 pair 所有会话事件（按 subject 过滤到当前选中会话）
-    const sub = nc.subscribe(`p.${pair}.evt.>`);
-    (async () => { for await (const m of sub) onEvent(dec(m), m.subject); })();
-    watchConnStatus();   // P1：断线/重连感知 → 重连后重放当前轮
-    watchPresence();     // P1：KV presence → 桌面在线状态 + 每 session streaming
-    // 本地兜底：watch 是事件驱动的，桌面停止后 KV 不再写入就收不到事件，
-    // 指示器会卡在"在线"。每 10s 按 lastHeartbeatTs 重算一次过期。
-    if (presenceTimer) clearInterval(presenceTimer);
-    presenceTimer = setInterval(refreshPresenceIndicator, 10000);
-    await loadModels();   // 拉取可用模型列表（连接时一次）
-    await listSessions(); // 自动加载会话列表
+    setStatus(code ? "领取凭证中…" : "连接中…");
+    let creds = code ? await claimPairing(code) : storedCredentials();
+    if (code) $("paircode").value = "";
+    if (!creds) throw new Error("请粘贴新的配对码");
+    if (jwtExpiry(creds.userJwt) * 1000 < Date.now() + 60000) {
+      creds = await refreshCredentials(creds);
+    }
+    await connectWithCredentials(creds);
   } catch (e) { setStatus("连接失败: " + (e?.message || String(e)), "err"); }
 }
 
-// KV presence：读 pairs 桶，感知桌面在线/离线 + 每 session streaming 态。
 async function watchPresence() {
+  const sub = nc.subscribe(`p.${pair}.presence`);
   try {
-    const js = nc.jetstream();
-    const kv = await js.views.kv("pairs");
-    // 先读一次当前值
-    try {
-      const entry = await kv.get(pair);
-      if (entry) onPresenceUpdate(JSON.parse(new TextDecoder().decode(entry.value)));
-    } catch { /* key 不存在 = 桌面未上报 */ }
-    // watch 后续变化
-    const watch = await kv.watch(pair);
-    (async () => {
-      for await (const e of watch) {
-        if (e.operation === "DEL" || e.operation === "PURGE") {
-          onPresenceUpdate(null);
-        } else {
-          try { onPresenceUpdate(JSON.parse(new TextDecoder().decode(e.value))); } catch {}
-        }
-      }
-    })();
-  } catch { /* KV 不可用（JetStream 未启用等）：presence 功能静默降级 */ }
+    for await (const message of sub) onPresenceUpdate(dec(message));
+  } catch { /* connection close */ }
 }
 
 function onPresenceUpdate(data) {
@@ -671,6 +780,7 @@ function renderApproval(data) {
 function autoGrow() { const t = $("msg"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 140) + "px"; }
 
 $("connect").onclick = doConnect;
+$("unlink").onclick = revokeClient;
 $("newsess").onclick = newSession;
 $("refresh").onclick = listSessions;
 $("send").onclick = send;
@@ -681,6 +791,7 @@ $("renameBtn").onclick = onRename;
 $("msg").addEventListener("input", autoGrow);
 // 对齐 GUI：streaming 时 Cmd/Ctrl+Enter 不发送（GUI 此时 early-return）；停止靠点"停止"键。
 $("msg").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !isStreaming) send(); });
+$("unlink").disabled = !storedCredentials();
 </script>
 </body>
 </html>

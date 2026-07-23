@@ -21,14 +21,14 @@
 | 命令投递/幂等 | cmd 订 `p.{pairId}.cmd.>`（多 token）+ **queue group** `bridge.{pairId}` + 每命令 **spawn**（防 HOL）+ 本机单实例锁 + **单飞**（同 `RpcCommand.id` 合并 in-flight/已完成） |
 | 历史拉取 | `get_messages` **分页**（cursor/offset+limit），单页 < NATS `max_payload`；历史是 **LLM Message 形状**，用**独立历史 renderer**（非 StreamEvent renderer） |
 | 审批 | decision 命令形态不变；**加 agent 侧 session 归属校验**（`ApprovalGate.decide` 收 `session_id`，与 `PendingApproval.session_id` 比对）；审批门**无 timeout**→ 客户端离线时 Bridge 自动 `abort`/`cancel_session`（见 §5） |
-| 鉴权节奏 | **先 App 后鉴权**；L0→L1→L2（见 0.3）；L1 为可公开发布下限；L1 扫码入网不做 App 账号二次校验，但**需最小签发服务**发 scoped creds |
+| 鉴权节奏 | **L1 已实现、待部署**；扫码入网不做 Web 账号二次校验，Desktop 用 Future 登录发起；platform-service 签 scoped creds |
 | 撤销 | 撤销在**下次重连/刷新生效（≤TTL）**；**已建连接需 server kick 才断**（不是"即时"）；L1 默认短期 JWT+刷新 |
 | 缓冲上限 | agent `run_events` 设 `max_events`/`max_bytes`；流设 `MaxBytes`/`MaxMsgSize`/`MaxAge`；超大事件截断 + 指针指向分页 `get_messages` |
-| presence | **每 session** 状态（streaming/idle）+ **每 session 的 `currentRunId`**；不用单一 activeSession（会话可并发） |
+| presence | core subject `p.{pairId}.presence` 心跳，含每 session 状态；不用 KV/`$JS.API`，会话可并发 |
 | 推送 | 退后（P6+） |
 | 客户端 | 开发期 Web 验证端先行，原生 App 复用同一渲染层；保留会话列表（一 PC 多会话，App 可切换） |
 | 远程端原则 | 远程端 = **已配对的本地前端**；不获得超出本地会话的权限；工具权限与审批**完全 follow 本地设置** |
-| 数据边界（写实） | 中枢**不存长期历史**，只短期缓存当前/最近若干轮事件（含文本/工具输出/审批内容）；**不做 E2EE**，靠 TLS + NATS auth + TTL/配额 + 运维 |
+| 数据边界（写实） | 中枢**不存长期历史**，只短期缓存当前/最近若干轮事件（含文本/工具输出/审批内容）；**不做 E2EE**；测试阶段明文只跑测试数据，生产再加 TLS/WSS |
 | 前提约束（固有） | 远控**依赖桌面在线且未睡眠**（工具在本机执行）；桌面睡眠/合盖/断网 → 远控不可用（presence 掉线），**非云故障** |
 
 ### 0.2 术语
@@ -45,7 +45,7 @@
 - **L1 扫码 + scoped creds**：账号+设备隔离（服务端强制）；App 不做账号二次校验；需最小签发服务。**← 可公开发布下限**。
 - **L2 加因子**：App 账号登录 + 生物识别 + 吊销/审计。
 
-**映射**：P0–P4 跑在 L0（内部/dev）→ P5 达到 L1（首个可发布）→ P6 到 L2。
+**映射**：P0–P4 已完成；P5 L1 代码已完成、待 NATS/platform-service 部署；P6 为后续。
 
 ### 0.4 Subject / 资源命名（全文唯一）
 | 用途 | 名称 |
@@ -53,8 +53,8 @@
 | 命令（request-reply） | 订阅 `p.{pairId}.cmd.>`；单条 `p.{pairId}.cmd.{session}` |
 | 命令回复 inbox | `p.{pairId}.rep.{device}`（客户端 **InboxPrefix**，不用默认 `_INBOX.>`） |
 | 事件（JetStream 每 pair 一流） | 流 `EVT_{pairId}`（签发服务配对时建），subject `p.{pairId}.evt.{session}` |
-| JetStream 发布 ack | Bridge 订自己的 `$JS.ACK.>`（publish 确认） |
-| 目录/presence（KV） | 桶 `pairs`，key `{pairId}`；值含**每 session** 状态（streaming）+ **每 session 的 `currentRunId`** |
+| JetStream 发布 ack | 走设备自己的 `p.{pairId}.rep.{desktop}.>` inbox |
+| 目录/presence | core subject `p.{pairId}.presence`；值含每 session 状态 |
 | 事件去重键 | `{run_id}:{idx}`（客户端自去重）；NATS `Nats-Msg-Id`=`{session}:{run_id}:{idx}`（辅） |
 
 ---
@@ -77,7 +77,7 @@
   ┌──────────────┐  nats.ws        ┌─────────────────────┐  async-nats     ┌──────────────┐
   │ 客户端        │◀──────────────▶│ 消息中枢 (NATS+JS)   │◀───────────────▶│ 桌面 Bridge   │
   │ Web / 原生App │ ①req cmd/订 evt│ future-os.cn         │ 订 cmd / 发 evt │ (async-nats) │
-  │ 瘦客户端      │ ④收 evt        │ + 签发服务 (L1)      │ KV presence     └──────┬───────┘
+  │ 瘦客户端      │ ④收 evt        │ + 签发服务 (L1)      │ core presence   └──────┬───────┘
   └──────────────┘                └─────────────────────┘             ②③ gRPC(localhost)
                                                                           ┌──────▼──────┐
                                                                           │ Rust Agent  │ 工具/会话在此
@@ -141,7 +141,7 @@
 remote/src/
   main.rs         # 加载配置 → 连 NATS → 重连循环
   config.rs       # ~/.future/remote/config.json: nats_url, creds, pairId
-  nats_client.rs  # async-nats：queue 订 cmd / JetStream 发 evt / KV presence / 重连
+  nats_client.rs  # async-nats：queue 订 cmd / JetStream 发 evt / core presence / 重连
   agent_client.rs # 本地 gRPC（复用 channels/grpc_client.rs 事件映射）
   bridge.rs       # 双向翻译：每 session 长期 pump(先订阅再发命令) + 每命令 spawn + 单飞幂等 + presence
   pairing.rs      # 配对码申领 + QR + creds 落盘（L1）
@@ -150,7 +150,7 @@ remote/src/
 - **每 session 长期订阅 `StreamEvents`，且在发 `execute_command` 之前 await 订阅就绪**——agent 是实时 broadcast、晚订阅会漏早期事件（`agent/src/grpc/mod.rs:175`）；P1 run buffer 兜底。（注意：`channels/feishu` 模板是 prompt 后才订阅、且 per-prompt，本项**是净新增**，非照搬。）
 - **cmd 用 `p.{pairId}.cmd.>` + queue group `bridge.{pairId}`**（防多 Bridge 重复执行）+ 本机单实例锁；**每命令 spawn**（防一个慢 `ExecuteCommand` HOL 阻塞其它 session）。
 - **单飞**：同 `RpcCommand.id` 合并 in-flight/已完成，超时重试不二次执行。
-- **不 purge**：只 publish 事件；旧轮由流 GC 老化。presence 心跳写 KV `pairs`（每 session 状态 + `currentRunId`）。
+- **不 purge**：只 publish 事件；旧轮由流 GC 老化。presence 走 core subject 心跳。
 
 CLI（仿 `future channel`/`future agent`）：`future remote start | stop | status | pair | unpair`。
 
@@ -167,7 +167,7 @@ CLI（仿 `future channel`/`future agent`）：`future remote start | stop | sta
 | 屏 | 内容 | 复用 |
 |---|---|---|
 | 配对（L1） | 扫 QR → 换 scoped creds | auth §4 |
-| 会话列表 | 该桌面会话（一 PC 多会话）、**每 session 在线/streaming 态**（读 KV `pairs`）；全量列表可 `list_sessions` | KV + `list_sessions` |
+| 会话列表 | 该桌面会话（一 PC 多会话）、每 session 在线/streaming 态；全量列表可 `list_sessions` | core presence + `list_sessions` |
 | 会话/聊天 | **流式渲染**（StreamEvent renderer，**按 currentRunId 选轮 + (run_id,idx) 去重**）；**历史滚动用独立 history renderer**（分页 `get_messages`，LLM Message 形状） | GUI 两套 renderer |
 | 审批 | `approval_request` → 批准/拒绝/取消 → `approval_decision` | 现有钩子 |
 | Composer | prompt / abort（prompt reply 是 accept-ack，完成看 `agent_end`；运行中拒绝新 prompt） | 与 GUI composer 一致 |
@@ -182,9 +182,12 @@ CLI（仿 `future channel`/`future agent`）：`future remote start | stop | sta
 - **远程端 = 已配对的本地前端**：不获得超出本地会话的权限；工具权限与审批**完全 follow 本地设置**（`permission_level`、审批门），远程不放宽也不默认收紧（"远程更严"为显式可选，默认关）。
 - **审批归属（H3）**：`ApprovalGate` 按全局 `entry_id` 查、无 pair/session 校验。1:1 下每 agent=一桌面=一 pair，天然 pair-scoped；仍加校验，且应放在 **agent 的 `ApprovalGate.decide`**（收 `session_id`，与 `PendingApproval.session_id`（`approval.rs:29`）比对不符则拒——一行签名改动，比 Bridge 记账便宜：Bridge 看不到 `entry_id→session` 映射）。故"零新语义"仅指**命令形态**不变。
 - **审批门无 timeout（H5 复核）**：`approval.rs` 的 `rx.recv()` **无期限**——手机 RTT 不会触发 agent 超时（好）；但**未应答审批会永久挂住该 session**（block_in_place 线程）直到 `abort`。→ **Bridge 在 presence 显示客户端离线时，对该 session 待审批自动发 `abort`/`cancel_session`**。
-- **本机 agent 不对外**：只 localhost 明文；对外全在 NATS creds + WSS/TLS；桌面**只出站**。
+- **本机 agent 不对外**：只 localhost 明文；对外经 NATS JWT，测试阶段暂用明文
+  NATS/WS 且只传测试数据；桌面**只出站**。
 - **每设备独立密钥**（私钥不离设备）+ 可撤销持久凭证；QR 不含任何秘密。
-- **数据边界（写实）**：中枢**不存长期历史**，只短期缓存当前/最近若干轮事件（含文本/工具输出/审批内容）；**不做 E2EE**，靠 TLS + NATS auth + TTL/配额 + 运维；历史/文件始终在本机（分页 `get_messages`）。
+- **数据边界（写实）**：中枢**不存长期历史**，只短期缓存当前/最近若干轮事件
+  （含文本/工具输出/审批内容）；**不做 E2EE**。当前靠 NATS auth + TTL/配额做
+  流程验证，生产再加 TLS/WSS；历史/文件始终在本机（分页 `get_messages`）。
 
 ---
 
@@ -194,14 +197,14 @@ CLI（仿 `future channel`/`future agent`）：`future remote start | stop | sta
 | **P0 兜底** | 现有 `channels/` 手机续接；**飞书交互卡回调→`approval_decision`（净新增，非"补"）** | — | 手机在飞书续接+审批 | — | S–M |
 | **P1 agent 缓冲** | run_id/idx 集中盖章 + 当前 run 缓冲 + `get_events_since` + `get_messages` 分页（§4.1） | — | prompt 事件不丢头部；断线补齐+去重；单测 | — | M |
 | **P2 Bridge+Web** | `remote/`（async-nats）+ `future remote` CLI + **Web 验证端** + **RN connectivity spike** | **L0** | 端到端；RN spike 过四关 | P1 | M |
-| **P3 中枢落地** | future-os.cn 公网 NATS+JetStream Relay（当前共享 token；每 pair 流/dupe-window 延后）+ 运维 | **L0（公网可达、受控凭证联调）** | Bridge 与 Web 端通过已部署 Relay 互通 | 与 P2 并行 | S–M |
+| **P3 中枢落地** | 公网测试 NATS+JetStream Relay；待切 operator/account JWT，暂不加 TLS | **L1 测试部署待办** | scoped JWT 与跨 pair 隔离验证 | 与 P5 联动 | S–M |
 | **P4 原生 App** | RN+`nats.ws`：列表/双 renderer/审批/composer | **L0（内部）** | 端到端跑通（内部/dev，未公开） | P2+P3 | L |
-| **P5 L1 鉴权** | 签发服务（含建流）+ 扫码配对 + scoped creds | **L1** | 服务端强制隔离；**首个可公开发布** | P4 | M |
+| **P5 L1 鉴权** | 签发服务（含建流）+ 一次性配对 + 双设备 NKey + scoped JWT/刷新/撤销 | **代码完成，待部署** | 服务端强制隔离；**首个可公开发布** | P4 | M |
 | **P6 L2 加固** | 账号二因子 + 生物识别 + 吊销/审计 + 弱网 + 推送 | **L2** | 安全评审通过 | P5 | M–L |
 
 \* 单人粗估。**建议顺序**：P1→(P2+P3 并行)→P4→P5→P6。
 > ⚠️ **发布纪律**：P2–P4 的 L0 部署必须**受控**（内网/单 token/白名单），**绝不公开无鉴权**；公开发布必须先到 P5（L1）。
-> 🔗 **P5 鉴权的落地实现与分阶段开发计划**见 [auth §8](remote-control-auth.md)/[§9](remote-control-auth.md)：已确认 **mode 共存**（L0/L1 一套主流程）、**简单配对先行**（Phase 1=随机 pairId+接入 token+命名分区，无签发服务；Phase 2=JWT 签发+服务端强制隔离，最后做）。本表 P5 行对应 auth §9 Phase 2。
+> 🔗 P5 当前实现与发布门槛见 [auth](remote-control-auth.md) 和 [实现进度](remote-control-status.md)。
 
 ---
 
@@ -228,7 +231,8 @@ CLI（仿 `future channel`/`future agent`）：`future remote start | stop | sta
 
 ## 9. 待定项
 1. ~~Bridge 落位~~ **已决**：内嵌 **GUI Tauri 后端**（远程走 GUI 持久化路径，对话自动落 SQLite + 页面显示）；独立 `remote/` crate 保留为传输骨架/headless 参考。见 [实现进度](remote-control-status.md)。
-2. ~~NATS 部署~~ **已决**：公网 Relay 已部署，地址按 Future 平台环境派生；L1 前仍使用共享 token。
+2. **NATS JWT 切换待执行**：公网测试 Relay 已部署，按 future-server runbook
+   切 operator/account；暂用明文 NATS/WS，只允许测试数据。
 3. **App 框架**：RN+`nats.ws`（推荐）vs. Flutter（P2 spike 后定）。
 4. **设备凭证有效期/重复配对策略/是否升级 account 硬隔离**：见 [auth §7](remote-control-auth.md)。
 
@@ -245,7 +249,9 @@ CLI（仿 `future channel`/`future agent`）：`future remote start | stop | sta
 - [ ] 审批：agent `decide` 加 session 归属校验；审批门**无 timeout**→ 客户端离线时 Bridge 自动 cancel（复用 `cancel_session`）。
 - [ ] 权限矩阵：签发服务建/删流，**Bridge 只 publish**（不给 STREAM.CREATE/PURGE/DELETE）。
 - [ ] 撤销措辞：≤TTL 生效 + server kick 才断活跃连；nonce 原子消费。
-- [ ] **鉴权落地（见 [auth §8/§9](remote-control-auth.md)）**：单一 paired 主流程；Phase 1 简单配对=随机 pairId+接入 token+命名分区（无服务端 subject 强制，写实）；Phase 2 JWT 签发+服务端强制隔离+流/桶迁签发服务。审批归属已在 Bridge 与 agent 双层校验。
+- [x] **鉴权代码落地**：一次性 nonce、双设备 NKey、scoped JWT、刷新/撤销、服务端建删流、审批双层归属。
+- [ ] **鉴权部署验证**：NATS operator/account（测试期无 TLS）、platform-service
+  secrets、跨 pair 越权与 TTL/撤销端到端。
 
 ---
 

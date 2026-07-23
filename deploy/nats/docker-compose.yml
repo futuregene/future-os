@@ -1,4 +1,4 @@
-# Local L0 dev NATS (JetStream + WebSocket). See README.md for usage.
+# Legacy local-only shared-token NATS. See README.md before use.
 services:
   nats:
     image: nats:2.10-alpine

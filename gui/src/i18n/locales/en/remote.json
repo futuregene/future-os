@@ -3,21 +3,15 @@
   "description": "Let a phone/web client remotely take over this machine's session (tools still run locally). Once enabled, local conversations are mirrored to the phone, and the phone can drive the same session.",
   "running": "Running",
   "notRunning": "Not running",
-  "tokenLabel": "Access token",
-  "tokenHint": "The shared NATS access token for the deployed relay (simple pairing, Phase 1).",
-  "tokenPlaceholder": "Relay access token",
-  "pairIdLabel": "Pair ID",
-  "pairIdHint": "Optional subject namespace override. Leave empty to reuse the existing pairing or generate a random ID.",
-  "pairIdPlaceholder": "Leave empty for automatic pairing",
   "webClient": "Web client",
   "stop": "Stop remote",
   "pairAndStart": "Pair & start",
   "pairedAs": "Paired as {{pairId}}",
   "unpair": "Unpair",
   "pairingCodeLabel": "Pairing code (paste into the web client)",
-  "pairingCodeHint": "Hand this code to the web/phone client and paste it there. Valid for 10 minutes. It carries the NATS address, pairId and access token — treat it like a password.",
+  "pairingCodeHint": "Paste this into the web/phone client within 5 minutes. It is single-use and contains only a short-lived credential-claim nonce, never an account key or device private key.",
   "copy": "Copy",
   "copied": "Copied",
   "copyFailed": "Copy failed — copy the code manually.",
-  "note": "Note: remote control requires the desktop (GUI + agent) to be online and awake — this is an inherent prerequisite, not a cloud failure. Simple pairing (Phase 1) gives admission control + a random-pairId partition, NOT server-enforced per-subject isolation (that needs Phase 2 JWTs)."
+  "note": "Remote control requires the desktop (GUI + agent) to be online and awake. Desktop and web use separate NKey private keys with short-lived JWTs; NATS enforces pairId-scoped subject isolation."
 }

@@ -140,10 +140,10 @@ async fn handle_command_singleflight(
     *cached = capture.lock().unwrap().clone();
 }
 
-// SECURITY: Phase 1 authenticates NATS admission with one shared token and
-// partitions traffic with a random pairId. It does not enforce per-pair subject
-// ACLs; scoped user JWTs remain required before treating the public relay as a
-// hostile multi-tenant boundary.
+// SECURITY: NATS admits this bridge with a short-lived user JWT whose server-
+// enforced ACL is scoped to this pair. Session/approval ownership is still
+// checked in the command handlers because subject isolation and application
+// authorization are separate boundaries.
 async fn handle_command(client: &async_nats::Client, msg: async_nats::Message) {
     let cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
         Ok(cmd) => cmd,

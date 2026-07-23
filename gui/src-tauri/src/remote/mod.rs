@@ -3,10 +3,10 @@
 //! contract lives in `agent_bridge::headless` (shared with any future headless
 //! caller, so it can't drift from the frontend semantics).
 //!
-//! Design: see repo-root `docs/remote-control-*.md`. Currently implemented:
-//!  - Step A: connect NATS, hold client, report status.
-//!  - Step B: `publish_event` — mirror events to mobile at the `agent_bridge::stream` consumption point.
-//!  - Step C (`commands.rs`): subscribe to `p.{pairId}.cmd.>`, route mobile commands into the GUI's persistence path.
+//! Design: see `gui/DEV_MD/remote-control-*.md`. The embedded bridge connects
+//! with a short-lived, pair-scoped NATS user JWT, mirrors agent events, routes
+//! Web/App commands through the GUI persistence path, publishes presence, and
+//! refreshes credentials before expiry.
 
 mod commands;
 pub(crate) mod pairing;
@@ -31,6 +31,7 @@ struct RemoteState {
     pair_id: String,
     cmd_task: tokio::task::JoinHandle<()>,
     heartbeat_task: tokio::task::JoinHandle<()>,
+    refresh_task: tokio::task::JoinHandle<()>,
     web_task: tokio::task::JoinHandle<()>,
 }
 
@@ -44,20 +45,7 @@ static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RemoteStartInput {
-    /// Optional explicit pairId override. Otherwise the persisted pairing's
-    /// pairId is reused, or a fresh one is generated when there is no prior
-    /// pairing (so the pairing code stays stable across restarts).
-    #[serde(default)]
-    pub pair_id: Option<String>,
-    /// NATS shared access token (simple pairing). Always required — dev/no-auth
-    /// mode has been removed.
-    pub access_token: String,
-    /// Persistent device id (inbox prefix suffix). Reused from the persisted
-    /// pairing when absent.
-    #[serde(default)]
-    pub device_id: Option<String>,
-}
+pub struct RemoteStartInput {}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,144 +72,96 @@ fn empty() -> RemoteStatus {
     }
 }
 
-pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
-    // Simple pairing only — dev / no-auth mode has been removed. An access token
-    // is always required. Server-enforced per-subject isolation (JWT) is Phase 2;
-    // see auth §8.9 for the honest security boundary of simple pairing.
-    let token = input.access_token.trim().to_string();
-    if token.is_empty() {
-        return Err(crate::AppError::Message(
-            "Remote control requires an access token (simple pairing).".to_string(),
-        ));
-    }
-
-    // NATS addresses are derived from the current platform host (environment
-    // switch — test / production), not typed by the user. Protocol + ports follow
-    // the dev conventions: client bridge → nats://:4222, web client → ws://:9090.
-    let host = platform_host();
-    let bridge_url = format!("nats://{host}:4222");
-    let ws_url = format!("ws://{host}:9090");
-
+pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
     let _start_guard = START_LOCK.lock().await;
-
-    // Stop any previous connection first (idempotent: aborts the old subscription task).
     let _ = stop();
 
-    let client = connect_nats(&bridge_url, Some(&token)).await?;
+    let (creds, pairing_code) = match pairing::load_creds() {
+        Some(creds) => (pairing::refresh_bridge_jwt(creds).await?, None),
+        None => {
+            let (creds, code) = pairing::create_pairing().await?;
+            (creds, Some(code))
+        }
+    };
+    let client = connect_nats(&creds).await?;
+    pairing::save_creds(&creds)?;
     let js = async_nats::jetstream::new(client.clone());
+    let pair_id = creds.pair_id.clone();
 
-    // pairId / deviceId resolution: explicit override > persisted pairing > fresh
-    // random. Reusing the persisted pairId keeps the pairing code stable across
-    // restarts (a previously paired desktop does not mint a new identity).
-    let persisted = pairing::load_creds();
-    let pair_id = input
-        .pair_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| persisted.as_ref().map(|c| c.pair_id.clone()))
-        .unwrap_or_else(pairing::new_pair_id);
-    let device_id = input
-        .device_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| persisted.as_ref().map(|c| c.device_id.clone()))
-        .unwrap_or_else(pairing::new_device_id);
-    pairing::save_creds(&pairing::PairingCreds {
-        pair_id: pair_id.clone(),
-        token: token.clone(),
-        device_id,
-    })?;
-    let pairing_code = pairing::encode_pairing_code(&pair_id, &token, &ws_url);
-
-    // Start the command subscription task (Step C).
     let cmd_task = tokio::spawn(commands::command_loop(client.clone(), pair_id.clone()));
-
-    // Presence heartbeat: write KV `pairs` so clients can see desktop online state.
-    let heartbeat_task = spawn_presence_heartbeat(js.clone(), pair_id.clone());
-
-    // Web client HTTP server: serve remote/web/ on localhost:8022.
+    let heartbeat_task = spawn_presence_heartbeat(client.clone(), pair_id.clone());
+    let refresh_task = spawn_credential_refresh(pair_id.clone());
     let web_task = spawn_web_server();
 
     let status = RemoteStatus {
         running: true,
         connected: true,
-        nats_url: bridge_url.clone(),
+        nats_url: creds.nats_url.clone(),
         pair_id: pair_id.clone(),
-        pairing_code: Some(pairing_code),
+        pairing_code,
         web_url: Some(format!("http://localhost:{WEB_PORT}")),
         error: None,
     };
     *STATE.lock().unwrap() = Some(RemoteState {
         client,
         js,
-        nats_url: bridge_url,
+        nats_url: creds.nats_url,
         pair_id,
         cmd_task,
         heartbeat_task,
+        refresh_task,
         web_task,
     });
     Ok(status)
 }
 
-/// Extract the host (without scheme or path) from the current FutureGene
-/// platform URL, falling back to `localhost` when auth is absent or unreadable.
-/// Used to derive NATS addresses so they track the active environment switch.
-fn platform_host() -> String {
-    let url = crate::future_platform::current_platform_url();
-    url.trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split('/')
-        .next()
-        .unwrap_or("localhost")
-        .to_string()
-}
-
-/// Connect to NATS, with the shared access token when in paired mode.
 async fn connect_nats(
-    url: &str,
-    token: Option<&str>,
+    creds: &pairing::PairingCreds,
 ) -> Result<async_nats::Client, crate::AppError> {
-    let result = match token {
-        Some(t) => {
-            async_nats::connect_with_options(
-                url,
-                async_nats::ConnectOptions::with_token(t.to_string()),
-            )
-            .await
-        }
-        None => async_nats::connect(url).await,
-    };
-    result.map_err(|e| crate::AppError::Message(format!("Failed to connect to NATS: {e}")))
+    let key_pair = std::sync::Arc::new(
+        nkeys::KeyPair::from_seed(&creds.nkey_seed)
+            .map_err(|error| crate::AppError::Message(format!("Invalid desktop NKey: {error}")))?,
+    );
+    let options = async_nats::ConnectOptions::with_jwt(creds.user_jwt.clone(), move |nonce| {
+        let key_pair = key_pair.clone();
+        async move { key_pair.sign(&nonce).map_err(async_nats::AuthError::new) }
+    })
+    .custom_inbox_prefix(format!("p.{}.rep.{}", creds.pair_id, creds.desktop_id));
+    options
+        .connect(&creds.nats_url)
+        .await
+        .map_err(|error| crate::AppError::Message(format!("Failed to connect to NATS: {error}")))
 }
 
 /// Drop the persisted pairing and stop the bridge (the desktop "unpair").
-pub fn unpair() -> RemoteStatus {
-    let _ = pairing::clear_creds();
-    stop()
+pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
+    if let Some(creds) = pairing::load_creds() {
+        pairing::revoke_pairing(&creds).await?;
+    }
+    let status = stop();
+    pairing::clear_creds()?;
+    Ok(status)
 }
 
 pub fn stop() -> RemoteStatus {
     if let Some(state) = STATE.lock().unwrap().take() {
-        // Clear presence so web clients see "offline" immediately (not after TTL).
-        // `stop()` is reached from the synchronous `remote_stop` command, which
-        // Tauri dispatches on the main thread — outside any tokio runtime
-        // context — so `tokio::spawn` here panics ("no reactor running") and
-        // aborts the app. `tauri::async_runtime::spawn` uses Tauri's global
-        // runtime handle instead, which needs no current-thread context. The
-        // cloned `js` keeps the NATS connection alive until the delete lands.
         let pair_id = state.pair_id.clone();
-        let js = state.js.clone();
+        let client = state.client.clone();
         tauri::async_runtime::spawn(async move {
-            if let Ok(kv) = js.get_key_value("pairs").await {
-                let _ = kv.delete(&pair_id).await;
-            }
+            let subject = format!("p.{pair_id}.presence");
+            let payload = serde_json::to_vec(&json!({
+                "online": false,
+                "pairId": pair_id,
+                "lastHeartbeatTs": unix_timestamp(),
+                "sessions": [],
+            }))
+            .unwrap_or_default();
+            let _ = client.publish(subject, payload.into()).await;
+            let _ = client.flush().await;
         });
         state.cmd_task.abort();
         state.heartbeat_task.abort();
+        state.refresh_task.abort();
         state.web_task.abort();
     }
     empty()
@@ -254,7 +194,7 @@ pub fn status() -> RemoteStatus {
     }
 }
 
-/// Event tap (Step B / P1): if remote is running, mirror an agent event to
+/// If remote is running, mirror an agent event to
 /// `p.{pairId}.evt.{session}`. Returns immediately when not connected — does not block GUI event consumption.
 ///
 /// Uses JetStream publish with `Nats-Msg-Id = {session}:{runId}:{idx}`:
@@ -266,7 +206,8 @@ pub fn status() -> RemoteStatus {
 /// The publish is **fire-and-forget**: we spawn the ack-waiting future instead of
 /// awaiting it, so a missing stream (no matching JetStream stream → the server
 /// returns an error ack immediately) cannot block the agent event loop. This is
-/// what lets Phase 1 run without provisioning a stream per pair.
+/// what lets the bridge degrade gracefully if stream provisioning is
+/// temporarily unavailable.
 pub async fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &str, idx: i64) {
     let target = {
         let guard = STATE.lock().unwrap();
@@ -299,35 +240,11 @@ pub async fn publish_event(session_id: &str, event_type: &str, data: &str, run_i
     }
 }
 
-/// Spawn a periodic presence heartbeat that writes session state to the KV
-/// bucket `pairs` under key `{pairId}`. Clients read/watch this to know the
-/// desktop is online and which sessions are streaming.
-///
-/// The bucket is created if missing (L0 dev: no separate provisioning step).
-/// The heartbeat task aborts when `stop()` is called.
 fn spawn_presence_heartbeat(
-    js: async_nats::jetstream::Context,
+    client: async_nats::Client,
     pair_id: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        // Best-effort bucket creation; if it fails (e.g. JetStream not enabled
-        // or bucket already managed externally), heartbeat writes are silently
-        // skipped — presence is non-critical.
-        let kv = match js
-            .create_or_update_key_value(async_nats::jetstream::kv::Config {
-                bucket: "pairs".to_string(),
-                max_age: std::time::Duration::from_secs(120),
-                ..Default::default()
-            })
-            .await
-        {
-            Ok(kv) => kv,
-            Err(e) => {
-                eprintln!("remote: presence KV bucket creation failed: {e}");
-                return;
-            }
-        };
-
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(20));
         loop {
             interval.tick().await;
@@ -335,9 +252,58 @@ fn spawn_presence_heartbeat(
             let Ok(bytes) = serde_json::to_vec(&payload) else {
                 continue;
             };
-            if let Err(e) = kv.put(pair_id.as_str(), bytes.into()).await {
+            if let Err(e) = client
+                .publish(format!("p.{pair_id}.presence"), bytes.into())
+                .await
+            {
                 eprintln!("remote: presence heartbeat write failed: {e}");
             }
+        }
+    })
+}
+
+fn spawn_credential_refresh(pair_id: String) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let Some(creds) = pairing::load_creds().filter(|creds| creds.pair_id == pair_id) else {
+                return;
+            };
+            tokio::time::sleep(pairing::refresh_delay(&creds)).await;
+            let refreshed = match pairing::refresh_bridge_jwt(creds).await {
+                Ok(creds) => creds,
+                Err(error) => {
+                    eprintln!("remote: credential refresh failed: {error}");
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    continue;
+                }
+            };
+            let client = match connect_nats(&refreshed).await {
+                Ok(client) => client,
+                Err(error) => {
+                    eprintln!("remote: reconnect with refreshed credential failed: {error}");
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    continue;
+                }
+            };
+            if let Err(error) = pairing::save_creds(&refreshed) {
+                eprintln!("remote: save refreshed credential failed: {error}");
+            }
+            let js = async_nats::jetstream::new(client.clone());
+            let new_cmd = tokio::spawn(commands::command_loop(client.clone(), pair_id.clone()));
+            let new_heartbeat = spawn_presence_heartbeat(client.clone(), pair_id.clone());
+            let mut guard = STATE.lock().unwrap();
+            let Some(state) = guard.as_mut().filter(|state| state.pair_id == pair_id) else {
+                new_cmd.abort();
+                new_heartbeat.abort();
+                return;
+            };
+            let old_cmd = std::mem::replace(&mut state.cmd_task, new_cmd);
+            let old_heartbeat = std::mem::replace(&mut state.heartbeat_task, new_heartbeat);
+            state.client = client;
+            state.js = js;
+            state.nats_url = refreshed.nats_url;
+            old_cmd.abort();
+            old_heartbeat.abort();
         }
     })
 }
@@ -366,6 +332,13 @@ fn build_presence_payload(pair_id: &str) -> serde_json::Value {
             .unwrap_or_default(),
         "sessions": sessions,
     })
+}
+
+fn unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 /// Spawn a minimal HTTP server on `127.0.0.1:8022` that serves the web client

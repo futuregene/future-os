@@ -17,11 +17,6 @@ export interface RemotePairingStatus {
 }
 
 export interface RemoteStartInput {
-  /** Optional explicit pairId override; otherwise the persisted pairing is reused or a fresh id generated. */
-  pairId?: string;
-  /** NATS shared access token (simple pairing). Always required. */
-  accessToken: string;
-  deviceId?: string;
 }
 
 export async function startRemote(input: RemoteStartInput) {
