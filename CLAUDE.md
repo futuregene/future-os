@@ -102,7 +102,8 @@ Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from s
 | `engine/mod.rs` | `Engine` struct: wires provider, tools, session, and agent loop together |
 | `llm/mod.rs` | OpenAI-compatible streaming HTTP client (reqwest + SSE parsing). Supports thinking/reasoning content extraction, tool call accumulation from streaming chunks |
 | `grpc/mod.rs` | gRPC server using tonic. Implements `FutureAgent` service: `ExecuteCommand` (unary), `StreamEvents` (server-side streaming) |
-| `rpc/mod.rs` | Command handler dispatch (25+ commands) and `ServerSession` state management. SSE event broadcasting via tokio broadcast channel (capacity: 4096) |
+| `rpc/mod.rs` | Command handler dispatch (25+ commands), `AppState` session registry, and `get_state_internal` (lock-free reads). SSE event broadcasting via `SseBroadcaster` (tokio broadcast channel, capacity: 4096) |
+| `rpc/session_prompt.rs` | **Core prompt orchestration** (largest file): prompt → build StreamContext → agent loop → persist. Auto-generates session names, mid-stream snapshot saves, compaction marker rewriting, token/cost tracking. Both prompt and steer/followUp flow through here |
 | `session/mod.rs` | Conversation persistence as JSONL files in `~/.future/agent/sessions/<encoded-cwd>/`. Tree-structured entries with ParentID for forks. `Manager` handles save/load/list |
 | `types/mod.rs` | Core types: `Message`, `StreamEvent`, `AgentTool`, `ToolDef`, `AgentConfig`, `LLMProvider` trait, `ContentBlock` (polymorphic text/image/tool_result) |
 | `sandbox/mod.rs` | OS-level sandbox for tool execution: `ResolvedSandbox` (tier: off/manual/seatbelt), `EscalationRequest`/`EscalationRequester` for post-hoc approval of out-of-sandbox operations. macOS Seatbelt via `seatbelt.rs`, cross-platform path rules via `rules.rs` |
@@ -125,6 +126,46 @@ Additional Rust crates:
 API key resolution order: `auth.json` (by model ID) → `auth.json` (by provider) → model built-in key → `auth.json` default key.
 
 Session files are JSONL, tree-structured (each entry has ID + optional ParentID). Entry types: session_info, user, assistant, tool, compaction, model_change, thinking_level_change, branch_summary, label, custom.
+
+### Session persistence details (`session/mod.rs`)
+
+Session JSONL format: one `SessionEntry` JSON object per line. The `Session` struct has a top-level `name` field that is separate from entries — it's derived during `load_path()` from the most recent LABEL entry (highest priority) or `session_info.session_name` (fallback). `ServerSession.session_name` is the in-memory copy synced from `Session.name` during `switch_session()`.
+
+Two repair functions run on every load (they persist fixes immediately so they don't re-fire):
+- `strip_empty_assistants()` — removes assistant entries with no content AND no tool_calls
+- `repair_dangling_tool_calls()` — appends placeholder `[Tool execution cancelled]` tool results when the last entry is an assistant with unexecuted tool_calls
+
+Key naming gotcha: three places hold a "session name" — `ServerSession.session_name` (in-memory, authoritative for `get_state` RPC), `Session.name` (on disk, from LABEL or session_info), and `session_info.session_name` (inside the session_info JSON entry, auto-generated from first user message). `switch_session()` loads disk → memory; `set_session_name` writes both memory AND disk (as LABEL entry). The auto-name logic in `session_prompt.rs` only writes to the JSONL session_info entry — it does NOT update `ServerSession.session_name`.
+
+### Locking & concurrency
+
+- `parking_lot::RwLock` for shared message state (`messages: Arc<RwLock<Vec<AgentMessage>>>`) — no poisoning, faster than std
+- `tokio::sync::RwLock` for `agent_loop: Arc<RwLock<Loop>>` — async-aware, held briefly
+- `Arc<AtomicI64>` for cumulative token counters — lock-free reads from `get_state`
+- `parking_lot::Mutex<f64>` for `cumulative_cost`
+- Steering/followUp queues: `tokio::sync::mpsc` channels cloned from Loop, usable without the loop lock
+- `std::sync::atomic::AtomicBool` for `is_streaming` and `interrupt_flag`
+
+### StreamContext (per-session callbacks)
+
+Callbacks (save, tool_event, on_tool_result, on_user_message) were removed from the shared `Loop` struct and moved into `StreamContext` — a per-session struct passed to `run_streaming_with_messages()`. This fixed a design problem where concurrent sessions sharing one Loop would overwrite each other's callbacks. The global `RwLock<Loop>` still serializes model/thinking changes, but streaming runs can now share the Loop concurrently via `&self` (read-only access during streaming).
+
+```rust
+pub struct StreamContext {
+    pub model: String,           // bare model ID for API calls
+    pub system_prompt: String,
+    pub on_tool_result: Option<PersistCallback>,
+    pub save_callback: Option<PersistCallback>,
+    pub tool_event_callback: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+    pub on_user_message: Option<PersistCallback>,
+}
+```
+
+The `model` field must be the bare canonical ID (e.g. `"deepseek-v4-pro"`), NOT the display format (`"future/deepseek-v4-pro"`). `ServerSession.model` stores the display format; `Loop.model` stores the bare ID. Mixing them causes LLM API 404 errors.
+
+### Cargo workspace layout
+
+Root `Cargo.toml` is a workspace with members `agent`, `channels`, `remote`. `gui/src-tauri` is deliberately excluded (Tauri builds via npm tooling). Shared deps (tokio, tonic, serde, etc.) are declared once in `[workspace.dependencies]`; members opt in with `{ workspace = true }`. The release profile is at workspace root — member `[profile.*]` sections are silently ignored by cargo.
 
 ### gRPC API (`proto/future.proto`)
 
