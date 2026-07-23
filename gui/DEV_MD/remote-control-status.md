@@ -1,7 +1,7 @@
 # 远程控制 · 实现进度（L0 / GUI 内嵌）
 
 > 设计真源：[plan](remote-control-plan.md) · [relay](remote-control-relay.md) · [auth](remote-control-auth.md)。
-> 本文记录**已实现**的部分、怎么跑、下一步。当前处于 **L0（无鉴权，仅本地/受控网络）**。
+> 本文记录**已实现**的部分、怎么跑、下一步。当前处于 **L0 简单配对**：共享接入 token 提供接入控制 + 随机 pairId 命名分区，**无**服务端逐 subject 强制隔离（那需 Phase 2 JWT）；仅本地/受控网络，禁公网。
 
 ## 架构决策（本阶段确定）
 - **Bridge 内嵌 GUI Tauri 后端**（不是独立进程）。原因：远程对话要落 GUI 的 SQLite 并在页面实时显示，而 GUI 的持久化是"谁发起谁落库"（`agent_prompt` → `stream.rs` 落 `run_events`）。内嵌后，手机命令走 GUI 现有 prompt 路径，天然落库+显示+镜像。
@@ -39,11 +39,11 @@
     - Web 端：chat header 显示模型下拉 + 思考等级下拉（off/low/medium/high）+ 重命名按钮；切换会话时从 `get_state` 拉当前值填充；重命名同步更新列表标题。
 
 - **Phase 1 简单配对 + 审批归属（已完成，落地见 [auth §8/§9](remote-control-auth.md)）**：
-  - **mode 共存**：`RemoteStartInput.mode = "dev" | "paired"`。dev = 无鉴权直连（仅非 release）；paired = 带共享接入 token 连接 + 配对码 + 持久凭证。release 门禁改为「dev 拒、paired 放行」。
-  - **简单配对凭证** `remote/pairing.rs`：随机 pairId + 共享 NATS 接入 token + 每设备 deviceId，凭证落 `~/.future/remote_pairing.json`（0600）；配对码 = base64url JSON（10min 窗口）。base64url 编解码无依赖；Rust 解码仅 `cfg(test)`（客户端在 JS 解码，浏览器无 Tauri 桥）。
+  - **单一 paired 模式（dev / 无鉴权直连已移除）**：`RemoteStartInput { nats_url, access_token(必需), pair_id?(覆盖), device_id? }`。**pairId 解析** = 显式覆盖 > 已持久化配对的 pairId > 随机生成——已配对桌面重启**复用**同一 pairId（配对码稳定），首次才随机；deviceId 同理复用。
+  - **简单配对凭证** `remote/pairing.rs`：复用或随机的 pairId + 共享 NATS 接入 token + 每设备 deviceId，凭证落 `~/.future/remote_pairing.json`（0600）；配对码 = base64url JSON（10min 窗口，**只含 pairId+token，不含 NATS 地址**——web 的 ws 地址由用户手填）。base64url 编解码无依赖；Rust 解码仅 `cfg(test)`（客户端在 JS 解码，浏览器无 Tauri 桥）。
   - **GUI 配对 UI**：Remote 页加接入 token 输入 +「配对并启动」+ 配对码显示/复制 + 已配对/解绑（`remote_pairing_status` / `remote_unpair` 命令）。
   - **Web 配对**：粘贴配对码（JS 自解）或手填 url/pair/token；connect 带 token + `inboxPrefix = p.{pairId}.rep.{deviceId}` —— **回复 inbox 已收敛**到 pair 命名空间，不再用默认 `_INBOX.>`。
-  - **NATS dev token auth**：`deploy/nats/nats.conf` 启用共享接入 token（client 4222 + websocket 8080 同值），README 同步；保留 no-auth 注释替代方案。
+  - **NATS dev token auth**：`deploy/nats/nats.conf` 启用共享接入 token（client 4222 + websocket 8080 同值），README 同步。conf 保留 no-auth 注释替代方案（仅 NATS 层；**GUI/web 已不支持 no-auth 连接**——dev 模式已移除）。
   - **审批 session 归属校验**（agent crate）：`ApprovalGate::decide` 加 `session_id` 参数，与 `PendingApproval.session_id` 比对，跨 session 拒绝（auth I1 例外，防 `entry_id` 泄漏越权批准）；2 个单测。
   - **publish fire-and-forget**：`publish_event` 原先 `await` JetStream ack（与自身注释矛盾；无匹配流时会阻塞 agent 事件循环）改为 `tokio::spawn` 发包。故 Phase 1 **无需为每 pair 建流**——实时走 core pub/sub，重连/中途加入走 `get_events_since`（agent 侧 buffer，与 NATS 流无关）。
   - **JetStream consumer 升级（原计划 1.8）延后**：流 provision + web `deliver=all` consumer 回放推到简单配对之后；当前 core sub + backfill 已覆盖重连/中途加入。
@@ -55,11 +55,11 @@
 - **弱网/重连健壮**：中途加入某轮补齐前缀；断线重连自动重放；同一事件多次到达按 `(runId,idx)` 去重。
 
 ## 边界 / 未做
-- **无鉴权**（L0）：仅本地/受控网络，**禁公网**。GUI 后端连 `nats://…:4222`（客户端口）；网页连 `ws://…:8080`。
+- **简单配对接入控制**（L0，无服务端 subject 强制）：仅本地/受控网络，**禁公网**。GUI 后端连 `nats://…:4222`（客户端口）；网页连 `ws://…:8080`。无 dev/无鉴权直连路径（已移除）。
 - **run 边界仅对 prompt 精确（P1 review C2，已知，暂缓）**：`start_run` 只在初始 `prompt` 调；流式中 `steer`/`follow_up` 复用同一 `run_id`（会多发一个 `agent_start`），手机端会把追加回答并进同一气泡。当前手机/网页只发 `prompt`，不受影响；真手机 App 阶段再改 run 模型。
 - **agent_start 非严格 idx 0（review M3）**：客户端以 `runId` 变化判新轮，不依赖 idx 0，故无实际影响。
 - **超长轮（>20000 事件）回放丢前缀**：`truncated` 已提示，不静默；必要时再调大或按时长裁剪。
-- **L1 鉴权部分完成**：简单配对（共享接入 token + 随机 pairId 分区，Phase 1）已做；**JWT 签发服务 + 服务端逐 subject 强制隔离未做**（在 `future-server`，见 `future-server/docs/remote-control.md` 与 [auth §9 Phase 2](remote-control-auth.md)）。简单配对**禁公网**（全局 token 无恶意多租户隔离）。
+- **L1 鉴权部分完成**：简单配对（共享接入 token + 复用/随机 pairId 分区，Phase 1）已做；**JWT 签发服务 + 服务端逐 subject 强制隔离未做**（在 `future-server`，见 `future-server/docs/remote-control.md` 与 [auth §9 Phase 2](remote-control-auth.md)）。简单配对**禁公网**（全局 token 无恶意多租户隔离）。
 - 并发：GUI 正在跑某会话时手机又发同一会话 → 被 `PromptSessionGuard` 拒（"already running"）。
 - **回复 inbox 已收敛**：客户端 connect 设 `inboxPrefix = p.{pairId}.rep.{deviceId}`，Bridge reply 跟随该 inbox，不再用默认 `_INBOX.>`。
 - **JetStream 回放延后**：事件目前走 core pub/sub（无 NATS 流），重连/中途加入靠 `get_events_since`；`EVT_{pairId}` 流 provision + web consumer 回放延后（见 Phase 1 简单配对段）。
@@ -69,7 +69,8 @@
 ```bash
 # 1) NATS（nats.conf 默认启用共享接入 token = devpairingtoken；client+ws 同值）
 cd deploy/nats && docker compose up -d
-#    要纯无鉴权 dev：注释掉 nats.conf 里两个 authorization 块。
+#    要纯无鉴权 NATS：注释掉 nats.conf 里两个 authorization 块（仅 NATS 层；
+#    GUI/web 已不支持 no-auth 连接，dev 模式已移除，故此路径仅供其他 NATS 客户端测试）。
 # 2) GUI：Remote → 填 NATS 地址 + 接入 token（devpairingtoken）→「配对并启动」
 #    配对成功后页面显示配对码，点复制。
 make run-gui

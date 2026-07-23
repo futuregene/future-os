@@ -5,8 +5,7 @@ export interface RemoteStatus {
   connected: boolean;
   natsUrl: string;
   pairId: string;
-  mode: string | null;
-  /** One-shot pairing code (base64url) returned only by a successful paired start. */
+  /** One-shot pairing code (base64url) returned only by a successful start. */
   pairingCode: string | null;
   webUrl: string | null;
   error: string | null;
@@ -20,9 +19,10 @@ export interface RemotePairingStatus {
 
 export interface RemoteStartInput {
   natsUrl: string;
-  pairId: string;
-  mode?: "dev" | "paired";
-  accessToken?: string;
+  /** Optional explicit pairId override; otherwise the persisted pairing is reused or a fresh id generated. */
+  pairId?: string;
+  /** NATS shared access token (simple pairing). Always required. */
+  accessToken: string;
   deviceId?: string;
 }
 

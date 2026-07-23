@@ -29,7 +29,6 @@ struct RemoteState {
     js: async_nats::jetstream::Context,
     nats_url: String,
     pair_id: String,
-    mode: String,
     cmd_task: tokio::task::JoinHandle<()>,
     heartbeat_task: tokio::task::JoinHandle<()>,
     web_task: tokio::task::JoinHandle<()>,
@@ -48,15 +47,16 @@ static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub struct RemoteStartInput {
     /// The GUI backend connects to the NATS **client port** (`nats://host:4222`), NOT the browser WebSocket port.
     pub nats_url: String,
-    /// pairId for `dev` mode. Ignored in `paired` mode (taken from creds / generated).
-    pub pair_id: String,
-    /// `"dev"` (default: no auth, non-release only) or `"paired"` (shared-token auth, Phase 1 simple pairing).
+    /// Optional explicit pairId override. Otherwise the persisted pairing's
+    /// pairId is reused, or a fresh one is generated when there is no prior
+    /// pairing (so the pairing code stays stable across restarts).
     #[serde(default)]
-    pub mode: Option<String>,
-    /// NATS shared access token. Required for `mode = "paired"`.
-    #[serde(default)]
-    pub access_token: Option<String>,
-    /// Persistent device id (inbox prefix suffix). Generated + persisted when absent in paired mode.
+    pub pair_id: Option<String>,
+    /// NATS shared access token (simple pairing). Always required — dev/no-auth
+    /// mode has been removed.
+    pub access_token: String,
+    /// Persistent device id (inbox prefix suffix). Reused from the persisted
+    /// pairing when absent.
     #[serde(default)]
     pub device_id: Option<String>,
 }
@@ -68,8 +68,7 @@ pub struct RemoteStatus {
     pub connected: bool,
     pub nats_url: String,
     pub pair_id: String,
-    pub mode: Option<String>,
-    /// One-shot pairing code (base64url) returned only by a successful `paired` start, for the UI to display/copy.
+    /// One-shot pairing code (base64url) returned only by a successful start, for the UI to display/copy.
     pub pairing_code: Option<String>,
     pub web_url: Option<String>,
     pub error: Option<String>,
@@ -81,7 +80,6 @@ fn empty() -> RemoteStatus {
         connected: false,
         nats_url: String::new(),
         pair_id: String::new(),
-        mode: None,
         pairing_code: None,
         web_url: None,
         error: None,
@@ -89,62 +87,51 @@ fn empty() -> RemoteStatus {
 }
 
 pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
-    let mode = input.mode.clone().unwrap_or_else(|| "dev".to_string());
-    let is_paired = mode == "paired";
-
-    // SECURITY gate (see the note above `commands::handle_command`):
-    //  - dev   = no auth           → non-release builds only.
-    //  - paired = shared-token auth (Phase 1 simple pairing) → release allowed.
-    // Server-enforced per-subject isolation (JWT) is Phase 2; see auth §8.9.
-    if !is_paired && crate::build_info::is_release() {
+    // Simple pairing only — dev / no-auth mode has been removed. An access token
+    // is always required. Server-enforced per-subject isolation (JWT) is Phase 2;
+    // see auth §8.9 for the honest security boundary of simple pairing.
+    let token = input.access_token.trim().to_string();
+    if token.is_empty() {
         return Err(crate::AppError::Message(
-            "Remote control in dev mode is not available in release builds; pair with an access token."
-                .to_string(),
+            "Remote control requires an access token (simple pairing).".to_string(),
         ));
     }
-
-    let token = if is_paired {
-        Some(input.access_token.clone().ok_or_else(|| {
-            crate::AppError::Message("paired mode requires an access token.".to_string())
-        })?)
-    } else {
-        None
-    };
 
     let _start_guard = START_LOCK.lock().await;
 
     // Stop any previous connection first (idempotent: aborts the old subscription task).
     let _ = stop();
 
-    let client = connect_nats(&input.nats_url, token.as_deref()).await?;
+    let client = connect_nats(&input.nats_url, Some(&token)).await?;
     let js = async_nats::jetstream::new(client.clone());
 
-    // Paired: resolve + persist pairId/deviceId and mint the pairing code the UI
-    // hands to a client. Dev: pairId is whatever the caller passed (may be empty).
-    let (pair_id, pairing_code) = if is_paired {
-        let device_id = input
-            .device_id
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| pairing::load_creds().map(|c| c.device_id))
-            .unwrap_or_else(pairing::new_device_id);
-        let pair_id = input.pair_id.trim().to_string();
-        let pair_id = if pair_id.is_empty() {
-            pairing::new_pair_id()
-        } else {
-            pair_id
-        };
-        let t = token.as_deref().unwrap_or("");
-        let _ = pairing::save_creds(&pairing::PairingCreds {
-            pair_id: pair_id.clone(),
-            token: t.to_string(),
-            device_id,
-            nats_url: input.nats_url.clone(),
-        });
-        let code = pairing::encode_pairing_code(&pair_id, t);
-        (pair_id, Some(code))
-    } else {
-        (input.pair_id.clone(), None)
-    };
+    // pairId / deviceId resolution: explicit override > persisted pairing > fresh
+    // random. Reusing the persisted pairId keeps the pairing code stable across
+    // restarts (a previously paired desktop does not mint a new identity).
+    let persisted = pairing::load_creds();
+    let pair_id = input
+        .pair_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| persisted.as_ref().map(|c| c.pair_id.clone()))
+        .unwrap_or_else(pairing::new_pair_id);
+    let device_id = input
+        .device_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| persisted.as_ref().map(|c| c.device_id.clone()))
+        .unwrap_or_else(pairing::new_device_id);
+    let _ = pairing::save_creds(&pairing::PairingCreds {
+        pair_id: pair_id.clone(),
+        token: token.clone(),
+        device_id,
+        nats_url: input.nats_url.clone(),
+    });
+    let pairing_code = pairing::encode_pairing_code(&pair_id, &token);
 
     // Start the command subscription task (Step C).
     let cmd_task = tokio::spawn(commands::command_loop(client.clone(), pair_id.clone()));
@@ -160,8 +147,7 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
         connected: true,
         nats_url: input.nats_url.clone(),
         pair_id: pair_id.clone(),
-        mode: Some(mode.clone()),
-        pairing_code,
+        pairing_code: Some(pairing_code),
         web_url: Some(format!("http://localhost:{WEB_PORT}")),
         error: None,
     };
@@ -170,7 +156,6 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
         js,
         nats_url: input.nats_url,
         pair_id,
-        mode,
         cmd_task,
         heartbeat_task,
         web_task,
@@ -241,7 +226,6 @@ pub fn status() -> RemoteStatus {
                 connected,
                 nats_url: s.nats_url.clone(),
                 pair_id: s.pair_id.clone(),
-                mode: Some(s.mode.clone()),
                 pairing_code: None,
                 web_url: Some(format!("http://localhost:{WEB_PORT}")),
                 error: loop_dead.then(|| {

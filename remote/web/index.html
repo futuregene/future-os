@@ -190,20 +190,17 @@ function getDeviceId() {
 
 async function doConnect() {
   const url = $("url").value.trim();
-  // pair/token 只来自配对码（手填框已移除）；无配对码 = dev / no-auth，pair 默认 DEVPAIR。
-  let pair = "DEVPAIR";
-  let token = "";
-  const code = $("paircode").value.trim();
-  if (code) {
-    const pc = decodePairingCode(code);
-    if (!pc) { setStatus("配对码无效或已过期", "err"); return; }
-    pair = pc.pairId; token = pc.token;
-  }
   if (!url) { setStatus("请填写 NATS websocket 地址", "err"); return; }
+  // dev / no-auth 已取消：pair/token 只来自配对码，无配对码无法接入。
+  const code = $("paircode").value.trim();
+  if (!code) { setStatus("请粘贴配对码", "err"); return; }
+  const pc = decodePairingCode(code);
+  if (!pc) { setStatus("配对码无效或已过期", "err"); return; }
+  const pair = pc.pairId;
+  const token = pc.token;
   try {
     setStatus("连接中…");
-    const opts = { servers: url, inboxPrefix: `p.${pair}.rep.${getDeviceId()}` };
-    if (token) opts.token = token;   // 简单配对接入 token；无 token = L0 无鉴权
+    const opts = { servers: url, inboxPrefix: `p.${pair}.rep.${getDeviceId()}`, token };
     nc = await connect(opts);
     setStatus("已连接", "ok");
     $("newsess").disabled = false; $("refresh").disabled = false; $("connect").disabled = true;

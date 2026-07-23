@@ -154,7 +154,7 @@ App 登出       → 删本地 .creds + 通知签发服务撤销
 > 本节**不改动** §1–§7 的高层模型（不变量、分级、权限矩阵、配对时序、签发服务落点均为 `[已定]`），只补"对照当前代码、把 L0→L1 接到现有结构上"的实现层设计。标注：`[已定]`=§1–§7 已锁；`[设计]`=落地建议（已 review 确认）；`[待定→默认]`=开放项的默认取值。
 
 ### 8.1 已确认的落地决策
-- **D1 mode 共存（非两条代码路径）** `[设计-确认]`：L0/L1 用**一套**主流程（订 cmd、发 evt、命令路由、presence、去重、审批转发、web 渲染），凭证/鉴权作可选输入 `RemoteStartInput { mode: "dev"|"paired", creds: Option<Creds>, nats_url, pair_id }`。理由：鉴权只改变"连接怎么建立 + subject 权限由谁强制"，**不**改变连上后的业务逻辑；写两套要么复制业务逻辑（必然漂移）要么抽公共层（退化成 mode 方案）。差异**只收敛到 4 点**：① connect options；② pairId 来源（输入 vs creds 内）；③ 桶/流谁建；④ release 门禁条件。**守则**：dev 路径不得在 release 泄露，靠 §8.10 门禁 + 测试守住，否则"共存"=release 后门。
+- **D1 单一 paired 模式（dev 已移除；非两条代码路径）** `[设计-确认]`：远程只走 simple pairing（共享接入 token + 配对码），**dev / 无鉴权直连已取消**——它让 pairId/配对语义混乱且不安全。L0/L1 仍用**一套**主流程（订 cmd、发 evt、命令路由、presence、去重、审批转发、web 渲染），凭证作**必需**输入 `RemoteStartInput { nats_url, access_token, pair_id?, device_id? }`。理由同前：鉴权只改变"连接怎么建立 + subject 权限由谁强制"，**不**改变连上后的业务逻辑，故无需两条代码路径。**pairId 解析顺序**：显式覆盖 > 已持久化配对的 pairId > 随机生成——已配对桌面重启**复用**同一 pairId（配对码稳定），首次才随机；deviceId 同理复用。
 - **D2 分阶段：简单配对先行，JWT 签发最后** `[设计-确认]`：Phase 1 做"简单配对"（无签发服务、无 JWT，见 §8.11 + §9），Phase 2 才上签发服务 + 服务端强制隔离。
 - **D3 Web 验证端 L1 仅联调** `[设计-确认]`：浏览器无 keychain，creds 存 localStorage（明文，文档写实风险），正式凭证走 App。
 - **D4 审批 session 归属校验放 agent 侧** `[已定+确认]`：`ApprovalGate::decide` 加 `session_id`（见 §8.8）。
@@ -226,7 +226,7 @@ App 登出       → 删本地 .creds + 通知签发服务撤销
 ### Phase 1 — 简单配对（L0 加固，无 JWT）
 | 步 | 内容 | 验证 |
 |---|---|---|
-| 1.1 | **mode 共存框架 + 门禁演进**：`RemoteStartInput.mode/creds`；`ConnectOptions` 封装 dev/paired；§8.8 门禁 | release+dev 拒绝单测；dev 直连回归 |
+| 1.1 | **paired-only + pairId/deviceId 复用**：`RemoteStartInput` 必需 `access_token`（无则拒）；pairId/deviceId = 显式覆盖 > 已持久化配对 > 随机生成 | 无 token 拒绝单测；pairId 复用行为 |
 | 1.2 | **配对凭证模型**：本地生成/存 pairId(随机)+pairing token+device id；`.creds` 结构；GUI 安全存储 / web localStorage | 单元 + 落盘读回 |
 | 1.3 | **GUI 配对 UI**：Remote 页"配对"→生成 pairId+token+QR→显示；已配对状态+解绑；`app_settings` 存配对元数据（token 走安全存储） | 手动：出 QR、解绑清凭证 |
 | 1.4 | **web 配对输入**：url+pairId → 贴码/扫码解析 → 用 token+pairId+url connect；`inboxPrefix` | 扫码后连上、reply 落 pair 命名空间 |

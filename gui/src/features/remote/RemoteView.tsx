@@ -82,12 +82,10 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
     setError(null);
     setPairingCode(null);
     try {
-      const mode = token.trim() ? "paired" : "dev";
       const next = await startRemote({
         natsUrl,
-        pairId,
-        mode,
-        accessToken: token.trim() || undefined,
+        pairId: pairId.trim() || undefined,
+        accessToken: token.trim(),
       });
       setStatus(next);
       if (next.pairingCode)
@@ -167,10 +165,6 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
             {running
               ? (
                   <span className="text-xs text-ink-muted">
-                    ·
-                    {" "}
-                    {status?.mode ?? "dev"}
-                    {" "}
                     ·
                     {" "}
                     {status?.natsUrl}
@@ -289,11 +283,11 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
               )
             : (
                 <Button
-                  disabled={busy || !natsUrl.trim()}
+                  disabled={busy || !natsUrl.trim() || !token.trim()}
                   onClick={() => void handleStart()}
                   variant="primary"
                 >
-                  {token.trim() ? t("pairAndStart") : t("startDev")}
+                  {t("pairAndStart")}
                 </Button>
               )}
         </div>
