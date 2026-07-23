@@ -234,6 +234,10 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             sess.broadcaster.subscribe()
         };
 
+        // Clone for the lag-warning closure below — `session_id` is moved
+        // into the `ping` stream and can't be borrowed across the chain.
+        let lag_session_id = session_id.clone();
+
         let ping = tokio_stream::once(Ok(proto::StreamEvent {
             r#type: "ping".to_string(),
             data: r#"{"type":"ping"}"#.to_string(),
@@ -247,19 +251,29 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 }
                 match r {
                     Ok(event) => event_types.contains(&event.event_type),
-                    Err(_) => true, // pass through errors
+                    // Never terminate the stream on lag — the receiver can
+                    // continue after a lag, but a tonic error ends the gRPC
+                    // stream and the client must reconnect, missing every
+                    // event in between (including critical settings-change
+                    // events like model_changed).
+                    Err(_) => true,
                 }
             })
-            .map(|r| match r {
-                Ok(event) => Ok(proto::StreamEvent {
+            .filter_map(move |r| match r {
+                Ok(event) => Some(Ok(proto::StreamEvent {
                     r#type: event.event_type,
                     data: event.data,
                     run_id: event.run_id,
                     idx: event.idx,
-                }),
+                })),
+                // Log lagged messages but do NOT terminate the stream.
+                // Lag is expected under load (text_chunk bursts); the client
+                // can recover by re-reading state (get_state / get_events_since).
                 Err(e) => {
-                    tracing::warn!("SSE stream error: {}", e);
-                    Err(tonic::Status::internal(e.to_string()))
+                    tracing::warn!(
+                        "SSE stream lagged (session={lag_session_id}): {e} — skipping, stream continues"
+                    );
+                    None
                 }
             });
         let stream = ping.chain(events);

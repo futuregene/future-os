@@ -228,6 +228,19 @@ function applySettingsEvent(
   eventType: string,
   p: Record<string, unknown>,
 ) {
+  // cwd_changed must reconcile workspace even when the session isn't yet
+  // in the agent-state cache (e.g. TUI /cwd on a just-imported session
+  // whose state hasn't been fetched). Fire it unconditionally — once per
+  // event, regardless of how many cached threads share the session.
+  if (eventType === "cwd_changed" && typeof p.cwd === "string") {
+    invokeCommand("reconcile_thread_workspace", {
+      sessionId,
+      cwd: p.cwd,
+    }).then(() => {
+      window.dispatchEvent(new CustomEvent("future:cwd-changed"));
+    }).catch(() => {});
+  }
+
   for (const [threadId, entry] of cache) {
     if (entry.state.sessionId !== sessionId)
       continue;
@@ -258,12 +271,7 @@ function applySettingsEvent(
         if (typeof p.cwd === "string") {
           next.cwd = p.cwd;
           changed = true;
-          invokeCommand("reconcile_thread_workspace", {
-            sessionId,
-            cwd: p.cwd,
-          }).then(() => {
-            window.dispatchEvent(new CustomEvent("future:cwd-changed"));
-          }).catch(() => {});
+          // reconcile_thread_workspace already called above
         }
         break;
       case "config_reloaded":
