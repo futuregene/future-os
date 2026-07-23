@@ -1,7 +1,7 @@
 import type { AppSettings } from "../../integrations/storage/appSettings";
 import type { RemotePairingStatus, RemoteStatus } from "./remoteClient";
 import { useEffect, useState } from "react";
-import { Trans, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { TextInput } from "../../components/ui/TextInput";
 import { cn } from "../../lib/cn";
@@ -24,7 +24,6 @@ interface RemoteViewProps {
 
 export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
   const { t } = useTranslation("remote");
-  const [natsUrl, setNatsUrl] = useState(appSettings.remoteNatsUrl);
   const [pairId, setPairId] = useState(appSettings.remotePairId);
   const [token, setToken] = useState("");
   const [pairingCode, setPairingCode] = useState<string | null>(null);
@@ -58,9 +57,8 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
   // in-progress edits (typing changes local state, not appSettings, and this
   // component is the only writer of these fields).
   useEffect(() => {
-    setNatsUrl(appSettings.remoteNatsUrl);
     setPairId(appSettings.remotePairId);
-  }, [appSettings.remoteNatsUrl, appSettings.remotePairId]);
+  }, [appSettings.remotePairId]);
 
   const running = status?.running ?? false;
   const isPaired = pairing?.paired ?? false;
@@ -83,7 +81,6 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
     setPairingCode(null);
     try {
       const next = await startRemote({
-        natsUrl,
         pairId: pairId.trim() || undefined,
         accessToken: token.trim(),
       });
@@ -92,7 +89,7 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
         setPairingCode(next.pairingCode);
       // Persist only after a successful start, so a failed attempt doesn't leave
       // `remoteEnabled` true.
-      onChangeSettings({ remoteNatsUrl: natsUrl, remotePairId: pairId, remoteEnabled: true });
+      onChangeSettings({ remotePairId: pairId, remoteEnabled: true });
       setPairing(await getRemotePairingStatus());
     }
     catch (caught) {
@@ -182,19 +179,6 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
 
         <div className="space-y-4">
           <label className="block space-y-1">
-            <span className="text-sm font-medium text-ink-soft">{t("natsUrlLabel")}</span>
-            <TextInput
-              disabled={running || busy}
-              onChange={event => setNatsUrl(event.target.value)}
-              placeholder="nats://localhost:4222"
-              value={natsUrl}
-            />
-            <span className="block text-xs text-ink-muted">
-              <Trans i18nKey="natsUrlHint" ns="remote" components={[<code key="url" />]} />
-            </span>
-          </label>
-
-          <label className="block space-y-1">
             <span className="text-sm font-medium text-ink-soft">{t("tokenLabel")}</span>
             <TextInput
               disabled={running || busy}
@@ -270,7 +254,7 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
               )
             : (
                 <Button
-                  disabled={busy || !natsUrl.trim() || !token.trim()}
+                  disabled={busy || !token.trim()}
                   onClick={() => void handleStart()}
                   variant="primary"
                 >

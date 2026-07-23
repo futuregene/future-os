@@ -21,7 +21,7 @@
     background:#171a21; border-bottom:1px solid #262a33; flex:none;
   }
   header input { background:#0f1115; color:#e6e6e6; border:1px solid #333; border-radius:6px; padding:6px 8px; font-size:13px; }
-  header input.url-sm { flex:none; width:180px; } header input.code { flex:1; min-width:160px; }
+  header input.code { flex:1; min-width:160px; }
   button { background:#2b6cff; color:#fff; border:0; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px; }
   button.ghost { background:#262a33; }
   button.sm { padding:4px 10px; font-size:12px; }
@@ -98,8 +98,7 @@
 </head>
 <body>
 <header>
-  <input id="url" class="url-sm" value="ws://localhost:8080" placeholder="ws://host:8080" />
-  <input id="paircode" class="code" placeholder="粘贴配对码 → 自动填 pairId / token（连接时也会自动解析）" />
+  <input id="paircode" class="code" placeholder="粘贴配对码" />
   <button id="connect">连接</button>
   <span id="presenceStatus" class="offline">桌面离线</span>
   <span id="status">未连接</span>
@@ -189,13 +188,12 @@ function getDeviceId() {
 }
 
 async function doConnect() {
-  const url = $("url").value.trim();
-  if (!url) { setStatus("请填写 NATS websocket 地址", "err"); return; }
-  // dev / no-auth 已取消：pair/token 只来自配对码，无配对码无法接入。
   const code = $("paircode").value.trim();
   if (!code) { setStatus("请粘贴配对码", "err"); return; }
   const pc = decodePairingCode(code);
   if (!pc) { setStatus("配对码无效或已过期", "err"); return; }
+  const url = pc.wsUrl;
+  if (!url) { setStatus("配对码缺少 wsUrl 字段，请重新生成配对码", "err"); return; }
   const pair = pc.pairId;
   const token = pc.token;
   try {

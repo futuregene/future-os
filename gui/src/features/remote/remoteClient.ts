@@ -18,7 +18,6 @@ export interface RemotePairingStatus {
 }
 
 export interface RemoteStartInput {
-  natsUrl: string;
   /** Optional explicit pairId override; otherwise the persisted pairing is reused or a fresh id generated. */
   pairId?: string;
   /** NATS shared access token (simple pairing). Always required. */

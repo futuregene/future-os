@@ -45,8 +45,6 @@ static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteStartInput {
-    /// The GUI backend connects to the NATS **client port** (`nats://host:4222`), NOT the browser WebSocket port.
-    pub nats_url: String,
     /// Optional explicit pairId override. Otherwise the persisted pairing's
     /// pairId is reused, or a fresh one is generated when there is no prior
     /// pairing (so the pairing code stays stable across restarts).
@@ -97,12 +95,19 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
         ));
     }
 
+    // NATS addresses are derived from the current platform host (environment
+    // switch — test / production), not typed by the user. Protocol + ports follow
+    // the dev conventions: client bridge → nats://:4222, web client → ws://:8080.
+    let host = platform_host();
+    let bridge_url = format!("nats://{host}:4222");
+    let ws_url = format!("ws://{host}:8080");
+
     let _start_guard = START_LOCK.lock().await;
 
     // Stop any previous connection first (idempotent: aborts the old subscription task).
     let _ = stop();
 
-    let client = connect_nats(&input.nats_url, Some(&token)).await?;
+    let client = connect_nats(&bridge_url, Some(&token)).await?;
     let js = async_nats::jetstream::new(client.clone());
 
     // pairId / deviceId resolution: explicit override > persisted pairing > fresh
@@ -129,9 +134,9 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
         pair_id: pair_id.clone(),
         token: token.clone(),
         device_id,
-        nats_url: input.nats_url.clone(),
+        nats_url: bridge_url.clone(),
     });
-    let pairing_code = pairing::encode_pairing_code(&pair_id, &token);
+    let pairing_code = pairing::encode_pairing_code(&pair_id, &token, &ws_url);
 
     // Start the command subscription task (Step C).
     let cmd_task = tokio::spawn(commands::command_loop(client.clone(), pair_id.clone()));
@@ -145,7 +150,7 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
     let status = RemoteStatus {
         running: true,
         connected: true,
-        nats_url: input.nats_url.clone(),
+        nats_url: bridge_url.clone(),
         pair_id: pair_id.clone(),
         pairing_code: Some(pairing_code),
         web_url: Some(format!("http://localhost:{WEB_PORT}")),
@@ -154,13 +159,26 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
     *STATE.lock().unwrap() = Some(RemoteState {
         client,
         js,
-        nats_url: input.nats_url,
+        nats_url: bridge_url,
         pair_id,
         cmd_task,
         heartbeat_task,
         web_task,
     });
     Ok(status)
+}
+
+/// Extract the host (without scheme or path) from the current FutureGene
+/// platform URL, falling back to `localhost` when auth is absent or unreadable.
+/// Used to derive NATS addresses so they track the active environment switch.
+fn platform_host() -> String {
+    let url = crate::future_platform::current_platform_url();
+    url.trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or("localhost")
+        .to_string()
 }
 
 /// Connect to NATS, with the shared access token when in paired mode.
