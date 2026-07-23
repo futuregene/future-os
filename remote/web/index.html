@@ -21,7 +21,7 @@
     background:#171a21; border-bottom:1px solid #262a33; flex:none;
   }
   header input { background:#0f1115; color:#e6e6e6; border:1px solid #333; border-radius:6px; padding:6px 8px; font-size:13px; }
-  header input.url { flex:1; min-width:130px; } header input.pair { width:96px; }
+  header input.url-sm { flex:none; width:180px; } header input.code { flex:1; min-width:160px; }
   button { background:#2b6cff; color:#fff; border:0; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px; }
   button.ghost { background:#262a33; }
   button.sm { padding:4px 10px; font-size:12px; }
@@ -103,15 +103,15 @@
 </head>
 <body>
 <header>
-  <input id="url" class="url" value="ws://localhost:8080" placeholder="ws://host:8080" />
-  <input id="pair" class="pair" value="DEVPAIR" placeholder="pairId" />
-  <input id="token" class="pair" placeholder="接入 token" />
+  <input id="url" class="url-sm" value="ws://localhost:8080" placeholder="ws://host:8080" />
+  <input id="paircode" class="code" placeholder="粘贴配对码 → 自动填 pairId / token（连接时也会自动解析）" />
   <button id="connect">连接</button>
   <span id="presenceStatus" class="offline">桌面离线</span>
   <span id="status">未连接</span>
 </header>
 <div id="pairbar">
-  <input id="paircode" placeholder="粘贴配对码（可选；解析后覆盖上方 url / pair / token）" />
+  <input id="pair" value="DEVPAIR" placeholder="pairId（手动 / 解析填充）" />
+  <input id="token" placeholder="接入 token（手动 / 解析填充）" />
   <button id="applyCode" class="ghost sm">解析配对码</button>
 </div>
 
@@ -201,7 +201,10 @@ function getDeviceId() {
 function applyPairingCode() {
   const pc = decodePairingCode($("paircode").value);
   if (!pc) { setStatus("配对码无效或已过期", "err"); return; }
-  $("url").value = pc.natsUrl; $("pair").value = pc.pairId; $("token").value = pc.token;
+  // 只填 pair/token，不碰 url：配对码里的 natsUrl 是 Bridge 的 client 地址
+  // (nats://…:4222)，而 web 必须用 websocket 地址 (ws://…:8080)，二者不同，
+  // url 由上方地址框决定。
+  $("pair").value = pc.pairId; $("token").value = pc.token;
   setStatus("已解析配对码，点连接", "");
 }
 
@@ -209,15 +212,16 @@ async function doConnect() {
   let url = $("url").value.trim();
   let token = $("token").value.trim();
   pair = $("pair").value.trim() || "DEVPAIR";
-  // 配对码（若有）覆盖手动输入
+  // 配对码（若有）提供 pair/token；不覆盖 url（配对码的 natsUrl 是 Bridge 的
+  // client 地址 nats://，web 须用上方地址框的 ws:// 地址）。
   const code = $("paircode").value.trim();
   if (code) {
     const pc = decodePairingCode(code);
     if (!pc) { setStatus("配对码无效或已过期", "err"); return; }
-    url = pc.natsUrl; pair = pc.pairId; token = pc.token;
-    $("url").value = url; $("pair").value = pair; $("token").value = token;
+    pair = pc.pairId; token = pc.token;
+    $("pair").value = pair; $("token").value = token;
   }
-  if (!url) { setStatus("请填写 NATS 地址", "err"); return; }
+  if (!url) { setStatus("请填写 NATS websocket 地址", "err"); return; }
   try {
     setStatus("连接中…");
     const opts = { servers: url, inboxPrefix: `p.${pair}.rep.${getDeviceId()}` };
@@ -236,7 +240,7 @@ async function doConnect() {
     presenceTimer = setInterval(refreshPresenceIndicator, 10000);
     await loadModels();   // 拉取可用模型列表（连接时一次）
     await listSessions(); // 自动加载会话列表
-  } catch (e) { setStatus("连接失败: " + e.message, "err"); }
+  } catch (e) { setStatus("连接失败: " + (e?.message || String(e)), "err"); }
 }
 
 // KV presence：读 pairs 桶，感知桌面在线/离线 + 每 session streaming 态。
