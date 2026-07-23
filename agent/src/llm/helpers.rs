@@ -94,14 +94,16 @@ impl Client {
                     // models using this format don't reason by default.
                 }
                 "reasoning-split" => {
-                    // MiniMax M3: reasoning_split controls *where* reasoning
-                    // appears, not *whether*.  The model defaults to
-                    // reasoning_split=false (inline <think> tags).  Always
-                    // send true so reasoning stays in reasoning_content where
-                    // the agent's thinking_delta pipeline captures it and the
-                    // GUI's "show thinking" toggle can hide it.  There is no
-                    // "disable thinking" parameter for this format.
-                    body["reasoning_split"] = serde_json::json!(true);
+                    // MiniMax M3: `reasoning_split` controls *where* reasoning
+                    // appears (in reasoning_content vs inline <think> tags),
+                    // while `thinking` controls *whether*.
+                    // Valid thinking modes: enabled / adaptive / disabled.
+                    if reasoning_enabled {
+                        body["reasoning_split"] = serde_json::json!(true);
+                        body["thinking"] = serde_json::json!("enabled");
+                    } else {
+                        body["thinking"] = serde_json::json!("disabled");
+                    }
                 }
                 _ => {}
             }
@@ -545,26 +547,26 @@ mod apply_thinking_params_tests {
     }
 
     #[test]
-    fn reasoning_split_off_emits_true() {
-        // reasoning_split controls *where*, not *whether*.  The model defaults
-        // to inline <think> tags; "off" must still send true to route thinking
-        // into reasoning_content where the agent pipeline hides it.
+    fn reasoning_split_off_emits_disabled() {
+        // "off" must send thinking="disabled" to stop the model from thinking.
         let client = Client::new("https://api.minimax.io/v1", "k", None, None)
             .with_compat("reasoning-split", false, false)
             .with_thinking_level("off");
         let mut body = body();
         client.apply_thinking_params(&mut body);
-        assert_eq!(body.get("reasoning_split"), Some(&json!(true)));
+        assert_eq!(body.get("thinking"), Some(&json!("disabled")));
+        assert_eq!(body.get("reasoning_split"), None);
     }
 
     #[test]
-    fn reasoning_split_high_emits_true() {
+    fn reasoning_split_high_emits_enabled_and_split() {
         let client = Client::new("https://api.minimax.io/v1", "k", None, None)
             .with_compat("reasoning-split", false, false)
             .with_thinking_level("high");
         let mut body = body();
         client.apply_thinking_params(&mut body);
         assert_eq!(body.get("reasoning_split"), Some(&json!(true)));
+        assert_eq!(body.get("thinking"), Some(&json!("enabled")));
     }
 
     #[test]
