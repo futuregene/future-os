@@ -485,12 +485,18 @@ impl ServerSession {
 
     pub fn set_steering_mode(&mut self, mode: &str) {
         self.steering_mode = mode.to_string();
-        self.agent_loop.try_write().unwrap().steering_queue.mode = mode.to_string();
+        if let Ok(mut loop_) = self.agent_loop.try_write() {
+            loop_.steering_queue.mode = mode.to_string();
+        }
+        // If the loop is busy (streaming), the mode takes effect next prompt.
     }
 
     pub fn set_follow_up_mode(&mut self, mode: &str) {
         self.follow_up_mode = mode.to_string();
-        self.agent_loop.try_write().unwrap().follow_up_queue.mode = mode.to_string();
+        if let Ok(mut loop_) = self.agent_loop.try_write() {
+            loop_.follow_up_queue.mode = mode.to_string();
+        }
+        // If the loop is busy (streaming), the mode takes effect next prompt.
     }
 
     pub fn compact(&self, _instructions: &str) -> Result<serde_json::Value> {

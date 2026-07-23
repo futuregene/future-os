@@ -911,6 +911,15 @@ export class App extends Container {
       const arg = parts.slice(1).join(" ");
 
       if (cmd === "model") {
+        if (this.state.streaming) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Cannot change model while agent is streaming. Wait for the current run to finish.",
+          });
+          this.requestRender();
+          return;
+        }
         if (arg) {
           // Set model directly — agent resolves and stores provider/id
           try {
@@ -1286,6 +1295,15 @@ export class App extends Container {
       }
 
       if (cmd === "cwd" && arg) {
+        if (this.state.streaming) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Cannot change working directory while agent is streaming.",
+          });
+          this.requestRender();
+          return;
+        }
         try {
           let resolved = arg;
           if (resolved === "~") {
@@ -1602,8 +1620,10 @@ export class App extends Container {
         role: "system",
         content: "✅  Reconnected to agent",
       });
-      // Refresh state after reconnect so footer shows correct model/tokens
-      this.refresh().catch(() => {});
+      // Delay refresh — after stream reconnect the gRPC channel may need
+      // a moment to become ready for unary RPCs (the stream delivers data
+      // before the channel finishes its HTTP/2 handshake).
+      setTimeout(() => this.refresh().catch(() => {}), 500);
     }
     this.requestRender();
   }
@@ -1659,6 +1679,15 @@ export class App extends Container {
   }
 
   async showModelSelector(): Promise<void> {
+    if (this.state.streaming) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "Cannot change model while agent is streaming.",
+      });
+      this.requestRender();
+      return;
+    }
     let models: string[] = [];
     try {
       const allModels = await this.client.listModels();
@@ -1715,6 +1744,15 @@ export class App extends Container {
   }
 
   private async cycleModel(): Promise<void> {
+    if (this.state.streaming) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "Cannot change model while agent is streaming.",
+      });
+      this.requestRender();
+      return;
+    }
     try {
       // If scoped models are set, cycle within them locally.
       if (this.enabledModelIds && this.enabledModelIds.length > 0) {
@@ -1735,6 +1773,15 @@ export class App extends Container {
   }
 
   private async cycleThinking(): Promise<void> {
+    if (this.state.streaming) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "Cannot change thinking level while agent is streaming.",
+      });
+      this.requestRender();
+      return;
+    }
     try {
       const r = await this.client.cycleThinkingLevel();
       if (r) {
