@@ -228,6 +228,19 @@ function applySettingsEvent(
   eventType: string,
   p: Record<string, unknown>,
 ) {
+  // cwd_changed must reconcile workspace even when the session isn't yet
+  // in the agent-state cache (e.g. TUI /cwd on a just-imported session
+  // whose state hasn't been fetched). Fire it unconditionally — once per
+  // event, regardless of how many cached threads share the session.
+  if (eventType === "cwd_changed" && typeof p.cwd === "string") {
+    invokeCommand("reconcile_thread_workspace", {
+      sessionId,
+      cwd: p.cwd,
+    }).then(() => {
+      window.dispatchEvent(new CustomEvent("future:cwd-changed"));
+    }).catch(() => {});
+  }
+
   for (const [threadId, entry] of cache) {
     if (entry.state.sessionId !== sessionId)
       continue;
@@ -258,12 +271,7 @@ function applySettingsEvent(
         if (typeof p.cwd === "string") {
           next.cwd = p.cwd;
           changed = true;
-          invokeCommand("reconcile_thread_workspace", {
-            sessionId,
-            cwd: p.cwd,
-          }).then(() => {
-            window.dispatchEvent(new CustomEvent("future:cwd-changed"));
-          }).catch(() => {});
+          // reconcile_thread_workspace already called above
         }
         break;
       case "config_reloaded":
@@ -281,68 +289,22 @@ function applySettingsEvent(
   notify();
 }
 
-// ── Streaming-status cache (short TTL, separate from full agent state) ────
-
-const STREAMING_TTL_MS = 1_000;
-const streamingCache = new Map<string, { streaming: boolean; fetchedAt: number }>();
+// ── Bulk streaming-status poll (no per-thread get_state fan-out) ────────
 
 /**
- * Lightweight check: is this session currently streaming?
- * Uses a short-lived cache (1s) so the thread list picks up TUI-initiated
- * streaming quickly without hammering the agent with get_state RPCs.
+ * Bulk streaming-status poll: ONE Tauri command returns every streaming
+ * thread id. The agent only scans its in-memory session map (no hydration,
+ * no disk I/O), so polling never creates agent sessions/loops for threads
+ * the user hasn't opened — unlike the old per-thread get_state fan-out,
+ * which hydrated every polled session at startup.
  */
-export async function fetchSessionStreaming(threadId: string): Promise<boolean> {
-  const cached = streamingCache.get(threadId);
-  if (cached && Date.now() - cached.fetchedAt < STREAMING_TTL_MS) {
-    return cached.streaming;
-  }
+export async function pollStreamingThreadIds(): Promise<string[]> {
   try {
-    const raw = await invokeCommand<Record<string, unknown>>("get_thread_agent_state", { threadId });
-    const streaming = raw.isStreaming === true;
-    streamingCache.set(threadId, { streaming, fetchedAt: Date.now() });
-    // Always update the full agent-state cache so settings changes
-    // (model, thinking, name, cwd) are reflected in near real-time,
-    // not just when streaming starts.
-    const state: AgentSessionState = {
-      model: typeof raw.model === "string" ? raw.model : null,
-      thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
-      sessionName: typeof raw.session_name === "string" ? raw.session_name : null,
-      sessionId: typeof raw.sessionId === "string" ? raw.sessionId : null,
-      cwd: typeof raw.cwd === "string" ? raw.cwd : null,
-      parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
-      isStreaming: streaming,
-    };
-    cache.set(threadId, { state, fetchedAt: Date.now() });
-    pruneCache();
-    notify();
-    return streaming;
+    const raw = await invokeCommand<string[]>("list_streaming_thread_ids");
+    return Array.isArray(raw) ? raw : [];
   }
   catch {
-    return cached?.streaming ?? false;
+    // Agent unreachable: report "nothing streaming" — the next tick retries.
+    return [];
   }
-}
-
-/**
- * Poll streaming status for a batch of threads and return a map of
- * threadId → isStreaming. Fires all requests in parallel.
- */
-export async function pollStreamingStatuses(
-  threadIds: string[],
-): Promise<Record<string, boolean>> {
-  const entries = await Promise.all(
-    threadIds.map(async (id) => {
-      try {
-        const streaming = await fetchSessionStreaming(id);
-        return { id, streaming };
-      }
-      catch {
-        return { id, streaming: false };
-      }
-    }),
-  );
-  const result: Record<string, boolean> = {};
-  for (const entry of entries) {
-    result[entry.id] = entry.streaming;
-  }
-  return result;
 }

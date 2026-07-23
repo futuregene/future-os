@@ -102,6 +102,13 @@ pub fn list_sessions_command() -> RpcCommand {
     base_command("list_sessions", String::new())
 }
 
+/// Bulk "who is streaming" query: one RPC returns every streaming session
+/// id, so the thread list doesn't fan out one get_state per thread (which
+/// also hydrated each polled session on the agent).
+pub fn list_streaming_sessions_command() -> RpcCommand {
+    base_command("list_streaming_sessions", String::new())
+}
+
 pub fn get_session_entries_command(session_id: String) -> RpcCommand {
     base_command("get_session_entries", session_id)
 }

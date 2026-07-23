@@ -428,8 +428,8 @@ export class RunClient {
     return this.executeCommand("get_state", {}, sessionId, 5) as Promise<RpcSessionState>;
   }
 
-  async fork(entryId: string): Promise<{ cancelled: boolean; sessionId?: string }> {
-    return this.executeCommand("fork", { entryId }, undefined, 5) as Promise<{
+  async fork(entryId: string, sessionId?: string): Promise<{ cancelled: boolean; sessionId?: string }> {
+    return this.executeCommand("fork", { entryId }, sessionId, 5) as Promise<{
       cancelled: boolean;
       sessionId?: string;
     }>;
@@ -563,12 +563,27 @@ export class RunClient {
     // other config changes are isolated to this run and never pollute the
     // default session.
     if (config.fork) {
-      const state = await this.getState();
-      sessionId = state.sessionId;
+      // Fork needs an explicit parent session — the agent no longer has a
+      // default session to fall back to.  Without --session, fork from the
+      // most recently updated session.
+      let parentId = config.session;
+      if (!parentId) {
+        const { sessions } = await this.listSessions();
+        if (sessions.length === 0) {
+          throw new Error("No previous session to fork from.");
+        }
+        sessions.sort(
+          (a, b) =>
+            new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+        );
+        parentId = sessions[0].id;
+      }
+      await this.switchSession(parentId);
+      sessionId = parentId;
       if (verbose) {
         process.stderr.write(`Forking from entry ${config.fork}...\n`);
       }
-      const result = await this.fork(config.fork);
+      const result = await this.fork(config.fork, sessionId);
       if (result.cancelled) {
         throw new Error("Fork was cancelled");
       }

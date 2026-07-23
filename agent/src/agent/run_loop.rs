@@ -762,6 +762,17 @@ impl Loop {
                 }
             }
 
+            // Apply the final credit_cost from this LLM call to cumulative_cost.
+            // The upstream API sends progressive credit_cost updates in each
+            // usage chunk; total_usage holds the LAST (complete) value. Adding
+            // it here — once per LLM call — avoids the N× inflation that
+            // would result from accumulating every intermediate chunk.
+            if let Some(ref u) = total_usage {
+                if let Some(cost) = u.credit_cost {
+                    *self.cumulative_cost.lock() += cost;
+                }
+            }
+
             // Stream was truncated mid-reply: the assistant text is a prefix,
             // not a finished answer. End the turn as `incomplete` (keeping the
             // partial text so it isn't lost) rather than draining the follow-up
@@ -993,9 +1004,11 @@ impl Loop {
             self.cumulative_cache_write_tokens
                 .fetch_add(cache_w, Ordering::Relaxed);
         }
-        if let Some(cost) = u.credit_cost {
-            *self.cumulative_cost.lock() += cost;
-        }
+        // NOTE: credit_cost is NOT accumulated here. The upstream API sends
+        // progressive credit_cost updates in each usage chunk (each value is
+        // the cumulative cost of the request so far). Adding every chunk
+        // inflates the total by N×. Instead, credit_cost is applied once at
+        // the end of the LLM call using the final value from total_usage.
         *total_usage = Some(u.clone());
         if let Some(ref bus) = self.event_bus {
             bus.emit(usage_event(u));

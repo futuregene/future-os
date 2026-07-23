@@ -23,19 +23,19 @@ pub use session::ServerSession;
 
 #[derive(Clone)]
 pub struct AppState {
-    /// Default session (used when no session_id specified)
-    pub session: Arc<RwLock<ServerSession>>,
-    /// Additional sessions keyed by session_id
+    /// All live sessions keyed by session_id.  Sessions are equal peers —
+    /// there is no privileged "default"/"current" session; clients address
+    /// sessions explicitly and the agent hydrates them on demand.
     pub sessions: Arc<RwLock<HashMap<String, Arc<RwLock<ServerSession>>>>>,
-    /// Active session ID (for get_state display)
-    pub active_session_id: Arc<RwLock<String>>,
+    /// On-disk session store (JSONL).  Used for hydration and sessionless
+    /// disk operations (delete, fork previews).
+    pub session_manager: Arc<crate::session::Manager>,
     pub welcome_version: String,
     pub welcome_cwd: String,
     pub welcome_skills: Arc<RwLock<Vec<String>>>,
     pub welcome_context: Arc<RwLock<Vec<String>>>,
     pub welcome_exts: Vec<String>,
     pub explicit_session: bool,
-    pub broadcaster: Arc<SseBroadcaster>,
     pub event_bus: Arc<EventBus>,
     pub approval_gate: ApprovalGate,
     pub verbose: bool,
@@ -46,67 +46,72 @@ pub struct AppState {
     /// Cached model registry populated once at startup.  Avoids repeated
     /// blocking network I/O on every get_state → Registry::new() call.
     pub model_registry: Arc<RwLock<ModelRegistry>>,
+    /// Template for minting per-session agent loops (`Loop::independent_copy`).
+    /// Every session gets its OWN loop — never a shared one — so a streaming
+    /// run's long-held read lock can't block another session's `set_model`
+    /// (`try_write`), and interrupt flags / steering queues / tool hooks /
+    /// token counters stay session-local.  The template itself is never used
+    /// to run prompts.
+    pub loop_template: Arc<crate::agent::Loop>,
 }
 
 impl AppState {
-    /// Get session by ID, or return default session if id is empty/None.
+    /// Resolve a session by id: in-memory hit, else hydrate from disk.
+    /// Returns None for an empty id or an id that exists neither in memory
+    /// nor on disk — callers NEVER silently receive a different session
+    /// (the old default-session fallback leaked one conversation's state
+    /// into another's caller).
     ///
     /// Disk loading (switch_session → JSONL parse) happens **outside** the
     /// write lock.  Only the final map insertion acquires the write lock
     /// (with a double-check), so a slow session load never stalls concurrent
     /// session lookups.
-    pub fn get_session(&self, session_id: &str) -> Arc<RwLock<ServerSession>> {
+    pub fn get_session(&self, session_id: &str) -> Option<Arc<RwLock<ServerSession>>> {
         if session_id.is_empty() {
-            return self.session.clone();
+            return None;
         }
         {
             let sessions = self.sessions.read();
             if let Some(sess) = sessions.get(session_id) {
-                return sess.clone();
+                return Some(sess.clone());
             }
         }
-        // Session not found in map — if it matches the default session's own
-        // ID, return it silently.
-        let default_id = self.session.read().session_id.clone();
-        if session_id == default_id {
-            return self.session.clone();
-        }
-
-        // Check whether the session exists on disk before doing expensive I/O.
-        let (agent_loop, session_manager, event_bus, cwd, approval_gate) = {
-            let sess = self.session.read();
-            if sess.session_manager.find(session_id).is_none() {
-                return self.session.clone(); // not on disk either
-            }
-            (
-                sess.agent_loop.clone(),
-                sess.session_manager.clone(),
-                sess.event_bus.clone(),
-                sess.cwd.clone(),
-                sess.approval_gate.clone(),
-            )
-        };
+        self.session_manager.find(session_id)?;
 
         // Load session from disk OUTSIDE any lock — switch_session parses
         // the JSONL file and can be slow for large histories.
+        //
+        // The hydrated session gets its OWN agent loop (minted from the
+        // template), so switch_session → set_model configures only this
+        // session's provider and can never fail with "agent is currently
+        // streaming" just because ANOTHER session is mid-run.
         let broadcaster = Arc::new(SseBroadcaster::new());
-        let mut new_sess = ServerSession::new_with_shared_loop(
+        let mut new_sess = ServerSession::new(
             session_id.to_string(),
-            agent_loop,
-            session_manager.clone(),
-            &cwd,
-            event_bus,
+            Arc::new(tokio::sync::RwLock::new(
+                self.loop_template.independent_copy(),
+            )),
+            self.session_manager.clone(),
+            &self.welcome_cwd.clone(),
+            self.event_bus.clone(),
             broadcaster,
-            approval_gate,
+            self.approval_gate.clone(),
+            self.model_registry.clone(),
         );
         if new_sess.switch_session(session_id).is_err() {
-            return self.session.clone();
+            return None;
         }
-        // If the session file had no model saved, copy from default
+        // If the session file had no model saved, fall back to the default
+        // — via set_model, which also rebuilds the loop's provider client.
+        // A bare `new_sess.model = ...` would leave the loop pointing at the
+        // template's startup model/endpoint.
         if new_sess.model.is_empty() {
-            let default_model = self.session.read().model.clone();
+            let default_model = crate::models::get_default_model()
+                .unwrap_or_else(|| self.loop_template.model.clone());
             if !default_model.is_empty() {
-                new_sess.model = default_model.clone();
+                if let Err(e) = new_sess.set_model(&default_model) {
+                    tracing::warn!("[session] could not apply default model on hydrate: {e}");
+                }
             }
         }
 
@@ -115,30 +120,11 @@ impl AppState {
         {
             let mut sessions = self.sessions.write();
             if let Some(sess) = sessions.get(session_id) {
-                return sess.clone();
+                return Some(sess.clone());
             }
             let sess_arc = Arc::new(RwLock::new(new_sess));
             sessions.insert(session_id.to_string(), sess_arc.clone());
-            sess_arc
-        }
-    }
-
-    pub fn find_session(&self, session_id: &str) -> Option<Arc<RwLock<ServerSession>>> {
-        let sess = self.get_session(session_id);
-        // get_session already handles empty, map lookup, default match,
-        // and disk fallback. If it returned the default session as a
-        // fallback, check whether we actually wanted the default or if
-        // the requested session truly doesn't exist.
-        if session_id.is_empty() {
-            return Some(sess);
-        }
-        let found_id = sess.read().session_id.clone();
-        if found_id == session_id || session_id == self.session.read().session_id.clone() {
-            Some(sess)
-        } else {
-            // get_session fell back to default but the requested session
-            // doesn't match the default — session not found.
-            None
+            Some(sess_arc)
         }
     }
 
@@ -151,15 +137,7 @@ impl AppState {
         self.sessions
             .write()
             .insert(id.clone(), Arc::new(RwLock::new(session)));
-        if let Some(mut active_id) = self.active_session_id.try_write() {
-            *active_id = id.clone();
-        }
         id
-    }
-
-    /// Get active session ID
-    pub fn get_active_session_id(&self) -> String {
-        self.active_session_id.read().clone()
     }
 
     /// Refresh the in-memory API key of every live session from auth.json.
@@ -169,7 +147,6 @@ impl AppState {
     /// skipped by `reload_credentials` and pick up the new key on their next
     /// `set_model`.
     pub fn reload_all_credentials(&self) {
-        self.session.read().reload_credentials();
         let sessions = self.sessions.read();
         for sess in sessions.values() {
             sess.read().reload_credentials();
@@ -177,8 +154,8 @@ impl AppState {
     }
 }
 
-fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
-    let session = state.get_session(session_id);
+fn get_state_internal(state: &AppState, session_id: &str) -> Option<serde_json::Value> {
+    let session = state.get_session(session_id)?;
     let sess = session.read();
 
     // Resolve context window: use the cached model registry from AppState.
@@ -248,7 +225,7 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         .map(|s| s.parent_session_id)
         .unwrap_or_default();
 
-    serde_json::json!({
+    Some(serde_json::json!({
         "model": sess.model,
         "imageSupport": image_support,
         "thinkingLevel": sess.thinking_level,
@@ -280,7 +257,7 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "parentSessionId": if parent_session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(parent_session_id) },
         "createdBy": sess.created_by.clone(),
         "sourceMeta": sess.source_meta.clone(),
-    })
+    }))
 }
 
 /// Generate HTML representation of a session (matches Go exportSessionToHTML)

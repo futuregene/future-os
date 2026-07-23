@@ -5,7 +5,7 @@
 
 import { GrpcClient } from "./rpc/index.js";
 import { VERSION } from "./version.generated.js";
-import type { SessionSummary } from "./rpc/types.js";
+import type { SessionSummary, ThinkingLevel } from "./rpc/types.js";
 import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
@@ -55,6 +55,7 @@ export class App extends Container {
   private acManager = new AutocompleteManager();
   private keybindings = new KeybindingManager();
   private enabledModelIds: string[] | null = null;  // client-side scoped models
+  private connectionLost = false;  // true when agent RPC stream is down
 
   // ── TUI-local settings (persisted to disk, not on agent) ──────────────
   private tuiSettings: { defaultModel?: string; defaultThinkingLevel?: string; defaultPermissionLevel?: string; enabledModelIds?: string[] } = {};
@@ -228,6 +229,38 @@ export class App extends Container {
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
+  /// Poll the agent every 1 s until it responds (or the TUI is stopped).
+  /// Shows a single "Connecting…" message on first failure; clears it on success.
+  private async waitForAgent(): Promise<void> {
+    let firstAttempt = true;
+    while (this.running) {
+      if (await this.client.tryConnect()) {
+        if (!firstAttempt) {
+          // Remove the "Connecting..." placeholder if we added one earlier
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "✅  Connected to agent",
+          });
+          this.requestRender();
+        }
+        return;
+      }
+      if (firstAttempt) {
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: "Connecting to agent… (retrying every 1s)",
+        });
+        this.requestRender();
+        // Yield to the event loop so the "Connecting…" message renders
+        await new Promise((r) => setTimeout(r, 50));
+        firstAttempt = false;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+
   async start(): Promise<void> {
     this.loadTuiSettings();
     this.terminal.hideCursor();
@@ -239,6 +272,10 @@ export class App extends Container {
       (data: string) => this.handleInput(data),
       () => this.requestResizeRender(),
     );
+
+    // Wait for agent to be reachable (retries every 1 s).
+    await this.waitForAgent();
+    if (!this.running) return;
 
     // Handle CLI session options
     if (this.cliOptions.session) {
@@ -316,6 +353,11 @@ export class App extends Container {
         this.client.prompt(this.cliOptions.initialPrompt!);
       }, 100);
     }
+
+    // Listen for connection state changes (runtime disconnects / reconnects).
+    this.client.onConnectionChange((connected) => {
+      this.setConnectionLost(!connected);
+    });
 
     // Subscribe to events only after session is established — prevents
     // cross-session event leakage (e.g. GUI streaming bleeding into TUI).
@@ -451,6 +493,10 @@ export class App extends Container {
         this.chat.finishTool(e.tool_id ?? "", e.text);
         this.state.activeToolCount = Math.max(0, this.state.activeToolCount - 1);
         if (this.state.activeToolCount === 0) this.state.toolStartTime = 0;
+        // Each LLM turn may have its own cost (which was finalised before
+        // tools executed).  Pull the latest cumulative cost/token totals so
+        // the footer updates after every tool call, not just at agent_end.
+        this.refresh().then(() => this.requestRender());
         break;
       }
 
@@ -833,7 +879,7 @@ export class App extends Container {
 
   private handleInterrupt(): void {
     if (this.state.streaming) {
-      this.client.abort();
+      this.client.abort().catch(() => { /* connection may close before abort completes */ });
       this.state.streaming = false;
       // Mark the in-progress assistant message as stopped so the partial
       // content (thinking, text, tool calls) is preserved and visible —
@@ -865,6 +911,15 @@ export class App extends Container {
       const arg = parts.slice(1).join(" ");
 
       if (cmd === "model") {
+        if (this.state.streaming) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Cannot change model while agent is streaming. Wait for the current run to finish.",
+          });
+          this.requestRender();
+          return;
+        }
         if (arg) {
           // Set model directly — agent resolves and stores provider/id
           try {
@@ -1148,7 +1203,13 @@ export class App extends Container {
 
       if (cmd === "new") {
         try {
-          const result = await this.client.newSession();
+          // Inherit cwd, model, and thinking level from the current session
+          // so /new feels like a clean continuation instead of a reset.
+          const result = await this.client.newSession({
+            cwd: this.state.cwd || undefined,
+            modelId: this.state.model || undefined,
+            level: (this.state.thinking || undefined) as ThinkingLevel | undefined,
+          });
           if (result.sessionId) {
             await this.refresh();
             this.chat.addMessage({
@@ -1234,6 +1295,15 @@ export class App extends Container {
       }
 
       if (cmd === "cwd" && arg) {
+        if (this.state.streaming) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Cannot change working directory while agent is streaming.",
+          });
+          this.requestRender();
+          return;
+        }
         try {
           let resolved = arg;
           if (resolved === "~") {
@@ -1535,6 +1605,29 @@ export class App extends Container {
     } catch { /* ok if agent doesn't support a command yet */ }
   }
 
+  private setConnectionLost(lost: boolean): void {
+    if (this.connectionLost === lost) return;
+    this.connectionLost = lost;
+    if (lost) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "⚠️  Connection to agent lost — retrying every 1s...",
+      });
+    } else {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "✅  Reconnected to agent",
+      });
+      // Delay refresh — after stream reconnect the gRPC channel may need
+      // a moment to become ready for unary RPCs (the stream delivers data
+      // before the channel finishes its HTTP/2 handshake).
+      setTimeout(() => this.refresh().catch(() => {}), 500);
+    }
+    this.requestRender();
+  }
+
   private async refresh(): Promise<void> {
     try {
       const s = await this.client.getState();
@@ -1565,6 +1658,17 @@ export class App extends Container {
         this.client.setCurrentSessionId(s.sessionId);
         this.client.connectEvents();
       }
+
+      // Clear connection-lost flag if we successfully reached the agent.
+      if (this.connectionLost) {
+        this.connectionLost = false;
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: "✅  Reconnected to agent",
+        });
+        this.requestRender();
+      }
     } catch {
       // Keep last known model; footer briefly showing "(not connected)" is
       // confusing during transient reconnects.
@@ -1575,6 +1679,15 @@ export class App extends Container {
   }
 
   async showModelSelector(): Promise<void> {
+    if (this.state.streaming) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "Cannot change model while agent is streaming.",
+      });
+      this.requestRender();
+      return;
+    }
     let models: string[] = [];
     try {
       const allModels = await this.client.listModels();
@@ -1631,6 +1744,15 @@ export class App extends Container {
   }
 
   private async cycleModel(): Promise<void> {
+    if (this.state.streaming) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "Cannot change model while agent is streaming.",
+      });
+      this.requestRender();
+      return;
+    }
     try {
       // If scoped models are set, cycle within them locally.
       if (this.enabledModelIds && this.enabledModelIds.length > 0) {
@@ -1651,6 +1773,15 @@ export class App extends Container {
   }
 
   private async cycleThinking(): Promise<void> {
+    if (this.state.streaming) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "Cannot change thinking level while agent is streaming.",
+      });
+      this.requestRender();
+      return;
+    }
     try {
       const r = await this.client.cycleThinkingLevel();
       if (r) {

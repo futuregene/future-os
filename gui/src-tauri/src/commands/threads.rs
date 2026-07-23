@@ -143,6 +143,54 @@ pub async fn delete_thread(thread_id: String) -> Result<store::ThreadRecord, cra
     Ok(thread)
 }
 
+/// Bulk streaming-status query: ONE agent RPC (`list_streaming_sessions`,
+/// which only scans the agent's in-memory session map — no hydration, no
+/// disk I/O) mapped back to GUI thread ids via the stored agent_session_id.
+/// Replaces the old per-thread get_state fan-out, which hydrated every
+/// polled session on the agent at startup.
+///
+/// Agent unreachable → empty list (nothing shows as streaming); callers
+/// self-heal on the next poll tick.
+#[tauri::command]
+pub async fn list_streaming_thread_ids() -> Result<Vec<String>, crate::AppError> {
+    let mut client = match crate::agent_bridge::connect_agent().await {
+        Ok(client) => client,
+        Err(_) => return Ok(vec![]),
+    };
+    let resp = client
+        .execute_command(crate::agent_bridge::list_streaming_sessions_command())
+        .await;
+    let streaming_session_ids: std::collections::HashSet<String> = match resp {
+        Ok(resp) => {
+            let inner = resp.into_inner();
+            if !inner.success {
+                return Ok(vec![]);
+            }
+            serde_json::from_str::<serde_json::Value>(&inner.data)
+                .ok()
+                .and_then(|v| v.get("sessionIds")?.as_array().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        }
+        Err(_) => return Ok(vec![]),
+    };
+    if streaming_session_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let threads = store::list_threads()?;
+    Ok(threads
+        .into_iter()
+        .filter(|t| {
+            t.agent_session_id
+                .as_deref()
+                .is_some_and(|sid| streaming_session_ids.contains(sid))
+        })
+        .map(|t| t.id)
+        .collect())
+}
+
 /// Fetch a thread's session state from the agent (model, thinking, name, cwd).
 /// Falls back to the stored DB values when the agent is unreachable.
 ///

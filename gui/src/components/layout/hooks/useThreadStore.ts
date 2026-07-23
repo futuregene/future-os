@@ -2,7 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { pollStreamingStatuses, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
+import { pollStreamingThreadIds, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
 import {
   getRecentOrCreateDefaultThread,
   initializeAppStore,
@@ -191,12 +191,17 @@ export function useThreadStore(): ThreadStore {
   });
   // Poll agent streaming status so threads that are being prompted by other
   // clients (TUI, CLI) show a running indicator without waiting for a local
-  // StoredRun entry.
+  // StoredRun entry. ONE bulk call for all threads — the agent only scans
+  // its in-memory map, so this never hydrates sessions at startup.
   usePolling(async () => {
     if (activeThreads.length === 0)
       return;
-    const streaming = await pollStreamingStatuses(activeThreads.map(t => t.id));
-    setThreadStreamingStatuses(streaming);
+    const streamingIds = new Set(await pollStreamingThreadIds());
+    const next: ThreadStreamingStatuses = {};
+    for (const thread of activeThreads) {
+      next[thread.id] = streamingIds.has(thread.id);
+    }
+    setThreadStreamingStatuses(next);
   }, 1000, {
     enabled: activeThreads.length > 0,
     deps: [activeThreads],
