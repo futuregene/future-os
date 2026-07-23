@@ -837,7 +837,7 @@ export class App extends Container {
 
   private handleInterrupt(): void {
     if (this.state.streaming) {
-      this.client.abort();
+      this.client.abort().catch(() => { /* connection may close before abort completes */ });
       this.state.streaming = false;
       // Mark the in-progress assistant message as stopped so the partial
       // content (thinking, text, tool calls) is preserved and visible —
