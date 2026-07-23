@@ -433,6 +433,8 @@ const proto = protoDescriptor.proto as any;
 
 // ─── RPC Client ─────────────────────────────────────────────────────────
 
+export type ConnectionChangeListener = (connected: boolean) => void;
+
 export class GrpcClient {
   private client: any;
   private eventListeners: EventListener[] = [];
@@ -444,10 +446,26 @@ export class GrpcClient {
   /// this instead of spinning every 100ms.
   private connectPromise: Promise<boolean> | null = null;
   private connectResolve: ((value: boolean) => void) | null = null;
+  private connectionChangeListeners: ConnectionChangeListener[] = [];
 
   constructor(address = "localhost:50051") {
     const credentials = grpc.credentials.createInsecure();
     this.client = new proto.FutureAgent(address, credentials);
+  }
+
+  // ─── Connection state callbacks ──────────────────────────────────────
+
+  onConnectionChange(listener: ConnectionChangeListener): () => void {
+    this.connectionChangeListeners.push(listener);
+    return () => {
+      this.connectionChangeListeners = this.connectionChangeListeners.filter((l) => l !== listener);
+    };
+  }
+
+  private notifyConnectionChange(connected: boolean): void {
+    for (const listener of this.connectionChangeListeners) {
+      try { listener(connected); } catch { /* ignore */ }
+    }
   }
 
   // ─── Session Management ───────────────────────────────────────────────
@@ -461,6 +479,26 @@ export class GrpcClient {
   }
 
   // ─── Event Streaming ─────────────────────────────────────────────────
+
+  /// Lightweight connectivity check — sends a simple RPC (list_models) without
+  /// requiring a session or event-stream handshake.  Returns true if the agent
+  /// is reachable, false otherwise.  Times out after 3 s.
+  async tryConnect(): Promise<boolean> {
+    try {
+      const request = { id: String(Date.now()), type: "list_models" };
+      const deadline = new Date();
+      deadline.setSeconds(deadline.getSeconds() + 3);
+      await new Promise<void>((resolve, reject) => {
+        this.client.ExecuteCommand(request, { deadline }, (err: Error | null, _response: any) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -492,12 +530,16 @@ export class GrpcClient {
 
     const scheduleReconnect = () => {
       if (!this.reconnectTimer) {
+        const wasConnected = this.connected;
         this.connected = false;
         this.connectResolve?.(false); // let call() proceed with timeout
+        if (wasConnected) {
+          this.notifyConnectionChange(false);
+        }
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null;
           this.connectEvents();
-        }, 2000);
+        }, 1000);
       }
     };
 
@@ -518,6 +560,7 @@ export class GrpcClient {
         this.connected = true;
         this.connectResolve?.(true);
         this.connectResolve = null;
+        this.notifyConnectionChange(true);
       }
       try {
         const rawData = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
@@ -637,8 +680,12 @@ export class GrpcClient {
       const isTransport = msg.includes("transport") || msg.includes("14 UNAVAILABLE")
         || msg.includes("Connect Failed") || msg.includes("ECONNREFUSED");
       if (isTransport) {
+        const wasConnected = this.connected;
         this.connected = false;
         this.connectEvents();
+        if (wasConnected) {
+          this.notifyConnectionChange(false);
+        }
       }
       throw err;
     }
