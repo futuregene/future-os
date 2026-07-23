@@ -73,6 +73,144 @@ fn size_main_window_to_screen(app: &tauri::App) {
     ));
 }
 
+/// Set a crisp taskbar icon on Windows by loading the multi-size ICO directly.
+///
+/// Tauri's `default_window_icon()` creates a single-size HICON from the first
+/// PNG in `bundle.icon` and calls `WM_SETICON(ICON_BIG, ...)`. When Windows
+/// renders that HICON in the taskbar at a different size (e.g. 40px on a 100%
+/// DPI system where SM_CXICON is only 32), GDI's icon scaling is visibly
+/// blurry. Instead, we parse the ICO directory, find the entry that matches
+/// the size Windows actually needs, and create an HICON from its exact pixel
+/// data — no scaling needed.
+#[cfg(target_os = "windows")]
+fn set_windows_taskbar_icon(app: &tauri::App) {
+    use tauri::Manager;
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateIconFromResourceEx, SendMessageW, ICON_BIG, ICON_SMALL, WM_SETICON,
+    };
+
+    // The ICO is bundled next to the exe at dev time (src-tauri/icons/icon.ico).
+    // At release time it is embedded in the exe resources, but Tauri already
+    // handles that path — this function is primarily for dev-mode clarity.
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = HWND(hwnd.0 as _);
+
+    // Read the ICO file — try a few candidate paths (dev mode).
+    let ico_data = find_icon_ico_bytes();
+    let Some(ico_data) = ico_data else {
+        eprintln!("set_windows_taskbar_icon: icon.ico not found");
+        return;
+    };
+
+    // Parse the ICO directory and pick the best entry for a given target size.
+    fn find_best_entry(data: &[u8], target: u32) -> Option<(u32, u32)> {
+        if data.len() < 6 {
+            return None;
+        }
+        let count = u16::from_le_bytes([data[4], data[5]]) as usize;
+        let mut best: Option<(u32, u32, u32)> = None; // (offset, size, score)
+        for i in 0..count {
+            let base = 6 + i * 16;
+            if base + 16 > data.len() {
+                break;
+            }
+            let w = if data[base] == 0 {
+                256u32
+            } else {
+                data[base] as u32
+            };
+            let entry_size =
+                u32::from_le_bytes([data[base + 8], data[base + 9], data[base + 10], data[base + 11]]);
+            let offset = u32::from_le_bytes([
+                data[base + 12],
+                data[base + 13],
+                data[base + 14],
+                data[base + 15],
+            ]);
+            // Score: prefer exact match (0), then larger (w - target), then
+            // smaller (2*(target - w) + 1 so any larger beats any smaller).
+            let score = if w >= target {
+                w - target
+            } else {
+                (target - w) * 2 + 1
+            };
+            if best.map_or(true, |(_, _, bs)| score < bs) {
+                best = Some((offset, entry_size, score));
+            }
+        }
+        best.map(|(o, s, _)| (o, s))
+    }
+
+    // Create an HICON from an ICO entry at the given offset/size.
+    unsafe fn hicon_from_ico_entry(
+        data: &[u8],
+        offset: u32,
+        size: u32,
+    ) -> Option<windows::Win32::UI::WindowsAndMessaging::HICON> {
+        let start = offset as usize;
+        let end = start + size as usize;
+        if end > data.len() {
+            return None;
+        }
+        let icon_bits = &data[start..end];
+        match CreateIconFromResourceEx(
+            icon_bits,
+            true,       // fIcon
+            0x00030000, // dwVersion
+            0,          // cxDesired (0 = use entry's own size)
+            0,          // cyDesired
+            windows::Win32::UI::WindowsAndMessaging::LR_DEFAULTSIZE,
+        ) {
+            Ok(hicon) if !hicon.is_invalid() => Some(hicon),
+            _ => None,
+        }
+    }
+
+    // ICON_BIG: used by Alt+Tab and the taskbar.
+    let big_target = 256u32;
+    // ICON_SMALL: used by the title bar and small taskbar mode.
+    let small_target = 128u32;
+
+    unsafe {
+        if let Some((offset, size)) = find_best_entry(&ico_data, big_target) {
+            if let Some(hicon) = hicon_from_ico_entry(&ico_data, offset, size) {
+                SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as _)), Some(LPARAM(hicon.0 as _)));
+            }
+        }
+        if let Some((offset, size)) = find_best_entry(&ico_data, small_target) {
+            if let Some(hicon) = hicon_from_ico_entry(&ico_data, offset, size) {
+                SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as _)), Some(LPARAM(hicon.0 as _)));
+            }
+        }
+    }
+}
+
+/// Locate `icon.ico` on disk (dev mode). Tries candidate paths relative to
+/// the current working directory and the executable.
+#[cfg(target_os = "windows")]
+fn find_icon_ico_bytes() -> Option<Vec<u8>> {
+    let candidates = [
+        // Dev: working directory is gui/ or gui/src-tauri/
+        std::path::Path::new("src-tauri/icons/icon.ico"),
+        std::path::Path::new("icons/icon.ico"),
+        // Relative to exe: gui/src-tauri/target/{debug,release}/futureos.exe
+        std::path::Path::new("../../icons/icon.ico"),
+        std::path::Path::new("../../../icons/icon.ico"),
+    ];
+    for path in &candidates {
+        if let Ok(data) = std::fs::read(path) {
+            return Some(data);
+        }
+    }
+    None
+}
+
 /// Notify the frontend that a Thread's "previous turn changes" changeset has updated. The
 /// frontend bridges this to its typed event bus (§6.1, C1).
 pub(crate) fn emit_review_updated(thread_id: &str) {
@@ -148,6 +286,13 @@ pub fn run() {
                 eprintln!("FutureOS menu setup failed: {error}");
             }
             size_main_window_to_screen(app);
+            // Windows: set a high-quality taskbar icon. Tauri's default path creates
+            // a single-size HICON from the first PNG, and GDI's icon scaling is poor
+            // when the taskbar needs to render it at a different size. Instead, load
+            // the multi-size ICO and let Windows pick the exact match for its display
+            // size — the ICO contains 16,20,24,30,32,36,40,48,64,72,96,128,256.
+            #[cfg(target_os = "windows")]
+            set_windows_taskbar_icon(app);
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
             }
