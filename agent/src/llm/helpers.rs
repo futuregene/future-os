@@ -578,4 +578,213 @@ mod apply_thinking_params_tests {
         client.apply_thinking_params(&mut body);
         assert_eq!(body.get("reasoning_effort"), None);
     }
+
+    #[test]
+    fn zai_format_emits_enable_thinking() {
+        let client = Client::new("https://api.z.ai/v1", "k", None, None)
+            .with_compat("zai", true, false)
+            .with_thinking_level("high");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("enable_thinking"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn zai_off_emits_enable_thinking_false() {
+        let client = Client::new("https://api.z.ai/v1", "k", None, None)
+            .with_compat("zai", true, false)
+            .with_thinking_level("off");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("enable_thinking"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn qwen_chat_template_format() {
+        let client = Client::new("https://example.com/v1", "k", None, None)
+            .with_compat("qwen-chat-template", true, false)
+            .with_thinking_level("high");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        let ct = body.get("chat_template_kwargs");
+        assert!(ct.is_some());
+        assert_eq!(ct.unwrap()["enable_thinking"], json!(true));
+    }
+
+    #[test]
+    fn thinking_level_map_applies() {
+        let mut level_map = std::collections::HashMap::new();
+        level_map.insert("high".to_string(), "max".to_string());
+        let client = Client::new("https://api.openai.com/v1", "k", None, None)
+            .with_compat("openai", true, false)
+            .with_thinking_level("high")
+            .with_thinking_level_map(level_map);
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("reasoning_effort"), Some(&json!("max")));
+    }
+}
+
+#[cfg(test)]
+mod message_conversion_tests {
+    use super::Client;
+    use crate::types::{Message, ToolCall, ToolCallFn};
+    use serde_json::{json, Value};
+
+    #[test]
+    fn convert_system_and_user() {
+        let msgs = vec![
+            Message {
+                role: "system".to_string(),
+                content: Some(json!("You are helpful")),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: Some(json!("hello")),
+                ..Default::default()
+            },
+        ];
+        let converted = Client::convert_messages_to_openai(msgs, "system prompt".to_string(), false);
+        assert_eq!(converted.len(), 3); // system prompt + system msg + user msg
+        assert_eq!(converted[0]["role"], "system");
+        assert_eq!(converted[1]["role"], "system");
+        assert_eq!(converted[2]["role"], "user");
+    }
+
+    #[test]
+    fn convert_assistant_with_tool_calls() {
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".to_string(),
+                call_type: "function".to_string(),
+                function: ToolCallFn {
+                    name: "shell".to_string(),
+                    arguments: json!({"command": "ls"}),
+                },
+            }]),
+            ..Default::default()
+        }];
+        let converted = Client::convert_messages_to_openai(msgs, String::new(), false);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert!(converted[0].get("tool_calls").is_some());
+        assert!(converted[0].get("content").is_none()); // omitted when no content
+    }
+
+    #[test]
+    fn convert_assistant_with_reasoning() {
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: Some(json!("answer")),
+            reasoning_content: "thinking...".to_string(),
+            ..Default::default()
+        }];
+        let converted = Client::convert_messages_to_openai(msgs, String::new(), false);
+        assert_eq!(converted[0]["reasoning_content"], "thinking...");
+    }
+
+    #[test]
+    fn convert_tool_message() {
+        let msgs = vec![Message {
+            role: "tool".to_string(),
+            content: Some(json!("result output")),
+            tool_call_id: "call_1".to_string(),
+            ..Default::default()
+        }];
+        let converted = Client::convert_messages_to_openai(msgs, String::new(), false);
+        assert_eq!(converted[0]["role"], "tool");
+        assert_eq!(converted[0]["tool_call_id"], "call_1");
+        assert_eq!(converted[0]["content"], "result output");
+    }
+
+    #[test]
+    fn convert_skips_empty_system_prompt() {
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: Some(json!("hi")),
+            ..Default::default()
+        }];
+        let converted = Client::convert_messages_to_openai(msgs, String::new(), false);
+        assert_eq!(converted.len(), 1); // no system prompt prepended
+    }
+
+    #[test]
+    fn extract_content_string() {
+        let result = Client::extract_content(Some(json!("hello")));
+        assert_eq!(result, json!([{ "type": "text", "text": "hello" }]));
+    }
+
+    #[test]
+    fn extract_content_array() {
+        let arr = json!([{ "type": "text", "text": "a" }]);
+        let result = Client::extract_content(Some(arr.clone()));
+        assert_eq!(result, arr);
+    }
+
+    #[test]
+    fn extract_content_none() {
+        let result = Client::extract_content(None);
+        assert_eq!(result, json!([{ "type": "text", "text": "" }]));
+    }
+
+    #[test]
+    fn parse_sse_chunk_thinking_delta() {
+        let data = r#"{"choices":[{"index":0,"delta":{"reasoning_content":"let me think"}}]}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_eq!(event.event_type, "thinking_delta");
+        assert_eq!(event.text, "let me think");
+    }
+
+    #[test]
+    fn parse_sse_chunk_text_delta() {
+        let data = r#"{"choices":[{"index":0,"delta":{"content":"hello"}}]}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_eq!(event.event_type, "text_delta");
+        assert_eq!(event.text, "hello");
+    }
+
+    #[test]
+    fn parse_sse_chunk_toolcall_end() {
+        let data = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_eq!(event.event_type, "toolcall_end");
+    }
+
+    #[test]
+    fn parse_sse_chunk_stop() {
+        let data = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_eq!(event.event_type, "stop");
+        assert_eq!(event.stop_reason, "stop");
+    }
+
+    #[test]
+    fn parse_sse_chunk_empty_delta_is_stop() {
+        let data = r#"{"choices":[{"index":0,"delta":{}}]}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_eq!(event.event_type, "stop");
+    }
+
+    #[test]
+    fn parse_sse_chunk_tc_index() {
+        let data = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":2,"id":"call_2","function":{"name":"read","arguments":"{}"}}]}}]}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_eq!(event.event_type, "toolcall_start");
+        assert_eq!(event.tc_index, 2);
+    }
+
+    #[test]
+    fn parse_sse_chunk_cached_tokens() {
+        let data = r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":80}}}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_eq!(event.usage.unwrap().cache_read_tokens, Some(80));
+    }
+
+    #[test]
+    fn parse_sse_chunk_invalid_json_errors() {
+        assert!(Client::parse_sse_chunk("not json").is_err());
+    }
 }

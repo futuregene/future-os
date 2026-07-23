@@ -1612,4 +1612,321 @@ mod tests {
             "grandchild process survived abort and wrote the marker file"
         );
     }
+
+    // ─── parse_result_failure ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_result_failure_extracts_exit_code() {
+        assert_eq!(
+            parse_result_failure("some output\n[exit: 1]"),
+            (1, "some output\n[exit: 1]".to_string())
+        );
+        assert_eq!(
+            parse_result_failure("[exit: 0]"),
+            (0, "[exit: 0]".to_string())
+        );
+        assert_eq!(
+            parse_result_failure("no exit code here"),
+            (0, "no exit code here".to_string())
+        );
+        // Long output gets tail-truncated
+        let long = "a".repeat(5000) + "\n[exit: 5]";
+        let (code, tail) = parse_result_failure(&long);
+        assert_eq!(code, 5);
+        assert!(tail.len() <= 2100);
+        assert!(tail.contains("[exit: 5]"));
+    }
+
+    // ─── shell_segments ────────────────────────────────────────────────────
+
+    #[test]
+    fn shell_segments_splits_pipes() {
+        let segments = shell_segments("echo hello | grep h");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0], vec!["echo", "hello"]);
+        assert_eq!(segments[1], vec!["grep", "h"]);
+    }
+
+    #[test]
+    fn shell_segments_single_command() {
+        let segments = shell_segments("echo hello world");
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0], vec!["echo", "hello", "world"]);
+    }
+
+    // ─── human_size ────────────────────────────────────────────────────────
+
+    #[test]
+    fn human_size_formats_correctly() {
+        assert_eq!(human_size(0), "0B");
+        assert_eq!(human_size(500), "500B");
+        assert_eq!(human_size(1024), "1KB");
+        assert_eq!(human_size(1536), "1KB");
+        assert_eq!(human_size(2048), "2KB");
+        assert_eq!(human_size(1048576), "1.0MB");
+        assert_eq!(human_size(1572864), "1.5MB");
+    }
+
+    // ─── format_shell_output ───────────────────────────────────────────────
+
+    #[test]
+    fn format_shell_output_includes_exit_code() {
+        let output = format_shell_output("hello world", 11, 0);
+        assert!(output.contains("hello world"));
+        assert!(output.contains("[exit: 0]"));
+    }
+
+    #[test]
+    fn format_shell_output_signal_exit() {
+        let output = format_shell_output("killed", 6, -1);
+        assert!(output.contains("[exit: signal]"));
+    }
+
+    // ─── truncate_for_error ────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_for_error_shortens() {
+        assert_eq!(truncate_for_error("hello"), "hello");
+        assert!(truncate_for_error("").is_empty());
+        let long = "a".repeat(500);
+        let truncated = truncate_for_error(&long);
+        assert!(truncated.len() < 500);
+        assert!(truncated.ends_with('…'));
+    }
+
+    // ─── make_tool / tool schemas ──────────────────────────────────────────
+
+    #[test]
+    fn shell_tool_has_correct_name() {
+        let tool = shell_tool();
+        assert_eq!(tool.def.function.name, "shell");
+        assert!(tool.def.function.description.contains("command"));
+    }
+
+    #[test]
+    fn read_tool_has_correct_name() {
+        let tool = read_tool();
+        assert_eq!(tool.def.function.name, "read");
+    }
+
+    #[test]
+    fn write_tool_has_correct_name() {
+        let tool = write_tool();
+        assert_eq!(tool.def.function.name, "write");
+    }
+
+    #[test]
+    fn edit_tool_has_correct_name() {
+        let tool = edit_tool();
+        assert_eq!(tool.def.function.name, "edit");
+    }
+
+    #[test]
+    fn make_tool_includes_guidelines() {
+        let tool = make_tool(
+            "test_tool",
+            "A test tool",
+            serde_json::json!({"type": "object"}),
+            |_: serde_json::Value| Box::pin(async { Ok("ok".to_string()) }),
+            vec!["guideline 1"],
+        );
+        assert_eq!(tool.def.function.name, "test_tool");
+        assert_eq!(tool.guidelines.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_read_returns_file_contents() {
+        let workspace = test_path("read-ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let file = workspace.join("test.txt");
+        std::fs::write(&file, "line1\nline2\nline3").unwrap();
+
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "all".to_string(),
+            async { run_read("test.txt", None, None).await },
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert!(content.contains("line1"));
+        assert!(content.contains("line3"));
+    }
+
+    #[tokio::test]
+    async fn run_read_with_offset_and_limit() {
+        let workspace = test_path("read-offset");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let file = workspace.join("test.txt");
+        std::fs::write(&file, "line1\nline2\nline3\nline4\nline5").unwrap();
+
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "all".to_string(),
+            async { run_read("test.txt", Some(2), Some(2)).await },
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert!(!content.contains("line1"));
+        assert!(content.contains("line2"));
+        assert!(content.contains("line3"));
+        assert!(!content.contains("line4"));
+    }
+
+    #[tokio::test]
+    async fn run_read_missing_file_errors() {
+        let workspace = test_path("read-missing");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "all".to_string(),
+            async { run_read("nonexistent.txt", None, None).await },
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn approve_outside_path_adds_to_approved_list() {
+        // Without a scope, this is a no-op (should not panic)
+        approve_outside_path("/tmp/test");
+    }
+
+    #[test]
+    fn shell_schema_is_valid() {
+        let schema = shell_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["command"].is_object());
+    }
+
+    #[test]
+    fn read_schema_is_valid() {
+        let schema = read_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["path"].is_object());
+    }
+
+    #[test]
+    fn write_schema_is_valid() {
+        let schema = write_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["path"].is_object());
+    }
+
+    #[test]
+    fn edit_schema_is_valid() {
+        let schema = edit_schema();
+        assert_eq!(schema["type"], "object");
+    }
+
+    #[tokio::test]
+    async fn shell_handler_executes_command() {
+        let workspace = test_path("shell-hdl");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "all".to_string(),
+            async {
+                shell_handler(serde_json::json!({"command": "echo handler-works"})).await
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("handler-works"));
+    }
+
+    #[tokio::test]
+    async fn read_handler_reads_file() {
+        let workspace = test_path("read-hdl");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let file = workspace.join("data.txt");
+        std::fs::write(&file, "file contents").unwrap();
+
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "all".to_string(),
+            async {
+                read_handler(serde_json::json!({"path": "data.txt"})).await
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("file contents"));
+    }
+
+    #[tokio::test]
+    async fn write_handler_writes_file() {
+        let workspace = test_path("write-hdl");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "all".to_string(),
+            async {
+                write_handler(serde_json::json!({
+                    "path": "output.txt",
+                    "content": "written content"
+                }))
+                .await
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("output.txt")).unwrap(),
+            "written content"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_handler_edits_file() {
+        let workspace = test_path("edit-hdl");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let file = workspace.join("edit.txt");
+        std::fs::write(&file, "before text").unwrap();
+
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "all".to_string(),
+            async {
+                edit_handler(serde_json::json!({
+                    "path": "edit.txt",
+                    "oldText": "before",
+                    "newText": "after"
+                }))
+                .await
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "after text"
+        );
+    }
+
+    // ─── coding_tools / all_tools ──────────────────────────────────────────
+
+    #[test]
+    fn coding_tools_includes_four_tools() {
+        let tools = coding_tools();
+        assert_eq!(tools.len(), 4);
+        let names: Vec<&str> = tools.iter().map(|t| t.def.function.name.as_str()).collect();
+        assert!(names.contains(&"shell"));
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"write"));
+        assert!(names.contains(&"edit"));
+    }
+
+    #[test]
+    fn all_tools_equals_coding_tools() {
+        let coding = coding_tools();
+        let all = all_tools();
+        assert_eq!(coding.len(), all.len());
+    }
 }

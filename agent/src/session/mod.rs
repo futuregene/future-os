@@ -1927,6 +1927,173 @@ mod tests {
         assert!(manager.find("nonexistent_id").is_none());
     }
 
+    #[test]
+    fn append_entries_persists_and_loads() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_append_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        manager.save(&session).unwrap();
+
+        // Append a second user entry
+        let appended = vec![SessionEntry::new_assistant(
+            serde_json::json!("hi there"),
+            vec![],
+        )];
+        manager.append_entries(&session.id, &appended).unwrap();
+
+        // Append to non-existent session should error
+        let result = manager.append_entries("nonexistent", &appended);
+        assert!(result.is_err());
+
+        // Load and verify both entries are present
+        let loaded = manager.load(&session.id).unwrap();
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].role, "user");
+        assert_eq!(loaded.entries[1].role, "assistant");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cheap_entry_type_extracts_type_field() {
+        // Entry format: id first, type second
+        let line = r#"{"id":"abc","type":"user","role":"user","content":"hello"}"#;
+        assert_eq!(Manager::cheap_entry_type(line), Some("user"));
+
+        let line2 = r#"{"id":"def","type":"assistant","role":"assistant"}"#;
+        assert_eq!(Manager::cheap_entry_type(line2), Some("assistant"));
+
+        let line3 = r#"{"id":"ghi","type":"tool","tool_call_id":"t1"}"#;
+        assert_eq!(Manager::cheap_entry_type(line3), Some("tool"));
+
+        // Line without type field
+        let no_type = r#"{"id":"xyz"}"#;
+        assert_eq!(Manager::cheap_entry_type(no_type), None);
+
+        // Very short line
+        assert_eq!(Manager::cheap_entry_type("{"), None);
+    }
+
+    #[test]
+    fn cheap_timestamp_extracts_last_timestamp() {
+        let line = r#"{"id":"x","timestamp":"2026-07-23T10:30:00+08:00","other":"data","timestamp":"2026-07-23T11:00:00+08:00"}"#;
+        let ts = Manager::cheap_timestamp(line).unwrap();
+        assert_eq!(ts.format("%H:%M").to_string(), "11:00");
+
+        // Line without valid timestamp
+        assert!(Manager::cheap_timestamp(r#"{"id":"x"}"#).is_none());
+    }
+
+    #[test]
+    fn summary_first_message_from_string_content() {
+        let e = SessionEntry::new_user("user", serde_json::json!("hello world from the user"));
+        let summary = Manager::summary_first_message(&e).unwrap();
+        assert!(summary.len() <= 40);
+        assert_eq!(summary, "hello world from the user");
+    }
+
+    #[test]
+    fn summary_first_message_from_array_content() {
+        let e = SessionEntry::new_user(
+            "user",
+            serde_json::json!([
+                {"type": "text", "text": "first message block "},
+                {"type": "text", "text": "second block"}
+            ]),
+        );
+        // summary_first_message only takes the FIRST text block
+        let summary = Manager::summary_first_message(&e).unwrap();
+        assert_eq!(summary, "first message block");
+    }
+
+    #[test]
+    fn summary_first_message_truncates_to_40() {
+        let long = "a".repeat(100);
+        let e = SessionEntry::new_user("user", serde_json::json!(long));
+        let summary = Manager::summary_first_message(&e).unwrap();
+        assert_eq!(summary.len(), 40);
+    }
+
+    #[test]
+    fn summary_first_message_empty_content_returns_none() {
+        let mut e = SessionEntry::new_user("user", serde_json::json!(""));
+        e.content = Some(serde_json::json!("   "));
+        assert!(Manager::summary_first_message(&e).is_none());
+    }
+
+    #[test]
+    fn session_snapshot_preserves_all_fields() {
+        let entries = vec![SessionEntry::new_user("user", serde_json::json!("hello"))];
+        let snap = Session::snapshot(
+            "sid-123".to_string(),
+            "/tmp/proj".to_string(),
+            "claude-sonnet".to_string(),
+            "My Session".to_string(),
+            "parent-456".to_string(),
+            entries,
+        );
+        assert_eq!(snap.id, "sid-123");
+        assert_eq!(snap.cwd, "/tmp/proj");
+        assert_eq!(snap.model, "claude-sonnet");
+        assert_eq!(snap.get_session_name(), "My Session");
+        assert_eq!(snap.parent_session_id, "parent-456");
+        assert_eq!(snap.entries.len(), 1);
+    }
+
+    #[test]
+    fn get_session_info_extracts_from_entries() {
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session.entries.push(SessionEntry::session_info(
+            serde_json::json!({"model": "gpt-4o", "thinking_level": "high"}),
+            "gpt-4o".to_string(),
+            "high".to_string(),
+        ));
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+
+        let info = session.get_session_info().unwrap();
+        assert_eq!(info["model"], "gpt-4o");
+        assert_eq!(info["thinking_level"], "high");
+
+        // Session without session_info entry
+        let empty = Session::new("/tmp/test", "gpt-4o", "");
+        assert!(empty.get_session_info().is_none());
+    }
+
+    #[test]
+    fn deserialize_timestamp_space_separator() {
+        let json = r#"{"id":"t","type":"u","timestamp":"2026-07-23 10:30:00+08:00"}"#;
+        let entry: SessionEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.timestamp.format("%H:%M").to_string(), "10:30");
+    }
+
+    #[test]
+    fn deserialize_timestamp_with_fractional_space() {
+        let json = r#"{"id":"t","type":"u","timestamp":"2026-07-23 10:30:00.500+08:00"}"#;
+        let entry: SessionEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.timestamp.format("%H:%M").to_string(), "10:30");
+    }
+
+    #[test]
+    fn deserialize_timestamp_unparseable_falls_back() {
+        let json = r#"{"id":"t","type":"u","timestamp":"not-a-timestamp"}"#;
+        let entry: SessionEntry = serde_json::from_str(json).unwrap();
+        // Should fall back to current time (not an error)
+        let now = chrono::Local::now();
+        let diff = (now - entry.timestamp).num_seconds().abs();
+        assert!(diff < 5, "fallback time should be close to now");
+    }
+
     // ─── fork_session edge cases ────────────────────────────────────────────
 
     #[test]

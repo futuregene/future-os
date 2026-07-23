@@ -384,4 +384,130 @@ mod tests {
         assert!(prompt.contains("# Workspace Memory"));
         assert!(prompt.contains("FUTURE.md"));
     }
+
+    #[test]
+    fn build_prompt_with_custom_prompt() {
+        let prompt = build_prompt(&PromptOptions {
+            custom_prompt: "You are a custom assistant.".to_string(),
+            ..Default::default()
+        });
+        assert!(prompt.contains("You are a custom assistant."));
+        // Should not have the default identity section
+        assert!(!prompt.contains("You are an expert coding assistant"));
+    }
+
+    #[test]
+    fn build_prompt_with_append() {
+        let prompt = build_prompt(&PromptOptions {
+            append_prompt: "EXTRA: Always use TypeScript.".to_string(),
+            ..Default::default()
+        });
+        assert!(prompt.contains("EXTRA: Always use TypeScript."));
+    }
+
+    #[test]
+    fn build_prompt_with_date_and_cwd() {
+        let prompt = build_prompt(&PromptOptions {
+            date: "2026-07-23".to_string(),
+            working_directory: "/Users/test/project".to_string(),
+            ..Default::default()
+        });
+        assert!(prompt.contains("Current date: 2026-07-23"));
+        assert!(prompt.contains("Current working directory: /Users/test/project"));
+    }
+
+    #[test]
+    fn build_prompt_with_skills() {
+        let skill = crate::skills::Skill {
+            name: "test-skill".to_string(),
+            description: "A test skill".to_string(),
+            name_zh: None,
+            description_zh: None,
+            version: Some("1.0".to_string()),
+            location: "/path/to/skill".to_string(),
+            disable_model_invocation: false,
+        };
+        let tool = crate::tools::read_tool();
+        let prompt = build_prompt(&PromptOptions {
+            skills: vec![skill],
+            tools: vec![tool],
+            ..Default::default()
+        });
+        assert!(prompt.contains("test-skill"));
+        assert!(prompt.contains("<available_skills>"));
+    }
+
+    #[test]
+    fn has_tool_finds_matching() {
+        let tools = crate::tools::coding_tools();
+        assert!(has_tool(&tools, "shell"));
+        assert!(has_tool(&tools, "read"));
+        assert!(!has_tool(&tools, "nonexistent"));
+    }
+
+    #[test]
+    fn first_sentence_truncates_at_period() {
+        assert_eq!(first_sentence("Hello world. Rest"), "Hello world.");
+        assert_eq!(first_sentence("No period"), "No period");
+    }
+
+    #[test]
+    fn escape_xml_escapes_all() {
+        assert_eq!(
+            escape_xml("<tag>\"quoted\"&'single'</tag>"),
+            "&lt;tag&gt;&quot;quoted&quot;&amp;&apos;single&apos;&lt;/tag&gt;"
+        );
+    }
+
+    #[test]
+    fn dedup_removes_case_insensitive_duplicates() {
+        let items = vec![
+            "First".to_string(),
+            "FIRST".to_string(),
+            "first".to_string(),
+            "second".to_string(),
+        ];
+        let result = dedup(items);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "First");
+        assert_eq!(result[1], "second");
+    }
+
+    #[test]
+    fn os_hint_returns_non_empty() {
+        let hint = os_hint();
+        assert!(!hint.is_empty());
+        assert!(hint.contains("Host platform"));
+    }
+
+    #[test]
+    fn format_skills_section_produces_xml() {
+        let skill = crate::skills::Skill {
+            name: "my-skill".to_string(),
+            description: "Does things".to_string(),
+            name_zh: None,
+            description_zh: None,
+            version: None,
+            location: "/home/.agents/skills/my-skill/SKILL.md".to_string(),
+            disable_model_invocation: false,
+        };
+        let xml = format_skills_section(&[&skill]);
+        assert!(xml.contains("<available_skills>"));
+        assert!(xml.contains("my-skill"));
+        assert!(xml.contains("Does things"));
+    }
+
+    #[test]
+    fn build_dynamic_tool_guidelines_returns_vec() {
+        let guidelines = build_dynamic_tool_guidelines(&["shell", "read", "write", "edit"]);
+        assert!(!guidelines.is_empty());
+    }
+
+    #[test]
+    fn build_prompt_without_skills_or_tools() {
+        let prompt = build_prompt(&PromptOptions::default());
+        // Should still contain workspace memory and environment sections
+        assert!(prompt.contains("# Workspace Memory"));
+        assert!(prompt.contains("# Environment"));
+    }
 }
