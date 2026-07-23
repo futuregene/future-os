@@ -5,7 +5,7 @@
 
 import { GrpcClient } from "./rpc/index.js";
 import { VERSION } from "./version.generated.js";
-import type { SessionSummary } from "./rpc/types.js";
+import type { SessionSummary, ThinkingLevel } from "./rpc/types.js";
 import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
@@ -1152,7 +1152,13 @@ export class App extends Container {
 
       if (cmd === "new") {
         try {
-          const result = await this.client.newSession();
+          // Inherit cwd, model, and thinking level from the current session
+          // so /new feels like a clean continuation instead of a reset.
+          const result = await this.client.newSession({
+            cwd: this.state.cwd || undefined,
+            modelId: this.state.model || undefined,
+            level: (this.state.thinking || undefined) as ThinkingLevel | undefined,
+          });
           if (result.sessionId) {
             await this.refresh();
             this.chat.addMessage({

@@ -19,6 +19,7 @@ import type {
   RpcSessionState,
   SessionSummary,
   AgentEvent,
+  ThinkingLevel,
 } from "./types.js";
 
 export type EventListener = (event: AgentEvent) => void;
@@ -645,9 +646,14 @@ export class GrpcClient {
 
   // ─── Session Management RPC Methods ──────────────────────────────────
 
-  async newSession(): Promise<{ sessionId?: string; cancelled: boolean }> {
+  async newSession(opts?: { cwd?: string; modelId?: string; level?: ThinkingLevel }): Promise<{ sessionId?: string; cancelled: boolean }> {
     const result = await this.call("new_session", {
-      cwd: process.cwd(),
+      // Clear sessionId so the agent generates a fresh ID instead of
+      // reusing the current session's ID (which would load old entries).
+      sessionId: undefined as any,
+      cwd: opts?.cwd || process.cwd(),
+      modelId: opts?.modelId,
+      level: opts?.level,
       customInstructions: JSON.stringify({ createdBy: "tui" }),
     }) as any;
     if (result?.sessionId) {
