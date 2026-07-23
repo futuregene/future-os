@@ -365,10 +365,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // Update session_info so name survives restarts
             if let Ok(mut s) = session_manager.load(&session_id) {
                 // Update session_info entry's session_name field
-                if let Some(info_entry) = s.entries.iter_mut().find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO) {
+                if let Some(info_entry) = s
+                    .entries
+                    .iter_mut()
+                    .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+                {
                     if let Some(ref mut content) = info_entry.content {
                         if let Some(obj) = content.as_object_mut() {
-                            obj.insert("session_name".to_string(), serde_json::Value::String(cmd.name.clone()));
+                            obj.insert(
+                                "session_name".to_string(),
+                                serde_json::Value::String(cmd.name.clone()),
+                            );
                         }
                     }
                 }

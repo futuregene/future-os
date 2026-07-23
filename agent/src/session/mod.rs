@@ -1,4 +1,4 @@
-﻿//! Session management — 1:1 compatible with Go internal/session/
+//! Session management — 1:1 compatible with Go internal/session/
 
 use crate::types::{Message, ToolCall};
 use crate::utils::{default_session_dir, generate_entry_id, generate_id};
@@ -155,7 +155,11 @@ impl SessionEntry {
     /// Build the `session_info` metadata entry prepended to every saved session.
     /// `content` holds the token/cost/name JSON snapshot; `model`/`thinking_level`
     /// pin the session's active settings. All other fields take entry defaults.
-    pub fn session_info(content: serde_json::Value, _model: String, _thinking_level: String) -> Self {
+    pub fn session_info(
+        content: serde_json::Value,
+        _model: String,
+        _thinking_level: String,
+    ) -> Self {
         Self {
             id: generate_entry_id(),
             entry_type: ENTRY_TYPE_SESSION_INFO.to_string(),
@@ -568,7 +572,8 @@ impl Manager {
             .rev()
             .find_map(|e| {
                 if e.entry_type == ENTRY_TYPE_MODEL_CHANGE {
-                    e.content.as_ref()
+                    e.content
+                        .as_ref()
                         .and_then(|c| c.get("model"))
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
@@ -764,7 +769,11 @@ impl Manager {
                     }
                     if model.is_empty() {
                         if let Some(ref content) = e.content {
-                            if let Some(m) = content.get("model").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                            if let Some(m) = content
+                                .get("model")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                            {
                                 model = m.to_string();
                             }
                         }

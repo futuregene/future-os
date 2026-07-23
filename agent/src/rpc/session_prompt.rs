@@ -402,9 +402,15 @@ impl ServerSession {
                                 new_entry.timestamp = old_entry.timestamp;
                                 // Preserve run stats from old entry's content
                                 if let Some(ref old_content) = old_entry.content {
-                                    if let Some(obj) = new_entry.content.as_mut().and_then(|c| c.as_object_mut()) {
-                                        if let Some(v) = old_content.get("run_tokens") { obj.insert("run_tokens".to_string(), v.clone()); }
-                                        if let Some(v) = old_content.get("run_duration_ms") { obj.insert("run_duration_ms".to_string(), v.clone()); }
+                                    if let Some(obj) =
+                                        new_entry.content.as_mut().and_then(|c| c.as_object_mut())
+                                    {
+                                        if let Some(v) = old_content.get("run_tokens") {
+                                            obj.insert("run_tokens".to_string(), v.clone());
+                                        }
+                                        if let Some(v) = old_content.get("run_duration_ms") {
+                                            obj.insert("run_duration_ms".to_string(), v.clone());
+                                        }
                                     }
                                 }
                             }
@@ -425,8 +431,14 @@ impl ServerSession {
                                 // Store run stats in the last assistant's content JSON
                                 if let Some(ref mut content) = last_assistant.content {
                                     if let Some(obj) = content.as_object_mut() {
-                                        obj.insert("run_tokens".to_string(), serde_json::json!(run_output_tokens));
-                                        obj.insert("run_duration_ms".to_string(), serde_json::json!(run_duration_ms));
+                                        obj.insert(
+                                            "run_tokens".to_string(),
+                                            serde_json::json!(run_output_tokens),
+                                        );
+                                        obj.insert(
+                                            "run_duration_ms".to_string(),
+                                            serde_json::json!(run_duration_ms),
+                                        );
                                     }
                                 }
                             }
