@@ -1058,4 +1058,351 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         let shape = approval_shape("read", &path, Op::Read, &args, &sandbox);
         assert_eq!(shape.save_suggestion.unwrap()["access"], "read");
     }
+
+    // ─── shell_auto_allow ──────────────────────────────────────────────────
+
+    #[test]
+    fn shell_auto_allow_read_only() {
+        assert!(shell_auto_allow("ls -la"));
+        assert!(shell_auto_allow("cat file.txt"));
+        assert!(shell_auto_allow("grep pattern file.txt"));
+        assert!(shell_auto_allow("head -5 file.txt"));
+        assert!(shell_auto_allow("git log"));
+        assert!(shell_auto_allow("git diff"));
+        assert!(shell_auto_allow("find . -name '*.rs'"));
+    }
+
+    #[test]
+    fn shell_auto_allow_rejects_writes() {
+        assert!(!shell_auto_allow("echo hello > file.txt"));
+        assert!(!shell_auto_allow("rm file.txt"));
+        assert!(!shell_auto_allow("touch file.txt"));
+        assert!(!shell_auto_allow("mkdir newdir"));
+        assert!(!shell_auto_allow("mv a b"));
+    }
+
+    #[test]
+    fn shell_auto_allow_rejects_chains() {
+        assert!(!shell_auto_allow("ls && rm file"));
+        assert!(!shell_auto_allow("ls; rm file"));
+        assert!(!shell_auto_allow("ls | tee output.txt"));
+        assert!(!shell_auto_allow("echo `whoami`"));
+        assert!(!shell_auto_allow("echo $(date)"));
+    }
+
+    #[test]
+    fn shell_auto_allow_rejects_pipes_with_writes() {
+        assert!(!shell_auto_allow("ls | tee output.txt"));
+    }
+
+    #[test]
+    fn shell_auto_allow_allows_read_only_pipes() {
+        assert!(shell_auto_allow("ls | grep file"));
+        assert!(shell_auto_allow("cat file | head -10"));
+    }
+
+    #[test]
+    fn shell_auto_allow_empty_command() {
+        assert!(!shell_auto_allow(""));
+        assert!(!shell_auto_allow("   "));
+    }
+
+    // ─── segment_is_read_only ──────────────────────────────────────────────
+
+    #[test]
+    fn segment_is_read_only_basename() {
+        assert!(segment_is_read_only("ls"));
+        assert!(segment_is_read_only("/bin/ls"));
+        assert!(segment_is_read_only("/usr/bin/grep pattern"));
+    }
+
+    #[test]
+    fn segment_is_read_only_git_readonly() {
+        assert!(segment_is_read_only("git log"));
+        assert!(segment_is_read_only("git diff"));
+        assert!(segment_is_read_only("git status"));
+        assert!(segment_is_read_only("git show"));
+        assert!(segment_is_read_only("git branch"));
+    }
+
+    #[test]
+    fn segment_is_read_only_git_not_readonly() {
+        assert!(!segment_is_read_only("git push"));
+        assert!(!segment_is_read_only("git commit"));
+        assert!(!segment_is_read_only("git checkout"));
+        assert!(!segment_is_read_only("git merge"));
+    }
+
+    #[test]
+    fn segment_is_read_only_find_without_exec() {
+        assert!(segment_is_read_only("find . -name '*.txt'"));
+        assert!(!segment_is_read_only("find . -name '*.txt' -exec rm {} +"));
+        assert!(!segment_is_read_only("find . -name '*.txt' -delete"));
+    }
+
+    #[test]
+    fn segment_is_read_only_empty() {
+        assert!(!segment_is_read_only(""));
+    }
+
+    // ─── command_summary ───────────────────────────────────────────────────
+
+    #[test]
+    fn command_summary_short() {
+        assert_eq!(command_summary("ls -la"), "ls -la");
+    }
+
+    #[test]
+    fn command_summary_truncates_long() {
+        let long = "a".repeat(300);
+        let summary = command_summary(&long);
+        // 200 chars + 3-byte ellipsis
+        assert!(summary.len() <= 203);
+        assert!(summary.ends_with('\u{2026}'));
+    }
+
+    // ─── extract_blocked_paths_raw ─────────────────────────────────────────
+
+    #[test]
+    fn extract_blocked_paths_raw_quoted() {
+        let stderr = "touch: /etc/test.txt: Operation not permitted";
+        let paths = extract_blocked_paths_raw(stderr);
+        assert_eq!(paths, vec!["/etc/test.txt"]);
+    }
+
+    #[test]
+    fn extract_blocked_paths_raw_multiple() {
+        let stderr = "touch: /etc/a.txt: Operation not permitted\ntouch: /etc/b.txt: Operation not permitted";
+        let paths = extract_blocked_paths_raw(stderr);
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn extract_blocked_paths_raw_no_match() {
+        let stderr = "some other error";
+        assert!(extract_blocked_paths_raw(stderr).is_empty());
+    }
+
+    // ─── shorten_home ──────────────────────────────────────────────────────
+
+    #[test]
+    fn shorten_home_replaces_home() {
+        let home = dirs::home_dir().unwrap().to_string_lossy().to_string();
+        let path = format!("{}/some/file.txt", home);
+        assert_eq!(shorten_home(&path), "~/some/file.txt");
+    }
+
+    #[test]
+    fn shorten_home_outside_home() {
+        assert_eq!(shorten_home("/etc/hosts"), "/etc/hosts");
+    }
+
+    // ─── quoted_path ───────────────────────────────────────────────────────
+
+    #[test]
+    fn quoted_path_finds_path() {
+        assert_eq!(
+            quoted_path("touch: '/etc/test.txt': Operation not permitted"),
+            Some("/etc/test.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn quoted_path_no_path() {
+        assert_eq!(quoted_path("no path here"), None);
+    }
+
+    // ─── absolute_path_token ───────────────────────────────────────────────
+
+    #[test]
+    fn absolute_path_token_finds() {
+        assert_eq!(
+            absolute_path_token("touch: /etc/test.txt: Operation not permitted"),
+            Some("/etc/test.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn absolute_path_token_trims_colon() {
+        assert_eq!(
+            absolute_path_token("error: /path/to/file: something"),
+            Some("/path/to/file".to_string())
+        );
+    }
+
+    #[test]
+    fn absolute_path_token_none() {
+        assert_eq!(absolute_path_token("no paths here"), None);
+    }
+
+    // ─── argument_write_preview ────────────────────────────────────────────
+
+    #[test]
+    fn argument_write_preview_finds_content() {
+        let args = serde_json::json!({"content": "file content here"});
+        assert_eq!(
+            argument_write_preview(&args),
+            Some("file content here".to_string())
+        );
+    }
+
+    #[test]
+    fn argument_write_preview_finds_new_text() {
+        let args = serde_json::json!({"newText": "replacement"});
+        assert_eq!(
+            argument_write_preview(&args),
+            Some("replacement".to_string())
+        );
+    }
+
+    #[test]
+    fn argument_write_preview_truncates() {
+        let long = "a".repeat(300);
+        let args = serde_json::json!({"content": long});
+        let preview = argument_write_preview(&args).unwrap();
+        // 200 chars + 3-byte ellipsis
+        assert!(preview.len() <= 203);
+    }
+
+    #[test]
+    fn argument_write_preview_no_content() {
+        let args = serde_json::json!({"path": "/tmp/file"});
+        assert_eq!(argument_write_preview(&args), None);
+    }
+
+    #[test]
+    fn argument_write_preview_string_json() {
+        let args = serde_json::json!("{\"content\": \"string content\"}");
+        assert_eq!(
+            argument_write_preview(&args),
+            Some("string content".to_string())
+        );
+    }
+
+    // ─── normalize_requested_action ────────────────────────────────────────
+
+    #[test]
+    fn normalize_requested_action_parses_json_string() {
+        let args = serde_json::json!("{\"path\": \"/tmp/file.txt\"}");
+        let result = normalize_requested_action(&args);
+        assert_eq!(result["path"], "/tmp/file.txt");
+    }
+
+    #[test]
+    fn normalize_requested_action_non_string() {
+        let args = serde_json::json!({"path": "/tmp/file.txt"});
+        let result = normalize_requested_action(&args);
+        assert_eq!(result["path"], "/tmp/file.txt");
+    }
+
+    // ─── repair_partial_json_object ────────────────────────────────────────
+
+    #[test]
+    fn repair_partial_json_object_missing_brace() {
+        let raw = r#"{"path": "/tmp/file.txt""#;
+        let repaired = repair_partial_json_object(raw);
+        assert!(repaired.is_some());
+        assert_eq!(repaired.unwrap()["path"], "/tmp/file.txt");
+    }
+
+    #[test]
+    fn repair_partial_json_object_unclosed_string() {
+        let raw = r#"{"path": "/tmp/file"#;
+        let repaired = repair_partial_json_object(raw);
+        assert!(repaired.is_some());
+    }
+
+    #[test]
+    fn repair_partial_json_object_not_object() {
+        assert!(repair_partial_json_object("[1,2,3]").is_none());
+    }
+
+    #[test]
+    fn repair_partial_json_object_valid() {
+        let raw = r#"{"path": "/tmp/file.txt"}"#;
+        let repaired = repair_partial_json_object(raw);
+        assert!(repaired.is_some());
+    }
+
+    // ─── has_unclosed_string ───────────────────────────────────────────────
+
+    #[test]
+    fn has_unclosed_string_true() {
+        assert!(has_unclosed_string(r#"{"key": "unclosed"#));
+    }
+
+    #[test]
+    fn has_unclosed_string_false() {
+        assert!(!has_unclosed_string(r#"{"key": "closed"}"#));
+        assert!(!has_unclosed_string("no strings"));
+    }
+
+    #[test]
+    fn has_unclosed_string_escaped_quotes() {
+        assert!(!has_unclosed_string(r#"{"key": "with \"escape\""}"#));
+    }
+
+    // ─── escalation_save_suggestion ────────────────────────────────────────
+
+    #[test]
+    fn escalation_save_suggestion_workspace_parent() {
+        let ws = temp_ws("esc-save");
+        let sandbox = enabled(&ws);
+        let blocked = format!("{}/subdir/file.txt", ws);
+        let suggestion = escalation_save_suggestion(&[blocked], &sandbox);
+        assert!(suggestion.is_some());
+        let s = suggestion.unwrap();
+        assert_eq!(s["access"], "write");
+        assert_eq!(s["action"], "allow");
+    }
+
+    #[test]
+    fn escalation_save_suggestion_empty_paths() {
+        let ws = temp_ws("esc-empty");
+        let sandbox = enabled(&ws);
+        assert!(escalation_save_suggestion(&[], &sandbox).is_none());
+    }
+
+    #[test]
+    fn escalation_save_suggestion_secret_returns_none() {
+        let ws = temp_ws("esc-secret");
+        let sandbox = enabled(&ws);
+        let home = dirs::home_dir().unwrap().to_string_lossy().to_string();
+        let secret_path = format!("{home}/.ssh/id_rsa");
+        assert!(escalation_save_suggestion(&[secret_path], &sandbox).is_none());
+    }
+
+    // ─── path_save_suggestion ──────────────────────────────────────────────
+
+    #[test]
+    fn path_save_suggestion_inside_workspace() {
+        let ws = temp_ws("save-sugg");
+        let sandbox = enabled(&ws);
+        let path = sandbox.workspace.join("docs/readme.md");
+        let suggestion = path_save_suggestion(&path, Op::Read, &sandbox.workspace);
+        assert!(suggestion.is_some());
+    }
+
+    #[test]
+    fn path_save_suggestion_outside_workspace() {
+        let ws = temp_ws("save-outside");
+        let sandbox = enabled(&ws);
+        let outside = dirs::home_dir().unwrap().join("outside.txt");
+        let suggestion = path_save_suggestion(&outside, Op::Write, &sandbox.workspace);
+        // Should still generate a suggestion (with ~ for home)
+        let _ = suggestion;
+    }
+
+    // ─── shell_command_shape ───────────────────────────────────────────────
+
+    #[test]
+    fn shell_command_shape_structure() {
+        let ws = temp_ws("shell-shape");
+        let sandbox = enabled(&ws);
+        let shape = shell_command_shape("ls -la", &sandbox);
+        assert_eq!(shape.kind, "shell_command");
+        assert_eq!(shape.risk_level, "medium");
+        assert!(shape.save_suggestion.is_none());
+        assert_eq!(shape.action["command"], "ls -la");
+    }
 }

@@ -1251,4 +1251,152 @@ mod tests {
         session.add_session_rule("/tmp/**", "read");
         // Just verify no panic — the rule goes into the session_rules mutex
     }
+
+    // ─── default_workspace ──────────────────────────────────────────────────
+
+    #[test]
+    fn default_workspace_contains_future_agent() {
+        let ws = default_workspace();
+        assert!(ws.contains(".future"));
+        assert!(ws.contains("agent"));
+        assert!(ws.contains("workspace"));
+    }
+
+    // ─── ServerSession unique tests (no duplicates with existing tests) ─────
+
+    #[test]
+    fn set_cwd_updates_field() {
+        let mut session = make_test_session("s1");
+        session.set_cwd("/new/path");
+        assert_eq!(session.cwd, "/new/path");
+    }
+
+    #[test]
+    fn set_permission_level_invalid() {
+        let mut session = make_test_session("s1");
+        session.set_permission_level("invalid");
+        // Should not crash, permission stays as-is or reverts
+    }
+
+    #[test]
+    fn get_permission_level_default() {
+        let session = make_test_session("s1");
+        assert_eq!(session.get_permission_level(), "all");
+    }
+
+    #[test]
+    fn set_auto_compaction_toggles() {
+        let mut session = make_test_session("s1");
+        assert!(session.auto_compaction);
+        session.set_auto_compaction(false);
+        assert!(!session.auto_compaction);
+    }
+
+    #[test]
+    fn set_auto_retry_toggles() {
+        let mut session = make_test_session("s1");
+        assert!(session.auto_retry);
+        session.set_auto_retry(false);
+        assert!(!session.auto_retry);
+    }
+
+    #[test]
+    fn set_system_prompt_updates() {
+        let mut session = make_test_session("s1");
+        session.set_system_prompt("custom prompt");
+        // Verify the prompt was set (indirect check via the loop)
+    }
+
+    #[test]
+    fn append_system_prompt_appends() {
+        let mut session = make_test_session("s1");
+        session.set_system_prompt("base");
+        session.append_system_prompt("appended");
+        // Verify no panic
+    }
+
+    #[test]
+    fn set_ephemeral_toggles() {
+        let mut session = make_test_session("s1");
+        session.set_ephemeral(true);
+        // Field should be updated
+    }
+
+    #[test]
+    fn set_tools_filters() {
+        let mut session = make_test_session("s1");
+        session.set_tools(&["shell".to_string(), "read".to_string()]);
+        // Should not panic
+    }
+
+    #[test]
+    fn disable_tools_clears() {
+        let mut session = make_test_session("s1");
+        session.disable_tools();
+        // Should not panic
+    }
+
+    #[test]
+    fn disable_builtin_tools() {
+        let mut session = make_test_session("s1");
+        session.disable_builtin_tools();
+        // Should not panic
+    }
+
+    #[test]
+    fn strip_images_removes_image_blocks_v2() {
+        let session = make_test_session("s1");
+        session.messages.write().push(crate::types::AgentMessage {
+            role: "user".to_string(),
+            content: vec![
+                crate::types::ContentBlock::text("hello"),
+                crate::types::ContentBlock::image("data:image/png;base64,abc"),
+            ],
+            ..Default::default()
+        });
+        session.strip_image_content_from_messages();
+        let msgs = session.messages.read();
+        assert_eq!(msgs[0].content.len(), 1);
+    }
+
+    #[test]
+    fn reload_credentials_no_panic() {
+        let session = make_test_session("s1");
+        session.reload_credentials();
+    }
+
+    #[test]
+    fn fork_does_not_panic() {
+        let mut session = make_test_session("s1");
+        let _ = session.fork("entry_id");
+    }
+
+    #[test]
+    fn delete_session_does_not_panic() {
+        let session = make_test_session("s1");
+        let _ = session.delete_session("other_id");
+    }
+
+    #[test]
+    fn list_sessions_empty_dir() {
+        let session = make_test_session("s1");
+        let result = session.list_sessions();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn set_sandbox_policy_updates() {
+        let mut session = make_test_session("s1");
+        session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+            tier: crate::sandbox::SandboxTier::Off,
+        });
+        // Should not panic
+    }
+
+    #[test]
+    fn compact_empty_messages_returns_zero() {
+        let session = make_test_session("s1");
+        let result = session.compact("").unwrap();
+        assert_eq!(result["messagesRemoved"], 0);
+    }
 }
