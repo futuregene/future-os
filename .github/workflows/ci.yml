@@ -30,7 +30,7 @@ jobs:
   # every crate (the rust-build Linux leg re-checks them — a deliberate,
   # cached, incremental overlap kept so that matrix stays symmetric).
   rust-quality:
-    name: Rust lint + test (Linux)
+    name: Rust fmt + clippy + tests (Linux)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -80,8 +80,10 @@ jobs:
           : > "gui/src-tauri/binaries/future-$triple"
 
       # ── Workspace crates (agent / channels / remote) ──
+      # --all because the root manifest is a virtual workspace (no [package]);
+      # --manifest-path would fail with "Failed to find targets".
       - name: rustfmt (workspace)
-        run: cargo fmt --check --manifest-path Cargo.toml
+        run: cargo fmt --check --all
 
       - name: clippy (workspace)
         run: cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings
