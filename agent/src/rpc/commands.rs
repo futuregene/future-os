@@ -589,9 +589,7 @@ fn get_agent_info_response(id: &str) -> String {
         crate::skills::APP_SKILLS_DIR.to_string(),
         crate::skills::AGENTS_SKILLS_DIR.to_string(),
     ];
-    let skills_count = crate::skills::discover_skills(&dirs)
-        .map(|s| s.len())
-        .unwrap_or(0);
+    let skills_count = crate::skills::discover_skills_cached(&dirs).len();
     RpcResponse::ok(
         id,
         "get_agent_info",
@@ -836,7 +834,7 @@ fn cmd_get_commands(id: &str) -> String {
         crate::skills::PROJECT_SKILLS_DIR.to_string(),
         crate::skills::AGENTS_SKILLS_DIR.to_string(),
     ];
-    let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+    let skills = crate::skills::discover_skills_cached(&skill_dirs);
 
     let mut commands: Vec<serde_json::Value> = skills
         .into_iter()
@@ -1337,7 +1335,7 @@ fn cmd_reload_config(
         format!("{}/{}", cwd, crate::skills::PROJECT_SKILLS_DIR),
         crate::skills::AGENTS_SKILLS_DIR.to_string(),
     ];
-    let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+    let skills = crate::skills::discover_skills_cached(&skill_dirs);
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
     // Re-read context files

@@ -54,6 +54,54 @@ pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
     Ok(skills)
 }
 
+// ─── Cached skills discovery ──────────────────────────────────────────────
+
+/// How long the cached skills list stays fresh before a refresh is triggered.
+const SKILLS_CACHE_TTL_SECS: u64 = 60;
+
+/// Global cached skills list, refreshed lazily on access.
+static SKILLS_CACHE: std::sync::RwLock<Option<(std::time::Instant, Vec<Skill>)>> =
+    std::sync::RwLock::new(None);
+
+/// Serialises cache refreshes so only one thread does the I/O work.
+static REFRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Returns a cached skills list, refreshing when older than
+/// SKILLS_CACHE_TTL_SECS. Fast path is lock-free for concurrent readers;
+/// slow path serialises file I/O with a dedicated refresh mutex so multiple
+/// concurrent prompts never block each other on the write lock.
+pub fn discover_skills_cached(dirs: &[String]) -> Vec<Skill> {
+    // Fast path: read lock, check TTL — multiple readers OK.
+    {
+        let cache = SKILLS_CACHE.read().unwrap();
+        if let Some((ref ts, ref skills)) = *cache {
+            if ts.elapsed().as_secs() < SKILLS_CACHE_TTL_SECS {
+                return skills.clone();
+            }
+        }
+    }
+    // Slow path: one thread refreshes; others wait on the refresh lock
+    // then double-check (the first thread may have already refreshed).
+    let _refresh = REFRESH_LOCK.lock().unwrap();
+    {
+        let cache = SKILLS_CACHE.read().unwrap();
+        if let Some((ref ts, ref skills)) = *cache {
+            if ts.elapsed().as_secs() < SKILLS_CACHE_TTL_SECS {
+                return skills.clone();
+            }
+        }
+    }
+    // File I/O outside any lock — only one thread reaches here.
+    let skills = discover_skills(dirs).unwrap_or_default();
+    *SKILLS_CACHE.write().unwrap() = Some((std::time::Instant::now(), skills.clone()));
+    skills
+}
+
+/// Invalidate the skills cache so the next access triggers a refresh.
+pub fn invalidate_skills_cache() {
+    *SKILLS_CACHE.write().unwrap() = None;
+}
+
 fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
     let content = std::fs::read_to_string(skill_md)?;
     let name = extract_name(&content, skill_md)?;

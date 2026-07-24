@@ -439,7 +439,7 @@ async fn async_main(
         format!("{}/{}", cwd, PROJECT_SKILLS_DIR),
         AGENTS_SKILLS_DIR.to_string(),
     ];
-    let skills = future_agent::discover_skills(&skill_dirs).unwrap_or_default();
+    let skills = future_agent::discover_skills_cached(&skill_dirs);
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
     // Load project context

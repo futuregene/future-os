@@ -714,7 +714,7 @@ impl ServerSession {
             format!("{}/{}", self.cwd, crate::skills::PROJECT_SKILLS_DIR),
             crate::skills::AGENTS_SKILLS_DIR.to_string(),
         ];
-        let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+        let skills = crate::skills::discover_skills_cached(&skill_dirs);
 
         // Load project context (AGENTS.md / CLAUDE.md / GEMINI.md)
         let mut agent_content = String::new();
