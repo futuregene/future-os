@@ -402,10 +402,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "cycle_model" => {
             // Cycle to next available model.  Scoping is client-side (TUI/GUI).
-            let registry = crate::models::Registry::new();
+            // Use the cached registry — Registry::new() re-parses the 1.9 MB
+            // catalog AND may do blocking network I/O (future provider
+            // refresh) on every call.
             let auth = crate::AuthStore::load();
-
-            let models: Vec<String> = registry
+            let models: Vec<String> = state
+                .model_registry
+                .read()
                 .all_models()
                 .into_iter()
                 .filter(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
