@@ -32,6 +32,8 @@ export interface ModelSelection {
   changeModel: (modelId: string) => Promise<void>;
   /** Draft (no thread yet) model change: updates the local selection only. */
   changeDraftModel: (modelId: string) => void;
+  /** Draft (no thread yet) thinking-level change: local selection only. */
+  changeDraftThinkingLevel: (thinkingLevel: string) => void;
   /** Thinking-level change: persists it when a thread is active. */
   changeThinkingLevel: (thinkingLevel: string) => Promise<void>;
   /** Prime the selection to a just-created thread's model + thinking level. */
@@ -125,6 +127,17 @@ export function useModelSelection({
     draftThinkingModelRef.current = modelId;
   }
 
+  // Draft counterpart of changeThinkingLevel. The new-chat screen is shown
+  // while `activeThread` may STILL point at the previous conversation
+  // (centerMode flips independently of activeThreadId), so wiring it to
+  // changeThinkingLevel would persist the draft pick into that thread's
+  // cache AND its agent session. Draft changes must stay local.
+  function changeDraftThinkingLevel(thinkingLevel: string) {
+    const nextLevel = normalizeThinkingLevel(thinkingLevel);
+    setSelectedThinkingLevel(nextLevel);
+    rememberLastUsedThinkingLevel(nextLevel);
+  }
+
   async function changeThinkingLevel(thinkingLevel: string) {
     const nextLevel = normalizeThinkingLevel(thinkingLevel);
     setSelectedThinkingLevel(nextLevel);
@@ -169,6 +182,7 @@ export function useModelSelection({
     activeThinkingLevel,
     changeModel,
     changeDraftModel,
+    changeDraftThinkingLevel,
     changeThinkingLevel,
     syncSelection,
   };

@@ -137,6 +137,7 @@ export function AppShell() {
     activeThinkingLevel,
     changeModel,
     changeDraftModel,
+    changeDraftThinkingLevel,
     changeThinkingLevel,
     syncSelection,
   } = useModelSelection({
@@ -376,7 +377,7 @@ export function AppShell() {
                 onAddWorkspace={handleAddWorkspace}
                 onModelChange={changeDraftModel}
                 thinkingLevel={selectedThinkingLevel}
-                onThinkingLevelChange={changeThinkingLevel}
+                onThinkingLevelChange={changeDraftThinkingLevel}
                 approvalTier={appSettings.approvalTier}
                 onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
                 onStart={startNewConversation}
