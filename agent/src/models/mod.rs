@@ -56,6 +56,17 @@ pub struct Cost {
     pub cache_write: f64,
 }
 
+/// Process-wide shared copy of the parsed built-in catalog.  The embedded
+/// models.json is ~1.9 MB; parsing it costs ~1.5 MB of fresh heap and
+/// several ms of CPU on every call, so parse once and share an `Arc`.
+pub fn builtin_models_shared() -> std::sync::Arc<Vec<Model>> {
+    static BUILTIN_MODELS: std::sync::OnceLock<std::sync::Arc<Vec<Model>>> =
+        std::sync::OnceLock::new();
+    BUILTIN_MODELS
+        .get_or_init(|| std::sync::Arc::new(builtin_models()))
+        .clone()
+}
+
 /// BuiltinModels returns the generated model catalog from models_generated.rs.
 /// All models are maintained by: make generate-models
 pub fn builtin_models() -> Vec<Model> {
@@ -90,8 +101,17 @@ pub fn builtin_models() -> Vec<Model> {
 /// Whether the resolved model advertises image input (catalog `input`
 /// modalities). Unknown models → false. Shared by the prompt path (deciding
 /// image_url vs. a path fallback) and session reload (re-hydrating images).
+///
+/// Prefer `model_accepts_images_with(registry, model)` to avoid the expensive
+/// `Registry::new()` call in hot paths.
 pub fn model_accepts_images(model: &str) -> bool {
-    Registry::new()
+    model_accepts_images_with(&Registry::new(), model)
+}
+
+/// Like `model_accepts_images` but reuses an existing registry to avoid
+/// re-deserialising the 906-model built-in catalog on every call.
+pub fn model_accepts_images_with(registry: &Registry, model: &str) -> bool {
+    registry
         .resolve(model)
         .map(|m| m.input.iter().any(|i| i == "image"))
         .unwrap_or(false)
@@ -115,7 +135,12 @@ pub fn settings_path() -> String {
 
 /// Get the first available model, or None.
 pub fn get_default_model() -> Option<String> {
-    let registry = Registry::new();
+    get_default_model_with(&Registry::new())
+}
+
+/// Like `get_default_model` but reuses an existing registry to avoid
+/// re-deserialising the model catalog on every GUI poll.
+pub fn get_default_model_with(registry: &Registry) -> Option<String> {
     let auth = crate::AuthStore::load();
     // Prefer future/deepseek-v4-pro when the future provider is configured,
     // otherwise fall back to the first model with credentials.
@@ -509,7 +534,10 @@ fn is_openai_compatible_api(api: &str) -> bool {
 
 /// Registry provides model resolution.
 pub struct Registry {
-    builtin: Vec<Model>,
+    // Shared, parsed-once built-in catalog (see `builtin_models_shared`).
+    // Copy-on-write: registries that inject future-provider models clone the
+    // Vec via Arc::make_mut; everyone else just shares the Arc.
+    builtin: std::sync::Arc<Vec<Model>>,
     user: Vec<Model>,
     provider_overrides: HashMap<String, ProviderOverride>,
 }
@@ -519,7 +547,7 @@ impl Registry {
         let (mut user_models, overrides) =
             load_user_models_with_overrides(&user_models_path()).unwrap_or_default();
 
-        let mut builtin = builtin_models();
+        let mut builtin = builtin_models_shared();
 
         // Load Future provider models dynamically if auth is available
         let auth_store = crate::AuthStore::load();
@@ -527,12 +555,14 @@ impl Registry {
             let base_url = resolve_future_base_url();
             let future_models = get_future_models_with_cache(&future_key, &base_url);
 
-            // Add future models to builtin (they override same-ID builtin models)
+            // Add future models to builtin (they override same-ID builtin
+            // models).  Clones the shared Vec only on this path.
+            let builtin_mut = std::sync::Arc::make_mut(&mut builtin);
             for fm in future_models {
-                if let Some(idx) = builtin.iter().position(|m| m.id == fm.id) {
-                    builtin[idx] = fm;
+                if let Some(idx) = builtin_mut.iter().position(|m| m.id == fm.id) {
+                    builtin_mut[idx] = fm;
                 } else {
-                    builtin.push(fm);
+                    builtin_mut.push(fm);
                 }
             }
 
@@ -582,7 +612,7 @@ impl Registry {
     /// Get all available models (user models override built-in with same ID).
     /// Models with `hide: true` are excluded from the listing but remain callable via `resolve()`.
     pub fn all_models(&self) -> Vec<Model> {
-        let mut models = self.builtin.clone();
+        let mut models = self.builtin.as_ref().clone();
         for user_model in &self.user {
             if let Some(idx) = models.iter().position(|m| m.id == user_model.id) {
                 models[idx] = user_model.clone();

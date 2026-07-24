@@ -65,6 +65,9 @@ pub struct Loop {
     /// point. The run loop checks this after transform_context and returns an
     /// error instead of silently proceeding with full context.
     pub compaction_failed: Arc<AtomicBool>,
+    /// Cached model registry — avoids re-deserialising the 906-model catalog
+    /// on auto-compaction checks and image-support queries inside the hot loop.
+    pub model_registry: Option<Arc<parking_lot::RwLock<crate::models::Registry>>>,
 }
 
 impl Loop {
@@ -90,6 +93,7 @@ impl Loop {
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             compaction_failed: Arc::new(AtomicBool::new(false)),
+            model_registry: None,
         }
     }
 
@@ -133,6 +137,7 @@ impl Loop {
         copy.verbose = self.verbose;
         copy.parallel_tools = self.parallel_tools;
         copy.event_bus = self.event_bus.clone();
+        copy.model_registry = self.model_registry.clone();
         copy
     }
 

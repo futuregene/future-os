@@ -225,7 +225,6 @@ jobs:
   rust-build:
     name: Rust build (${{ matrix.name }})
     needs: changes
-    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -238,13 +237,23 @@ jobs:
           - name: macOS
             os: macos-latest
     steps:
+      # Keep the three matrix statuses present for branch protection. A
+      # job-level `if` would skip matrix expansion entirely, leaving the
+      # required per-platform checks as "Expected" on unrelated PRs.
+      - name: No Rust or GUI Tauri changes
+        if: needs.changes.outputs.rust_workspace != 'true' && needs.changes.outputs.gui_tauri != 'true'
+        run: echo "No Rust workspace or GUI Tauri changes; build check skipped."
+
       - name: Checkout
+        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
         uses: actions/checkout@v5
 
       - name: Setup Rust
+        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
         uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Cache Rust
+        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -254,7 +263,7 @@ jobs:
           cache-all-crates: true
 
       - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
+        if: (needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true') && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -270,13 +279,13 @@ jobs:
             protobuf-compiler
 
       - name: Install macOS protoc
-        if: runner.os == 'macOS'
+        if: needs.changes.outputs.rust_workspace == 'true' && runner.os == 'macOS'
         run: brew install protobuf
 
       # taiki-e/install-action is a composite action (no Node runtime /
       # deprecation warning); choco was unreliable at exposing protoc on PATH.
       - name: Install Windows protoc
-        if: runner.os == 'Windows'
+        if: needs.changes.outputs.rust_workspace == 'true' && runner.os == 'Windows'
         uses: taiki-e/install-action@v2
         with:
           tool: protoc
