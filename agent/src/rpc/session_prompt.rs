@@ -641,6 +641,7 @@ impl ServerSession {
             if let Ok(mut r#loop) = self.agent_loop.try_write() {
                 let comp_tokens = self.last_prompt_tokens.clone();
                 let comp_result = r#loop.last_compaction_result.clone();
+                let comp_failed = r#loop.compaction_failed.clone();
                 // Resolve context_window once — avoid creating a new Registry
                 // on every LLM call inside the closure.
                 let context_window = crate::models::Registry::new()
@@ -664,6 +665,7 @@ impl ServerSession {
                     // substantial conversation continuity after compaction.
                     let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
                     let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
+                    let needs_compact = context_tokens > context_window - reserve_tokens;
                     let (compacted, result) = crate::compaction::compact(
                         msgs,
                         &crate::compaction::CompactOptions {
@@ -675,6 +677,18 @@ impl ServerSession {
                     );
                     if let Some(r) = result {
                         *comp_result.lock() = Some(r);
+                        compacted
+                    } else if needs_compact {
+                        // Compaction was needed but compact() returned no result,
+                        // meaning it found no valid cut point. Signal failure so
+                        // the run loop can report an error instead of silently
+                        // proceeding with full (overflowing) context.
+                        tracing::error!(
+                            tokens = context_tokens,
+                            window = context_window,
+                            "auto-compaction needed but failed"
+                        );
+                        comp_failed.store(true, Ordering::SeqCst);
                         compacted
                     } else {
                         compacted
