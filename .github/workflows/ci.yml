@@ -31,7 +31,7 @@ jobs:
   # incremental overlap kept so that matrix stays symmetric).
   rust-quality:
     name: Rust lint + test (Linux)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -92,7 +92,7 @@ jobs:
       matrix:
         include:
           - name: Linux
-            os: ubuntu-22.04
+            os: ubuntu-latest
           - name: Windows
             os: windows-latest
           - name: macOS
@@ -180,7 +180,7 @@ jobs:
   # concerns separate.)
   gui-rust:
     name: GUI backend Rust lint + test (advisory)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - name: Checkout
@@ -237,7 +237,7 @@ jobs:
   # Platform-agnostic — a single OS covers it.
   cli:
     name: CLI typecheck + test
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -271,7 +271,7 @@ jobs:
   # ─── TUI: typecheck + bun test ───────────────────────────────────────────
   tui:
     name: TUI typecheck + test
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -305,7 +305,7 @@ jobs:
   # 3-platform) and gui-rust (lint + test, advisory). Platform-agnostic.
   gui-frontend:
     name: GUI frontend lint + test
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
