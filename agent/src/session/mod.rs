@@ -953,6 +953,9 @@ impl Manager {
     /// Delete a session file
     pub fn delete(&self, id: &str) -> Result<()> {
         let path = self.session_path(id);
+        // Also remove the lock file if present — no session means no lock.
+        let lock_path = path.with_extension("jsonl.lock");
+        let _ = fs::remove_file(&lock_path);
         fs::remove_file(path).map_err(|e| anyhow!("failed to delete session: {}", e))
     }
 }
