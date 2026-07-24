@@ -274,7 +274,7 @@ jobs:
   # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,
   # 3-platform) and rust-quality (lint + test, hard gate). Platform-agnostic.
   gui:
-    name: GUI frontend lint + test
+    name: GUI lint + test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
