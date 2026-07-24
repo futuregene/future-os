@@ -1,6 +1,6 @@
 //! Signed in-place application updates through Tauri's updater plugin.
 //!
-//! Formal builds embed the OSS `latest.json` endpoint and the updater public
+//! Formal builds embed the CDN `latest.json` endpoint and the updater public
 //! key through a per-build Tauri config overlay. The manifest may also contain
 //! the custom top-level `assets` map used by the website; Tauri ignores those
 //! additional fields and selects only the current entry under `platforms`.

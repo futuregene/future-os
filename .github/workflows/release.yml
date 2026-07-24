@@ -67,7 +67,7 @@ jobs:
       OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
       VERSION: ${{ needs.version.outputs.version }}
-      RELEASE_ORIGIN: https://futureos.oss-cn-hangzhou.aliyuncs.com/releases
+      RELEASE_ORIGIN: https://dl.future-os.cn/releases
     steps:
       - name: Checkout
         uses: actions/checkout@v5

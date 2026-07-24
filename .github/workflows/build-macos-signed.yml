@@ -236,7 +236,7 @@ jobs:
                 updater: {
                   pubkey: process.env.TAURI_UPDATER_PUBLIC_KEY,
                   endpoints: [
-                    "https://futureos.oss-cn-hangzhou.aliyuncs.com/releases/latest.json"
+                    "https://dl.future-os.cn/releases/latest.json"
                   ]
                 }
               }
@@ -555,11 +555,9 @@ jobs:
           echo "==> Uploading macOS artifacts to oss://$OSS_BUCKET/test/$version/"
           ossutil cp -r -f signed-release/ "oss://$OSS_BUCKET/test/$version/"
 
-          oss_host="$(printf '%s' "$OSS_ENDPOINT" \
-            | sed -E 's#^https?://##; s/-internal//')"
           echo "==> Download URLs:"
           find signed-release -maxdepth 1 -type f -print | while read -r output; do
-            echo "https://$OSS_BUCKET.$oss_host/test/$version/$(basename "$output")"
+            echo "https://dl.future-os.cn/test/$version/$(basename "$output")"
           done
 
       - name: Clean up signing material
