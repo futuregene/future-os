@@ -518,28 +518,33 @@ async fn async_main(
 
     // If --profile-seconds is set, spawn a task that signals shutdown after N
     // seconds via a oneshot so the flamegraph gets written by main().
-    let (profile_tx, profile_rx) = tokio::sync::oneshot::channel::<()>();
-    let mut profile_tx = Some(profile_tx);
-    if let Some(secs) = cli.profile_seconds {
-        let tx = profile_tx.take().unwrap();
-        let shutting_down = shutting_down.clone();
-        let sessions = sessions.clone();
-        tokio::spawn(async move {
-            tracing::info!(
-                "Profile timer: agent will auto-shutdown after {} seconds",
-                secs
-            );
-            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-            tracing::info!("Profile timer expired — shutting down for flamegraph capture");
-            shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
-            for s in sessions.read().values() {
-                s.read().abort();
-            }
-            let _ = tx.send(());
-        });
-    }
-    // If --profile-seconds was not given, drop tx so rx never fires.
-    drop(profile_tx);
+    // When --profile-seconds is not set, use pending() so the select branch
+    // never fires.
+    let profile_rx: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+        if let Some(secs) = cli.profile_seconds {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let shutting_down = shutting_down.clone();
+            let sessions = sessions.clone();
+            tokio::spawn(async move {
+                tracing::info!(
+                    "Profile timer: agent will auto-shutdown after {} seconds",
+                    secs
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                tracing::info!("Profile timer expired — shutting down for flamegraph capture");
+                shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+                for s in sessions.read().values() {
+                    s.read().abort();
+                }
+                let _ = tx.send(());
+            });
+            Box::pin(async move {
+                let _ = rx.await;
+                tracing::info!("Profile timer completed — draining active streams");
+            })
+        } else {
+            Box::pin(std::future::pending())
+        };
 
     tokio::select! {
         result = server => result?,
@@ -578,7 +583,7 @@ async fn async_main(
             }
         }
         _ = profile_rx => {
-            tracing::info!("Profile timer completed — draining active streams");
+            // profile timer handled inside the future
         }
     }
     Ok(())

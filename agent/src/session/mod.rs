@@ -321,6 +321,20 @@ impl Manager {
         if !path.exists() {
             return Err(anyhow::anyhow!("session file does not exist yet"));
         }
+
+        // Acquire the same advisory file lock as save() so appends and saves
+        // to the same session are serialised.
+        let lock_path = path.with_extension("jsonl.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(&lock_path)
+            .context("open session lock file")?;
+        let mut file_lock = fd_lock::RwLock::new(lock_file);
+        let _guard = file_lock.write().context("acquire session write lock")?;
+
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(&path)

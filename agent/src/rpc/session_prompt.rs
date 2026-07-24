@@ -757,32 +757,47 @@ impl ServerSession {
         })
     }
 
-    /// Persist the current session snapshot (entries + prepended session_info)
-    /// so the GUI sees the just-pushed user message mid-stream. Best-effort:
-    /// a save failure is logged, not propagated.
+    /// Persist the just-pushed user message so the GUI sees it mid-stream.
+    /// Uses append-only when the session file already exists (avoids a full
+    /// rewrite); falls back to full save for a brand-new session that has no
+    /// JSONL yet.  The session_info line (token counts, model, name) stays
+    /// at its last-completed-run values — the final save at run end refreshes
+    /// it.  Best-effort: a save failure is logged, not propagated.
     fn persist_user_message(&self) {
+        // Use in-memory parent_session_id — avoids reading the entire session
+        // file from disk just to get one field.
+        let parent_session_id = self.parent_session_id.clone();
         let msgs = self.messages.read();
+
+        // Fast path: session file already exists → append just the new user
+        // message.  Skips a ~349 KB full rewrite to add one ~1 KB line.
+        if let Some(last_msg) = msgs.last() {
+            let entry = crate::session::agent_message_to_entry(last_msg);
+            match self
+                .session_manager
+                .append_entries(&self.session_id, &[entry])
+            {
+                Ok(()) => return, // appended — done
+                Err(_) => {
+                    // File doesn't exist yet (brand-new session) → fall through
+                    // to full save so the JSONL gets created with session_info.
+                }
+            }
+        }
+
+        // Slow path: full save (new session, or append failed).
         let mut entries: Vec<crate::session::SessionEntry> = msgs
             .iter()
             .map(crate::session::agent_message_to_entry)
             .collect();
-        let parent_session_id = self
-            .session_manager
-            .load(&self.session_id)
-            .map(|s| s.parent_session_id)
-            .unwrap_or_default();
         // Prepend session_info so token counts and other metadata survive
         // a crash — without this, a restarted session starts with zeroed
         // token counters and may skip needed compaction.
         {
             use std::sync::atomic::Ordering;
-            // Derive session_name: prefer the explicitly-set name; fall back
-            // to the first user message so the mid-stream save doesn't write
-            // an empty name that would leak into a subsequent fork.
             let session_name = if !self.session_name.is_empty() {
                 self.session_name.clone()
             } else {
-                // Same auto-generation logic as the final save below.
                 entries
                     .iter()
                     .find(|e| e.role == "user")

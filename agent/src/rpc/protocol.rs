@@ -189,13 +189,19 @@ impl SseBroadcaster {
             let overflow = run.events.len() - MAX_RUN_EVENTS;
             run.events.drain(0..overflow);
         }
-        // broadcast::Sender::send returns Err(SendError) when the ring buffer
-        // is full (all receivers are >256 events behind).  This is expected
-        // for slow/disconnected clients — warn so it's diagnosable.
-        if let Err(tokio::sync::broadcast::error::SendError(_)) = self.tx.send(event) {
-            tracing::warn!(
-                "SSE broadcast channel full (256 events) — slow client(s) will receive Lagged"
-            );
+        // broadcast::Sender::send returns Err(SendError) when there are no
+        // active receivers OR when the ring buffer is full (receivers are
+        // >256 events behind).  Distinguish: only warn when there ARE
+        // receivers (i.e. the channel is actually full) — silent no-receiver
+        // is normal for ephemeral sessions before a client subscribes.
+        if self.tx.receiver_count() > 0 {
+            if let Err(tokio::sync::broadcast::error::SendError(_)) = self.tx.send(event) {
+                tracing::warn!(
+                    "SSE broadcast channel full (256 events) — slow client(s) will receive Lagged"
+                );
+            }
+        } else {
+            let _ = self.tx.send(event); // no receivers, discard
         }
     }
 
