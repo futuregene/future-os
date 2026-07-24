@@ -45,6 +45,19 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 ignore = "0.4"
 fuzzy-matcher = "0.3"
 
+# Win32 API for high-quality window icon (taskbar clarity). Loads the ICO file
+# with proper multi-size support instead of Tauri's single-size GDI HICON.
+# Target-specific on purpose: an unconditional dep pulls the `windows` crate
+# into every platform's dependency graph, and windows v0.61's transitive
+# windows-future conflicts with windows-core on macOS, breaking that build.
+# Gating it on cfg(target_os = "windows") keeps it out of non-Windows graphs
+# entirely while still satisfying the `use windows::...` in lib.rs on Windows.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
 
 # Stripped symbols + no debug info: smaller desktop binary and less link/scan
 # I/O, negligible runtime cost for a Tauri shell. See ../../.cargo/config.toml.

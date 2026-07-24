@@ -9,6 +9,7 @@ import { models } from "./commands/models.js";
 import { session } from "./commands/session.js";
 import { agentStatus } from "./commands/agent.js";
 import { doctor } from "./commands/doctor.js";
+import { init as initCommand } from "./commands/init.js";
 import { printHelp } from "./help.js";
 import { VERSION } from "./version.generated.js";
 
@@ -18,6 +19,27 @@ async function main(): Promise<void> {
 
   if (group === "--version" || group === "-v" || group === "version") {
     console.log(`future v${VERSION}`);
+    return;
+  }
+
+  if (group === "init") {
+    if (command === "--help" || command === "-h") {
+      console.log(`future init — initialize Future OS
+
+Usage:
+  future init
+
+Installs all built-in skills. On macOS and Linux, also links future and, when
+available, its sibling future-agent into ~/.future/bin/ and prints a PATH setup hint.`);
+      return;
+    }
+    if (command) {
+      console.error(`Unknown argument: ${command}\n`);
+      console.error("Usage: future init");
+      process.exitCode = 1;
+      return;
+    }
+    await initCommand();
     return;
   }
 
