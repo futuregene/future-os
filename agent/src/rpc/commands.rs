@@ -585,11 +585,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 }
 
 fn get_agent_info_response(id: &str) -> String {
-    let dirs = vec![
-        crate::skills::APP_SKILLS_DIR.to_string(),
-        crate::skills::AGENTS_SKILLS_DIR.to_string(),
-    ];
-    let skills_count = crate::skills::discover_skills_cached(&dirs).len();
+    let skills_count =
+        crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs()).len();
     RpcResponse::ok(
         id,
         "get_agent_info",
@@ -829,12 +826,7 @@ fn cmd_get_fork_messages(state: &AppState, cmd: &RpcCommand, id: &str) -> String
 
 fn cmd_get_commands(id: &str) -> String {
     // Return commands from skills (similar to Go's extensions + prompts)
-    let skill_dirs = vec![
-        crate::skills::APP_SKILLS_DIR.to_string(),
-        crate::skills::PROJECT_SKILLS_DIR.to_string(),
-        crate::skills::AGENTS_SKILLS_DIR.to_string(),
-    ];
-    let skills = crate::skills::discover_skills_cached(&skill_dirs);
+    let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
 
     let mut commands: Vec<serde_json::Value> = skills
         .into_iter()
@@ -912,10 +904,8 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // the active session) so that CLI one-shot runs always start from the
     // preferred default.  GUI/TUI explicitly set model_id on the command,
     // which overrides this below.
-    let default_model = crate::models::get_default_model_with(
-        &state.model_registry.read(),
-    )
-    .unwrap_or_else(|| inherit_model.clone());
+    let default_model = crate::models::get_default_model_with(&state.model_registry.read())
+        .unwrap_or_else(|| inherit_model.clone());
     // Apply via set_model: it sets the canonical model AND rebuilds the
     // loop's provider client for that model's endpoint/key/compat.  A bare
     // `loop_.model = bare_id` leaves the provider on the template's startup
@@ -1193,10 +1183,8 @@ fn cmd_fork(
         state.approval_gate.clone(),
         state.model_registry.clone(),
     );
-    let supports_images = crate::models::model_accepts_images_with(
-        &state.model_registry.read(),
-        &forked.model,
-    );
+    let supports_images =
+        crate::models::model_accepts_images_with(&state.model_registry.read(), &forked.model);
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
@@ -1291,10 +1279,8 @@ fn cmd_clone(
         state.approval_gate.clone(),
         state.model_registry.clone(),
     );
-    let supports_images = crate::models::model_accepts_images_with(
-        &state.model_registry.read(),
-        &forked.model,
-    );
+    let supports_images =
+        crate::models::model_accepts_images_with(&state.model_registry.read(), &forked.model);
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
@@ -1329,13 +1315,10 @@ fn cmd_reload_config(
         (sess.cwd.clone(), loop_.tools.clone())
     };
 
-    // Re-discover skills (blocking I/O, no locks held)
-    let skill_dirs = vec![
-        crate::skills::APP_SKILLS_DIR.to_string(),
-        format!("{}/{}", cwd, crate::skills::PROJECT_SKILLS_DIR),
-        crate::skills::AGENTS_SKILLS_DIR.to_string(),
-    ];
-    let skills = crate::skills::discover_skills_cached(&skill_dirs);
+    // Re-discover skills (blocking I/O, no locks held).  Invalidate the
+    // 60s cache first — an explicit reload must see on-disk changes now.
+    crate::skills::invalidate_skills_cache();
+    let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
     // Re-read context files

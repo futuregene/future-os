@@ -29,8 +29,8 @@ pub use models::{get_default_model, Registry as ModelRegistry};
 pub use rpc::ServerSession;
 pub use session::{Manager, Session, SessionEntry};
 pub use skills::{
-    discover_skills, discover_skills_cached, invalidate_skills_cache, Skill, AGENTS_SKILLS_DIR,
-    APP_SKILLS_DIR, PROJECT_SKILLS_DIR,
+    discover_skills, discover_skills_cached, global_skill_dirs, invalidate_skills_cache, Skill,
+    AGENTS_SKILLS_DIR, APP_SKILLS_DIR,
 };
 pub use tools::{all_tools, coding_tools};
 pub use types::{AgentMessage, AgentTool, LLMProvider, Message, StreamEvent, ToolDef};

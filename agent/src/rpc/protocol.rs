@@ -189,20 +189,13 @@ impl SseBroadcaster {
             let overflow = run.events.len() - MAX_RUN_EVENTS;
             run.events.drain(0..overflow);
         }
-        // broadcast::Sender::send returns Err(SendError) when there are no
-        // active receivers OR when the ring buffer is full (receivers are
-        // >256 events behind).  Distinguish: only warn when there ARE
-        // receivers (i.e. the channel is actually full) — silent no-receiver
-        // is normal for ephemeral sessions before a client subscribes.
-        if self.tx.receiver_count() > 0 {
-            if let Err(tokio::sync::broadcast::error::SendError(_)) = self.tx.send(event) {
-                tracing::warn!(
-                    "SSE broadcast channel full (256 events) — slow client(s) will receive Lagged"
-                );
-            }
-        } else {
-            let _ = self.tx.send(event); // no receivers, discard
-        }
+        // tokio broadcast semantics: send() only fails when there are NO
+        // active receivers — normal for ephemeral sessions before a client
+        // subscribes, so the error is ignored.  When the ring buffer is
+        // full, send() does NOT fail; it drops the oldest events and slow
+        // receivers observe RecvError::Lagged, then resync via
+        // `events_since` (which reports the gap via min_idx).
+        let _ = self.tx.send(event);
     }
 
     /// Begin a new user run: set `run_id`, reset `idx`, clear the buffer.

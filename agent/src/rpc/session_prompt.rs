@@ -30,10 +30,8 @@ impl ServerSession {
         // Whether the active model accepts image input (catalog modalities).
         // Uses the cached registry from ServerSession to avoid ~15% CPU overhead
         // from re-deserialising the full model catalog on every prompt.
-        let model_supports_images = crate::models::model_accepts_images_with(
-            &self.model_registry.read(),
-            &self.model,
-        );
+        let model_supports_images =
+            crate::models::model_accepts_images_with(&self.model_registry.read(), &self.model);
         // Images are read + (down)encoded to base64 here, on the agent, from the
         // local path the GUI sent — the base64 never crosses the wire.
         let user_message = build_user_message(
@@ -709,12 +707,9 @@ impl ServerSession {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         // Discover skills so they appear in the system prompt's <available_skills> block.
-        let skill_dirs = vec![
-            crate::skills::APP_SKILLS_DIR.to_string(),
-            format!("{}/{}", self.cwd, crate::skills::PROJECT_SKILLS_DIR),
-            crate::skills::AGENTS_SKILLS_DIR.to_string(),
-        ];
-        let skills = crate::skills::discover_skills_cached(&skill_dirs);
+        // Global user-level dirs only — identical for every session/cwd, which
+        // keeps the skills cache correct regardless of which session refreshes it.
+        let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
 
         // Load project context (AGENTS.md / CLAUDE.md / GEMINI.md)
         let mut agent_content = String::new();

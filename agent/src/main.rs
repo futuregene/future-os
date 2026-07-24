@@ -3,10 +3,7 @@
 use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
-use future_agent::{
-    Engine, EngineConfig, Manager, ModelRegistry, AGENTS_SKILLS_DIR, APP_SKILLS_DIR,
-    PROJECT_SKILLS_DIR,
-};
+use future_agent::{Engine, EngineConfig, Manager, ModelRegistry};
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -171,15 +168,14 @@ fn main() -> Result<()> {
     let model_registry = Arc::new(parking_lot::RwLock::new(ModelRegistry::new()));
 
     // Launch async portion
-    // 1 MB thread stack is sufficient for async I/O (was 4 MB).
-    // On a 32-core machine this saves 96 MB virtual memory.
-    tokio::runtime::Builder::new_multi_thread()
+    // 2 MB thread stack (Rust's default) is enough for async I/O while
+    // leaving headroom for deep serde/JSON recursion (was 4 MB).
+    // On a 32-core machine this still saves 64 MB virtual memory vs 4 MB.
+    let run_result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_stack_size(1 * 1024 * 1024)
+        .thread_stack_size(2 * 1024 * 1024)
         .build()?
-        .block_on(async_main(model_registry, cli, profile_path.clone()))
-        .inspect_err(|e| tracing::error!("Agent exited with error: {e}"))
-        .ok();
+        .block_on(async_main(model_registry, cli));
 
     // Write profiling flamegraph on shutdown (after the runtime drops,
     // so all async tasks have settled).  ProfilerGuard stops sampling on
@@ -216,13 +212,18 @@ fn main() -> Result<()> {
     #[cfg(windows)]
     let _ = (profiler_guard, profile_path);
 
+    // Propagate async_main's failure as a non-zero exit code so callers
+    // (CLI/TUI/service managers) can detect an abnormal exit.
+    if let Err(e) = run_result {
+        tracing::error!("Agent exited with error: {e}");
+        std::process::exit(1);
+    }
     Ok(())
 }
 
 async fn async_main(
     model_registry: Arc<parking_lot::RwLock<ModelRegistry>>,
     cli: Cli,
-    _profile_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let cwd = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
@@ -433,12 +434,9 @@ async fn async_main(
             Err(_) => ("127.0.0.1", 50051),
         }
     };
-    // Discover skills
-    let skill_dirs = vec![
-        APP_SKILLS_DIR.to_string(),
-        format!("{}/{}", cwd, PROJECT_SKILLS_DIR),
-        AGENTS_SKILLS_DIR.to_string(),
-    ];
+    // Discover skills (global user-level dirs only — project/cwd-relative
+    // skill dirs are intentionally not scanned).
+    let skill_dirs = future_agent::global_skill_dirs();
     let skills = future_agent::discover_skills_cached(&skill_dirs);
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 

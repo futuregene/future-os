@@ -112,7 +112,7 @@ Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from s
 | `models/mod.rs` | Model registry: generated built-in catalog (`generated/`, 906 models) + user `models.json` overrides, resolution, fuzzy matching. Default model from settings.json |
 | `config/mod.rs` | Settings struct (7 fields: steering_mode, follow_up_mode, compaction, retry, max_turns, default_permission_level). Loads from `~/.future/agent/settings.json` (global) and `.future/agent/settings.json` (project), deep-merged |
 | `auth/mod.rs` | Reads API credentials from `~/.future/agent/auth.json` or `~/.future/agent-app/auth.json`, keyed by provider |
-| `skills/mod.rs` | Discovers skills from `~/.future/agent/skills/`, `.future/agent/skills/`, `~/.agents/skills/` — parses YAML frontmatter from SKILL.md |
+| `skills/mod.rs` | Discovers skills from the global dirs `~/.future/agent/skills/` and `~/.agents/skills/` (project/cwd-relative dirs are not supported) — parses YAML frontmatter from SKILL.md. Discovery is cached process-wide with a 60s TTL |
 | `prompt/mod.rs` | Builds system prompt in 6 sections: Identity (tools + guidelines) → Skills → Project Context (AGENTS.md > CLAUDE.md > GEMINI.md) → Workspace Memory (FUTURE.md) → Append prompt → Environment (date/cwd/platform). All sections deterministic for prompt cache hits |
 | `events/mod.rs` | `EventBus` with pub/sub for bridging agent streaming events to frontends (thinking, tool calls, usage stats) |
 | `utils/mod.rs` | Session ID generation, cwd path encoding (base32), image MIME type detection |

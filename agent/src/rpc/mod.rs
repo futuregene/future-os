@@ -106,10 +106,8 @@ impl AppState {
         // A bare `new_sess.model = ...` would leave the loop pointing at the
         // template's startup model/endpoint.
         if new_sess.model.is_empty() {
-            let default_model = crate::models::get_default_model_with(
-                &self.model_registry.read(),
-            )
-            .unwrap_or_else(|| self.loop_template.model.clone());
+            let default_model = crate::models::get_default_model_with(&self.model_registry.read())
+                .unwrap_or_else(|| self.loop_template.model.clone());
             if !default_model.is_empty() {
                 if let Err(e) = new_sess.set_model(&default_model) {
                     tracing::warn!("[session] could not apply default model on hydrate: {e}");

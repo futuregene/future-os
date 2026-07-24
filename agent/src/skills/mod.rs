@@ -17,9 +17,10 @@ pub struct Skill {
     pub disable_model_invocation: bool,
 }
 
-/// Predefined skill directories (matching Go internal/skills/skills.go)
+/// Predefined skill directories (matching Go internal/skills/skills.go).
+/// Both are global, user-level locations — project/cwd-relative skill
+/// directories are intentionally not supported (see `global_skill_dirs`).
 pub const APP_SKILLS_DIR: &str = "~/.future/agent/skills/";
-pub const PROJECT_SKILLS_DIR: &str = ".future/agent/skills/";
 pub const AGENTS_SKILLS_DIR: &str = "~/.agents/skills/";
 
 /// DiscoverSkills finds all skills in the given directories.
@@ -54,6 +55,14 @@ pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
     Ok(skills)
 }
 
+/// The global (user-level) skill directories. Project/cwd-relative skill
+/// dirs are intentionally NOT scanned: every caller must see the same skill
+/// set regardless of the session's working directory, which also keeps the
+/// `discover_skills_cached` cache key stable across call sites.
+pub fn global_skill_dirs() -> Vec<String> {
+    vec![APP_SKILLS_DIR.to_string(), AGENTS_SKILLS_DIR.to_string()]
+}
+
 // ─── Cached skills discovery ──────────────────────────────────────────────
 
 /// How long the cached skills list stays fresh before a refresh is triggered.
@@ -70,6 +79,10 @@ static REFRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// SKILLS_CACHE_TTL_SECS. Fast path is lock-free for concurrent readers;
 /// slow path serialises file I/O with a dedicated refresh mutex so multiple
 /// concurrent prompts never block each other on the write lock.
+///
+/// All call sites are expected to pass `global_skill_dirs()`; the cache is
+/// global and does NOT key on `dirs`, so mixing different dir lists across
+/// call sites would return stale results for the minority list.
 pub fn discover_skills_cached(dirs: &[String]) -> Vec<Skill> {
     // Fast path: read lock, check TTL — multiple readers OK.
     {
