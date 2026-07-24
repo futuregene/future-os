@@ -338,6 +338,22 @@ impl Manager {
     pub fn save(&self, session: &Session) -> Result<()> {
         let path = self.session_path(&session.id);
         fs::create_dir_all(&self.dir).context("create session dir")?;
+
+        // Acquire an advisory file lock so concurrent saves to the same
+        // session are serialised.  Without this, two prompts finishing at the
+        // same time race on the temp→final rename, causing "rename temp to
+        // final" errors and potentially lost entries.
+        let lock_path = path.with_extension("jsonl.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(&lock_path)
+            .context("open session lock file")?;
+        let mut file_lock = fd_lock::RwLock::new(lock_file);
+        let _guard = file_lock.write().context("acquire session write lock")?;
+
         // Write to a temp file and rename atomically so a mid-write crash
         // never leaves a partially-written (corrupt) JSONL behind.
         let tmp_path = path.with_extension("jsonl.tmp");
@@ -355,6 +371,8 @@ impl Manager {
             .map_err(|_| anyhow::anyhow!("flush failed"))?;
         file.sync_all().context("fsync temp session file")?;
         fs::rename(&tmp_path, &path).context("rename temp to final")?;
+
+        // Lock released when _guard goes out of scope
         Ok(())
     }
 

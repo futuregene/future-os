@@ -227,8 +227,12 @@ impl Loop {
                             }
                             // Resolve the model's actual context window so we don't
                             // over-compact large-context models (1M+).
-                            let context_window = crate::models::Registry::new()
-                                .resolve(&ctx.model)
+                            // Use the cached registry from the loop to avoid
+                            // re-deserialising the model catalog.
+                            let context_window = self
+                                .model_registry
+                                .as_ref()
+                                .and_then(|r| r.read().resolve(&ctx.model))
                                 .map(|m| m.context_window)
                                 .unwrap_or(1_000_000);
                             let reserve = ((context_window as f64 * 0.1) as i32).max(16384);

@@ -28,7 +28,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         return get_agent_info_response(id);
     }
     if cmd_type == "list_models" {
-        return list_models_response(id);
+        return list_models_response(id, &state.model_registry.read());
     }
 
     // Credential refresh operates on every session, not one — handle it before
@@ -602,8 +602,7 @@ fn get_agent_info_response(id: &str) -> String {
     )
 }
 
-fn list_models_response(id: &str) -> String {
-    let registry = crate::models::Registry::new();
+fn list_models_response(id: &str, registry: &crate::models::Registry) -> String {
     let auth = crate::AuthStore::load();
 
     // Always return all available models.  Scoping / defaults are client-side.
@@ -624,7 +623,7 @@ fn list_models_response(id: &str) -> String {
 
     // Use the same default-model resolution as cmd_new_session so the list
     // and actual session creation agree on which model is the default.
-    let effective_default = crate::models::get_default_model()
+    let effective_default = crate::models::get_default_model_with(registry)
         .and_then(|full| full.rsplit_once('/').map(|(_, id)| id.to_string()))
         .or_else(|| models.first().map(|m| m.id.clone()))
         .unwrap_or_default();
@@ -911,11 +910,14 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         approval_gate,
         state.model_registry.clone(),
     );
-    // Resolve the default model fresh from the registry (not inherited from
+    // Resolve the default model from the cached registry (not inherited from
     // the active session) so that CLI one-shot runs always start from the
     // preferred default.  GUI/TUI explicitly set model_id on the command,
     // which overrides this below.
-    let default_model = crate::models::get_default_model().unwrap_or_else(|| inherit_model.clone());
+    let default_model = crate::models::get_default_model_with(
+        &state.model_registry.read(),
+    )
+    .unwrap_or_else(|| inherit_model.clone());
     // Apply via set_model: it sets the canonical model AND rebuilds the
     // loop's provider client for that model's endpoint/key/compat.  A bare
     // `loop_.model = bare_id` leaves the provider on the template's startup
@@ -983,7 +985,10 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         } else {
             disk_model.clone()
         };
-        let supports_images = crate::models::model_accepts_images(&effective_model);
+        let supports_images = crate::models::model_accepts_images_with(
+            &state.model_registry.read(),
+            &effective_model,
+        );
         let mut msgs = new_sess.messages.write();
         *msgs = crate::session::entries_to_agent_messages(&entries, supports_images);
         if !disk_model.is_empty() {
@@ -1190,7 +1195,10 @@ fn cmd_fork(
         state.approval_gate.clone(),
         state.model_registry.clone(),
     );
-    let supports_images = crate::models::model_accepts_images(&forked.model);
+    let supports_images = crate::models::model_accepts_images_with(
+        &state.model_registry.read(),
+        &forked.model,
+    );
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
@@ -1285,7 +1293,10 @@ fn cmd_clone(
         state.approval_gate.clone(),
         state.model_registry.clone(),
     );
-    let supports_images = crate::models::model_accepts_images(&forked.model);
+    let supports_images = crate::models::model_accepts_images_with(
+        &state.model_registry.read(),
+        &forked.model,
+    );
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {

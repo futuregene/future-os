@@ -511,7 +511,9 @@ impl ServerSession {
         let tokens_before = self.last_prompt_tokens.load(Ordering::Relaxed) as i32;
 
         // Resolve context_window from model registry (same as getState's contextWindow)
-        let context_window = crate::models::Registry::new()
+        let context_window = self
+            .model_registry
+            .read()
             .resolve(&self.model)
             .map(|m| m.context_window)
             .unwrap_or(1_000_000); // Modern default: 1M

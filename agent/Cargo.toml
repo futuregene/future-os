@@ -61,6 +61,10 @@ tower-http = { version = "0.6", features = ["cors"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Profiling flamegraph output uses inferno behind the scenes.
+[target.'cfg(not(windows))'.dependencies]
+pprof = { version = "0.13", features = ["flamegraph"] }
+
 # Windows: Job Object for process-tree kill; restricted token + ACLs for the
 # bash sandbox (SANDBOX_PLAN §11). Feature set grows with W1b.
 [target.'cfg(windows)'.dependencies]

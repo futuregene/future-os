@@ -90,8 +90,17 @@ pub fn builtin_models() -> Vec<Model> {
 /// Whether the resolved model advertises image input (catalog `input`
 /// modalities). Unknown models → false. Shared by the prompt path (deciding
 /// image_url vs. a path fallback) and session reload (re-hydrating images).
+///
+/// Prefer `model_accepts_images_with(registry, model)` to avoid the expensive
+/// `Registry::new()` call in hot paths.
 pub fn model_accepts_images(model: &str) -> bool {
-    Registry::new()
+    model_accepts_images_with(&Registry::new(), model)
+}
+
+/// Like `model_accepts_images` but reuses an existing registry to avoid
+/// re-deserialising the 906-model built-in catalog on every call.
+pub fn model_accepts_images_with(registry: &Registry, model: &str) -> bool {
+    registry
         .resolve(model)
         .map(|m| m.input.iter().any(|i| i == "image"))
         .unwrap_or(false)
@@ -115,7 +124,12 @@ pub fn settings_path() -> String {
 
 /// Get the first available model, or None.
 pub fn get_default_model() -> Option<String> {
-    let registry = Registry::new();
+    get_default_model_with(&Registry::new())
+}
+
+/// Like `get_default_model` but reuses an existing registry to avoid
+/// re-deserialising the model catalog on every GUI poll.
+pub fn get_default_model_with(registry: &Registry) -> Option<String> {
     let auth = crate::AuthStore::load();
     // Prefer future/deepseek-v4-pro when the future provider is configured,
     // otherwise fall back to the first model with credentials.

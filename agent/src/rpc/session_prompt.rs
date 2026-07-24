@@ -28,7 +28,12 @@ impl ServerSession {
         };
 
         // Whether the active model accepts image input (catalog modalities).
-        let model_supports_images = crate::models::model_accepts_images(&self.model);
+        // Uses the cached registry from ServerSession to avoid ~15% CPU overhead
+        // from re-deserialising the full model catalog on every prompt.
+        let model_supports_images = crate::models::model_accepts_images_with(
+            &self.model_registry.read(),
+            &self.model,
+        );
         // Images are read + (down)encoded to base64 here, on the agent, from the
         // local path the GUI sent — the base64 never crosses the wire.
         let user_message = build_user_message(
@@ -642,9 +647,11 @@ impl ServerSession {
                 let comp_tokens = self.last_prompt_tokens.clone();
                 let comp_result = r#loop.last_compaction_result.clone();
                 let comp_failed = r#loop.compaction_failed.clone();
-                // Resolve context_window once — avoid creating a new Registry
-                // on every LLM call inside the closure.
-                let context_window = crate::models::Registry::new()
+                // Resolve context_window once — reuse cached registry
+                // to avoid re-deserialising the model catalog.
+                let context_window = self
+                    .model_registry
+                    .read()
                     .resolve(&self.model)
                     .map(|m| m.context_window)
                     .unwrap_or(1_000_000); // Modern default: 1M (was 200K — too low for 1M models)

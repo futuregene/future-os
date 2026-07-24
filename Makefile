@@ -275,6 +275,36 @@ package-gui: install-gui
 run-channels:
 	cd channels && cargo run
 
+# ─── Profile ───────────────────────────────────────────────────────────────
+
+# Build agent with debug symbols + frame pointers for profiling, then run
+# the benchmark suite.  Writes flamegraph SVG + logs to profile-results/.
+profile-agent:
+	RUSTFLAGS="-C force-frame-pointers=yes" \
+		cargo build --release -p future-agent \
+		--config 'profile.release.debug="line-tables-only"' \
+		--config 'profile.release.strip="none"'
+	@mkdir -p profile-results
+	@echo "Starting profile run (port 50052, 90s)..."
+	PROFILE_DURATION=90 bash scripts/agent-profile-bench.sh
+	@echo ""
+	@echo "Flamegraph: $$(ls -t profile-results/agent-profile-*.svg | head -1)"
+	@echo "Run: open profile-results/agent-profile-*.svg"
+
+# Quick profile: start agent with profiling on port 50052, run for N seconds.
+# Usage: make profile-quick PROFILE_SECS=30
+profile-quick:
+	RUSTFLAGS="-C force-frame-pointers=yes" \
+		cargo build --release -p future-agent \
+		--config 'profile.release.debug="line-tables-only"' \
+		--config 'profile.release.strip="none"'
+	@mkdir -p profile-results
+	./target/release/future-agent \
+		--grpc-addr 127.0.0.1:50052 \
+		--profile profile-results/quick-profile.svg \
+		--profile-seconds $(or $(PROFILE_SECS),30) \
+		--verbose
+
 # ─── Generate ───────────────────────────────────────────────────────────────
 
 generate-models:

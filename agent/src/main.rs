@@ -43,10 +43,68 @@ struct Cli {
         default_value_t = future_agent::logfile::DEFAULT_MAX_LINES
     )]
     log_max_lines: usize,
+
+    /// Enable CPU profiling and write a flamegraph SVG to the given path on
+    /// shutdown.  Profiling starts immediately and runs until the agent exits.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<String>,
+
+    /// Profile for N seconds then exit automatically (for benchmarking).
+    /// Implies --profile with a default path when --profile is not also set.
+    #[arg(long, value_name = "N")]
+    profile_seconds: Option<u64>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Resolve profile path early (before the runtime starts).
+    let profile_path: Option<std::path::PathBuf> = cli
+        .profile
+        .as_deref()
+        .or_else(|| {
+            if cli.profile_seconds.is_some() {
+                Some("agent-profile.svg")
+            } else {
+                None
+            }
+        })
+        .map(std::path::PathBuf::from);
+
+    // Start CPU profiling if requested.  The guard lives in main() so it
+    // covers the entire agent lifetime including gRPC startup/shutdown.
+    // ProfilerGuard is !Send so we keep it right here.
+    #[cfg(not(windows))]
+    let profiler_guard = match &profile_path {
+        Some(_path) => {
+            tracing::info!(
+                "CPU profiling enabled → will write flamegraph to {}",
+                _path.display()
+            );
+            match pprof::ProfilerGuardBuilder::default()
+                .frequency(997) // prime to avoid lock-step with timers
+                .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+                .build()
+            {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to start profiler: {} — continuing without profiling",
+                        e
+                    );
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    #[cfg(windows)]
+    let profiler_guard: Option<()> = {
+        if profile_path.is_some() {
+            tracing::warn!("CPU profiling is not supported on Windows — ignoring --profile flag");
+        }
+        None
+    };
 
     // Load the user's login-shell PATH/env BEFORE spawning any threads or the
     // tokio runtime — set_var is only sound while single-threaded. Fixes
@@ -113,16 +171,58 @@ fn main() -> Result<()> {
     let model_registry = Arc::new(parking_lot::RwLock::new(ModelRegistry::new()));
 
     // Launch async portion
+    // 1 MB thread stack is sufficient for async I/O (was 4 MB).
+    // On a 32-core machine this saves 96 MB virtual memory.
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_stack_size(4 * 1024 * 1024)
+        .thread_stack_size(1 * 1024 * 1024)
         .build()?
-        .block_on(async_main(model_registry, cli))
+        .block_on(async_main(model_registry, cli, profile_path.clone()))
+        .inspect_err(|e| tracing::error!("Agent exited with error: {e}"))
+        .ok();
+
+    // Write profiling flamegraph on shutdown (after the runtime drops,
+    // so all async tasks have settled).  ProfilerGuard stops sampling on
+    // drop, so we must build the report BEFORE dropping the guard.
+    #[cfg(not(windows))]
+    if let (Some(guard), Some(path)) = (profiler_guard, profile_path) {
+        tracing::info!("Writing CPU profile flamegraph to {}", path.display());
+        match guard.report().build() {
+            Ok(report) => {
+                let file = std::fs::File::create(&path)
+                    .map_err(|e| {
+                        tracing::error!("Cannot create profile file {}: {}", path.display(), e);
+                        e
+                    })
+                    .ok();
+                if let Some(f) = file {
+                    if let Err(e) = report.flamegraph(f) {
+                        tracing::error!("Failed to write flamegraph: {}", e);
+                    } else {
+                        let sz = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        tracing::info!(
+                            "Flamegraph written: {} ({:.1} KB)",
+                            path.display(),
+                            sz as f64 / 1024.0
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to build profiling report: {}", e);
+            }
+        }
+    }
+    #[cfg(windows)]
+    let _ = (profiler_guard, profile_path);
+
+    Ok(())
 }
 
 async fn async_main(
     model_registry: Arc<parking_lot::RwLock<ModelRegistry>>,
     cli: Cli,
+    _profile_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let cwd = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
@@ -379,7 +479,12 @@ async fn async_main(
     // share one global loop — each hydrated/created session gets an
     // independent copy so concurrent runs, model switches and aborts stay
     // session-local.  The template itself never runs prompts.
-    let loop_template = Arc::new(engine.agent_loop.independent_copy());
+    // Set the model_registry on the template so all session loops inherit
+    // the cached registry via independent_copy() — avoids ~15% CPU overhead
+    // from re-deserialising the model catalog on every prompt.
+    let mut template_loop = engine.agent_loop.independent_copy();
+    template_loop.model_registry = Some(model_registry.clone());
+    let loop_template = Arc::new(template_loop);
 
     // The agent starts with ZERO sessions.  There is no privileged
     // "default"/"current" session — clients (TUI, GUI, CLI, channels)
@@ -410,6 +515,31 @@ async fn async_main(
     let shutdown_timeout = std::time::Duration::from_secs(30);
 
     let server = future_agent::grpc::serve(app_state, grpc_host, grpc_port);
+
+    // If --profile-seconds is set, spawn a task that signals shutdown after N
+    // seconds via a oneshot so the flamegraph gets written by main().
+    let (profile_tx, profile_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut profile_tx = Some(profile_tx);
+    if let Some(secs) = cli.profile_seconds {
+        let tx = profile_tx.take().unwrap();
+        let shutting_down = shutting_down.clone();
+        let sessions = sessions.clone();
+        tokio::spawn(async move {
+            tracing::info!(
+                "Profile timer: agent will auto-shutdown after {} seconds",
+                secs
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            tracing::info!("Profile timer expired — shutting down for flamegraph capture");
+            shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+            for s in sessions.read().values() {
+                s.read().abort();
+            }
+            let _ = tx.send(());
+        });
+    }
+    // If --profile-seconds was not given, drop tx so rx never fires.
+    drop(profile_tx);
 
     tokio::select! {
         result = server => result?,
@@ -446,6 +576,9 @@ async fn async_main(
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
+        }
+        _ = profile_rx => {
+            tracing::info!("Profile timer completed — draining active streams");
         }
     }
     Ok(())
