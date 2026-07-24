@@ -117,8 +117,12 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
             } else {
                 data[base] as u32
             };
-            let entry_size =
-                u32::from_le_bytes([data[base + 8], data[base + 9], data[base + 10], data[base + 11]]);
+            let entry_size = u32::from_le_bytes([
+                data[base + 8],
+                data[base + 9],
+                data[base + 10],
+                data[base + 11],
+            ]);
             let offset = u32::from_le_bytes([
                 data[base + 12],
                 data[base + 13],
@@ -172,12 +176,22 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
     unsafe {
         if let Some((offset, size)) = find_best_entry(&ico_data, big_target) {
             if let Some(hicon) = hicon_from_ico_entry(&ico_data, offset, size) {
-                SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as _)), Some(LPARAM(hicon.0 as _)));
+                SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    Some(WPARAM(ICON_BIG as _)),
+                    Some(LPARAM(hicon.0 as _)),
+                );
             }
         }
         if let Some((offset, size)) = find_best_entry(&ico_data, small_target) {
             if let Some(hicon) = hicon_from_ico_entry(&ico_data, offset, size) {
-                SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as _)), Some(LPARAM(hicon.0 as _)));
+                SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    Some(WPARAM(ICON_SMALL as _)),
+                    Some(LPARAM(hicon.0 as _)),
+                );
             }
         }
     }
