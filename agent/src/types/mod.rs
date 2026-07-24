@@ -257,6 +257,21 @@ impl AgentMessage {
             .collect::<Vec<_>>()
             .join("")
     }
+
+    /// The user's visible text: only the FIRST text block. Later text blocks
+    /// are agent-injected context (attachment manifest, file paths) that
+    /// `build_user_message` appends for the model — they must never reach a
+    /// message bubble. Mirrors `get_session_entries`, which renders user
+    /// entries from the first text block only.
+    pub fn display_text(&self) -> String {
+        self.content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
     pub fn add_text(&mut self, text: impl Into<String>) {
         self.content.push(ContentBlock::text(text));
     }
@@ -1219,6 +1234,25 @@ mod tests {
         msg.content.push(ContentBlock::image("data:..."));
         msg.add_text("after");
         assert_eq!(msg.text(), "beforeafter");
+    }
+
+    #[test]
+    fn agent_message_display_text_is_first_block_only() {
+        // build_user_message appends an attachment-manifest text block after
+        // the typed message; display_text must exclude it (the manifest must
+        // never reach a message bubble).
+        let mut msg = AgentMessage::default();
+        msg.add_text("识别");
+        msg.add_text("\n\nUser attachment metadata follows as a JSON array: [{\"kind\":\"file\"}]");
+        assert_eq!(msg.display_text(), "识别");
+        assert!(msg.text().contains("attachment metadata"));
+    }
+
+    #[test]
+    fn agent_message_display_text_empty_without_text_blocks() {
+        let mut msg = AgentMessage::default();
+        msg.content.push(ContentBlock::image("data:..."));
+        assert_eq!(msg.display_text(), "");
     }
 
     #[test]

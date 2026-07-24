@@ -47,6 +47,7 @@ impl ServerSession {
         // or deliberately repeating a message ("continue", "yes", same text
         // with different attachments).
         let user_text = user_message.text();
+        let user_display_text = user_message.display_text();
         self.messages.write().push(user_message);
 
         // Log the user message so the run log shows the question alongside
@@ -57,9 +58,12 @@ impl ServerSession {
 
         // Broadcast the user message to all connected clients so a second TUI
         // observing the same session sees the question alongside the answer.
+        // Use display_text (first text block only): text() also joins the
+        // agent-injected attachment manifest, which observers would render
+        // as a bogus extra bubble.
         self.broadcaster.broadcast(crate::rpc::SseEvent::new(
             "user_message",
-            serde_json::json!({"text": user_text}),
+            serde_json::json!({"text": user_display_text}),
         ));
 
         // Persist immediately so the GUI can see the user message (and any
@@ -156,7 +160,7 @@ impl ServerSession {
             Arc::new(move |msg: &crate::types::AgentMessage| {
                 b.broadcast(crate::rpc::SseEvent::new(
                     "user_message",
-                    serde_json::json!({"text": msg.text()}),
+                    serde_json::json!({"text": msg.display_text()}),
                 ));
             })
         };
