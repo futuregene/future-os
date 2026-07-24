@@ -1181,6 +1181,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+ "windows",
  "zip",
 ]
 
