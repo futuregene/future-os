@@ -590,27 +590,28 @@ pub fn save_pasted_image(
 /// (`open`/`xdg-open`/ShellExecuteW). Never route through `cmd /C start`:
 /// cmd re-parses the argument, so `&`/`^`/`%VAR%` in an agent-produced path
 /// would be interpreted — an injection vector, not just a broken open.
+#[cfg(target_os = "macos")]
 fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
     open::that(path).or_else(|_| {
         // macOS may not have a default handler for extensionless / dotfiles
         // (e.g. `.env`).  Fall back to `open -t` which forces the default
         // text editor.
-        #[cfg(target_os = "macos")]
-        {
-            let status = std::process::Command::new("open")
-                .arg("-t")
-                .arg(path)
-                .status()
-                .map_err(|e| format!("Failed to open: {e}"))?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(format!("Failed to open {path}: open -t exited with {status}").into())
-            }
+        let status = std::process::Command::new("open")
+            .arg("-t")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("Failed to open {path}: open -t exited with {status}").into())
         }
-        #[cfg(not(target_os = "macos"))]
-        Err(format!("Failed to open: {path}").into())
     })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
+    open::that(path).map_err(|_| format!("Failed to open: {path}").into())
 }
 
 #[cfg(test)]

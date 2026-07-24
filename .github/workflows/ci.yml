@@ -39,7 +39,7 @@ jobs:
       # Pinned to match rust-toolchain.toml so CI and local dev use the same
       # compiler. Bump both together (see build.yml for the same pin).
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -135,7 +135,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -237,7 +237,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -381,11 +381,11 @@ jobs:
         working-directory: tui
         run: bun test
 
-  # ─── GUI: eslint + stylelint + vitest ─────────────────────────────────────
+  # ─── GUI: typecheck + eslint + stylelint + vitest ─────────────────────────
   # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,
   # 3-platform) and rust-quality (lint + test, hard gate). Platform-agnostic.
   gui:
-    name: GUI lint + test
+    name: GUI typecheck + lint + test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -401,6 +401,10 @@ jobs:
       - name: Install dependencies
         working-directory: gui
         run: npm ci
+
+      - name: Typecheck
+        working-directory: gui
+        run: npx tsc --noEmit
 
       - name: ESLint
         working-directory: gui

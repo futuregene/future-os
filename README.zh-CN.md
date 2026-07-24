@@ -35,7 +35,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 
 每个平台的完整构建（agent + TUI + CLI + GUI）都需要：
 
-- **Rust** 1.96+（由 `rust-toolchain.toml` 固定）
+- **Rust** 1.97+（由 `rust-toolchain.toml` 固定）
 - **Node.js** 24+（见 `.nvmrc`）
 - **Bun** —— 必需项，非可选：TUI 构建和 CLI/GUI 打包均使用 `bun build`
 - 可选：**Python 3** —— 仅 `make generate-models` 需要

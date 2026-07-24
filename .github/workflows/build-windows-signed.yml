@@ -84,14 +84,14 @@ jobs:
         with:
           bun-version: latest
 
-      # rust-toolchain.toml pins `channel = "stable"`, so a bare rustup install
-      # picks up the right toolchain on first cargo invocation.
+      # Match the toolchain pinned in rust-toolchain.toml and the other CI
+      # workflows, rather than accepting whichever stable version is current.
       - name: Install Rust
         if: steps.detect.outputs.cargo == 'false'
         shell: powershell
         run: |
           Invoke-WebRequest https://win.rustup.rs -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
-          & "$env:RUNNER_TEMP\rustup-init.exe" -y --default-toolchain stable
+          & "$env:RUNNER_TEMP\rustup-init.exe" -y --default-toolchain 1.97.0
           "$env:USERPROFILE\.cargo\bin" | Add-Content -Path $env:GITHUB_PATH
 
       - name: Install protoc
