@@ -40,7 +40,7 @@
     "updater": {
       "pubkey": "",
       "endpoints": [
-        "https://futureos.oss-cn-hangzhou.aliyuncs.com/releases/latest.json"
+        "https://dl.future-os.cn/releases/latest.json"
       ]
     }
   },

@@ -1,6 +1,6 @@
 //! Signed in-place application updates through Tauri's updater plugin.
 //!
-//! Formal builds embed the OSS `latest.json` endpoint and the updater public
+//! Formal builds embed the CDN `latest.json` endpoint and the updater public
 //! key through a per-build Tauri config overlay. The manifest may also contain
 //! the custom top-level `assets` map used by the website; Tauri ignores those
 //! additional fields and selects only the current entry under `platforms`.
@@ -54,9 +54,11 @@ fn manual_download_url_for_asset(manifest: &Value, asset_key: &str) -> Option<St
 
 fn manual_download_url(manifest: &Value) -> Option<String> {
     let asset_key = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "macos-aarch64"
+        "darwin-aarch64"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "darwin-x86_64"
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "windows-x64"
+        "windows-x86_64"
     } else {
         return None;
     };
@@ -123,14 +125,14 @@ mod tests {
     fn reads_the_matching_website_asset_url() {
         let manifest = json!({
             "assets": {
-                "macos-aarch64": {
+                "darwin-aarch64": {
                     "url": "https://downloads.example.com/FutureOS_1.0.4_aarch64-sign.dmg"
                 }
             }
         });
 
         assert_eq!(
-            manual_download_url_for_asset(&manifest, "macos-aarch64"),
+            manual_download_url_for_asset(&manifest, "darwin-aarch64"),
             Some("https://downloads.example.com/FutureOS_1.0.4_aarch64-sign.dmg".to_string())
         );
     }
@@ -139,12 +141,12 @@ mod tests {
     fn rejects_non_https_website_asset_urls() {
         let manifest = json!({
             "assets": {
-                "windows-x64": { "url": "http://downloads.example.com/FutureOS.exe" }
+                "windows-x86_64": { "url": "http://downloads.example.com/FutureOS.exe" }
             }
         });
 
         assert_eq!(
-            manual_download_url_for_asset(&manifest, "windows-x64"),
+            manual_download_url_for_asset(&manifest, "windows-x86_64"),
             None
         );
     }

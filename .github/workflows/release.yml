@@ -67,7 +67,7 @@ jobs:
       OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
       VERSION: ${{ needs.version.outputs.version }}
-      RELEASE_ORIGIN: https://futureos.oss-cn-hangzhou.aliyuncs.com/releases
+      RELEASE_ORIGIN: https://dl.future-os.cn/releases
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -84,14 +84,19 @@ jobs:
           set -euo pipefail
           mkdir -p publish
 
-          mac="FutureOS_${VERSION}_aarch64-sign.dmg"
-          mac_updater="FutureOS_${VERSION}_aarch64.app.tar.gz"
+          mac_arm="FutureOS_${VERSION}_aarch64-sign.dmg"
+          mac_arm_updater="FutureOS_${VERSION}_aarch64.app.tar.gz"
+          mac_intel="FutureOS_${VERSION}_x64-sign.dmg"
+          mac_intel_updater="FutureOS_${VERSION}_x64.app.tar.gz"
           windows="FutureOS_${VERSION}_x64-setup-sign.exe"
 
           for name in \
-            "$mac" \
-            "$mac_updater" \
-            "$mac_updater.sig" \
+            "$mac_arm" \
+            "$mac_arm_updater" \
+            "$mac_arm_updater.sig" \
+            "$mac_intel" \
+            "$mac_intel_updater" \
+            "$mac_intel_updater.sig" \
             "$windows" \
             "$windows.sig"
           do
@@ -107,12 +112,13 @@ jobs:
           # Already-released clients derive these historical filenames from
           # `version` alone. Keep byte-identical aliases for one-way migration
           # into the first updater-enabled release.
-          cp -v "publish/$mac" "publish/FutureOS_${VERSION}_aarch64.dmg"
+          cp -v "publish/$mac_arm" "publish/FutureOS_${VERSION}_aarch64.dmg"
+          cp -v "publish/$mac_intel" "publish/FutureOS_${VERSION}_x64.dmg"
           cp -v "publish/$windows" "publish/FutureOS_${VERSION}_x64-setup.exe"
 
           count="$(find publish -type f | wc -l | tr -d ' ')"
-          [[ "$count" == "7" ]] || {
-            echo "Expected exactly seven public release assets, found $count." >&2
+          [[ "$count" == "11" ]] || {
+            echo "Expected exactly eleven public release assets, found $count." >&2
             exit 1
           }
 
@@ -123,8 +129,10 @@ jobs:
         run: |
           set -euo pipefail
           export PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          export MAC_FILE="FutureOS_${VERSION}_aarch64-sign.dmg"
-          export MAC_UPDATER_FILE="FutureOS_${VERSION}_aarch64.app.tar.gz"
+          export MAC_ARM_FILE="FutureOS_${VERSION}_aarch64-sign.dmg"
+          export MAC_ARM_UPDATER_FILE="FutureOS_${VERSION}_aarch64.app.tar.gz"
+          export MAC_INTEL_FILE="FutureOS_${VERSION}_x64-sign.dmg"
+          export MAC_INTEL_UPDATER_FILE="FutureOS_${VERSION}_x64.app.tar.gz"
           export WINDOWS_FILE="FutureOS_${VERSION}_x64-setup-sign.exe"
 
           node <<'NODE'
@@ -142,12 +150,14 @@ jobs:
             version: process.env.VERSION,
             pub_date: process.env.PUB_DATE,
             platforms: {
-              "darwin-aarch64": updater(process.env.MAC_UPDATER_FILE),
+              "darwin-aarch64": updater(process.env.MAC_ARM_UPDATER_FILE),
+              "darwin-x86_64": updater(process.env.MAC_INTEL_UPDATER_FILE),
               "windows-x86_64": updater(process.env.WINDOWS_FILE),
             },
             assets: {
-              "macos-aarch64": asset(process.env.MAC_FILE),
-              "windows-x64": asset(process.env.WINDOWS_FILE),
+              "darwin-aarch64": asset(process.env.MAC_ARM_FILE),
+              "darwin-x86_64": asset(process.env.MAC_INTEL_FILE),
+              "windows-x86_64": asset(process.env.WINDOWS_FILE),
             },
           };
           fs.writeFileSync("latest.json", `${JSON.stringify(manifest, null, 2)}\n`);
@@ -182,6 +192,10 @@ jobs:
             "FutureOS_${VERSION}_aarch64.dmg" \
             "FutureOS_${VERSION}_aarch64.app.tar.gz" \
             "FutureOS_${VERSION}_aarch64.app.tar.gz.sig" \
+            "FutureOS_${VERSION}_x64-sign.dmg" \
+            "FutureOS_${VERSION}_x64.dmg" \
+            "FutureOS_${VERSION}_x64.app.tar.gz" \
+            "FutureOS_${VERSION}_x64.app.tar.gz.sig" \
             "FutureOS_${VERSION}_x64-setup-sign.exe" \
             "FutureOS_${VERSION}_x64-setup.exe" \
             "FutureOS_${VERSION}_x64-setup-sign.exe.sig"

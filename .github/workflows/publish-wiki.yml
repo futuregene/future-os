@@ -7,9 +7,9 @@ name: Publish Docs
 # Only the Chinese pages are published; the English pages under docs/wiki/en/
 # are not pushed to OSS.
 #
-# OSS publish is a full replace: `sync --delete` uploads the current zh/*.md and
-# removes any object under docs/ that no longer exists locally — so removed
-# pages don't linger.
+# OSS publish uploads and updates the current Chinese pages. It deliberately
+# does not delete objects that disappeared locally: the publishing credential
+# has no DeleteObject permission.
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     # ossutil v2 auto-reads these OSS_* env vars (endpoint + credentials); the
     # Setup step derives OSS_REGION from the endpoint for SigV4.
     env:
@@ -41,12 +41,11 @@ jobs:
       - name: Setup ossutil
         run: bash scripts/setup-ossutil.sh
 
-      # Full replace via `sync --delete`: uploads/updates the current Chinese
-      # pages and removes any object under docs/ that no longer exists locally —
-      # in one pass, with no window where docs/ is empty.
+      # Upload/update the current Chinese pages. Old objects are retained until
+      # they are removed through a separately authorized OSS maintenance task.
       - name: Publish docs/wiki/zh to OSS
         run: |
           set -euo pipefail
-          echo "==> Syncing docs/wiki/zh/ → docs/ (with --delete)"
-          ossutil sync docs/wiki/zh/ "oss://$OSS_BUCKET/docs/" --delete -f
+          echo "==> Syncing docs/wiki/zh/ → docs/"
+          ossutil sync docs/wiki/zh/ "oss://$OSS_BUCKET/docs/" -f
           echo "==> Done."
