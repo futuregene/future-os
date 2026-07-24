@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { platform as osPlatform } from "node:os";
 
 import { getPlatformUrl } from "../utils/platform.js";
+import { notifyAgentRefreshSkills } from "../rpc/grpc-client.js";
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -225,6 +226,9 @@ async function installSkill(skillId: string, version?: string): Promise<void> {
     await flattenSingleSubdir(dest);
 
     console.log(`${isUpdate ? "Updated" : "Installed"} skill "${skillId}" v${version} → ${dest}`);
+    // Notify the agent so the next prompt sees the new skill immediately.
+    // Best-effort — silence errors; the TTL-based refresh is the fallback.
+    notifyAgentRefreshSkills();
   } finally {
     try { await rm(tmpZip, { force: true }); } catch { /* ignore */ }
   }
@@ -351,6 +355,7 @@ async function uninstallSkill(skillId: string): Promise<void> {
 
   await rm(dest, { recursive: true, force: true });
   console.log(`Uninstalled skill "${skillId}" from ${SKILLS_DIR}.`);
+  notifyAgentRefreshSkills();
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

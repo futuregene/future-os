@@ -23,7 +23,7 @@ pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;
 pub(crate) use self::run_control::abort_session;
 pub use self::session::fork_agent_session;
-pub use self::skills::{list_installed_skills, InstalledSkill};
+pub use self::skills::{list_installed_skills, refresh_skills, InstalledSkill};
 pub use review::retry as retry_run_review;
 
 use serde::Serialize;

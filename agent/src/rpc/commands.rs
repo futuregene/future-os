@@ -500,6 +500,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "export_html", serde_json::json!({"path": output_path}))
         }
         "reload_config" => cmd_reload_config(state, &session, id),
+        "refresh_skills" => cmd_refresh_skills(id),
         "set_cwd" => {
             // Trim trailing whitespace / separators so the saved cwd is
             // always a clean directory path — "project/ " produces a
@@ -1295,6 +1296,24 @@ fn cmd_clone(
     state.create_session(new_sess);
 
     RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
+}
+
+fn cmd_refresh_skills(id: &str) -> String {
+    // Invalidate the skills cache and rebuild immediately so freshly
+    // installed skills are visible on the next prompt without waiting
+    // for the 60s TTL to expire.
+    crate::skills::invalidate_skills_cache();
+    let skills =
+        crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
+    let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+    RpcResponse::ok(
+        id,
+        "refresh_skills",
+        serde_json::json!({
+            "skills_count": skill_names.len(),
+            "skills": skill_names,
+        }),
+    )
 }
 
 fn cmd_reload_config(
