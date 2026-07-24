@@ -16,6 +16,7 @@ interface UpdateStatus {
   platformSupported: boolean;
   downloadUrl: string | null;
   fileName: string | null;
+  sha256: string | null;
 }
 
 interface DownloadProgress {
@@ -88,6 +89,7 @@ export function UpdatePage() {
       const path = await invokeCommand<string>("download_app_update", {
         url: status.downloadUrl,
         fileName: status.fileName,
+        expectedSha256: status.sha256,
       });
       setSavedPath(path);
     }

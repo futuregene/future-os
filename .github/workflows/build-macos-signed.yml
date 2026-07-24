@@ -7,20 +7,42 @@ permissions: read-all
 # Apple's notarization service. Do not add pull_request or other events that can
 # execute untrusted code with the signing credentials.
 #
-# Artifacts go directly to Aliyun OSS and carry a `-sign` suffix so they can sit
-# beside build.yml's unsigned DMG without overwriting it:
-#   dev (workflow_dispatch) -> test/<version>/
-#   release (`v*` tag)      -> releases/<version>/
+# Manual builds go to `test/<version>/`. Formal releases call this workflow from
+# release.yml and consume its verified artifact; only the coordinator publishes
+# to `releases/` and advances latest.json.
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      version:
+        description: Exact release version supplied by the coordinator.
+        required: true
+        type: string
+    secrets:
+      MACOS_CERTIFICATE:
+        required: true
+      MACOS_CERTIFICATE_PWD:
+        required: true
+      APPLE_API_KEY:
+        required: true
+      APPLE_API_KEY_ID:
+        required: true
+      APPLE_API_ISSUER:
+        required: true
+      OSS_ENDPOINT:
+        required: false
+      OSS_BUCKET:
+        required: false
+      OSS_ACCESS_KEY_ID:
+        required: false
+      OSS_ACCESS_KEY_SECRET:
+        required: false
 
 jobs:
   build:
     name: Build signed and notarized macOS DMG
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: macos-latest
     timeout-minutes: 180
     env:
@@ -109,6 +131,8 @@ jobs:
 
       - name: Resolve version
         id: v
+        env:
+          FUTURE_VERSION: ${{ inputs.version }}
         run: node scripts/version.mjs --github-output
 
       - name: Install npm dependencies (GUI)
@@ -241,7 +265,26 @@ jobs:
           spctl --assess --type open \
             --context context:primary-signature --verbose=2 "$SIGNED_DMG"
 
+      - name: Stage signed DMG
+        run: |
+          set -euo pipefail
+          mkdir -p signed-release
+          base="$(basename "$SIGNED_DMG" .dmg)"
+          output="signed-release/${base}-sign.dmg"
+          cp "$SIGNED_DMG" "$output"
+          echo "SIGNED_RELEASE_DMG=$output" >> "$GITHUB_ENV"
+
+      - name: Upload signed DMG artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: futureos-macos-signed
+          if-no-files-found: error
+          overwrite: true
+          path: signed-release/*-sign.dmg
+          retention-days: 7
+
       - name: Setup ossutil
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           version="2.3.0"
@@ -263,28 +306,18 @@ jobs:
           echo "OSS_REGION=$region" >> "$GITHUB_ENV"
 
       - name: Upload signed DMG to OSS
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           version="${{ steps.v.outputs.version }}"
-          if [[ "${{ steps.v.outputs.is_release }}" == "true" ]]; then
-            prefix="releases"
-          else
-            prefix="test"
-          fi
-          stage="$RUNNER_TEMP/oss-stage"
-          mkdir -p "$stage"
-
-          base="$(basename "$SIGNED_DMG" .dmg)"
-          output="$stage/${base}-sign.dmg"
-          cp "$SIGNED_DMG" "$output"
-
-          echo "==> Uploading $(basename "$output") to oss://$OSS_BUCKET/$prefix/$version/"
-          ossutil cp -f "$output" "oss://$OSS_BUCKET/$prefix/$version/$(basename "$output")"
+          output="$SIGNED_RELEASE_DMG"
+          echo "==> Uploading $(basename "$output") to oss://$OSS_BUCKET/test/$version/"
+          ossutil cp -f "$output" "oss://$OSS_BUCKET/test/$version/$(basename "$output")"
 
           oss_host="$(printf '%s' "$OSS_ENDPOINT" \
             | sed -E 's#^https?://##; s/-internal//')"
           echo "==> Download URL:"
-          echo "https://$OSS_BUCKET.$oss_host/$prefix/$version/$(basename "$output")"
+          echo "https://$OSS_BUCKET.$oss_host/test/$version/$(basename "$output")"
 
       - name: Clean up signing material
         if: always()

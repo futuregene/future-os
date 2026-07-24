@@ -4,7 +4,9 @@
 
 这份文档用于描述 FutureOS 第一阶段需要持久化和管理的核心对象，以及对象之间的关联关系。
 
-它不是最终数据库迁移文件，而是产品模型到数据模型之间的设计草案。后续实现数据库时，可以在此基础上继续细化字段类型、索引、约束、迁移策略和兼容方案。
+它不是数据库 migration 文件，而是产品模型到数据模型之间的设计稿。字段类型、索引、约束与兼容方案必须在此同步；实现层的 migration 规则以 `gui/CLAUDE.md` 的 “Released database migrations” 为准。
+
+> **发布后迁移边界。** GUI SQLite 已正式发布。每次修改数据库结构或持久化数据形态，先以最近可达的正式 tag 为基线比对；该 tag 中已有的 migration 不可修改，当前未发布 migration 才可继续调整。一个目标发布 tag 的相关变更原则上合并为一条新 migration，并同时验证“上一 tag 的旧库升级”与“当前 schema 的全新库”。
 
 第一阶段设计重点：
 
@@ -483,8 +485,8 @@ Artifact 表示工作过程中产生的可复用产物。
 - `store::ensure_artifact` 据此 upsert：命中则更新 `run_id` / `summary` / `content` / `updated_at`（指向最新一次改动），`created_at` 保留首次生成时间；未命中才插入。
 - 无 `path` 的 inline artifact 没有文件身份，仍按 (`run_id`, `title`) 去重，也被上述 partial index 排除。
 - 用户软删（`deleted_at`）的行不参与去重：Agent 事后重新写同一个文件会新起一行，符合直觉。
-- 该索引暂不在 `SCHEMA` 里，只在 `ADDED_INDEXES`——旧版本写入的**开发库**存在重复行，必须先由 `db::dedupe_file_artifacts` 折叠（保留组内最近改动的一行，并继承组内最早的 `created_at`）才能建索引，而 `SCHEMA` 跑在所有迁移步骤之前。
-- **`dedupe_file_artifacts` 是发布前的临时迁移**：项目尚未发布，它只为折叠开发机上已有库的重复行而存在。发布前连同其测试、`apply_schema` 中的调用一起删除，并把 `idx_artifacts_thread_path` 移回 `SCHEMA`——留着它等于每次启动都对用户数据跑一遍删除。
+- 该索引暂不在 `SCHEMA` 里，只在 `ADDED_INDEXES`——早期版本写入的库可能存在重复行，必须先由 `db::dedupe_file_artifacts` 折叠（保留组内最近改动的一行，并继承组内最早的 `created_at`）才能建索引，而 `SCHEMA` 跑在兼容步骤之前。
+- `dedupe_file_artifacts` 是**发布基线之前的历史兼容清理**，不是未来 schema 变更的范例。不要再往启动路径追加类似删除/修复逻辑；它的移除、替换或任何新的数据修复都必须作为独立的版本化 migration，并按 `gui/CLAUDE.md` 的 tag 边界规则验证。
 - 面板排序按 `updated_at DESC`：一行已折叠该文件的全部改动，用 `created_at` 会把刚被 Agent 重写的文件钉在它首次出现的位置。
 
 说明：

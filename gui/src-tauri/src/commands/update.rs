@@ -1,19 +1,20 @@
 //! App self-update: check the OSS release manifest and download the
 //! platform-appropriate installer.
 //!
-//! The manifest (`releases/latest.json`) carries only `{ version, pub_date }`.
-//! Installer download URLs are derived deterministically from the version and
-//! the running platform — the release layout is flat:
-//!   `releases/<version>/FutureOS_<version>_<arch>.<ext>`
-//! (see `.github/workflows/build.yml`, "Stage publishable installers").
+//! The manifest (`releases/latest.json`) retains the legacy `version` and
+//! `pub_date` fields and adds an optional `assets` map with exact filenames and
+//! SHA-256 hashes. Older manifests without `assets` remain supported through the
+//! deterministic filename fallback.
 //!
 //! Dev builds (version `0.0.0-dev.<hash>`) always report an available update —
 //! any real release outranks `0.0.0`. That is expected, not a bug.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 
 use crate::{build_info, AppError};
@@ -27,6 +28,14 @@ const PROGRESS_EVENT: &str = "app-update-progress";
 #[derive(Deserialize)]
 struct Manifest {
     version: String,
+    #[serde(default)]
+    assets: HashMap<String, ManifestAsset>,
+}
+
+#[derive(Deserialize)]
+struct ManifestAsset {
+    file_name: String,
+    sha256: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,6 +48,9 @@ pub struct UpdateStatus {
     pub platform_supported: bool,
     pub download_url: Option<String>,
     pub file_name: Option<String>,
+    /// Present for current manifests. Legacy manifests remain downloadable
+    /// without a hash until every previously published manifest has aged out.
+    pub sha256: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -52,13 +64,32 @@ struct DownloadProgress {
 /// The installer file name for the current OS, or `None` on a platform we don't
 /// ship an installer for. Each platform ships a single arch, so the arch token
 /// is fixed (see the build matrix).
-fn platform_installer(version: &str) -> Option<String> {
-    match std::env::consts::OS {
-        "macos" => Some(format!("FutureOS_{version}_aarch64.dmg")),
-        "windows" => Some(format!("FutureOS_{version}_x64-setup.exe")),
-        "linux" => Some(format!("FutureOS_{version}_amd64.deb")),
+fn platform_installer_for(os: &str, version: &str) -> Option<String> {
+    match os {
+        "macos" => Some(format!("FutureOS_{version}_aarch64-sign.dmg")),
+        "windows" => Some(format!("FutureOS_{version}_x64-setup-sign.exe")),
         _ => None,
     }
+}
+
+fn platform_asset_key_for(os: &str) -> Option<&'static str> {
+    match os {
+        "macos" => Some("macos-aarch64"),
+        "windows" => Some("windows-x64"),
+        _ => None,
+    }
+}
+
+fn installer_from_manifest(manifest: &Manifest, os: &str) -> Option<(String, Option<String>)> {
+    if manifest.assets.is_empty() {
+        // Backward compatibility with the original `{ version, pub_date }`
+        // manifest consumed by existing third parties.
+        return platform_installer_for(os, &manifest.version).map(|file_name| (file_name, None));
+    }
+
+    platform_asset_key_for(os)
+        .and_then(|key| manifest.assets.get(key))
+        .map(|asset| (asset.file_name.clone(), Some(asset.sha256.clone())))
 }
 
 /// (major, minor, patch, is_prerelease) from a version string. Missing or
@@ -119,14 +150,15 @@ pub async fn check_app_update() -> Result<UpdateStatus, AppError> {
     let current_version = build_info::VERSION.to_string();
     let has_update = is_newer(&manifest.version, &current_version);
 
-    let (download_url, file_name, platform_supported) = match platform_installer(&manifest.version)
-    {
-        Some(name) => (
+    let selected_asset = installer_from_manifest(&manifest, std::env::consts::OS);
+    let (download_url, file_name, sha256, platform_supported) = match selected_asset {
+        Some((name, sha256)) => (
             Some(format!("{RELEASE_BASE}/{}/{name}", manifest.version)),
             Some(name),
+            sha256,
             true,
         ),
-        None => (None, None, false),
+        None => (None, None, None, false),
     };
 
     Ok(UpdateStatus {
@@ -136,22 +168,21 @@ pub async fn check_app_update() -> Result<UpdateStatus, AppError> {
         platform_supported,
         download_url,
         file_name,
+        sha256,
     })
 }
 
 /// Stream the installer to the user's Downloads directory, emitting
 /// `app-update-progress` events, and return the saved path.
 ///
-/// SECURITY (deferred): the installer is protected only by HTTPS + the release
-/// host prefix — the manifest (`latest.json`, `{version}` only) and the package
-/// carry no signature/checksum, so a compromised OSS bucket could serve a poisoned
-/// installer (→ RCE on install). Fix needs the release pipeline to publish a
-/// per-installer SHA-256; verify it here before returning the path.
+/// Current manifests carry a SHA-256 for each platform package. The optional
+/// argument keeps downloads from legacy manifests working during migration.
 #[tauri::command]
 pub async fn download_app_update(
     app: tauri::AppHandle,
     url: String,
     file_name: String,
+    expected_sha256: Option<String>,
 ) -> Result<String, AppError> {
     // Reject anything not on our release host — this URL is passed from the
     // frontend, so pin the origin rather than trust it blindly.
@@ -163,6 +194,16 @@ pub async fn download_app_update(
     // Guard against a crafted file_name escaping the Downloads directory.
     if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') {
         return Err(AppError::Message("Illegal filename.".to_string()));
+    }
+    let expected_sha256 = expected_sha256
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    if expected_sha256.as_deref().is_some_and(|value| {
+        value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }) {
+        return Err(AppError::Message(
+            "Update manifest contains an invalid SHA-256.".to_string(),
+        ));
     }
 
     let dir = app.path().download_dir().map_err(|error| {
@@ -188,6 +229,7 @@ pub async fn download_app_update(
 
     let total = response.content_length().unwrap_or(0);
     let mut file = std::fs::File::create(&dest)?;
+    let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
     let mut last_emit: u64 = 0;
 
@@ -197,6 +239,7 @@ pub async fn download_app_update(
         .map_err(|error| AppError::Message(format!("Download interrupted: {error}")))?
     {
         file.write_all(&chunk)?;
+        hasher.update(&chunk);
         downloaded += chunk.len() as u64;
         // Throttle to ~1 MiB steps (plus a final tick) to avoid flooding the UI.
         if downloaded - last_emit >= 1_048_576 || (total > 0 && downloaded >= total) {
@@ -205,6 +248,17 @@ pub async fn download_app_update(
         }
     }
     file.flush()?;
+    drop(file);
+
+    if let Some(expected) = expected_sha256 {
+        let actual = format!("{:x}", hasher.finalize());
+        if actual != expected {
+            let _ = std::fs::remove_file(&dest);
+            return Err(AppError::Message(format!(
+                "Downloaded installer failed SHA-256 verification (expected {expected}, got {actual})."
+            )));
+        }
+    }
 
     Ok(dest.to_string_lossy().into_owned())
 }
@@ -221,5 +275,62 @@ mod tests {
         assert!(!is_newer("1.0.0", "1.0.0")); // equal, both release
         assert!(!is_newer("1.0.0", "1.2.0")); // older isn't newer
         assert!(!is_newer("1.0.0-dev.x", "1.0.0")); // a dev never beats its release
+    }
+
+    #[test]
+    fn signed_installers_are_selected_for_macos_and_windows() {
+        assert_eq!(
+            platform_installer_for("macos", "1.2.3").as_deref(),
+            Some("FutureOS_1.2.3_aarch64-sign.dmg")
+        );
+        assert_eq!(
+            platform_installer_for("windows", "1.2.3").as_deref(),
+            Some("FutureOS_1.2.3_x64-setup-sign.exe")
+        );
+        assert_eq!(platform_installer_for("linux", "1.2.3"), None);
+    }
+
+    #[test]
+    fn platform_asset_keys_match_release_manifest() {
+        assert_eq!(platform_asset_key_for("macos"), Some("macos-aarch64"));
+        assert_eq!(platform_asset_key_for("windows"), Some("windows-x64"));
+        assert_eq!(platform_asset_key_for("linux"), None);
+        assert_eq!(platform_asset_key_for("freebsd"), None);
+    }
+
+    #[test]
+    fn legacy_manifest_keeps_filename_fallback() {
+        let manifest: Manifest = serde_json::from_str(r#"{"version":"1.2.3","pub_date":"x"}"#)
+            .expect("legacy manifest parses");
+        assert!(manifest.assets.is_empty());
+        assert_eq!(
+            installer_from_manifest(&manifest, "macos"),
+            Some(("FutureOS_1.2.3_aarch64-sign.dmg".to_string(), None))
+        );
+    }
+
+    #[test]
+    fn asset_manifest_selects_exact_file_and_hash() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{
+                "version": "1.2.3",
+                "pub_date": "x",
+                "assets": {
+                    "windows-x64": {
+                        "file_name": "FutureOS_1.2.3_x64-setup-sign.exe",
+                        "sha256": "abc123"
+                    }
+                }
+            }"#,
+        )
+        .expect("asset manifest parses");
+        assert_eq!(
+            installer_from_manifest(&manifest, "windows"),
+            Some((
+                "FutureOS_1.2.3_x64-setup-sign.exe".to_string(),
+                Some("abc123".to_string())
+            ))
+        );
+        assert_eq!(installer_from_manifest(&manifest, "macos"), None);
     }
 }

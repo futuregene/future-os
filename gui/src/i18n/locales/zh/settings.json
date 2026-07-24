@@ -126,7 +126,7 @@
     "save": "保存",
     "saving": "保存中…",
     "nameLabel": "名称",
-    "namePlaceholder": "例如 DashScope",
+    "namePlaceholder": "例如 DashScope（留空则使用提供商 ID）",
     "idLabel": "提供商 ID",
     "idPlaceholder": "例如 dashscope-coding",
     "apiTypeLabel": "API 类型",

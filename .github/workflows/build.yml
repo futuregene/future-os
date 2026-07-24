@@ -4,14 +4,10 @@ permissions: read-all
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
 
 jobs:
   # Compute the build version once (single source of truth: scripts/version.mjs).
-  # A `vX.Y.Z` tag → release ("X.Y.Z"); anything else → dev ("0.0.0-dev.<hash>").
-  # Downstream jobs read these outputs; is_release gates the release job.
+  # Manual builds resolve to a development version (`0.0.0-dev.<hash>`).
   version:
     name: Resolve version
     runs-on: ubuntu-latest
@@ -45,24 +41,14 @@ jobs:
           - name: macOS
             os: macos-latest
             artifact_name: futureos-macos
-            # macOS ships as a .dmg: it preserves the .app bundle (exec bit,
-            # symlinks) that a raw upload-artifact zip would strip. The CLI
-            # binary is injected into the .app alongside the agent sidecar.
             bundle_path: gui/src-tauri/target/release/bundle/dmg/*.dmg
           - name: Windows
             os: windows-latest
             artifact_name: futureos-windows
-            # NSIS setup .exe only — MSI is not targeted in tauri.conf.json, so
-            # nothing else lands under bundle/. Coexists with the portable zip
-            # (uploaded as futureos-windows-portable below), which carries the
-            # GUI, agent, and CLI in one directory.
             bundle_path: gui/src-tauri/target/release/bundle/nsis/*.exe
           - name: Linux
-            os: ubuntu-22.04
+            os: ubuntu-latest
             artifact_name: futureos-linux
-            # .deb only. AppImage self-bundles the whole WebKitGTK stack (~130MB
-            # per build) and rpm isn't targeted — both are dropped in
-            # tauri.conf.json ("targets"), so nothing else lands under bundle/.
             bundle_path: gui/src-tauri/target/release/bundle/deb/*.deb
 
     steps:
@@ -262,6 +248,7 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           if-no-files-found: error
+          overwrite: true
           path: ${{ matrix.bundle_path }}
           # Dev/test bundles — expire fast so the shared Actions storage quota
           # doesn't fill up. Release assets live on the GitHub Release, not here.
@@ -290,6 +277,7 @@ jobs:
         with:
           name: futureos-windows-portable
           if-no-files-found: error
+          overwrite: true
           path: FutureOS-portable-windows.zip
           retention-days: 3
 
@@ -314,98 +302,6 @@ jobs:
         with:
           name: futureos-linux-portable
           if-no-files-found: error
+          overwrite: true
           path: FutureOS-portable-linux.tar.gz
           retention-days: 3
-
-  # Publish a GitHub Release with all platform bundles attached. Runs only for
-  # release builds (a `vX.Y.Z` tag); manual/dispatch runs are dev and stop at
-  # uploaded artifacts. Release notes are auto-generated from commits/PRs.
-  release:
-    name: Publish release
-    needs: [version, build]
-    if: needs.version.outputs.is_release == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    # OSS coordinates come from repo secrets. ossutil v2 auto-reads the OSS_*
-    # env vars (endpoint + credentials) — no config file needed. OSS_REGION is
-    # derived from the endpoint in the Setup step (v2 signs with SigV4, which
-    # requires a region). See docs/WIKI-MAINTENANCE.md / repo settings.
-    env:
-      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
-      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
-      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
-      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-    steps:
-      # Needed for scripts/setup-ossutil.sh (this job otherwise only handles
-      # artifacts and never checks out the repo).
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v7
-        with:
-          path: release-assets
-
-      # latest.json is the auto-upgrade manifest: for now it carries just the
-      # version and publish time (download URLs come later, once the CDN domain
-      # is live). Generated before the release step so it can be attached to the
-      # GitHub Release too, not only pushed to OSS.
-      - name: Generate latest.json
-        run: |
-          set -euo pipefail
-          cat > latest.json <<EOF
-          {
-            "version": "${{ needs.version.outputs.version }}",
-            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
-          echo "==> latest.json:"
-          cat latest.json
-
-      # Curate what actually ships to users. The portable builds (Windows zip,
-      # Linux tarball) are TESTER-ONLY: they remain as Actions artifacts
-      # (downloadable from the run) but are NOT published to the GitHub Release
-      # or OSS. Only the end-user installers ship:
-      #   macOS .dmg · Windows .exe · Linux .deb
-      # Files are flattened into publish/ (no per-artifact subfolders) so the
-      # Release and the OSS releases/<version>/ layout stay clean.
-      - name: Stage publishable installers
-        run: |
-          set -euo pipefail
-          mkdir -p publish
-          find release-assets -type f \( \
-            -name '*.dmg' -o \
-            -name '*-setup.exe' -o \
-            -name '*.deb' \) -exec cp -v {} publish/ \;
-          echo "==> Staged for release/OSS:"
-          ls -1 publish
-
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: FutureOS ${{ needs.version.outputs.version }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            publish/*
-            latest.json
-
-      # ─── Mirror the release to Aliyun OSS ──────────────────────────────────
-      # ossutil v2 is fetched directly from Aliyun's public CDN (no third-party
-      # action). Auth is entirely via the OSS_* env vars set at the job level.
-      - name: Setup ossutil
-        run: bash scripts/setup-ossutil.sh
-
-      # Each release gets its own versioned folder: releases/<version>/… (flat,
-      # installers only). latest.json is written to a fixed key so consumers
-      # always read releases/latest.json.
-      - name: Upload release to OSS
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.version.outputs.version }}"
-          echo "==> Uploading installers to releases/$VERSION/"
-          ossutil cp -r -f publish/ "oss://$OSS_BUCKET/releases/$VERSION/"
-          echo "==> Uploading latest.json to releases/latest.json"
-          ossutil cp -f latest.json "oss://$OSS_BUCKET/releases/latest.json"
