@@ -35,7 +35,7 @@ FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, a
 
 Required on every platform for a full build (agent + TUI + CLI + GUI):
 
-- **Rust** 1.96+ (pinned via `rust-toolchain.toml`)
+- **Rust** 1.97+ (pinned via `rust-toolchain.toml`)
 - **Node.js** 24+ (see `.nvmrc`)
 - **Bun** — required, not optional: the TUI build and CLI/GUI packaging use `bun build`
 - Optional: **Python 3** — only for `make generate-models`
