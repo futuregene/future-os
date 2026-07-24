@@ -128,7 +128,7 @@
     "save": "Save",
     "saving": "Saving…",
     "nameLabel": "Name",
-    "namePlaceholder": "e.g. DashScope",
+    "namePlaceholder": "e.g. DashScope (defaults to provider ID)",
     "idLabel": "Provider ID",
     "idPlaceholder": "e.g. dashscope-coding",
     "apiTypeLabel": "API type",

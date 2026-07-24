@@ -13,9 +13,9 @@ permissions: read-all
 # │ `issue_comment`, or any other externally-triggerable event) TO THIS FILE.  │
 # │                                                                            │
 # │ This repository is public and this workflow runs on a self-hosted runner   │
-# │ holding a live code signing session. The triggers below fire only for      │
-# │ people who already have write access: `push` ignores forks, and            │
-# │ `workflow_dispatch` requires write access. An externally-triggerable event │
+# │ holding a live code signing session. The job guard permits only manual     │
+# │ runs and calls originating from a repository v* tag push. An externally-   │
+# │ triggerable event                                                           │
 # │ would let anyone run code on the signing machine and sign arbitrary        │
 # │ binaries with our certificate — which gets the certificate revoked, not    │
 # │ just the build broken. The private key cannot be stolen (it lives in the   │
@@ -27,21 +27,32 @@ permissions: read-all
 # step fails in seconds if the session is dead, rather than after a 40-minute
 # compile.
 #
-# Artifacts go straight to Aliyun OSS, never to GitHub artifact storage or a
-# Release. Filenames carry a `-sign` suffix so they sit alongside build.yml's
-# unsigned Windows artifacts in the same OSS prefix without overwriting them:
-#   dev (workflow_dispatch) → test/<version>/
-#   release (`v*` tag)      → releases/<version>/
+# Manual builds go to `test/<version>/`. Formal releases call this workflow from
+# release.yml and consume its verified artifact; only the coordinator publishes
+# to `releases/` and advances latest.json.
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      version:
+        description: Exact release version supplied by the coordinator.
+        required: true
+        type: string
+    secrets:
+      OSS_ENDPOINT:
+        required: false
+      OSS_BUCKET:
+        required: false
+      OSS_ACCESS_KEY_ID:
+        required: false
+      OSS_ACCESS_KEY_SECRET:
+        required: false
 
 jobs:
   build:
     name: Build signed Windows
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: [self-hosted, Windows]
     # ossutil v2 auto-reads the OSS_* env vars; OSS_REGION is derived in the
     # Setup ossutil step (v2 signs with SigV4, which requires a region).
@@ -104,6 +115,8 @@ jobs:
       # ("X.Y.Z"); anything else → dev ("0.0.0-<hash>").
       - name: Resolve version
         id: v
+        env:
+          FUTURE_VERSION: ${{ inputs.version }}
         run: node scripts/version.mjs --github-output
 
       # Fail now, not after a 40-minute compile: the certificate is only visible
@@ -129,6 +142,7 @@ jobs:
       # signer. Landed in a runner-temp dir added to PATH — no global install on
       # this long-lived machine.
       - name: Setup ossutil
+        if: github.event_name == 'workflow_dispatch'
         shell: powershell
         run: |
           if (-not (Get-Command ossutil -ErrorAction SilentlyContinue)) {
@@ -264,16 +278,10 @@ jobs:
           }
           if ($bad) { throw "Not properly signed: $($bad -join ', ')" }
 
-      # `-sign` before the extension keeps these from colliding with build.yml's
-      # unsigned Windows artifacts, which land in the same OSS prefix. Once the
-      # signed build takes over as the published Windows artifact, the suffix and
-      # build.yml's Windows publishing both go away.
-      - name: Upload to OSS
+      - name: Stage signed artifacts
         shell: powershell
         run: |
-          $version = "${{ steps.v.outputs.version }}"
-          $prefix = if ("${{ steps.v.outputs.is_release }}" -eq "true") { "releases" } else { "test" }
-          $stage = "$env:RUNNER_TEMP\oss-stage"
+          $stage = "signed-release"
           Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
@@ -283,11 +291,36 @@ jobs:
           }
           Copy-Item "FutureOS-portable-windows.zip" (Join-Path $stage "FutureOS-portable-windows-sign.zip")
 
-          Write-Host "==> Uploading to oss://$env:OSS_BUCKET/$prefix/$version/"
           Get-ChildItem $stage | Select-Object -ExpandProperty Name
-          ossutil cp -r -f "$stage\" "oss://$env:OSS_BUCKET/$prefix/$version/"
+
+      - name: Upload signed Windows installer artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: futureos-windows-signed
+          if-no-files-found: error
+          overwrite: true
+          path: signed-release/*-setup-sign.exe
+          retention-days: 7
+
+      - name: Upload signed Windows portable artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: futureos-windows-portable-signed
+          if-no-files-found: error
+          overwrite: true
+          path: signed-release/*-portable-windows-sign.zip
+          retention-days: 7
+
+      - name: Upload to OSS test channel
+        if: github.event_name == 'workflow_dispatch'
+        shell: powershell
+        run: |
+          $version = "${{ steps.v.outputs.version }}"
+          Write-Host "==> Uploading to oss://$env:OSS_BUCKET/test/$version/"
+          Get-ChildItem signed-release | Select-Object -ExpandProperty Name
+          ossutil cp -r -f "signed-release\" "oss://$env:OSS_BUCKET/test/$version/"
           if ($LASTEXITCODE -ne 0) { throw "ossutil upload failed (exit $LASTEXITCODE)" }
 
           $ossHost = $env:OSS_ENDPOINT -replace '^https?://','' -replace '-internal',''
           Write-Host "==> Download URLs:"
-          Get-ChildItem $stage | ForEach-Object { Write-Host "  https://$env:OSS_BUCKET.$ossHost/$prefix/$version/$($_.Name)" }
+          Get-ChildItem signed-release | ForEach-Object { Write-Host "  https://$env:OSS_BUCKET.$ossHost/test/$version/$($_.Name)" }

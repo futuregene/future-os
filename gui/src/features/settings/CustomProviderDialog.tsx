@@ -45,6 +45,15 @@ interface ModelRow extends CustomProviderModel {
   key: string;
 }
 
+function RequiredLabel({ children }: { children: string }) {
+  return (
+    <>
+      <span aria-hidden="true" className="mr-0.5 text-danger">*</span>
+      {children}
+    </>
+  );
+}
+
 export function CustomProviderDialog({
   existing,
   initial,
@@ -217,10 +226,7 @@ export function CustomProviderDialog({
       )}
     >
       <div className="space-y-3">
-        <Field label={t("customProvider.nameLabel")}>
-          <TextInput onChange={event => setName(event.target.value)} placeholder={t("customProvider.namePlaceholder")} value={name} />
-        </Field>
-        <Field label={t("customProvider.idLabel")}>
+        <Field label={<RequiredLabel>{t("customProvider.idLabel")}</RequiredLabel>}>
           <TextInput
             disabled={editing}
             onChange={event => setId(event.target.value.toLowerCase())}
@@ -228,14 +234,17 @@ export function CustomProviderDialog({
             value={id}
           />
         </Field>
-        <Field label={t("customProvider.apiTypeLabel")}>
+        <Field label={t("customProvider.nameLabel")}>
+          <TextInput onChange={event => setName(event.target.value)} placeholder={t("customProvider.namePlaceholder")} value={name} />
+        </Field>
+        <Field label={<RequiredLabel>{t("customProvider.apiTypeLabel")}</RequiredLabel>}>
           <Select onChange={event => setApi(event.target.value)} value={api}>
             {API_OPTIONS.map(option => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </Select>
         </Field>
-        <Field label={t("customProvider.baseUrlLabel")}>
+        <Field label={<RequiredLabel>{t("customProvider.baseUrlLabel")}</RequiredLabel>}>
           <TextInput onChange={event => setBaseUrl(event.target.value)} placeholder={t("customProvider.baseUrlPlaceholder")} value={baseUrl} />
         </Field>
         <Field label={editing ? t("customProvider.apiKeyLabelEditing") : t("customProvider.apiKeyLabel")}>

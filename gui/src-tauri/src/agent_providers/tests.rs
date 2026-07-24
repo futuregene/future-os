@@ -254,6 +254,28 @@ fn validates_models() {
 }
 
 #[test]
+fn empty_provider_and_model_names_fall_back_to_their_ids() {
+    let _home = HomeGuard::new("name-fallbacks");
+    let mut input = input("provider-id", "", true);
+    input.models = vec![CustomProviderModel {
+        id: "model-id".to_string(),
+        name: String::new(),
+        supports_images: false,
+    }];
+
+    upsert_custom_provider(input).unwrap();
+
+    let view = list_agent_providers().unwrap();
+    let provider = view
+        .custom
+        .iter()
+        .find(|provider| provider.id == "provider-id")
+        .unwrap();
+    assert_eq!(provider.name, "provider-id");
+    assert_eq!(provider.models[0].name, "model-id");
+}
+
+#[test]
 fn model_modalities_round_trip() {
     let _home = HomeGuard::new("modalities");
     let mut in_ = input("p1", "P1", true);

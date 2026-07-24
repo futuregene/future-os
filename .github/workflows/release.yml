@@ -1,0 +1,188 @@
+name: Release FutureOS
+
+permissions: read-all
+
+# Formal releases have one coordinator. Platform jobs may finish in any order,
+# but the public latest.json pointer is advanced only after every installer has
+# been built, signed where applicable, collected, hashed, uploaded and checked.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  version:
+    name: Resolve release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Resolve version
+        id: v
+        run: node scripts/version.mjs --github-output
+      - name: Require a plain release version
+        env:
+          IS_RELEASE: ${{ steps.v.outputs.is_release }}
+        run: |
+          set -euo pipefail
+          [[ "$IS_RELEASE" == "true" ]] || {
+            echo "Formal releases require a vX.Y.Z tag." >&2
+            exit 1
+          }
+
+  macos:
+    name: Build signed macOS
+    needs: version
+    uses: ./.github/workflows/build-macos-signed.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+    secrets: inherit
+
+  windows:
+    name: Build signed Windows
+    needs: version
+    uses: ./.github/workflows/build-windows-signed.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+    secrets: inherit
+
+  publish:
+    name: Publish complete release
+    needs: [version, macos, windows]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: futureos-release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+
+      # Portable packages remain Actions-only tester artifacts. The public
+      # release contains the signed macOS and Windows installers only.
+      - name: Stage and validate installers
+        run: |
+          set -euo pipefail
+          mkdir -p publish
+
+          mac="FutureOS_${VERSION}_aarch64-sign.dmg"
+          windows="FutureOS_${VERSION}_x64-setup-sign.exe"
+
+          for name in "$mac" "$windows"; do
+            source="$(find release-assets -type f -name "$name" -print -quit)"
+            [[ -n "$source" ]] || {
+              echo "Required release installer is missing: $name" >&2
+              find release-assets -maxdepth 3 -type f -print >&2
+              exit 1
+            }
+            cp -v "$source" "publish/$name"
+          done
+
+          count="$(find publish -type f | wc -l | tr -d ' ')"
+          [[ "$count" == "2" ]] || {
+            echo "Expected exactly two public installers, found $count." >&2
+            exit 1
+          }
+
+      # Keep version/pub_date exactly as before for third-party consumers.
+      # `assets` is additive and gives new clients exact signed filenames plus
+      # hashes, while older clients can continue reading only `version`.
+      - name: Generate backward-compatible latest.json
+        run: |
+          set -euo pipefail
+          export PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export MAC_FILE="FutureOS_${VERSION}_aarch64-sign.dmg"
+          export WINDOWS_FILE="FutureOS_${VERSION}_x64-setup-sign.exe"
+          export MAC_SHA256="$(sha256sum "publish/$MAC_FILE" | cut -d' ' -f1)"
+          export WINDOWS_SHA256="$(sha256sum "publish/$WINDOWS_FILE" | cut -d' ' -f1)"
+
+          node <<'NODE'
+          const fs = require("node:fs");
+          const asset = (fileName, sha256) => ({ file_name: fileName, sha256 });
+          const manifest = {
+            version: process.env.VERSION,
+            pub_date: process.env.PUB_DATE,
+            assets: {
+              "macos-aarch64": asset(process.env.MAC_FILE, process.env.MAC_SHA256),
+              "windows-x64": asset(process.env.WINDOWS_FILE, process.env.WINDOWS_SHA256),
+            },
+          };
+          fs.writeFileSync("latest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+
+          cat latest.json
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: FutureOS ${{ env.VERSION }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            publish/*
+            latest.json
+
+      - name: Setup ossutil
+        run: bash scripts/setup-ossutil.sh
+
+      # Upload immutable versioned assets first. `latest.json` is the commit
+      # point: it is written only after OSS confirms every referenced object is
+      # present, so clients either see the previous complete release or this one.
+      - name: Upload and verify versioned installers
+        run: |
+          set -euo pipefail
+          target="oss://$OSS_BUCKET/releases/$VERSION"
+          ossutil cp -r -f publish/ "$target/"
+          for name in \
+            "FutureOS_${VERSION}_aarch64-sign.dmg" \
+            "FutureOS_${VERSION}_x64-setup-sign.exe"
+          do
+            ossutil stat "$target/$name"
+          done
+
+      - name: Advance latest.json
+        run: |
+          set -euo pipefail
+          # A slower, older release must never overwrite a newer pointer. The
+          # job-level concurrency serializes publishers; this version check also
+          # makes reruns and out-of-order build completion safe.
+          ossutil cp -f "oss://$OSS_BUCKET/releases/latest.json" current-latest.json
+          CURRENT_VERSION="$(node -e '
+            const fs = require("node:fs");
+            process.stdout.write(JSON.parse(fs.readFileSync("current-latest.json")).version || "");
+          ')"
+          export CURRENT_VERSION
+          node <<'NODE'
+          const parse = value => String(value).split(".").map(part => Number.parseInt(part, 10) || 0);
+          const current = parse(process.env.CURRENT_VERSION);
+          const next = parse(process.env.VERSION);
+          for (let i = 0; i < 3; i += 1) {
+            if (next[i] > current[i]) process.exit(0);
+            if (next[i] < current[i]) {
+              console.error(`Refusing to move latest.json backward from ${process.env.CURRENT_VERSION} to ${process.env.VERSION}.`);
+              process.exit(1);
+            }
+          }
+          NODE
+
+          ossutil cp -f latest.json "oss://$OSS_BUCKET/releases/latest.json"
+          ossutil stat "oss://$OSS_BUCKET/releases/latest.json"
