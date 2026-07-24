@@ -178,7 +178,9 @@ jobs:
 
       # Let Tauri notarize and staple the app during bundling. This ordering is
       # important: the updater tarball must be created from the final notarized
-      # app, then signed with the separate Tauri updater key.
+      # app, then signed with the separate Tauri updater key. The DMG is created
+      # afterwards, so it is a distinct distribution container and is notarized
+      # and stapled in the next step.
       - name: Prepare Apple notarization key
         env:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
@@ -227,17 +229,178 @@ jobs:
           ' "$overlay"
           npm --prefix gui run tauri:build -- --config "$overlay"
 
-      - name: Verify signed and notarized artifacts
+      # Tauri notarizes the app before it creates the DMG. Apple treats the
+      # resulting signed disk image as a separate distribution artifact: submit
+      # it after creation and staple its own ticket so installation also works
+      # when Gatekeeper cannot reach Apple's notarization service.
+      - name: Notarize and staple DMG
+        timeout-minutes: 60
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           set -euo pipefail
-          app="$(find gui/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-          updater="$(find gui/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app.tar.gz' -print -quit)"
-          updater_sig="$(find gui/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app.tar.gz.sig' -print -quit)"
-          dmg="$(find gui/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
-          [[ -n "$app" ]] || { echo "Tauri produced no .app bundle." >&2; exit 1; }
-          [[ -n "$updater" ]] || { echo "Tauri produced no macOS updater archive." >&2; exit 1; }
-          [[ -s "$updater_sig" ]] || { echo "Tauri produced no macOS updater signature." >&2; exit 1; }
-          [[ -n "$dmg" ]] || { echo "Tauri produced no DMG." >&2; exit 1; }
+          : "${APPLE_API_KEY_PATH:?APPLE_API_KEY_PATH is required}"
+          : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID secret is required}"
+          : "${APPLE_API_ISSUER:?APPLE_API_ISSUER secret is required}"
+          [[ -s "$APPLE_API_KEY_PATH" ]] || {
+            echo "Apple notarization key is missing or empty: $APPLE_API_KEY_PATH" >&2
+            exit 1
+          }
+
+          shopt -s nullglob
+          dmgs=(gui/src-tauri/target/release/bundle/dmg/*.dmg)
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "Expected exactly one DMG, found ${#dmgs[@]}." >&2
+            find gui/src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -print >&2 || true
+            exit 1
+          fi
+          dmg="${dmgs[0]}"
+
+          # Verify the container before uploading it. Do not re-sign the DMG:
+          # replacing a signature on the compressed image can produce a package
+          # that behaves differently when verified in a fresh process.
+          codesign --verify --strict --verbose=2 "$dmg"
+          hdiutil verify "$dmg"
+
+          response="$RUNNER_TEMP/futureos-dmg-notarization.json"
+          notary_args=(
+            --key "$APPLE_API_KEY_PATH"
+            --key-id "$APPLE_API_KEY_ID"
+            --issuer "$APPLE_API_ISSUER"
+          )
+
+          set +e
+          xcrun notarytool submit \
+            "${notary_args[@]}" \
+            --wait \
+            --timeout 45m \
+            --output-format json \
+            "$dmg" > "$response"
+          submit_exit=$?
+          set -e
+
+          if [[ -s "$response" ]]; then
+            cat "$response"
+          fi
+          submission_id="$(node -e '
+            const fs = require("node:fs");
+            try {
+              const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).id;
+              if (value) process.stdout.write(String(value));
+            } catch {}
+          ' "$response")"
+          notarization_status="$(node -e '
+            const fs = require("node:fs");
+            try {
+              const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).status;
+              if (value) process.stdout.write(String(value));
+            } catch {}
+          ' "$response")"
+
+          if [[ "$submit_exit" -ne 0 || "$notarization_status" != "Accepted" ]]; then
+            echo "DMG notarization failed (exit=$submit_exit, status=${notarization_status:-unknown})." >&2
+            if [[ -n "$submission_id" ]]; then
+              echo "Apple notarization log for submission $submission_id:" >&2
+              xcrun notarytool log "${notary_args[@]}" "$submission_id" || true
+            fi
+            exit 1
+          fi
+
+          # Apple recommends checking the completed submission log even after an
+          # Accepted result. Surface every reported issue in the Actions summary,
+          # but do not block an Apple-accepted release on advisory diagnostics.
+          notary_log="$RUNNER_TEMP/futureos-dmg-notarization-log.json"
+          log_downloaded=false
+          for attempt in 1 2 3; do
+            if xcrun notarytool log \
+              "${notary_args[@]}" \
+              "$submission_id" \
+              "$notary_log"; then
+              log_downloaded=true
+              break
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              delay=$((attempt * 10))
+              echo "Notarization log attempt $attempt failed; retrying in ${delay}s." >&2
+              sleep "$delay"
+            fi
+          done
+          [[ "$log_downloaded" == true && -s "$notary_log" ]] || {
+            echo "Unable to retrieve the accepted notarization log." >&2
+            exit 1
+          }
+          cat "$notary_log"
+          notary_issue_count="$(node -e '
+            const fs = require("node:fs");
+            const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (data.issues == null) {
+              process.stdout.write("0");
+            } else if (Array.isArray(data.issues)) {
+              process.stdout.write(String(data.issues.length));
+            } else {
+              throw new Error("Apple notarization log has an invalid issues field");
+            }
+          ' "$notary_log")"
+          if [[ "$notary_issue_count" != "0" ]]; then
+            echo "::warning title=Apple notarization diagnostics::Apple accepted the DMG but reported $notary_issue_count issue(s); review the notarization log above."
+          fi
+
+          # An accepted ticket can take a short time to propagate to stapler.
+          # Retry only the idempotent staple operation; never resubmit the DMG.
+          stapled=false
+          for attempt in 1 2 3 4 5; do
+            if xcrun stapler staple -v "$dmg"; then
+              stapled=true
+              break
+            fi
+            if [[ "$attempt" -lt 5 ]]; then
+              delay=$((attempt * 10))
+              echo "Staple attempt $attempt failed; retrying in ${delay}s." >&2
+              sleep "$delay"
+            fi
+          done
+          [[ "$stapled" == true ]] || {
+            echo "Unable to staple the accepted notarization ticket to $dmg." >&2
+            exit 1
+          }
+          xcrun stapler validate -v "$dmg"
+          echo "SIGNED_DMG=$dmg" >> "$GITHUB_ENV"
+
+      # Validate the exact two user journeys, not only Tauri's build directory:
+      # mount the website DMG and extract the automatic-updater archive. Both
+      # copies of the app must retain their Developer ID signature and stapled
+      # notarization ticket and must pass Gatekeeper assessment.
+      - name: Verify distributable macOS artifacts
+        run: |
+          set -euo pipefail
+          : "${SIGNED_DMG:?SIGNED_DMG is required}"
+          shopt -s nullglob
+          apps=(gui/src-tauri/target/release/bundle/macos/*.app)
+          updaters=(gui/src-tauri/target/release/bundle/macos/*.app.tar.gz)
+          updater_sigs=(gui/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig)
+          [[ ${#apps[@]} -eq 1 ]] || {
+            echo "Expected exactly one .app bundle, found ${#apps[@]}." >&2
+            exit 1
+          }
+          [[ ${#updaters[@]} -eq 1 ]] || {
+            echo "Expected exactly one macOS updater archive, found ${#updaters[@]}." >&2
+            exit 1
+          }
+          [[ ${#updater_sigs[@]} -eq 1 ]] || {
+            echo "Expected exactly one macOS updater signature, found ${#updater_sigs[@]}." >&2
+            exit 1
+          }
+          [[ -s "${updater_sigs[0]}" ]] || {
+            echo "The macOS updater signature is empty." >&2
+            exit 1
+          }
+
+          app="${apps[0]}"
+          updater="${updaters[0]}"
+          updater_sig="${updater_sigs[0]}"
+          dmg="$SIGNED_DMG"
+          [[ -s "$dmg" ]] || { echo "The notarized DMG is missing or empty: $dmg" >&2; exit 1; }
 
           codesign --verify --deep --strict --verbose=2 "$app"
           signature_info="$(codesign --display --verbose=4 "$app" 2>&1)"
@@ -246,14 +409,84 @@ jobs:
             echo "The app signature does not enable hardened runtime." >&2
             exit 1
           }
+          grep -q '^Authority=Developer ID Application:' <<<"$signature_info" || {
+            echo "The app is not signed with a Developer ID Application certificate." >&2
+            exit 1
+          }
+          grep -q '^Timestamp=' <<<"$signature_info" || {
+            echo "The app signature has no secure timestamp." >&2
+            exit 1
+          }
+
           codesign --verify --strict --verbose=2 "$dmg"
-          codesign --display --verbose=4 "$dmg"
+          dmg_signature_info="$(codesign --display --verbose=4 "$dmg" 2>&1)"
+          printf '%s\n' "$dmg_signature_info"
+          grep -q '^Authority=Developer ID Application:' <<<"$dmg_signature_info" || {
+            echo "The DMG is not signed with a Developer ID Application certificate." >&2
+            exit 1
+          }
+          grep -q '^Timestamp=' <<<"$dmg_signature_info" || {
+            echo "The DMG signature has no secure timestamp." >&2
+            exit 1
+          }
+
           xcrun stapler validate "$app"
           xcrun stapler validate "$dmg"
           spctl --assess --type execute --verbose=2 "$app"
           spctl --assess --type open \
             --context context:primary-signature --verbose=2 "$dmg"
-          echo "SIGNED_DMG=$dmg" >> "$GITHUB_ENV"
+          hdiutil verify "$dmg"
+
+          updater_dir="$(mktemp -d "$RUNNER_TEMP/futureos-updater.XXXXXX")"
+          mount_dir="$(mktemp -d "$RUNNER_TEMP/futureos-dmg.XXXXXX")"
+          dmg_attached=false
+          cleanup_verification() {
+            if [[ "$dmg_attached" == true ]]; then
+              hdiutil detach "$mount_dir" || true
+            fi
+            rm -rf "$updater_dir"
+            rmdir "$mount_dir" 2>/dev/null || true
+          }
+          trap cleanup_verification EXIT
+
+          tar -xzf "$updater" -C "$updater_dir"
+          updater_apps=()
+          while IFS= read -r -d '' candidate; do
+            updater_apps[${#updater_apps[@]}]="$candidate"
+          done < <(find "$updater_dir" -type d -name '*.app' -prune -print0)
+          [[ ${#updater_apps[@]} -eq 1 ]] || {
+            echo "Expected the updater archive to contain exactly one app, found ${#updater_apps[@]}." >&2
+            exit 1
+          }
+          codesign --verify --deep --strict --verbose=2 "${updater_apps[0]}"
+          xcrun stapler validate "${updater_apps[0]}"
+          spctl --assess --type execute --verbose=2 "${updater_apps[0]}"
+
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_dir"
+          dmg_attached=true
+          [[ -L "$mount_dir/Applications" \
+             && "$(readlink "$mount_dir/Applications")" == "/Applications" ]] || {
+            echo "The DMG has no standard Applications drag-to-install link." >&2
+            exit 1
+          }
+          mounted_apps=()
+          while IFS= read -r -d '' candidate; do
+            mounted_apps[${#mounted_apps[@]}]="$candidate"
+          done < <(find "$mount_dir" -maxdepth 1 -type d -name '*.app' -print0)
+          [[ ${#mounted_apps[@]} -eq 1 ]] || {
+            echo "Expected the DMG to contain exactly one app, found ${#mounted_apps[@]}." >&2
+            exit 1
+          }
+          codesign --verify --deep --strict --verbose=2 "${mounted_apps[0]}"
+          xcrun stapler validate "${mounted_apps[0]}"
+          spctl --assess --type execute --verbose=2 "${mounted_apps[0]}"
+
+          hdiutil detach "$mount_dir"
+          dmg_attached=false
+          rm -rf "$updater_dir"
+          rmdir "$mount_dir"
+          trap - EXIT
+
           echo "MACOS_UPDATER=$updater" >> "$GITHUB_ENV"
           echo "MACOS_UPDATER_SIG=$updater_sig" >> "$GITHUB_ENV"
 
