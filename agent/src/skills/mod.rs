@@ -17,9 +17,10 @@ pub struct Skill {
     pub disable_model_invocation: bool,
 }
 
-/// Predefined skill directories (matching Go internal/skills/skills.go)
+/// Predefined skill directories (matching Go internal/skills/skills.go).
+/// Both are global, user-level locations — project/cwd-relative skill
+/// directories are intentionally not supported (see `global_skill_dirs`).
 pub const APP_SKILLS_DIR: &str = "~/.future/agent/skills/";
-pub const PROJECT_SKILLS_DIR: &str = ".future/agent/skills/";
 pub const AGENTS_SKILLS_DIR: &str = "~/.agents/skills/";
 
 /// DiscoverSkills finds all skills in the given directories.
@@ -52,6 +53,66 @@ pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
         }
     }
     Ok(skills)
+}
+
+/// The global (user-level) skill directories. Project/cwd-relative skill
+/// dirs are intentionally NOT scanned: every caller must see the same skill
+/// set regardless of the session's working directory, which also keeps the
+/// `discover_skills_cached` cache key stable across call sites.
+pub fn global_skill_dirs() -> Vec<String> {
+    vec![APP_SKILLS_DIR.to_string(), AGENTS_SKILLS_DIR.to_string()]
+}
+
+// ─── Cached skills discovery ──────────────────────────────────────────────
+
+/// How long the cached skills list stays fresh before a refresh is triggered.
+const SKILLS_CACHE_TTL_SECS: u64 = 60;
+
+/// Global cached skills list, refreshed lazily on access.
+static SKILLS_CACHE: std::sync::RwLock<Option<(std::time::Instant, Vec<Skill>)>> =
+    std::sync::RwLock::new(None);
+
+/// Serialises cache refreshes so only one thread does the I/O work.
+static REFRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Returns a cached skills list, refreshing when older than
+/// SKILLS_CACHE_TTL_SECS. Fast path is lock-free for concurrent readers;
+/// slow path serialises file I/O with a dedicated refresh mutex so multiple
+/// concurrent prompts never block each other on the write lock.
+///
+/// All call sites are expected to pass `global_skill_dirs()`; the cache is
+/// global and does NOT key on `dirs`, so mixing different dir lists across
+/// call sites would return stale results for the minority list.
+pub fn discover_skills_cached(dirs: &[String]) -> Vec<Skill> {
+    // Fast path: read lock, check TTL — multiple readers OK.
+    {
+        let cache = SKILLS_CACHE.read().unwrap();
+        if let Some((ref ts, ref skills)) = *cache {
+            if ts.elapsed().as_secs() < SKILLS_CACHE_TTL_SECS {
+                return skills.clone();
+            }
+        }
+    }
+    // Slow path: one thread refreshes; others wait on the refresh lock
+    // then double-check (the first thread may have already refreshed).
+    let _refresh = REFRESH_LOCK.lock().unwrap();
+    {
+        let cache = SKILLS_CACHE.read().unwrap();
+        if let Some((ref ts, ref skills)) = *cache {
+            if ts.elapsed().as_secs() < SKILLS_CACHE_TTL_SECS {
+                return skills.clone();
+            }
+        }
+    }
+    // File I/O outside any lock — only one thread reaches here.
+    let skills = discover_skills(dirs).unwrap_or_default();
+    *SKILLS_CACHE.write().unwrap() = Some((std::time::Instant::now(), skills.clone()));
+    skills
+}
+
+/// Invalidate the skills cache so the next access triggers a refresh.
+pub fn invalidate_skills_cache() {
+    *SKILLS_CACHE.write().unwrap() = None;
 }
 
 fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {

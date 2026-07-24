@@ -11,6 +11,11 @@ path = "src/main.rs"
 name = "future_agent"
 path = "src/lib.rs"
 
+[features]
+# Heap (memory) profiling via dhat.  Build with `--features dhat-heap` and
+# run with `--profile-heap <PATH>` to get a dhat-heap JSON report.
+dhat-heap = ["dep:dhat"]
+
 [dependencies]
 tokio.workspace = true
 parking_lot.workspace = true
@@ -57,9 +62,17 @@ prost.workspace = true
 prost-types = "0.13"
 tower-http = { version = "0.6", features = ["cors"] }
 
+# Optional: heap profiling support (feature `dhat-heap`).  The global
+# allocator shim lives in main.rs and is compiled only with the feature.
+dhat = { version = "0.3", optional = true }
+
 # Kill the whole bash process group on abort/timeout (not just the direct child)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Profiling flamegraph output uses inferno behind the scenes.
+[target.'cfg(not(windows))'.dependencies]
+pprof = { version = "0.13", features = ["flamegraph"] }
 
 # Windows: Job Object for process-tree kill; restricted token + ACLs for the
 # bash sandbox (SANDBOX_PLAN §11). Feature set grows with W1b.

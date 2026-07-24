@@ -135,7 +135,10 @@ impl RpcResponse {
 /// per-session ceiling, not cumulative. Sized to comfortably hold a long
 /// generation's per-token `text_chunk` stream; on overflow the oldest are
 /// dropped and `events_since` reports the resulting gap via `min_idx`.
-const MAX_RUN_EVENTS: usize = 20000;
+/// Max events buffered per run for `events_since` resync.
+/// 2000 is sufficient — a client that falls behind 2000 events
+/// is effectively disconnected and should reconnect.
+const MAX_RUN_EVENTS: usize = 2_000;
 
 struct RunState {
     run_id: String,
@@ -154,7 +157,11 @@ pub struct SseBroadcaster {
 
 impl SseBroadcaster {
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(4096);
+        // 256 slots is enough — measured rate is ~15-30 events/sec during
+        // streaming, so 256 slots tolerates ~10s of client lag.  A client
+        // behind by more than 256 events is effectively disconnected and
+        // should resync via `events_since` anyway.
+        let (tx, _) = broadcast::channel(256);
         Self {
             tx,
             run: std::sync::Arc::new(parking_lot::Mutex::new(RunState {
@@ -182,6 +189,12 @@ impl SseBroadcaster {
             let overflow = run.events.len() - MAX_RUN_EVENTS;
             run.events.drain(0..overflow);
         }
+        // tokio broadcast semantics: send() only fails when there are NO
+        // active receivers — normal for ephemeral sessions before a client
+        // subscribes, so the error is ignored.  When the ring buffer is
+        // full, send() does NOT fail; it drops the oldest events and slow
+        // receivers observe RecvError::Lagged, then resync via
+        // `events_since` (which reports the gap via min_idx).
         let _ = self.tx.send(event);
     }
 

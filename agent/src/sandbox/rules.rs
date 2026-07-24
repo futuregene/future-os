@@ -417,9 +417,41 @@ impl RuleSet {
     /// Resolve, sharing `session` so runtime injections (same-run "allow in
     /// this workspace") are visible to the live sandbox.
     pub fn resolve_with_session(workspace: &Path, session: SessionRules) -> Self {
-        let workspace = paths::canonicalize_lenient(workspace);
         let home = dirs::home_dir();
-        let home_ref = home.as_deref();
+        let user_rule_file = home.as_ref().map(|h| h.join(".future/approval_rule.json"));
+        Self::resolve_impl(
+            workspace,
+            home.as_deref(),
+            user_rule_file.as_deref(),
+            session,
+        )
+    }
+
+    /// Test-only constructor: uses the real home for built-in guards (tests
+    /// assert on paths like `~/.ssh/id_rsa`), but points the user-rule layer
+    /// at a nonexistent file so the developer machine's real
+    /// `~/.future/approval_rule.json` can never leak into a test outcome.
+    /// Reading mutable machine-global state made these tests flaky.
+    #[cfg(test)]
+    fn resolve_isolated(workspace: &Path) -> Self {
+        let home = dirs::home_dir();
+        let stub = workspace.join(".future/user-rules-that-do-not-exist.json");
+        Self::resolve_impl(
+            workspace,
+            home.as_deref(),
+            Some(&stub),
+            Arc::new(Mutex::new(vec![])),
+        )
+    }
+
+    /// Full constructor with an injectable user-rule file path.
+    fn resolve_impl(
+        workspace: &Path,
+        home: Option<&Path>,
+        user_rule_file: Option<&Path>,
+        session: SessionRules,
+    ) -> Self {
+        let workspace = paths::canonicalize_lenient(workspace);
 
         let workspace_rules =
             load_rule_file(&workspace.join(".future/approval_rule.json"), &workspace)
@@ -427,19 +459,18 @@ impl RuleSet {
                     tracing::warn!("{error}");
                     vec![]
                 });
-        let user_rules = match home_ref {
-            Some(home) => load_rule_file(&home.join(".future/approval_rule.json"), &workspace)
-                .unwrap_or_else(|error| {
-                    tracing::warn!("{error}");
-                    vec![]
-                }),
+        let user_rules = match user_rule_file {
+            Some(file) => load_rule_file(file, &workspace).unwrap_or_else(|error| {
+                tracing::warn!("{error}");
+                vec![]
+            }),
             None => vec![],
         };
 
         Self {
             temp_roots: temp_roots(),
-            overrides: builtin_overrides(&workspace, home_ref),
-            guards: builtin_guards(&workspace, home_ref),
+            overrides: builtin_overrides(&workspace, home),
+            guards: builtin_guards(&workspace, home),
             session,
             workspace_rules,
             user_rules,
@@ -575,7 +606,7 @@ mod tests {
     #[test]
     fn fallback_reads_open_writes_gated() {
         let workspace = ws();
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         // Read anywhere → allow.
         assert_eq!(
             set.evaluate(Path::new("/usr/lib/x"), Op::Read),
@@ -594,7 +625,7 @@ mod tests {
     #[test]
     fn temp_is_allowed_read_and_write() {
         let workspace = ws();
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         let tmp = paths::canonicalize_lenient(&std::env::temp_dir()).join("futureos-t.txt");
         assert_eq!(set.evaluate(&tmp, Op::Write), Decision::Allow);
         assert_eq!(set.evaluate(&tmp, Op::Read), Decision::Allow);
@@ -603,7 +634,7 @@ mod tests {
     #[test]
     fn credential_reads_ask() {
         let workspace = ws();
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         let ssh = dirs::home_dir().unwrap().join(".ssh/id_rsa");
         assert_eq!(set.evaluate(&ssh, Op::Read), Decision::Ask);
     }
@@ -611,7 +642,7 @@ mod tests {
     #[test]
     fn workspace_env_asks_even_though_in_workspace() {
         let workspace = ws();
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         // .env would be write-allowed by fallback, but layer-4 ask wins first.
         assert_eq!(
             set.evaluate(&workspace.join(".env"), Op::Read),
@@ -630,7 +661,7 @@ mod tests {
     #[test]
     fn rule_file_write_is_denied_and_unoverridable() {
         let workspace = ws();
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         let rulefile = workspace.join(".future/approval_rule.json");
         assert_eq!(set.evaluate(&rulefile, Op::Write), Decision::Deny);
         // Even a session allow can't override the layer-0 deny.
@@ -654,7 +685,7 @@ mod tests {
             r#"{"rules":[{"path":".env","access":"read","action":"allow"}]}"#,
         )
         .unwrap();
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         assert_eq!(
             set.evaluate(&workspace.join(".env"), Op::Read),
             Decision::Ask
@@ -671,7 +702,7 @@ mod tests {
             r#"{"rules":[{"path":"config/*","access":"write","action":"allow"}]}"#,
         )
         .unwrap();
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         assert_eq!(
             set.evaluate(&workspace.join("config/app.yaml"), Op::Write),
             Decision::Allow
@@ -687,7 +718,7 @@ mod tests {
     #[test]
     fn session_allow_ungates_non_secret_only() {
         let workspace = ws();
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         let outside = dirs::home_dir().unwrap().join("futureos-session-dir");
         set.add_session_rule(
             &outside.join("*").to_string_lossy(),
@@ -719,7 +750,7 @@ mod tests {
             r#"{"rules":[{"path":"vendor","action":"deny"}]}"#,
         )
         .unwrap();
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         assert_eq!(
             set.evaluate(&workspace.join("vendor"), Op::Read),
             Decision::Deny
@@ -745,7 +776,7 @@ mod tests {
             r#"{"rules":[{"path":"build/*","access":"write","action":"deny"}]}"#,
         )
         .unwrap();
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         assert_eq!(
             set.evaluate(&workspace.join("build/out.o"), Op::Write),
             Decision::Deny
@@ -763,7 +794,7 @@ mod tests {
         std::fs::create_dir_all(workspace.join(".future")).unwrap();
         std::fs::write(workspace.join(".future/approval_rule.json"), "{ not json").unwrap();
         // resolve() logs + skips; built-ins + fallback still apply.
-        let set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve_isolated(&workspace);
         assert_eq!(
             set.evaluate(&workspace.join("a.txt"), Op::Read),
             Decision::Allow
