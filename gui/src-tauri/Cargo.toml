@@ -44,13 +44,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 # Workspace file `@`-mention picker: gitignore-aware directory walk + fuzzy rank.
 ignore = "0.4"
 fuzzy-matcher = "0.3"
-# Win32 API for high-quality window icon (taskbar clarity). Loads the ICO file
-# with proper multi-size support instead of Tauri's single-size GDI HICON.
-windows = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_Graphics_Gdi",
-] }
+
 
 # Stripped symbols + no debug info: smaller desktop binary and less link/scan
 # I/O, negligible runtime cost for a Tauri shell. See ../../.cargo/config.toml.
