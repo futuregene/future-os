@@ -67,6 +67,7 @@ jobs:
       OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
       VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_ORIGIN: https://futureos.oss-cn-hangzhou.aliyuncs.com/releases
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -76,53 +77,77 @@ jobs:
         with:
           path: release-assets
 
-      # Portable packages remain Actions-only tester artifacts. The public
-      # release contains the signed macOS and Windows installers only.
-      - name: Stage and validate installers
+      # Website installers and Tauri updater packages are all immutable,
+      # versioned release assets. Portable packages remain tester-only.
+      - name: Stage and validate release assets
         run: |
           set -euo pipefail
           mkdir -p publish
 
           mac="FutureOS_${VERSION}_aarch64-sign.dmg"
+          mac_updater="FutureOS_${VERSION}_aarch64.app.tar.gz"
           windows="FutureOS_${VERSION}_x64-setup-sign.exe"
 
-          for name in "$mac" "$windows"; do
+          for name in \
+            "$mac" \
+            "$mac_updater" \
+            "$mac_updater.sig" \
+            "$windows" \
+            "$windows.sig"
+          do
             source="$(find release-assets -type f -name "$name" -print -quit)"
             [[ -n "$source" ]] || {
-              echo "Required release installer is missing: $name" >&2
+              echo "Required release asset is missing: $name" >&2
               find release-assets -maxdepth 3 -type f -print >&2
               exit 1
             }
             cp -v "$source" "publish/$name"
           done
 
+          # Already-released clients derive these historical filenames from
+          # `version` alone. Keep byte-identical aliases for one-way migration
+          # into the first updater-enabled release.
+          cp -v "publish/$mac" "publish/FutureOS_${VERSION}_aarch64.dmg"
+          cp -v "publish/$windows" "publish/FutureOS_${VERSION}_x64-setup.exe"
+
           count="$(find publish -type f | wc -l | tr -d ' ')"
-          [[ "$count" == "2" ]] || {
-            echo "Expected exactly two public installers, found $count." >&2
+          [[ "$count" == "7" ]] || {
+            echo "Expected exactly seven public release assets, found $count." >&2
             exit 1
           }
 
       # Keep version/pub_date exactly as before for third-party consumers.
-      # `assets` is additive and gives new clients exact signed filenames plus
-      # hashes, while older clients can continue reading only `version`.
-      - name: Generate backward-compatible latest.json
+      # `platforms` is Tauri's signed in-place updater index; the additive
+      # `assets` map is the website's direct-download index.
+      - name: Generate Tauri-compatible latest.json
         run: |
           set -euo pipefail
           export PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           export MAC_FILE="FutureOS_${VERSION}_aarch64-sign.dmg"
+          export MAC_UPDATER_FILE="FutureOS_${VERSION}_aarch64.app.tar.gz"
           export WINDOWS_FILE="FutureOS_${VERSION}_x64-setup-sign.exe"
-          export MAC_SHA256="$(sha256sum "publish/$MAC_FILE" | cut -d' ' -f1)"
-          export WINDOWS_SHA256="$(sha256sum "publish/$WINDOWS_FILE" | cut -d' ' -f1)"
 
           node <<'NODE'
           const fs = require("node:fs");
-          const asset = (fileName, sha256) => ({ file_name: fileName, sha256 });
+          const crypto = require("node:crypto");
+          const sha256 = file => crypto.createHash("sha256").update(fs.readFileSync(`publish/${file}`)).digest("hex");
+          const url = file => `${process.env.RELEASE_ORIGIN}/${process.env.VERSION}/${file}`;
+          const updater = file => ({
+            url: url(file),
+            signature: fs.readFileSync(`publish/${file}.sig`, "utf8").trim(),
+            sha256: sha256(file),
+          });
+          const asset = file => ({ url: url(file), sha256: sha256(file) });
           const manifest = {
             version: process.env.VERSION,
             pub_date: process.env.PUB_DATE,
+            platforms: {
+              "darwin-aarch64": updater(process.env.MAC_UPDATER_FILE),
+              "windows-x86_64": updater(process.env.WINDOWS_FILE),
+            },
             assets: {
-              "macos-aarch64": asset(process.env.MAC_FILE, process.env.MAC_SHA256),
-              "windows-x64": asset(process.env.WINDOWS_FILE, process.env.WINDOWS_SHA256),
+              "macos-aarch64": asset(process.env.MAC_FILE),
+              "windows-x64": asset(process.env.WINDOWS_FILE),
             },
           };
           fs.writeFileSync("latest.json", `${JSON.stringify(manifest, null, 2)}\n`);
@@ -147,14 +172,19 @@ jobs:
       # Upload immutable versioned assets first. `latest.json` is the commit
       # point: it is written only after OSS confirms every referenced object is
       # present, so clients either see the previous complete release or this one.
-      - name: Upload and verify versioned installers
+      - name: Upload and verify versioned release assets
         run: |
           set -euo pipefail
           target="oss://$OSS_BUCKET/releases/$VERSION"
           ossutil cp -r -f publish/ "$target/"
           for name in \
             "FutureOS_${VERSION}_aarch64-sign.dmg" \
-            "FutureOS_${VERSION}_x64-setup-sign.exe"
+            "FutureOS_${VERSION}_aarch64.dmg" \
+            "FutureOS_${VERSION}_aarch64.app.tar.gz" \
+            "FutureOS_${VERSION}_aarch64.app.tar.gz.sig" \
+            "FutureOS_${VERSION}_x64-setup-sign.exe" \
+            "FutureOS_${VERSION}_x64-setup.exe" \
+            "FutureOS_${VERSION}_x64-setup-sign.exe.sig"
           do
             ossutil stat "$target/$name"
           done

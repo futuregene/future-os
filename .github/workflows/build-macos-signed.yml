@@ -30,6 +30,12 @@ on:
         required: true
       APPLE_API_ISSUER:
         required: true
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      TAURI_UPDATER_PUBLIC_KEY:
+        required: true
       OSS_ENDPOINT:
         required: false
       OSS_BUCKET:
@@ -41,7 +47,7 @@ on:
 
 jobs:
   build:
-    name: Build signed and notarized macOS DMG
+    name: Build signed and notarized macOS release
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: macos-latest
     timeout-minutes: 180
@@ -170,33 +176,67 @@ jobs:
           FUTURE_VERSION: ${{ steps.v.outputs.version }}
         run: node scripts/version.mjs --set-bundle
 
-      # tauri.conf.json intentionally uses the ad-hoc identity (`-`) for normal
-      # builds. A per-run overlay keeps unsigned/local builds unchanged while
-      # making Tauri sign the app and every nested sidecar with hardened runtime.
-      - name: Build desktop bundle (signed)
+      # Let Tauri notarize and staple the app during bundling. This ordering is
+      # important: the updater tarball must be created from the final notarized
+      # app, then signed with the separate Tauri updater key.
+      - name: Prepare Apple notarization key
         env:
-          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
         run: |
           set -euo pipefail
+          : "${APPLE_API_KEY_CONTENT:?APPLE_API_KEY secret is required}"
+          : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID secret is required}"
+          api_key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_CONTENT" | base64 -D > "$api_key"
+          chmod 600 "$api_key"
+          echo "APPLE_API_KEY_PATH=$api_key" >> "$GITHUB_ENV"
+
+      # tauri.conf.json intentionally uses the ad-hoc identity (`-`) for normal
+      # builds. A per-run overlay keeps unsigned/local builds unchanged while
+      # embedding the production updater endpoint/key only in formal artifacts.
+      - name: Build desktop bundle (signed, notarized and updater-enabled)
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          : "${TAURI_SIGNING_PRIVATE_KEY:?TAURI_SIGNING_PRIVATE_KEY secret is required}"
+          : "${TAURI_UPDATER_PUBLIC_KEY:?TAURI_UPDATER_PUBLIC_KEY secret is required}"
           overlay="$RUNNER_TEMP/tauri.macos-sign.json"
           node -e '
             const fs = require("node:fs");
             fs.writeFileSync(process.argv[1], JSON.stringify({
-              bundle: { macOS: { signingIdentity: process.env.SIGNING_IDENTITY } }
+              bundle: {
+                createUpdaterArtifacts: true,
+                macOS: { signingIdentity: process.env.SIGNING_IDENTITY }
+              },
+              plugins: {
+                updater: {
+                  pubkey: process.env.TAURI_UPDATER_PUBLIC_KEY,
+                  endpoints: [
+                    "https://futureos.oss-cn-hangzhou.aliyuncs.com/releases/latest.json"
+                  ]
+                }
+              }
             }));
           ' "$overlay"
           npm --prefix gui run tauri:build -- --config "$overlay"
 
-      # Tauri signs the .app contents and the final disk image. Verify both
-      # independently before submitting that exact DMG to Apple; force-signing
-      # an already compressed image a second time can invalidate its embedded
-      # signature after the current process's signature cache is discarded.
-      - name: Verify app and DMG signatures
+      - name: Verify signed and notarized artifacts
         run: |
           set -euo pipefail
           app="$(find gui/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          updater="$(find gui/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app.tar.gz' -print -quit)"
+          updater_sig="$(find gui/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app.tar.gz.sig' -print -quit)"
           dmg="$(find gui/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
           [[ -n "$app" ]] || { echo "Tauri produced no .app bundle." >&2; exit 1; }
+          [[ -n "$updater" ]] || { echo "Tauri produced no macOS updater archive." >&2; exit 1; }
+          [[ -s "$updater_sig" ]] || { echo "Tauri produced no macOS updater signature." >&2; exit 1; }
           [[ -n "$dmg" ]] || { echo "Tauri produced no DMG." >&2; exit 1; }
 
           codesign --verify --deep --strict --verbose=2 "$app"
@@ -208,79 +248,34 @@ jobs:
           }
           codesign --verify --strict --verbose=2 "$dmg"
           codesign --display --verbose=4 "$dmg"
-          echo "SIGNED_DMG=$dmg" >> "$GITHUB_ENV"
-
-      - name: Notarize and staple DMG
-        env:
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          set -euo pipefail
-          : "${APPLE_API_KEY:?APPLE_API_KEY secret is required}"
-          : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID secret is required}"
-          : "${APPLE_API_ISSUER:?APPLE_API_ISSUER secret is required}"
-
-          api_key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-          result="$RUNNER_TEMP/notary-result.json"
-          printf '%s' "$APPLE_API_KEY" | base64 -D > "$api_key"
-          chmod 600 "$api_key"
-
-          set +e
-          xcrun notarytool submit "$SIGNED_DMG" \
-            --key "$api_key" \
-            --key-id "$APPLE_API_KEY_ID" \
-            --issuer "$APPLE_API_ISSUER" \
-            --wait \
-            --output-format json > "$result"
-          submit_exit=$?
-          set -e
-          cat "$result"
-
-          submission_id="$(node -e '
-            const fs = require("node:fs");
-            try { process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).id || ""); }
-            catch {}
-          ' "$result")"
-          notary_status="$(node -e '
-            const fs = require("node:fs");
-            try { process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).status || ""); }
-            catch {}
-          ' "$result")"
-          if [[ "$submit_exit" -ne 0 || "$notary_status" != "Accepted" ]]; then
-            if [[ -n "$submission_id" ]]; then
-              xcrun notarytool log "$submission_id" \
-                --key "$api_key" \
-                --key-id "$APPLE_API_KEY_ID" \
-                --issuer "$APPLE_API_ISSUER" || true
-            fi
-            rm -f "$api_key"
-            echo "Apple notarization failed (status: ${notary_status:-unknown})." >&2
-            exit 1
-          fi
-
-          rm -f "$api_key"
-          xcrun stapler staple "$SIGNED_DMG"
-          xcrun stapler validate "$SIGNED_DMG"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type execute --verbose=2 "$app"
           spctl --assess --type open \
-            --context context:primary-signature --verbose=2 "$SIGNED_DMG"
+            --context context:primary-signature --verbose=2 "$dmg"
+          echo "SIGNED_DMG=$dmg" >> "$GITHUB_ENV"
+          echo "MACOS_UPDATER=$updater" >> "$GITHUB_ENV"
+          echo "MACOS_UPDATER_SIG=$updater_sig" >> "$GITHUB_ENV"
 
-      - name: Stage signed DMG
+      - name: Stage signed macOS artifacts
         run: |
           set -euo pipefail
           mkdir -p signed-release
           base="$(basename "$SIGNED_DMG" .dmg)"
-          output="signed-release/${base}-sign.dmg"
-          cp "$SIGNED_DMG" "$output"
-          echo "SIGNED_RELEASE_DMG=$output" >> "$GITHUB_ENV"
+          dmg_output="signed-release/${base}-sign.dmg"
+          updater_output="signed-release/FutureOS_${{ steps.v.outputs.version }}_aarch64.app.tar.gz"
+          cp "$SIGNED_DMG" "$dmg_output"
+          cp "$MACOS_UPDATER" "$updater_output"
+          cp "$MACOS_UPDATER_SIG" "$updater_output.sig"
+          echo "SIGNED_RELEASE_DMG=$dmg_output" >> "$GITHUB_ENV"
 
-      - name: Upload signed DMG artifact
+      - name: Upload signed macOS artifact
         uses: actions/upload-artifact@v7
         with:
           name: futureos-macos-signed
           if-no-files-found: error
           overwrite: true
-          path: signed-release/*-sign.dmg
+          path: signed-release/*
           retention-days: 7
 
       - name: Setup ossutil
@@ -305,19 +300,20 @@ jobs:
             | sed -E 's#^https?://##; s/^oss-//; s/-internal//; s/\.aliyuncs\.com$//')"
           echo "OSS_REGION=$region" >> "$GITHUB_ENV"
 
-      - name: Upload signed DMG to OSS
+      - name: Upload signed macOS artifacts to OSS
         if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           version="${{ steps.v.outputs.version }}"
-          output="$SIGNED_RELEASE_DMG"
-          echo "==> Uploading $(basename "$output") to oss://$OSS_BUCKET/test/$version/"
-          ossutil cp -f "$output" "oss://$OSS_BUCKET/test/$version/$(basename "$output")"
+          echo "==> Uploading macOS artifacts to oss://$OSS_BUCKET/test/$version/"
+          ossutil cp -r -f signed-release/ "oss://$OSS_BUCKET/test/$version/"
 
           oss_host="$(printf '%s' "$OSS_ENDPOINT" \
             | sed -E 's#^https?://##; s/-internal//')"
-          echo "==> Download URL:"
-          echo "https://$OSS_BUCKET.$oss_host/test/$version/$(basename "$output")"
+          echo "==> Download URLs:"
+          find signed-release -maxdepth 1 -type f -print | while read -r output; do
+            echo "https://$OSS_BUCKET.$oss_host/test/$version/$(basename "$output")"
+          done
 
       - name: Clean up signing material
         if: always()

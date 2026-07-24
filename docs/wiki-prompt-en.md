@@ -125,12 +125,12 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
   - macOS: `.dmg` disk image
   - Windows: installer (`.exe`), or portable `.zip`
 - Mention that the CLI tool `future-cli` **ships with every download** (both installer and portable, placed next to the app) — see the CLI page for details.
-- **First launch** (current builds are unsigned/notarized, system warnings are expected):
-  - **macOS**: drag FutureOS into Applications; first time right-click → "Open" → click "Open" again; if "damaged", run `xattr -dr com.apple.quarantine /Applications/FutureOS.app` in Terminal then open.
-  - **Windows**: installer version — run `.exe`; portable version — extract the entire folder then double-click `FutureOS.exe` (keep `FutureOS.exe` and `future-agent.exe` in the same folder). First SmartScreen prompt: "More info → Run anyway". Requires **Microsoft Edge WebView2 Runtime** (pre-installed on recent Win10 and Win11; if missing, install the Evergreen version from Microsoft's website).
+- **First launch**: formal macOS and Windows installers are signed, and the macOS build is Apple-notarized.
+  - **macOS**: drag FutureOS into Applications and launch it normally.
+  - **Windows**: installer version — run `.exe`; portable version — extract the entire folder then double-click `FutureOS.exe` (keep `FutureOS.exe` and `future-agent.exe` in the same folder). If SmartScreen shows a reputation prompt, verify the publisher and official download source. Requires **Microsoft Edge WebView2 Runtime** (pre-installed on recent Win10 and Win11; if missing, install the Evergreen version from Microsoft's website).
 - **Sign in**: first use requires internet and in-app sign-in — see Quick Start.
 - **Data location**: `.future` folder in your home directory (macOS `~/.future`, Windows `C:\Users\<you>\.future`).
-- **Updating**: download the latest and install over the old one (replace folder for portable). `.future` data is preserved.
+- **Updating**: installer builds can use Settings → Check for updates to download, verify, and install an update, then restart when prompted; manual overwrite remains available. Replace the folder for portable builds. `.future` data is preserved.
 - **Uninstalling**: macOS — delete `FutureOS.app`; Windows — uninstall from Settings or delete portable folder. To also remove data, delete `.future` afterward.
 
 ### Quick-Start
