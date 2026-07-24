@@ -61,6 +61,10 @@ pub struct Loop {
     pub cumulative_cost: Arc<parking_lot::Mutex<f64>>,
     /// Last API call's prompt_tokens (actual context size, not cumulative across turns)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
+    /// Set to true when auto-compaction is needed but fails to find a valid cut
+    /// point. The run loop checks this after transform_context and returns an
+    /// error instead of silently proceeding with full context.
+    pub compaction_failed: Arc<AtomicBool>,
 }
 
 impl Loop {
@@ -85,6 +89,7 @@ impl Loop {
             cumulative_cache_write_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            compaction_failed: Arc::new(AtomicBool::new(false)),
         }
     }
 

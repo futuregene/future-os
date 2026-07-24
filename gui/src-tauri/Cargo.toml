@@ -41,6 +41,7 @@ image = { version = "0.25", default-features = false, features = [
     "bmp",
 ] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+sha2 = "0.10"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 # Workspace file `@`-mention picker: gitignore-aware directory walk + fuzzy rank.
 ignore = "0.4"
