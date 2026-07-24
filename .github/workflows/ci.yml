@@ -23,12 +23,12 @@ concurrency:
 
 jobs:
   # ─── Rust quality gate (Linux): fmt + clippy + tests ─────────────────────
-  # Lint and test the workspace crates (agent / channels / remote — whatever
-  # `members` lists; gui is excluded from the workspace). Platform-agnostic, so
-  # one OS suffices; Windows/macOS *compilation* is the rust-build job's job.
-  # clippy implicitly compiles, so this also covers Linux compilation of these
-  # crates (the rust-build Linux leg re-checks them — a deliberate, cached,
-  # incremental overlap kept so that matrix stays symmetric).
+  # Lint and test ALL Rust crates in one hard gate: the workspace members
+  # (agent / channels / remote) plus the GUI Tauri backend. Platform-agnostic,
+  # so one OS suffices; Windows/macOS *compilation* is the rust-build job's
+  # job. clippy implicitly compiles, so this also covers Linux compilation of
+  # every crate (the rust-build Linux leg re-checks them — a deliberate,
+  # cached, incremental overlap kept so that matrix stays symmetric).
   rust-quality:
     name: Rust lint + test (Linux)
     runs-on: ubuntu-latest
@@ -44,29 +44,60 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          # Root workspace only — this job never compiles the GUI backend.
-          workspaces: "."
+          workspaces: |
+            .
+            gui/src-tauri
           cache-on-failure: true
           cache-all-crates: true
 
-      # protoc for the agent/channels/remote build.rs proto codegen (run on
-      # every build). mold + binutils because .cargo/config.toml pins
-      # -fuse-ld=mold for Linux and clippy/test still link build scripts,
-      # proc-macros and test binaries. No WebKit/GTK: this job doesn't build
-      # the Tauri backend.
+      # protoc for the workspace build.rs proto codegen. mold + binutils
+      # because .cargo/config.toml pins -fuse-ld=mold and clippy/test still
+      # link build scripts, proc-macros and test binaries. WebKit/GTK for the
+      # Tauri -sys build scripts (GUI backend is part of this gate now).
       - name: Install Linux deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y binutils mold protobuf-compiler
+          sudo apt-get install -y \
+            build-essential \
+            binutils \
+            mold \
+            pkg-config \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            protobuf-compiler
 
-      - name: rustfmt
+      # tauri-build's build script aborts with `resource path ... doesn't exist`
+      # unless every `bundle.externalBin` sidecar is present. For lint/test
+      # empty placeholders suffice.
+      - name: Create placeholder sidecars
+        run: |
+          triple=$(rustc -Vv | sed -n 's/^host: //p')
+          mkdir -p gui/src-tauri/binaries
+          : > "gui/src-tauri/binaries/future-agent-$triple"
+          : > "gui/src-tauri/binaries/future-$triple"
+
+      # ── Workspace crates (agent / channels / remote) ──
+      - name: rustfmt (workspace)
         run: cargo fmt --check --manifest-path Cargo.toml
 
-      - name: clippy
+      - name: clippy (workspace)
         run: cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings
 
-      - name: cargo test
+      - name: cargo test (workspace)
         run: cargo test --workspace --manifest-path Cargo.toml
+
+      # ── GUI Tauri backend ──
+      - name: rustfmt (GUI backend)
+        run: cargo fmt --check --manifest-path gui/src-tauri/Cargo.toml
+
+      - name: clippy (GUI backend)
+        run: cargo clippy --all-targets --manifest-path gui/src-tauri/Cargo.toml -- -D warnings
+
+      - name: cargo test (GUI backend)
+        run: cargo test --manifest-path gui/src-tauri/Cargo.toml
 
   # ─── Rust 3-platform compile check ───────────────────────────────────────
   # The quality gate above only runs on Linux, so platform-conditional code was
@@ -169,67 +200,6 @@ jobs:
       - name: cargo check (GUI Tauri backend)
         run: cargo check --manifest-path gui/src-tauri/Cargo.toml
 
-  # ─── GUI backend Rust quality (advisory) ─────────────────────────────────
-  # The GUI Tauri backend has never had fmt/clippy/test in CI, so we don't know
-  # whether the existing tree is warning- / test-clean. Run them here as an
-  # *advisory* job (continue-on-error) so they produce a visible signal without
-  # turning the PR red and blocking merges. Once the backend is cleaned up,
-  # drop `continue-on-error` to promote this to a hard gate. (Linux compilation
-  # of the GUI is still a hard gate — via the rust-build Linux leg above; this
-  # job re-compiles it for clippy/test, which is the price of keeping the two
-  # concerns separate.)
-  gui-rust:
-    name: GUI backend Rust lint + test (advisory)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.96.0
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "gui/src-tauri"
-          cache-on-failure: true
-          cache-all-crates: true
-
-      # WebKit/GTK for the Tauri -sys build scripts; mold/binutils because
-      # clippy/test link build scripts, proc-macros and the test binary
-      # (.cargo/config.toml pins -fuse-ld=mold). No protoc — the GUI proto is
-      # checked into src/generated/.
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            binutils \
-            mold \
-            pkg-config \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev
-
-      - name: Create placeholder sidecars
-        run: |
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p gui/src-tauri/binaries
-          : > "gui/src-tauri/binaries/future-agent-$triple"
-          : > "gui/src-tauri/binaries/future-$triple"
-
-      - name: rustfmt
-        run: cargo fmt --check --manifest-path gui/src-tauri/Cargo.toml
-
-      - name: clippy
-        run: cargo clippy --all-targets --manifest-path gui/src-tauri/Cargo.toml -- -D warnings
-
-      - name: cargo test
-        run: cargo test --manifest-path gui/src-tauri/Cargo.toml
-
   # ─── CLI: typecheck + bun test ───────────────────────────────────────────
   # `bun run test` runs the unit set only (src/commands + browser unit tests);
   # real-browser suites (validation/characterization) are opt-in via
@@ -302,7 +272,7 @@ jobs:
 
   # ─── GUI frontend: eslint + stylelint + vitest ───────────────────────────
   # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,
-  # 3-platform) and gui-rust (lint + test, advisory). Platform-agnostic.
+  # 3-platform) and rust-quality (lint + test, hard gate). Platform-agnostic.
   gui-frontend:
     name: GUI frontend lint + test
     runs-on: ubuntu-latest
