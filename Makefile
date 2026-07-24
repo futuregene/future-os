@@ -291,6 +291,24 @@ profile-agent:
 	@echo "Flamegraph: $$(ls -t profile-results/agent-profile-*.svg | head -1)"
 	@echo "Run: open profile-results/agent-profile-*.svg"
 
+# Heap (memory) profile: build with the dhat-heap feature, run on port
+# 50052 for N seconds, write a dhat report JSON.
+# Usage: make profile-heap PROFILE_SECS=30
+# View the report at https://nnethercote.github.io/dh_view/dh_view.html
+profile-heap:
+	cargo build --release -p future-agent --features dhat-heap \
+		--config 'profile.release.debug="line-tables-only"' \
+		--config 'profile.release.strip="none"'
+	@mkdir -p profile-results
+	./target/release/future-agent \
+		--grpc-addr 127.0.0.1:50052 \
+		--profile-heap profile-results/heap-profile.json \
+		--profile-seconds $(or $(PROFILE_SECS),30) \
+		--verbose
+	@echo ""
+	@echo "Heap profile: profile-results/heap-profile.json"
+	@echo "View: https://nnethercote.github.io/dh_view/dh_view.html"
+
 # Quick profile: start agent with profiling on port 50052, run for N seconds.
 # Usage: make profile-quick PROFILE_SECS=30
 profile-quick:
@@ -365,6 +383,9 @@ help:
 	@echo "  run-gui            Run GUI in dev mode"
 	@echo "  run-channels        Run channel bridge directly (debug build)"
 	@echo "  package-gui        Package GUI desktop bundles"
+	@echo "  profile-agent      CPU profile: build + 90s bench, write flamegraph SVG"
+	@echo "  profile-quick      CPU profile: run agent N secs (PROFILE_SECS=30)"
+	@echo "  profile-heap       Heap profile via dhat, write dhat report JSON"
 	@echo "  generate-models    Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
 	@echo "  install            Build & install all components"

@@ -33,6 +33,9 @@ make run-cli            # Run CLI in dev mode (auto-installs npm deps)
 make run-gui            # Run Tauri GUI in dev mode (auto-installs npm deps)
 make package-gui        # Build GUI desktop bundle via Tauri
 make run-channels        # Build and run channel bridge
+make profile-agent       # CPU profile: build + 90s bench → flamegraph SVG in profile-results/
+make profile-quick       # CPU profile: run N secs (PROFILE_SECS=30)
+make profile-heap        # Heap profile via dhat (feature dhat-heap) → dhat JSON in profile-results/
 make generate-models    # Fetch model data from APIs, regenerate models_generated.rs
 make generate-proto     # Compile proto/future.proto → Rust gRPC code
 make clean              # Remove target/, dist/, node_modules/

@@ -50,17 +50,36 @@ struct Cli {
     /// Implies --profile with a default path when --profile is not also set.
     #[arg(long, value_name = "N")]
     profile_seconds: Option<u64>,
+
+    /// Enable heap (memory) profiling and write a dhat report to the given
+    /// path on shutdown.  Requires the `dhat-heap` build feature
+    /// (`cargo build --release --features dhat-heap`); without it this flag
+    /// is ignored with a warning.
+    #[arg(long, value_name = "PATH")]
+    profile_heap: Option<String>,
 }
+
+// When built with the `dhat-heap` feature, route every allocation through
+// dhat's tracking allocator.  Without an active `dhat::Profiler` this is a
+// thin pass-through to the system allocator, and the shim is compiled out
+// entirely in normal builds.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Resolve profile path early (before the runtime starts).
+    // --profile-seconds alone implies CPU profiling with a default path —
+    // but NOT when --profile-heap is set: running the CPU sampler during a
+    // heap profile pollutes the report (pprof's collector alone allocates
+    // ~68 MB) and skews every measurement.
     let profile_path: Option<std::path::PathBuf> = cli
         .profile
         .as_deref()
         .or_else(|| {
-            if cli.profile_seconds.is_some() {
+            if cli.profile_seconds.is_some() && cli.profile_heap.is_none() {
                 Some("agent-profile.svg")
             } else {
                 None
@@ -102,6 +121,21 @@ fn main() -> Result<()> {
         }
         None
     };
+
+    // Start heap profiling if requested.  The Profiler writes its report to
+    // disk when dropped, so it must outlive the tokio runtime — it lives
+    // here in main() and is dropped explicitly before any early exit.
+    #[cfg(feature = "dhat-heap")]
+    let heap_profiler = cli.profile_heap.as_ref().map(|path| {
+        tracing::info!("Heap profiling enabled → will write dhat report to {path}");
+        dhat::Profiler::builder().file_name(path).build()
+    });
+    #[cfg(not(feature = "dhat-heap"))]
+    if cli.profile_heap.is_some() {
+        tracing::warn!(
+            "--profile-heap requires a build with --features dhat-heap — ignoring the flag"
+        );
+    }
 
     // Load the user's login-shell PATH/env BEFORE spawning any threads or the
     // tokio runtime — set_var is only sound while single-threaded. Fixes
@@ -216,6 +250,9 @@ fn main() -> Result<()> {
     // (CLI/TUI/service managers) can detect an abnormal exit.
     if let Err(e) = run_result {
         tracing::error!("Agent exited with error: {e}");
+        // process::exit skips destructors — flush the heap report first.
+        #[cfg(feature = "dhat-heap")]
+        drop(heap_profiler);
         std::process::exit(1);
     }
     Ok(())
