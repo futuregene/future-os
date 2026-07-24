@@ -3,6 +3,7 @@ import { Download, RefreshCw, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
+import { openExternalUrl } from "../../integrations/storage/files";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { errorMessage } from "../../lib/errors";
@@ -14,6 +15,7 @@ interface UpdateStatus {
   latestVersion: string;
   hasUpdate: boolean;
   platformSupported: boolean;
+  downloadUrl: string | null;
 }
 
 interface DownloadProgress {
@@ -34,6 +36,7 @@ export function UpdatePage() {
   const [progress, setProgress] = useState(0);
   const [installed, setInstalled] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   // Tear down the streamed-progress listener if the page unmounts mid-download
   // (the download command itself still settles in the background).
@@ -50,6 +53,7 @@ export function UpdatePage() {
     setCheckError(null);
     setInstalled(false);
     setInstallError(null);
+    setDownloadError(null);
     try {
       setStatus(await invokeCommand<UpdateStatus>("check_app_update"));
     }
@@ -102,6 +106,18 @@ export function UpdatePage() {
     }
     catch (error) {
       setInstallError(errorMessage(error));
+    }
+  }
+
+  async function handleManualDownload() {
+    if (!status?.downloadUrl)
+      return;
+    setDownloadError(null);
+    try {
+      await openExternalUrl(status.downloadUrl);
+    }
+    catch (error) {
+      setDownloadError(errorMessage(error));
     }
   }
 
@@ -182,7 +198,28 @@ export function UpdatePage() {
                                   {installError ? <p className="text-xs text-danger">{`${t("update.installFailed")}: ${installError}`}</p> : null}
                                 </div>
                               )
-                            : <p className="text-xs text-ink-muted">{t("update.noAsset")}</p>}
+                            : (
+                                <div className="space-y-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-xs text-ink-muted">{t("update.noAsset")}</span>
+                                    {status.downloadUrl
+                                      ? (
+                                          <a
+                                            className="text-xs font-medium text-accent underline underline-offset-2"
+                                            href={status.downloadUrl}
+                                            onClick={(event) => {
+                                              event.preventDefault();
+                                              void handleManualDownload();
+                                            }}
+                                          >
+                                            {t("update.download")}
+                                          </a>
+                                        )
+                                      : null}
+                                  </div>
+                                  {downloadError ? <p className="text-xs text-danger">{`${t("update.downloadFailed")}: ${downloadError}`}</p> : null}
+                                </div>
+                              )}
                         </>
                       )
                     : <p className="text-sm text-ink-soft">{t("update.upToDate")}</p>}

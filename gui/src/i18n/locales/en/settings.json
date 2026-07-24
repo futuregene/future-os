@@ -36,6 +36,8 @@
     "installed": "Update installed. Restart to finish.",
     "restart": "Restart FutureOS",
     "noAsset": "Automatic updates are not available for this platform",
+    "download": "Download latest version",
+    "downloadFailed": "Could not open download link",
     "checkFailed": "Update check failed",
     "installFailed": "Update failed"
   },
