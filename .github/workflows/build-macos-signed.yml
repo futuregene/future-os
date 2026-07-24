@@ -47,10 +47,25 @@ on:
 
 jobs:
   build:
-    name: Build signed and notarized macOS release
+    name: Build signed and notarized macOS (${{ matrix.name }})
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `macos-latest` is the GitHub-hosted Apple Silicon image.
+          - name: Apple Silicon
+            runner: macos-latest
+            asset_arch: aarch64
+            artifact_name: futureos-macos-signed
+          # Keep the Intel build pinned to a named image: unlike
+          # `macos-latest`, this cannot silently switch architectures.
+          - name: Intel
+            runner: macos-15-intel
+            asset_arch: x64
+            artifact_name: futureos-macos-intel-signed
     env:
       OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
       OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
@@ -494,9 +509,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p signed-release
-          base="$(basename "$SIGNED_DMG" .dmg)"
-          dmg_output="signed-release/${base}-sign.dmg"
-          updater_output="signed-release/FutureOS_${{ steps.v.outputs.version }}_aarch64.app.tar.gz"
+          dmg_output="signed-release/FutureOS_${{ steps.v.outputs.version }}_${{ matrix.asset_arch }}-sign.dmg"
+          updater_output="signed-release/FutureOS_${{ steps.v.outputs.version }}_${{ matrix.asset_arch }}.app.tar.gz"
           cp "$SIGNED_DMG" "$dmg_output"
           cp "$MACOS_UPDATER" "$updater_output"
           cp "$MACOS_UPDATER_SIG" "$updater_output.sig"
@@ -505,7 +519,7 @@ jobs:
       - name: Upload signed macOS artifact
         uses: actions/upload-artifact@v7
         with:
-          name: futureos-macos-signed
+          name: ${{ matrix.artifact_name }}
           if-no-files-found: error
           overwrite: true
           path: signed-release/*

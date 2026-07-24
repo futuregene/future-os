@@ -42,6 +42,10 @@ jobs:
             os: macos-latest
             artifact_name: futureos-macos
             bundle_path: gui/src-tauri/target/release/bundle/dmg/*.dmg
+          - name: macOS Intel
+            os: macos-15-intel
+            artifact_name: futureos-macos-intel
+            bundle_path: gui/src-tauri/target/release/bundle/dmg/*.dmg
           - name: Windows
             os: windows-latest
             artifact_name: futureos-windows
