@@ -161,6 +161,21 @@ jobs:
       - name: cargo check (agent + channels)
         run: cargo check --workspace --manifest-path Cargo.toml
 
+      # tauri-build's build script verifies every `bundle.externalBin` sidecar
+      # exists (it appends the host triple, and `.exe` on Windows) and aborts
+      # with `resource path ... doesn't exist` otherwise. The real sidecars are
+      # produced by the packaging jobs; for a type-check the paths just need to
+      # exist, so drop empty placeholders. CI-only — `binaries/` is gitignored.
+      - name: Create placeholder sidecar binaries
+        shell: bash
+        run: |
+          triple=$(rustc -Vv | sed -n 's/^host: //p')
+          suf=""
+          case "$triple" in *windows*) suf=".exe" ;; esac
+          mkdir -p gui/src-tauri/binaries
+          : > "gui/src-tauri/binaries/future-agent-$triple$suf"
+          : > "gui/src-tauri/binaries/future-$triple$suf"
+
       - name: cargo check (GUI Tauri backend)
         run: cargo check --manifest-path gui/src-tauri/Cargo.toml
 
