@@ -28,6 +28,12 @@ interface AgentPromptResponse {
   complete?: boolean;
   /** The agent session id — persisted on the thread for subsequent prompts. */
   sessionId?: string;
+  /**
+   * True when the thread's previous agent session was gone (data lost or cwd
+   * drift) and a fresh empty session replaced it — prior agent-side context
+   * is unavailable even though the GUI still shows the history.
+   */
+  sessionRecreated?: boolean;
 }
 
 export const defaultAgentModelId = "";
@@ -55,6 +61,7 @@ export async function sendPromptToFutureAgent(
     content: response.content,
     complete: response.complete !== false,
     sessionId: response.sessionId,
+    sessionRecreated: response.sessionRecreated === true,
   };
 }
 

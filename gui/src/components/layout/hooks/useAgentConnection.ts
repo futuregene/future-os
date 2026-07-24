@@ -112,7 +112,9 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
       if (generation !== refreshGenRef.current)
         return;
       const message = errorMessage(error);
-      setModelOptions([]);
+      // Keep the last good catalog: blanking it made every model id
+      // unresolvable, which dropped the composer to the last-used/default
+      // model and "off" thinking level until the next successful poll.
       setAgentConnection({
         checkedAt: Date.now(),
         error: message,

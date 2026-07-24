@@ -113,15 +113,18 @@ export function updateCachedAgentState(threadId: string, patch: Partial<AgentSes
   notify();
 }
 
-/** Synchronously read cached state (no fetch). Returns undefined on miss. */
+/**
+ * Synchronously read cached state (no fetch). Returns undefined only when the
+ * thread was never fetched. Stale entries ARE returned (stale-while-revalidate):
+ * silently dropping the snapshot at the TTL boundary made the composer fall
+ * back to the global draft model/thinking level ~30s into viewing a thread.
+ * Freshness is the writer's job — getAgentState still refetches once an entry
+ * is older than CACHE_TTL_MS.
+ */
 export function getCachedAgentState(threadId: string | undefined | null): AgentSessionState | undefined {
   if (!threadId)
     return undefined;
-  const cached = cache.get(threadId);
-  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-    return cached.state;
-  }
-  return undefined;
+  return cache.get(threadId)?.state;
 }
 
 /** Invalidate a thread's cached state (force re-fetch on next access). */
