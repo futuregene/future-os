@@ -270,10 +270,10 @@ jobs:
         working-directory: tui
         run: bun test
 
-  # ─── GUI frontend: eslint + stylelint + vitest ───────────────────────────
+  # ─── GUI: eslint + stylelint + vitest ─────────────────────────────────────
   # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,
   # 3-platform) and rust-quality (lint + test, hard gate). Platform-agnostic.
-  gui-frontend:
+  gui:
     name: GUI frontend lint + test
     runs-on: ubuntu-latest
     steps:
