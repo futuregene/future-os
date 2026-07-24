@@ -240,7 +240,7 @@ jobs:
           $config | Add-Member -NotePropertyName plugins -NotePropertyValue @{
             updater = @{
               pubkey = $env:TAURI_UPDATER_PUBLIC_KEY
-              endpoints = @("https://futureos.oss-cn-hangzhou.aliyuncs.com/releases/latest.json")
+              endpoints = @("https://dl.future-os.cn/releases/latest.json")
             }
           }
           $json = $config | ConvertTo-Json -Depth 10
@@ -351,6 +351,5 @@ jobs:
           ossutil cp -r -f "signed-release\" "oss://$env:OSS_BUCKET/test/$version/"
           if ($LASTEXITCODE -ne 0) { throw "ossutil upload failed (exit $LASTEXITCODE)" }
 
-          $ossHost = $env:OSS_ENDPOINT -replace '^https?://','' -replace '-internal',''
           Write-Host "==> Download URLs:"
-          Get-ChildItem signed-release | ForEach-Object { Write-Host "  https://$env:OSS_BUCKET.$ossHost/test/$version/$($_.Name)" }
+          Get-ChildItem signed-release | ForEach-Object { Write-Host "  https://dl.future-os.cn/test/$version/$($_.Name)" }
