@@ -496,7 +496,7 @@ async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), St
         let Some(event) = event else {
             // Stream ended without agent_end — settle the run.
             let _ = crate::store::settle_interrupted_run(run_id, "failed");
-            let _ = crate::store::clear_run_event_buffer(run_id);
+            crate::store::clear_run_event_buffer(run_id);
             break;
         };
 
@@ -558,7 +558,7 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .as_millis() as i64;
     if existing_runs.iter().any(|r| {
         r.status == "completed"
-            && r.ended_at.map_or(false, |ended| now_ms - ended < 10_000)
+            && r.ended_at.is_some_and(|ended| now_ms - ended < 10_000)
     }) {
         return Ok(String::new()); // empty = already handled
     }
@@ -643,7 +643,7 @@ async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), Str
                     error_type: None,
                 },
             );
-            let _ = crate::store::clear_run_event_buffer(run_id);
+            crate::store::clear_run_event_buffer(run_id);
             break;
         };
 
