@@ -22,11 +22,65 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # On PRs, run only the suites affected by the changed paths. Pushes to main
+  # and manual dispatches are deliberately full runs: the former validates the
+  # merge result, and the latter is the escape hatch for dependency/runner
+  # changes that do not show up in a source diff.
+  changes:
+    name: Detect affected checks
+    runs-on: ubuntu-latest
+    outputs:
+      rust_workspace: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_workspace == 'true' || steps.filter.outputs.ci == 'true' }}
+      gui_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.gui_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
+      gui_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.gui_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
+      cli: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.cli == 'true' || steps.filter.outputs.ci == 'true' }}
+      tui: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.tui == 'true' || steps.filter.outputs.ci == 'true' }}
+    steps:
+      - id: force
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            echo "all=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "all=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            # Changing this workflow must revalidate every suite.
+            ci:
+              - '.github/workflows/ci.yml'
+            rust_workspace:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
+              - 'proto/**'
+              - 'agent/**'
+              - 'channels/**'
+              - 'remote/**'
+            gui_tauri:
+              - 'gui/src-tauri/**'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
+            gui_frontend:
+              - 'gui/**'
+              - '!gui/src-tauri/**'
+            cli:
+              - 'cli/**'
+            tui:
+              - 'tui/**'
+
   # ─── Rust lint gate (Linux): fmt + clippy ─────────────────────────────────
   # Lint all workspace crates plus the GUI Tauri backend. Tests run in the
   # independent `rust-tests` job below so both gates can execute in parallel.
   rust-quality:
     name: Rust fmt + clippy (Linux)
+    needs: changes
+    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -69,6 +123,7 @@ jobs:
       # unless every `bundle.externalBin` sidecar is present. For lint empty
       # placeholders suffice.
       - name: Create placeholder sidecars
+        if: needs.changes.outputs.gui_tauri == 'true'
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p gui/src-tauri/binaries
@@ -79,16 +134,20 @@ jobs:
       # --all because the root manifest is a virtual workspace (no [package]);
       # --manifest-path would fail with "Failed to find targets".
       - name: rustfmt (workspace)
+        if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo fmt --check --all
 
       - name: clippy (workspace)
+        if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings
 
       # ── GUI Tauri backend ──
       - name: rustfmt (GUI backend)
+        if: needs.changes.outputs.gui_tauri == 'true'
         run: cargo fmt --check --manifest-path gui/src-tauri/Cargo.toml
 
       - name: clippy (GUI backend)
+        if: needs.changes.outputs.gui_tauri == 'true'
         run: cargo clippy --all-targets --manifest-path gui/src-tauri/Cargo.toml -- -D warnings
 
   # ─── Rust test gate (Linux) ───────────────────────────────────────────────
@@ -97,6 +156,8 @@ jobs:
   # reduces PR wall-clock time.
   rust-tests:
     name: Rust tests (Linux)
+    needs: changes
+    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -130,6 +191,7 @@ jobs:
             protobuf-compiler
 
       - name: Create placeholder sidecars
+        if: needs.changes.outputs.gui_tauri == 'true'
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p gui/src-tauri/binaries
@@ -137,9 +199,11 @@ jobs:
           : > "gui/src-tauri/binaries/future-$triple"
 
       - name: cargo test (workspace)
+        if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo test --workspace --manifest-path Cargo.toml
 
       - name: cargo test (GUI backend)
+        if: needs.changes.outputs.gui_tauri == 'true'
         run: cargo test --manifest-path gui/src-tauri/Cargo.toml
 
   # ─── Rust 3-platform compile check ───────────────────────────────────────
@@ -160,6 +224,8 @@ jobs:
   # presence; `binaries/` is gitignored).
   rust-build:
     name: Rust build (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -221,7 +287,7 @@ jobs:
       # ones; for a type-check empty placeholders suffice. Split per-OS so
       # Windows uses pwsh natively instead of relying on git-bash's sed/case.
       - name: Create placeholder sidecars (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && needs.changes.outputs.gui_tauri == 'true'
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p gui/src-tauri/binaries
@@ -229,7 +295,7 @@ jobs:
           : > "gui/src-tauri/binaries/future-$triple"
 
       - name: Create placeholder sidecars (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && needs.changes.outputs.gui_tauri == 'true'
         shell: pwsh
         run: |
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
@@ -238,9 +304,11 @@ jobs:
           New-Item -ItemType File -Force -Path "gui/src-tauri/binaries/future-$triple.exe" | Out-Null
 
       - name: cargo check (workspace)
+        if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo check --workspace --manifest-path Cargo.toml
 
       - name: cargo check (GUI Tauri backend)
+        if: needs.changes.outputs.gui_tauri == 'true'
         run: cargo check --manifest-path gui/src-tauri/Cargo.toml
 
   # ─── CLI: typecheck + bun test ───────────────────────────────────────────
@@ -250,6 +318,8 @@ jobs:
   # Platform-agnostic — a single OS covers it.
   cli:
     name: CLI typecheck + test
+    needs: changes
+    if: needs.changes.outputs.cli == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -284,6 +354,8 @@ jobs:
   # ─── TUI: typecheck + bun test ───────────────────────────────────────────
   tui:
     name: TUI typecheck + test
+    needs: changes
+    if: needs.changes.outputs.tui == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -318,6 +390,8 @@ jobs:
   # 3-platform) and rust-quality (lint + test, hard gate). Platform-agnostic.
   gui:
     name: GUI typecheck + lint + test
+    needs: changes
+    if: needs.changes.outputs.gui_frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
