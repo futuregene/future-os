@@ -296,9 +296,7 @@ pub fn get_thread_cleanup_summary(
 /// subscribe to live events so the GUI shows real-time streaming content
 /// for prompts initiated by other clients (TUI, CLI, phone).
 #[tauri::command]
-pub async fn attach_remote_stream(
-    thread_id: String,
-) -> Result<serde_json::Value, crate::AppError> {
+pub async fn attach_remote_stream(thread_id: String) -> Result<serde_json::Value, crate::AppError> {
     let run_id = crate::agent_bridge::attach_remote_stream(&thread_id).await?;
     Ok(serde_json::json!({ "runId": run_id }))
 }
@@ -314,10 +312,7 @@ pub fn observe_session(session_id: String) {
 
 /// Move a thread to the workspace matching a new cwd (e.g. after TUI /cwd).
 #[tauri::command]
-pub fn reconcile_thread_workspace(
-    session_id: String,
-    cwd: String,
-) -> Result<(), crate::AppError> {
+pub fn reconcile_thread_workspace(session_id: String, cwd: String) -> Result<(), crate::AppError> {
     crate::agent_bridge::reconcile_thread_workspace(&session_id, &cwd)
         .map_err(crate::AppError::from)
 }

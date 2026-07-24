@@ -14,8 +14,8 @@ pub use self::approval::{decide_approval, inject_session_rule};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     connect_agent, delete_session_command, get_session_entries_command, get_state_command,
-    list_streaming_sessions_command, set_cwd_command, set_model_command,
-    set_session_name_command, set_thinking_level_command, RpcResponseExt,
+    list_streaming_sessions_command, set_cwd_command, set_model_command, set_session_name_command,
+    set_thinking_level_command, RpcResponseExt,
 };
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub(crate) use self::import::import_missing_sessions;
@@ -556,10 +556,10 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    if existing_runs.iter().any(|r| {
-        r.status == "completed"
-            && r.ended_at.is_some_and(|ended| now_ms - ended < 10_000)
-    }) {
+    if existing_runs
+        .iter()
+        .any(|r| r.status == "completed" && r.ended_at.is_some_and(|ended| now_ms - ended < 10_000))
+    {
         return Ok(String::new()); // empty = already handled
     }
 
@@ -576,14 +576,12 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
     tokio::spawn(async move {
         if let Err(e) = collect_remote_stream(&sid, &run_id).await {
             eprintln!("FutureOS remote-stream collector for {run_id} failed: {e}");
-            let _ = crate::store::update_run_status_if_active(
-                crate::store::UpdateRunStatusInput {
-                    run_id,
-                    status: "failed".to_string(),
-                    error_message: Some(e),
-                    error_type: None,
-                },
-            );
+            let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+                run_id,
+                status: "failed".to_string(),
+                error_message: Some(e),
+                error_type: None,
+            });
         }
     });
 
@@ -605,7 +603,11 @@ async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), Str
                 crate::store::append_run_event(crate::store::AppendRunEventInput {
                     run_id: run_id.to_string(),
                     event_type: evt_type.to_string(),
-                    payload: if evt_data.is_empty() { None } else { Some(evt_data.to_string()) },
+                    payload: if evt_data.is_empty() {
+                        None
+                    } else {
+                        Some(evt_data.to_string())
+                    },
                     sequence,
                 })
                 .map_err(|e| format!("append_backfill: {e}"))?;
@@ -624,25 +626,20 @@ async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), Str
         .into_inner();
 
     loop {
-        let event = tokio::time::timeout(
-            std::time::Duration::from_secs(600),
-            stream.message(),
-        )
-        .await
-        .map_err(|_| "agent response timed out".to_string())?
-        .map_err(|e| format!("stream failed: {e}"))?;
+        let event = tokio::time::timeout(std::time::Duration::from_secs(600), stream.message())
+            .await
+            .map_err(|_| "agent response timed out".to_string())?
+            .map_err(|e| format!("stream failed: {e}"))?;
 
         let Some(event) = event else {
             // Stream ended without agent_end — settle the run so it doesn't
             // stay "running" forever.
-            let _ = crate::store::update_run_status_if_active(
-                crate::store::UpdateRunStatusInput {
-                    run_id: run_id.to_string(),
-                    status: "failed".to_string(),
-                    error_message: Some("stream ended without agent_end".to_string()),
-                    error_type: None,
-                },
-            );
+            let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+                run_id: run_id.to_string(),
+                status: "failed".to_string(),
+                error_message: Some("stream ended without agent_end".to_string()),
+                error_type: None,
+            });
             crate::store::clear_run_event_buffer(run_id);
             break;
         };
@@ -674,8 +671,8 @@ async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), Str
 
 // ── Session observer (real-time settings-change events) ───────────────────
 
-use tokio::sync::oneshot;
 use tauri::Emitter;
+use tokio::sync::oneshot;
 
 /// Handle to the currently-running session observation task.  When a new
 /// observation starts, the old one is cancelled via this channel.
