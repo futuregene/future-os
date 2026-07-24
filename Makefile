@@ -41,33 +41,33 @@ install-nogui: install-agent install-tui install-cli install-channels install-sk
 
 uninstall:
 ifeq ($(OS),windows)
-	cmd /c del /q "$(PREFIX)\future-agent" 2>NUL
-	cmd /c del /q "$(PREFIX)\future" 2>NUL
-	cmd /c del /q "$(PREFIX)\future-tui" 2>NUL
-	cmd /c del /q "$(PREFIX)\future-gui" 2>NUL
-	cmd /c del /q "$(PREFIX)\future-channel" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-agent$(EXE_SUFFIX)" 2>NUL
+	cmd /c del /q "$(PREFIX)\future$(EXE_SUFFIX)" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-tui$(EXE_SUFFIX)" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-gui$(EXE_SUFFIX)" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-channel$(EXE_SUFFIX)" 2>NUL
 else
-	$(SUDO) rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-gui$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
 endif
 	@echo "Removed: future-agent, future, future-tui, future-gui, future-channel"
 
 install-agent: build-agent
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "$(PREFIX)\future-agent"
+	$(SUDO) $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "$(PREFIX)\future-agent$(EXE_SUFFIX)"
 else
 	$(SUDO) cp target/release/future-agent "$(PREFIX)/future-agent"
 endif
 
 install-tui: build-tui
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) tui\dist\future-tui$(EXE_SUFFIX) "$(PREFIX)\future-tui"
+	$(SUDO) $(COPY_CMD) tui\dist\future-tui$(EXE_SUFFIX) "$(PREFIX)\future-tui$(EXE_SUFFIX)"
 else
 	$(SUDO) cp tui/dist/future-tui "$(PREFIX)/future-tui"
 endif
 
 install-cli: build-cli
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "$(PREFIX)\future"
+	$(SUDO) $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
 else
 	$(SUDO) cp cli/dist/future "$(PREFIX)/future"
 endif
@@ -85,7 +85,7 @@ endif
 	$(call npm-install-if-needed,gui)
 	cd gui && npx tauri build --no-bundle
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) gui\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-gui"
+	$(SUDO) $(COPY_CMD) gui\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-gui$(EXE_SUFFIX)"
 else
 	$(SUDO) cp gui/src-tauri/target/release/futureos "$(PREFIX)/future-gui"
 endif
@@ -302,11 +302,11 @@ ifeq ($(OS),windows)
 	@if exist gui\node_modules rmdir /s /q gui\node_modules
 	@if exist gui\src-tauri\target rmdir /s /q gui\src-tauri\target
 	@if exist gui\src-tauri\binaries rmdir /s /q gui\src-tauri\binaries
-	@if exist "$(PREFIX)\future-agent" del /q "$(PREFIX)\future-agent"
-	@if exist "$(PREFIX)\future" del /q "$(PREFIX)\future"
-	@if exist "$(PREFIX)\future-tui" del /q "$(PREFIX)\future-tui"
-	@if exist "$(PREFIX)\future-gui" del /q "$(PREFIX)\future-gui"
-	@if exist "$(PREFIX)\future-channel" del /q "$(PREFIX)\future-channel"
+	@if exist "$(PREFIX)\future-agent$(EXE_SUFFIX)" del /q "$(PREFIX)\future-agent$(EXE_SUFFIX)"
+	@if exist "$(PREFIX)\future$(EXE_SUFFIX)" del /q "$(PREFIX)\future$(EXE_SUFFIX)"
+	@if exist "$(PREFIX)\future-tui$(EXE_SUFFIX)" del /q "$(PREFIX)\future-tui$(EXE_SUFFIX)"
+	@if exist "$(PREFIX)\future-gui$(EXE_SUFFIX)" del /q "$(PREFIX)\future-gui$(EXE_SUFFIX)"
+	@if exist "$(PREFIX)\future-channel$(EXE_SUFFIX)" del /q "$(PREFIX)\future-channel$(EXE_SUFFIX)"
 else
 	rm -rf target
 	rm -rf tui/dist tui/node_modules
@@ -314,7 +314,7 @@ else
 	rm -rf cli/dist cli/node_modules
 	rm -f cli/src/version.generated.ts
 	rm -rf gui/dist gui/node_modules gui/src-tauri/target gui/src-tauri/binaries
-	$(SUDO) rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-gui$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
 endif
 
 # ─── Help ───────────────────────────────────────────────────────────────────

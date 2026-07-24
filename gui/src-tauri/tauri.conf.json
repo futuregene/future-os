@@ -15,6 +15,7 @@
         "title": "FutureOS",
         "width": 1440,
         "height": 960,
+        "visible": false,
         "minWidth": 1024,
         "minHeight": 720,
         "decorations": true,
