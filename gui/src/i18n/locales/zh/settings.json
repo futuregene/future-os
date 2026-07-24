@@ -36,6 +36,8 @@
     "installed": "更新已安装，重启后生效",
     "restart": "重启 FutureOS",
     "noAsset": "当前平台暂不支持自动更新",
+    "download": "前往下载",
+    "downloadFailed": "无法打开下载链接",
     "checkFailed": "检查更新失败",
     "installFailed": "更新失败"
   },
