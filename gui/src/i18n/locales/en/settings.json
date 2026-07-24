@@ -25,19 +25,19 @@
   "update": {
     "sectionTitle": "Software update",
     "title": "Check for updates",
-    "description": "Check the official source and download the latest installer",
+    "description": "Securely download and install signed updates from the official source",
     "currentVersion": "Current version v{{version}}",
     "check": "Check for updates",
     "checking": "Checking…",
     "upToDate": "You're on the latest version",
     "available": "New version v{{version}} available",
-    "download": "Download update",
+    "install": "Download and install",
     "downloading": "Downloading",
-    "downloaded": "Download complete",
-    "reveal": "Show in folder",
-    "noAsset": "No installer for this platform yet — please download from the website",
+    "installed": "Update installed. Restart to finish.",
+    "restart": "Restart FutureOS",
+    "noAsset": "Automatic updates are not available for this platform",
     "checkFailed": "Update check failed",
-    "downloadFailed": "Download failed"
+    "installFailed": "Update failed"
   },
   "dialog": {
     "ariaLabel": "Settings",

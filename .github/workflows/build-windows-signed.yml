@@ -40,6 +40,12 @@ on:
         required: true
         type: string
     secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      TAURI_UPDATER_PUBLIC_KEY:
+        required: true
       OSS_ENDPOINT:
         required: false
       OSS_BUCKET:
@@ -220,10 +226,25 @@ jobs:
         timeout-minutes: 120
         env:
           FUTURE_VERSION: ${{ steps.v.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw "TAURI_SIGNING_PRIVATE_KEY secret is required" }
+          if (-not $env:TAURI_UPDATER_PUBLIC_KEY) { throw "TAURI_UPDATER_PUBLIC_KEY secret is required" }
           . scripts/lib/windows-signing.ps1
           $overlay = New-SignOverlayConfig -Thumbprint $env:SIGN_THUMBPRINT `
                                            -SignScript (Resolve-Path scripts/sign-file.ps1).Path
+          $config = Get-Content $overlay -Raw | ConvertFrom-Json
+          $config.bundle | Add-Member -NotePropertyName createUpdaterArtifacts -NotePropertyValue $true
+          $config | Add-Member -NotePropertyName plugins -NotePropertyValue @{
+            updater = @{
+              pubkey = $env:TAURI_UPDATER_PUBLIC_KEY
+              endpoints = @("https://futureos.oss-cn-hangzhou.aliyuncs.com/releases/latest.json")
+            }
+          }
+          $json = $config | ConvertTo-Json -Depth 10
+          [IO.File]::WriteAllText($overlay, $json, [Text.UTF8Encoding]::new($false))
           Write-Host "overlay: $overlay"
           Push-Location gui
           try {
@@ -270,6 +291,11 @@ jobs:
           $signTool = Find-SignTool
           $installers = @(Get-ChildItem gui/src-tauri/target/release/bundle/nsis/*.exe -ErrorAction SilentlyContinue)
           if (-not $installers) { throw "Tauri produced no installer under bundle/nsis." }
+          foreach ($f in $installers) {
+            if (-not (Test-Path "$($f.FullName).sig")) {
+              throw "Tauri produced no updater signature for $($f.Name)."
+            }
+          }
           $bad = @()
           foreach ($f in $installers + @(Get-ChildItem futureos-portable/*.exe)) {
             $state = Get-SignatureState -SignTool $signTool -Path $f.FullName
@@ -287,7 +313,9 @@ jobs:
 
           Get-ChildItem gui/src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object {
             $name = "$([IO.Path]::GetFileNameWithoutExtension($_.Name))-sign$($_.Extension)"
-            Copy-Item $_.FullName (Join-Path $stage $name)
+            $output = Join-Path $stage $name
+            Copy-Item $_.FullName $output
+            Copy-Item "$($_.FullName).sig" "$output.sig"
           }
           Copy-Item "FutureOS-portable-windows.zip" (Join-Path $stage "FutureOS-portable-windows-sign.zip")
 
@@ -299,7 +327,9 @@ jobs:
           name: futureos-windows-signed
           if-no-files-found: error
           overwrite: true
-          path: signed-release/*-setup-sign.exe
+          path: |
+            signed-release/*-setup-sign.exe
+            signed-release/*-setup-sign.exe.sig
           retention-days: 7
 
       - name: Upload signed Windows portable artifact

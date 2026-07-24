@@ -36,6 +36,14 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://futureos.oss-cn-hangzhou.aliyuncs.com/releases/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["deb", "app", "dmg", "nsis"],

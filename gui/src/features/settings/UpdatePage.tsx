@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { Download, FolderOpen, RefreshCw } from "lucide-react";
+import { Download, RefreshCw, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -14,9 +14,6 @@ interface UpdateStatus {
   latestVersion: string;
   hasUpdate: boolean;
   platformSupported: boolean;
-  downloadUrl: string | null;
-  fileName: string | null;
-  sha256: string | null;
 }
 
 interface DownloadProgress {
@@ -25,8 +22,7 @@ interface DownloadProgress {
 }
 
 /**
- * Software update page: check the OSS release manifest and download the
- * installer for this platform. Dev builds always report an update available.
+ * Software update page backed by Tauri's signed in-place updater.
  */
 export function UpdatePage() {
   const { t } = useTranslation("settings");
@@ -36,8 +32,8 @@ export function UpdatePage() {
   const [checkError, setCheckError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [savedPath, setSavedPath] = useState<string | null>(null);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [installed, setInstalled] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   // Tear down the streamed-progress listener if the page unmounts mid-download
   // (the download command itself still settles in the background).
@@ -52,8 +48,8 @@ export function UpdatePage() {
   async function handleCheck() {
     setChecking(true);
     setCheckError(null);
-    setSavedPath(null);
-    setDownloadError(null);
+    setInstalled(false);
+    setInstallError(null);
     try {
       setStatus(await invokeCommand<UpdateStatus>("check_app_update"));
     }
@@ -66,13 +62,12 @@ export function UpdatePage() {
     }
   }
 
-  async function handleDownload() {
-    if (!status?.downloadUrl || !status.fileName)
+  async function handleInstall() {
+    if (!status?.hasUpdate)
       return;
     setDownloading(true);
     setProgress(0);
-    setDownloadError(null);
-    setSavedPath(null);
+    setInstallError(null);
     // Listen for streamed progress before kicking off the download.
     const unlisten = await listen<DownloadProgress>("app-update-progress", (event) => {
       const { downloaded, total } = event.payload;
@@ -86,15 +81,12 @@ export function UpdatePage() {
     }
     unlistenRef.current = unlisten;
     try {
-      const path = await invokeCommand<string>("download_app_update", {
-        url: status.downloadUrl,
-        fileName: status.fileName,
-        expectedSha256: status.sha256,
-      });
-      setSavedPath(path);
+      await invokeCommand("install_app_update");
+      setProgress(100);
+      setInstalled(true);
     }
     catch (error) {
-      setDownloadError(errorMessage(error));
+      setInstallError(errorMessage(error));
     }
     finally {
       unlisten();
@@ -103,17 +95,13 @@ export function UpdatePage() {
     }
   }
 
-  async function handleReveal() {
-    if (!savedPath)
-      return;
-    // Open the containing folder (strip the trailing path segment, either sep).
-    const dir = savedPath.replace(/[/\\][^/\\]*$/, "");
-    setDownloadError(null);
+  async function handleRestart() {
+    setInstallError(null);
     try {
-      await invokeCommand("open_path", { path: dir });
+      await invokeCommand("restart_after_app_update");
     }
     catch (error) {
-      setDownloadError(errorMessage(error));
+      setInstallError(errorMessage(error));
     }
   }
 
@@ -155,17 +143,17 @@ export function UpdatePage() {
                           {status.platformSupported
                             ? (
                                 <div className="space-y-2">
-                                  {savedPath
+                                  {installed
                                     ? (
                                         <div className="flex flex-wrap items-center gap-2">
-                                          <span className="text-xs text-success">{t("update.downloaded")}</span>
+                                          <span className="text-xs text-success">{t("update.installed")}</span>
                                           <Button
-                                            leftIcon={<FolderOpen className="size-3.5" />}
-                                            onClick={() => void handleReveal()}
+                                            leftIcon={<RotateCcw className="size-3.5" />}
+                                            onClick={() => void handleRestart()}
                                             size="sm"
-                                            variant="secondary"
+                                            variant="primary"
                                           >
-                                            {t("update.reveal")}
+                                            {t("update.restart")}
                                           </Button>
                                         </div>
                                       )
@@ -184,14 +172,14 @@ export function UpdatePage() {
                                       : (
                                           <Button
                                             leftIcon={<Download className="size-3.5" />}
-                                            onClick={() => void handleDownload()}
+                                            onClick={() => void handleInstall()}
                                             size="sm"
                                             variant="primary"
                                           >
-                                            {t("update.download")}
+                                            {t("update.install")}
                                           </Button>
                                         )}
-                                  {downloadError ? <p className="text-xs text-danger">{`${t("update.downloadFailed")}: ${downloadError}`}</p> : null}
+                                  {installError ? <p className="text-xs text-danger">{`${t("update.installFailed")}: ${installError}`}</p> : null}
                                 </div>
                               )
                             : <p className="text-xs text-ink-muted">{t("update.noAsset")}</p>}

@@ -25,19 +25,19 @@
   "update": {
     "sectionTitle": "软件更新",
     "title": "检查更新",
-    "description": "从官方源检查并下载最新版本的安装包",
+    "description": "从官方源安全下载并安装经过签名验证的更新",
     "currentVersion": "当前版本 v{{version}}",
     "check": "检查更新",
     "checking": "检查中…",
     "upToDate": "已是最新版本",
     "available": "发现新版本 v{{version}}",
-    "download": "下载新版本",
+    "install": "下载并安装",
     "downloading": "下载中",
-    "downloaded": "下载完成",
-    "reveal": "在文件夹中显示",
-    "noAsset": "当前平台暂无对应安装包，请前往官网下载",
+    "installed": "更新已安装，重启后生效",
+    "restart": "重启 FutureOS",
+    "noAsset": "当前平台暂不支持自动更新",
     "checkFailed": "检查更新失败",
-    "downloadFailed": "下载失败"
+    "installFailed": "更新失败"
   },
   "dialog": {
     "ariaLabel": "设置",

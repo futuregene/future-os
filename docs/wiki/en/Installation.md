@@ -21,23 +21,18 @@ The command-line tool `future` ships **inside every download** — it sits next 
 
 ## First launch
 
-The current builds are **not signed / notarized**, so your system will show a warning the first time. This is expected.
+Formal macOS and Windows installers are signed, and the macOS build is also notarized by Apple.
 
 ### macOS
 
 1. Open the `.dmg` and drag **FutureOS** into your **Applications** folder.
-2. In Applications, **right-click** (or Control-click) FutureOS and choose **Open**, then click **Open** again in the dialog. After this first time, you can launch it normally.
-3. If you see a **"damaged" / "can't be opened"** message, open the **Terminal** app and run this once, then open the app again:
-
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/FutureOS.app
-   ```
+2. Double-click FutureOS in Applications to launch it.
 
 ### Windows
 
 - **Installer version:** run the `.exe` and follow the prompts.
 - **Portable version:** unzip the **whole folder**, then double-click `FutureOS.exe`. Keep `FutureOS.exe` and `future-agent.exe` in the **same folder** — the background service is started automatically from there, so don't move `FutureOS.exe` on its own.
-- The first time, **SmartScreen** may say "Windows protected your PC". Click **More info → Run anyway**.
+- Windows may temporarily show a SmartScreen reputation prompt. Confirm that the publisher and download source are the official FutureOS channel.
 - FutureOS needs the **Microsoft Edge WebView2 Runtime**. Recent Windows 10 and Windows 11 usually already have it. If the window won't open or a component is reported missing, install the "Evergreen" WebView2 Runtime from Microsoft's website and try again.
 
 > **Portable "zip" tip (Windows):** if the window opens but says the background service isn't connected, the downloaded `.zip` was tagged "came from the Internet". Before unzipping, right-click the `.zip` → **Properties** → tick **Unblock** → OK, then unzip. (Or, after unzipping, run `Get-ChildItem -Recurse | Unblock-File` inside the folder in PowerShell.)
@@ -63,9 +58,7 @@ Your conversations and settings are stored in a `.future` folder in your home di
 
 ## Updating
 
-Download the latest version and install it over the old one (for the portable version, replace the folder). Your `.future` data is kept.
-
-You can also open **Settings → Check for updates** inside the app to check for a newer version and download it.
+Installer builds can open **Settings → Check for updates** to download and install a signature-verified update, then restart when prompted. You can also manually install the latest version over the old one. For the portable version, replace the folder. Your `.future` data is kept.
 
 ---
 

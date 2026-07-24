@@ -231,6 +231,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_menu_event(|app, event| {
             #[cfg(target_os = "macos")]
             {
@@ -360,7 +361,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_build_info,
             check_app_update,
-            download_app_update,
+            install_app_update,
+            restart_after_app_update,
             open_path,
             list_directory,
             open_external_url,
