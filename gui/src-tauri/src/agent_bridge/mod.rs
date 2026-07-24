@@ -55,6 +55,10 @@ pub struct AgentPromptResponse {
     /// The agent session id (newly-created or existing). The frontend persists
     /// this on the thread so subsequent prompts reuse the same session.
     pub session_id: String,
+    /// True when the thread already had a session but the agent no longer had
+    /// it (or its cwd drifted), so a fresh empty session replaced it. The
+    /// frontend must warn the user that prior agent-side context was lost.
+    pub session_recreated: bool,
 }
 
 /// Fetch the agent's buffered events for a session's current run (P1c backfill).
@@ -225,7 +229,7 @@ async fn agent_prompt_inner(
     // once we know the agent-generated session id so the directory can be named
     // after it.
     let existing_cwd = workspace_path_for_thread(&thread_id)?;
-    let session_id = ensure_agent_session(
+    let ensured = ensure_agent_session(
         &mut command_client,
         &stored_session_id,
         &existing_cwd,
@@ -233,6 +237,16 @@ async fn agent_prompt_inner(
         thinking_level.as_deref(),
     )
     .await?;
+    let session_id = ensured.session_id;
+    if ensured.recreated {
+        // The thread's previous agent session was unusable (data gone or cwd
+        // drift) and a fresh empty session replaced it. The GUI still shows
+        // the old history, so without a visible signal the next reply looks
+        // like the agent suddenly "forgot" the conversation.
+        eprintln!(
+            "FutureOS: thread {thread_id} agent session {stored_session_id} was recreated as {session_id} — prior agent-side context is unavailable"
+        );
+    }
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
 
@@ -325,6 +339,7 @@ async fn agent_prompt_inner(
                 content: response.content,
                 complete: response.complete,
                 session_id,
+                session_recreated: ensured.recreated,
             })
         }
         Err(error) => {

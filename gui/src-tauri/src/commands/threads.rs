@@ -220,26 +220,25 @@ pub async fn get_thread_agent_state(
         }));
     };
 
-    if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
-        let cmd = crate::agent_bridge::get_state_command(session_id.to_string());
-        if let Ok(resp) = client.execute_command(cmd).await {
-            let inner = resp.into_inner();
-            if inner.success {
-                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&inner.data) {
-                    return Ok(data);
-                }
-            }
-        }
+    // Agent unreachable or get_state failed: return an ERROR, not a null
+    // payload. The frontend caches whatever this command returns; caching
+    // fabricated nulls poisoned the composer with the global draft
+    // model/thinking level for the whole TTL window. An error instead
+    // rejects the fetch, leaving the last-known-good cache entry in place.
+    let mut client = crate::agent_bridge::connect_agent()
+        .await
+        .map_err(|e| format!("Future Agent unreachable: {e}"))?;
+    let cmd = crate::agent_bridge::get_state_command(session_id.to_string());
+    let resp = client
+        .execute_command(cmd)
+        .await
+        .map_err(|e| format!("get_state RPC failed: {e}"))?
+        .into_inner();
+    if !resp.success {
+        return Err(format!("get_state rejected: {}", resp.error).into());
     }
-
-    // Fallback: agent unreachable — return null for model/thinking.
-    Ok(serde_json::json!({
-        "model": null,
-        "thinkingLevel": null,
-        "session_name": thread.title,
-        "cwd": null,
-        "parentSessionId": null,
-    }))
+    serde_json::from_str::<serde_json::Value>(&resp.data)
+        .map_err(|e| format!("get_state parse error: {e}").into())
 }
 
 /// Fetch session entries from the agent (user, assistant, tool messages).

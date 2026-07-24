@@ -6,6 +6,7 @@ import i18n from "../../i18n";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import { appendMessage, createRun, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import {
   buildAgentFailureContent,
@@ -157,6 +158,17 @@ export async function runSendPipeline(
       thinkingLevel,
     );
     clearStreamTimer();
+
+    if (reply.sessionRecreated) {
+      // The agent lost this thread's session (data gone or cwd drift) and a
+      // fresh empty session replaced it. The visible history is intact, but
+      // the agent starts this turn with zero context — say so explicitly,
+      // otherwise the next reply reads like sudden amnesia.
+      emitFutureEvent("toast", {
+        message: i18n.t("agent:thread.sessionRecreated"),
+        tone: "info",
+      });
+    }
 
     // No cleanup here: non-image files were never copied, and pasted/downloaded
     // images already had their temp original moved into the thread's origin dir

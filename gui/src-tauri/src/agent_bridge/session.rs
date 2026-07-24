@@ -12,6 +12,17 @@ use super::client::{
 };
 use crate::{agent_proto::FutureAgentClient, store};
 
+/// Outcome of `ensure_agent_session`.
+pub(super) struct EnsuredSession {
+    pub session_id: String,
+    /// True when the thread ALREADY had a session id but it was unusable
+    /// (agent lost the session data, or its cwd no longer matches the
+    /// thread's workspace), so a fresh empty session silently replaced it.
+    /// The agent-side context is gone even though the GUI still shows the
+    /// history — callers must surface this instead of rebinding quietly.
+    pub recreated: bool,
+}
+
 /// Ensure an agent session exists for the given thread. Returns the session
 /// id (the existing one, or the newly-created one if the agent generated it).
 /// `model_id` and `thinking_level` are applied to newly-created sessions so
@@ -22,7 +33,7 @@ pub(super) async fn ensure_agent_session(
     cwd: &str,
     model_id: Option<&str>,
     thinking_level: Option<&str>,
-) -> Result<String, crate::AppError> {
+) -> Result<EnsuredSession, crate::AppError> {
     // If the thread already has a stored session id, check if it's still valid.
     if !session_id.is_empty() {
         let response = client
@@ -42,7 +53,10 @@ pub(super) async fn ensure_agent_session(
                     .and_then(|cwd| cwd.as_str())
                     .unwrap_or_default();
                 if active_id == session_id && active_cwd == cwd {
-                    return Ok(session_id.to_string());
+                    return Ok(EnsuredSession {
+                        session_id: session_id.to_string(),
+                        recreated: false,
+                    });
                 }
             }
         }
@@ -69,7 +83,12 @@ pub(super) async fn ensure_agent_session(
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
 
-    Ok(new_id)
+    Ok(EnsuredSession {
+        session_id: new_id,
+        // A non-empty incoming session id means this new session REPLACES one
+        // the agent no longer has — the previous context is lost.
+        recreated: !session_id.is_empty(),
+    })
 }
 
 pub(super) async fn set_agent_permission_level(

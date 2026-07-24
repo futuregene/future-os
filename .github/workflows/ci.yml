@@ -11,8 +11,8 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Run the whole PR-check suite by hand from the Actions tab (e.g. to verify a
-  # cross-platform fix on a feature branch without opening a PR).
+  # Lets you run the whole PR-check suite manually from the Actions tab
+  # (e.g. to verify a cross-platform fix on a feature branch without a PR).
   workflow_dispatch:
 
 # Re-pushing a branch cancels its stale run; release tags are unaffected
@@ -196,6 +196,115 @@ jobs:
 
       - name: cargo check (workspace)
         run: cargo check --workspace --manifest-path Cargo.toml
+
+      - name: cargo check (GUI Tauri backend)
+        run: cargo check --manifest-path gui/src-tauri/Cargo.toml
+
+  # ─── Rust cross-platform compile check ───────────────────────────────────
+  # The `rust` job above only ever compiles on Linux, so platform-conditional
+  # code is never type-checked on Windows/macOS in CI. That is exactly how the
+  # GUI Tauri backend regressed twice (a macOS-only fix dropped the `windows`
+  # crate unconditionally, breaking Windows). This matrix runs `cargo check` on
+  # all three release targets so a missing `cfg`/crate surfaces on the PR.
+  #
+  # Scope: the root workspace (agent + channels) and the GUI Tauri backend.
+  # `remote/` is a standalone crate outside the workspace and is already
+  # compiled by the Linux `rust` job; it is platform-agnostic and left out here
+  # to keep this matrix focused. The GUI backend's proto is checked into
+  # src/generated/ (build.rs only regenerates under REGENERATE_PROTO), so it
+  # needs no protoc — but agent/channels regenerate proto on every build, so
+  # protoc is installed on every runner. System-dep install is copied verbatim
+  # from build.yml so this check runs in an environment proven to build.
+  # `cargo check` type-checks without linking, so this is far cheaper than the
+  # packaging jobs and needs no Node/npm (tauri-build reads config files only).
+  rust-cross:
+    name: Rust cross-check (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            gui/src-tauri
+          cache-on-failure: true
+          cache-all-crates: true
+
+      # Tauri on Linux needs the WebKit/GTK system libraries even for `check`,
+      # because the -sys crates' build scripts run pkg-config. `cargo check`
+      # does not link the final crate, but it DOES link build scripts and
+      # proc-macros (they are executables / .so that get run / loaded), and
+      # `.cargo/config.toml` pins `-fuse-ld=mold` for this target — so mold must
+      # be installed or those link steps fail with `collect2: cannot find 'ld'`.
+      # binutils provides the traditional ld/collect2 toolchain.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            binutils \
+            mold \
+            pkg-config \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            protobuf-compiler
+
+      - name: Install macOS protoc
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      # protoc for the agent/channels build.rs proto codegen (gui's proto is
+      # checked in and needs none). taiki-e/install-action is a composite action
+      # (no Node runtime / deprecation warning); choco was unreliable here.
+      - name: Install Windows protoc
+        if: runner.os == 'Windows'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: protoc
+
+      # lib + bin only (no `--all-targets`): this matrix guards platform
+      # conditional *compilation* (the E0433 class of regression), which shows
+      # up in the default targets. The GUI backend's Rust tests have never been
+      # compiled in CI, so pulling them in here would risk unrelated red on a
+      # platform nobody has type-checked them on; agent/channels tests are
+      # already compiled+run on Linux by the `rust` job.
+      - name: cargo check (agent + channels)
+        run: cargo check --workspace --manifest-path Cargo.toml
+
+      # tauri-build's build script verifies every `bundle.externalBin` sidecar
+      # exists (it appends the host triple, and `.exe` on Windows) and aborts
+      # with `resource path ... doesn't exist` otherwise. The real sidecars are
+      # produced by the packaging jobs; for a type-check the paths just need to
+      # exist, so drop empty placeholders. CI-only — `binaries/` is gitignored.
+      - name: Create placeholder sidecar binaries
+        shell: bash
+        run: |
+          triple=$(rustc -Vv | sed -n 's/^host: //p')
+          suf=""
+          case "$triple" in *windows*) suf=".exe" ;; esac
+          mkdir -p gui/src-tauri/binaries
+          : > "gui/src-tauri/binaries/future-agent-$triple$suf"
+          : > "gui/src-tauri/binaries/future-$triple$suf"
 
       - name: cargo check (GUI Tauri backend)
         run: cargo check --manifest-path gui/src-tauri/Cargo.toml
