@@ -2,20 +2,24 @@ import type { AppSettings } from "../../integrations/storage/appSettings";
 import type { RemoteStatus } from "./remoteClient";
 import { useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { Button } from "../../components/ui/Button";
 import { TextInput } from "../../components/ui/TextInput";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { usePolling } from "../../lib/usePolling";
+import { startWindowDrag } from "../../lib/windowDrag";
 import { getRemoteStatus, startRemote, stopRemote } from "./remoteClient";
 
 interface RemoteViewProps {
   appSettings: AppSettings;
+  leftPanelExpanded: boolean;
   onChangeSettings: (patch: Partial<AppSettings>) => void;
+  onToggleLeftPanel: () => void;
 }
 
-export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
+export function RemoteView({ appSettings, leftPanelExpanded, onChangeSettings, onToggleLeftPanel }: RemoteViewProps) {
   const { t } = useTranslation("remote");
   const [natsUrl, setNatsUrl] = useState(appSettings.remoteNatsUrl);
   const [pairId, setPairId] = useState(appSettings.remotePairId);
@@ -88,87 +92,94 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
   }
 
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-y-auto bg-surface p-8">
-      <div className="mx-auto w-full max-w-xl space-y-6">
-        <header>
-          <h1 className="text-lg font-semibold text-ink">{t("title")}</h1>
-          <p className="mt-1 text-sm text-ink-muted">
-            {t("description")}
-          </p>
-        </header>
+    <section className="flex h-full min-h-0 flex-col bg-surface">
+      <header
+        className="flex h-12 shrink-0 select-none items-center justify-between border-b border-line-soft/40 px-4"
+        onMouseDown={startWindowDrag}
+      >
+        <div className="flex min-w-0 flex-1 items-center" data-tauri-drag-region>
+          <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
+          <span className="truncate text-sm font-semibold text-ink">{t("title")}</span>
+        </div>
+      </header>
 
-        <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={cn("inline-block size-2 rounded-full", running ? "bg-accent" : "bg-ink-muted/60")} />
-            <span className="text-sm font-medium text-ink">{running ? t("running") : t("notRunning")}</span>
+      <div className="min-h-0 flex-1 overflow-y-auto p-8">
+        <div className="mx-auto w-full max-w-xl space-y-6">
+          <p className="text-sm text-ink-muted">{t("description")}</p>
+
+          <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={cn("inline-block size-2 rounded-full", running ? "bg-accent" : "bg-ink-muted/60")} />
+              <span className="text-sm font-medium text-ink">{running ? t("running") : t("notRunning")}</span>
+              {running
+                ? (
+                    <span className="text-xs text-ink-muted">
+                      ·
+                      {" "}
+                      {status?.natsUrl}
+                      {" "}
+                      · pair
+                      {" "}
+                      {status?.pairId}
+                    </span>
+                  )
+                : null}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <label className="block space-y-1">
+              <span className="text-sm font-medium text-ink-soft">{t("natsUrlLabel")}</span>
+              <TextInput
+                disabled={running || busy}
+                onChange={event => setNatsUrl(event.target.value)}
+                placeholder="nats://localhost:4222"
+                value={natsUrl}
+              />
+              <span className="block text-xs text-ink-muted">
+                <Trans i18nKey="natsUrlHint" ns="remote" components={[<code key="url" />]} />
+              </span>
+            </label>
+
+            <label className="block space-y-1">
+              <span className="text-sm font-medium text-ink-soft">{t("pairIdLabel")}</span>
+              <TextInput
+                disabled={running || busy}
+                onChange={event => setPairId(event.target.value)}
+                placeholder="DEVPAIR"
+                value={pairId}
+              />
+            </label>
+          </div>
+
+          {error
+            ? (
+                <div className="rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>
+              )
+            : null}
+
+          <div className="flex gap-2">
             {running
               ? (
-                  <span className="text-xs text-ink-muted">
-                    ·
-                    {" "}
-                    {status?.natsUrl}
-                    {" "}
-                    · pair
-                    {" "}
-                    {status?.pairId}
-                  </span>
+                  <Button disabled={busy} onClick={() => void handleStop()} variant="secondary">
+                    {t("stop")}
+                  </Button>
                 )
-              : null}
+              : (
+                  <Button
+                    disabled={busy || !natsUrl.trim() || !pairId.trim()}
+                    onClick={() => void handleStart()}
+                    variant="primary"
+                  >
+                    {t("start")}
+                  </Button>
+                )}
           </div>
+
+          <p className="text-xs text-ink-muted">
+            {t("note")}
+          </p>
         </div>
-
-        <div className="space-y-4">
-          <label className="block space-y-1">
-            <span className="text-sm font-medium text-ink-soft">{t("natsUrlLabel")}</span>
-            <TextInput
-              disabled={running || busy}
-              onChange={event => setNatsUrl(event.target.value)}
-              placeholder="nats://localhost:4222"
-              value={natsUrl}
-            />
-            <span className="block text-xs text-ink-muted">
-              <Trans i18nKey="natsUrlHint" ns="remote" components={[<code key="url" />]} />
-            </span>
-          </label>
-
-          <label className="block space-y-1">
-            <span className="text-sm font-medium text-ink-soft">{t("pairIdLabel")}</span>
-            <TextInput
-              disabled={running || busy}
-              onChange={event => setPairId(event.target.value)}
-              placeholder="DEVPAIR"
-              value={pairId}
-            />
-          </label>
-        </div>
-
-        {error
-          ? (
-              <div className="rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>
-            )
-          : null}
-
-        <div className="flex gap-2">
-          {running
-            ? (
-                <Button disabled={busy} onClick={() => void handleStop()} variant="secondary">
-                  {t("stop")}
-                </Button>
-              )
-            : (
-                <Button
-                  disabled={busy || !natsUrl.trim() || !pairId.trim()}
-                  onClick={() => void handleStart()}
-                  variant="primary"
-                >
-                  {t("start")}
-                </Button>
-              )}
-        </div>
-
-        <p className="text-xs text-ink-muted">
-          {t("note")}
-        </p>
       </div>
     </section>
   );

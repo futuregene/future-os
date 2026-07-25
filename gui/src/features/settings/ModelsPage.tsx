@@ -62,8 +62,20 @@ export function ModelsPage({
     }
   }
 
+  function setProviderVisibility(models: AgentModelOption[], visible: boolean) {
+    const keys = new Set(models.map(modelKey));
+    if (visible) {
+      onChangeHidden(hiddenModels.filter(item => !keys.has(item)));
+    }
+    else {
+      const toAdd = models.map(modelKey).filter(key => !hidden.has(key));
+      if (toAdd.length > 0)
+        onChangeHidden([...hiddenModels, ...toAdd]);
+    }
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <TextInput
         onChange={event => setQuery(event.target.value)}
         placeholder={t("models.searchPlaceholder")}
@@ -74,28 +86,43 @@ export function ModelsPage({
         ? <p className="text-sm text-ink-muted">{t("models.noModels")}</p>
         : null}
 
-      {groups.map(([provider, models]) => (
-        <SettingsSection key={provider} title={providerLabel(provider)}>
-          <SettingsList>
-            {models.map(model => (
-              <SettingsRow
-                key={modelKey(model)}
-                title={model.label}
-                // Subtitle: raw model id (dropped when it equals the label so it
-                // isn't shown twice) followed by the input modality, e.g.
-                // "Text" or "Text Image".
-                description={modelSubtitle(model)}
-              >
+      {groups.map(([provider, models]) => {
+        const allVisible = models.every(model => !hidden.has(modelKey(model)));
+        return (
+          <SettingsSection
+            key={provider}
+            title={providerLabel(provider)}
+            action={(
+              <div className="pr-4">
                 <Switch
-                  checked={!hidden.has(modelKey(model))}
-                  label={model.label}
-                  onChange={visible => setVisibility(model, visible)}
+                  checked={allVisible}
+                  label={providerLabel(provider)}
+                  onChange={visible => setProviderVisibility(models, visible)}
                 />
-              </SettingsRow>
-            ))}
-          </SettingsList>
-        </SettingsSection>
-      ))}
+              </div>
+            )}
+          >
+            <SettingsList>
+              {models.map(model => (
+                <SettingsRow
+                  key={modelKey(model)}
+                  title={model.label}
+                  // Subtitle: raw model id (dropped when it equals the label so it
+                  // isn't shown twice) followed by the input modality, e.g.
+                  // "Text" or "Text Image".
+                  description={modelSubtitle(model)}
+                >
+                  <Switch
+                    checked={!hidden.has(modelKey(model))}
+                    label={model.label}
+                    onChange={visible => setVisibility(model, visible)}
+                  />
+                </SettingsRow>
+              ))}
+            </SettingsList>
+          </SettingsSection>
+        );
+      })}
 
       {modelOptions.length > 0 && groups.length === 0
         ? <p className="text-sm text-ink-muted">{t("models.noMatch")}</p>

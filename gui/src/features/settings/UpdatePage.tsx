@@ -1,3 +1,4 @@
+import type { UpdateStatus } from "../../components/layout/hooks/useUpdateChecker";
 import { listen } from "@tauri-apps/api/event";
 import { Download, RefreshCw, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -9,15 +10,6 @@ import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { errorMessage } from "../../lib/errors";
 import { SettingsSection } from "./SettingsPrimitives";
 
-/** Mirrors the backend `UpdateStatus` (serde camelCase). */
-interface UpdateStatus {
-  currentVersion: string;
-  latestVersion: string;
-  hasUpdate: boolean;
-  platformSupported: boolean;
-  downloadUrl: string | null;
-}
-
 interface DownloadProgress {
   downloaded: number;
   total: number;
@@ -25,11 +17,13 @@ interface DownloadProgress {
 
 /**
  * Software update page backed by Tauri's signed in-place updater.
+ * Accepts an optional `cachedStatus` from the background update checker so
+ * the result is displayed immediately without a redundant network round-trip.
  */
-export function UpdatePage() {
+export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | null }) {
   const { t } = useTranslation("settings");
   const build = useBuildInfo();
-  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [status, setStatus] = useState<UpdateStatus | null>(cachedStatus ?? null);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
