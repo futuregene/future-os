@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { platform as osPlatform } from "node:os";
 
 import { getPlatformUrl } from "../utils/platform.js";
+import { notifyAgentRefreshSkills } from "../rpc/grpc-client.js";
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -38,11 +39,15 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
 
   if (command === "install-builtin") {
     await installBuiltinSkills();
+    // One notification per command, not per skill — batch installs would
+    // otherwise flood the agent with refresh RPCs.
+    notifyAgentRefreshSkills();
     return;
   }
 
   if (command === "update") {
     await updateSkills();
+    notifyAgentRefreshSkills();
     return;
   }
 
@@ -51,6 +56,7 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
     if (!name) {
       // No name given — install all builtin skills (same as install-builtin)
       await installBuiltinSkills();
+      notifyAgentRefreshSkills();
       return;
     }
     const versionIdx = args.indexOf("--version");
@@ -60,6 +66,7 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
       version = version.slice(1);
     }
     await installSkill(name, version);
+    notifyAgentRefreshSkills();
     return;
   }
 
@@ -72,6 +79,7 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
 
   if (command === "uninstall") {
     await uninstallSkill(name);
+    notifyAgentRefreshSkills();
     return;
   }
 }

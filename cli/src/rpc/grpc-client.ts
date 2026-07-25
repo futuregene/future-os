@@ -713,3 +713,34 @@ export class RunClient {
     return { sessionId, text, events, model, thinkingLevel };
   }
 }
+
+/**
+ * Notify a running agent that skills were added or removed so it drops its
+ * 60 s skills cache and re-discovers immediately.  Best-effort: if the
+ * agent is not reachable (timeout 1 s) the call is silently dropped —
+ * the next prompt triggers the TTL-based refresh anyway.
+ *
+ * The deadline is deliberately short: the agent is often not running when
+ * skills are installed from a bare shell, and grpc-js retries connecting
+ * until the deadline — a long timeout would stall every offline install.
+ */
+export async function notifyAgentRefreshSkills(grpcAddr?: string): Promise<void> {
+  const address = grpcAddr ?? process.env.FUTURE_AGENT_GRPC_ADDR ?? "127.0.0.1:50051";
+  const client = new proto.FutureAgent(address, grpc.credentials.createInsecure());
+  try {
+    const deadline = new Date();
+    deadline.setSeconds(deadline.getSeconds() + 1); // 1 s timeout
+    await new Promise<void>((resolve, reject) => {
+      client.ExecuteCommand(
+        { id: String(Date.now()), type: "refresh_skills" },
+        deadline,
+        (err: any) => (err ? reject(err) : resolve()),
+      );
+    });
+  } catch {
+    // Agent unreachable or not running — the cache TTL will pick it up.
+  } finally {
+    // Release the channel; without close() the client lingers until GC.
+    client.close();
+  }
+}

@@ -72,3 +72,14 @@ pub async fn list_installed_skills() -> Result<Vec<InstalledSkill>, crate::AppEr
         .collect();
     Ok(skills)
 }
+
+/// Tell the agent to drop its 60 s skills cache and re-scan so freshly
+/// installed / uninstalled skills are visible on the next prompt without
+/// waiting for the TTL to expire.  Best-effort — never fail the caller.
+pub async fn refresh_skills() {
+    if let Ok(mut client) = connect_agent().await {
+        let _ = client
+            .execute_command(base_command("refresh_skills", String::new()))
+            .await;
+    }
+}
