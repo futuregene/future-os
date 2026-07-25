@@ -2,14 +2,16 @@ name: CI
 
 permissions: read-all
 
-# Fast feedback on every push to main, every PR, and on manual dispatch:
+# Fast feedback on every PR and on manual dispatch:
 # lint + typecheck + tests + a 3-platform Rust compile check. Full
 # cross-platform *packaging* stays in build.yml (tags / dispatch) — this
 # workflow exists so breakage (especially platform-conditional Rust that only
 # shows up on Windows/macOS) is caught BEFORE a release build is cut.
+#
+# Push-to-main trigger is intentionally absent: "Require branches to be up
+# to date before merging" on branch protection already forces the PR check
+# to re-run on the merged result, so a post-merge run would be redundant.
 on:
-  push:
-    branches: [main]
   pull_request:
   # Lets you run the whole PR-check suite manually from the Actions tab
   # (e.g. to verify a cross-platform fix on a feature branch without a PR).
@@ -22,10 +24,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # On PRs, run only the suites affected by the changed paths. Pushes to main
-  # and manual dispatches are deliberately full runs: the former validates the
-  # merge result, and the latter is the escape hatch for dependency/runner
-  # changes that do not show up in a source diff.
+  # On PRs, run only the suites affected by the changed paths. Manual
+  # dispatches are deliberately full runs: the escape hatch for dependency/
+  # runner changes that do not show up in a source diff.
   changes:
     name: Detect affected checks
     runs-on: ubuntu-latest
