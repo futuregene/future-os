@@ -32,6 +32,7 @@ import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
 import { useUnreadThreads } from "./hooks/useUnreadThreads";
+import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
@@ -66,6 +67,7 @@ export function AppShell() {
 
   const { appSettings, changeSettings } = useAppSettings();
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
+  const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
 
   const centerRef = useRef<HTMLElement>(null);
   const {
@@ -319,6 +321,7 @@ export function AppShell() {
   const activityRailProps = {
     active: section,
     activeThreadId,
+    hasUpdate,
     threads,
     threadRunStatuses,
     threadStreamingStatuses,
@@ -387,11 +390,11 @@ export function AppShell() {
             )
           : section === "skill"
             ? (
-                <SkillsView />
+                <SkillsView leftPanelExpanded={leftExpanded} onToggleLeftPanel={handleToggleLeftPanel} />
               )
             : section === "remote"
               ? (
-                  <RemoteView appSettings={appSettings} onChangeSettings={patch => void changeSettings(patch)} />
+                  <RemoteView appSettings={appSettings} leftPanelExpanded={leftExpanded} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} />
                 )
               : storeError
                 ? (
@@ -473,11 +476,14 @@ export function AppShell() {
       />
       <SettingsDialog
         appSettings={appSettings}
+        cachedUpdateStatus={cachedStatus}
+        hasUpdate={hasUpdate}
         initialTab={settingsTab}
         modelOptions={modelOptions}
         onChangeSettings={patch => void changeSettings(patch)}
         onClose={() => setSettingsOpen(false)}
         onProvidersChanged={() => void refreshAgentModels()}
+        onUpdateSeen={markUpdateSeen}
         open={settingsOpen}
       />
       <ToastHost />
