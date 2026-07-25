@@ -39,11 +39,15 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
 
   if (command === "install-builtin") {
     await installBuiltinSkills();
+    // One notification per command, not per skill — batch installs would
+    // otherwise flood the agent with refresh RPCs.
+    notifyAgentRefreshSkills();
     return;
   }
 
   if (command === "update") {
     await updateSkills();
+    notifyAgentRefreshSkills();
     return;
   }
 
@@ -52,6 +56,7 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
     if (!name) {
       // No name given — install all builtin skills (same as install-builtin)
       await installBuiltinSkills();
+      notifyAgentRefreshSkills();
       return;
     }
     const versionIdx = args.indexOf("--version");
@@ -61,6 +66,7 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
       version = version.slice(1);
     }
     await installSkill(name, version);
+    notifyAgentRefreshSkills();
     return;
   }
 
@@ -73,6 +79,7 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
 
   if (command === "uninstall") {
     await uninstallSkill(name);
+    notifyAgentRefreshSkills();
     return;
   }
 }
@@ -226,9 +233,6 @@ async function installSkill(skillId: string, version?: string): Promise<void> {
     await flattenSingleSubdir(dest);
 
     console.log(`${isUpdate ? "Updated" : "Installed"} skill "${skillId}" v${version} → ${dest}`);
-    // Notify the agent so the next prompt sees the new skill immediately.
-    // Best-effort — silence errors; the TTL-based refresh is the fallback.
-    notifyAgentRefreshSkills();
   } finally {
     try { await rm(tmpZip, { force: true }); } catch { /* ignore */ }
   }
@@ -355,7 +359,6 @@ async function uninstallSkill(skillId: string): Promise<void> {
 
   await rm(dest, { recursive: true, force: true });
   console.log(`Uninstalled skill "${skillId}" from ${SKILLS_DIR}.`);
-  notifyAgentRefreshSkills();
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
