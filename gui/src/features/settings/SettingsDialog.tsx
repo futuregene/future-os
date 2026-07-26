@@ -1,3 +1,4 @@
+import type { UpdateStatus } from "../../components/layout/hooks/useUpdateChecker";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
 import { Boxes, FlaskConical, Info, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound } from "lucide-react";
@@ -58,14 +59,21 @@ const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
 
 export function SettingsDialog({
   appSettings,
+  cachedUpdateStatus,
+  hasUpdate,
   initialTab = "general",
   modelOptions,
   onChangeSettings,
   onClose,
   onProvidersChanged,
+  onUpdateSeen,
   open,
 }: {
   appSettings: AppSettings;
+  /** Cached update-check result from the background checker. */
+  cachedUpdateStatus?: UpdateStatus | null;
+  /** Whether a new app version is available (shows a dot on the update nav item). */
+  hasUpdate?: boolean;
   /** Tab to show when the dialog opens (e.g. a "Models" quick entry). */
   initialTab?: SettingsTab;
   modelOptions: AgentModelOption[];
@@ -73,6 +81,8 @@ export function SettingsDialog({
   onClose: () => void;
   /** Refresh the available model list after a provider mutation. */
   onProvidersChanged?: () => void;
+  /** Called when the user navigates to the "Check for updates" tab. */
+  onUpdateSeen?: () => void;
   open: boolean;
 }) {
   const { t } = useTranslation("settings");
@@ -112,6 +122,7 @@ export function SettingsDialog({
                   .filter(item => showEnvironment || !("devOnly" in item && item.devOnly))
                   .map((item) => {
                     const Icon = item.icon;
+                    const showDot = item.value === "update" && hasUpdate;
                     return (
                       <button
                         key={item.value}
@@ -119,10 +130,17 @@ export function SettingsDialog({
                           "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink",
                           tab === item.value && "border-line-soft bg-surface text-ink shadow-xs",
                         )}
-                        onClick={() => setTab(item.value)}
+                        onClick={() => {
+                          setTab(item.value);
+                          if (item.value === "update")
+                            onUpdateSeen?.();
+                        }}
                         type="button"
                       >
-                        <Icon className="size-4 shrink-0" />
+                        <span className="relative inline-flex shrink-0">
+                          <Icon className="size-4" />
+                          {showDot ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
+                        </span>
                         <span className="truncate">{t(item.labelKey)}</span>
                       </button>
                     );
@@ -157,7 +175,7 @@ export function SettingsDialog({
                 )
               : null}
             {tab === "account" ? <AccountPage /> : null}
-            {tab === "update" ? <UpdatePage /> : null}
+            {tab === "update" ? <UpdatePage cachedStatus={cachedUpdateStatus} /> : null}
             {tab === "about" ? <AboutPage /> : null}
             {tab === "providers" ? <ProvidersPage onProvidersChanged={onProvidersChanged} /> : null}
             {tab === "models"

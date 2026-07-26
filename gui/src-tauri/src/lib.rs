@@ -229,6 +229,15 @@ pub(crate) fn emit_remote_activity(thread_id: &str) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // A second instance was launched — activate the existing window.
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -242,9 +251,9 @@ pub fn run() {
                         let _ = app.emit("open-settings", ());
                     }
                     menu::MENU_RESTART_WEBVIEW => {
-                        // Debug escape hatch: reload a hung/crashed webview in
-                        // place (native reload, so it recovers even when the JS
-                        // context is dead) instead of relaunching the app.
+                        // Reload a hung/crashed webview in place (native reload,
+                        // so it recovers even when the JS context is dead)
+                        // instead of relaunching the app.
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.reload();
                         }
