@@ -152,7 +152,9 @@ pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, cra
         return Ok(vec![]);
     }
     let conn = connect()?;
-    let placeholders: Vec<String> = (0..thread_ids.len()).map(|i| format!("?{}", i + 1)).collect();
+    let placeholders: Vec<String> = (0..thread_ids.len())
+        .map(|i| format!("?{}", i + 1))
+        .collect();
     let sql = format!(
         "SELECT thread_id, status, ended_at FROM (
              SELECT thread_id, status, ended_at,
@@ -163,7 +165,10 @@ pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, cra
         placeholders.join(",")
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> = thread_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = thread_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect();
     let rows = stmt.query_map(params.as_slice(), |row| {
         Ok(LatestRunInfo {
             thread_id: row.get(0)?,

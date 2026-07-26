@@ -2,7 +2,9 @@
 //! the agent to confirm idle before snapshotting. These back the abort command
 //! and the parent module's prompt finalization.
 
-use super::client::{base_command, connect_agent, get_state_command, map_rpc_error, RpcResponseExt};
+use super::client::{
+    base_command, connect_agent, get_state_command, map_rpc_error, RpcResponseExt,
+};
 use crate::store;
 
 pub(super) async fn abort_agent_thread(thread_id: &str) -> Result<(), crate::AppError> {

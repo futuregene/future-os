@@ -167,7 +167,10 @@ mod tests {
         assert_eq!(relative.status, "resolved");
         let relative = relative.data.expect("data");
         let expected_path = std::path::Path::new("/work/space").join("sub/note.md");
-        assert_eq!(relative["path"], expected_path.to_string_lossy().into_owned());
+        assert_eq!(
+            relative["path"],
+            expected_path.to_string_lossy().into_owned()
+        );
         assert_eq!(relative["relativePath"], "sub/note.md");
         assert_eq!(relative["insideWorkspace"], true);
         assert_eq!(relative["name"], "note.md");
