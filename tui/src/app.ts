@@ -40,6 +40,11 @@ function isTermuxSession(): boolean {
   return Boolean(process.env.TERMUX_VERSION);
 }
 
+/** Collapse all whitespace runs (spaces, tabs, newlines) to a single space and trim. */
+function sanitizeSessionName(name: string): string {
+  return name.replace(/\s+/g, " ").trim();
+}
+
 export class App extends Container {
   private terminal: NodeTerminal;
   private client: GrpcClient;
@@ -91,7 +96,7 @@ export class App extends Container {
   private getSessions = async (): Promise<string[]> => {
     try {
       const r = await this.client.listSessions();
-      return r.sessions.map((s) => s.session_name || s.id);
+      return r.sessions.map((s) => sanitizeSessionName(s.session_name || s.id));
     } catch { return []; }
   };
 
@@ -1171,7 +1176,7 @@ export class App extends Container {
                   prefix += isLast ? "└─ " : "├─ ";
                 }
                 const currentMarker = s.id === this.state.sessionId ? "▶ " : "  ";
-                const label = `${currentMarker}${prefix}${s.session_name || (s as any).first_message || s.id}`;
+                const label = `${currentMarker}${prefix}${sanitizeSessionName(s.session_name || (s as any).first_message || s.id)}`;
                 items.push({
                   value: s.id,
                   label,
@@ -2044,7 +2049,7 @@ export class App extends Container {
 
     const items: SelectItem[] = sessions.map((s) => ({
       value: s.id,
-      label: s.session_name || (s as any).first_message || s.id,
+      label: sanitizeSessionName(s.session_name || (s as any).first_message || s.id),
       description: s.id === this.state.sessionId ? "current" : "",
     }));
 
