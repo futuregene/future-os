@@ -280,6 +280,16 @@ run-channels:
 # Build agent with debug symbols + frame pointers for profiling, then run
 # the benchmark suite.  Writes flamegraph SVG + logs to profile-results/.
 profile-agent:
+ifeq ($(OS),windows)
+	set "RUSTFLAGS=-C force-frame-pointers=yes" && \
+		cargo build --release -p future-agent \
+		--config "profile.release.debug=""line-tables-only""" \
+		--config "profile.release.strip=""none"""
+	@if not exist profile-results mkdir profile-results
+	@where blondie >NUL 2>NUL || (echo. & echo  blondie is required for CPU profiling on Windows. & echo  Install: cargo install blondie --features inferno & echo  CPU profiling also requires administrator privileges. & exit /b 1)
+	@echo Starting profile run (port 50052, 90s)...
+	set "PROFILE_DURATION=90" && powershell -ExecutionPolicy Bypass -File scripts/agent-profile-bench.ps1
+else
 	RUSTFLAGS="-C force-frame-pointers=yes" \
 		cargo build --release -p future-agent \
 		--config 'profile.release.debug="line-tables-only"' \
@@ -290,28 +300,45 @@ profile-agent:
 	@echo ""
 	@echo "Flamegraph: $$(ls -t profile-results/agent-profile-*.svg | head -1)"
 	@echo "Run: open profile-results/agent-profile-*.svg"
+endif
 
 # Heap (memory) profile: build with the dhat-heap feature, run on port
 # 50052 for N seconds, write a dhat report JSON.
 # Usage: make profile-heap PROFILE_SECS=30
 # View the report at https://nnethercote.github.io/dh_view/dh_view.html
 profile-heap:
+ifeq ($(OS),windows)
+# Windows needs full debug info (2) for dhat backtrace capture (line-tables-only is insufficient)
+	cargo build --release -p future-agent --features dhat-heap \
+		--config profile.release.debug=2 \
+		--config "profile.release.strip=""none"""
+	@if not exist profile-results mkdir profile-results
+else
 	cargo build --release -p future-agent --features dhat-heap \
 		--config 'profile.release.debug="line-tables-only"' \
 		--config 'profile.release.strip="none"'
 	@mkdir -p profile-results
-	./target/release/future-agent \
+endif
+	./target/release/future-agent$(EXE_SUFFIX) \
 		--grpc-addr 127.0.0.1:50052 \
 		--profile-heap profile-results/heap-profile.json \
 		--profile-seconds $(or $(PROFILE_SECS),30) \
 		--verbose
 	@echo ""
 	@echo "Heap profile: profile-results/heap-profile.json"
-	@echo "View: https://nnethercote.github.io/dh_view/dh_view.html"
+	@echo "Interactive viewer: https://nnethercote.github.io/dh_view/dh_view.html"
+	@echo "For static flamegraph: dhat-to-flamegraph profile-results/heap-profile.json -f svg -o heap-flame.svg (requires dhat backtraces)"
 
 # Quick profile: start agent with profiling on port 50052, run for N seconds.
 # Usage: make profile-quick PROFILE_SECS=30
 profile-quick:
+ifeq ($(OS),windows)
+	set "RUSTFLAGS=-C force-frame-pointers=yes" && \
+		cargo build --release -p future-agent \
+		--config "profile.release.debug=""line-tables-only""" \
+		--config "profile.release.strip=""none"""
+	powershell -ExecutionPolicy Bypass -File scripts/profile-quick.ps1 -Duration $(or $(PROFILE_SECS),30)
+else
 	RUSTFLAGS="-C force-frame-pointers=yes" \
 		cargo build --release -p future-agent \
 		--config 'profile.release.debug="line-tables-only"' \
@@ -322,6 +349,7 @@ profile-quick:
 		--profile profile-results/quick-profile.svg \
 		--profile-seconds $(or $(PROFILE_SECS),30) \
 		--verbose
+endif
 
 # ─── Generate ───────────────────────────────────────────────────────────────
 

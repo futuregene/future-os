@@ -5,7 +5,7 @@
 
 import type { Component } from "../tui.js";
 import { CSI, RESET, BOLD } from "../tui.js";
-import { visibleWidth, truncateToWidth } from "../utils.js";
+import { visibleWidth, truncateToWidth, applyBackgroundToLine } from "../utils.js";
 
 export interface SelectItem {
   value: string;
@@ -170,37 +170,35 @@ export class SelectList implements Component {
     const innerW = Math.max(20, width);
 
     // Width budget: label left, description right, both aligned
-    const maxLabelW = Math.max(10, Math.floor(innerW * 0.4));
+    const maxLabelW = Math.max(10, Math.floor(innerW * 0.45));
     const maxDescW = Math.max(5, innerW - maxLabelW - 4);
 
-    // Helper: pad to innerW-2 (safe margin for overlay compositing borders)
-    const padToWidth = (line: string): string => {
-      const visW = visibleWidth(line);
-      const safeW = Math.max(10, innerW - 2);
-      if (visW < safeW) {
-        return line + " ".repeat(safeW - visW) + RESET;
-      }
-      return truncateToWidth(line, safeW) + RESET;
+    // Helper: pad to innerW-2 with a solid background so the overlay
+    // forms a proper box and base text can't bleed through.
+    const bg = this.theme.bg;
+    const selBg = this.theme.selectedBg;
+    const padToWidth = (line: string, bgColor: number): string => {
+      return applyBackgroundToLine(line, innerW, bgColor);
     };
 
-    lines.push(padToWidth(`${CSI}38;5;${this.theme.accent}m${BOLD} ${this.title}`));
-    lines.push(padToWidth(`${CSI}2mFilter: ${this.filter}_`));
+    lines.push(padToWidth(`${CSI}38;5;${this.theme.accent}m${BOLD} ${this.title}`, bg));
+    lines.push(padToWidth(`${CSI}2mFilter: ${this.filter}_`, bg));
 
     const total = this.filteredItems.length;
     const maxItems = Math.min(total, this.maxVisible);
 
     // Scroll indicator above (always reserve space for consistent line count)
     if (this.scrollOffset > 0) {
-      lines.push(padToWidth(`${CSI}38;5;${this.theme.dimFg}m↑ ${this.scrollOffset} more`));
+      lines.push(padToWidth(`${CSI}38;5;${this.theme.dimFg}m↑ ${this.scrollOffset} more`, bg));
     } else {
-      lines.push(padToWidth(""));
+      lines.push(padToWidth("", bg));
     }
 
     for (let i = 0; i < this.maxVisible; i++) {
       const idx = this.scrollOffset + i;
       const item = this.filteredItems[idx];
       if (!item) {
-        lines.push(padToWidth(""));
+        lines.push(padToWidth("", bg));
         continue;
       }
 
@@ -222,27 +220,27 @@ export class SelectList implements Component {
         const suffix = descPart
           ? ` ${CSI}2m${descPart}`
           : "";
-        lines.push(padToWidth(head + label + suffix));
+        lines.push(padToWidth(head + label + suffix, selBg));
       } else {
         const label = `${CSI}38;5;${this.theme.fg}m  ${labelPart}${labelPad}${RESET}`;
         const suffix = descPart
           ? ` ${CSI}38;5;${this.theme.dimFg}m${CSI}2m${descPart}${RESET}`
           : "";
-        lines.push(padToWidth(label + suffix));
+        lines.push(padToWidth(label + suffix, bg));
       }
     }
 
     // Scroll indicator below (always reserve space for consistent line count)
     if (this.scrollOffset + maxItems < total) {
       const remaining = total - this.scrollOffset - maxItems;
-      lines.push(padToWidth(`${CSI}38;5;${this.theme.dimFg}m↓ ${remaining} more`));
+      lines.push(padToWidth(`${CSI}38;5;${this.theme.dimFg}m↓ ${remaining} more`, bg));
     } else {
-      lines.push(padToWidth(""));
+      lines.push(padToWidth("", bg));
     }
 
     if (total === 0) {
       // Replace one empty slot with the message (line count stays constant)
-      lines[2] = padToWidth(`${CSI}2mNo matching items`);
+      lines[2] = padToWidth(`${CSI}2mNo matching items`, bg);
     }
 
     return lines;
