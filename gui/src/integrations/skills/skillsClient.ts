@@ -40,3 +40,8 @@ export function installSkill(id: string, version: string): Promise<void> {
 export function uninstallSkill(id: string): Promise<boolean> {
   return invokeCommand<boolean>("uninstall_skill", { id });
 }
+
+/** Tell the agent to drop its skills cache and re-discover immediately. */
+export function refreshSkills(): Promise<void> {
+  return invokeCommand<void>("refresh_skills");
+}

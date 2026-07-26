@@ -8,6 +8,15 @@
 
 use crate::{agent_bridge, skills};
 
+/// Manually tell the agent to drop its skills cache and re-discover.
+/// Use when entering the Skills page or on app startup so the
+/// displayed list always reflects the current filesystem state.
+#[tauri::command]
+pub async fn refresh_skills() -> Result<(), crate::AppError> {
+    agent_bridge::refresh_skills().await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_installed_skills() -> Result<Vec<agent_bridge::InstalledSkill>, crate::AppError> {
     agent_bridge::list_installed_skills().await

@@ -13,6 +13,7 @@ import {
   installSkill,
   listAvailableSkills,
   listInstalledSkills,
+  refreshSkills,
   uninstallSkill,
 } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
@@ -141,7 +142,9 @@ export function SkillsView({ leftPanelExpanded, onToggleLeftPanel }: { leftPanel
   }, []);
 
   useEffect(() => {
-    void refresh();
+    // First tell the agent to re-scan skills so the installed list is fresh,
+    // then load both lists. refreshSkills is best-effort (agent may be down).
+    void refreshSkills().finally(() => void refresh());
   }, [refresh]);
 
   // The silent auto-upgrade installs newer versions out-of-band; reload so an
