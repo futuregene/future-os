@@ -460,3 +460,300 @@ pub struct ImageInput {
     pub data: ImageData,
     pub file_path: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_event(event_type: &str, data: &str) -> proto::StreamEvent {
+        proto::StreamEvent {
+            r#type: event_type.to_string(),
+            data: data.to_string(),
+            run_id: "run_1".to_string(),
+            idx: 0,
+        }
+    }
+
+    // ─── parse_event: basic events ───────────────────────────────────────────
+
+    #[test]
+    fn parse_ping() {
+        let event = make_event("ping", "{}");
+        assert!(matches!(
+            AgentClient::parse_event(event),
+            Some(AgentEvent::Ping)
+        ));
+    }
+
+    #[test]
+    fn parse_agent_start() {
+        let event = make_event("agent_start", "{}");
+        assert!(matches!(
+            AgentClient::parse_event(event),
+            Some(AgentEvent::AgentStart)
+        ));
+    }
+
+    #[test]
+    fn parse_agent_end_no_error() {
+        let event = make_event("agent_end", "{}");
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::AgentEnd { error }) => assert!(error.is_none()),
+            other => panic!("expected AgentEnd, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_agent_end_with_error() {
+        let event = make_event("agent_end", r#"{"error":"rate limited"}"#);
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::AgentEnd { error }) => {
+                assert_eq!(error.as_deref(), Some("rate limited"))
+            }
+            other => panic!("expected AgentEnd, got {:?}", other),
+        }
+    }
+
+    // ─── parse_event: text events ────────────────────────────────────────────
+
+    #[test]
+    fn parse_text_chunk() {
+        let event = make_event("text_chunk", r#"{"text":"Hello world"}"#);
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::TextChunk(text)) => assert_eq!(text, "Hello world"),
+            other => panic!("expected TextChunk, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_text_chunk_empty_data() {
+        let event = make_event("text_chunk", "{}");
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::TextChunk(text)) => assert_eq!(text, ""),
+            other => panic!("expected TextChunk, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_thinking_start() {
+        let event = make_event("thinking_start", "{}");
+        assert!(matches!(
+            AgentClient::parse_event(event),
+            Some(AgentEvent::ThinkingStart)
+        ));
+    }
+
+    #[test]
+    fn parse_thinking_delta() {
+        let event = make_event("thinking_delta", r#"{"text":"Let me think"}"#);
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::ThinkingDelta(text)) => assert_eq!(text, "Let me think"),
+            other => panic!("expected ThinkingDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_thinking_end() {
+        let event = make_event("thinking_end", "{}");
+        assert!(matches!(
+            AgentClient::parse_event(event),
+            Some(AgentEvent::ThinkingEnd)
+        ));
+    }
+
+    // ─── parse_event: tool events ────────────────────────────────────────────
+
+    #[test]
+    fn parse_tool_start() {
+        let event = make_event(
+            "tool_start",
+            r#"{"tool_id":"call_1","tool_name":"shell","tool_args":"{\"command\":\"ls\"}"}"#,
+        );
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::ToolStart {
+                tool_id,
+                tool_name,
+                tool_args,
+                ..
+            }) => {
+                assert_eq!(tool_id, "call_1");
+                assert_eq!(tool_name, "shell");
+                assert_eq!(tool_args.as_deref(), Some("{\"command\":\"ls\"}"));
+            }
+            other => panic!("expected ToolStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_tool_start_missing_args() {
+        let event = make_event("tool_start", r#"{"tool_id":"call_1","tool_name":"read"}"#);
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::ToolStart { tool_args, .. }) => assert!(tool_args.is_none()),
+            other => panic!("expected ToolStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_tool_start_invalid_json() {
+        let event = make_event("tool_start", "not json");
+        assert!(AgentClient::parse_event(event).is_none());
+    }
+
+    #[test]
+    fn parse_tool_delta() {
+        let event = make_event(
+            "tool_delta",
+            r#"{"tool_id":"call_1","text":"partial output"}"#,
+        );
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::ToolDelta { tool_id, text }) => {
+                assert_eq!(tool_id, "call_1");
+                assert_eq!(text, "partial output");
+            }
+            other => panic!("expected ToolDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_tool_end() {
+        let event = make_event("tool_end", r#"{"tool_id":"call_1","text":"file1.txt"}"#);
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::ToolEnd { tool_id, text }) => {
+                assert_eq!(tool_id, "call_1");
+                assert_eq!(text.as_deref(), Some("file1.txt"));
+            }
+            other => panic!("expected ToolEnd, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_tool_end_no_text() {
+        let event = make_event("tool_end", r#"{"tool_id":"call_1"}"#);
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::ToolEnd { text, .. }) => assert!(text.is_none()),
+            other => panic!("expected ToolEnd, got {:?}", other),
+        }
+    }
+
+    // ─── parse_event: approval & error events ────────────────────────────────
+
+    #[test]
+    fn parse_approval_request() {
+        let event = make_event(
+            "approval_request",
+            r#"{
+                "approval_request_id": "req_1",
+                "tool_id": "call_1",
+                "tool_name": "shell",
+                "kind": "sandbox",
+                "risk_level": "high",
+                "title": "Dangerous command",
+                "summary": "rm -rf /",
+                "requested_action": {"command": "rm -rf /"}
+            }"#,
+        );
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::ApprovalRequest {
+                approval_request_id,
+                tool_name,
+                risk_level,
+                title,
+                summary,
+                ..
+            }) => {
+                assert_eq!(approval_request_id, "req_1");
+                assert_eq!(tool_name, "shell");
+                assert_eq!(risk_level, "high");
+                assert_eq!(title, "Dangerous command");
+                assert_eq!(summary, "rm -rf /");
+            }
+            other => panic!("expected ApprovalRequest, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_error_event() {
+        let event = make_event("error", r#"{"error":"something went wrong"}"#);
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::Error(msg)) => assert_eq!(msg, "something went wrong"),
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_error_event_invalid_json() {
+        let event = make_event("error", "not json");
+        match AgentClient::parse_event(event) {
+            Some(AgentEvent::Error(msg)) => assert_eq!(msg, "unknown error"),
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    // ─── parse_event: unknown events ─────────────────────────────────────────
+
+    #[test]
+    fn parse_unknown_event_returns_none() {
+        let event = make_event("custom_event", "{}");
+        assert!(AgentClient::parse_event(event).is_none());
+    }
+
+    #[test]
+    fn parse_empty_type_returns_none() {
+        let event = make_event("", "{}");
+        assert!(AgentClient::parse_event(event).is_none());
+    }
+
+    // ─── SessionState construction ───────────────────────────────────────────
+
+    #[test]
+    fn session_state_fields() {
+        let state = SessionState {
+            model: "openai/gpt-4o".into(),
+            image_support: true,
+            thinking_level: "medium".into(),
+            is_streaming: false,
+            context_tokens: 1500,
+            context_window: 128000,
+            tokens_in: 500,
+            tokens_out: 1000,
+            query_count: 3,
+            session_id: "sess_1".into(),
+            session_name: "test".into(),
+            cwd: "/tmp".into(),
+            auto_compaction: true,
+            total_cost: 0.05,
+            permission_level: "all".into(),
+        };
+        assert_eq!(state.model, "openai/gpt-4o");
+        assert!(state.image_support);
+        assert_eq!(state.context_tokens, 1500);
+    }
+
+    // ─── ImageInput construction ─────────────────────────────────────────────
+
+    #[test]
+    fn image_input_base64() {
+        let img = ImageInput {
+            content_type: "image_url".into(),
+            data: ImageData::Base64("data:image/png;base64,abc".into()),
+            file_path: Some("/tmp/img.png".into()),
+        };
+        match &img.data {
+            ImageData::Base64(d) => assert!(d.starts_with("data:")),
+            _ => panic!("expected Base64"),
+        }
+    }
+
+    #[test]
+    fn image_input_url() {
+        let img = ImageInput {
+            content_type: "image_url".into(),
+            data: ImageData::Url("https://example.com/img.png".into()),
+            file_path: None,
+        };
+        match &img.data {
+            ImageData::Url(u) => assert!(u.starts_with("https://")),
+            _ => panic!("expected Url"),
+        }
+    }
+}

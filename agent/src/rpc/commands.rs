@@ -28,30 +28,54 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         return get_agent_info_response(id);
     }
     if cmd_type == "list_models" {
-        return list_models_response(id);
+        return list_models_response(id, &state.model_registry.read());
     }
 
     // Credential refresh operates on every session, not one — handle it before
     // resolving a target session (which would needlessly create/load one).
     if cmd_type == "reload_auth" {
+        // Rebuild the shared model registry FIRST so runtime-added/
+        // removed providers and models.json edits become visible to every
+        // session — set_model now resolves against this cache instead of
+        // constructing a fresh Registry per call.
+        *state.model_registry.write() = crate::models::Registry::new();
         state.reload_all_credentials();
         return RpcResponse::ok(id, "reload_auth", serde_json::json!({}));
     }
 
-    // Get the target session based on session_id, or use default
-    let session = state.get_session(&cmd.session_id);
+    // ── Sessionless commands: dispatched WITHOUT resolving a target session.
+    // Sessions are equal peers; these commands either operate on the whole
+    // system (shutdown, lists), create sessions (new/switch/delete), or read
+    // straight from disk (fork messages).
+    match cmd_type.as_str() {
+        "shutdown" => return cmd_shutdown(state, id),
+        "list_sessions" => return cmd_list_sessions(state, &cmd, id),
+        "list_streaming_sessions" => return cmd_list_streaming_sessions(state, id),
+        "new_session" => return cmd_new_session(state, &cmd, id),
+        "switch_session" => return cmd_switch_session(state, &cmd, id),
+        "delete_session" => return cmd_delete_session(state, &cmd, id),
+        "get_fork_messages" => return cmd_get_fork_messages(state, &cmd, id),
+        "get_commands" => return cmd_get_commands(id),
+        "set_enabled_models" => {
+            // Scoped models are managed entirely by the TUI/client; the agent
+            // returns all available models. Kept as a no-op for compatibility.
+            return RpcResponse::ok(id, "set_enabled_models", serde_json::json!({}));
+        }
+        _ => {}
+    }
+
+    // ── Session-scoped commands: resolve the target session or fail.
+    // No default-session fallback: an empty or unknown session_id is an
+    // explicit error, never a silent redirect into another conversation.
+    let Some(session) = state.get_session(&cmd.session_id) else {
+        return RpcResponse::build_fail(
+            id,
+            cmd_type,
+            "session not found — pass a valid session_id (new_session creates one)",
+        );
+    };
 
     match cmd_type.as_str() {
-        "shutdown" => {
-            state
-                .shutting_down
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            RpcResponse::ok(
-                id,
-                "shutdown",
-                serde_json::json!({"shutting_down": true, "note": "Existing runs continue; new prompts are rejected."}),
-            )
-        }
         "prompt" => {
             if state
                 .shutting_down
@@ -63,7 +87,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "agent is shutting down; no new prompts accepted",
                 );
             }
-            let Some(session) = state.find_session(&cmd.session_id) else {
+            let Some(session) = state.get_session(&cmd.session_id) else {
                 return RpcResponse::build_fail(
                     id,
                     "prompt",
@@ -152,10 +176,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             }
         }
         "new_session" => cmd_new_session(state, &cmd, id),
-        "get_state" => {
-            let state_val = get_state_internal(state, &cmd.session_id);
-            RpcResponse::ok(id, "get_state", state_val)
-        }
+        "get_state" => match get_state_internal(state, &cmd.session_id) {
+            Some(state_val) => RpcResponse::ok(id, "get_state", state_val),
+            None => RpcResponse::build_fail(id, "get_state", "session not found"),
+        },
         "get_messages" => {
             let msgs = rlock!(session, id).get_messages();
             RpcResponse::ok(id, "get_messages", serde_json::json!({"messages": msgs}))
@@ -309,158 +333,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let stats = rlock!(session, id).get_session_stats();
             RpcResponse::ok(id, "get_session_stats", stats)
         }
-        "list_sessions" => {
-            // Clone the session manager Arc outside the lock so list_all()'s
-            // disk I/O doesn't block concurrent readers/writers.
-            let session_manager = {
-                let sess = rlock!(session, id);
-                sess.session_manager.clone()
-            };
-            let summaries = session_manager.list_all().unwrap_or_default();
-
-            // Snapshot active session streaming flags.  Collect within a
-            // single outer read guard — this is safe because we only acquire
-            // inner read locks (never writes), and ParkingLot RwLock allows
-            // concurrent reads.
-            let active_flags: std::collections::HashMap<String, bool> = {
-                let active = state.sessions.read();
-                active
-                    .iter()
-                    .map(|(sid, sess)| {
-                        let streaming = sess
-                            .read()
-                            .is_streaming
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        (sid.clone(), streaming)
-                    })
-                    .collect()
-            };
-
-            let sessions: Vec<serde_json::Value> = summaries
-                .into_iter()
-                .map(|s| {
-                    let is_streaming = active_flags.get(&s.id).copied().unwrap_or(false);
-                    serde_json::json!({
-                        "id": s.id,
-                        "session_name": s.name,
-                        "model": s.model,
-                        "cwd": s.cwd,
-                        "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-                        "parent_session_id": s.parent_session_id,
-                        "first_message": s.first_message,
-                        "query_count": s.query_count,
-                        "is_streaming": is_streaming,
-                    })
-                })
-                .collect();
-            RpcResponse::ok(
-                id,
-                "list_sessions",
-                serde_json::json!({"sessions": sessions}),
-            )
-        }
-        "switch_session" => {
-            if cmd.session_id.is_empty() {
-                return RpcResponse::build_fail(
-                    id,
-                    "switch_session",
-                    "No session selected. Choose a session from the list to switch to.",
-                );
-            }
-            let mut sess = wlock!(session, id);
-            let result = match sess.switch_session(&cmd.session_id) {
-                Ok(()) => {
-                    if let Some(mut active_id) = state.active_session_id.try_write() {
-                        *active_id = cmd.session_id.clone();
-                    }
-                    // Give this session its own private broadcaster so events
-                    // are only delivered to subscribers of this session.
-                    sess.broadcaster = Arc::new(SseBroadcaster::new());
-                    // Insert into sessions map so subsequent lookups by this
-                    // session_id succeed (avoids fallback-to-default warning).
-                    if let Some(mut sessions) = state.sessions.try_write() {
-                        sessions.insert(cmd.session_id.clone(), session.clone());
-                    }
-                    RpcResponse::ok(
-                        id,
-                        "switch_session",
-                        serde_json::json!({"cancelled": false}),
-                    )
-                }
-                Err(e) => RpcResponse::build_fail(id, "switch_session", &e.to_string()),
-            };
-            result
-        }
-        "delete_session" => {
-            if cmd.session_id.is_empty() {
-                return RpcResponse::build_fail(
-                    id,
-                    "delete_session",
-                    "No session selected to delete. Choose a session first.",
-                );
-            }
-            // Delete from disk
-            if let Err(e) = session.read().session_manager.delete(&cmd.session_id) {
-                return RpcResponse::build_fail(id, "delete_session", &e.to_string());
-            }
-            // Remove from memory if present
-            if let Some(mut sessions) = state.sessions.try_write() {
-                sessions.remove(&cmd.session_id);
-            }
-            RpcResponse::ok(id, "delete_session", serde_json::json!({"deleted": true}))
-        }
         "fork" => cmd_fork(state, &session, &cmd, id),
-        "get_fork_messages" => {
-            // Load session from disk to get entry IDs (needed for fork).
-            let (session_manager, session_id) = {
-                let sess = rlock!(session, id);
-                (sess.session_manager.clone(), sess.session_id.clone())
-            };
-            let user_entries: Vec<serde_json::Value> =
-                session_manager
-                    .load(&session_id)
-                    .map(|s| {
-                        s.entries
-                        .iter()
-                        .filter(|e| e.entry_type == crate::session::ENTRY_TYPE_USER)
-                        .map(|e| {
-                            let content_text = e.content.as_ref()
-                                .map(|c| {
-                                    if let Some(arr) = c.as_array() {
-                                        // First text block only — later text blocks are
-                                        // the agent-injected attachment-path list.
-                                        arr.iter()
-                                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                            .next()
-                                            .unwrap_or("")
-                                            .to_string()
-                                    } else {
-                                        c.as_str().unwrap_or("").to_string()
-                                    }
-                                })
-                                .unwrap_or_default();
-                            serde_json::json!({
-                                "id": e.id,
-                                "role": e.role,
-                                "content": content_text,
-                                "timestamp": e.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
-                            })
-                        })
-                        .collect()
-                    })
-                    .unwrap_or_default();
-            RpcResponse::ok(
-                id,
-                "get_fork_messages",
-                serde_json::json!({"messages": user_entries}),
-            )
-        }
         "get_session_entries" => {
-            // Must not fall back to the default session when the requested id is
-            // unrecognised — that leaks another conversation's entries into the
-            // wrong caller (e.g. a GUI thread with no agent session yet would
-            // see whichever session happens to be the default).
-            if let Some(sess) = state.find_session(&cmd.session_id) {
+            // Must not fall back to a different session when the requested id
+            // is unrecognised — that leaks another conversation's entries
+            // into the wrong caller (e.g. a GUI thread with no agent session
+            // yet would see whichever session got resolved instead).
+            if let Some(sess) = state.get_session(&cmd.session_id) {
                 cmd_get_session_entries(&sess, id)
             } else {
                 RpcResponse::ok(
@@ -484,33 +363,23 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 sess.set_session_name(&cmd.name);
                 (sess.session_manager.clone(), sess.session_id.clone())
             };
-            // Persist label entry to session JSONL so name survives restarts
+            // Update session_info so name survives restarts
             if let Ok(mut s) = session_manager.load(&session_id) {
-                s.entries.push(crate::session::SessionEntry {
-                    id: crate::utils::generate_entry_id(),
-                    parent_id: String::new(),
-                    entry_type: crate::session::ENTRY_TYPE_LABEL.to_string(),
-                    role: String::new(),
-                    content: None,
-                    tool_calls: vec![],
-                    timestamp: chrono::Local::now(),
-                    summary: String::new(),
-                    model: String::new(),
-                    label: cmd.name.clone(),
-                    thinking_level: String::new(),
-                    branch_summary: None,
-                    custom_type: String::new(),
-                    custom_data: None,
-                    display: String::new(),
-                    provider: String::new(),
-                    tool_call_id: String::new(),
-                    name: String::new(),
-                    tool_args: String::new(),
-                    thinking: String::new(),
-                    output_tokens: 0,
-                    duration_ms: 0,
-                    meta: None,
-                });
+                // Update session_info entry's session_name field
+                if let Some(info_entry) = s
+                    .entries
+                    .iter_mut()
+                    .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+                {
+                    if let Some(ref mut content) = info_entry.content {
+                        if let Some(obj) = content.as_object_mut() {
+                            obj.insert(
+                                "session_name".to_string(),
+                                serde_json::Value::String(cmd.name.clone()),
+                            );
+                        }
+                    }
+                }
                 s.name = cmd.name.clone();
                 let _ = session_manager.save(&s);
             }
@@ -524,40 +393,6 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             ));
             RpcResponse::ok(id, "set_session_name", serde_json::json!({}))
         }
-        "get_commands" => {
-            // Return commands from skills (similar to Go's extensions + prompts)
-            let skill_dirs = vec![
-                crate::skills::APP_SKILLS_DIR.to_string(),
-                crate::skills::PROJECT_SKILLS_DIR.to_string(),
-                crate::skills::AGENTS_SKILLS_DIR.to_string(),
-            ];
-            let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
-
-            let mut commands: Vec<serde_json::Value> = skills
-                .into_iter()
-                .map(|s| {
-                    serde_json::json!({
-                        "name": s.name,
-                        "description": s.description,
-                        "nameZh": s.name_zh,
-                        "descriptionZh": s.description_zh,
-                        "source": "skill"
-                    })
-                })
-                .collect();
-            commands.sort_by(|a, b| {
-                a["name"]
-                    .as_str()
-                    .unwrap_or("")
-                    .cmp(b["name"].as_str().unwrap_or(""))
-            });
-
-            RpcResponse::ok(
-                id,
-                "get_commands",
-                serde_json::json!({"commands": commands}),
-            )
-        }
         "abort_retry" => {
             rlock!(session, id).abort();
             RpcResponse::ok(id, "abort_retry", serde_json::json!({}))
@@ -568,10 +403,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "cycle_model" => {
             // Cycle to next available model.  Scoping is client-side (TUI/GUI).
-            let registry = crate::models::Registry::new();
+            // Use the cached registry — Registry::new() re-parses the 1.9 MB
+            // catalog AND may do blocking network I/O (future provider
+            // refresh) on every call.
             let auth = crate::AuthStore::load();
-
-            let models: Vec<String> = registry
+            let models: Vec<String> = state
+                .model_registry
+                .read()
                 .all_models()
                 .into_iter()
                 .filter(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
@@ -633,12 +471,6 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 serde_json::json!({"level": next_level}),
             )
         }
-        "set_enabled_models" => {
-            // Scoped models are now managed entirely by the TUI/client.
-            // The agent no longer reads enabled_models — list_models always
-            // returns all available models.
-            RpcResponse::ok(id, "set_enabled_models", serde_json::json!({}))
-        }
         "clone" => cmd_clone(state, &session, id),
         "export_html" => {
             // Export session to HTML file
@@ -669,6 +501,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "export_html", serde_json::json!({"path": output_path}))
         }
         "reload_config" => cmd_reload_config(state, &session, id),
+        "refresh_skills" => cmd_refresh_skills(id),
         "set_cwd" => {
             // Trim trailing whitespace / separators so the saved cwd is
             // always a clean directory path — "project/ " produces a
@@ -757,13 +590,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 }
 
 fn get_agent_info_response(id: &str) -> String {
-    let dirs = vec![
-        crate::skills::APP_SKILLS_DIR.to_string(),
-        crate::skills::AGENTS_SKILLS_DIR.to_string(),
-    ];
-    let skills_count = crate::skills::discover_skills(&dirs)
-        .map(|s| s.len())
-        .unwrap_or(0);
+    let skills_count =
+        crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs()).len();
     RpcResponse::ok(
         id,
         "get_agent_info",
@@ -774,8 +602,7 @@ fn get_agent_info_response(id: &str) -> String {
     )
 }
 
-fn list_models_response(id: &str) -> String {
-    let registry = crate::models::Registry::new();
+fn list_models_response(id: &str, registry: &crate::models::Registry) -> String {
     let auth = crate::AuthStore::load();
 
     // Always return all available models.  Scoping / defaults are client-side.
@@ -796,7 +623,7 @@ fn list_models_response(id: &str) -> String {
 
     // Use the same default-model resolution as cmd_new_session so the list
     // and actual session creation agree on which model is the default.
-    let effective_default = crate::models::get_default_model()
+    let effective_default = crate::models::get_default_model_with(registry)
         .and_then(|full| full.rsplit_once('/').map(|(_, id)| id.to_string()))
         .or_else(|| models.first().map(|m| m.id.clone()))
         .unwrap_or_default();
@@ -834,6 +661,204 @@ fn list_models_response(id: &str) -> String {
     )
 }
 
+fn cmd_shutdown(state: &AppState, id: &str) -> String {
+    state
+        .shutting_down
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    RpcResponse::ok(
+        id,
+        "shutdown",
+        serde_json::json!({"shutting_down": true, "note": "Existing runs continue; new prompts are rejected."}),
+    )
+}
+
+fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    let summaries = state.session_manager.list_all().unwrap_or_default();
+    // Scope by the caller's cwd when provided (empty = all sessions).
+    let cwd_filter = cmd.cwd.trim().to_string();
+
+    // Snapshot streaming flags of live sessions.  Collect within a single
+    // outer read guard — safe because we only acquire inner read locks, and
+    // ParkingLot RwLock allows concurrent reads.
+    let active_flags: std::collections::HashMap<String, bool> = {
+        let active = state.sessions.read();
+        active
+            .iter()
+            .map(|(sid, sess)| {
+                let streaming = sess
+                    .read()
+                    .is_streaming
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                (sid.clone(), streaming)
+            })
+            .collect()
+    };
+
+    let sessions: Vec<serde_json::Value> = summaries
+        .into_iter()
+        .filter(|s| cwd_filter.is_empty() || s.cwd == cwd_filter)
+        .map(|s| {
+            let is_streaming = active_flags.get(&s.id).copied().unwrap_or(false);
+            serde_json::json!({
+                "id": s.id,
+                "session_name": s.name,
+                "model": s.model,
+                "cwd": s.cwd,
+                "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                "parent_session_id": s.parent_session_id,
+                "first_message": s.first_message,
+                "query_count": s.query_count,
+                "is_streaming": is_streaming,
+            })
+        })
+        .collect();
+    RpcResponse::ok(
+        id,
+        "list_sessions",
+        serde_json::json!({"sessions": sessions}),
+    )
+}
+
+/// Lightweight streaming-status query: scans ONLY the in-memory session map
+/// (hydrated sessions) — never touches disk and never hydrates.  A session
+/// that isn't in the map can't be streaming (runs are always started through
+/// a hydrated ServerSession), so this is the exact set of active runs.
+fn cmd_list_streaming_sessions(state: &AppState, id: &str) -> String {
+    let ids: Vec<String> = state
+        .sessions
+        .read()
+        .iter()
+        .filter(|(_, sess)| {
+            sess.read()
+                .is_streaming
+                .load(std::sync::atomic::Ordering::Relaxed)
+        })
+        .map(|(sid, _)| sid.clone())
+        .collect();
+    RpcResponse::ok(
+        id,
+        "list_streaming_sessions",
+        serde_json::json!({"sessionIds": ids}),
+    )
+}
+
+/// Bind a client to an existing session.  Sessions are equal peers, so
+/// "switching" just means resolving (and hydrating) the target — the client
+/// addresses it by id from then on.
+fn cmd_switch_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    if cmd.session_id.is_empty() {
+        return RpcResponse::build_fail(
+            id,
+            "switch_session",
+            "No session selected. Choose a session from the list to switch to.",
+        );
+    }
+    match state.get_session(&cmd.session_id) {
+        Some(_) => RpcResponse::ok(
+            id,
+            "switch_session",
+            serde_json::json!({"cancelled": false}),
+        ),
+        None => RpcResponse::build_fail(
+            id,
+            "switch_session",
+            &format!("session `{}` not found", cmd.session_id),
+        ),
+    }
+}
+
+fn cmd_delete_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    if cmd.session_id.is_empty() {
+        return RpcResponse::build_fail(
+            id,
+            "delete_session",
+            "No session selected to delete. Choose a session first.",
+        );
+    }
+    if let Err(e) = state.session_manager.delete(&cmd.session_id) {
+        return RpcResponse::build_fail(id, "delete_session", &e.to_string());
+    }
+    if let Some(mut sessions) = state.sessions.try_write() {
+        sessions.remove(&cmd.session_id);
+    }
+    RpcResponse::ok(id, "delete_session", serde_json::json!({"deleted": true}))
+}
+
+/// Load user entries of a session from disk (fork-point picker).  Reads the
+/// file directly — no in-memory session required.
+fn cmd_get_fork_messages(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    let user_entries: Vec<serde_json::Value> = state
+        .session_manager
+        .load(&cmd.session_id)
+        .map(|s| {
+            s.entries
+                .iter()
+                .filter(|e| e.entry_type == crate::session::ENTRY_TYPE_USER)
+                .map(|e| {
+                    let content_text = e
+                        .content
+                        .as_ref()
+                        .map(|c| {
+                            if let Some(arr) = c.as_array() {
+                                // First text block only — later text blocks are
+                                // the agent-injected attachment-path list.
+                                arr.iter()
+                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                    .next()
+                                    .unwrap_or("")
+                                    .to_string()
+                            } else {
+                                c.as_str().unwrap_or("").to_string()
+                            }
+                        })
+                        .unwrap_or_default();
+                    serde_json::json!({
+                        "id": e.id,
+                        "role": e.role,
+                        "content": content_text,
+                        "timestamp": e.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    RpcResponse::ok(
+        id,
+        "get_fork_messages",
+        serde_json::json!({"messages": user_entries}),
+    )
+}
+
+fn cmd_get_commands(id: &str) -> String {
+    // Return commands from skills (similar to Go's extensions + prompts)
+    let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
+
+    let mut commands: Vec<serde_json::Value> = skills
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "description": s.description,
+                "nameZh": s.name_zh,
+                "descriptionZh": s.description_zh,
+                "source": "skill"
+            })
+        })
+        .collect();
+    commands.sort_by(|a, b| {
+        a["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["name"].as_str().unwrap_or(""))
+    });
+
+    RpcResponse::ok(
+        id,
+        "get_commands",
+        serde_json::json!({"commands": commands}),
+    )
+}
+
 fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // Create a new session with shared agent_loop, preserving model/thinking
     // Use TUI-provided cwd if available, otherwise default workspace.
@@ -844,66 +869,17 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     } else {
         super::session::default_workspace()
     };
-    let active_id = state.get_active_session_id();
-    let session = state.get_session(&active_id);
-    // Snapshot everything we need from the active session up front, then
-    // drop its lock — nothing below should keep the active ServerSession
-    // borrowed while we fall back to other loops for the config template.
-    let (active_loop, inherit_model, event_bus, broadcaster, approval_gate, session_manager) = {
-        let sess = rlock!(session, id);
-        (
-            sess.agent_loop.clone(),
-            sess.model.clone(),
-            sess.event_bus.clone(),
-            sess.broadcaster.clone(),
-            sess.approval_gate.clone(),
-            sess.session_manager.clone(),
-        )
-    };
+    // No active/default session to inherit from — everything comes from
+    // AppState-level singletons and the loop template.  The fresh loop is
+    // minted from the template (never used for runs), so creation succeeds
+    // even while every existing session is mid-stream.
+    let event_bus = state.event_bus.clone();
+    let broadcaster = Arc::new(SseBroadcaster::new());
+    let approval_gate = state.approval_gate.clone();
+    let session_manager = Arc::new(crate::session::Manager::default_for(&session_cwd));
+    let inherit_model = state.loop_template.model.clone();
 
-    // Build the fresh loop's config template from an *idle* loop. The
-    // active session's loop is held under a write lock for the whole turn
-    // while it streams, so a `try_read` on it fails mid-run — which used to
-    // make "start a second conversation while the first is running" fail
-    // outright. Fall back to the default session's loop (never used for
-    // prompts by the GUI, so effectively always idle) so concurrent
-    // sessions can be created. Clients call `set_model` on the new session
-    // right after, so this template is only a seed.
-    let snapshot = |loop_arc: &Arc<tokio::sync::RwLock<crate::agent::Loop>>| {
-        loop_arc.try_read().ok().map(|loop_guard| {
-            let config = crate::types::AgentConfig {
-                system_prompt: loop_guard.config.system_prompt.clone(),
-                max_turns: loop_guard.config.max_turns,
-                thinking_budget: loop_guard.config.thinking_budget,
-                max_retries: loop_guard.config.max_retries,
-                tools_execution_mode: loop_guard.config.tools_execution_mode.clone(),
-                ..Default::default()
-            };
-            (
-                loop_guard.provider.clone(),
-                loop_guard.model.clone(),
-                loop_guard.tools.clone(),
-                config,
-                loop_guard.verbose,
-            )
-        })
-    };
-
-    let template = snapshot(&active_loop).or_else(|| {
-        let default_loop = state.session.read().agent_loop.clone();
-        snapshot(&default_loop)
-    });
-    let Some((provider, model, tools, config, verbose)) = template else {
-        return RpcResponse::build_fail(
-            id,
-            "new_session",
-            "agent is busy; wait for the current run to finish before starting a new session",
-        );
-    };
-    let mut fresh_loop = crate::agent::Loop::new(provider, &model)
-        .with_tools(tools)
-        .with_config(config);
-    fresh_loop.verbose = verbose;
+    let fresh_loop = state.loop_template.independent_copy();
 
     let new_session_id = if cmd.session_id.is_empty() {
         crate::utils::generate_id()
@@ -919,35 +895,44 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         .filter(|s| !s.entries.is_empty())
         .map(|s| (s.entries, s.model.clone()));
 
-    let mut new_sess = ServerSession::new_with_shared_loop(
+    let mut new_sess = ServerSession::new(
         new_session_id.clone(),
         Arc::new(tokio::sync::RwLock::new(fresh_loop)),
-        Arc::new(crate::session::Manager::default_for(&session_cwd)),
+        session_manager.clone(),
         &session_cwd,
         event_bus,
         broadcaster,
         approval_gate,
+        state.model_registry.clone(),
     );
-    // Resolve the default model fresh from the registry (not inherited from
+    // Resolve the default model from the cached registry (not inherited from
     // the active session) so that CLI one-shot runs always start from the
     // preferred default.  GUI/TUI explicitly set model_id on the command,
     // which overrides this below.
-    let default_model = crate::models::get_default_model().unwrap_or_else(|| inherit_model.clone());
-    new_sess.model = default_model.clone();
-    // Also update the fresh loop's model so the LLM call uses the correct
-    // bare model ID (the loop takes just the ID, not provider/id).
-    // The template's model was inherited from the active session, which may
-    // have been changed by a previous --model override.
-    if let Ok(mut loop_) = new_sess.agent_loop.try_write() {
-        // Strip provider/ prefix to get the bare model ID for LLM API calls.
-        let bare_id = default_model
-            .rsplit_once('/')
-            .map(|(_, id)| id.to_string())
-            .unwrap_or_else(|| default_model.clone());
-        loop_.model = bare_id;
+    let default_model = crate::models::get_default_model_with(&state.model_registry.read())
+        .unwrap_or_else(|| inherit_model.clone());
+    // Apply via set_model: it sets the canonical model AND rebuilds the
+    // loop's provider client for that model's endpoint/key/compat.  A bare
+    // `loop_.model = bare_id` leaves the provider on the template's startup
+    // model, which breaks whenever the current default differs.
+    if let Err(e) = new_sess.set_model(&default_model.clone()) {
+        tracing::warn!("[new_session] could not sync model to fresh loop: {e}");
     }
     // Always start new sessions at the preferred thinking level.
     new_sess.thinking_level = "xhigh".to_string();
+
+    // Apply user settings (previously applied only to the startup "default
+    // session" — with sessions as equal peers, every new session gets them).
+    let settings_path = std::path::PathBuf::from(crate::models::settings_path());
+    if let Ok(settings) = crate::config::load_settings(&settings_path) {
+        new_sess.set_steering_mode(&settings.steering_mode);
+        new_sess.set_follow_up_mode(&settings.follow_up_mode);
+        if !settings.default_permission_level.is_empty() {
+            new_sess.set_permission_level(&settings.default_permission_level);
+        }
+        new_sess.set_auto_compaction(settings.compaction_enabled());
+        new_sess.set_auto_retry(settings.retry_enabled());
+    }
 
     // Default created_by to "tui" for sessions created without
     // explicit source info (e.g. TUI, channels). GUI passes
@@ -993,7 +978,10 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         } else {
             disk_model.clone()
         };
-        let supports_images = crate::models::model_accepts_images(&effective_model);
+        let supports_images = crate::models::model_accepts_images_with(
+            &state.model_registry.read(),
+            &effective_model,
+        );
         let mut msgs = new_sess.messages.write();
         *msgs = crate::session::entries_to_agent_messages(&entries, supports_images);
         if !disk_model.is_empty() {
@@ -1098,12 +1086,7 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     // Per-reply metadata for the GUI's message footer
                     // ("time · N tokens"); set on the final assistant
                     // entry of each run.
-                    if e.output_tokens > 0 {
-                        entry["output_tokens"] = serde_json::json!(e.output_tokens);
-                    }
-                    if e.duration_ms > 0 {
-                        entry["duration_ms"] = serde_json::json!(e.duration_ms);
-                    }
+                    // Run stats are in content JSON (run_tokens / run_duration_ms)
                     // For session_info entries, include the original content
                     // JSON (session_name, cwd, parent_session_id, …) and the
                     // model / thinking_level struct fields so callers can
@@ -1111,13 +1094,6 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
                         if let Some(ref content) = e.content {
                             entry["content"] = content.clone();
-                        }
-                        if !e.model.is_empty() {
-                            entry["model"] = serde_json::Value::String(e.model.clone());
-                        }
-                        if !e.thinking_level.is_empty() {
-                            entry["thinking_level"] =
-                                serde_json::Value::String(e.thinking_level.clone());
                         }
                     }
                     entry
@@ -1148,10 +1124,9 @@ fn cmd_fork(
     }
 
     // Extract needed data from session
-    let (agent_loop, session_manager, event_bus, broadcaster, _cwd, current_session_id) = {
+    let (session_manager, event_bus, broadcaster, _cwd, current_session_id) = {
         let sess = rlock!(session, id);
         (
-            sess.agent_loop.clone(),
             sess.session_manager.clone(),
             sess.event_bus.clone(),
             sess.broadcaster.clone(),
@@ -1159,6 +1134,11 @@ fn cmd_fork(
             sess.session_id.clone(),
         )
     };
+    // The fork gets its own agent loop — sharing the parent's loop would let
+    // a run in one session block (or be aborted by) the other.
+    let agent_loop = Arc::new(tokio::sync::RwLock::new(
+        state.loop_template.independent_copy(),
+    ));
 
     // Resolve parent session: use cmd.parent_session if provided,
     // otherwise fork from the current session.
@@ -1198,7 +1178,7 @@ fn cmd_fork(
     // the saved history on disk — session_prompt.rs saves
     // self.messages back to disk (via File::create), truncating
     // anything not held in memory.
-    let mut new_sess = ServerSession::new_with_shared_loop(
+    let mut new_sess = ServerSession::new(
         forked_id.clone(),
         agent_loop,
         session_manager,
@@ -1206,14 +1186,16 @@ fn cmd_fork(
         event_bus,
         broadcaster,
         state.approval_gate.clone(),
+        state.model_registry.clone(),
     );
-    let supports_images = crate::models::model_accepts_images(&forked.model);
+    let supports_images =
+        crate::models::model_accepts_images_with(&state.model_registry.read(), &forked.model);
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
         new_sess.model = forked.model.clone();
-        // Sync the shared agent loop so the fork's first prompt uses the
-        // forked model, not whatever the previous session left behind.
+        // Sync the fork's own agent loop so the first prompt uses the
+        // forked model, not whatever the template seeded.
         if let Err(e) = new_sess.set_model(&new_sess.model.clone()) {
             tracing::warn!("[fork] could not sync agent loop model: {e}");
         }
@@ -1229,7 +1211,7 @@ fn cmd_clone(
     id: &str,
 ) -> String {
     // Extract needed data from session
-    let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
+    let (session_manager, event_bus, broadcaster, _cwd, session_id) = {
         let sess = rlock!(session, id);
         if sess.messages.read().is_empty() {
             return RpcResponse::build_fail(
@@ -1239,7 +1221,6 @@ fn cmd_clone(
             );
         }
         (
-            sess.agent_loop.clone(),
             sess.session_manager.clone(),
             sess.event_bus.clone(),
             sess.broadcaster.clone(),
@@ -1247,6 +1228,10 @@ fn cmd_clone(
             sess.session_id.clone(),
         )
     };
+    // Own agent loop for the clone (same reasoning as fork).
+    let agent_loop = Arc::new(tokio::sync::RwLock::new(
+        state.loop_template.independent_copy(),
+    ));
 
     // Get parent session from manager
     let parent = match session_manager.load(&session_id) {
@@ -1289,7 +1274,7 @@ fn cmd_clone(
     // Add to sessions map.  Load the cloned entries into
     // in-memory messages (same reason as fork — prevents
     // the first prompt from truncating history on disk).
-    let mut new_sess = ServerSession::new_with_shared_loop(
+    let mut new_sess = ServerSession::new(
         forked_id.clone(),
         agent_loop,
         session_manager,
@@ -1297,8 +1282,10 @@ fn cmd_clone(
         event_bus,
         broadcaster,
         state.approval_gate.clone(),
+        state.model_registry.clone(),
     );
-    let supports_images = crate::models::model_accepts_images(&forked.model);
+    let supports_images =
+        crate::models::model_accepts_images_with(&state.model_registry.read(), &forked.model);
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
@@ -1310,6 +1297,57 @@ fn cmd_clone(
     state.create_session(new_sess);
 
     RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
+}
+
+/// Minimum interval between forced skills-cache refreshes. CLI/GUI fire one
+/// notification per install/uninstall operation, so a burst of operations
+/// (or several frontends at once) must not trigger repeated disk scans —
+/// requests inside this window are served from the still-fresh cache.
+const SKILLS_REFRESH_MIN_INTERVAL_SECS: u64 = 5;
+
+fn cmd_refresh_skills(id: &str) -> String {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static LAST_REFRESH: Mutex<Option<Instant>> = Mutex::new(None);
+
+    // Rate-limit: only invalidate + rescan when the last forced refresh is
+    // older than the minimum interval. Otherwise keep the cache as-is;
+    // `discover_skills_cached` will serve it (it is fresh by construction).
+    let now = Instant::now();
+    let refreshed = {
+        let mut last = LAST_REFRESH.lock().unwrap();
+        match *last {
+            Some(t)
+                if now.duration_since(t)
+                    < Duration::from_secs(SKILLS_REFRESH_MIN_INTERVAL_SECS) =>
+            {
+                false
+            }
+            _ => {
+                *last = Some(now);
+                true
+            }
+        }
+    };
+    if refreshed {
+        // Invalidate the skills cache so freshly installed skills are
+        // visible on the next prompt without waiting for the 60s TTL.
+        crate::skills::invalidate_skills_cache();
+    }
+    let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
+    let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+    RpcResponse::ok(
+        id,
+        "refresh_skills",
+        serde_json::json!({
+            "skills_count": skill_names.len(),
+            "skills": skill_names,
+            // false when served from cache due to the minimum-interval
+            // rate limit — callers can log this for debugging.
+            "refreshed": refreshed,
+        }),
+    )
 }
 
 fn cmd_reload_config(
@@ -1333,13 +1371,10 @@ fn cmd_reload_config(
         (sess.cwd.clone(), loop_.tools.clone())
     };
 
-    // Re-discover skills (blocking I/O, no locks held)
-    let skill_dirs = vec![
-        crate::skills::APP_SKILLS_DIR.to_string(),
-        format!("{}/{}", cwd, crate::skills::PROJECT_SKILLS_DIR),
-        crate::skills::AGENTS_SKILLS_DIR.to_string(),
-    ];
-    let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+    // Re-discover skills (blocking I/O, no locks held).  Invalidate the
+    // 60s cache first — an explicit reload must see on-disk changes now.
+    crate::skills::invalidate_skills_cache();
+    let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
     // Re-read context files
@@ -1400,4 +1435,462 @@ fn cmd_reload_config(
             "contextFiles": if agent_content.is_empty() { vec![] } else { vec!["CLAUDE.md".to_string()] },
         }),
     )
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        agent::Loop,
+        rpc::ApprovalGate,
+        types::{LLMProvider, Message, StreamEvent, ToolDef},
+    };
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    struct EmptyProvider;
+
+    #[async_trait::async_trait]
+    impl LLMProvider for EmptyProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDef>,
+            _system_prompt: String,
+        ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(ReceiverStream::new(rx))
+        }
+    }
+
+    fn test_workspace() -> String {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("futureos-cmd-test-{stamp}"))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn make_app_state() -> AppState {
+        let cwd = test_workspace();
+        let model_registry = Arc::new(parking_lot::RwLock::new(crate::models::Registry::new()));
+        let session_manager = Arc::new(crate::session::Manager::default_for(&cwd));
+        let event_bus = Arc::new(crate::events::EventBus::new());
+        let approval_gate = ApprovalGate::default();
+        // One live session named "default" — sessions are equal peers now,
+        // so tests address it explicitly by id.
+        let session = ServerSession::new(
+            "default".to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(EmptyProvider),
+                "mock",
+            ))),
+            session_manager.clone(),
+            &cwd,
+            event_bus.clone(),
+            Arc::new(SseBroadcaster::new()),
+            approval_gate.clone(),
+            model_registry.clone(),
+        );
+        let sessions: HashMap<String, Arc<parking_lot::RwLock<ServerSession>>> = [(
+            "default".to_string(),
+            Arc::new(parking_lot::RwLock::new(session)),
+        )]
+        .into_iter()
+        .collect();
+        AppState {
+            sessions: Arc::new(parking_lot::RwLock::new(sessions)),
+            session_manager,
+            welcome_version: "0.0.0".to_string(),
+            welcome_cwd: cwd.clone(),
+            welcome_skills: Arc::new(parking_lot::RwLock::new(vec![])),
+            welcome_context: Arc::new(parking_lot::RwLock::new(vec![])),
+            welcome_exts: vec![],
+            explicit_session: false,
+            event_bus,
+            approval_gate,
+            verbose: false,
+            shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            model_registry: model_registry.clone(),
+            loop_template: Arc::new(Loop::new(Arc::new(EmptyProvider), "mock")),
+        }
+    }
+
+    fn make_cmd(cmd_type: &str) -> RpcCommand {
+        serde_json::from_str(&format!(
+            r#"{{"id":"test_cmd","type":"{}","sessionId":"default"}}"#,
+            cmd_type
+        ))
+        .unwrap()
+    }
+
+    fn parse_response(json: &str) -> serde_json::Value {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn unknown_command_returns_error() {
+        let state = make_app_state();
+        let cmd = make_cmd("nonexistent_command");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("unknown command"));
+    }
+
+    #[test]
+    fn get_agent_info_returns_version() {
+        let state = make_app_state();
+        let cmd = make_cmd("get_agent_info");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["version"].is_string());
+    }
+
+    #[test]
+    fn get_state_returns_session_info() {
+        let state = make_app_state();
+        let cmd = make_cmd("get_state");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["sessionId"].is_string());
+    }
+
+    #[test]
+    fn refresh_skills_returns_skill_list() {
+        let state = make_app_state();
+        let cmd = make_cmd("refresh_skills");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["skills_count"].is_number());
+        assert!(resp["data"]["skills"].is_array());
+        assert_eq!(
+            resp["data"]["skills_count"].as_u64().unwrap(),
+            resp["data"]["skills"].as_array().unwrap().len() as u64
+        );
+        assert!(resp["data"]["refreshed"].is_boolean());
+    }
+
+    #[test]
+    fn refresh_skills_rate_limits_bursts() {
+        // A second call within the minimum interval must be served from the
+        // cache (`refreshed: false`) instead of rescanning the skill dirs.
+        // Robust against test ordering: any earlier refresh within the
+        // window only makes `refreshed: false` more likely.
+        let state = make_app_state();
+        handle_command_internal(&state, make_cmd("refresh_skills"));
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("refresh_skills")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["refreshed"], false);
+    }
+
+    #[test]
+    fn shutdown_sets_flag() {
+        let state = make_app_state();
+        let cmd = make_cmd("shutdown");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(state
+            .shutting_down
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn prompt_rejected_after_shutdown() {
+        let state = make_app_state();
+        let cmd = make_cmd("shutdown");
+        handle_command_internal(&state, cmd);
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "hello".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("shutting down"));
+    }
+
+    #[test]
+    fn set_permission_level_valid() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_permission_level");
+        cmd.level = "workspace".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["permissionLevel"], "workspace");
+    }
+
+    #[test]
+    fn set_permission_level_invalid() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_permission_level");
+        cmd.level = "invalid_level".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("invalid level"));
+    }
+
+    #[test]
+    fn set_thinking_level_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_thinking_level");
+        cmd.level = "high".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn set_auto_compaction_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_auto_compaction");
+        cmd.enabled = false;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn set_auto_retry_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_auto_retry");
+        cmd.enabled = true;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn set_ephemeral_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_ephemeral");
+        cmd.ephemeral = true;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["ephemeral"], true);
+    }
+
+    #[test]
+    fn abort_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("abort");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn get_messages_returns_empty() {
+        let state = make_app_state();
+        let cmd = make_cmd("get_messages");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["messages"].is_array());
+    }
+
+    #[test]
+    fn get_session_stats_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("get_session_stats");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["sessionId"].is_string());
+    }
+
+    #[test]
+    fn cycle_thinking_level_advances() {
+        let state = make_app_state();
+        let cmd = make_cmd("cycle_thinking_level");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["level"].is_string());
+    }
+
+    #[test]
+    fn set_enabled_models_accepted() {
+        let state = make_app_state();
+        let cmd = make_cmd("set_enabled_models");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn disable_tools_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("disable_tools");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn disable_builtin_tools_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("disable_builtin_tools");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn set_system_prompt_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_system_prompt");
+        cmd.system_prompt = "You are helpful".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn append_system_prompt_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("append_system_prompt");
+        cmd.system_prompt = "Extra instructions".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn set_cwd_trims_trailing_slash() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_cwd");
+        cmd.cwd = "/tmp/project/ ".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["cwd"], "/tmp/project");
+    }
+
+    #[test]
+    fn set_sandbox_policy_missing_payload() {
+        let state = make_app_state();
+        let cmd = make_cmd("set_sandbox_policy");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing sandbox_policy"));
+    }
+
+    #[test]
+    fn compact_empty_session() {
+        let state = make_app_state();
+        let cmd = make_cmd("compact");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["messagesRemoved"], 0);
+    }
+
+    #[test]
+    fn approval_decision_invalid_mode() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("approval_decision");
+        cmd.mode = "invalid".to_string();
+        cmd.entry_id = "req_1".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("approved, rejected, or cancelled"));
+    }
+
+    #[test]
+    fn shell_echo() {
+        let state = make_app_state();
+        std::fs::create_dir_all(&state.welcome_cwd).unwrap();
+        let mut cmd = make_cmd("shell");
+        cmd.command = "echo test_output".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["output"]
+            .as_str()
+            .unwrap()
+            .contains("test_output"));
+        assert_eq!(resp["data"]["exitCode"], 0);
+    }
+
+    #[test]
+    fn abort_retry_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("abort_retry");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn abort_shell_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("abort_shell");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn list_sessions_returns_array() {
+        let state = make_app_state();
+        let cmd = make_cmd("list_sessions");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["sessions"].is_array());
+    }
+
+    #[test]
+    fn list_streaming_sessions_reports_only_streaming() {
+        let state = make_app_state();
+        let cmd = make_cmd("list_streaming_sessions");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(
+            resp["data"]["sessionIds"].as_array().unwrap().len(),
+            0,
+            "nothing streams at startup"
+        );
+
+        state.sessions.read()["default"]
+            .read()
+            .is_streaming
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("list_streaming_sessions"),
+        ));
+        let ids = resp["data"]["sessionIds"].as_array().unwrap();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], "default");
+    }
+
+    #[test]
+    fn reload_auth_works() {
+        let state = make_app_state();
+        let cmd = make_cmd("reload_auth");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn get_events_since_empty() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("get_events_since");
+        cmd.run_id = "run_1".to_string();
+        cmd.since_idx = -1;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["events"].is_array());
+    }
+
+    #[test]
+    fn get_commands_returns_list() {
+        let state = make_app_state();
+        let cmd = make_cmd("get_commands");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let commands = resp["data"]["commands"].as_array().unwrap();
+        // Commands list may be empty in minimal environments (no skills installed)
+        assert!(commands.iter().all(|c| c.is_object()));
+    }
+
+    #[test]
+    fn add_session_rule_works() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("add_session_rule");
+        cmd.message = "/tmp/**".to_string();
+        cmd.mode = "read".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
 }

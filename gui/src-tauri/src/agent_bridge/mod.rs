@@ -14,8 +14,9 @@ pub use self::approval::{decide_approval, inject_session_rule};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     connect_agent, delete_session_command, get_available_models_command,
-    get_session_entries_command, get_state_command, set_cwd_command, set_model_command,
-    set_session_name_command, set_thinking_level_command, RpcResponseExt,
+    get_session_entries_command, get_state_command, list_streaming_sessions_command, map_rpc_error,
+    set_cwd_command, set_model_command, set_session_name_command, set_thinking_level_command,
+    RpcResponseExt,
 };
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub(crate) use self::import::import_missing_sessions;
@@ -23,7 +24,7 @@ pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;
 pub(crate) use self::run_control::abort_session;
 pub use self::session::fork_agent_session;
-pub use self::skills::{list_installed_skills, InstalledSkill};
+pub use self::skills::{list_installed_skills, refresh_skills, InstalledSkill};
 pub use review::retry as retry_run_review;
 
 use serde::Serialize;
@@ -55,6 +56,10 @@ pub struct AgentPromptResponse {
     /// The agent session id (newly-created or existing). The frontend persists
     /// this on the thread so subsequent prompts reuse the same session.
     pub session_id: String,
+    /// True when the thread already had a session but the agent no longer had
+    /// it (or its cwd drifted), so a fresh empty session replaced it. The
+    /// frontend must warn the user that prior agent-side context was lost.
+    pub session_recreated: bool,
 }
 
 /// Fetch the agent's buffered events for a session's current run (P1c backfill).
@@ -209,7 +214,7 @@ pub(crate) async fn provision_agent_session(
     let mut client = connect_agent().await?;
     // Empty stored id → the agent generates a real session id, seeded with the
     // caller's model / thinking selections (matches the GUI new-chat draft).
-    let session_id = ensure_agent_session(
+    let ensured = ensure_agent_session(
         &mut client,
         "",
         &cwd,
@@ -217,6 +222,7 @@ pub(crate) async fn provision_agent_session(
         thinking_level.as_deref(),
     )
     .await?;
+    let session_id = ensured.session_id;
     set_agent_permission_level(&mut client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut client, &session_id, thread_id).await?;
     crate::store::update_thread_session_id(thread_id, &session_id)?;
@@ -242,7 +248,9 @@ pub async fn reload_agent_credentials() -> Result<(), crate::AppError> {
     client
         .execute_command(base_command("reload_auth", String::new()))
         .await
-        .map_err(|error| format!("Unable to refresh Future Agent credentials: {error}"))?
+        // Transport-level Unavailable → AgentUnavailable → treated as success
+        // above ("no in-memory state to refresh on a down agent").
+        .map_err(|status| map_rpc_error("Unable to refresh Future Agent credentials", status))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the credential refresh.")?;
     Ok(())
@@ -361,7 +369,7 @@ async fn agent_prompt_inner(
     // once we know the agent-generated session id so the directory can be named
     // after it.
     let existing_cwd = workspace_path_for_thread(&thread_id)?;
-    let session_id = ensure_agent_session(
+    let ensured = ensure_agent_session(
         &mut command_client,
         &stored_session_id,
         &existing_cwd,
@@ -369,6 +377,16 @@ async fn agent_prompt_inner(
         thinking_level.as_deref(),
     )
     .await?;
+    let session_id = ensured.session_id;
+    if ensured.recreated {
+        // The thread's previous agent session was unusable (data gone or cwd
+        // drift) and a fresh empty session replaced it. The GUI still shows
+        // the old history, so without a visible signal the next reply looks
+        // like the agent suddenly "forgot" the conversation.
+        eprintln!(
+            "FutureOS: thread {thread_id} agent session {stored_session_id} was recreated as {session_id} — prior agent-side context is unavailable"
+        );
+    }
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
 
@@ -461,6 +479,7 @@ async fn agent_prompt_inner(
                 content: response.content,
                 complete: response.complete,
                 session_id,
+                session_recreated: ensured.recreated,
             })
         }
         Err(error) => {
@@ -632,7 +651,7 @@ async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), St
         let Some(event) = event else {
             // Stream ended without agent_end — settle the run.
             let _ = crate::store::settle_interrupted_run(run_id, "failed");
-            let _ = crate::store::clear_run_event_buffer(run_id);
+            crate::store::clear_run_event_buffer(run_id);
             break;
         };
 
@@ -692,9 +711,10 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    if existing_runs.iter().any(|r| {
-        r.status == "completed" && r.ended_at.map_or(false, |ended| now_ms - ended < 10_000)
-    }) {
+    if existing_runs
+        .iter()
+        .any(|r| r.status == "completed" && r.ended_at.is_some_and(|ended| now_ms - ended < 10_000))
+    {
         return Ok(String::new()); // empty = already handled
     }
 
@@ -775,7 +795,7 @@ async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), Str
                 error_message: Some("stream ended without agent_end".to_string()),
                 error_type: None,
             });
-            let _ = crate::store::clear_run_event_buffer(run_id);
+            crate::store::clear_run_event_buffer(run_id);
             break;
         };
 

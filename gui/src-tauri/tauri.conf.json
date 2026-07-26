@@ -15,6 +15,7 @@
         "title": "FutureOS",
         "width": 1440,
         "height": 960,
+        "visible": false,
         "minWidth": 1024,
         "minHeight": 720,
         "decorations": true,
@@ -33,6 +34,14 @@
         "enable": true,
         "scope": ["$APPCACHE/**", "$APPDATA/**", "$HOME/.future/**", "$TEMP/**"]
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://dl.future-os.cn/releases/latest.json"
+      ]
     }
   },
   "bundle": {

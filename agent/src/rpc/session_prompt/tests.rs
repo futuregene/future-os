@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use std::path::PathBuf;
 
 use crate::{
@@ -197,8 +197,6 @@ fn session_info_content_includes_required_fields() {
     let entry = SessionEntry::session_info(content.clone(), "claude".into(), "high".into());
     assert_eq!(entry.entry_type, "session_info");
     assert_eq!(entry.role, "system");
-    assert_eq!(entry.model, "claude");
-    assert_eq!(entry.thinking_level, "high");
 
     let restored = entry.content.unwrap();
     assert_eq!(

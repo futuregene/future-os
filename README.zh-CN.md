@@ -35,7 +35,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 
 每个平台的完整构建（agent + TUI + CLI + GUI）都需要：
 
-- **Rust** 1.96+（由 `rust-toolchain.toml` 固定）
+- **Rust** 1.97+（由 `rust-toolchain.toml` 固定）
 - **Node.js** 24+（见 `.nvmrc`）
 - **Bun** —— 必需项，非可选：TUI 构建和 CLI/GUI 打包均使用 `bun build`
 - 可选：**Python 3** —— 仅 `make generate-models` 需要
@@ -205,9 +205,11 @@ FutureOS 内置一套精选技能——针对深度研究、浏览器自动化�
 make install-skills                          # 从内置 skills/ 子模块创建符号链接
 # 或从平台目录安装：
 future skills install                        # 安装所有 future-* 技能（约 13 个）
+future init                                  # 安装技能；macOS/Linux 上同时链接本地命令
 ```
 
 > 技能以符号链接方式装入 `~/.future/agent/skills/`，Agent 会自动发现。使用 `future skills list` 查看可用技能，`future skills update` 升级。
+> 在 macOS 和 Linux 上，`future init` 还会将 `future` 及同目录中存在的 `future-agent` 软链到 `~/.future/bin/`；可按需将该目录加入 `PATH`。
 
 ### 启动 Agent
 

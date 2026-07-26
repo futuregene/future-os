@@ -5,7 +5,7 @@
 
 import { GrpcClient } from "./rpc/index.js";
 import { VERSION } from "./version.generated.js";
-import type { SessionSummary } from "./rpc/types.js";
+import type { SessionSummary, ThinkingLevel } from "./rpc/types.js";
 import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
@@ -40,6 +40,11 @@ function isTermuxSession(): boolean {
   return Boolean(process.env.TERMUX_VERSION);
 }
 
+/** Collapse all whitespace runs (spaces, tabs, newlines) to a single space and trim. */
+function sanitizeSessionName(name: string): string {
+  return name.replace(/\s+/g, " ").trim();
+}
+
 export class App extends Container {
   private terminal: NodeTerminal;
   private client: GrpcClient;
@@ -55,6 +60,7 @@ export class App extends Container {
   private acManager = new AutocompleteManager();
   private keybindings = new KeybindingManager();
   private enabledModelIds: string[] | null = null;  // client-side scoped models
+  private connectionLost = false;  // true when agent RPC stream is down
 
   // ── TUI-local settings (persisted to disk, not on agent) ──────────────
   private tuiSettings: { defaultModel?: string; defaultThinkingLevel?: string; defaultPermissionLevel?: string; enabledModelIds?: string[] } = {};
@@ -90,9 +96,12 @@ export class App extends Container {
   private getSessions = async (): Promise<string[]> => {
     try {
       const r = await this.client.listSessions();
-      return r.sessions.map((s) => s.session_name || s.id);
+      return r.sessions.map((s) => sanitizeSessionName(s.session_name || s.id));
     } catch { return []; }
   };
+
+  // Per-session draft input cache — preserves unsent text when switching sessions
+  private sessionInputCache = new Map<string, string>();
 
   private state = {
     model: "",
@@ -120,6 +129,19 @@ export class App extends Container {
   };
 
   private running = false;
+
+  /** Save the current input draft for the current session before switching away. */
+  private saveSessionInput(): void {
+    if (this.state.sessionId) {
+      this.sessionInputCache.set(this.state.sessionId, this.input.getValue());
+    }
+  }
+
+  /** Restore the cached input draft for the current session, or clear if none. */
+  private restoreSessionInput(): void {
+    const cached = this.sessionInputCache.get(this.state.sessionId);
+    this.input.setValue(cached ?? "");
+  }
 
   // Diff-based render state 
   private previousLines: string[] = [];
@@ -228,6 +250,38 @@ export class App extends Container {
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
+  /// Poll the agent every 1 s until it responds (or the TUI is stopped).
+  /// Shows a single "Connecting…" message on first failure; clears it on success.
+  private async waitForAgent(): Promise<void> {
+    let firstAttempt = true;
+    while (this.running) {
+      if (await this.client.tryConnect()) {
+        if (!firstAttempt) {
+          // Remove the "Connecting..." placeholder if we added one earlier
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "✅  Connected to agent",
+          });
+          this.requestRender();
+        }
+        return;
+      }
+      if (firstAttempt) {
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: "Connecting to agent… (retrying every 1s)",
+        });
+        this.requestRender();
+        // Yield to the event loop so the "Connecting…" message renders
+        await new Promise((r) => setTimeout(r, 50));
+        firstAttempt = false;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+
   async start(): Promise<void> {
     this.loadTuiSettings();
     this.terminal.hideCursor();
@@ -239,6 +293,10 @@ export class App extends Container {
       (data: string) => this.handleInput(data),
       () => this.requestResizeRender(),
     );
+
+    // Wait for agent to be reachable (retries every 1 s).
+    await this.waitForAgent();
+    if (!this.running) return;
 
     // Handle CLI session options
     if (this.cliOptions.session) {
@@ -316,6 +374,11 @@ export class App extends Container {
         this.client.prompt(this.cliOptions.initialPrompt!);
       }, 100);
     }
+
+    // Listen for connection state changes (runtime disconnects / reconnects).
+    this.client.onConnectionChange((connected) => {
+      this.setConnectionLost(!connected);
+    });
 
     // Subscribe to events only after session is established — prevents
     // cross-session event leakage (e.g. GUI streaming bleeding into TUI).
@@ -396,6 +459,8 @@ export class App extends Container {
 
       case "agent_end": {
         this.state.streaming = false;
+        this.state.activeToolCount = 0;
+        this.state.toolStartTime = 0;
         const e = event as { text?: string };
         if (e.text && this.chat) {
           this.chat.updateLastMessage(e.text);
@@ -407,6 +472,8 @@ export class App extends Container {
 
       case "agent_start":
         this.state.streaming = true;
+        this.state.activeToolCount = 0;
+        this.state.toolStartTime = 0;
         this.chat.addMessage({
           id: crypto.randomUUID(),
           role: "assistant",
@@ -451,6 +518,10 @@ export class App extends Container {
         this.chat.finishTool(e.tool_id ?? "", e.text);
         this.state.activeToolCount = Math.max(0, this.state.activeToolCount - 1);
         if (this.state.activeToolCount === 0) this.state.toolStartTime = 0;
+        // Each LLM turn may have its own cost (which was finalised before
+        // tools executed).  Pull the latest cumulative cost/token totals so
+        // the footer updates after every tool call, not just at agent_end.
+        this.refresh().then(() => this.requestRender());
         break;
       }
 
@@ -833,8 +904,10 @@ export class App extends Container {
 
   private handleInterrupt(): void {
     if (this.state.streaming) {
-      this.client.abort();
+      this.client.abort().catch(() => { /* connection may close before abort completes */ });
       this.state.streaming = false;
+      this.state.activeToolCount = 0;
+      this.state.toolStartTime = 0;
       // Mark the in-progress assistant message as stopped so the partial
       // content (thinking, text, tool calls) is preserved and visible —
       // matching the GUI's behaviour of keeping the aborted reply.
@@ -865,6 +938,15 @@ export class App extends Container {
       const arg = parts.slice(1).join(" ");
 
       if (cmd === "model") {
+        if (this.state.streaming) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Cannot change model while agent is streaming. Wait for the current run to finish.",
+          });
+          this.requestRender();
+          return;
+        }
         if (arg) {
           // Set model directly — agent resolves and stores provider/id
           try {
@@ -1007,9 +1089,11 @@ export class App extends Container {
             maxVisible: 15,
             onSelect: async (item) => {
               try {
+                this.saveSessionInput();
                 const r = await this.client.fork(item.value);
                 if (!r.cancelled) {
                   await this.refresh();
+                  this.restoreSessionInput();
                   await this.loadSessionMessages();
                   this.chat.addMessage({
                     id: crypto.randomUUID(),
@@ -1030,7 +1114,7 @@ export class App extends Container {
               this.hideOverlay();
             },
           });
-          this.showOverlay(sl);
+          this.showOverlay(sl, { width: Math.min(80, this.terminal.columns - 4) });
         } catch (err) {
           this.chat.addMessage({
             id: crypto.randomUUID(),
@@ -1092,12 +1176,11 @@ export class App extends Container {
                   prefix += isLast ? "└─ " : "├─ ";
                 }
                 const currentMarker = s.id === this.state.sessionId ? "▶ " : "  ";
-                const streamingMark = (s as any).is_streaming ? "● " : "";
-                const label = `${currentMarker}${streamingMark}${prefix}${s.session_name || (s as any).first_message || s.id}`;
+                const label = `${currentMarker}${prefix}${sanitizeSessionName(s.session_name || (s as any).first_message || s.id)}`;
                 items.push({
                   value: s.id,
                   label,
-                  description: `${s.model} · ${(s as any).query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
+                  description: s.id === this.state.sessionId ? "current" : "",
                 });
                 if (hasChildren) {
                   flatten(children.get(s.id)!, depth + 1, [...ancestorsLast, isLast]);
@@ -1113,8 +1196,10 @@ export class App extends Container {
             onSelect: async (item) => {
               try {
                 if (item.value !== this.state.sessionId) {
+                  this.saveSessionInput();
                   await this.client.switchSession(item.value);
                   await this.refresh();
+                  this.restoreSessionInput();
                   await this.loadSessionMessages();
                   this.chat.addMessage({
                     id: crypto.randomUUID(),
@@ -1135,7 +1220,7 @@ export class App extends Container {
               this.hideOverlay();
             },
           });
-          this.showOverlay(treeList);
+          this.showOverlay(treeList, { width: Math.min(80, this.terminal.columns - 4) });
         } catch (err) {
           this.chat.addMessage({
             id: crypto.randomUUID(),
@@ -1148,9 +1233,17 @@ export class App extends Container {
 
       if (cmd === "new") {
         try {
-          const result = await this.client.newSession();
+          // Inherit cwd, model, and thinking level from the current session
+          // so /new feels like a clean continuation instead of a reset.
+          this.saveSessionInput();
+          const result = await this.client.newSession({
+            cwd: this.state.cwd || undefined,
+            modelId: this.state.model || undefined,
+            level: (this.state.thinking || undefined) as ThinkingLevel | undefined,
+          });
           if (result.sessionId) {
             await this.refresh();
+            this.restoreSessionInput();
             this.chat.addMessage({
               id: crypto.randomUUID(),
               role: "system",
@@ -1222,7 +1315,7 @@ export class App extends Container {
               this.hideOverlay();
             },
           });
-          this.showOverlay(selector);
+          this.showOverlay(selector, { width: Math.min(100, this.terminal.columns - 4) });
         } catch (err) {
           this.chat.addMessage({
             id: crypto.randomUUID(),
@@ -1234,6 +1327,15 @@ export class App extends Container {
       }
 
       if (cmd === "cwd" && arg) {
+        if (this.state.streaming) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Cannot change working directory while agent is streaming.",
+          });
+          this.requestRender();
+          return;
+        }
         try {
           let resolved = arg;
           if (resolved === "~") {
@@ -1535,11 +1637,42 @@ export class App extends Container {
     } catch { /* ok if agent doesn't support a command yet */ }
   }
 
+  private setConnectionLost(lost: boolean): void {
+    if (this.connectionLost === lost) return;
+    this.connectionLost = lost;
+    if (lost) {
+      this.state.streaming = false;
+      this.state.activeToolCount = 0;
+      this.state.toolStartTime = 0;
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "⚠️  Connection to agent lost — retrying every 1s...",
+      });
+    } else {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "✅  Reconnected to agent",
+      });
+      // Delay refresh — after stream reconnect the gRPC channel may need
+      // a moment to become ready for unary RPCs (the stream delivers data
+      // before the channel finishes its HTTP/2 handshake).
+      setTimeout(() => this.refresh().catch(() => {}), 500);
+    }
+    this.requestRender();
+  }
+
   private async refresh(): Promise<void> {
     try {
       const s = await this.client.getState();
       this.state.model = s.model ?? "(no model)";
       this.state.thinking = s.thinkingLevel;
+      this.state.streaming = s.isStreaming ?? false;
+      if (!this.state.streaming) {
+        this.state.activeToolCount = 0;
+        this.state.toolStartTime = 0;
+      }
       this.state.sessionId = s.sessionId ?? this.state.sessionId;
       this.state.cwd = s.cwd ?? "";
       this.state.version = s.version ?? "";
@@ -1565,6 +1698,17 @@ export class App extends Container {
         this.client.setCurrentSessionId(s.sessionId);
         this.client.connectEvents();
       }
+
+      // Clear connection-lost flag if we successfully reached the agent.
+      if (this.connectionLost) {
+        this.connectionLost = false;
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: "✅  Reconnected to agent",
+        });
+        this.requestRender();
+      }
     } catch {
       // Keep last known model; footer briefly showing "(not connected)" is
       // confusing during transient reconnects.
@@ -1575,6 +1719,15 @@ export class App extends Container {
   }
 
   async showModelSelector(): Promise<void> {
+    if (this.state.streaming) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "Cannot change model while agent is streaming.",
+      });
+      this.requestRender();
+      return;
+    }
     let models: string[] = [];
     try {
       const allModels = await this.client.listModels();
@@ -1627,10 +1780,19 @@ export class App extends Container {
       },
     });
 
-    this.showOverlay(sl);
+    this.showOverlay(sl, { width: Math.min(80, this.terminal.columns - 4) });
   }
 
   private async cycleModel(): Promise<void> {
+    if (this.state.streaming) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "Cannot change model while agent is streaming.",
+      });
+      this.requestRender();
+      return;
+    }
     try {
       // If scoped models are set, cycle within them locally.
       if (this.enabledModelIds && this.enabledModelIds.length > 0) {
@@ -1651,6 +1813,15 @@ export class App extends Container {
   }
 
   private async cycleThinking(): Promise<void> {
+    if (this.state.streaming) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "Cannot change thinking level while agent is streaming.",
+      });
+      this.requestRender();
+      return;
+    }
     try {
       const r = await this.client.cycleThinkingLevel();
       if (r) {
@@ -1669,7 +1840,7 @@ export class App extends Container {
       render: (width: number) => renderHelp(width),
       invalidate: () => {},
     };
-    this.showOverlay(helpComponent);
+    this.showOverlay(helpComponent, { width: this.terminal.columns });
   }
 
   showOverlay(component: Component, options?: OverlayOptions): OverlayHandle {
@@ -1773,9 +1944,13 @@ export class App extends Container {
       : base;
 
     for (const entry of visible) {
-      const overlayLines = entry.component.render(termW);
+      // Two-pass render: first pass at termW to measure height for layout,
+      // then re-render at layout.width so content fits the composited box.
+      const measureLines = entry.component.render(termW);
+      if (measureLines.length === 0) continue;
+      const layout = resolveOverlayLayout(termW, termH, measureLines.length, entry.options);
+      const overlayLines = entry.component.render(layout.width);
       if (overlayLines.length === 0) continue;
-      const layout = resolveOverlayLayout(termW, termH, overlayLines.length, entry.options);
 
       // Blank out the overlay area first, then composite lines
       const maxRows = Math.min(overlayLines.length, layout.maxHeight, termH - layout.row);
@@ -1874,8 +2049,8 @@ export class App extends Container {
 
     const items: SelectItem[] = sessions.map((s) => ({
       value: s.id,
-      label: s.session_name || (s as any).first_message || s.id,
-      description: `${s.is_streaming ? "● " : ""}${s.model} · ${s.query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
+      label: sanitizeSessionName(s.session_name || (s as any).first_message || s.id),
+      description: s.id === this.state.sessionId ? "current" : "",
     }));
 
     const sl = new SelectList({
@@ -1884,8 +2059,10 @@ export class App extends Container {
       maxVisible: 15,
       onSelect: async (item) => {
         try {
+          this.saveSessionInput();
           await this.client.switchSession(item.value);
           await this.refresh();
+          this.restoreSessionInput();
           await this.loadSessionMessages();
           this.chat.addMessage({
             id: crypto.randomUUID(),
@@ -1906,7 +2083,7 @@ export class App extends Container {
       },
     });
 
-    this.showOverlay(sl);
+    this.showOverlay(sl, { width: Math.min(80, this.terminal.columns - 4) });
   }
 
   async showSettings(): Promise<void> {
@@ -1940,7 +2117,7 @@ export class App extends Container {
       },
     });
 
-    this.showOverlay(sl);
+    this.showOverlay(sl, { width: Math.min(80, this.terminal.columns - 4) });
   }
 
   // ─── Rendering (differential with synchronized output) ──────────
@@ -2148,6 +2325,11 @@ export class App extends Container {
     // Filter out undefined entries (can happen with certain input sequences)
     newLines = newLines.map((l) => l ?? "");
 
+    // Extract cursor position BEFORE overlay compositing — overlays may
+    // cover the editor row and drop the cursor marker, causing hardware-
+    // cursor tracking to drift and diff renders to write at wrong rows.
+    const cursorPos = this.extractCursorPosition(newLines, H);
+
     // Composite overlays into rendered lines (before diff compare)
     if (this.overlayStack.length > 0) {
       newLines = this.compositeOverlays(newLines, W, H);
@@ -2172,9 +2354,6 @@ export class App extends Container {
         }
       }
     }
-
-    // Extract cursor position before line resets (marker must be found first)
-    const cursorPos = this.extractCursorPosition(newLines, H);
 
     // Apply line resets (prevents ANSI style bleed between lines)
     newLines = this.applyLineResets(newLines);

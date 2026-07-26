@@ -28,7 +28,10 @@ impl ServerSession {
         };
 
         // Whether the active model accepts image input (catalog modalities).
-        let model_supports_images = crate::models::model_accepts_images(&self.model);
+        // Uses the cached registry from ServerSession to avoid ~15% CPU overhead
+        // from re-deserialising the full model catalog on every prompt.
+        let model_supports_images =
+            crate::models::model_accepts_images_with(&self.model_registry.read(), &self.model);
         // Images are read + (down)encoded to base64 here, on the agent, from the
         // local path the GUI sent — the base64 never crosses the wire.
         let user_message = build_user_message(
@@ -47,6 +50,7 @@ impl ServerSession {
         // or deliberately repeating a message ("continue", "yes", same text
         // with different attachments).
         let user_text = user_message.text();
+        let user_display_text = user_message.display_text();
         self.messages.write().push(user_message);
 
         // Log the user message so the run log shows the question alongside
@@ -57,9 +61,12 @@ impl ServerSession {
 
         // Broadcast the user message to all connected clients so a second TUI
         // observing the same session sees the question alongside the answer.
+        // Use display_text (first text block only): text() also joins the
+        // agent-injected attachment manifest, which observers would render
+        // as a bogus extra bubble.
         self.broadcaster.broadcast(crate::rpc::SseEvent::new(
             "user_message",
-            serde_json::json!({"text": user_text}),
+            serde_json::json!({"text": user_display_text}),
         ));
 
         // Persist immediately so the GUI can see the user message (and any
@@ -156,7 +163,7 @@ impl ServerSession {
             Arc::new(move |msg: &crate::types::AgentMessage| {
                 b.broadcast(crate::rpc::SseEvent::new(
                     "user_message",
-                    serde_json::json!({"text": msg.text()}),
+                    serde_json::json!({"text": msg.display_text()}),
                 ));
             })
         };
@@ -176,8 +183,8 @@ impl ServerSession {
             on_user_message: Some(user_msg_cb),
         };
 
-        // Set approval/sandbox hooks on the shared Loop config (these are not
-        // callbacks — they're tool-execution hooks on AgentConfig).
+        // Set approval/sandbox hooks on this session's Loop config (these
+        // are not callbacks — they're tool-execution hooks on AgentConfig).
         if let Ok(mut r#loop) = agent_loop.try_write() {
             let approval_gate_hook = approval_gate.clone();
             let approval_broadcaster = broadcaster.clone();
@@ -218,7 +225,7 @@ impl ServerSession {
         // for both initial prompts and follow-up turns.
 
         // Clear any stale interrupt flag left by a previous abort().
-        // Ctrl+C / abort sets interrupt_flag=true on the shared agent_loop.
+        // abort() sets interrupt_flag=true on this session's own agent_loop.
         // Without clearing it, the spawned task's first loop iteration would
         // exit immediately without calling the LLM.
         let shared_interrupt_flag = if let Ok(r#loop) = self.agent_loop.try_read() {
@@ -400,8 +407,19 @@ impl ServerSession {
                                 entries.iter_mut().zip(old_msg_entries.iter())
                             {
                                 new_entry.timestamp = old_entry.timestamp;
-                                new_entry.output_tokens = old_entry.output_tokens;
-                                new_entry.duration_ms = old_entry.duration_ms;
+                                // Preserve run stats from old entry's content
+                                if let Some(ref old_content) = old_entry.content {
+                                    if let Some(obj) =
+                                        new_entry.content.as_mut().and_then(|c| c.as_object_mut())
+                                    {
+                                        if let Some(v) = old_content.get("run_tokens") {
+                                            obj.insert("run_tokens".to_string(), v.clone());
+                                        }
+                                        if let Some(v) = old_content.get("run_duration_ms") {
+                                            obj.insert("run_duration_ms".to_string(), v.clone());
+                                        }
+                                    }
+                                }
                             }
 
                             // Attach this run's output tokens + wall-clock duration
@@ -417,8 +435,19 @@ impl ServerSession {
                                 .rev()
                                 .find(|e| e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT)
                             {
-                                last_assistant.output_tokens = run_output_tokens;
-                                last_assistant.duration_ms = run_duration_ms;
+                                // Store run stats in the last assistant's content JSON
+                                if let Some(ref mut content) = last_assistant.content {
+                                    if let Some(obj) = content.as_object_mut() {
+                                        obj.insert(
+                                            "run_tokens".to_string(),
+                                            serde_json::json!(run_output_tokens),
+                                        );
+                                        obj.insert(
+                                            "run_duration_ms".to_string(),
+                                            serde_json::json!(run_duration_ms),
+                                        );
+                                    }
+                                }
                             }
                         }
 
@@ -526,7 +555,6 @@ impl ServerSession {
                                     "tokens_in": tokens_in.load(Ordering::Relaxed),
                                     "tokens_out": tokens_out.load(Ordering::Relaxed),
                                 }));
-                                comp_entry.label = "compacted".to_string();
                                 entries.insert(idx + 1, comp_entry);
                                 entries.remove(idx);
                             }
@@ -616,9 +644,12 @@ impl ServerSession {
             if let Ok(mut r#loop) = self.agent_loop.try_write() {
                 let comp_tokens = self.last_prompt_tokens.clone();
                 let comp_result = r#loop.last_compaction_result.clone();
-                // Resolve context_window once — avoid creating a new Registry
-                // on every LLM call inside the closure.
-                let context_window = crate::models::Registry::new()
+                let comp_failed = r#loop.compaction_failed.clone();
+                // Resolve context_window once — reuse cached registry
+                // to avoid re-deserialising the model catalog.
+                let context_window = self
+                    .model_registry
+                    .read()
                     .resolve(&self.model)
                     .map(|m| m.context_window)
                     .unwrap_or(1_000_000); // Modern default: 1M (was 200K — too low for 1M models)
@@ -639,6 +670,7 @@ impl ServerSession {
                     // substantial conversation continuity after compaction.
                     let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
                     let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
+                    let needs_compact = context_tokens > context_window - reserve_tokens;
                     let (compacted, result) = crate::compaction::compact(
                         msgs,
                         &crate::compaction::CompactOptions {
@@ -650,6 +682,18 @@ impl ServerSession {
                     );
                     if let Some(r) = result {
                         *comp_result.lock() = Some(r);
+                        compacted
+                    } else if needs_compact {
+                        // Compaction was needed but compact() returned no result,
+                        // meaning it found no valid cut point. Signal failure so
+                        // the run loop can report an error instead of silently
+                        // proceeding with full (overflowing) context.
+                        tracing::error!(
+                            tokens = context_tokens,
+                            window = context_window,
+                            "auto-compaction needed but failed"
+                        );
+                        comp_failed.store(true, Ordering::SeqCst);
                         compacted
                     } else {
                         compacted
@@ -663,12 +707,9 @@ impl ServerSession {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         // Discover skills so they appear in the system prompt's <available_skills> block.
-        let skill_dirs = vec![
-            crate::skills::APP_SKILLS_DIR.to_string(),
-            format!("{}/{}", self.cwd, crate::skills::PROJECT_SKILLS_DIR),
-            crate::skills::AGENTS_SKILLS_DIR.to_string(),
-        ];
-        let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+        // Global user-level dirs only — identical for every session/cwd, which
+        // keeps the skills cache correct regardless of which session refreshes it.
+        let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
 
         // Load project context (AGENTS.md / CLAUDE.md / GEMINI.md)
         let mut agent_content = String::new();
@@ -711,32 +752,47 @@ impl ServerSession {
         })
     }
 
-    /// Persist the current session snapshot (entries + prepended session_info)
-    /// so the GUI sees the just-pushed user message mid-stream. Best-effort:
-    /// a save failure is logged, not propagated.
+    /// Persist the just-pushed user message so the GUI sees it mid-stream.
+    /// Uses append-only when the session file already exists (avoids a full
+    /// rewrite); falls back to full save for a brand-new session that has no
+    /// JSONL yet.  The session_info line (token counts, model, name) stays
+    /// at its last-completed-run values — the final save at run end refreshes
+    /// it.  Best-effort: a save failure is logged, not propagated.
     fn persist_user_message(&self) {
+        // Use in-memory parent_session_id — avoids reading the entire session
+        // file from disk just to get one field.
+        let parent_session_id = self.parent_session_id.clone();
         let msgs = self.messages.read();
+
+        // Fast path: session file already exists → append just the new user
+        // message.  Skips a ~349 KB full rewrite to add one ~1 KB line.
+        if let Some(last_msg) = msgs.last() {
+            let entry = crate::session::agent_message_to_entry(last_msg);
+            match self
+                .session_manager
+                .append_entries(&self.session_id, &[entry])
+            {
+                Ok(()) => return, // appended — done
+                Err(_) => {
+                    // File doesn't exist yet (brand-new session) → fall through
+                    // to full save so the JSONL gets created with session_info.
+                }
+            }
+        }
+
+        // Slow path: full save (new session, or append failed).
         let mut entries: Vec<crate::session::SessionEntry> = msgs
             .iter()
             .map(crate::session::agent_message_to_entry)
             .collect();
-        let parent_session_id = self
-            .session_manager
-            .load(&self.session_id)
-            .map(|s| s.parent_session_id)
-            .unwrap_or_default();
         // Prepend session_info so token counts and other metadata survive
         // a crash — without this, a restarted session starts with zeroed
         // token counters and may skip needed compaction.
         {
             use std::sync::atomic::Ordering;
-            // Derive session_name: prefer the explicitly-set name; fall back
-            // to the first user message so the mid-stream save doesn't write
-            // an empty name that would leak into a subsequent fork.
             let session_name = if !self.session_name.is_empty() {
                 self.session_name.clone()
             } else {
-                // Same auto-generation logic as the final save below.
                 entries
                     .iter()
                     .find(|e| e.role == "user")

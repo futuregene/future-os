@@ -1,33 +1,18 @@
-//! App self-update: check the OSS release manifest and download the
-//! platform-appropriate installer.
+//! Signed in-place application updates through Tauri's updater plugin.
 //!
-//! The manifest (`releases/latest.json`) carries only `{ version, pub_date }`.
-//! Installer download URLs are derived deterministically from the version and
-//! the running platform — the release layout is flat:
-//!   `releases/<version>/FutureOS_<version>_<arch>.<ext>`
-//! (see `.github/workflows/build.yml`, "Stage publishable installers").
-//!
-//! Dev builds (version `0.0.0-dev.<hash>`) always report an available update —
-//! any real release outranks `0.0.0`. That is expected, not a bug.
+//! Formal builds embed the CDN `latest.json` endpoint and the updater public
+//! key through a per-build Tauri config overlay. The manifest may also contain
+//! the custom top-level `assets` map used by the website; Tauri ignores those
+//! additional fields and selects only the current entry under `platforms`.
 
-use std::io::Write;
-use std::time::Duration;
+use serde::Serialize;
+use serde_json::Value;
+use tauri::Emitter;
+use tauri_plugin_updater::UpdaterExt;
 
-use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager};
+use crate::{agent_supervisor, build_info, AppError};
 
-use crate::{build_info, AppError};
-
-const MANIFEST_URL: &str = "https://futureos.oss-cn-hangzhou.aliyuncs.com/releases/latest.json";
-const RELEASE_BASE: &str = "https://futureos.oss-cn-hangzhou.aliyuncs.com/releases";
-
-/// Event name for streaming download progress to the frontend.
 const PROGRESS_EVENT: &str = "app-update-progress";
-
-#[derive(Deserialize)]
-struct Manifest {
-    version: String,
-}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,191 +20,184 @@ pub struct UpdateStatus {
     pub current_version: String,
     pub latest_version: String,
     pub has_update: bool,
-    /// Whether this platform has a downloadable installer in the release layout.
     pub platform_supported: bool,
+    /// Website installer URL for builds that cannot use the in-place updater.
     pub download_url: Option<String>,
-    pub file_name: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DownloadProgress {
     downloaded: u64,
-    /// 0 when the server didn't send a Content-Length.
+    /// 0 when the server did not send a Content-Length.
     total: u64,
 }
 
-/// The installer file name for the current OS, or `None` on a platform we don't
-/// ship an installer for. Each platform ships a single arch, so the arch token
-/// is fixed (see the build matrix).
-fn platform_installer(version: &str) -> Option<String> {
-    match std::env::consts::OS {
-        "macos" => Some(format!("FutureOS_{version}_aarch64.dmg")),
-        "windows" => Some(format!("FutureOS_{version}_x64-setup.exe")),
-        "linux" => Some(format!("FutureOS_{version}_amd64.deb")),
-        _ => None,
-    }
+fn updater_error(context: &str, error: impl std::fmt::Display) -> AppError {
+    AppError::Message(format!("{context}: {error}"))
 }
 
-/// (major, minor, patch, is_prerelease) from a version string. Missing or
-/// non-numeric components read as 0 so a malformed manifest never panics.
-fn parse_version(v: &str) -> (u64, u64, u64, bool) {
-    let is_prerelease = v.contains('-');
-    let core = v.split('-').next().unwrap_or(v);
-    let mut parts = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
-    (
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-        is_prerelease,
-    )
+/// Return the website installer URL from the custom `assets` manifest field.
+///
+/// Tauri consumes `platforms` for its updater archive, while `assets` points
+/// to the normal DMG/EXE users should download when automatic installation is
+/// unavailable (for example from a local build).
+fn manual_download_url_for_asset(manifest: &Value, asset_key: &str) -> Option<String> {
+    let url = manifest
+        .get("assets")?
+        .get(asset_key)?
+        .get("url")?
+        .as_str()?;
+
+    url.starts_with("https://").then(|| url.to_owned())
 }
 
-/// Is `latest` newer than `current`? Compares the numeric core; on an equal
-/// core a release outranks a prerelease/dev of that core. Dev builds carry a
-/// `0.0.0` core, so any real release is "newer" — dev always sees an update.
-fn is_newer(latest: &str, current: &str) -> bool {
-    let (lm, ln, lp, l_pre) = parse_version(latest);
-    let (cm, cn, cp, c_pre) = parse_version(current);
-    if (lm, ln, lp) != (cm, cn, cp) {
-        return (lm, ln, lp) > (cm, cn, cp);
-    }
-    // Same core: a plain release beats a prerelease/dev build.
-    !l_pre && c_pre
-}
-
-fn http_client(timeout: Duration) -> Result<reqwest::Client, AppError> {
-    reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|error| AppError::Message(format!("Failed to create HTTP client: {error}")))
-}
-
-/// Fetch the release manifest and report whether an update is available for the
-/// current platform.
-#[tauri::command]
-pub async fn check_app_update() -> Result<UpdateStatus, AppError> {
-    let client = http_client(Duration::from_secs(15))?;
-    let response = client
-        .get(MANIFEST_URL)
-        .send()
-        .await
-        .map_err(|error| AppError::Message(format!("Failed to check for updates: {error}")))?;
-    if !response.status().is_success() {
-        return Err(AppError::Message(format!(
-            "Update check failed: server returned {}",
-            response.status()
-        )));
-    }
-    let manifest: Manifest = response
-        .json()
-        .await
-        .map_err(|error| AppError::Message(format!("Failed to parse version info: {error}")))?;
-
-    let current_version = build_info::VERSION.to_string();
-    let has_update = is_newer(&manifest.version, &current_version);
-
-    let (download_url, file_name, platform_supported) = match platform_installer(&manifest.version)
-    {
-        Some(name) => (
-            Some(format!("{RELEASE_BASE}/{}/{name}", manifest.version)),
-            Some(name),
-            true,
-        ),
-        None => (None, None, false),
+fn manual_download_url(manifest: &Value) -> Option<String> {
+    let asset_key = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "darwin-aarch64"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "darwin-x86_64"
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "windows-x86_64"
+    } else {
+        return None;
     };
 
-    Ok(UpdateStatus {
-        current_version,
-        latest_version: manifest.version,
-        has_update,
-        platform_supported,
-        download_url,
-        file_name,
-    })
+    manual_download_url_for_asset(manifest, asset_key)
 }
 
-/// Stream the installer to the user's Downloads directory, emitting
-/// `app-update-progress` events, and return the saved path.
-///
-/// SECURITY (deferred): the installer is protected only by HTTPS + the release
-/// host prefix — the manifest (`latest.json`, `{version}` only) and the package
-/// carry no signature/checksum, so a compromised OSS bucket could serve a poisoned
-/// installer (→ RCE on install). Fix needs the release pipeline to publish a
-/// per-installer SHA-256; verify it here before returning the path.
+/// Check the signed static manifest configured in `tauri.conf.json`.
 #[tauri::command]
-pub async fn download_app_update(
-    app: tauri::AppHandle,
-    url: String,
-    file_name: String,
-) -> Result<String, AppError> {
-    // Reject anything not on our release host — this URL is passed from the
-    // frontend, so pin the origin rather than trust it blindly.
-    if !url.starts_with(RELEASE_BASE) {
-        return Err(AppError::Message(
-            "Download URL is not from an allowed release source.".to_string(),
-        ));
-    }
-    // Guard against a crafted file_name escaping the Downloads directory.
-    if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') {
-        return Err(AppError::Message("Illegal filename.".to_string()));
+pub async fn check_app_update(app: tauri::AppHandle) -> Result<UpdateStatus, AppError> {
+    let current_version = build_info::VERSION.to_string();
+
+    // Linux is intentionally absent from formal releases. Avoid asking the
+    // plugin to resolve a target that latest.json deliberately does not carry.
+    if !cfg!(any(target_os = "macos", target_os = "windows")) {
+        return Ok(UpdateStatus {
+            latest_version: current_version.clone(),
+            current_version,
+            has_update: false,
+            platform_supported: false,
+            download_url: None,
+        });
     }
 
-    let dir = app.path().download_dir().map_err(|error| {
-        AppError::Message(format!("Failed to locate download directory: {error}"))
-    })?;
-    let dest = dir.join(&file_name);
-
-    // No timeout: installers are large and a slow link shouldn't abort mid-file.
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|error| AppError::Message(format!("Failed to create HTTP client: {error}")))?;
-    let mut response = client
-        .get(&url)
-        .send()
+    let updater = app
+        .updater()
+        .map_err(|error| updater_error("Failed to initialize the updater", error))?;
+    let update = updater
+        .check()
         .await
-        .map_err(|error| AppError::Message(format!("Download failed: {error}")))?;
-    if !response.status().is_success() {
-        return Err(AppError::Message(format!(
-            "Download failed: server returned {}",
-            response.status()
-        )));
-    }
+        .map_err(|error| updater_error("Failed to check for updates", error))?;
 
-    let total = response.content_length().unwrap_or(0);
-    let mut file = std::fs::File::create(&dest)?;
-    let mut downloaded: u64 = 0;
-    let mut last_emit: u64 = 0;
-
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| AppError::Message(format!("Download interrupted: {error}")))?
-    {
-        file.write_all(&chunk)?;
-        downloaded += chunk.len() as u64;
-        // Throttle to ~1 MiB steps (plus a final tick) to avoid flooding the UI.
-        if downloaded - last_emit >= 1_048_576 || (total > 0 && downloaded >= total) {
-            last_emit = downloaded;
-            let _ = app.emit(PROGRESS_EVENT, DownloadProgress { downloaded, total });
+    Ok(match update {
+        Some(update) => {
+            let download_url = manual_download_url(&update.raw_json);
+            UpdateStatus {
+                current_version,
+                latest_version: update.version,
+                has_update: true,
+                // Only formal signed builds embed the updater public key. Local and
+                // daily builds may inspect the public manifest, but must not offer
+                // installation without signature verification.
+                platform_supported: build_info::is_release(),
+                download_url,
+            }
         }
-    }
-    file.flush()?;
-
-    Ok(dest.to_string_lossy().into_owned())
+        None => UpdateStatus {
+            latest_version: current_version.clone(),
+            current_version,
+            has_update: false,
+            platform_supported: true,
+            download_url: None,
+        },
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use serde_json::json;
+
+    use super::manual_download_url_for_asset;
 
     #[test]
-    fn release_outranks_dev_and_older() {
-        assert!(is_newer("0.0.1", "0.0.0-dev.abc")); // dev always updates
-        assert!(is_newer("1.2.0", "1.1.9"));
-        assert!(is_newer("1.0.0", "1.0.0-dev.abc")); // release beats same-core dev
-        assert!(!is_newer("1.0.0", "1.0.0")); // equal, both release
-        assert!(!is_newer("1.0.0", "1.2.0")); // older isn't newer
-        assert!(!is_newer("1.0.0-dev.x", "1.0.0")); // a dev never beats its release
+    fn reads_the_matching_website_asset_url() {
+        let manifest = json!({
+            "assets": {
+                "darwin-aarch64": {
+                    "url": "https://downloads.example.com/FutureOS_1.0.4_aarch64-sign.dmg"
+                }
+            }
+        });
+
+        assert_eq!(
+            manual_download_url_for_asset(&manifest, "darwin-aarch64"),
+            Some("https://downloads.example.com/FutureOS_1.0.4_aarch64-sign.dmg".to_string())
+        );
     }
+
+    #[test]
+    fn rejects_non_https_website_asset_urls() {
+        let manifest = json!({
+            "assets": {
+                "windows-x86_64": { "url": "http://downloads.example.com/FutureOS.exe" }
+            }
+        });
+
+        assert_eq!(
+            manual_download_url_for_asset(&manifest, "windows-x86_64"),
+            None
+        );
+    }
+}
+
+/// Download, verify and install the platform updater package.
+///
+/// Tauri verifies the mandatory minisign signature before installation. The
+/// SHA-256 values in latest.json remain useful to website consumers and release
+/// audits, but are not a substitute for this signature verification.
+#[tauri::command]
+pub async fn install_app_update(app: tauri::AppHandle) -> Result<(), AppError> {
+    if !build_info::is_release() {
+        return Err(AppError::Message(
+            "Automatic installation is only available in signed release builds.".to_string(),
+        ));
+    }
+
+    let updater = app
+        .updater()
+        .map_err(|error| updater_error("Failed to initialize the updater", error))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|error| updater_error("Failed to check for updates", error))?
+        .ok_or_else(|| AppError::Message("No update is currently available.".to_string()))?;
+
+    let progress_app = app.clone();
+    let mut downloaded = 0_u64;
+    update
+        .download_and_install(
+            move |chunk_length, content_length| {
+                downloaded = downloaded.saturating_add(chunk_length as u64);
+                let _ = progress_app.emit(
+                    PROGRESS_EVENT,
+                    DownloadProgress {
+                        downloaded,
+                        total: content_length.unwrap_or(0),
+                    },
+                );
+            },
+            || {},
+        )
+        .await
+        .map_err(|error| updater_error("Failed to install the update", error))
+}
+
+/// Relaunch only after installation has completed and the user explicitly asks
+/// to do so. Keeping this separate lets an active conversation finish first.
+#[tauri::command]
+pub fn restart_after_app_update(app: tauri::AppHandle) -> Result<(), AppError> {
+    agent_supervisor::shutdown_agent();
+    app.restart()
 }

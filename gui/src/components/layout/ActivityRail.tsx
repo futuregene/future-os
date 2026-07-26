@@ -34,6 +34,7 @@ interface ActivityRailProps {
   expanded: boolean;
   floating?: boolean;
   activeThreadId: string | null;
+  hasUpdate?: boolean;
   threads: StoredThread[];
   threadRunStatuses: Record<string, ThreadRunInfo | undefined>;
   threadStreamingStatuses: Record<string, boolean>;
@@ -71,6 +72,7 @@ export function ActivityRail({
   activeThreadId,
   expanded,
   floating,
+  hasUpdate,
   threads,
   threadRunStatuses,
   threadStreamingStatuses,
@@ -451,13 +453,21 @@ export function ActivityRail({
                 onClick={() => onChange(settingsItem.id)}
                 type="button"
               >
-                <Settings className="size-4 shrink-0" />
+                <span className="relative inline-flex shrink-0">
+                  <Settings className="size-4" />
+                  {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
+                </span>
                 <span className="truncate">{t("activityRail.settings")}</span>
               </button>
             )
           : (
               <IconButton
-                icon={<Settings className="size-4" />}
+                icon={(
+                  <span className="relative inline-flex">
+                    <Settings className="size-4" />
+                    {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
+                  </span>
+                )}
                 label={t("activityRail.settings")}
                 active={active === settingsItem.id}
                 onClick={() => onChange(settingsItem.id)}

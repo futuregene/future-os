@@ -73,7 +73,7 @@ GUI 当前已具备：
   - 代码块支持语法高亮（Shiki，28 种语言，GitHub Light 主题，行号显示）。
 - Composer 支持 `@` 搜索并插入 FutureOS markdown 引用。
 - 发送给 Agent 的 prompt 会注入引用对象摘要，消息原文仍保存 markdown。
-- Store 已启用 SQLite `foreign_keys`、`busy_timeout`、`WAL`；schema 为单一真源、幂等应用（`IF NOT EXISTS`，无增量 migration 历史）。
+- Store 已启用 SQLite `foreign_keys`、`busy_timeout`、`WAL`；`SCHEMA` 是**全新安装**的单一真源。GUI 已正式发布，后续任何数据库结构或持久化数据形态变更都必须配套版本化 migration；不可只依赖 `IF NOT EXISTS`。迁移以最近正式 tag 为边界：已发布迁移不可修改，未发布迁移可继续合并；同一目标 tag 原则上只新增一条 migration。完整执行规则见 `../CLAUDE.md` 的 “Released database migrations”。
 - Settings 已可用：General、Models、Providers、自定义 Provider 配置。
 - Research 可展示当前 workspace resource，并支持从 markdown embed 跳转选中 resource。
 - Data、Skill 仍是入口级占位（`AppShell` 的 `ModulePlaceholder`）。

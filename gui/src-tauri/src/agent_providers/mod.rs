@@ -208,6 +208,7 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
             let name = config
                 .get("name")
                 .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| id.clone());
             let models = config
@@ -221,6 +222,7 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
                             let name = model
                                 .get("name")
                                 .and_then(Value::as_str)
+                                .filter(|name| !name.trim().is_empty())
                                 .unwrap_or(&id)
                                 .to_string();
                             let supports_images = model

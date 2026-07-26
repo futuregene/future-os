@@ -191,3 +191,334 @@ pub(super) fn resolve_workspace_path(cwd: &str, path: &str) -> String {
         .to_string_lossy()
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Attachment, ImageContent, StreamEvent};
+
+    // ─── stream_event_to_sse_data ──────────────────────────────────────────
+
+    #[test]
+    fn sse_data_text_event() {
+        let event = StreamEvent {
+            event_type: "text_delta".to_string(),
+            text: "hello".to_string(),
+            ..Default::default()
+        };
+        let data = stream_event_to_sse_data(&event);
+        assert!(data.contains("\"type\":\"text_delta\""));
+        assert!(data.contains("\"text\":\"hello\""));
+    }
+
+    #[test]
+    fn sse_data_tool_event() {
+        let event = StreamEvent {
+            event_type: "tool_start".to_string(),
+            tool_name: "shell".to_string(),
+            tool_id: "call_1".to_string(),
+            ..Default::default()
+        };
+        let data = stream_event_to_sse_data(&event);
+        assert!(data.contains("\"tool_name\":\"shell\""));
+        assert!(data.contains("\"tool_id\":\"call_1\""));
+    }
+
+    #[test]
+    fn sse_data_error_event() {
+        let event = StreamEvent {
+            event_type: "error".to_string(),
+            error_text: "something broke".to_string(),
+            ..Default::default()
+        };
+        let data = stream_event_to_sse_data(&event);
+        assert!(data.contains("\"error\":\"something broke\""));
+    }
+
+    #[test]
+    fn sse_data_stop_reason() {
+        let event = StreamEvent {
+            event_type: "stop".to_string(),
+            stop_reason: "max_tokens".to_string(),
+            ..Default::default()
+        };
+        let data = stream_event_to_sse_data(&event);
+        assert!(data.contains("\"stopReason\":\"max_tokens\""));
+    }
+
+    #[test]
+    fn sse_data_usage() {
+        let event = StreamEvent {
+            event_type: "usage".to_string(),
+            usage: Some(crate::types::Usage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let data = stream_event_to_sse_data(&event);
+        assert!(data.contains("\"usage\""));
+        assert!(data.contains("100"));
+    }
+
+    #[test]
+    fn sse_data_tool_call_args() {
+        let event = StreamEvent {
+            event_type: "toolcall_start".to_string(),
+            tool_name: "shell".to_string(),
+            tool_id: "call_1".to_string(),
+            tool_call: Some(crate::types::ToolCall {
+                id: "call_1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({"command": "ls"}),
+                },
+            }),
+            ..Default::default()
+        };
+        let data = stream_event_to_sse_data(&event);
+        assert!(data.contains("\"tool_args\""));
+    }
+
+    #[test]
+    fn sse_data_tc_index() {
+        let event = StreamEvent {
+            event_type: "toolcall_delta".to_string(),
+            tc_index: 2,
+            ..Default::default()
+        };
+        let data = stream_event_to_sse_data(&event);
+        assert!(data.contains("\"tc_index\":2"));
+    }
+
+    #[test]
+    fn sse_data_tc_index_zero_omitted() {
+        let event = StreamEvent {
+            event_type: "text_delta".to_string(),
+            tc_index: 0,
+            ..Default::default()
+        };
+        let data = stream_event_to_sse_data(&event);
+        assert!(!data.contains("tc_index"));
+    }
+
+    #[test]
+    fn sse_data_empty_fields_omitted() {
+        let event = StreamEvent {
+            event_type: "text_delta".to_string(),
+            ..Default::default()
+        };
+        let data = stream_event_to_sse_data(&event);
+        assert!(!data.contains("\"text\""));
+        assert!(!data.contains("\"tool_name\""));
+        assert!(!data.contains("\"error\""));
+        assert!(!data.contains("\"stopReason\""));
+    }
+
+    // ─── build_user_message ────────────────────────────────────────────────
+
+    #[test]
+    fn build_user_message_text_only() {
+        let msg = build_user_message("hello", &[], &[], false, &|_| None);
+        assert_eq!(msg.role, "user");
+        assert!(msg.text().contains("hello"));
+        assert!(msg.metadata.is_none());
+    }
+
+    #[test]
+    fn build_user_message_with_images() {
+        let images = vec![ImageContent {
+            content_type: "image".to_string(),
+            mime_type: Some("image/png".to_string()),
+            data: Some("data:image/png;base64,abc".to_string()),
+            source: None,
+            file_path: None,
+        }];
+        let msg = build_user_message("look at this", &images, &[], false, &|_| None);
+        assert_eq!(msg.content.len(), 2); // text + image
+    }
+
+    #[test]
+    fn build_user_message_with_attachments() {
+        let attachments = vec![Attachment {
+            path: "/tmp/report.pdf".to_string(),
+            kind: "file".to_string(),
+            name: "report.pdf".to_string(),
+            thumbnail: None,
+        }];
+        let msg = build_user_message("check this", &[], &attachments, false, &|_| None);
+        assert!(msg.text().contains("report.pdf"));
+        assert!(msg.metadata.is_some());
+        let meta = msg.metadata.unwrap();
+        let atts = meta["attachments"].as_array().unwrap();
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0]["path"], "/tmp/report.pdf");
+    }
+
+    #[test]
+    fn build_user_message_with_thumbnail() {
+        let attachments = vec![Attachment {
+            path: "/tmp/img.png".to_string(),
+            kind: "image".to_string(),
+            name: "img.png".to_string(),
+            thumbnail: Some("/tmp/thumb.png".to_string()),
+        }];
+        let msg = build_user_message("image", &[], &attachments, false, &|_| None);
+        let meta = msg.metadata.unwrap();
+        let atts = meta["attachments"].as_array().unwrap();
+        assert_eq!(atts[0]["thumbnail"], "/tmp/thumb.png");
+    }
+
+    #[test]
+    fn build_user_message_image_attachment_with_loader() {
+        let attachments = vec![Attachment {
+            path: "/tmp/photo.png".to_string(),
+            kind: "image".to_string(),
+            name: "photo.png".to_string(),
+            thumbnail: None,
+        }];
+        let msg = build_user_message("check image", &[], &attachments, true, &|path| {
+            Some(format!("data:image/png;base64,loaded-{path}"))
+        });
+        // Should have text + image (from loader)
+        assert!(msg.content.len() >= 2);
+    }
+
+    #[test]
+    fn build_user_message_image_attachment_no_loader_fallback() {
+        let attachments = vec![Attachment {
+            path: "/tmp/photo.png".to_string(),
+            kind: "image".to_string(),
+            name: "photo.png".to_string(),
+            thumbnail: None,
+        }];
+        // No loader → falls back to path reference
+        let msg = build_user_message("check image", &[], &attachments, false, &|_| None);
+        assert!(msg.text().contains("photo.png"));
+    }
+
+    #[test]
+    fn build_user_message_empty_name_uses_path() {
+        let attachments = vec![Attachment {
+            path: "/tmp/file.txt".to_string(),
+            kind: "file".to_string(),
+            name: String::new(), // empty name → use path
+            thumbnail: None,
+        }];
+        let msg = build_user_message("file", &[], &attachments, false, &|_| None);
+        assert!(msg.text().contains("file.txt"));
+    }
+
+    // ─── prepare_session_tool_call ─────────────────────────────────────────
+
+    #[test]
+    fn prepare_session_tool_call_normalizes_path() {
+        let args = prepare_session_tool_call(
+            "/workspace",
+            "read",
+            &serde_json::json!({"path": "relative.txt"}),
+        );
+        assert!(args["path"].as_str().unwrap().contains("/workspace"));
+    }
+
+    #[test]
+    fn prepare_session_tool_call_non_path_tool() {
+        let args =
+            prepare_session_tool_call("/workspace", "shell", &serde_json::json!({"command": "ls"}));
+        // Shell tool doesn't get path rewritten
+        assert_eq!(args["command"], "ls");
+    }
+
+    #[test]
+    fn prepare_session_tool_call_string_arguments() {
+        let args = prepare_session_tool_call(
+            "/workspace",
+            "read",
+            &serde_json::json!("{\"path\": \"file.txt\"}"),
+        );
+        assert!(args["path"].as_str().unwrap().contains("/workspace"));
+    }
+
+    #[test]
+    fn prepare_session_tool_call_absolute_path_unchanged() {
+        let args = prepare_session_tool_call(
+            "/workspace",
+            "read",
+            &serde_json::json!({"path": "/absolute/path.txt"}),
+        );
+        assert_eq!(args["path"], "/absolute/path.txt");
+    }
+
+    // ─── approve_tool_path_if_present ──────────────────────────────────────
+
+    #[test]
+    fn approve_tool_path_write_and_edit() {
+        // Should not panic
+        approve_tool_path_if_present(
+            "/workspace",
+            "write",
+            &serde_json::json!({"path": "test.txt"}),
+        );
+        approve_tool_path_if_present(
+            "/workspace",
+            "edit",
+            &serde_json::json!({"path": "test.txt"}),
+        );
+    }
+
+    #[test]
+    fn approve_tool_path_other_tools_noop() {
+        // read and shell don't approve paths
+        approve_tool_path_if_present(
+            "/workspace",
+            "read",
+            &serde_json::json!({"path": "test.txt"}),
+        );
+        approve_tool_path_if_present("/workspace", "shell", &serde_json::json!({"command": "ls"}));
+    }
+
+    #[test]
+    fn approve_tool_path_no_path_field() {
+        // Missing path field → no-op
+        approve_tool_path_if_present("/workspace", "write", &serde_json::json!({}));
+    }
+
+    // ─── rewrite_path_field ────────────────────────────────────────────────
+
+    #[test]
+    fn rewrite_path_field_resolves_relative() {
+        let mut args = serde_json::json!({"path": "subdir/file.txt"});
+        rewrite_path_field("/workspace", &mut args, "path");
+        assert!(args["path"].as_str().unwrap().contains("subdir/file.txt"));
+    }
+
+    #[test]
+    fn rewrite_path_field_missing_key_noop() {
+        let mut args = serde_json::json!({"other": "value"});
+        rewrite_path_field("/workspace", &mut args, "path");
+        assert!(args.get("path").is_none());
+    }
+
+    // ─── resolve_workspace_path ────────────────────────────────────────────
+
+    #[test]
+    fn resolve_workspace_path_relative() {
+        let resolved = resolve_workspace_path("/workspace", "file.txt");
+        assert!(resolved.contains("file.txt"));
+    }
+
+    #[test]
+    fn resolve_workspace_path_absolute() {
+        let resolved = resolve_workspace_path("/workspace", "/absolute/file.txt");
+        assert_eq!(resolved, "/absolute/file.txt");
+    }
+
+    #[test]
+    fn resolve_workspace_path_dotdot() {
+        let resolved = resolve_workspace_path("/workspace/subdir", "../parent.txt");
+        assert!(resolved.contains("parent.txt"));
+    }
+}

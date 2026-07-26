@@ -52,15 +52,16 @@ pub use review_snapshots::{
 };
 pub use runs::{
     active_run_sessions, append_run_event, clear_all_run_events_files, clear_run_event_buffer,
-    create_run, delete_run_events_file, fail_run_if_active, get_tool_call_input, list_run_events,
-    list_run_events_bulk, list_runs, list_tool_calls, list_tool_outputs,
-    update_run_status_if_active, RunEventRecord, RunRecord, ToolCallRecord, ToolOutputRecord,
+    create_run, delete_run_events_file, fail_run_if_active, get_tool_call_input, latest_run_infos,
+    list_run_events, list_run_events_bulk, list_runs, list_tool_calls, list_tool_outputs,
+    update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord,
+    ToolOutputRecord,
 };
 pub use threads::{
     archive_thread, create_thread, delete_thread, find_thread_by_agent_session, get_recent_thread,
     get_thread, list_threads, move_thread_to_workspace, pin_thread, purge_soft_deleted_threads,
-    rename_thread, restore_thread, update_thread_model, update_thread_session_id,
-    update_thread_thinking_level, ThreadRecord,
+    rename_thread, restore_thread, sync_thread_title, update_thread_model,
+    update_thread_session_id, update_thread_thinking_level, ThreadRecord,
 };
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{

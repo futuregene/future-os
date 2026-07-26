@@ -2,11 +2,11 @@ import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { pollStreamingStatuses, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
+import { pollStreamingThreadIds, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
 import {
   getRecentOrCreateDefaultThread,
   initializeAppStore,
-  listRuns,
+  listLatestRunInfos,
   listThreads,
   listWorkspaces,
 } from "../../../integrations/storage/threadStore";
@@ -87,28 +87,33 @@ export function useThreadStore(): ThreadStore {
     // must not reject the whole batch — that would blank every thread's run
     // indicator and surface an unhandled rejection. A failed thread keeps
     // its previous status and self-heals on the next 1.5s tick.
-    const entries = await Promise.all(
-      nextThreads.map(async (thread) => {
-        try {
-          const runs = await listRuns(thread.id);
-          const latest = runs[0];
-          const value = latest ? { endedAt: latest.endedAt ?? null, status: latest.status } : undefined;
-          return { id: thread.id, ok: true as const, value };
-        }
-        catch {
-          return { id: thread.id, ok: false as const };
-        }
-      }),
-    );
+    const ids = nextThreads.map(t => t.id);
+    let infos: Array<{ threadId: string; status: string; endedAt: number | null }> = [];
+    try {
+      infos = await listLatestRunInfos(ids);
+    }
+    catch {
+      // Transient error — keep previous statuses, retry next tick.
+    }
     if (generation !== runStatusGenRef.current) {
       return;
     }
+    const infoMap = new Map(infos.map(info => [info.threadId, info]));
     setThreadRunStatuses((previous) => {
+      let changed = false;
       const next: ThreadRunStatuses = {};
-      for (const entry of entries) {
-        next[entry.id] = entry.ok ? entry.value : previous[entry.id];
+      for (const thread of nextThreads) {
+        const info = infoMap.get(thread.id);
+        const value: ThreadRunInfo | undefined = info
+          ? { endedAt: info.endedAt ?? null, status: info.status as ThreadRunInfo["status"] }
+          : previous[thread.id]; // keep old if no new info
+        if (!changed) {
+          const prev = previous[thread.id];
+          changed = prev?.status !== value?.status || prev?.endedAt !== value?.endedAt;
+        }
+        next[thread.id] = value;
       }
-      return next;
+      return changed ? next : previous;
     });
   }, []);
 
@@ -191,12 +196,23 @@ export function useThreadStore(): ThreadStore {
   });
   // Poll agent streaming status so threads that are being prompted by other
   // clients (TUI, CLI) show a running indicator without waiting for a local
-  // StoredRun entry.
+  // StoredRun entry. ONE bulk call for all threads — the agent only scans
+  // its in-memory map, so this never hydrates sessions at startup.
   usePolling(async () => {
     if (activeThreads.length === 0)
       return;
-    const streaming = await pollStreamingStatuses(activeThreads.map(t => t.id));
-    setThreadStreamingStatuses(streaming);
+    const streamingIds = new Set(await pollStreamingThreadIds());
+    const next: ThreadStreamingStatuses = {};
+    for (const thread of activeThreads) {
+      next[thread.id] = streamingIds.has(thread.id);
+    }
+    setThreadStreamingStatuses(prev =>
+      // Shallow-compare every key — skip the re-render when nothing streamed.
+      Object.keys(next).length === Object.keys(prev).length
+      && Object.keys(next).every(k => prev[k] === next[k])
+        ? prev
+        : next,
+    );
   }, 1000, {
     enabled: activeThreads.length > 0,
     deps: [activeThreads],
@@ -209,10 +225,17 @@ export function useThreadStore(): ThreadStore {
 
   // Pre-fetch agent state for the active thread so model/thinking/title
   // are available from cache without a network delay on first render.
+  // Keep refreshing on an interval shorter than the cache TTL (30s): the
+  // cached entry must never expire while the thread is being viewed — an
+  // expired snapshot dropped the composer back to the global draft
+  // model/thinking level mid-view. getAgentState dedupes via the TTL and
+  // its in-flight map, so a 10s tick costs at most one fetch per 30s.
   useEffect(() => {
-    if (activeThreadId) {
-      prefetchAgentState(activeThreadId);
-    }
+    if (!activeThreadId)
+      return;
+    prefetchAgentState(activeThreadId);
+    const timer = window.setInterval(prefetchAgentState, 10_000, activeThreadId);
+    return () => window.clearInterval(timer);
   }, [activeThreadId]);
 
   return {

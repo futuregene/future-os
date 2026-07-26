@@ -3,6 +3,7 @@ import type { SkillFilters } from "./skillsFilter";
 import { ArrowUpCircle, Blocks, Download, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -12,11 +13,13 @@ import {
   installSkill,
   listAvailableSkills,
   listInstalledSkills,
+  refreshSkills,
   uninstallSkill,
 } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
+import { startWindowDrag } from "../../lib/windowDrag";
 import { computeSkillUpgrades } from "./autoUpgrade";
 import {
   allCategoriesValue,
@@ -30,7 +33,7 @@ type SkillsTab = "installed" | "all";
 
 const emptyFilters: SkillFilters = { category: allCategoriesValue, query: "" };
 
-export function SkillsView() {
+export function SkillsView({ leftPanelExpanded, onToggleLeftPanel }: { leftPanelExpanded: boolean; onToggleLeftPanel: () => void }) {
   const { t } = useTranslation("skills");
   const [tab, setTab] = useState<SkillsTab>("installed");
   const [installed, setInstalled] = useState<InstalledSkill[]>([]);
@@ -139,7 +142,9 @@ export function SkillsView() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    // First tell the agent to re-scan skills so the installed list is fresh,
+    // then load both lists. refreshSkills is best-effort (agent may be down).
+    void refreshSkills().finally(() => void refresh());
   }, [refresh]);
 
   // The silent auto-upgrade installs newer versions out-of-band; reload so an
@@ -184,10 +189,19 @@ export function SkillsView() {
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
-      <header className="border-b border-line-soft px-8 pb-3 pt-6">
-        <h1 className="text-base font-semibold text-ink">{t("title")}</h1>
-        <p className="mt-1 text-sm text-ink-muted">{t("subtitle")}</p>
-        <div className="mt-4 grid w-64 grid-cols-2 gap-1 rounded-md bg-surface-subtle p-1">
+      <header
+        className="flex h-12 shrink-0 select-none items-center justify-between border-b border-line-soft/40 px-4"
+        onMouseDown={startWindowDrag}
+      >
+        <div className="flex min-w-0 flex-1 items-center" data-tauri-drag-region>
+          <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
+          <span className="truncate text-sm font-semibold text-ink">{t("title")}</span>
+        </div>
+      </header>
+
+      <header className="border-b border-line-soft px-8 pb-3 pt-4">
+        <p className="text-sm text-ink-muted">{t("subtitle")}</p>
+        <div className="mt-3 grid w-64 grid-cols-2 gap-1 rounded-md bg-surface-subtle p-1">
           <TabButton active={tab === "installed"} label={t("tab.installed")} onClick={() => setTab("installed")} />
           <TabButton active={tab === "all"} label={t("tab.all")} onClick={() => setTab("all")} />
         </div>

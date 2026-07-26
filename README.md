@@ -35,7 +35,7 @@ FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, a
 
 Required on every platform for a full build (agent + TUI + CLI + GUI):
 
-- **Rust** 1.96+ (pinned via `rust-toolchain.toml`)
+- **Rust** 1.97+ (pinned via `rust-toolchain.toml`)
 - **Node.js** 24+ (see `.nvmrc`)
 - **Bun** — required, not optional: the TUI build and CLI/GUI packaging use `bun build`
 - Optional: **Python 3** — only for `make generate-models`
@@ -206,9 +206,11 @@ FutureOS includes a set of curated skills — specialized instructions for commo
 make install-skills                          # symlink from the bundled skills/ submodule
 # or install from the platform catalog:
 future skills install                        # install all future-* skills (~13)
+future init                                  # install skills and, on macOS/Linux, link local commands
 ```
 
 > Skills are symlinked into `~/.future/agent/skills/` where the agent discovers them automatically. Use `future skills list` to see available skills and `future skills update` to upgrade.
+> On macOS and Linux, `future init` also links `future` and, when present, its sibling `future-agent` into `~/.future/bin/`; add that directory to `PATH` if desired.
 
 ### Run the agent
 

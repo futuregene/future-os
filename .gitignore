@@ -56,3 +56,7 @@ channel/
 # Windows / MSYS2 artifacts
 /NUL
 *.bun-build
+
+# Profiling output (make profile-agent / profile-quick)
+/profile-results/
+/agent-profile.svg

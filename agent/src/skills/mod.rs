@@ -17,9 +17,10 @@ pub struct Skill {
     pub disable_model_invocation: bool,
 }
 
-/// Predefined skill directories (matching Go internal/skills/skills.go)
+/// Predefined skill directories (matching Go internal/skills/skills.go).
+/// Both are global, user-level locations — project/cwd-relative skill
+/// directories are intentionally not supported (see `global_skill_dirs`).
 pub const APP_SKILLS_DIR: &str = "~/.future/agent/skills/";
-pub const PROJECT_SKILLS_DIR: &str = ".future/agent/skills/";
 pub const AGENTS_SKILLS_DIR: &str = "~/.agents/skills/";
 
 /// DiscoverSkills finds all skills in the given directories.
@@ -52,6 +53,66 @@ pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
         }
     }
     Ok(skills)
+}
+
+/// The global (user-level) skill directories. Project/cwd-relative skill
+/// dirs are intentionally NOT scanned: every caller must see the same skill
+/// set regardless of the session's working directory, which also keeps the
+/// `discover_skills_cached` cache key stable across call sites.
+pub fn global_skill_dirs() -> Vec<String> {
+    vec![APP_SKILLS_DIR.to_string(), AGENTS_SKILLS_DIR.to_string()]
+}
+
+// ─── Cached skills discovery ──────────────────────────────────────────────
+
+/// How long the cached skills list stays fresh before a refresh is triggered.
+const SKILLS_CACHE_TTL_SECS: u64 = 60;
+
+/// Global cached skills list, refreshed lazily on access.
+static SKILLS_CACHE: std::sync::RwLock<Option<(std::time::Instant, Vec<Skill>)>> =
+    std::sync::RwLock::new(None);
+
+/// Serialises cache refreshes so only one thread does the I/O work.
+static REFRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Returns a cached skills list, refreshing when older than
+/// SKILLS_CACHE_TTL_SECS. Fast path is lock-free for concurrent readers;
+/// slow path serialises file I/O with a dedicated refresh mutex so multiple
+/// concurrent prompts never block each other on the write lock.
+///
+/// All call sites are expected to pass `global_skill_dirs()`; the cache is
+/// global and does NOT key on `dirs`, so mixing different dir lists across
+/// call sites would return stale results for the minority list.
+pub fn discover_skills_cached(dirs: &[String]) -> Vec<Skill> {
+    // Fast path: read lock, check TTL — multiple readers OK.
+    {
+        let cache = SKILLS_CACHE.read().unwrap();
+        if let Some((ref ts, ref skills)) = *cache {
+            if ts.elapsed().as_secs() < SKILLS_CACHE_TTL_SECS {
+                return skills.clone();
+            }
+        }
+    }
+    // Slow path: one thread refreshes; others wait on the refresh lock
+    // then double-check (the first thread may have already refreshed).
+    let _refresh = REFRESH_LOCK.lock().unwrap();
+    {
+        let cache = SKILLS_CACHE.read().unwrap();
+        if let Some((ref ts, ref skills)) = *cache {
+            if ts.elapsed().as_secs() < SKILLS_CACHE_TTL_SECS {
+                return skills.clone();
+            }
+        }
+    }
+    // File I/O outside any lock — only one thread reaches here.
+    let skills = discover_skills(dirs).unwrap_or_default();
+    *SKILLS_CACHE.write().unwrap() = Some((std::time::Instant::now(), skills.clone()));
+    skills
+}
+
+/// Invalidate the skills cache so the next access triggers a refresh.
+pub fn invalidate_skills_cache() {
+    *SKILLS_CACHE.write().unwrap() = None;
 }
 
 fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
@@ -311,5 +372,214 @@ version: "1.0.0"
             extract_frontmatter_field(content, "description").as_deref(),
             Some("First line.\nSecond line.")
         );
+    }
+
+    #[test]
+    fn extract_name_falls_back_to_filename() {
+        let content = "---\nother: value\n---\n# Body";
+        let path = std::path::Path::new("/path/to/my-skill/SKILL.md");
+        assert_eq!(extract_name(content, path).unwrap(), "SKILL");
+    }
+
+    #[test]
+    fn extract_yaml_value_quoted_strings() {
+        assert_eq!(
+            extract_yaml_value("name: \"quoted value\"", "name").as_deref(),
+            Some("quoted value")
+        );
+        assert_eq!(
+            extract_yaml_value("name: 'single quoted'", "name").as_deref(),
+            Some("single quoted")
+        );
+    }
+
+    #[test]
+    fn extract_yaml_value_no_colon_returns_none() {
+        assert!(extract_yaml_value("nocolon", "name").is_none());
+    }
+
+    #[test]
+    fn frontmatter_with_newline_separator() {
+        let content = "---\nname: skill\ndescription: desc\n---\n# Body";
+        let fm = frontmatter(content).unwrap();
+        assert!(fm.contains("name: skill"));
+    }
+
+    #[test]
+    fn frontmatter_without_newline_separator() {
+        let content = "---name: skill---";
+        let fm = frontmatter(content).unwrap();
+        assert_eq!(fm, "name: skill");
+    }
+
+    #[test]
+    fn frontmatter_no_separator_returns_none() {
+        assert!(frontmatter("no frontmatter here").is_none());
+    }
+
+    #[test]
+    fn yaml_block_scalar_style_literal() {
+        assert_eq!(yaml_block_scalar_style("|  "), Some('|'));
+        assert_eq!(yaml_block_scalar_style(">  "), Some('>'));
+        assert_eq!(yaml_block_scalar_style("|"), Some('|'));
+        assert!(yaml_block_scalar_style("plain").is_none());
+        assert!(yaml_block_scalar_style("").is_none());
+    }
+
+    #[test]
+    fn yaml_block_scalar_with_modifiers() {
+        assert_eq!(yaml_block_scalar_style("|2"), Some('|'));
+        assert_eq!(yaml_block_scalar_style(">-"), Some('>'));
+        assert_eq!(yaml_block_scalar_style("|+"), Some('|'));
+        assert!(yaml_block_scalar_style("|x").is_none());
+    }
+
+    #[test]
+    fn extract_yaml_block_scalar_literal() {
+        // Lines must have MORE leading spaces than parent (parent has 2, lines have 4)
+        let lines = ["    line one", "    line two", "  stop"];
+        let result = extract_yaml_block_scalar(&lines, "  description: |", '|');
+        assert_eq!(result, "line one\nline two");
+    }
+
+    #[test]
+    fn extract_yaml_block_scalar_folded() {
+        // Lines with more indent than parent
+        let lines = [
+            "    line one",
+            "    line two",
+            "    ",
+            "    line three",
+            "  stop",
+        ];
+        let result = extract_yaml_block_scalar(&lines, "  description: >", '>');
+        assert_eq!(result, "line one line two\n\nline three");
+    }
+
+    #[test]
+    fn fold_yaml_block_lines_joins_consecutive() {
+        let lines: Vec<String> = vec![
+            "first line".to_string(),
+            "continued".to_string(),
+            "".to_string(),
+            "new paragraph".to_string(),
+        ];
+        let result = fold_yaml_block_lines(&lines);
+        assert!(result.contains("first line continued"));
+        assert!(result.contains("\n\nnew paragraph"));
+    }
+
+    #[test]
+    fn strip_indent_basic() {
+        assert_eq!(strip_indent("    indented", 4), "indented");
+        assert_eq!(strip_indent("noindent", 0), "noindent");
+        assert_eq!(strip_indent("  ", 2), "");
+    }
+
+    #[test]
+    fn leading_spaces_counts_correctly() {
+        assert_eq!(leading_spaces("  two"), 2);
+        assert_eq!(leading_spaces("zero"), 0);
+    }
+
+    #[test]
+    fn resolve_collisions_renames_duplicates() {
+        let skills = vec![
+            Skill {
+                name: "my-skill".to_string(),
+                description: "first".to_string(),
+                name_zh: None,
+                description_zh: None,
+                version: Some("1.0".to_string()),
+                location: "/a".to_string(),
+                disable_model_invocation: false,
+            },
+            Skill {
+                name: "my-skill".to_string(),
+                description: "second".to_string(),
+                name_zh: None,
+                description_zh: None,
+                version: Some("2.0".to_string()),
+                location: "/b".to_string(),
+                disable_model_invocation: false,
+            },
+            Skill {
+                name: "other".to_string(),
+                description: "unique".to_string(),
+                name_zh: None,
+                description_zh: None,
+                version: None,
+                location: "/c".to_string(),
+                disable_model_invocation: false,
+            },
+        ];
+        let resolved = resolve_collisions(skills);
+        assert_eq!(resolved.len(), 3);
+        assert_eq!(resolved[0].name, "my-skill");
+        assert_eq!(resolved[1].name, "my-skill_2");
+        assert_eq!(resolved[2].name, "other");
+    }
+
+    #[test]
+    fn parse_skill_reads_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_skill_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let skill_md = dir.join("SKILL.md");
+        let content = r#"---
+name: test-skill
+description: A test skill for unit tests
+version: "1.0.0"
+disable_model_invocation: true
+---
+
+# Test Skill
+This is a test skill body.
+"#;
+        std::fs::write(&skill_md, content).unwrap();
+
+        let skill = parse_skill(&skill_md).unwrap().unwrap();
+        assert_eq!(skill.name, "test-skill");
+        assert_eq!(skill.description, "A test skill for unit tests");
+        assert_eq!(skill.version.as_deref(), Some("1.0.0"));
+        assert!(skill.disable_model_invocation);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn discover_skills_finds_and_parses() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_skills_discover_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let skills_subdir = dir.join("test-skill");
+        std::fs::create_dir_all(&skills_subdir).unwrap();
+        std::fs::write(
+            skills_subdir.join("SKILL.md"),
+            "---\nname: discovered-skill\ndescription: Found via discovery\n---\n# Body\n",
+        )
+        .unwrap();
+
+        let discovered = discover_skills(&[dir.to_string_lossy().to_string()]).unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].name, "discovered-skill");
+        assert_eq!(discovered[0].description, "Found via discovery");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn discover_skills_empty_nonexistent_dir() {
+        let discovered = discover_skills(&["/no/such/dir/skills".to_string()]).unwrap();
+        assert!(discovered.is_empty());
     }
 }

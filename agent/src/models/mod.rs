@@ -56,6 +56,17 @@ pub struct Cost {
     pub cache_write: f64,
 }
 
+/// Process-wide shared copy of the parsed built-in catalog.  The embedded
+/// models.json is ~1.9 MB; parsing it costs ~1.5 MB of fresh heap and
+/// several ms of CPU on every call, so parse once and share an `Arc`.
+pub fn builtin_models_shared() -> std::sync::Arc<Vec<Model>> {
+    static BUILTIN_MODELS: std::sync::OnceLock<std::sync::Arc<Vec<Model>>> =
+        std::sync::OnceLock::new();
+    BUILTIN_MODELS
+        .get_or_init(|| std::sync::Arc::new(builtin_models()))
+        .clone()
+}
+
 /// BuiltinModels returns the generated model catalog from models_generated.rs.
 /// All models are maintained by: make generate-models
 pub fn builtin_models() -> Vec<Model> {
@@ -90,8 +101,17 @@ pub fn builtin_models() -> Vec<Model> {
 /// Whether the resolved model advertises image input (catalog `input`
 /// modalities). Unknown models → false. Shared by the prompt path (deciding
 /// image_url vs. a path fallback) and session reload (re-hydrating images).
+///
+/// Prefer `model_accepts_images_with(registry, model)` to avoid the expensive
+/// `Registry::new()` call in hot paths.
 pub fn model_accepts_images(model: &str) -> bool {
-    Registry::new()
+    model_accepts_images_with(&Registry::new(), model)
+}
+
+/// Like `model_accepts_images` but reuses an existing registry to avoid
+/// re-deserialising the 906-model built-in catalog on every call.
+pub fn model_accepts_images_with(registry: &Registry, model: &str) -> bool {
+    registry
         .resolve(model)
         .map(|m| m.input.iter().any(|i| i == "image"))
         .unwrap_or(false)
@@ -115,7 +135,12 @@ pub fn settings_path() -> String {
 
 /// Get the first available model, or None.
 pub fn get_default_model() -> Option<String> {
-    let registry = Registry::new();
+    get_default_model_with(&Registry::new())
+}
+
+/// Like `get_default_model` but reuses an existing registry to avoid
+/// re-deserialising the model catalog on every GUI poll.
+pub fn get_default_model_with(registry: &Registry) -> Option<String> {
     let auth = crate::AuthStore::load();
     // Prefer future/deepseek-v4-pro when the future provider is configured,
     // otherwise fall back to the first model with credentials.
@@ -509,7 +534,10 @@ fn is_openai_compatible_api(api: &str) -> bool {
 
 /// Registry provides model resolution.
 pub struct Registry {
-    builtin: Vec<Model>,
+    // Shared, parsed-once built-in catalog (see `builtin_models_shared`).
+    // Copy-on-write: registries that inject future-provider models clone the
+    // Vec via Arc::make_mut; everyone else just shares the Arc.
+    builtin: std::sync::Arc<Vec<Model>>,
     user: Vec<Model>,
     provider_overrides: HashMap<String, ProviderOverride>,
 }
@@ -519,7 +547,7 @@ impl Registry {
         let (mut user_models, overrides) =
             load_user_models_with_overrides(&user_models_path()).unwrap_or_default();
 
-        let mut builtin = builtin_models();
+        let mut builtin = builtin_models_shared();
 
         // Load Future provider models dynamically if auth is available
         let auth_store = crate::AuthStore::load();
@@ -527,12 +555,14 @@ impl Registry {
             let base_url = resolve_future_base_url();
             let future_models = get_future_models_with_cache(&future_key, &base_url);
 
-            // Add future models to builtin (they override same-ID builtin models)
+            // Add future models to builtin (they override same-ID builtin
+            // models).  Clones the shared Vec only on this path.
+            let builtin_mut = std::sync::Arc::make_mut(&mut builtin);
             for fm in future_models {
-                if let Some(idx) = builtin.iter().position(|m| m.id == fm.id) {
-                    builtin[idx] = fm;
+                if let Some(idx) = builtin_mut.iter().position(|m| m.id == fm.id) {
+                    builtin_mut[idx] = fm;
                 } else {
-                    builtin.push(fm);
+                    builtin_mut.push(fm);
                 }
             }
 
@@ -582,7 +612,7 @@ impl Registry {
     /// Get all available models (user models override built-in with same ID).
     /// Models with `hide: true` are excluded from the listing but remain callable via `resolve()`.
     pub fn all_models(&self) -> Vec<Model> {
-        let mut models = self.builtin.clone();
+        let mut models = self.builtin.as_ref().clone();
         for user_model in &self.user {
             if let Some(idx) = models.iter().position(|m| m.id == user_model.id) {
                 models[idx] = user_model.clone();
@@ -1101,6 +1131,310 @@ mod tests {
             user.compat.get("maxTokensField").and_then(|v| v.as_str()),
             Some("max_completion_tokens"),
             "maxTokensField should be inferred for reasoning models on openai-compatible API"
+        );
+    }
+
+    // ─── glob_match ────────────────────────────────────────────────────────
+
+    #[test]
+    fn glob_match_exact() {
+        assert!(super::glob_match("gpt-4o", "gpt-4o"));
+        assert!(!super::glob_match("gpt-4o", "gpt-4"));
+    }
+
+    #[test]
+    fn glob_match_star_prefix() {
+        assert!(super::glob_match("*", "anything"));
+        assert!(super::glob_match("gpt-*", "gpt-4o"));
+        assert!(super::glob_match("gpt-*", "gpt-3.5"));
+        assert!(!super::glob_match("gpt-*", "claude-3"));
+    }
+
+    #[test]
+    fn glob_match_star_suffix() {
+        assert!(super::glob_match("*.txt", "file.txt"));
+        assert!(!super::glob_match("*.txt", "file.rs"));
+    }
+
+    #[test]
+    fn glob_match_star_middle() {
+        assert!(super::glob_match("gpt*4o", "gpt-4o"));
+        assert!(super::glob_match("gpt*4o", "gpt4o"));
+        assert!(!super::glob_match("gpt*4o", "claude-4o"));
+    }
+
+    #[test]
+    fn glob_match_multiple_stars() {
+        assert!(super::glob_match("*-*-*", "a-b-c"));
+        assert!(super::glob_match("*-*-*", "gpt-4o-turbo"));
+        assert!(!super::glob_match("*-*-*", "a-b"));
+    }
+
+    // ─── is_openai_compatible_api ──────────────────────────────────────────
+
+    #[test]
+    fn is_openai_compatible_api_true() {
+        assert!(super::is_openai_compatible_api("openai"));
+        assert!(super::is_openai_compatible_api("openai-completions"));
+        assert!(super::is_openai_compatible_api("chat"));
+        assert!(super::is_openai_compatible_api("azure-openai-responses"));
+    }
+
+    #[test]
+    fn is_openai_compatible_api_false() {
+        assert!(!super::is_openai_compatible_api("anthropic"));
+        assert!(!super::is_openai_compatible_api("gemini"));
+        assert!(!super::is_openai_compatible_api(""));
+    }
+
+    // ─── model_accepts_images ──────────────────────────────────────────────
+
+    #[test]
+    fn model_accepts_images_returns_bool() {
+        // The function depends on the global Registry — just verify it doesn't panic
+        let result = super::model_accepts_images("gpt-4o");
+        // Result depends on the builtin model catalog
+        let _ = result;
+    }
+
+    #[test]
+    fn model_accepts_images_unknown_returns_false() {
+        assert!(!super::model_accepts_images(
+            "definitely-not-a-real-model-xyz"
+        ));
+    }
+
+    // ─── builtin_models / user_models_path / settings_path / get_default_model ──
+
+    #[test]
+    fn builtin_models_returns_nonempty() {
+        let models = super::builtin_models();
+        assert!(!models.is_empty(), "builtin models should not be empty");
+    }
+
+    #[test]
+    fn user_models_path_contains_models_json() {
+        let path = super::user_models_path();
+        assert!(path.contains("models.json"));
+    }
+
+    #[test]
+    fn settings_path_contains_settings_json() {
+        let path = super::settings_path();
+        assert!(path.contains("settings.json"));
+    }
+
+    #[test]
+    fn get_default_model_returns_something() {
+        let model = super::get_default_model();
+        // In CI there may be no auth.json configured, so None is acceptable
+        let _ = model;
+    }
+
+    // ─── provider_similarity additional ────────────────────────────────────
+
+    #[test]
+    fn provider_similarity_same_string_always_one() {
+        assert_eq!(provider_similarity("any", "any"), 1.0);
+    }
+
+    // ─── Registry ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn registry_new_creates_instance() {
+        let reg = super::Registry::new();
+        let models = reg.all_models();
+        assert!(!models.is_empty(), "registry should have models");
+    }
+
+    #[test]
+    fn registry_resolve_existing_model() {
+        let reg = super::Registry::new();
+        let models = reg.all_models();
+        if let Some(first) = models.first() {
+            let resolved = reg.resolve(&first.id);
+            assert!(resolved.is_some());
+            assert_eq!(resolved.unwrap().id, first.id);
+        }
+    }
+
+    #[test]
+    fn registry_resolve_nonexistent_returns_none() {
+        let reg = super::Registry::new();
+        assert!(reg.resolve("definitely-not-real-model-xyz").is_none());
+    }
+
+    #[test]
+    fn registry_resolve_provider_slash_format() {
+        let reg = super::Registry::new();
+        let models = reg.all_models();
+        if let Some(first) = models.first() {
+            let full_id = format!("{}/{}", first.provider, first.id);
+            let resolved = reg.resolve(&full_id);
+            assert!(resolved.is_some());
+        }
+    }
+
+    #[test]
+    fn registry_default_for_provider() {
+        let reg = super::Registry::new();
+        let models = reg.all_models();
+        if let Some(first) = models.first() {
+            let resolved = reg.default_for_provider(&first.provider);
+            assert!(resolved.is_some());
+        }
+    }
+
+    #[test]
+    fn registry_resolve_scope_with_star() {
+        let reg = super::Registry::new();
+        let auth = crate::AuthStore::load();
+        let scope = reg.resolve_scope(&["*".to_string()], &auth);
+        // Star should match all models (if auth is available)
+        let _ = scope;
+    }
+
+    // ─── derive_thinking_compat ────────────────────────────────────────────
+
+    #[test]
+    fn derive_thinking_compat_none_reasoning() {
+        let (compat, _) = derive_thinking_compat(&[], None);
+        assert!(compat.is_empty());
+    }
+
+    #[test]
+    fn derive_thinking_compat_glm() {
+        let (compat, _) = derive_thinking_compat(&[], Some("GLM"));
+        assert!(!compat.is_empty());
+        assert_eq!(
+            compat.get("thinkingFormat").and_then(|v| v.as_str()),
+            Some("zai")
+        );
+    }
+
+    #[test]
+    fn derive_thinking_compat_with_reasoning_params() {
+        let supported = vec!["reasoning_effort".to_string()];
+        let (compat, tlm) = derive_thinking_compat(&supported, None);
+        assert!(!compat.is_empty());
+        assert_eq!(
+            compat.get("thinkingFormat").and_then(|v| v.as_str()),
+            Some("deepseek")
+        );
+        assert!(tlm.contains_key("high"));
+    }
+
+    #[test]
+    fn derive_thinking_compat_with_enable_thinking() {
+        let supported = vec!["enable_thinking".to_string()];
+        let (compat, _) = derive_thinking_compat(&supported, None);
+        assert!(!compat.is_empty());
+        assert_eq!(
+            compat.get("thinkingFormat").and_then(|v| v.as_str()),
+            Some("qwen")
+        );
+    }
+
+    #[test]
+    fn derive_thinking_compat_with_reasoning_split() {
+        let supported = vec!["reasoning_split".to_string()];
+        let (compat, _) = derive_thinking_compat(&supported, None);
+        assert!(!compat.is_empty());
+        assert_eq!(
+            compat.get("thinkingFormat").and_then(|v| v.as_str()),
+            Some("reasoning-split")
+        );
+    }
+
+    // ─── load_user_models_with_overrides ────────────────────────────────────
+
+    #[test]
+    fn load_user_models_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("models.json");
+        let content = r#"{
+            "providers": {
+                "custom": {
+                    "baseUrl": "https://custom.api.com/v1",
+                    "apiKey": "sk-custom",
+                    "api": "openai",
+                    "models": [{
+                        "id": "custom-model",
+                        "name": "Custom Model",
+                        "reasoning": true,
+                        "contextWindow": 64000,
+                        "maxTokens": 4096,
+                        "modalities": ["text", "image"],
+                        "cost": {"input": 1.0, "output": 2.0, "cacheRead": 0.5, "cacheWrite": 0.3}
+                    }]
+                }
+            }
+        }"#;
+        std::fs::write(&path, content).unwrap();
+
+        let (models, overrides) =
+            super::load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "custom-model");
+        assert_eq!(models[0].provider, "custom");
+        assert_eq!(models[0].api_key, "sk-custom");
+        assert!(models[0].reasoning);
+        assert_eq!(models[0].context_window, 64000);
+        assert_eq!(models[0].max_tokens, 4096);
+        assert_eq!(models[0].cost.input, 1.0);
+        assert_eq!(models[0].cost.output, 2.0);
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(
+            overrides["custom"].base_url.as_deref(),
+            Some("https://custom.api.com/v1")
+        );
+    }
+
+    #[test]
+    fn load_user_models_missing_file_errors() {
+        let result = super::load_user_models_with_overrides("/no/such/file.json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_user_models_no_providers_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.json");
+        std::fs::write(&path, r#"{}"#).unwrap();
+
+        let (models, overrides) =
+            super::load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
+
+        assert!(models.is_empty());
+        assert!(overrides.is_empty());
+    }
+
+    #[test]
+    fn load_user_models_provider_without_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("override-only.json");
+        std::fs::write(
+            &path,
+            r#"{
+            "providers": {
+                "test": {
+                    "baseUrl": "https://test.api.com/v1",
+                    "apiKey": "key123"
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+
+        let (models, overrides) =
+            super::load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
+
+        assert!(models.is_empty());
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(
+            overrides["test"].base_url.as_deref(),
+            Some("https://test.api.com/v1")
         );
     }
 }

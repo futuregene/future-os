@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
+.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help test-gui-rust gui-sidecars
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -41,51 +41,42 @@ install-nogui: install-agent install-tui install-cli install-channels install-sk
 
 uninstall:
 ifeq ($(OS),windows)
-	cmd /c del /q "$(PREFIX)\future-agent" 2>NUL
-	cmd /c del /q "$(PREFIX)\future" 2>NUL
-	cmd /c del /q "$(PREFIX)\future-tui" 2>NUL
-	cmd /c del /q "$(PREFIX)\future-gui" 2>NUL
-	cmd /c del /q "$(PREFIX)\future-channel" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-agent$(EXE_SUFFIX)" 2>NUL
+	cmd /c del /q "$(PREFIX)\future$(EXE_SUFFIX)" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-tui$(EXE_SUFFIX)" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-gui$(EXE_SUFFIX)" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-channel$(EXE_SUFFIX)" 2>NUL
 else
-	$(SUDO) rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-gui$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
 endif
 	@echo "Removed: future-agent, future, future-tui, future-gui, future-channel"
 
 install-agent: build-agent
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "$(PREFIX)\future-agent"
+	$(SUDO) $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "$(PREFIX)\future-agent$(EXE_SUFFIX)"
 else
 	$(SUDO) cp target/release/future-agent "$(PREFIX)/future-agent"
 endif
 
 install-tui: build-tui
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) tui\dist\future-tui$(EXE_SUFFIX) "$(PREFIX)\future-tui"
+	$(SUDO) $(COPY_CMD) tui\dist\future-tui$(EXE_SUFFIX) "$(PREFIX)\future-tui$(EXE_SUFFIX)"
 else
 	$(SUDO) cp tui/dist/future-tui "$(PREFIX)/future-tui"
 endif
 
 install-cli: build-cli
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "$(PREFIX)\future"
+	$(SUDO) $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
 else
 	$(SUDO) cp cli/dist/future "$(PREFIX)/future"
 endif
 
-install-gui: install-cli install-agent
-ifeq ($(OS),windows)
-	cmd /c "if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries"
-	$(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)"
-	$(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
-else
-	@mkdir -p gui/src-tauri/binaries
-	cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
-	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
-endif
+install-gui: install-cli install-agent gui-sidecars
 	$(call npm-install-if-needed,gui)
 	cd gui && npx tauri build --no-bundle
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) gui\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-gui"
+	$(SUDO) $(COPY_CMD) gui\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-gui$(EXE_SUFFIX)"
 else
 	$(SUDO) cp gui/src-tauri/target/release/futureos "$(PREFIX)/future-gui"
 endif
@@ -164,16 +155,37 @@ build-cli:
 	$(call npm-install-if-needed,cli)
 	cd cli && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future
 
-build-gui:
+# Internal: copy sidecar binaries (agent + CLI) into the Tauri resource dir.
+# Tauri's externalBin references these at build time; they are embedded next
+# to the GUI binary and extracted on first launch so the GUI can auto-start
+# the agent, run CLI commands (skill bootstrap), etc.
+gui-sidecars: build-agent build-cli
+ifeq ($(OS),windows)
+	cmd /c "if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries"
+	$(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)"
+	$(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
+else
+	@mkdir -p gui/src-tauri/binaries
+	cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
+	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
+endif
+
+# Compile the React frontend only — needed by check-gui and as a dep of build-gui.
+build-gui-dist:
 	$(call npm-install-if-needed,gui)
 	cd gui && npm run build
+
+# Self-contained standalone binary (no installer).  Produces
+#   gui/src-tauri/target/release/futureos$(EXE_SUFFIX)
+build-gui: build-gui-dist gui-sidecars
+	cd gui && npx tauri build --no-bundle
 
 build-channels:
 	cd channels && cargo build --release
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent test-channels test-cli test-tui test-gui
+test: test-agent test-channels test-cli test-tui test-gui test-gui-rust
 
 test-agent:
 	cd agent && cargo test
@@ -192,6 +204,9 @@ test-tui:
 test-gui:
 	$(call npm-install-if-needed,gui)
 	cd gui && npm test
+
+test-gui-rust:
+	cd gui/src-tauri && cargo test
 
 # ─── Lint ───────────────────────────────────────────────────────────────────
 
@@ -215,7 +230,7 @@ lint-gui:
 stylelint-gui:
 	cd gui && npm run stylelint
 
-check-gui: lint-gui stylelint-gui build-gui
+check-gui: lint-gui stylelint-gui build-gui-dist
 	cd gui/src-tauri && cargo check
 
 fmt:
@@ -266,6 +281,82 @@ package-gui: install-gui
 run-channels:
 	cd channels && cargo run
 
+# ─── Profile ───────────────────────────────────────────────────────────────
+
+# Build agent with debug symbols + frame pointers for profiling, then run
+# the benchmark suite.  Writes flamegraph SVG + logs to profile-results/.
+profile-agent:
+ifeq ($(OS),windows)
+	set "RUSTFLAGS=-C force-frame-pointers=yes" && \
+		cargo build --release -p future-agent \
+		--config "profile.release.debug=""line-tables-only""" \
+		--config "profile.release.strip=""none"""
+	@if not exist profile-results mkdir profile-results
+	@where blondie >NUL 2>NUL || (echo. & echo  blondie is required for CPU profiling on Windows. & echo  Install: cargo install blondie --features inferno & echo  CPU profiling also requires administrator privileges. & exit /b 1)
+	@echo Starting profile run (port 50052, 90s)...
+	set "PROFILE_DURATION=90" && powershell -ExecutionPolicy Bypass -File scripts/agent-profile-bench.ps1
+else
+	RUSTFLAGS="-C force-frame-pointers=yes" \
+		cargo build --release -p future-agent \
+		--config 'profile.release.debug="line-tables-only"' \
+		--config 'profile.release.strip="none"'
+	@mkdir -p profile-results
+	@echo "Starting profile run (port 50052, 90s)..."
+	PROFILE_DURATION=90 bash scripts/agent-profile-bench.sh
+	@echo ""
+	@echo "Flamegraph: $$(ls -t profile-results/agent-profile-*.svg | head -1)"
+	@echo "Run: open profile-results/agent-profile-*.svg"
+endif
+
+# Heap (memory) profile: build with the dhat-heap feature, run on port
+# 50052 for N seconds, write a dhat report JSON.
+# Usage: make profile-heap PROFILE_SECS=30
+# View the report at https://nnethercote.github.io/dh_view/dh_view.html
+profile-heap:
+ifeq ($(OS),windows)
+# Windows needs full debug info (2) for dhat backtrace capture (line-tables-only is insufficient)
+	cargo build --release -p future-agent --features dhat-heap \
+		--config profile.release.debug=2 \
+		--config "profile.release.strip=""none"""
+	@if not exist profile-results mkdir profile-results
+else
+	cargo build --release -p future-agent --features dhat-heap \
+		--config 'profile.release.debug="line-tables-only"' \
+		--config 'profile.release.strip="none"'
+	@mkdir -p profile-results
+endif
+	./target/release/future-agent$(EXE_SUFFIX) \
+		--grpc-addr 127.0.0.1:50052 \
+		--profile-heap profile-results/heap-profile.json \
+		--profile-seconds $(or $(PROFILE_SECS),30) \
+		--verbose
+	@echo ""
+	@echo "Heap profile: profile-results/heap-profile.json"
+	@echo "Interactive viewer: https://nnethercote.github.io/dh_view/dh_view.html"
+	@echo "For static flamegraph: dhat-to-flamegraph profile-results/heap-profile.json -f svg -o heap-flame.svg (requires dhat backtraces)"
+
+# Quick profile: start agent with profiling on port 50052, run for N seconds.
+# Usage: make profile-quick PROFILE_SECS=30
+profile-quick:
+ifeq ($(OS),windows)
+	set "RUSTFLAGS=-C force-frame-pointers=yes" && \
+		cargo build --release -p future-agent \
+		--config "profile.release.debug=""line-tables-only""" \
+		--config "profile.release.strip=""none"""
+	powershell -ExecutionPolicy Bypass -File scripts/profile-quick.ps1 -Duration $(or $(PROFILE_SECS),30)
+else
+	RUSTFLAGS="-C force-frame-pointers=yes" \
+		cargo build --release -p future-agent \
+		--config 'profile.release.debug="line-tables-only"' \
+		--config 'profile.release.strip="none"'
+	@mkdir -p profile-results
+	./target/release/future-agent \
+		--grpc-addr 127.0.0.1:50052 \
+		--profile profile-results/quick-profile.svg \
+		--profile-seconds $(or $(PROFILE_SECS),30) \
+		--verbose
+endif
+
 # ─── Generate ───────────────────────────────────────────────────────────────
 
 generate-models:
@@ -293,11 +384,11 @@ ifeq ($(OS),windows)
 	@if exist gui\node_modules rmdir /s /q gui\node_modules
 	@if exist gui\src-tauri\target rmdir /s /q gui\src-tauri\target
 	@if exist gui\src-tauri\binaries rmdir /s /q gui\src-tauri\binaries
-	@if exist "$(PREFIX)\future-agent" del /q "$(PREFIX)\future-agent"
-	@if exist "$(PREFIX)\future" del /q "$(PREFIX)\future"
-	@if exist "$(PREFIX)\future-tui" del /q "$(PREFIX)\future-tui"
-	@if exist "$(PREFIX)\future-gui" del /q "$(PREFIX)\future-gui"
-	@if exist "$(PREFIX)\future-channel" del /q "$(PREFIX)\future-channel"
+	@if exist "$(PREFIX)\future-agent$(EXE_SUFFIX)" del /q "$(PREFIX)\future-agent$(EXE_SUFFIX)"
+	@if exist "$(PREFIX)\future$(EXE_SUFFIX)" del /q "$(PREFIX)\future$(EXE_SUFFIX)"
+	@if exist "$(PREFIX)\future-tui$(EXE_SUFFIX)" del /q "$(PREFIX)\future-tui$(EXE_SUFFIX)"
+	@if exist "$(PREFIX)\future-gui$(EXE_SUFFIX)" del /q "$(PREFIX)\future-gui$(EXE_SUFFIX)"
+	@if exist "$(PREFIX)\future-channel$(EXE_SUFFIX)" del /q "$(PREFIX)\future-channel$(EXE_SUFFIX)"
 else
 	rm -rf target
 	rm -rf tui/dist tui/node_modules
@@ -305,7 +396,7 @@ else
 	rm -rf cli/dist cli/node_modules
 	rm -f cli/src/version.generated.ts
 	rm -rf gui/dist gui/node_modules gui/src-tauri/target gui/src-tauri/binaries
-	$(SUDO) rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-gui$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
 endif
 
 # ─── Help ───────────────────────────────────────────────────────────────────
@@ -326,6 +417,9 @@ help:
 	@echo "  run-gui            Run GUI in dev mode"
 	@echo "  run-channels        Run channel bridge directly (debug build)"
 	@echo "  package-gui        Package GUI desktop bundles"
+	@echo "  profile-agent      CPU profile: build + 90s bench, write flamegraph SVG"
+	@echo "  profile-quick      CPU profile: run agent N secs (PROFILE_SECS=30)"
+	@echo "  profile-heap       Heap profile via dhat, write dhat report JSON"
 	@echo "  generate-models    Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
 	@echo "  install            Build & install all components"

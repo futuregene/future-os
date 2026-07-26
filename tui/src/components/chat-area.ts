@@ -147,6 +147,14 @@ export class ChatArea implements Component {
   }
 
   appendToLastMessage(delta: string): void {
+    // When the last message is a tool result from a previous turn,
+    // a new assistant response is starting — push a fresh message.
+    // (startThinking has the same guard; without thinking events we
+    //  would otherwise append across turn boundaries into one block.)
+    const lastMsg = this.messages[this.messages.length - 1];
+    if (lastMsg?.role === "tool") {
+      this.addMessage({ id: this.newId(), role: "assistant", content: "" });
+    }
     const idx = this.findAssistantIndex();
     if (idx >= 0) {
       this.messages[idx].content += delta;

@@ -179,6 +179,34 @@ pub fn rename_thread(input: RenameThreadInput) -> Result<ThreadRecord, crate::Ap
     loaded(get_thread(&input.thread_id)?, "Thread")
 }
 
+pub(super) fn sync_thread_title_in(
+    conn: &Connection,
+    thread_id: &str,
+    title: &str,
+) -> Result<bool, crate::AppError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(false);
+    }
+    let changed = conn.execute(
+        "UPDATE threads
+         SET title = ?1
+         WHERE id = ?2 AND status != 'deleted' AND title != ?1",
+        params![title, thread_id],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Background convergence of the title toward the agent's `session_name` —
+/// the name shared with every client (TUI `/name`, CLI, channels), whose
+/// renames never reach the GUI DB. Unlike `rename_thread` this is not a user
+/// edit: `updated_at` is untouched so the sidebar order is undisturbed, and
+/// matching titles are a no-op. Returns whether the title changed.
+pub fn sync_thread_title(thread_id: &str, title: &str) -> Result<bool, crate::AppError> {
+    let conn = connect()?;
+    sync_thread_title_in(&conn, thread_id, title)
+}
+
 pub fn update_thread_model(input: UpdateThreadModelInput) -> Result<ThreadRecord, crate::AppError> {
     // Model is now managed by the agent (set_model RPC). The GUI cache
     // (agentStateCache) handles reads; DB write is a no-op.
@@ -519,5 +547,43 @@ mod tests {
             // tx dropped here without commit -> rollback.
         }
         assert_eq!(workspace_count(&conn), 0);
+    }
+
+    /// Title convergence from the agent's session_name must not disturb the
+    /// sidebar order (`updated_at` untouched), skip matching titles, and
+    /// reject empty titles.
+    #[test]
+    fn sync_thread_title_converges_without_touching_updated_at() {
+        let conn = test_conn();
+        let workspace = get_or_create_user_workspace_in(
+            &conn,
+            "Sync Workspace".to_string(),
+            PathBuf::from("/tmp/futureos-sync-ws"),
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (
+                 id, workspace_id, mode, title, status, pinned, readonly,
+                 agent_session_id, created_at, updated_at
+             ) VALUES ('thread_sync', ?1, 'chat', 'old', 'active', 0, 0, 'sess', 1, 42)",
+            params![workspace.id],
+        )
+        .unwrap();
+
+        // Matching title: no-op. New title: applied. Empty title: rejected.
+        assert!(!super::sync_thread_title_in(&conn, "thread_sync", "old").unwrap());
+        assert!(super::sync_thread_title_in(&conn, "thread_sync", "agent name").unwrap());
+        assert!(!super::sync_thread_title_in(&conn, "thread_sync", "   ").unwrap());
+
+        let (title, updated_at): (String, i64) = conn
+            .query_row(
+                "SELECT title, updated_at FROM threads WHERE id = 'thread_sync'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "agent name");
+        assert_eq!(updated_at, 42);
     }
 }

@@ -147,12 +147,11 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
 /// same file down to the one row per (thread_id, path) that `ensure_artifact`
 /// now maintains and `idx_artifacts_thread_path` enforces.
 ///
-/// PRE-RELEASE ONLY — delete this before release, with its tests, its call in
-/// `apply_schema`, and the `ADDED_INDEXES` carve-out that exists to sequence it
-/// (move `idx_artifacts_thread_path` into `SCHEMA` then). It exists solely to
-/// fold the duplicates sitting in already-populated development databases; no
-/// database that has only ever seen a post-change build can hold them, so once
-/// none is in play this is dead weight that deletes user rows on every launch.
+/// Legacy compatibility cleanup for databases written before the release
+/// baseline. Do not extend this startup pass for new schema changes: post-release
+/// changes require a dedicated, versioned migration (see `gui/CLAUDE.md`). Its
+/// removal or replacement must itself be handled as a migration after confirming
+/// that all supported upgrade paths have crossed this historical boundary.
 ///
 /// The survivor is the group's most recently touched row — it already carries
 /// the latest run_id/summary/content — and it inherits the group's earliest

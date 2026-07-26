@@ -21,27 +21,12 @@ pub const ENTRY_TYPE_MODEL_CHANGE: &str = "model_change";
 pub const ENTRY_TYPE_LABEL: &str = "label";
 pub const ENTRY_TYPE_SESSION_INFO: &str = "session_info";
 pub const ENTRY_TYPE_THINKING_LEVEL_CHANGE: &str = "thinking_level_change";
-pub const ENTRY_TYPE_BRANCH_SUMMARY: &str = "branch_summary";
 pub const ENTRY_TYPE_CUSTOM: &str = "custom";
 pub const ENTRY_TYPE_CUSTOM_MESSAGE: &str = "custom_message";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BranchSummaryMeta {
-    #[serde(rename = "from_id", skip_serializing_if = "Option::is_none")]
-    pub from_id: Option<String>,
-    #[serde(rename = "from_hook", skip_serializing_if = "Option::is_none")]
-    pub from_hook: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
     pub id: String,
-    #[serde(
-        rename = "parent_id",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub parent_id: String,
     #[serde(rename = "type")]
     pub entry_type: String,
     #[serde(rename = "role", default, skip_serializing_if = "String::is_empty")]
@@ -55,40 +40,6 @@ pub struct SessionEntry {
         default = "default_timestamp"
     )]
     pub timestamp: DateTime<Local>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub model: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub label: String,
-    #[serde(
-        rename = "thinking_level",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub thinking_level: String,
-    #[serde(
-        rename = "branch_summary",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub branch_summary: Option<BranchSummaryMeta>,
-    #[serde(
-        rename = "custom_type",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub custom_type: String,
-    #[serde(
-        rename = "custom_data",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub custom_data: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub display: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub provider: String,
     #[serde(
         rename = "tool_call_id",
         default,
@@ -101,15 +52,6 @@ pub struct SessionEntry {
     pub tool_args: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub thinking: String,
-    /// Output (completion) tokens for the reply this entry belongs to. Only the
-    /// final assistant entry of a run carries a non-zero value; used by the GUI
-    /// to show per-reply token counts when reloading history from JSONL.
-    #[serde(rename = "output_tokens", default, skip_serializing_if = "is_zero_i64")]
-    pub output_tokens: i64,
-    /// Wall-clock duration of the run this entry belongs to, in milliseconds.
-    /// Set alongside `output_tokens` on the final assistant entry of a run.
-    #[serde(rename = "duration_ms", default, skip_serializing_if = "is_zero_i64")]
-    pub duration_ms: i64,
     /// Structured per-entry metadata (not model-visible). For user entries this
     /// carries `{ "attachments": [{ path, kind, name }] }` — the files the user
     /// attached, referenced by original absolute path (never copied). Populated
@@ -161,35 +103,19 @@ fn default_timestamp() -> DateTime<Local> {
     chrono::Local::now()
 }
 
-fn is_zero_i64(v: &i64) -> bool {
-    *v == 0
-}
-
 impl SessionEntry {
     pub fn new_user(role: &str, content: serde_json::Value) -> Self {
         Self {
             id: generate_entry_id(),
-            parent_id: String::new(),
             entry_type: ENTRY_TYPE_USER.to_string(),
             role: role.to_string(),
             content: Some(content),
             tool_calls: vec![],
             timestamp: Local::now(),
-            summary: String::new(),
-            model: String::new(),
-            label: String::new(),
-            thinking_level: String::new(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         }
     }
@@ -197,27 +123,15 @@ impl SessionEntry {
     pub fn new_assistant(content: serde_json::Value, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             id: generate_entry_id(),
-            parent_id: String::new(),
             entry_type: ENTRY_TYPE_ASSISTANT.to_string(),
             role: "assistant".to_string(),
             content: Some(content),
             tool_calls,
             timestamp: Local::now(),
-            summary: String::new(),
-            model: String::new(),
-            label: String::new(),
-            thinking_level: String::new(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         }
     }
@@ -225,27 +139,15 @@ impl SessionEntry {
     pub fn new_tool(call_id: &str, content: &str) -> Self {
         Self {
             id: generate_entry_id(),
-            parent_id: String::new(),
             entry_type: ENTRY_TYPE_TOOL.to_string(),
             role: "tool".to_string(),
             content: Some(serde_json::json!(content)),
             tool_calls: vec![],
             timestamp: Local::now(),
-            summary: String::new(),
-            model: String::new(),
-            label: String::new(),
-            thinking_level: String::new(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: call_id.to_string(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         }
     }
@@ -253,30 +155,22 @@ impl SessionEntry {
     /// Build the `session_info` metadata entry prepended to every saved session.
     /// `content` holds the token/cost/name JSON snapshot; `model`/`thinking_level`
     /// pin the session's active settings. All other fields take entry defaults.
-    pub fn session_info(content: serde_json::Value, model: String, thinking_level: String) -> Self {
+    pub fn session_info(
+        content: serde_json::Value,
+        _model: String,
+        _thinking_level: String,
+    ) -> Self {
         Self {
             id: generate_entry_id(),
-            parent_id: String::new(),
             entry_type: ENTRY_TYPE_SESSION_INFO.to_string(),
             role: ENTRY_TYPE_SYSTEM.to_string(),
             content: Some(content),
             tool_calls: vec![],
             timestamp: Local::now(),
-            summary: String::new(),
-            model,
-            label: String::new(),
-            thinking_level,
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         }
     }
@@ -427,6 +321,20 @@ impl Manager {
         if !path.exists() {
             return Err(anyhow::anyhow!("session file does not exist yet"));
         }
+
+        // Acquire the same advisory file lock as save() so appends and saves
+        // to the same session are serialised.
+        let lock_path = path.with_extension("jsonl.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(&lock_path)
+            .context("open session lock file")?;
+        let mut file_lock = fd_lock::RwLock::new(lock_file);
+        let _guard = file_lock.write().context("acquire session write lock")?;
+
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
@@ -444,6 +352,22 @@ impl Manager {
     pub fn save(&self, session: &Session) -> Result<()> {
         let path = self.session_path(&session.id);
         fs::create_dir_all(&self.dir).context("create session dir")?;
+
+        // Acquire an advisory file lock so concurrent saves to the same
+        // session are serialised.  Without this, two prompts finishing at the
+        // same time race on the temp→final rename, causing "rename temp to
+        // final" errors and potentially lost entries.
+        let lock_path = path.with_extension("jsonl.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(&lock_path)
+            .context("open session lock file")?;
+        let mut file_lock = fd_lock::RwLock::new(lock_file);
+        let _guard = file_lock.write().context("acquire session write lock")?;
+
         // Write to a temp file and rename atomically so a mid-write crash
         // never leaves a partially-written (corrupt) JSONL behind.
         let tmp_path = path.with_extension("jsonl.tmp");
@@ -461,6 +385,8 @@ impl Manager {
             .map_err(|_| anyhow::anyhow!("flush failed"))?;
         file.sync_all().context("fsync temp session file")?;
         fs::rename(&tmp_path, &path).context("rename temp to final")?;
+
+        // Lock released when _guard goes out of scope
         Ok(())
     }
 
@@ -477,6 +403,83 @@ impl Manager {
             e.entry_type != ENTRY_TYPE_ASSISTANT || e.content.is_some() || !e.tool_calls.is_empty()
         });
         entries.len() != before
+    }
+
+    /// Content prefix of the placeholder tool-result entries written by
+    /// `repair_dangling_tool_calls`. Used to recognise placeholders so a
+    /// later-arriving REAL tool result with the same tool_call_id can
+    /// replace them (see `dedupe_tool_entries`).
+    const TOOL_LOST_PLACEHOLDER_PREFIX: &'static str = "[Tool execution lost —";
+
+    fn entry_text_starts_with(entry: &SessionEntry, prefix: &str) -> bool {
+        match &entry.content {
+            Some(serde_json::Value::String(s)) => s.starts_with(prefix),
+            Some(serde_json::Value::Array(arr)) => arr
+                .first()
+                .and_then(|b| b.get("text"))
+                .and_then(|t| t.as_str())
+                .is_some_and(|s| s.starts_with(prefix)),
+            _ => false,
+        }
+    }
+
+    /// Remove duplicate tool-result entries that share the same tool_call_id.
+    ///
+    /// Duplicates arise when a load-time repair wrote a "tool execution lost"
+    /// placeholder for a dangling tool_call while the original agent process
+    /// was still mid-tool, and the real tool result was appended afterwards.
+    /// Two tool messages with the same tool_call_id make the LLM API reject
+    /// the request with HTTP 400 ("Messages with role 'tool' must be a
+    /// response to a preceding message with 'tool_calls'").
+    ///
+    /// When one of the duplicates is a placeholder and the other is a real
+    /// result, the placeholder is dropped; otherwise the first entry wins.
+    fn dedupe_tool_entries(entries: &mut Vec<SessionEntry>) -> bool {
+        use std::collections::{HashMap, HashSet};
+        // tool_call_id -> index of the entry currently kept for that id
+        let mut kept: HashMap<String, usize> = HashMap::new();
+        let mut drop_idx: Vec<usize> = vec![];
+        for (i, e) in entries.iter().enumerate() {
+            if e.entry_type != ENTRY_TYPE_TOOL || e.tool_call_id.is_empty() {
+                continue;
+            }
+            match kept.get(&e.tool_call_id) {
+                None => {
+                    kept.insert(e.tool_call_id.clone(), i);
+                }
+                Some(&prev) => {
+                    let prev_is_placeholder = Self::entry_text_starts_with(
+                        &entries[prev],
+                        Self::TOOL_LOST_PLACEHOLDER_PREFIX,
+                    );
+                    let cur_is_placeholder =
+                        Self::entry_text_starts_with(e, Self::TOOL_LOST_PLACEHOLDER_PREFIX);
+                    if prev_is_placeholder && !cur_is_placeholder {
+                        // The real result arrived after the placeholder was
+                        // written — drop the placeholder, keep the real one.
+                        drop_idx.push(prev);
+                        kept.insert(e.tool_call_id.clone(), i);
+                    } else {
+                        drop_idx.push(i);
+                    }
+                }
+            }
+        }
+        if drop_idx.is_empty() {
+            return false;
+        }
+        tracing::warn!(
+            "Removing {} duplicate tool-result entries from session (shared tool_call_id)",
+            drop_idx.len()
+        );
+        let drop: HashSet<usize> = drop_idx.into_iter().collect();
+        let mut i = 0;
+        entries.retain(|_| {
+            let keep = !drop.contains(&i);
+            i += 1;
+            keep
+        });
+        true
     }
 
     /// If the last assistant entry has dangling tool_calls (no matching tool
@@ -499,35 +502,24 @@ impl Manager {
             .iter()
             .map(|tc| (tc.id.clone(), tc.function.name.clone()))
             .collect();
-        let parent_id = entries[last_idx].id.clone();
+        let _parent_id = entries[last_idx].id.clone();
         let now = chrono::Local::now();
         for (tc_id, tc_name) in &tool_calls {
             let placeholder = format!(
-            "[Tool execution lost — {tc_name} was not executed before the session was interrupted]",
-        );
+                "{} {tc_name} was not executed before the session was interrupted]",
+                Self::TOOL_LOST_PLACEHOLDER_PREFIX,
+            );
             entries.push(SessionEntry {
                 id: crate::utils::generate_id(),
-                parent_id: parent_id.clone(),
                 entry_type: ENTRY_TYPE_TOOL.to_string(),
                 role: "tool".to_string(),
                 content: Some(serde_json::Value::String(placeholder)),
                 tool_calls: vec![],
                 timestamp: now,
-                summary: String::new(),
-                model: String::new(),
-                label: String::new(),
-                thinking_level: String::new(),
-                branch_summary: None,
-                custom_type: String::new(),
-                custom_data: None,
-                display: String::new(),
-                provider: String::new(),
                 tool_call_id: tc_id.clone(),
                 name: tc_name.clone(),
                 tool_args: String::new(),
                 thinking: String::new(),
-                output_tokens: 0,
-                duration_ms: 0,
                 meta: None,
             });
         }
@@ -569,30 +561,27 @@ impl Manager {
         if entries.is_empty() {
             return Err(anyhow!("session {} has no entries", id));
         }
-        // Heal dangling tool_calls + strip empty assistants: fix up common
-        // session corruptions so the conversation remains API-valid on resume.
-        // Persist immediately so the fix doesn't re-fire on the next load.
+        // Heal common session corruptions IN MEMORY ONLY so the conversation
+        // is API-valid on resume: strip empty assistants, drop duplicate tool
+        // results, and patch dangling tool_calls with placeholders.
+        //
+        // The healed entries are deliberately NOT written back to the file
+        // here.  load_path is called from many read-only paths (session list,
+        // summaries, get_session_entries, fork/clone) that can run while the
+        // owning agent process is still mid-turn.  Persisting a placeholder
+        // for a dangling tool_call at that moment corrupts the file: when the
+        // running tool finishes, its real result is appended with the same
+        // tool_call_id, producing duplicate tool messages that the LLM API
+        // rejects with HTTP 400.  The in-memory heal is idempotent and cheap,
+        // and the owning session's next save() persists the healed state.
         let stripped = Self::strip_empty_assistants(&mut entries);
+        let deduped = Self::dedupe_tool_entries(&mut entries);
         let repaired = Self::repair_dangling_tool_calls(&mut entries);
-        if stripped || repaired {
-            // Save the repaired entries back so the next load is clean.
-            let path_owned = path.to_path_buf();
-            if let Err(e) = (|| -> Result<()> {
-                let file = File::create(&path_owned).context("create session file for repair")?;
-                let mut w = std::io::BufWriter::new(file);
-                for entry in entries.iter() {
-                    let json = serde_json::to_string(entry).context("serialize entry")?;
-                    writeln!(w, "{}", json).context("write entry")?;
-                }
-                w.flush().context("flush")?;
-                w.into_inner()
-                    .map_err(|_| anyhow::anyhow!("flush failed"))?
-                    .sync_all()
-                    .context("fsync")?;
-                Ok(())
-            })() {
-                tracing::warn!("Failed to persist repaired session: {e}");
-            }
+        if stripped || deduped || repaired {
+            tracing::info!(
+                "Healed session {id} in memory (stripped_empty={stripped}, \
+                 deduped_tools={deduped}, repaired_dangling={repaired})"
+            );
         }
         let created_at = entries[0].timestamp;
         let updated_at = entries.last().map(|e| e.timestamp).unwrap_or(created_at);
@@ -614,8 +603,13 @@ impl Manager {
             .iter()
             .rev()
             .find_map(|e| {
-                if e.entry_type == ENTRY_TYPE_MODEL_CHANGE && !e.model.is_empty() {
-                    Some(e.model.clone())
+                if e.entry_type == ENTRY_TYPE_MODEL_CHANGE {
+                    e.content
+                        .as_ref()
+                        .and_then(|c| c.get("model"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
                 } else {
                     None
                 }
@@ -626,33 +620,21 @@ impl Manager {
                 entries
                     .iter()
                     .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
-                    .and_then(|e| {
-                        if !e.model.is_empty() {
-                            Some(e.model.clone())
-                        } else {
-                            None
-                        }
-                    })
-            })
-            .unwrap_or_default();
-        let name = entries
-            .iter()
-            .rev()
-            .find(|e| e.entry_type == ENTRY_TYPE_LABEL && !e.label.is_empty())
-            .map(|e| e.label.clone())
-            .or_else(|| {
-                // Fall back to session_info.session_name when no LABEL entry
-                // exists (e.g. sessions that were auto-named but never
-                // explicitly renamed).
-                entries
-                    .iter()
-                    .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
                     .and_then(|e| e.content.as_ref())
-                    .and_then(|c| c.get("session_name"))
+                    .and_then(|c| c.get("model"))
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string())
             })
+            .unwrap_or_default();
+        let name = entries
+            .iter()
+            .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .and_then(|e| e.content.as_ref())
+            .and_then(|c| c.get("session_name"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
             .unwrap_or_default();
         let parent_session_id = entries
             .iter()
@@ -684,39 +666,261 @@ impl Manager {
         Ok(session)
     }
 
-    pub fn list(&self, cwd: &str) -> Result<Vec<Session>> {
-        fs::create_dir_all(&self.dir).ok();
-        let mut sessions = vec![];
-        if self.dir.exists() {
-            for entry in fs::read_dir(&self.dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-                    continue;
+    /// Extract the `"type":"..."` value from a serialized entry line without
+    /// parsing the whole JSON.  `SessionEntry` serializes `id` first and
+    /// `type` second (struct field order is deterministic), so the marker
+    /// always appears within the first ~80 bytes regardless of how large the
+    /// `content` payload is.
+    fn cheap_entry_type(line: &str) -> Option<&str> {
+        // Boundary-safe head slice: a multi-byte char may straddle byte 96.
+        let head = line.get(..96).unwrap_or(line);
+        let start = head.find("\"type\":\"")? + 8;
+        let end = head[start..].find('"')? + start;
+        Some(&head[start..end])
+    }
+
+    /// Extract the last `"timestamp":"..."` occurrence from a line without
+    /// parsing the whole JSON.  Used for `updated_at` from the final entry,
+    /// which may itself be a huge tool-result line.
+    fn cheap_timestamp(line: &str) -> Option<DateTime<Local>> {
+        let start = line.rfind("\"timestamp\":\"")? + 13;
+        let end = line[start..].find('"')? + start;
+        let ts = chrono::DateTime::parse_from_rfc3339(&line[start..end]).ok()?;
+        Some(ts.with_timezone(&Local))
+    }
+
+    /// Extract the display text of a user entry's content (first text block),
+    /// trimmed and truncated to ~40 visible columns for the session list.
+    fn summary_first_message(entry: &SessionEntry) -> Option<String> {
+        let content_val = entry.content.as_ref()?;
+        let text: String = if let Some(arr) = content_val.as_array() {
+            // First text block only — a later one is the agent-injected
+            // attachment-path list, not the user's message.
+            arr.iter()
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .next()
+                .unwrap_or("")
+                .to_string()
+        } else if let Some(s) = content_val.as_str() {
+            s.to_string()
+        } else {
+            String::new()
+        };
+        let truncated: String = truncate_visible(text.trim(), 40);
+        if truncated.is_empty() {
+            None
+        } else {
+            Some(truncated)
+        }
+    }
+
+    /// Build a summary from a fully-loaded session (fallback path for files
+    /// whose structure the cheap scanner doesn't recognise).
+    fn summary_from_session(sess: &Session) -> SessionSummary {
+        let mut first_message: Option<String> = None;
+        let mut query_count: usize = 0;
+        let mut session_info_name: Option<String> = None;
+        for entry in &sess.entries {
+            if entry.role == "user" {
+                query_count += 1;
+                if first_message.is_none() {
+                    first_message = Self::summary_first_message(entry);
                 }
-                let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                if let Ok(sess) = self.load_path(&path, id) {
-                    if sess.cwd == cwd || cwd.is_empty() {
-                        sessions.push(sess);
+            } else if entry.entry_type == ENTRY_TYPE_SESSION_INFO && session_info_name.is_none() {
+                if let Some(ref content_val) = entry.content {
+                    if let Some(n) = content_val.get("session_name").and_then(|v| v.as_str()) {
+                        let trimmed = n.trim();
+                        if !trimmed.is_empty() {
+                            session_info_name = Some(trimmed.to_string());
+                        }
                     }
                 }
             }
         }
-        sessions.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
-        Ok(sessions)
+        SessionSummary {
+            id: sess.id.clone(),
+            cwd: sess.cwd.clone(),
+            updated_at: sess.updated_at,
+            model: sess.model.clone(),
+            name: if !sess.name.is_empty() {
+                Some(sess.name.clone())
+            } else {
+                session_info_name
+            },
+            parent_session_id: sess.parent_session_id.clone(),
+            first_message,
+            query_count,
+        }
     }
 
-    /// List all sessions in the flat sessions directory
+    /// Build a SessionSummary by scanning the JSONL cheaply: fully parse only
+    /// the small metadata lines (session_info / model_change / label) and the
+    /// first user entry; every other line is inspected via a `"type"` prefix
+    /// scan, so multi-hundred-KB tool/assistant lines are never deserialized.
+    /// Returns None when the file has no usable session_info or a metadata
+    /// line fails to parse — callers should fall back to a full `load_path`.
+    fn read_summary(&self, path: &Path, id: &str) -> Option<SessionSummary> {
+        let file = File::open(path).ok()?;
+        let reader = BufReader::new(file);
+        let mut cwd = String::new();
+        let mut model = String::new();
+        let mut name = String::new();
+        let mut parent_session_id = String::new();
+        let mut first_message: Option<String> = None;
+        let mut query_count: usize = 0;
+        let mut saw_session_info = false;
+        let mut last_line = String::new();
+
+        for line in reader.lines() {
+            let line = line.ok()?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            last_line = line;
+            match Self::cheap_entry_type(&last_line) {
+                Some(ENTRY_TYPE_SESSION_INFO) => {
+                    let e: SessionEntry = serde_json::from_str(&last_line).ok()?;
+                    saw_session_info = true;
+                    if let Some(ref content) = e.content {
+                        if let Some(c) = content.get("cwd").and_then(|v| v.as_str()) {
+                            cwd = c.to_string();
+                        }
+                        if name.is_empty() {
+                            if let Some(n) = content
+                                .get("session_name")
+                                .and_then(|v| v.as_str())
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            {
+                                name = n.to_string();
+                            }
+                        }
+                        if let Some(p) = content.get("parent_session_id").and_then(|v| v.as_str()) {
+                            parent_session_id = p.to_string();
+                        }
+                    }
+                    if model.is_empty() {
+                        if let Some(ref content) = e.content {
+                            if let Some(m) = content
+                                .get("model")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                            {
+                                model = m.to_string();
+                            }
+                        }
+                    }
+                }
+                Some(ENTRY_TYPE_MODEL_CHANGE) => {
+                    let e: SessionEntry = serde_json::from_str(&last_line).ok()?;
+                    if let Some(ref content) = e.content {
+                        if let Some(m) = content.get("model").and_then(|v| v.as_str()) {
+                            model = m.to_string(); // last one wins
+                        }
+                    }
+                }
+                Some(ENTRY_TYPE_USER) => {
+                    query_count += 1;
+                    if first_message.is_none() {
+                        if let Ok(e) = serde_json::from_str::<SessionEntry>(&last_line) {
+                            first_message = Self::summary_first_message(&e);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !saw_session_info || last_line.is_empty() {
+            return None;
+        }
+        // updated_at: timestamp of the final entry (cheap extraction — the
+        // last line may be a huge tool result), falling back to file mtime.
+        let updated_at = Self::cheap_timestamp(&last_line).or_else(|| {
+            std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(DateTime::<Local>::from)
+        })?;
+
+        Some(SessionSummary {
+            id: id.to_string(),
+            cwd,
+            updated_at,
+            model,
+            name: if name.is_empty() { None } else { Some(name) },
+            parent_session_id,
+            first_message,
+            query_count,
+        })
+    }
+
+    /// List sessions for a cwd as lightweight summaries (no full JSONL
+    /// parse per file — see `read_summary`).
+    pub fn list_summaries(&self, cwd: &str) -> Result<Vec<SessionSummary>> {
+        let mut summaries = self.list_all()?;
+        if !cwd.is_empty() {
+            summaries.retain(|s| s.cwd == cwd);
+        }
+        Ok(summaries)
+    }
+
+    /// List all sessions in the flat sessions directory.
+    ///
+    /// Files are scanned in parallel (each JSONL is an independent cheap
+    /// line-scan via `read_summary`); with thousands of sessions on disk a
+    /// sequential scan is the dominant startup cost for the GUI/TUI list.
     pub fn list_all(&self) -> Result<Vec<SessionSummary>> {
         if !self.dir.exists() {
             return Ok(vec![]);
         }
-        let mut summaries = vec![];
+        let mut paths = vec![];
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
             let path = entry.path();
-            self.try_push_summary(&path, &mut summaries);
+            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                paths.push(path);
+            }
         }
+        let mut summaries = if paths.len() <= 8 {
+            // Few files: thread-spawn overhead outweighs the scan time.
+            let mut summaries = vec![];
+            for path in &paths {
+                self.try_push_summary(path, &mut summaries);
+            }
+            summaries
+        } else {
+            // Work-stealing over a shared index; capped worker count to
+            // avoid I/O thrash on spinning disks.
+            let workers = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .min(8)
+                .min(paths.len());
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let per_worker: Vec<Vec<SessionSummary>> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..workers)
+                    .map(|_| {
+                        s.spawn(|| {
+                            let mut local = vec![];
+                            loop {
+                                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if i >= paths.len() {
+                                    break;
+                                }
+                                self.try_push_summary(&paths[i], &mut local);
+                            }
+                            local
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or_default())
+                    .collect()
+            });
+            per_worker.into_iter().flatten().collect()
+        };
         summaries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(summaries)
     }
@@ -726,66 +930,13 @@ impl Manager {
             return;
         }
         let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        if let Ok(sess) = self.load_path(path, id) {
-            // Scan entries for user messages: first user message and total count.
-            // Also read session_name from the session_info entry as a fallback
-            // for the name when the Session-level name field is empty (older
-            // sessions saved before the name was plumbed through).
-            let mut first_message: Option<String> = None;
-            let mut query_count: usize = 0;
-            let mut session_info_name: Option<String> = None;
-            for entry in &sess.entries {
-                if entry.role == "user" {
-                    query_count += 1;
-                    if first_message.is_none() {
-                        if let Some(ref content_val) = entry.content {
-                            let text: String = if let Some(arr) = content_val.as_array() {
-                                // First text block only — a later one is the agent-
-                                // injected attachment-path list, not the user's message.
-                                arr.iter()
-                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                    .next()
-                                    .unwrap_or("")
-                                    .to_string()
-                            } else if let Some(s) = content_val.as_str() {
-                                s.to_string()
-                            } else {
-                                String::new()
-                            };
-                            // Trim, then truncate to ~40 visible-width (≈20 CJK chars)
-                            let trimmed = text.trim();
-                            let truncated: String = truncate_visible(trimmed, 40);
-                            if !truncated.is_empty() {
-                                first_message = Some(truncated);
-                            }
-                        }
-                    }
-                } else if entry.entry_type == ENTRY_TYPE_SESSION_INFO && session_info_name.is_none()
-                {
-                    if let Some(ref content_val) = entry.content {
-                        if let Some(n) = content_val.get("session_name").and_then(|v| v.as_str()) {
-                            let trimmed = n.trim();
-                            if !trimmed.is_empty() {
-                                session_info_name = Some(trimmed.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            summaries.push(SessionSummary {
-                id: sess.id,
-                cwd: sess.cwd,
-                updated_at: sess.updated_at,
-                model: sess.model,
-                name: if !sess.name.is_empty() {
-                    Some(sess.name)
-                } else {
-                    session_info_name.clone()
-                },
-                parent_session_id: sess.parent_session_id.clone(),
-                first_message,
-                query_count,
-            });
+        // Fast path: cheap line scan that never deserializes large
+        // tool/assistant payloads.  Falls back to a full load for files the
+        // scanner can't handle (legacy layouts, missing session_info).
+        if let Some(summary) = self.read_summary(path, id) {
+            summaries.push(summary);
+        } else if let Ok(sess) = self.load_path(path, id) {
+            summaries.push(Self::summary_from_session(&sess));
         }
     }
 
@@ -802,6 +953,9 @@ impl Manager {
     /// Delete a session file
     pub fn delete(&self, id: &str) -> Result<()> {
         let path = self.session_path(id);
+        // Also remove the lock file if present — no session means no lock.
+        let lock_path = path.with_extension("jsonl.lock");
+        let _ = fs::remove_file(&lock_path);
         fs::remove_file(path).map_err(|e| anyhow!("failed to delete session: {}", e))
     }
 }
@@ -822,9 +976,6 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     let mut entries: Vec<SessionEntry> = chain.into_iter().cloned().collect();
     for e in &mut entries {
         e.id = generate_entry_id();
-        // Reset parent_id too — the old references point into the
-        // parent session and are meaningless (orphaned) in the fork.
-        e.parent_id.clear();
     }
     // Read parent metadata from the session_info entry.  The values live on
     // the SessionEntry struct fields (model, thinking_level) and also inside
@@ -839,25 +990,17 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     // when neither is set, so a `low`/`medium` parent doesn't silently fork to
     // `high`.
     let parent_thinking_level = parent_info
-        .map(|e| e.thinking_level.as_str())
+        .and_then(|e| e.content.as_ref())
+        .and_then(|c| c.get("thinking_level"))
+        .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            parent_info
-                .and_then(|e| e.content.as_ref())
-                .and_then(|c| c.get("thinking_level"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-        })
         .unwrap_or("high");
 
     let parent_model = parent_info
-        .and_then(|e| {
-            if !e.model.is_empty() {
-                Some(e.model.as_str())
-            } else {
-                None
-            }
-        })
+        .and_then(|e| e.content.as_ref())
+        .and_then(|c| c.get("model"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
         .unwrap_or(&parent.model)
         .to_string();
 
@@ -867,7 +1010,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         .and_then(|v| v.as_str())
         .unwrap_or("tui");
 
-    // Derive fork name: read from session_info content first, then LABEL.
+    // Derive fork name: read from session_info content.
     let parent_name = parent_info
         .and_then(|e| e.content.as_ref())
         .and_then(|c| c.get("session_name"))
@@ -894,27 +1037,15 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         0,
         SessionEntry {
             id: generate_entry_id(),
-            parent_id: String::new(),
             entry_type: ENTRY_TYPE_SESSION_INFO.to_string(),
             role: "system".to_string(),
             content: Some(info),
             tool_calls: vec![],
             timestamp: Local::now(),
-            summary: String::new(),
-            model: parent_model.clone(),
-            label: String::new(),
-            thinking_level: parent_thinking_level.to_string(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         },
     );
@@ -1124,21 +1255,11 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
 
     SessionEntry {
         id: generate_entry_id(),
-        parent_id: String::new(),
         entry_type: entry_type.to_string(),
         role: msg.role.clone(),
         content,
         tool_calls,
         timestamp: Local::now(),
-        summary: String::new(),
-        model: String::new(),
-        label: String::new(),
-        thinking_level: String::new(),
-        branch_summary: None,
-        custom_type: String::new(),
-        custom_data: None,
-        display: String::new(),
-        provider: String::new(),
         tool_call_id: msg.tool_call_id.clone(),
         name: msg.name.clone(),
         tool_args: msg.tool_args.clone(),
@@ -1146,8 +1267,6 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         // Populated at the save site (session_prompt.rs): only the final
         // assistant entry of a run gets a non-zero value, and prior entries'
         // values are preserved from the previously-saved session.
-        output_tokens: 0,
-        duration_ms: 0,
         // Carry structured metadata (e.g. user attachments) into the JSONL so it
         // survives reload; the reverse mapping restores it in
         // entries_to_agent_messages.
@@ -1185,6 +1304,883 @@ pub fn truncate_visible(s: &str, max_vis: usize) -> String {
         result.push(ch);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── truncate_visible ───────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_visible_ascii() {
+        assert_eq!(truncate_visible("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_visible_cjk() {
+        assert_eq!(truncate_visible("你好世界", 4), "你好");
+    }
+
+    #[test]
+    fn truncate_visible_mixed() {
+        assert_eq!(truncate_visible("ab你好cd", 4), "ab你");
+    }
+
+    #[test]
+    fn truncate_visible_emoji() {
+        assert_eq!(truncate_visible("a🦀b", 3), "a🦀");
+    }
+
+    #[test]
+    fn truncate_visible_exact_fit() {
+        assert_eq!(truncate_visible("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_visible_zero() {
+        assert_eq!(truncate_visible("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_visible_empty_string() {
+        assert_eq!(truncate_visible("", 10), "");
+    }
+
+    #[test]
+    fn truncate_visible_cjk_never_splits() {
+        // "中" is 2 cols. 3 cols budget → only "中" fits
+        assert_eq!(truncate_visible("中文中文", 3), "中");
+    }
+
+    // ─── SessionEntry constructors ──────────────────────────────────────────
+
+    #[test]
+    fn new_user_entry() {
+        let e = SessionEntry::new_user("user", serde_json::json!("hello"));
+        assert_eq!(e.entry_type, ENTRY_TYPE_USER);
+        assert_eq!(e.role, "user");
+        assert!(!e.id.is_empty());
+    }
+
+    #[test]
+    fn new_assistant_entry() {
+        let tool_calls = vec![crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"cmd": "ls"}),
+            },
+        }];
+        let e = SessionEntry::new_assistant(serde_json::json!("answer"), tool_calls);
+        assert_eq!(e.entry_type, ENTRY_TYPE_ASSISTANT);
+        assert_eq!(e.role, "assistant");
+        assert_eq!(e.tool_calls.len(), 1);
+        assert_eq!(e.tool_calls[0].function.name, "shell");
+    }
+
+    #[test]
+    fn new_tool_entry() {
+        let e = SessionEntry::new_tool("call_123", "file contents here");
+        assert_eq!(e.entry_type, ENTRY_TYPE_TOOL);
+        assert_eq!(e.role, "tool");
+        assert_eq!(e.tool_call_id, "call_123");
+    }
+
+    #[test]
+    fn session_info_entry() {
+        let content = serde_json::json!({"session_name": "test", "model": "gpt-4o", "thinking_level": "high"});
+        let e = SessionEntry::session_info(content, "gpt-4o".to_string(), "high".to_string());
+        assert_eq!(e.entry_type, ENTRY_TYPE_SESSION_INFO);
+        assert_eq!(e.role, ENTRY_TYPE_SYSTEM);
+        let c = e.content.as_ref().unwrap();
+        assert_eq!(c["model"], "gpt-4o");
+        assert_eq!(c["thinking_level"], "high");
+    }
+
+    #[test]
+    fn entry_ids_are_unique() {
+        let e1 = SessionEntry::new_user("user", serde_json::json!("a"));
+        let e2 = SessionEntry::new_user("user", serde_json::json!("b"));
+        assert_ne!(e1.id, e2.id);
+    }
+
+    // ─── Session basics ─────────────────────────────────────────────────────
+
+    #[test]
+    fn session_new_fields() {
+        let s = Session::new("/tmp/test", "gpt-4o", "https://api.openai.com");
+        assert_eq!(s.cwd, "/tmp/test");
+        assert_eq!(s.model, "gpt-4o");
+        assert_eq!(s.base_url, "https://api.openai.com");
+        assert!(s.entries.is_empty());
+        assert!(s.parent_session_id.is_empty());
+    }
+
+    #[test]
+    fn session_name_get_set() {
+        let mut s = Session::new("/tmp", "model", "");
+        assert_eq!(s.get_session_name(), "");
+        s.set_session_name("My Chat");
+        assert_eq!(s.get_session_name(), "My Chat");
+    }
+
+    #[test]
+    fn session_base_url_get_set() {
+        let mut s = Session::new("/tmp", "model", "https://old.com");
+        assert_eq!(s.get_base_url(), "https://old.com");
+        s.set_base_url("https://new.com");
+        assert_eq!(s.get_base_url(), "https://new.com");
+    }
+
+    // ─── build_context ──────────────────────────────────────────────────────
+
+    #[test]
+    fn build_context_from_entries() {
+        let entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("hello")),
+            SessionEntry::new_assistant(serde_json::json!("hi"), vec![]),
+            SessionEntry::new_tool("c1", "output"),
+        ];
+        let msgs = build_context(&entries);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+        assert_eq!(msgs[2].role, "tool");
+        assert_eq!(msgs[2].tool_call_id, "c1");
+    }
+
+    #[test]
+    fn build_context_skips_non_message_types() {
+        let mut compaction = SessionEntry::new_user("user", serde_json::json!("x"));
+        compaction.entry_type = ENTRY_TYPE_COMPACTION.to_string();
+        let entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("hello")),
+            compaction,
+        ];
+        let msgs = build_context(&entries);
+        assert_eq!(msgs.len(), 1); // compaction skipped
+    }
+
+    #[test]
+    fn build_context_preserves_thinking() {
+        let mut e = SessionEntry::new_assistant(serde_json::json!("answer"), vec![]);
+        e.thinking = "let me think...".to_string();
+        let msgs = build_context(&[e]);
+        assert_eq!(msgs[0].reasoning_content, "let me think...");
+    }
+
+    #[test]
+    fn build_context_empty_entries() {
+        let msgs = build_context(&[]);
+        assert!(msgs.is_empty());
+    }
+
+    // ─── agent_message_to_entry ─────────────────────────────────────────────
+
+    #[test]
+    fn agent_message_to_entry_user() {
+        let msg = crate::types::AgentMessage {
+            role: "user".to_string(),
+            content: vec![crate::types::ContentBlock::text("hello")],
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert_eq!(entry.entry_type, ENTRY_TYPE_USER);
+        assert_eq!(entry.role, "user");
+    }
+
+    #[test]
+    fn agent_message_to_entry_assistant_with_tool_calls() {
+        let msg = crate::types::AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![crate::types::ContentBlock::text("answer")],
+            tool_calls: vec![crate::types::AgentToolCall {
+                id: "c1".to_string(),
+                name: "shell".to_string(),
+                args: serde_json::json!({"cmd": "ls"}),
+            }],
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert_eq!(entry.entry_type, ENTRY_TYPE_ASSISTANT);
+        assert_eq!(entry.tool_calls.len(), 1);
+        assert_eq!(entry.tool_calls[0].function.name, "shell");
+    }
+
+    #[test]
+    fn agent_message_to_entry_tool() {
+        let msg = crate::types::AgentMessage {
+            role: "tool".to_string(),
+            content: vec![crate::types::ContentBlock::text("result")],
+            tool_call_id: "c1".to_string(),
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert_eq!(entry.entry_type, ENTRY_TYPE_TOOL);
+        assert_eq!(entry.tool_call_id, "c1");
+    }
+
+    #[test]
+    fn agent_message_to_entry_preserves_thinking() {
+        let msg = crate::types::AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![crate::types::ContentBlock::text("answer")],
+            thinking: "reasoning here".to_string(),
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert_eq!(entry.thinking, "reasoning here");
+    }
+
+    #[test]
+    fn agent_message_to_entry_preserves_meta() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("key".to_string(), serde_json::json!("value"));
+        let msg = crate::types::AgentMessage {
+            role: "user".to_string(),
+            content: vec![crate::types::ContentBlock::text("hi")],
+            metadata: Some(meta),
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert!(entry.meta.is_some());
+        assert_eq!(entry.meta.unwrap()["key"], "value");
+    }
+
+    #[test]
+    fn agent_message_to_entry_unknown_role_defaults_user() {
+        let msg = crate::types::AgentMessage {
+            role: "custom_role".to_string(),
+            content: vec![crate::types::ContentBlock::text("x")],
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert_eq!(entry.entry_type, ENTRY_TYPE_USER);
+    }
+
+    // ─── entries_to_agent_messages ──────────────────────────────────────────
+
+    #[test]
+    fn entries_to_messages_basic() {
+        let entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("hello")),
+            SessionEntry::new_assistant(serde_json::json!("hi"), vec![]),
+        ];
+        let msgs = entries_to_agent_messages(&entries, false);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+    }
+
+    #[test]
+    fn entries_to_messages_skips_non_standard_types() {
+        let mut compaction = SessionEntry::new_user("user", serde_json::json!("x"));
+        compaction.entry_type = ENTRY_TYPE_COMPACTION.to_string();
+        let entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("hello")),
+            compaction,
+        ];
+        let msgs = entries_to_agent_messages(&entries, false);
+        assert_eq!(msgs.len(), 1);
+    }
+
+    #[test]
+    fn entries_to_messages_string_content() {
+        let entries = vec![SessionEntry::new_user(
+            "user",
+            serde_json::json!("plain string"),
+        )];
+        let msgs = entries_to_agent_messages(&entries, false);
+        assert_eq!(msgs[0].text(), "plain string");
+    }
+
+    #[test]
+    fn entries_to_messages_array_content() {
+        let entries = vec![SessionEntry::new_user(
+            "user",
+            serde_json::json!([
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": " second"},
+            ]),
+        )];
+        let msgs = entries_to_agent_messages(&entries, false);
+        assert_eq!(msgs[0].text(), "first second");
+    }
+
+    #[test]
+    fn entries_to_messages_tool_calls() {
+        let tool_calls = vec![crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "read".to_string(),
+                arguments: serde_json::json!({"path": "/tmp"}),
+            },
+        }];
+        let entries = vec![SessionEntry::new_assistant(
+            serde_json::json!("reading..."),
+            tool_calls,
+        )];
+        let msgs = entries_to_agent_messages(&entries, false);
+        assert_eq!(msgs[0].tool_calls.len(), 1);
+        assert_eq!(msgs[0].tool_calls[0].name, "read");
+    }
+
+    #[test]
+    fn entries_to_messages_empty_entries() {
+        let msgs = entries_to_agent_messages(&[], false);
+        assert!(msgs.is_empty());
+    }
+
+    // ─── Manager save/load/delete ───────────────────────────────────────────
+
+    /// The lightweight summary scanner must produce the same SessionSummary
+    /// as the full load_path-based fallback — including on files with huge
+    /// tool payloads, model changes and labels.
+    #[test]
+    fn list_summaries_matches_full_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_summary_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session.entries.push(SessionEntry::session_info(
+            serde_json::json!({"session_name": "named-session", "cwd": "/tmp/test", "model": "gpt-4o", "thinking_level": "high"}),
+            "gpt-4o".to_string(),
+            "high".to_string(),
+        ));
+        session.entries.push(SessionEntry::new_user(
+            "user",
+            serde_json::json!("first question"),
+        ));
+        // A huge tool payload — the cheap scanner must skip it.
+        session.entries.push(SessionEntry::new_assistant(
+            serde_json::json!("calling tool"),
+            vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "read".to_string(),
+                    arguments: serde_json::json!({"path": "/big"}),
+                },
+            }],
+        ));
+        session
+            .entries
+            .push(SessionEntry::new_tool("tc1", &"x".repeat(500_000)));
+        session.entries.push(SessionEntry::new_user(
+            "user",
+            serde_json::json!("second question"),
+        ));
+        manager.save(&session).unwrap();
+
+        let summaries = manager.list_all().unwrap();
+        assert_eq!(summaries.len(), 1);
+        let fast = &summaries[0];
+
+        let full = Manager::summary_from_session(&manager.load(&session.id).unwrap());
+        assert_eq!(fast.id, full.id);
+        assert_eq!(fast.cwd, full.cwd);
+        assert_eq!(fast.model, full.model);
+        assert_eq!(fast.name, full.name);
+        assert_eq!(fast.first_message, full.first_message);
+        assert_eq!(fast.query_count, full.query_count);
+        assert_eq!(fast.updated_at, full.updated_at);
+        // Sanity: the expected values themselves.
+        assert_eq!(fast.query_count, 2);
+        assert_eq!(fast.first_message.as_deref(), Some("first question"));
+        assert_eq!(fast.name.as_deref(), Some("named-session"));
+        assert_eq!(fast.model, "gpt-4o");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file without session_info falls back to the full-load summary path
+    /// instead of being dropped from the list.
+    #[test]
+    fn list_summaries_falls_back_without_session_info() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_summary_fb_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        // No session_info entry — legacy/corrupt layout.
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        manager.save(&session).unwrap();
+
+        let summaries = manager.list_all().unwrap();
+        assert_eq!(
+            summaries.len(),
+            1,
+            "session must still be listed via fallback"
+        );
+        assert_eq!(summaries[0].first_message.as_deref(), Some("hello"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manager_save_and_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_session_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        // Add session_info entry (model/thinking_level are in content JSON)
+        session.entries.push(SessionEntry::session_info(
+            serde_json::json!({"session_name": "test", "cwd": "/tmp/test", "model": "gpt-4o", "thinking_level": "high"}),
+            "gpt-4o".to_string(),
+            "high".to_string(),
+        ));
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        manager.save(&session).unwrap();
+
+        let loaded = manager.load(&session.id).unwrap();
+        assert_eq!(loaded.id, session.id);
+        assert_eq!(loaded.model, "gpt-4o");
+        assert_eq!(loaded.entries.len(), 2);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression test for the HTTP 400 "Messages with role 'tool' must be a
+    /// response to a preceding message with 'tool_calls'" failure seen when
+    /// resuming a session: a load-time repair previously PERSISTED a "tool
+    /// execution lost" placeholder while the owning agent was still mid-tool;
+    /// the real tool result was appended afterwards, leaving two tool entries
+    /// with the same tool_call_id.  Load must now heal this in memory (keep
+    /// the real result, drop the placeholder) without touching the file.
+    #[test]
+    fn load_dedupes_tool_results_preferring_real_over_placeholder() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_dedupe_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        session.entries.push(SessionEntry::new_assistant(
+            serde_json::json!("running tool"),
+            vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({"cmd": "ls"}),
+                },
+            }],
+        ));
+        // Placeholder written by a stale repair, then the real result.
+        session.entries.push(SessionEntry::new_tool(
+            "tc1",
+            "[Tool execution lost — shell was not executed before the session was interrupted]",
+        ));
+        session
+            .entries
+            .push(SessionEntry::new_tool("tc1", "real output"));
+        manager.save(&session).unwrap();
+
+        let loaded = manager.load(&session.id).unwrap();
+        let tool_entries: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .collect();
+        assert_eq!(
+            tool_entries.len(),
+            1,
+            "duplicate tool entries must be deduped"
+        );
+        assert_eq!(
+            tool_entries[0].content.as_ref().unwrap(),
+            &serde_json::json!("real output"),
+            "the real result must win over the placeholder"
+        );
+
+        // The file on disk must NOT be rewritten by load: read-only callers
+        // (session list, get_session_entries) can run while the owning agent
+        // is mid-turn, and persisting repairs is what created the duplicates.
+        let on_disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
+        assert_eq!(
+            on_disk.lines().count(),
+            4,
+            "load must not persist healed entries back to the session file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two REAL tool results with the same tool_call_id: keep the first.
+    #[test]
+    fn load_dedupes_tool_results_keeping_first_real() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_dedupe2_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        session.entries.push(SessionEntry::new_assistant(
+            serde_json::json!("running tool"),
+            vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({"cmd": "ls"}),
+                },
+            }],
+        ));
+        session
+            .entries
+            .push(SessionEntry::new_tool("tc1", "first result"));
+        session
+            .entries
+            .push(SessionEntry::new_tool("tc1", "second result"));
+        manager.save(&session).unwrap();
+
+        let loaded = manager.load(&session.id).unwrap();
+        let tool_entries: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .collect();
+        assert_eq!(tool_entries.len(), 1);
+        assert_eq!(
+            tool_entries[0].content.as_ref().unwrap(),
+            &serde_json::json!("first result")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dangling tool_call (assistant saved, tool never executed) is still
+    /// patched with a placeholder in memory — but the file stays untouched.
+    #[test]
+    fn load_repairs_dangling_tool_calls_in_memory_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_dangling_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        session.entries.push(SessionEntry::new_assistant(
+            serde_json::json!("running tool"),
+            vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({"cmd": "ls"}),
+                },
+            }],
+        ));
+        manager.save(&session).unwrap();
+
+        let loaded = manager.load(&session.id).unwrap();
+        let tool_entries: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .collect();
+        assert_eq!(
+            tool_entries.len(),
+            1,
+            "dangling tool_call must get a placeholder"
+        );
+        assert_eq!(tool_entries[0].tool_call_id, "tc1");
+
+        let on_disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
+        assert_eq!(
+            on_disk.lines().count(),
+            2,
+            "dangling repair must not be persisted to the session file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manager_delete() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_delete_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let session = Session::new("/tmp/test", "model", "");
+        manager.save(&session).unwrap();
+        assert!(manager.find(&session.id).is_some());
+
+        manager.delete(&session.id).unwrap();
+        assert!(manager.find(&session.id).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manager_find_nonexistent() {
+        let dir = std::env::temp_dir().join("future_test_find_none");
+        let manager = Manager::new(dir);
+        assert!(manager.find("nonexistent_id").is_none());
+    }
+
+    #[test]
+    fn append_entries_persists_and_loads() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_append_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        manager.save(&session).unwrap();
+
+        // Append a second user entry
+        let appended = vec![SessionEntry::new_assistant(
+            serde_json::json!("hi there"),
+            vec![],
+        )];
+        manager.append_entries(&session.id, &appended).unwrap();
+
+        // Append to non-existent session should error
+        let result = manager.append_entries("nonexistent", &appended);
+        assert!(result.is_err());
+
+        // Load and verify both entries are present
+        let loaded = manager.load(&session.id).unwrap();
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].role, "user");
+        assert_eq!(loaded.entries[1].role, "assistant");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cheap_entry_type_extracts_type_field() {
+        // Entry format: id first, type second
+        let line = r#"{"id":"abc","type":"user","role":"user","content":"hello"}"#;
+        assert_eq!(Manager::cheap_entry_type(line), Some("user"));
+
+        let line2 = r#"{"id":"def","type":"assistant","role":"assistant"}"#;
+        assert_eq!(Manager::cheap_entry_type(line2), Some("assistant"));
+
+        let line3 = r#"{"id":"ghi","type":"tool","tool_call_id":"t1"}"#;
+        assert_eq!(Manager::cheap_entry_type(line3), Some("tool"));
+
+        // Line without type field
+        let no_type = r#"{"id":"xyz"}"#;
+        assert_eq!(Manager::cheap_entry_type(no_type), None);
+
+        // Very short line
+        assert_eq!(Manager::cheap_entry_type("{"), None);
+    }
+
+    #[test]
+    fn cheap_timestamp_extracts_last_timestamp() {
+        let line = r#"{"id":"x","timestamp":"2026-07-23T10:30:00+08:00","other":"data","timestamp":"2026-07-23T11:00:00+08:00"}"#;
+        let ts = Manager::cheap_timestamp(line).unwrap();
+        // Just verify we get a valid timestamp, regardless of local timezone
+        assert!(ts.timestamp() > 0);
+
+        // Line without valid timestamp
+        assert!(Manager::cheap_timestamp(r#"{"id":"x"}"#).is_none());
+    }
+
+    #[test]
+    fn summary_first_message_from_string_content() {
+        let e = SessionEntry::new_user("user", serde_json::json!("hello world from the user"));
+        let summary = Manager::summary_first_message(&e).unwrap();
+        assert!(summary.len() <= 40);
+        assert_eq!(summary, "hello world from the user");
+    }
+
+    #[test]
+    fn summary_first_message_from_array_content() {
+        let e = SessionEntry::new_user(
+            "user",
+            serde_json::json!([
+                {"type": "text", "text": "first message block "},
+                {"type": "text", "text": "second block"}
+            ]),
+        );
+        // summary_first_message only takes the FIRST text block
+        let summary = Manager::summary_first_message(&e).unwrap();
+        assert_eq!(summary, "first message block");
+    }
+
+    #[test]
+    fn summary_first_message_truncates_to_40() {
+        let long = "a".repeat(100);
+        let e = SessionEntry::new_user("user", serde_json::json!(long));
+        let summary = Manager::summary_first_message(&e).unwrap();
+        assert_eq!(summary.len(), 40);
+    }
+
+    #[test]
+    fn summary_first_message_empty_content_returns_none() {
+        let mut e = SessionEntry::new_user("user", serde_json::json!(""));
+        e.content = Some(serde_json::json!("   "));
+        assert!(Manager::summary_first_message(&e).is_none());
+    }
+
+    #[test]
+    fn session_snapshot_preserves_all_fields() {
+        let entries = vec![SessionEntry::new_user("user", serde_json::json!("hello"))];
+        let snap = Session::snapshot(
+            "sid-123".to_string(),
+            "/tmp/proj".to_string(),
+            "claude-sonnet".to_string(),
+            "My Session".to_string(),
+            "parent-456".to_string(),
+            entries,
+        );
+        assert_eq!(snap.id, "sid-123");
+        assert_eq!(snap.cwd, "/tmp/proj");
+        assert_eq!(snap.model, "claude-sonnet");
+        assert_eq!(snap.get_session_name(), "My Session");
+        assert_eq!(snap.parent_session_id, "parent-456");
+        assert_eq!(snap.entries.len(), 1);
+    }
+
+    #[test]
+    fn get_session_info_extracts_from_entries() {
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session.entries.push(SessionEntry::session_info(
+            serde_json::json!({"model": "gpt-4o", "thinking_level": "high"}),
+            "gpt-4o".to_string(),
+            "high".to_string(),
+        ));
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+
+        let info = session.get_session_info().unwrap();
+        assert_eq!(info["model"], "gpt-4o");
+        assert_eq!(info["thinking_level"], "high");
+
+        // Session without session_info entry
+        let empty = Session::new("/tmp/test", "gpt-4o", "");
+        assert!(empty.get_session_info().is_none());
+    }
+
+    #[test]
+    fn deserialize_timestamp_space_separator() {
+        let json = r#"{"id":"t","type":"u","timestamp":"2026-07-23 10:30:00+08:00"}"#;
+        let entry: SessionEntry = serde_json::from_str(json).unwrap();
+        // Timezone conversion depends on CI location, just verify it parses
+        assert!(entry.timestamp.timestamp() > 0);
+    }
+
+    #[test]
+    fn deserialize_timestamp_with_fractional_space() {
+        let json = r#"{"id":"t","type":"u","timestamp":"2026-07-23 10:30:00.500+08:00"}"#;
+        let entry: SessionEntry = serde_json::from_str(json).unwrap();
+        assert!(entry.timestamp.timestamp() > 0);
+    }
+
+    #[test]
+    fn deserialize_timestamp_unparseable_falls_back() {
+        let json = r#"{"id":"t","type":"u","timestamp":"not-a-timestamp"}"#;
+        let entry: SessionEntry = serde_json::from_str(json).unwrap();
+        // Should fall back to current time (not an error)
+        let now = chrono::Local::now();
+        let diff = (now - entry.timestamp).num_seconds().abs();
+        assert!(diff < 5, "fallback time should be close to now");
+    }
+
+    // ─── fork_session edge cases ────────────────────────────────────────────
+
+    #[test]
+    fn fork_session_bad_entry_id_clones_all() {
+        let mut parent = Session::new("/tmp", "model", "");
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        let forked = fork_session(&parent, "nonexistent_id");
+        // Should still produce a session with entries (fallback behavior)
+        assert!(!forked.entries.is_empty());
+    }
+
+    #[test]
+    fn fork_session_preserves_model() {
+        let mut parent = Session::new("/tmp", "my-model", "");
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        let forked = fork_session(&parent, &parent.entries[0].id);
+        assert_eq!(forked.model, "my-model");
+    }
+
+    #[test]
+    fn fork_session_generates_new_ids() {
+        let mut parent = Session::new("/tmp", "model", "");
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        let original_id = parent.entries[0].id.clone();
+        let forked = fork_session(&parent, &original_id);
+        // Forked entries should have different IDs
+        let forked_user_entry = forked
+            .entries
+            .iter()
+            .find(|e| e.entry_type == ENTRY_TYPE_USER)
+            .unwrap();
+        assert_ne!(forked_user_entry.id, original_id);
+    }
+
+    #[test]
+    fn fork_session_name_suffix() {
+        let mut parent = Session::new("/tmp", "model", "");
+        parent.set_session_name("Original Chat");
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        let forked = fork_session(&parent, &parent.entries[0].id);
+        assert!(forked.name.contains("fork"));
+    }
 }
 
 #[cfg(test)]
@@ -1301,27 +2297,15 @@ mod fork_tests {
     fn make_entry(id: &str, entry_type: &str, role: &str, content: &str) -> SessionEntry {
         SessionEntry {
             id: id.to_string(),
-            parent_id: String::new(),
             entry_type: entry_type.to_string(),
             role: role.to_string(),
             content: Some(serde_json::json!(content)),
             tool_calls: vec![],
             timestamp: chrono::Local::now(),
-            summary: String::new(),
-            model: String::new(),
-            label: String::new(),
-            thinking_level: String::new(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
             meta: None,
         }
     }

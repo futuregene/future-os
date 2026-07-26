@@ -13,6 +13,16 @@ pub fn list_runs(thread_id: String) -> Result<Vec<store::RunRecord>, crate::AppE
     store::list_runs(&thread_id)
 }
 
+/// Batch query: the latest run's (status, ended_at) for each thread in one IPC.
+/// Replaces the per-thread [`list_runs`] fan-out that powered the thread-list
+/// run-indicator poll (N connections, N full row-sets 6+ times per second).
+#[tauri::command]
+pub fn list_latest_run_infos(
+    thread_ids: Vec<String>,
+) -> Result<Vec<store::LatestRunInfo>, crate::AppError> {
+    store::latest_run_infos(&thread_ids)
+}
+
 /// Update a run's status from the frontend's completion/failure paths. Guarded:
 /// a run that is already terminal (e.g. a concurrent `abort_run` set `cancelled`)
 /// is not clobbered. Returns the run's real current state so the caller

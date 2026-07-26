@@ -34,6 +34,7 @@
     "agentDoneNoText": "Future Agent 已完成，但没有返回文本。",
     "messagesLoadFailed": "FutureOS 消息读取失败：{{message}}",
     "alreadyRunning": "该对话已有一个回复正在进行中。",
+    "sessionRecreated": "该对话此前的 Agent 会话已不可用（数据丢失），已开启新会话。上方历史消息保留供查阅，但 Agent 已无法看到它们。",
     "responseInterrupted": "回复在完成前被中断。"
   },
   "failure": {

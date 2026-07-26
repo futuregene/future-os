@@ -10,6 +10,7 @@ import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
 import { installAgentEventListener } from "../../integrations/agent/agentStateCache";
+import { refreshSkills } from "../../integrations/skills/skillsClient";
 import {
   createWorkspace,
   pinThread,
@@ -32,6 +33,7 @@ import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
 import { useUnreadThreads } from "./hooks/useUnreadThreads";
+import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
@@ -66,6 +68,7 @@ export function AppShell() {
 
   const { appSettings, changeSettings } = useAppSettings();
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
+  const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
 
   const centerRef = useRef<HTMLElement>(null);
   const {
@@ -86,6 +89,12 @@ export function AppShell() {
   // (settings changes from other clients).  Only runs once.
   useEffect(() => {
     installAgentEventListener();
+  }, []);
+
+  // On startup, tell the agent to re-scan skills so any skills installed
+  // outside the GUI (e.g. via CLI) are visible without a restart.
+  useEffect(() => {
+    void refreshSkills();
   }, []);
 
   const {
@@ -130,6 +139,16 @@ export function AppShell() {
     setSelectedModelId,
     refreshAgentModels,
   } = useAgentConnection(appSettings.hiddenModels);
+
+  // When the agent becomes available (startup, restart, or recovery after
+  // a disconnect), re-trigger the skills scan.  The agent has a 5 s rate
+  // limit so rapid repeats are harmless.
+  useEffect(() => {
+    if (agentConnection.status === "connected") {
+      void refreshSkills();
+    }
+  }, [agentConnection.status]);
+
   const {
     selectedThinkingLevel,
     modelsEmptyReason,
@@ -137,6 +156,7 @@ export function AppShell() {
     activeThinkingLevel,
     changeModel,
     changeDraftModel,
+    changeDraftThinkingLevel,
     changeThinkingLevel,
     syncSelection,
   } = useModelSelection({
@@ -318,6 +338,7 @@ export function AppShell() {
   const activityRailProps = {
     active: section,
     activeThreadId,
+    hasUpdate,
     threads,
     threadRunStatuses,
     threadStreamingStatuses,
@@ -376,7 +397,7 @@ export function AppShell() {
                 onAddWorkspace={handleAddWorkspace}
                 onModelChange={changeDraftModel}
                 thinkingLevel={selectedThinkingLevel}
-                onThinkingLevelChange={changeThinkingLevel}
+                onThinkingLevelChange={changeDraftThinkingLevel}
                 approvalTier={appSettings.approvalTier}
                 onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
                 onStart={startNewConversation}
@@ -386,11 +407,11 @@ export function AppShell() {
             )
           : section === "skill"
             ? (
-                <SkillsView />
+                <SkillsView leftPanelExpanded={leftExpanded} onToggleLeftPanel={handleToggleLeftPanel} />
               )
             : section === "remote"
               ? (
-                  <RemoteView appSettings={appSettings} onChangeSettings={patch => void changeSettings(patch)} />
+                  <RemoteView appSettings={appSettings} leftPanelExpanded={leftExpanded} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} />
                 )
               : storeError
                 ? (
@@ -472,11 +493,14 @@ export function AppShell() {
       />
       <SettingsDialog
         appSettings={appSettings}
+        cachedUpdateStatus={cachedStatus}
+        hasUpdate={hasUpdate}
         initialTab={settingsTab}
         modelOptions={modelOptions}
         onChangeSettings={patch => void changeSettings(patch)}
         onClose={() => setSettingsOpen(false)}
         onProvidersChanged={() => void refreshAgentModels()}
+        onUpdateSeen={markUpdateSeen}
         open={settingsOpen}
       />
       <ToastHost />

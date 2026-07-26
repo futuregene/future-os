@@ -38,6 +38,7 @@
     "agentDoneNoText": "Future Agent finished but returned no text.",
     "messagesLoadFailed": "Failed to load FutureOS messages: {{message}}",
     "alreadyRunning": "A response is already in progress for this conversation.",
+    "sessionRecreated": "The previous agent session for this conversation was unavailable (its data was lost), so a fresh session was started. The history above is kept for reference, but the agent can no longer see it.",
     "responseInterrupted": "The response was interrupted before it finished."
   },
   "failure": {

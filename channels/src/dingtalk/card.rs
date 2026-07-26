@@ -255,3 +255,113 @@ fn normalize_content(s: &str) -> String {
         s.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── CardStatus ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn card_status_as_str() {
+        assert_eq!(CardStatus::Inputing.as_str(), "INPUTING");
+        assert_eq!(CardStatus::Finished.as_str(), "FINISHED");
+    }
+
+    #[test]
+    fn card_status_equality() {
+        assert_eq!(CardStatus::Inputing, CardStatus::Inputing);
+        assert_ne!(CardStatus::Inputing, CardStatus::Finished);
+    }
+
+    // ─── normalize_content ──────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_short_content_unchanged() {
+        let s = "hello world";
+        assert_eq!(normalize_content(s), s);
+    }
+
+    #[test]
+    fn normalize_empty_string() {
+        assert_eq!(normalize_content(""), "");
+    }
+
+    #[test]
+    fn normalize_exact_limit() {
+        let s = "x".repeat(20000);
+        assert_eq!(normalize_content(&s), s);
+    }
+
+    #[test]
+    fn normalize_over_limit_truncates() {
+        let s = "x".repeat(25000);
+        let result = normalize_content(&s);
+        assert!(result.ends_with("..."));
+        assert_eq!(result.len(), 19950 + 3);
+    }
+
+    #[test]
+    fn normalize_unicode_content() {
+        let s = "你好世界".repeat(100);
+        let result = normalize_content(&s);
+        assert!(!result.is_empty());
+    }
+
+    // ─── unique_id ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn unique_id_increments() {
+        let a = unique_id();
+        let b = unique_id();
+        assert_ne!(a, b);
+        let a_num: u64 = a.parse().unwrap();
+        let b_num: u64 = b.parse().unwrap();
+        assert!(b_num > a_num);
+    }
+
+    #[test]
+    fn unique_id_is_numeric_string() {
+        let id = unique_id();
+        assert!(id.parse::<u64>().is_ok());
+    }
+
+    // ─── AiCard struct ──────────────────────────────────────────────────────
+
+    #[test]
+    fn ai_card_fields() {
+        let card = AiCard {
+            card_instance_id: "card_123".to_string(),
+            access_token: "token_abc".to_string(),
+            inputing_started: false,
+        };
+        assert_eq!(card.card_instance_id, "card_123");
+        assert!(!card.inputing_started);
+    }
+
+    // ─── CardTarget ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn card_target_user() {
+        let target = CardTarget::User {
+            user_id: "user_123".to_string(),
+        };
+        match target {
+            CardTarget::User { user_id } => assert_eq!(user_id, "user_123"),
+            _ => panic!("expected User target"),
+        }
+    }
+
+    #[test]
+    fn card_target_group() {
+        let target = CardTarget::Group {
+            open_conversation_id: "conv_456".to_string(),
+        };
+        match target {
+            CardTarget::Group {
+                open_conversation_id,
+            } => assert_eq!(open_conversation_id, "conv_456"),
+            _ => panic!("expected Group target"),
+        }
+    }
+}

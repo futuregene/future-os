@@ -257,6 +257,21 @@ impl AgentMessage {
             .collect::<Vec<_>>()
             .join("")
     }
+
+    /// The user's visible text: only the FIRST text block. Later text blocks
+    /// are agent-injected context (attachment manifest, file paths) that
+    /// `build_user_message` appends for the model — they must never reach a
+    /// message bubble. Mirrors `get_session_entries`, which renders user
+    /// entries from the first text block only.
+    pub fn display_text(&self) -> String {
+        self.content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
     pub fn add_text(&mut self, text: impl Into<String>) {
         self.content.push(ContentBlock::text(text));
     }
@@ -844,3 +859,740 @@ pub fn convert_from_llm(msgs: Vec<Message>) -> Vec<AgentMessage> {
 // Aliases for Go-style names (PascalCase conversion functions)
 pub use convert_from_llm as ConvertFromLLM;
 pub use convert_to_llm as ConvertToLLM;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── ContentBlock construction ──────────────────────────────────────────
+
+    #[test]
+    fn content_block_text() {
+        let b = ContentBlock::text("hello");
+        match b {
+            ContentBlock::Text { text } => assert_eq!(text, "hello"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn content_block_image() {
+        let b = ContentBlock::image("data:image/png;base64,abc");
+        match b {
+            ContentBlock::Image { image_url } => {
+                assert_eq!(image_url.url.as_deref(), Some("data:image/png;base64,abc"))
+            }
+            _ => panic!("expected Image"),
+        }
+    }
+
+    #[test]
+    fn content_block_tool_result() {
+        let b = ContentBlock::tool_result("call_1", "output text", false);
+        match b {
+            ContentBlock::ToolResult {
+                tool_call_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_call_id, "call_1");
+                assert_eq!(content, "output text");
+                assert!(!is_error);
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    // ─── ContentBlock serde ────────────────────────────────────────────────
+
+    #[test]
+    fn serialize_text_block() {
+        let b = ContentBlock::text("world");
+        let json = serde_json::to_value(&b).unwrap();
+        assert_eq!(json["type"], "text");
+        assert_eq!(json["text"], "world");
+    }
+
+    #[test]
+    fn serialize_image_block() {
+        let b = ContentBlock::image("https://example.com/img.png");
+        let json = serde_json::to_value(&b).unwrap();
+        assert_eq!(json["type"], "image_url");
+        assert_eq!(json["image_url"]["url"], "https://example.com/img.png");
+    }
+
+    #[test]
+    fn serialize_tool_result_no_error() {
+        let b = ContentBlock::tool_result("c1", "ok", false);
+        let json = serde_json::to_value(&b).unwrap();
+        assert_eq!(json["type"], "tool_result");
+        assert_eq!(json["tool_call_id"], "c1");
+        assert_eq!(json["content"], "ok");
+        // is_error=false should NOT be serialized (skip if false)
+        assert!(json.get("is_error").is_none());
+    }
+
+    #[test]
+    fn serialize_tool_result_with_error() {
+        let b = ContentBlock::tool_result("c1", "fail msg", true);
+        let json = serde_json::to_value(&b).unwrap();
+        assert_eq!(json["is_error"], true);
+    }
+
+    #[test]
+    fn deserialize_text_block() {
+        let json = r#"{"type":"text","text":"hello"}"#;
+        let b: ContentBlock = serde_json::from_str(json).unwrap();
+        match b {
+            ContentBlock::Text { text } => assert_eq!(text, "hello"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn deserialize_image_block() {
+        let json = r#"{"type":"image_url","image_url":{"url":"data:..."}}"#;
+        let b: ContentBlock = serde_json::from_str(json).unwrap();
+        match b {
+            ContentBlock::Image { image_url } => {
+                assert_eq!(image_url.url.as_deref(), Some("data:..."))
+            }
+            _ => panic!("expected Image"),
+        }
+    }
+
+    #[test]
+    fn deserialize_tool_result_block() {
+        let json = r#"{"type":"tool_result","tool_call_id":"c1","content":"done","is_error":true}"#;
+        let b: ContentBlock = serde_json::from_str(json).unwrap();
+        match b {
+            ContentBlock::ToolResult {
+                tool_call_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_call_id, "c1");
+                assert_eq!(content, "done");
+                assert!(is_error);
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn deserialize_unknown_type_falls_back_to_text() {
+        let json = r#"{"type":"unknown_type","text":"fallback"}"#;
+        let b: ContentBlock = serde_json::from_str(json).unwrap();
+        match b {
+            ContentBlock::Text { text } => assert_eq!(text, "fallback"),
+            _ => panic!("expected Text fallback"),
+        }
+    }
+
+    #[test]
+    fn content_block_roundtrip_text() {
+        let original = ContentBlock::text("roundtrip");
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: ContentBlock = serde_json::from_str(&json).unwrap();
+        match restored {
+            ContentBlock::Text { text } => assert_eq!(text, "roundtrip"),
+            _ => panic!("roundtrip failed"),
+        }
+    }
+
+    #[test]
+    fn content_block_roundtrip_tool_result() {
+        let original = ContentBlock::tool_result("c2", "result", true);
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: ContentBlock = serde_json::from_str(&json).unwrap();
+        match restored {
+            ContentBlock::ToolResult {
+                tool_call_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_call_id, "c2");
+                assert_eq!(content, "result");
+                assert!(is_error);
+            }
+            _ => panic!("roundtrip failed"),
+        }
+    }
+
+    // ─── ImageUrlData ──────────────────────────────────────────────────────
+
+    #[test]
+    fn image_url_data_from_object() {
+        let json = r#"{"url":"data:image/png;base64,xyz"}"#;
+        let d: ImageUrlData = serde_json::from_str(json).unwrap();
+        assert_eq!(d.url.as_deref(), Some("data:image/png;base64,xyz"));
+    }
+
+    #[test]
+    fn image_url_data_from_string() {
+        let json = r#""data:image/png;base64,xyz""#;
+        let d: ImageUrlData = serde_json::from_str(json).unwrap();
+        assert_eq!(d.url.as_deref(), Some("data:image/png;base64,xyz"));
+    }
+
+    #[test]
+    fn image_url_data_empty() {
+        let d = ImageUrlData::default();
+        assert!(d.url.is_none());
+    }
+
+    #[test]
+    fn image_url_data_serialize_empty() {
+        let d = ImageUrlData { url: None };
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json.is_object());
+    }
+
+    // ─── deserialize_credit_cost additional visitors ────────────────────────
+
+    #[test]
+    fn usage_credit_cost_as_i64() {
+        let json = r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":0}"#;
+        let u: Usage = serde_json::from_str(json).unwrap();
+        assert_eq!(u.credit_cost, Some(0.0));
+    }
+
+    #[test]
+    fn usage_credit_cost_as_bool_returns_none() {
+        let json =
+            r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":true}"#;
+        let u: Usage = serde_json::from_str(json).unwrap();
+        assert!(u.credit_cost.is_none());
+    }
+
+    // ─── ContentBlock visitor ──────────────────────────────────────────────
+
+    #[test]
+    fn content_block_visit_seq_errors() {
+        let json = r#"["not", "an", "object"]"#;
+        let result: Result<ContentBlock, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    // ─── StreamEvent tc_index ──────────────────────────────────────────────
+
+    #[test]
+    fn stream_event_tc_index_serialization() {
+        let event = StreamEvent {
+            event_type: "toolcall_delta".to_string(),
+            tc_index: 2,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["tc_index"], 2);
+    }
+
+    #[test]
+    fn stream_event_tc_index_zero_skipped() {
+        let event = StreamEvent {
+            event_type: "toolcall_delta".to_string(),
+            tc_index: 0,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("tc_index").is_none());
+    }
+
+    // ─── AgentTool / ToolCallFn ────────────────────────────────────────────
+
+    #[test]
+    fn agent_tool_call_args_string_preserved() {
+        let msg = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![],
+            tool_calls: vec![AgentToolCall {
+                id: "c1".to_string(),
+                name: "shell".to_string(),
+                args: serde_json::json!("string-args"),
+            }],
+            ..Default::default()
+        };
+        let llm = msg.to_llm();
+        let tcs = llm.tool_calls.unwrap();
+        assert_eq!(tcs[0].function.arguments, serde_json::json!("string-args"));
+    }
+
+    // ─── ImageContent / ImageSource ────────────────────────────────────────
+
+    #[test]
+    fn image_content_serialization() {
+        let ic = ImageContent {
+            content_type: "image".to_string(),
+            mime_type: Some("image/png".to_string()),
+            data: Some("base64data".to_string()),
+            source: None,
+            file_path: Some("/tmp/img.png".to_string()),
+        };
+        let json = serde_json::to_value(&ic).unwrap();
+        assert_eq!(json["type"], "image");
+        assert_eq!(json["mime_type"], "image/png");
+        assert_eq!(json["file_path"], "/tmp/img.png");
+    }
+
+    #[test]
+    fn image_source_serialization() {
+        let src = ImageSource {
+            source_type: "base64".to_string(),
+            media_type: "image/png".to_string(),
+            data: "encoded".to_string(),
+        };
+        let json = serde_json::to_value(&src).unwrap();
+        assert_eq!(json["type"], "base64");
+        assert_eq!(json["media_type"], "image/png");
+    }
+
+    // ─── ToolCallResult ────────────────────────────────────────────────────
+
+    #[test]
+    fn tool_call_result_debug() {
+        let r = ToolCallResult {
+            result: "output".to_string(),
+            is_error: false,
+        };
+        let debug = format!("{r:?}");
+        assert!(debug.contains("output"));
+    }
+
+    // ─── AgentConfig default ───────────────────────────────────────────────
+
+    #[test]
+    fn agent_config_default_values() {
+        let c = AgentConfig {
+            system_prompt: "prompt".to_string(),
+            max_turns: 10,
+            thinking_budget: 0,
+            max_retries: 3,
+            transform_context: None,
+            stop_condition: None,
+            before_tool_call: None,
+            prepare_tool_call: None,
+            finalize_tool_call: None,
+            after_tool_call: None,
+            tools_execution_mode: "parallel".to_string(),
+        };
+        assert_eq!(c.max_turns, 10);
+        assert_eq!(c.max_retries, 3);
+        assert_eq!(c.tools_execution_mode, "parallel");
+    }
+
+    // ─── Model serialization extras ────────────────────────────────────────
+
+    #[test]
+    fn model_with_headers_and_compat() {
+        let json = r#"{
+            "id": "custom-model",
+            "name": "Custom",
+            "provider": "custom",
+            "api": "openai",
+            "baseUrl": "https://api.example.com",
+            "contextWindow": 32000,
+            "maxTokens": 8192,
+            "reasoning": true,
+            "hide": true,
+            "headers": {"X-Custom": "value"},
+            "compat": {"force_json": true}
+        }"#;
+        let m: Model = serde_json::from_str(json).unwrap();
+        assert!(m.hide);
+        assert!(m.reasoning);
+        assert!(m.headers.is_some());
+        assert!(m.compat.is_some());
+    }
+
+    // ─── TextContent ───────────────────────────────────────────────────────
+
+    #[test]
+    fn text_content_serialization() {
+        let tc = TextContent {
+            content_type: "text".to_string(),
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_value(&tc).unwrap();
+        assert_eq!(json["type"], "text");
+        assert_eq!(json["text"], "hello");
+    }
+
+    // ─── AgentMessage ──────────────────────────────────────────────────────
+
+    #[test]
+    fn agent_message_text() {
+        let mut msg = AgentMessage::default();
+        msg.add_text("hello ");
+        msg.add_text("world");
+        assert_eq!(msg.text(), "hello world");
+    }
+
+    #[test]
+    fn agent_message_text_skips_non_text_blocks() {
+        let mut msg = AgentMessage::default();
+        msg.add_text("before");
+        msg.content.push(ContentBlock::image("data:..."));
+        msg.add_text("after");
+        assert_eq!(msg.text(), "beforeafter");
+    }
+
+    #[test]
+    fn agent_message_display_text_is_first_block_only() {
+        // build_user_message appends an attachment-manifest text block after
+        // the typed message; display_text must exclude it (the manifest must
+        // never reach a message bubble).
+        let mut msg = AgentMessage::default();
+        msg.add_text("识别");
+        msg.add_text("\n\nUser attachment metadata follows as a JSON array: [{\"kind\":\"file\"}]");
+        assert_eq!(msg.display_text(), "识别");
+        assert!(msg.text().contains("attachment metadata"));
+    }
+
+    #[test]
+    fn agent_message_display_text_empty_without_text_blocks() {
+        let mut msg = AgentMessage::default();
+        msg.content.push(ContentBlock::image("data:..."));
+        assert_eq!(msg.display_text(), "");
+    }
+
+    #[test]
+    fn agent_message_add_image() {
+        let mut msg = AgentMessage::default();
+        msg.add_image("image/png".to_string(), "aGVsbG8=".to_string());
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::Image { image_url } => {
+                assert!(image_url
+                    .url
+                    .as_ref()
+                    .unwrap()
+                    .starts_with("data:image/png;base64,aGVsbG8="));
+            }
+            _ => panic!("expected Image"),
+        }
+    }
+
+    #[test]
+    fn agent_message_new_user_string_content() {
+        let msg = AgentMessage::new_user("user", serde_json::json!("hello"));
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content.len(), 1);
+        assert_eq!(msg.text(), "hello");
+    }
+
+    #[test]
+    fn agent_message_new_user_array_content() {
+        let content = serde_json::json!([
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": " second"},
+        ]);
+        let msg = AgentMessage::new_user("user", content);
+        assert_eq!(msg.text(), "first second");
+    }
+
+    #[test]
+    fn agent_message_new_user_with_image() {
+        let content = serde_json::json!([
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]);
+        let msg = AgentMessage::new_user("user", content);
+        assert_eq!(msg.content.len(), 2);
+        assert_eq!(msg.text(), "look at this");
+    }
+
+    #[test]
+    fn agent_message_new_user_empty_content() {
+        let msg = AgentMessage::new_user("user", serde_json::json!(null));
+        assert!(msg.content.is_empty());
+    }
+
+    // ─── AgentMessage serde ────────────────────────────────────────────────
+
+    #[test]
+    fn agent_message_serialize_omits_empty_fields() {
+        let msg = AgentMessage {
+            role: "user".to_string(),
+            content: vec![ContentBlock::text("hi")],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(json.get("thinking").is_none());
+        assert!(json.get("tool_calls").is_none());
+        assert!(json.get("tool_call_id").is_none());
+        assert!(json.get("name").is_none());
+    }
+
+    #[test]
+    fn agent_message_serialize_with_tool_calls() {
+        let msg = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![],
+            tool_calls: vec![AgentToolCall {
+                id: "call_1".to_string(),
+                name: "shell".to_string(),
+                args: serde_json::json!({"command": "ls"}),
+            }],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["tool_calls"][0]["name"], "shell");
+    }
+
+    // ─── Usage deserialization ─────────────────────────────────────────────
+
+    #[test]
+    fn usage_from_json() {
+        let json = r#"{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}"#;
+        let u: Usage = serde_json::from_str(json).unwrap();
+        assert_eq!(u.prompt_tokens, 100);
+        assert_eq!(u.completion_tokens, 50);
+        assert_eq!(u.total_tokens, 150);
+        assert!(u.cache_read_tokens.is_none());
+    }
+
+    #[test]
+    fn usage_with_cache_tokens() {
+        let json = r#"{
+            "prompt_tokens":100,"completion_tokens":50,"total_tokens":150,
+            "cache_read_tokens":80,"cache_write_tokens":20
+        }"#;
+        let u: Usage = serde_json::from_str(json).unwrap();
+        assert_eq!(u.cache_read_tokens, Some(80));
+        assert_eq!(u.cache_write_tokens, Some(20));
+    }
+
+    #[test]
+    fn usage_credit_cost_as_string() {
+        let json =
+            r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":"0.00019"}"#;
+        let u: Usage = serde_json::from_str(json).unwrap();
+        assert_eq!(u.credit_cost, Some(0.00019));
+    }
+
+    #[test]
+    fn usage_credit_cost_as_number() {
+        let json =
+            r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":0.00025}"#;
+        let u: Usage = serde_json::from_str(json).unwrap();
+        assert_eq!(u.credit_cost, Some(0.00025));
+    }
+
+    #[test]
+    fn usage_credit_cost_absent() {
+        let json = r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}"#;
+        let u: Usage = serde_json::from_str(json).unwrap();
+        assert!(u.credit_cost.is_none());
+    }
+
+    // ─── StreamEvent ───────────────────────────────────────────────────────
+
+    #[test]
+    fn stream_event_serialization() {
+        let event = StreamEvent {
+            event_type: "text_chunk".to_string(),
+            text: "hello".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "text_chunk");
+        assert_eq!(json["text"], "hello");
+    }
+
+    #[test]
+    fn stream_event_deserialization() {
+        let json = r#"{"type":"tool_start","toolName":"shell","toolID":"call_1"}"#;
+        let e: StreamEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(e.event_type, "tool_start");
+        assert_eq!(e.tool_name, "shell");
+        assert_eq!(e.tool_id, "call_1");
+    }
+
+    #[test]
+    fn stream_event_camel_case_fields() {
+        let event = StreamEvent {
+            event_type: "agent_end".to_string(),
+            stop_reason: "max_tokens".to_string(),
+            error_text: "some error".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["stopReason"], "max_tokens");
+        assert_eq!(json["errorText"], "some error");
+    }
+
+    // ─── Message ↔ AgentMessage conversion ─────────────────────────────────
+
+    #[test]
+    fn agent_message_to_llm_text_only() {
+        let msg = AgentMessage {
+            role: "user".to_string(),
+            content: vec![ContentBlock::text("hello")],
+            ..Default::default()
+        };
+        let llm = msg.to_llm();
+        assert_eq!(llm.role, "user");
+        assert!(llm.content.is_some());
+        assert!(llm.tool_calls.is_none());
+    }
+
+    #[test]
+    fn agent_message_to_llm_with_tool_calls() {
+        let msg = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![],
+            tool_calls: vec![AgentToolCall {
+                id: "c1".to_string(),
+                name: "shell".to_string(),
+                args: serde_json::json!({"command": "ls"}),
+            }],
+            ..Default::default()
+        };
+        let llm = msg.to_llm();
+        let tcs = llm.tool_calls.unwrap();
+        assert_eq!(tcs.len(), 1);
+        assert_eq!(tcs[0].id, "c1");
+        assert_eq!(tcs[0].function.name, "shell");
+    }
+
+    #[test]
+    fn agent_message_to_llm_empty_content() {
+        let msg = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![],
+            ..Default::default()
+        };
+        let llm = msg.to_llm();
+        assert!(llm.content.is_none());
+    }
+
+    #[test]
+    fn convert_to_llm_and_back() {
+        let original = vec![AgentMessage {
+            role: "user".to_string(),
+            content: vec![ContentBlock::text("test")],
+            ..Default::default()
+        }];
+        let llm_msgs = convert_to_llm(&original);
+        assert_eq!(llm_msgs.len(), 1);
+        let back = convert_from_llm(llm_msgs);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].role, "user");
+        assert_eq!(back[0].text(), "test");
+    }
+
+    #[test]
+    fn convert_from_llm_with_tool_calls() {
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "c1".to_string(),
+                call_type: "function".to_string(),
+                function: ToolCallFn {
+                    name: "read".to_string(),
+                    arguments: serde_json::json!({"path": "/tmp"}),
+                },
+            }]),
+            ..Default::default()
+        }];
+        let agent_msgs = convert_from_llm(msgs);
+        assert_eq!(agent_msgs[0].tool_calls.len(), 1);
+        assert_eq!(agent_msgs[0].tool_calls[0].name, "read");
+    }
+
+    #[test]
+    fn convert_from_llm_preserves_reasoning_content() {
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: None,
+            reasoning_content: "thinking...".to_string(),
+            ..Default::default()
+        }];
+        let agent_msgs = convert_from_llm(msgs);
+        assert_eq!(agent_msgs[0].thinking, "thinking...");
+    }
+
+    #[test]
+    fn convert_from_llm_string_content() {
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: Some(serde_json::json!("plain text")),
+            ..Default::default()
+        }];
+        let agent_msgs = convert_from_llm(msgs);
+        assert_eq!(agent_msgs[0].text(), "plain text");
+    }
+
+    // ─── Attachment ────────────────────────────────────────────────────────
+
+    #[test]
+    fn attachment_serialization() {
+        let att = Attachment {
+            path: "/tmp/file.pdf".to_string(),
+            kind: "file".to_string(),
+            name: "file.pdf".to_string(),
+            thumbnail: None,
+        };
+        let json = serde_json::to_value(&att).unwrap();
+        assert_eq!(json["path"], "/tmp/file.pdf");
+        assert_eq!(json["kind"], "file");
+        assert!(json.get("thumbnail").is_none());
+    }
+
+    #[test]
+    fn attachment_with_thumbnail() {
+        let att = Attachment {
+            path: "/tmp/img.png".to_string(),
+            kind: "image".to_string(),
+            name: "img.png".to_string(),
+            thumbnail: Some("/tmp/thumb.png".to_string()),
+        };
+        let json = serde_json::to_value(&att).unwrap();
+        assert_eq!(json["thumbnail"], "/tmp/thumb.png");
+    }
+
+    // ─── Model / ModelCost ─────────────────────────────────────────────────
+
+    #[test]
+    fn model_deserialization() {
+        let json = r#"{
+            "id": "gpt-4o",
+            "name": "GPT-4o",
+            "provider": "openai",
+            "api": "openai",
+            "baseUrl": "https://api.openai.com",
+            "contextWindow": 128000,
+            "maxTokens": 4096,
+            "reasoning": false
+        }"#;
+        let m: Model = serde_json::from_str(json).unwrap();
+        assert_eq!(m.id, "gpt-4o");
+        assert_eq!(m.context_window, 128000);
+        assert!(!m.reasoning);
+    }
+
+    #[test]
+    fn model_cost_defaults() {
+        let c = ModelCost::default();
+        assert_eq!(c.input, 0.0);
+        assert_eq!(c.output, 0.0);
+    }
+
+    // ─── ToolDef / FunctionDef ─────────────────────────────────────────────
+
+    #[test]
+    fn tool_def_serialization() {
+        let tool = ToolDef {
+            tool_type: "function".to_string(),
+            function: FunctionDef {
+                name: "shell".to_string(),
+                description: "Run a command".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        };
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["type"], "function");
+        assert_eq!(json["function"]["name"], "shell");
+    }
+}

@@ -443,3 +443,249 @@ pub(super) fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec
     // kicked off above will populate both caches.
     Vec::new()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── parse_price_string ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_price_valid() {
+        let val = Some("0.00025".to_string());
+        assert_eq!(parse_price_string(&val, 1.0), 250.0); // 0.00025 * 1M / 1
+    }
+
+    #[test]
+    fn parse_price_with_unit() {
+        let val = Some("0.001".to_string());
+        assert_eq!(parse_price_string(&val, 1000.0), 1.0); // 0.001 * 1M / 1000
+    }
+
+    #[test]
+    fn parse_price_none() {
+        assert_eq!(parse_price_string(&None, 1.0), 0.0);
+    }
+
+    #[test]
+    fn parse_price_invalid_string() {
+        let val = Some("not_a_number".to_string());
+        assert_eq!(parse_price_string(&val, 1.0), 0.0);
+    }
+
+    #[test]
+    fn parse_price_empty_string() {
+        let val = Some("".to_string());
+        assert_eq!(parse_price_string(&val, 1.0), 0.0);
+    }
+
+    // ─── derive_thinking_compat ────────────────────────────────────────────
+
+    #[test]
+    fn glm_model_gets_zai_format() {
+        let params: Vec<String> = vec![];
+        let (compat, tlm) = derive_thinking_compat(&params, Some("GLM"));
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("zai")
+        );
+        assert_eq!(
+            compat.get("supportsReasoningEffort").unwrap(),
+            &serde_json::json!(true)
+        );
+        assert!(tlm.is_empty());
+    }
+
+    #[test]
+    fn glm_case_insensitive() {
+        let params: Vec<String> = vec![];
+        let (compat, _) = derive_thinking_compat(&params, Some("glm"));
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("zai")
+        );
+    }
+
+    #[test]
+    fn qwen_model_gets_qwen_format() {
+        let params: Vec<String> = vec!["enable_thinking".to_string()];
+        let (compat, _) = derive_thinking_compat(&params, None);
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("qwen")
+        );
+        assert_eq!(
+            compat.get("supportsReasoningEffort").unwrap(),
+            &serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn reasoning_split_gets_split_format() {
+        let params: Vec<String> = vec!["reasoning_split".to_string()];
+        let (compat, tlm) = derive_thinking_compat(&params, None);
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("reasoning-split")
+        );
+        assert!(tlm.is_empty());
+    }
+
+    #[test]
+    fn deepseek_thinking_params_get_deepseek_format() {
+        let params: Vec<String> = vec!["thinking".to_string()];
+        let (compat, tlm) = derive_thinking_compat(&params, None);
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("deepseek")
+        );
+        assert_eq!(tlm.get("high").unwrap(), &serde_json::json!("high"));
+        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("max"));
+    }
+
+    #[test]
+    fn reasoning_effort_alone_gets_deepseek() {
+        let params: Vec<String> = vec!["reasoning_effort".to_string()];
+        let (compat, _) = derive_thinking_compat(&params, None);
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("deepseek")
+        );
+    }
+
+    #[test]
+    fn include_reasoning_gets_deepseek() {
+        let params: Vec<String> = vec!["include_reasoning".to_string()];
+        let (compat, _) = derive_thinking_compat(&params, None);
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("deepseek")
+        );
+    }
+
+    #[test]
+    fn no_thinking_params_empty_compat() {
+        let params: Vec<String> = vec!["temperature".to_string()];
+        let (compat, tlm) = derive_thinking_compat(&params, None);
+        assert!(!compat.contains_key("thinkingFormat"));
+        assert!(tlm.is_empty());
+    }
+
+    #[test]
+    fn max_completion_tokens_sets_field() {
+        let params: Vec<String> = vec!["max_completion_tokens".to_string()];
+        let (compat, _) = derive_thinking_compat(&params, None);
+        assert_eq!(
+            compat.get("maxTokensField").unwrap(),
+            &serde_json::json!("max_completion_tokens")
+        );
+    }
+
+    #[test]
+    fn empty_params_no_max_tokens_field() {
+        let params: Vec<String> = vec![];
+        let (compat, _) = derive_thinking_compat(&params, None);
+        assert!(!compat.contains_key("maxTokensField"));
+    }
+
+    // ─── resolve_future_base_url ───────────────────────────────────────────
+
+    #[test]
+    fn resolve_future_base_url_returns_default() {
+        // When auth.json doesn't have future.base_url or future.platform_base_url,
+        // should return the default. (In test env, may or may not have auth.json.)
+        let url = resolve_future_base_url();
+        assert!(!url.is_empty());
+        assert!(url.starts_with("https://"));
+    }
+
+    // ─── convert_future_model (via public interface) ───────────────────────
+
+    #[test]
+    fn convert_model_reasoning_detection() {
+        let entry = FutureModelEntry {
+            id: "test-model".to_string(),
+            name: Some("Test".to_string()),
+            context_length: Some(128000),
+            architecture: Some(FutureArchitecture {
+                modality: Some("text+image->text".to_string()),
+                tokenizer: None,
+            }),
+            pricing: None,
+            supported_parameters: Some(vec![
+                "thinking".to_string(),
+                "reasoning_effort".to_string(),
+            ]),
+            knowledge_cutoff: None,
+            provider: None,
+        };
+        let model = convert_future_model(entry, "https://api.example.com/v1");
+        assert!(model.reasoning);
+        assert_eq!(model.provider, "future");
+    }
+
+    #[test]
+    fn convert_model_no_reasoning() {
+        let entry = FutureModelEntry {
+            id: "plain-model".to_string(),
+            name: None,
+            context_length: Some(64000),
+            architecture: None,
+            pricing: None,
+            supported_parameters: Some(vec!["temperature".to_string()]),
+            knowledge_cutoff: None,
+            provider: None,
+        };
+        let model = convert_future_model(entry, "https://api.example.com/v1");
+        assert!(!model.reasoning);
+        assert_eq!(model.name, "plain-model"); // falls back to id
+    }
+
+    #[test]
+    fn convert_model_image_input() {
+        let entry = FutureModelEntry {
+            id: "vision".to_string(),
+            name: Some("Vision".to_string()),
+            context_length: None,
+            architecture: Some(FutureArchitecture {
+                modality: Some("text+image->text".to_string()),
+                tokenizer: None,
+            }),
+            pricing: None,
+            supported_parameters: None,
+            knowledge_cutoff: None,
+            provider: None,
+        };
+        let model = convert_future_model(entry, "https://api.example.com/v1");
+        assert!(model.input.iter().any(|i| i == "image"));
+        assert_eq!(model.context_window, 128000); // default
+    }
+
+    #[test]
+    fn convert_model_pricing() {
+        let entry = FutureModelEntry {
+            id: "priced".to_string(),
+            name: None,
+            context_length: Some(128000),
+            architecture: None,
+            pricing: Some(FuturePricing {
+                currency: None,
+                price_unit: Some(1),
+                prices: Some(vec![FuturePriceRule {
+                    input: Some("0.001".to_string()),
+                    output: Some("0.002".to_string()),
+                    input_cache_read: Some("0.0005".to_string()),
+                    input_cache_write: None,
+                }]),
+            }),
+            supported_parameters: None,
+            knowledge_cutoff: None,
+            provider: None,
+        };
+        let model = convert_future_model(entry, "https://api.example.com/v1");
+        assert_eq!(model.cost.input, 1000.0); // 0.001 * 1M / 1
+        assert_eq!(model.cost.output, 2000.0);
+        assert_eq!(model.cost.cache_read, 500.0);
+        assert_eq!(model.cost.cache_write, 0.0); // None → 0
+    }
+}

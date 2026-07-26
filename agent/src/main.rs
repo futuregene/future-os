@@ -3,10 +3,7 @@
 use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
-use future_agent::{
-    Engine, EngineConfig, Manager, ModelRegistry, ServerSession, AGENTS_SKILLS_DIR, APP_SKILLS_DIR,
-    PROJECT_SKILLS_DIR,
-};
+use future_agent::{Engine, EngineConfig, Manager, ModelRegistry};
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -43,10 +40,108 @@ struct Cli {
         default_value_t = future_agent::logfile::DEFAULT_MAX_LINES
     )]
     log_max_lines: usize,
+
+    /// Enable CPU profiling and write a flamegraph SVG to the given path on
+    /// shutdown.  Profiling starts immediately and runs until the agent exits.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<String>,
+
+    /// Profile for N seconds then exit automatically (for benchmarking).
+    /// Implies --profile with a default path when --profile is not also set.
+    #[arg(long, value_name = "N")]
+    profile_seconds: Option<u64>,
+
+    /// Enable heap (memory) profiling and write a dhat report to the given
+    /// path on shutdown.  Requires the `dhat-heap` build feature
+    /// (`cargo build --release --features dhat-heap`); without it this flag
+    /// is ignored with a warning.
+    #[arg(long, value_name = "PATH")]
+    profile_heap: Option<String>,
 }
+
+// When built with the `dhat-heap` feature, route every allocation through
+// dhat's tracking allocator.  Without an active `dhat::Profiler` this is a
+// thin pass-through to the system allocator, and the shim is compiled out
+// entirely in normal builds.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Resolve profile path early (before the runtime starts).
+    // --profile-seconds alone implies CPU profiling with a default path —
+    // but NOT when --profile-heap is set: running the CPU sampler during a
+    // heap profile pollutes the report (pprof's collector alone allocates
+    // ~68 MB) and skews every measurement.
+    let profile_path: Option<std::path::PathBuf> = cli
+        .profile
+        .as_deref()
+        .or_else(|| {
+            if cli.profile_seconds.is_some() && cli.profile_heap.is_none() {
+                Some("agent-profile.svg")
+            } else {
+                None
+            }
+        })
+        .map(std::path::PathBuf::from);
+
+    // Start CPU profiling if requested.  The guard lives in main() so it
+    // covers the entire agent lifetime including gRPC startup/shutdown.
+    // ProfilerGuard is !Send so we keep it right here.
+    #[cfg(not(windows))]
+    let profiler_guard = match &profile_path {
+        Some(_path) => {
+            tracing::info!(
+                "CPU profiling enabled → will write flamegraph to {}",
+                _path.display()
+            );
+            match pprof::ProfilerGuardBuilder::default()
+                .frequency(997) // prime to avoid lock-step with timers
+                .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+                .build()
+            {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to start profiler: {} — continuing without profiling",
+                        e
+                    );
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    #[cfg(windows)]
+    let profiler_guard: Option<()> = {
+        if profile_path.is_some() {
+            tracing::warn!(
+                "Built-in CPU profiling is not available on Windows (pprof is Unix-only)."
+            );
+            tracing::info!(
+                "To profile on Windows, use: make profile-quick (requires blondie + admin)"
+            );
+            tracing::info!("Or run externally: blondie flamegraph future-agent.exe --grpc-addr ... --profile-seconds N");
+        }
+        None
+    };
+
+    // Start heap profiling if requested.  The Profiler writes its report to
+    // disk when dropped, so it must outlive the tokio runtime — it lives
+    // here in main() and is dropped explicitly before any early exit.
+    #[cfg(feature = "dhat-heap")]
+    let heap_profiler = cli.profile_heap.as_ref().map(|path| {
+        tracing::info!("Heap profiling enabled → will write dhat report to {path}");
+        dhat::Profiler::builder().file_name(path).build()
+    });
+    #[cfg(not(feature = "dhat-heap"))]
+    if cli.profile_heap.is_some() {
+        tracing::warn!(
+            "--profile-heap requires a build with --features dhat-heap — ignoring the flag"
+        );
+    }
 
     // Load the user's login-shell PATH/env BEFORE spawning any threads or the
     // tokio runtime — set_var is only sound while single-threaded. Fixes
@@ -113,11 +208,60 @@ fn main() -> Result<()> {
     let model_registry = Arc::new(parking_lot::RwLock::new(ModelRegistry::new()));
 
     // Launch async portion
-    tokio::runtime::Builder::new_multi_thread()
+    // 2 MB thread stack (Rust's default) is enough for async I/O while
+    // leaving headroom for deep serde/JSON recursion (was 4 MB).
+    // On a 32-core machine this still saves 64 MB virtual memory vs 4 MB.
+    let run_result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_stack_size(4 * 1024 * 1024)
+        .thread_stack_size(2 * 1024 * 1024)
         .build()?
-        .block_on(async_main(model_registry, cli))
+        .block_on(async_main(model_registry, cli));
+
+    // Write profiling flamegraph on shutdown (after the runtime drops,
+    // so all async tasks have settled).  ProfilerGuard stops sampling on
+    // drop, so we must build the report BEFORE dropping the guard.
+    #[cfg(not(windows))]
+    if let (Some(guard), Some(path)) = (profiler_guard, profile_path) {
+        tracing::info!("Writing CPU profile flamegraph to {}", path.display());
+        match guard.report().build() {
+            Ok(report) => {
+                let file = std::fs::File::create(&path)
+                    .map_err(|e| {
+                        tracing::error!("Cannot create profile file {}: {}", path.display(), e);
+                        e
+                    })
+                    .ok();
+                if let Some(f) = file {
+                    if let Err(e) = report.flamegraph(f) {
+                        tracing::error!("Failed to write flamegraph: {}", e);
+                    } else {
+                        let sz = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        tracing::info!(
+                            "Flamegraph written: {} ({:.1} KB)",
+                            path.display(),
+                            sz as f64 / 1024.0
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to build profiling report: {}", e);
+            }
+        }
+    }
+    #[cfg(windows)]
+    let _ = (profiler_guard, profile_path);
+
+    // Propagate async_main's failure as a non-zero exit code so callers
+    // (CLI/TUI/service managers) can detect an abnormal exit.
+    if let Err(e) = run_result {
+        tracing::error!("Agent exited with error: {e}");
+        // process::exit skips destructors — flush the heap report first.
+        #[cfg(feature = "dhat-heap")]
+        drop(heap_profiler);
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 async fn async_main(
@@ -333,13 +477,10 @@ async fn async_main(
             Err(_) => ("127.0.0.1", 50051),
         }
     };
-    // Discover skills
-    let skill_dirs = vec![
-        APP_SKILLS_DIR.to_string(),
-        format!("{}/{}", cwd, PROJECT_SKILLS_DIR),
-        AGENTS_SKILLS_DIR.to_string(),
-    ];
-    let skills = future_agent::discover_skills(&skill_dirs).unwrap_or_default();
+    // Discover skills (global user-level dirs only — project/cwd-relative
+    // skill dirs are intentionally not scanned).
+    let skill_dirs = future_agent::global_skill_dirs();
+    let skills = future_agent::discover_skills_cached(&skill_dirs);
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
     // Load project context
@@ -374,56 +515,77 @@ async fn async_main(
     engine.agent_loop.config.system_prompt = system_prompt;
 
     let manager = Arc::new(Manager::default_for(&cwd));
-    let broadcaster: Arc<future_agent::rpc::SseBroadcaster> =
-        Arc::new(future_agent::rpc::SseBroadcaster::new());
     let approval_gate = future_agent::rpc::ApprovalGate::default();
-    let mut server_session = ServerSession::new(
-        future_agent::utils::generate_id(),
-        Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
-        manager,
-        &cwd,
-        event_bus.clone(),
-        broadcaster.clone(),
-        approval_gate.clone(),
-    );
-    server_session.model = resolved_model.clone();
+    // Template for minting per-session agent loops.  Sessions no longer
+    // share one global loop — each hydrated/created session gets an
+    // independent copy so concurrent runs, model switches and aborts stay
+    // session-local.  The template itself never runs prompts.
+    // Set the model_registry on the template so all session loops inherit
+    // the cached registry via independent_copy() — avoids ~15% CPU overhead
+    // from re-deserialising the model catalog on every prompt.
+    let mut template_loop = engine.agent_loop.independent_copy();
+    template_loop.model_registry = Some(model_registry.clone());
+    let loop_template = Arc::new(template_loop);
 
-    server_session.set_steering_mode(&settings.steering_mode);
-    server_session.set_follow_up_mode(&settings.follow_up_mode);
-    if !settings.default_permission_level.is_empty() {
-        server_session.set_permission_level(&settings.default_permission_level);
-    }
-    server_session.set_auto_compaction(settings.compaction_enabled());
-    server_session.set_auto_retry(settings.retry_enabled());
-
-    let session = Arc::new(parking_lot::RwLock::new(server_session));
-
+    // The agent starts with ZERO sessions.  There is no privileged
+    // "default"/"current" session — clients (TUI, GUI, CLI, channels)
+    // create or switch to sessions explicitly, and the agent hydrates
+    // them on demand.  Settings that used to be applied to the startup
+    // default session are applied per-session in cmd_new_session.
     let app_state = future_agent::rpc::AppState {
-        session: session.clone(),
         sessions: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
-        active_session_id: Arc::new(parking_lot::RwLock::new(String::new())),
+        session_manager: manager,
         welcome_version: future_agent::utils::VERSION.to_string(),
         welcome_cwd: cwd.clone(),
         welcome_skills: Arc::new(parking_lot::RwLock::new(skill_names.clone())),
         welcome_context: Arc::new(parking_lot::RwLock::new(context_lines)),
         welcome_exts: vec![],
         explicit_session: false,
-        broadcaster: broadcaster.clone(),
         event_bus: event_bus.clone(),
         approval_gate,
         verbose: cli.verbose,
         shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         model_registry: model_registry.clone(),
+        loop_template,
     };
 
     // Graceful shutdown on Ctrl+C: set the shutting_down flag so new prompts
     // are rejected, then wait up to 30 s for active streams to finish.
     let shutting_down = app_state.shutting_down.clone();
     let sessions = app_state.sessions.clone();
-    let default_session = app_state.session.clone();
     let shutdown_timeout = std::time::Duration::from_secs(30);
 
     let server = future_agent::grpc::serve(app_state, grpc_host, grpc_port);
+
+    // If --profile-seconds is set, spawn a task that signals shutdown after N
+    // seconds via a oneshot so the flamegraph gets written by main().
+    // When --profile-seconds is not set, use pending() so the select branch
+    // never fires.
+    let profile_rx: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+        if let Some(secs) = cli.profile_seconds {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let shutting_down = shutting_down.clone();
+            let sessions = sessions.clone();
+            tokio::spawn(async move {
+                tracing::info!(
+                    "Profile timer: agent will auto-shutdown after {} seconds",
+                    secs
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                tracing::info!("Profile timer expired — shutting down for flamegraph capture");
+                shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+                for s in sessions.read().values() {
+                    s.read().abort();
+                }
+                let _ = tx.send(());
+            });
+            Box::pin(async move {
+                let _ = rx.await;
+                tracing::info!("Profile timer completed — draining active streams");
+            })
+        } else {
+            Box::pin(std::future::pending())
+        };
 
     tokio::select! {
         result = server => result?,
@@ -434,7 +596,6 @@ async fn async_main(
             // Actively interrupt in-flight runs. Without this, a long LLM
             // stream keeps running and the wait loop below only exits via the
             // 30 s timeout — making Ctrl-C look like a hang.
-            default_session.read().abort();
             for s in sessions.read().values() {
                 s.read().abort();
             }
@@ -442,33 +603,28 @@ async fn async_main(
             // Wait for active streams to settle
             let deadline = tokio::time::Instant::now() + shutdown_timeout;
             loop {
-                let any_streaming = {
-                    let active = default_session
-                        .read()
+                let any_streaming = sessions
+                    .read()
+                    .values()
+                    .any(|s| s.read()
                         .is_streaming
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    if active { true } else {
-                        sessions.read()
-                            .values()
-                            .any(|s| s.read()
-                                .is_streaming
-                                .load(std::sync::atomic::Ordering::Relaxed))
-                    }
-                };
+                        .load(std::sync::atomic::Ordering::Relaxed));
                 if !any_streaming {
                     tracing::info!("All streams finished — exiting");
                     break;
                 }
                 if tokio::time::Instant::now() >= deadline {
                     tracing::warn!("Shutdown timeout (30s) — forcing exit with {} active stream(s)",
-                        if default_session.read().is_streaming.load(std::sync::atomic::Ordering::Relaxed) { 1 } else { 0 }
-                        + sessions.read().values()
+                        sessions.read().values()
                             .filter(|s| s.read().is_streaming.load(std::sync::atomic::Ordering::Relaxed))
                             .count());
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
+        }
+        _ = profile_rx => {
+            // profile timer handled inside the future
         }
     }
     Ok(())

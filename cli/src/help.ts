@@ -5,6 +5,7 @@ Usage:
   future <group> <command> [options] [args...]
 
 Groups:
+  init      Install built-in skills and initialize local commands
   auth      Authentication & API key management
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
@@ -16,6 +17,7 @@ Groups:
   doctor    Environment diagnostic
 
 Quick start:
+  future init                                Initialize Future OS
   future auth login                          Sign in to the Future platform
   future run "Explain this project"          One-shot agent prompt
   future run @README.md "Summarize this"     Include files in prompt
@@ -23,6 +25,7 @@ Quick start:
   future doctor                              Check everything is working
 
 Run 'future <group> --help' for per-group details.
+  future init --help         Initialization behavior
   future run --help          All run options (model, fork, thinking, tools, etc.)
   future auth --help         Auth subcommands
   future account --help      Account subcommands

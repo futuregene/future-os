@@ -1,8 +1,10 @@
 /// Full database schema for the desktop GUI store.
 ///
-/// The app is pre-release, so there is no incremental migration history: this
-/// is the single source of truth and is applied idempotently (every statement
-/// uses `IF NOT EXISTS`). Change tables/columns here directly.
+/// This is the single source of truth for **fresh** databases and is applied
+/// idempotently. The GUI database has shipped: a post-release schema change
+/// must also have a versioned migration for existing databases; changing this
+/// constant alone is insufficient. See `gui/CLAUDE.md`, “Released database
+/// migrations”.
 pub(super) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
@@ -311,8 +313,8 @@ pub(super) const ADDED_INDEXES: &[&str] = &[
     // hold one row per write/edit of the same file, and this index cannot be
     // created until `dedupe_file_artifacts` has folded them — `SCHEMA` runs
     // first, before any migration step, so creating it there would fail on
-    // exactly those DBs. PRE-RELEASE ONLY: when that migration is deleted before
-    // release, move this into `SCHEMA` next to the other artifact index.
+    // exactly those legacy DBs. Do not extend this compatibility path for new
+    // releases; any change to it must be an explicit versioned migration.
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_thread_path \
      ON artifacts(thread_id, path) WHERE deleted_at IS NULL AND path IS NOT NULL",
 ];

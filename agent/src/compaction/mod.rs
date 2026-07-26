@@ -367,4 +367,299 @@ mod tests {
         // Cyrillic: not CJK, not ASCII → 0.5 tokens/char.
         assert_eq!(estimate_tokens(&text_msg("user", &"Привет".repeat(2))), 6);
     }
+
+    // ─── should_compact ────────────────────────────────────────────────────
+
+    #[test]
+    fn should_compact_disabled() {
+        let settings = CompactionSettings {
+            enabled: false,
+            reserve_tokens: 1000,
+            keep_recent_tokens: 5000,
+        };
+        assert!(!should_compact(200_000, 128_000, &settings));
+    }
+
+    #[test]
+    fn should_compact_when_exceeding_threshold() {
+        let settings = CompactionSettings {
+            enabled: true,
+            reserve_tokens: 8000,
+            keep_recent_tokens: 5000,
+        };
+        // context_tokens (120_000) > context_window (128_000) - reserve (8000) = 120_000
+        // 120_000 > 120_000 is false, so not triggered
+        assert!(!should_compact(120_000, 128_000, &settings));
+        // 120_001 > 120_000 → triggers
+        assert!(should_compact(120_001, 128_000, &settings));
+    }
+
+    #[test]
+    fn should_compact_under_threshold() {
+        let settings = CompactionSettings {
+            enabled: true,
+            reserve_tokens: 8000,
+            keep_recent_tokens: 5000,
+        };
+        assert!(!should_compact(100_000, 128_000, &settings));
+    }
+
+    // ─── estimate_context_tokens ───────────────────────────────────────────
+
+    #[test]
+    fn estimate_context_tokens_sums_messages() {
+        let msgs = vec![
+            text_msg("user", &"a".repeat(100)),     // 25 tokens
+            text_msg("assistant", &"b".repeat(40)), // 10 tokens
+        ];
+        assert_eq!(estimate_context_tokens(&msgs), 35);
+    }
+
+    // ─── content_text_pieces ───────────────────────────────────────────────
+
+    #[test]
+    fn content_text_pieces_array() {
+        let content = Some(serde_json::json!([
+            {"type": "text", "text": "hello"},
+            {"type": "text", "text": " world"}
+        ]));
+        let pieces = content_text_pieces(&content);
+        assert_eq!(pieces, vec!["hello", " world"]);
+    }
+
+    #[test]
+    fn content_text_pieces_string() {
+        let content = Some(serde_json::json!("plain string"));
+        let pieces = content_text_pieces(&content);
+        assert_eq!(pieces, vec!["plain string"]);
+    }
+
+    #[test]
+    fn content_text_pieces_none() {
+        assert!(content_text_pieces(&None).is_empty());
+    }
+
+    // ─── is_cjk ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_cjk_detects_all_ranges() {
+        assert!(is_cjk('汉')); // U+6C49 — CJK Unified
+        assert!(is_cjk('あ')); // U+3042 — Hiragana
+        assert!(is_cjk('が')); // U+304C — Hiragana
+        assert!(!is_cjk('a'));
+        assert!(!is_cjk('@'));
+    }
+
+    // ─── estimate_text_tokens ──────────────────────────────────────────────
+
+    #[test]
+    fn estimate_text_tokens_empty() {
+        assert_eq!(estimate_text_tokens(""), 0);
+    }
+
+    // ─── adjust_cut_for_tool_context ───────────────────────────────────────
+
+    #[test]
+    fn adjust_cut_after_tool_backs_up_to_assistant_with_tool_calls() {
+        let msgs = vec![
+            text_msg("user", "hello"),
+            Message {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![]),
+                ..Default::default()
+            },
+            text_msg("tool", "result"),
+        ];
+        // Cut on the tool msg (index 2), should back up to assistant (index 1)
+        assert_eq!(adjust_cut_for_tool_context(&msgs, 2), 1);
+    }
+
+    #[test]
+    fn adjust_cut_on_user_unchanged() {
+        let msgs = vec![text_msg("user", "hello")];
+        assert_eq!(adjust_cut_for_tool_context(&msgs, 0), 0);
+    }
+
+    #[test]
+    fn adjust_cut_out_of_bounds_returns_original() {
+        let msgs: Vec<Message> = vec![];
+        assert_eq!(adjust_cut_for_tool_context(&msgs, 5), 5);
+    }
+
+    // ─── find_valid_cut_points ─────────────────────────────────────────────
+
+    #[test]
+    fn find_valid_cut_points_all_types() {
+        let msgs = vec![
+            text_msg("system", "prompt"),
+            text_msg("user", "question"),
+            text_msg("assistant", "answer"),
+            text_msg("tool", "output"),
+        ];
+        let points = find_valid_cut_points(&msgs);
+        assert_eq!(points, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn find_valid_cut_points_excludes_assistant_with_tool_calls() {
+        let msgs = vec![
+            text_msg("user", "q"),
+            Message {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![crate::types::ToolCall {
+                    id: "t1".to_string(),
+                    call_type: "function".to_string(),
+                    function: crate::types::ToolCallFn {
+                        name: "shell".to_string(),
+                        arguments: serde_json::json!("{}"),
+                    },
+                }]),
+                ..Default::default()
+            },
+            text_msg("tool", "result"),
+        ];
+        let points = find_valid_cut_points(&msgs);
+        // Index 1 (assistant with tool_calls) is excluded
+        assert_eq!(points, vec![0, 2]);
+    }
+
+    // ─── find_cut_point ────────────────────────────────────────────────────
+
+    #[test]
+    fn find_cut_point_empty_messages_returns_zero() {
+        let msgs: Vec<Message> = vec![];
+        assert_eq!(find_cut_point(&msgs, 5000), 0);
+    }
+
+    #[test]
+    fn find_cut_point_returns_first_useful_cut() {
+        let msgs = vec![
+            text_msg("user", &"a".repeat(400)),     // ~100 tokens
+            text_msg("assistant", &"b".repeat(40)), // ~10 tokens
+            text_msg("user", &"c".repeat(100)),     // ~25 tokens
+        ];
+        // keep_recent 20 → keep last ~20 tokens → should cut before last msg
+        let cut = find_cut_point(&msgs, 20);
+        assert_eq!(cut, 2);
+    }
+
+    // ─── extract_file_operations ───────────────────────────────────────────
+
+    #[test]
+    fn extract_file_operations_finds_reads_and_writes() {
+        let msgs = vec![
+            text_msg("user", "read file"),
+            Message {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![
+                    crate::types::ToolCall {
+                        id: "tc1".to_string(),
+                        call_type: "function".to_string(),
+                        function: crate::types::ToolCallFn {
+                            name: "read".to_string(),
+                            arguments: serde_json::json!(r#"{"path":"/tmp/a.txt"}"#),
+                        },
+                    },
+                    crate::types::ToolCall {
+                        id: "tc2".to_string(),
+                        call_type: "function".to_string(),
+                        function: crate::types::ToolCallFn {
+                            name: "write".to_string(),
+                            arguments: serde_json::json!(r#"{"file_path":"/tmp/b.txt"}"#),
+                        },
+                    },
+                ]),
+                ..Default::default()
+            },
+        ];
+        let (reads, writes) = extract_file_operations(&msgs);
+        assert_eq!(reads, vec!["/tmp/a.txt"]);
+        assert_eq!(writes, vec!["/tmp/b.txt"]);
+    }
+
+    #[test]
+    fn extract_file_operations_edit_and_patch_are_writes() {
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "edit".to_string(),
+                    arguments: serde_json::json!(r#"{"path":"/tmp/edit.txt"}"#),
+                },
+            }]),
+            ..Default::default()
+        }];
+        let (reads, writes) = extract_file_operations(&msgs);
+        assert!(reads.is_empty());
+        assert_eq!(writes, vec!["/tmp/edit.txt"]);
+    }
+
+    // ─── compact / compact_from ────────────────────────────────────────────
+
+    #[test]
+    fn compact_below_threshold_does_nothing() {
+        let msgs = vec![text_msg("user", "hello")];
+        let opts = CompactOptions {
+            reserve_tokens: 8000,
+            keep_recent_tokens: 4000,
+            context_window: 128_000,
+            tokens_before: 50,
+        };
+        let (result, compacted) = compact(msgs.clone(), &opts);
+        assert!(compacted.is_none());
+        assert_eq!(result.len(), msgs.len());
+    }
+
+    #[test]
+    fn compact_triggers_and_keeps_recent() {
+        // Build enough messages to trigger compaction
+        let mut msgs = vec![];
+        for i in 0..200 {
+            msgs.push(text_msg("user", &format!("message {i} ")));
+        }
+        let opts = CompactOptions {
+            reserve_tokens: 100,
+            keep_recent_tokens: 100,
+            context_window: 500,
+            tokens_before: 0,
+        };
+        let (result, compacted) = compact(msgs, &opts);
+        assert!(compacted.is_some());
+        // First message should be the compaction marker
+        assert_eq!(result[0].role, "user");
+        let content = result[0].content.as_ref().unwrap();
+        assert!(content.to_string().contains("compaction"));
+        // Result should be shorter than original
+        assert!(result.len() < 200);
+    }
+
+    #[test]
+    fn compact_uses_tokens_before_when_larger_than_estimate() {
+        // Need enough messages so that should_compact triggers
+        let mut msgs = vec![];
+        for i in 0..200 {
+            msgs.push(text_msg(
+                "user",
+                &format!(
+                    "message number {i} with extra text to push token count up higher and higher"
+                ),
+            ));
+        }
+        let opts = CompactOptions {
+            reserve_tokens: 50,
+            keep_recent_tokens: 50,
+            context_window: 300,
+            tokens_before: 500,
+        };
+        let (_, compact_opt) = compact(msgs, &opts);
+        assert!(compact_opt.is_some(), "should trigger compaction");
+        // tokens_before is max(opts.tokens_before, estimated), so it's at least 500
+        assert!(compact_opt.unwrap().tokens_before >= 500);
+    }
 }

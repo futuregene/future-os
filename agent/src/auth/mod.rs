@@ -222,4 +222,102 @@ mod tests {
         );
         assert_eq!(store.get("deepseek-v4-pro"), Some("pro".to_string()));
     }
+
+    #[test]
+    fn get_returns_none_for_empty_key() {
+        let store = make_store(
+            r#"{
+                "provider": {"type": "api_key", "key": ""}
+            }"#,
+        );
+        assert_eq!(store.get("provider"), None);
+    }
+
+    #[test]
+    fn get_returns_none_for_unknown_provider() {
+        let store = make_store(
+            r#"{
+                "openai": {"type": "api_key", "key": "sk-123"}
+            }"#,
+        );
+        assert_eq!(store.get("unknown"), None);
+    }
+
+    #[test]
+    fn prefix_match_prefers_longer_name_when_query_is_shorter() {
+        let store = make_store(
+            r#"{
+                "deepseek-v4-pro": {"type": "api_key", "key": "pro-key"},
+                "deepseek": {"type": "api_key", "key": "base-key"}
+            }"#,
+        );
+        // "deepseek" exact match → base-key
+        assert_eq!(store.get("deepseek"), Some("base-key".to_string()));
+        // "deepseek-" no exact, both prefix match → prefer longer "deepseek-v4-pro"
+        assert_eq!(store.get("deepseek-"), Some("pro-key".to_string()));
+    }
+
+    #[test]
+    fn base_url_exact_match() {
+        let store = make_store(
+            r#"{
+                "openai": {"type": "api_key", "key": "sk-123", "baseUrl": "https://api.openai.com"}
+            }"#,
+        );
+        assert_eq!(
+            store.base_url("openai"),
+            Some("https://api.openai.com".to_string())
+        );
+    }
+
+    #[test]
+    fn base_url_case_insensitive_prefix() {
+        let store = make_store(
+            r#"{
+                "azure-openai": {"type": "api_key", "key": "key", "baseUrl": "https://my.openai.azure.com/"}
+            }"#,
+        );
+        assert_eq!(
+            store.base_url("Azure-OpenAI-eus"),
+            Some("https://my.openai.azure.com".to_string())
+        );
+    }
+
+    #[test]
+    fn base_url_empty_returns_none() {
+        let store = make_store(
+            r#"{
+                "provider": {"type": "api_key", "key": "key", "baseUrl": ""}
+            }"#,
+        );
+        assert_eq!(store.base_url("provider"), None);
+    }
+
+    #[test]
+    fn base_url_unknown_provider_returns_none() {
+        let store = make_store(
+            r#"{
+                "openai": {"type": "api_key", "key": "sk-123"}
+            }"#,
+        );
+        assert_eq!(store.base_url("unknown"), None);
+    }
+
+    #[test]
+    fn default_key_returns_first_non_empty() {
+        let store = make_store(
+            r#"{
+                "a": {"type": "api_key", "key": ""},
+                "b": {"type": "api_key", "key": "valid-key"}
+            }"#,
+        );
+        assert!(store.default_key().is_some());
+        assert_ne!(store.default_key().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn default_key_empty_store_returns_none() {
+        let store = make_store(r#"{}"#);
+        assert_eq!(store.default_key(), None);
+    }
 }

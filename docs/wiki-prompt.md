@@ -125,12 +125,12 @@ docs/wiki/
   - macOS:`.dmg` 磁盘镜像
   - Windows:安装包(`.exe`),或便携版 `.zip`
 - 说明命令行工具 `future` **随每个下载包附带**(安装包与便携包都有,装在应用旁边),详见 CLI 页。
-- **首次启动**(当前构建未签名/公证,系统会告警,属正常):
-  - **macOS**:把 FutureOS 拖进"应用程序";首次右键 →"打开"→ 再点"打开";若提示"已损坏",在终端运行 `xattr -dr com.apple.quarantine /Applications/FutureOS.app` 再打开。
-  - **Windows**:安装版跑 `.exe`;便携版解压整个文件夹后双击 `FutureOS.exe`(便携版需把 `FutureOS.exe` 和 `future-agent.exe` 放在同一文件夹)。首次 SmartScreen 提示时点"更多信息 → 仍要运行"。需要 **Microsoft Edge WebView2 Runtime**(Win10 近期版与 Win11 一般已内置,缺失则从微软官网装 Evergreen 版)。
+- **首次启动**:正式发布的 macOS / Windows 安装包均已签名，macOS 同时完成 Apple 公证。
+  - **macOS**:把 FutureOS 拖进"应用程序"后正常启动。
+  - **Windows**:安装版跑 `.exe`;便携版解压整个文件夹后双击 `FutureOS.exe`(便携版需把 `FutureOS.exe` 和 `future-agent.exe` 放在同一文件夹)。若遇 SmartScreen 信誉提示，应核对发布者和官方来源。需要 **Microsoft Edge WebView2 Runtime**(Win10 近期版与 Win11 一般已内置,缺失则从微软官网装 Evergreen 版)。
 - **登录**:首次使用需联网并在应用内登录,详见快速开始。
 - **数据位置**:主目录下的 `.future` 文件夹(macOS `~/.future`,Windows `C:\Users\<你>\.future`)。
-- **更新**:下载最新版覆盖安装(便携版替换文件夹),`.future` 数据保留。
+- **更新**:安装版可在 Settings → 检查更新中下载、验证并安装更新，按提示重启；也可手动覆盖安装。便携版替换文件夹；`.future` 数据保留。
 - **卸载**:macOS 删除 `FutureOS.app`;Windows 从设置卸载或删除便携文件夹。要清数据再删 `.future`。
 
 ### Quick-Start

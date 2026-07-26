@@ -143,6 +143,23 @@ impl Loop {
                 messages.clone()
             };
 
+            // Auto-compaction was needed but failed — context is overflowing
+            // the model's window. Stop instead of silently proceeding.
+            if self
+                .compaction_failed
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                if let Some(ref bus) = self.event_bus {
+                    bus.emit(error_event(
+                        "Context compaction failed: unable to find a valid cut point. \
+                         The conversation is too long and cannot continue.",
+                    ));
+                }
+                return Err(anyhow!(
+                    "context compaction failed: conversation overflows model context window"
+                ));
+            }
+
             // Emit message_start
             if let Some(ref bus) = self.event_bus {
                 bus.emit(message_start("assistant"));
@@ -210,8 +227,16 @@ impl Loop {
                             }
                             // Resolve the model's actual context window so we don't
                             // over-compact large-context models (1M+).
-                            let context_window = crate::models::Registry::new()
-                                .resolve(&ctx.model)
+                            // Use the cached registry from the loop to avoid
+                            // re-deserialising the model catalog; loops not
+                            // derived from the app template (model_registry =
+                            // None, e.g. tests) fall back to a fresh Registry
+                            // so behaviour matches the pre-cache code.
+                            let context_window = self
+                                .model_registry
+                                .as_ref()
+                                .and_then(|r| r.read().resolve(&ctx.model))
+                                .or_else(|| crate::models::Registry::new().resolve(&ctx.model))
                                 .map(|m| m.context_window)
                                 .unwrap_or(1_000_000);
                             let reserve = ((context_window as f64 * 0.1) as i32).max(16384);
@@ -228,9 +253,25 @@ impl Loop {
                             messages = ConvertFromLLM(compacted);
                             if let Some(r) = compact_result {
                                 *self.last_compaction_result.lock() = Some(r);
-                            }
-                            if let Some(ref bus) = self.event_bus {
-                                bus.emit(events::compaction_end(0, "", false, "auto"));
+                                if let Some(ref bus) = self.event_bus {
+                                    bus.emit(events::compaction_end(0, "", false, "auto"));
+                                }
+                            } else {
+                                // Forced compaction (context-length error) failed to
+                                // find any valid cut point. The conversation cannot
+                                // continue safely — report the error and stop.
+                                tracing::error!(
+                                    "forced compaction after context-length error failed"
+                                );
+                                if let Some(ref bus) = self.event_bus {
+                                    bus.emit(error_event(
+                                        "Context compaction failed: unable to find a valid \
+                                         cut point. The conversation is too long and cannot continue.",
+                                    ));
+                                }
+                                return Err(anyhow!(
+                                    "context compaction failed: conversation overflows model context window"
+                                ));
                             }
                         }
                         // Don't burn a retry (and its backoff) if the user
@@ -762,6 +803,17 @@ impl Loop {
                 }
             }
 
+            // Apply the final credit_cost from this LLM call to cumulative_cost.
+            // The upstream API sends progressive credit_cost updates in each
+            // usage chunk; total_usage holds the LAST (complete) value. Adding
+            // it here — once per LLM call — avoids the N× inflation that
+            // would result from accumulating every intermediate chunk.
+            if let Some(ref u) = total_usage {
+                if let Some(cost) = u.credit_cost {
+                    *self.cumulative_cost.lock() += cost;
+                }
+            }
+
             // Stream was truncated mid-reply: the assistant text is a prefix,
             // not a finished answer. End the turn as `incomplete` (keeping the
             // partial text so it isn't lost) rather than draining the follow-up
@@ -993,9 +1045,11 @@ impl Loop {
             self.cumulative_cache_write_tokens
                 .fetch_add(cache_w, Ordering::Relaxed);
         }
-        if let Some(cost) = u.credit_cost {
-            *self.cumulative_cost.lock() += cost;
-        }
+        // NOTE: credit_cost is NOT accumulated here. The upstream API sends
+        // progressive credit_cost updates in each usage chunk (each value is
+        // the cumulative cost of the request so far). Adding every chunk
+        // inflates the total by N×. Instead, credit_cost is applied once at
+        // the end of the LLM call using the final value from total_usage.
         *total_usage = Some(u.clone());
         if let Some(ref bus) = self.event_bus {
             bus.emit(usage_event(u));

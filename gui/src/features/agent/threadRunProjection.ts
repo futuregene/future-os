@@ -46,10 +46,10 @@ async function projectRunForLivePreview(
  *
  * The agent's save_callback persists each completed LLM call mid-run, so a
  * reload during streaming surfaces a persisted assistant entry for THIS
- * in-flight turn (no runId — applyRunMetadata only stamps settled runs). Left
- * in place, it renders alongside the live bubble as a duplicate of the same
- * reply. Detect it — the entry sits after the last user message and its text
- * overlaps the live projection — and drop it, so the turn renders once.
+ * in-flight turn (no runId of its own — applyRunMetadata leaves in-flight
+ * turns unstamped). Left in place, it renders alongside the live bubble as a
+ * duplicate of the same reply. Detect it — the entry sits after the last user
+ * message — and drop it, so the turn renders once.
  */
 export function streamingBubbleBase(
   current: AgentMessage[],
@@ -64,8 +64,13 @@ export function streamingBubbleBase(
 
   const lastAssistantIdx = current.map(message => message.role).lastIndexOf("assistant");
   const lastAssistant = lastAssistantIdx >= 0 ? current[lastAssistantIdx] : undefined;
-  if (lastAssistant && !lastAssistant.runId) {
-    const persisted = lastAssistant.content.trim();
+  // Reaching here, no message carries `runId` (checked above) — so a runId on
+  // the last assistant always belongs to ANOTHER run. If that assistant sits
+  // in the in-flight turn (after the last user message), its stamp can only be
+  // a misaligned leftover (e.g. persisted by an older build) and the entry is
+  // this turn's mid-run snapshot regardless — don't let a stray runId shield
+  // it from the dedup.
+  if (lastAssistant && lastAssistant.runId !== runId) {
     // The mid-run persisted entry belongs to the in-flight turn only when the
     // last user message precedes it; an assistant that appears before the last
     // user is an earlier completed turn.
@@ -73,14 +78,18 @@ export function streamingBubbleBase(
     const sameTurn = lastUserIdx >= 0 && lastUserIdx < lastAssistantIdx;
 
     // A mid-run snapshot for THIS in-flight turn — the streaming bubble is
-    // authoritative, even if no text has landed in the event log yet (the
-    // very first reattach tick may fire before the collector has persisted
-    // the first text chunks). Drop the persisted snapshot so the turn
-    // renders once and keeps updating instead of duplicating.
-    if (sameTurn && persisted) {
+    // authoritative: it re-projects the turn's thinking, tool activity AND
+    // text from the run's event log, so dropping the snapshot loses nothing,
+    // even when the snapshot carries no text yet (thinking/tools-only — its
+    // `content` is empty but its segments render) or when no event has landed
+    // in the log at all (the very first reattach tick may fire before the
+    // collector persists the first chunks). The one thing that is NOT a reply
+    // snapshot is a compaction divider — keep it in place.
+    if (sameTurn && !isCompactionDivider(lastAssistant)) {
       return current.filter(message => message.id !== lastAssistant.id);
     }
 
+    const persisted = lastAssistant.content.trim();
     // Another turn's persisted reply already covers the head of the live
     // text (a settled-run reload raced this poll tick) — keep the persisted
     // message and suppress the bubble.
@@ -285,15 +294,28 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
     .filter(index => index >= 0)
     .reverse();
 
-  // Only assign settled runs to persistent assistant messages.  An active
-  // (still-streaming) run has no assistant entry on disk yet; its live
-  // preview is inserted by upsertStreamingPreview.  Matching an active run
-  // to an old assistant turn (positional misalignment after an abort) would
-  // steal the runId and block the streaming bubble from ever appearing.
+  // Only assign settled runs to persistent assistant messages.  Matching an
+  // active run to an old assistant turn (positional misalignment after an
+  // abort) would steal the runId and block the streaming bubble from ever
+  // appearing.
   const settled = runs.filter(run => matchesSettledRun(run.status));
+
+  // The agent's save_callback persists each completed LLM call MID-RUN, so an
+  // active (still-streaming) run can already have a partial assistant entry on
+  // disk — it projects as the newest turn. When turns outnumber settled runs,
+  // the excess newest turns belong to the in-flight runs: leave them
+  // unstamped. Stamping the newest settled run onto such a turn instead
+  // misaligns every older pairing (the real owner loses its runId/model badge)
+  // and — worse — defeats streamingBubbleBase's duplicate detection, so the
+  // frozen partial renders next to the growing live bubble (the "ABC, ABC →
+  // ABC, ABCDE" duplicate).
+  const inFlight = runs.length - settled.length;
+  const skipNewest = Math.min(Math.max(turnIndices.length - settled.length, 0), inFlight);
+  const assignable = turnIndices.slice(skipNewest);
+
   const patched = [...messages];
-  for (let i = 0; i < turnIndices.length && i < settled.length; i++) {
-    const index = turnIndices[i]!;
+  for (let i = 0; i < assignable.length && i < settled.length; i++) {
+    const index = assignable[i]!;
     const run = settled[i]!;
     const message = patched[index]!;
     // An aborted turn projects with no content and no reply time (the agent

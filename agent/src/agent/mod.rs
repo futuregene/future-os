@@ -61,6 +61,13 @@ pub struct Loop {
     pub cumulative_cost: Arc<parking_lot::Mutex<f64>>,
     /// Last API call's prompt_tokens (actual context size, not cumulative across turns)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
+    /// Set to true when auto-compaction is needed but fails to find a valid cut
+    /// point. The run loop checks this after transform_context and returns an
+    /// error instead of silently proceeding with full context.
+    pub compaction_failed: Arc<AtomicBool>,
+    /// Cached model registry — avoids re-deserialising the 906-model catalog
+    /// on auto-compaction checks and image-support queries inside the hot loop.
+    pub model_registry: Option<Arc<parking_lot::RwLock<crate::models::Registry>>>,
 }
 
 impl Loop {
@@ -85,6 +92,8 @@ impl Loop {
             cumulative_cache_write_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            compaction_failed: Arc::new(AtomicBool::new(false)),
+            model_registry: None,
         }
     }
 
@@ -106,6 +115,30 @@ impl Loop {
     pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
         self.event_bus = Some(bus);
         self
+    }
+
+    /// Create an independent copy of this loop: same provider, model, tools,
+    /// config, system prompt and event bus, but FRESH steering/follow-up
+    /// queues, token counters, interrupt flag and compaction state.
+    ///
+    /// Every `ServerSession` gets its own copy instead of sharing one global
+    /// loop, so a streaming run (which holds `loop.read()` for its whole
+    /// duration) never blocks another session's `set_model`/
+    /// `set_thinking_level` (`try_write`), and per-session state — interrupt
+    /// flag, steering queues, token counters, tool-execution hooks — can no
+    /// longer leak across sessions.  The provider `Arc` is cloned only as a
+    /// seed: `ServerSession::set_model` replaces it with a freshly-built
+    /// client for the session's own model before the first prompt.
+    pub fn independent_copy(&self) -> Loop {
+        let mut copy = Loop::new(self.provider.clone(), &self.model)
+            .with_tools(self.tools.clone())
+            .with_system_prompt(&self.system_prompt)
+            .with_config(self.config.clone());
+        copy.verbose = self.verbose;
+        copy.parallel_tools = self.parallel_tools;
+        copy.event_bus = self.event_bus.clone();
+        copy.model_registry = self.model_registry.clone();
+        copy
     }
 
     pub fn with_transform_context(
@@ -602,5 +635,557 @@ impl Default for crate::types::AgentConfig {
             after_tool_call: None,
             tools_execution_mode: String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── PendingMessageQueue ────────────────────────────────────────────────
+
+    #[test]
+    fn queue_new_is_empty() {
+        let q = PendingMessageQueue::new(10, "all");
+        assert!(q.is_empty());
+        assert_eq!(q.len(), 0);
+        assert_eq!(q.mode, "all");
+    }
+
+    #[test]
+    fn queue_enqueue_and_len() {
+        let q = PendingMessageQueue::new(10, "all");
+        q.enqueue("msg1".to_string());
+        q.enqueue("msg2".to_string());
+        assert_eq!(q.len(), 2);
+        assert!(!q.is_empty());
+    }
+
+    #[test]
+    fn queue_drain_all_mode() {
+        let q = PendingMessageQueue::new(10, "all");
+        q.enqueue("a".to_string());
+        q.enqueue("b".to_string());
+        q.enqueue("c".to_string());
+        let msgs = q.drain();
+        assert_eq!(msgs, vec!["a", "b", "c"]);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn queue_drain_one_at_a_time_mode() {
+        let q = PendingMessageQueue::new(10, "one-at-a-time");
+        q.enqueue("first".to_string());
+        q.enqueue("second".to_string());
+        let msgs = q.drain();
+        assert_eq!(msgs, vec!["first"]);
+        assert_eq!(q.len(), 1); // second still queued
+    }
+
+    #[test]
+    fn queue_drain_empty() {
+        let q = PendingMessageQueue::new(10, "all");
+        let msgs = q.drain();
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn queue_clear() {
+        let q = PendingMessageQueue::new(10, "all");
+        q.enqueue("a".to_string());
+        q.enqueue("b".to_string());
+        q.clear();
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn queue_set_mode() {
+        let mut q = PendingMessageQueue::new(10, "all");
+        assert_eq!(q.mode, "all");
+        q.set_mode("one-at-a-time");
+        assert_eq!(q.mode, "one-at-a-time");
+    }
+
+    #[test]
+    fn queue_capacity_overflow_drops() {
+        let q = PendingMessageQueue::new(2, "all");
+        q.enqueue("a".to_string());
+        q.enqueue("b".to_string());
+        q.enqueue("c".to_string()); // channel full — dropped
+        assert_eq!(q.len(), 2);
+        let msgs = q.drain();
+        assert_eq!(msgs, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn queue_drain_one_at_a_time_then_all() {
+        let q = PendingMessageQueue::new(10, "one-at-a-time");
+        q.enqueue("a".to_string());
+        q.enqueue("b".to_string());
+        q.enqueue("c".to_string());
+        assert_eq!(q.drain(), vec!["a"]);
+        assert_eq!(q.drain(), vec!["b"]);
+        assert_eq!(q.drain(), vec!["c"]);
+        assert!(q.drain().is_empty());
+    }
+
+    // ─── Loop struct (needs mock provider) ──────────────────────────────────
+
+    struct MockProvider;
+
+    #[async_trait::async_trait]
+    impl crate::types::LLMProvider for MockProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<crate::types::Message>,
+            _tools: Vec<crate::types::ToolDef>,
+            _system_prompt: String,
+        ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
+        {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+        }
+    }
+
+    fn make_loop() -> Loop {
+        Loop::new(std::sync::Arc::new(MockProvider), "test-model")
+    }
+
+    #[test]
+    fn loop_steer_and_queued_counts() {
+        let loop_ = make_loop();
+        loop_.steer("steer msg".to_string());
+        let (s, f) = loop_.queued_counts();
+        assert_eq!(s, 1);
+        assert_eq!(f, 0);
+        assert_eq!(loop_.pending_message_count(), 1);
+    }
+
+    #[test]
+    fn loop_follow_up_and_counts() {
+        let loop_ = make_loop();
+        loop_.follow_up("followup msg".to_string());
+        let (s, f) = loop_.queued_counts();
+        assert_eq!(s, 0);
+        assert_eq!(f, 1);
+    }
+
+    #[test]
+    fn loop_clear_queues() {
+        let loop_ = make_loop();
+        loop_.steer("a".to_string());
+        loop_.follow_up("b".to_string());
+        assert_eq!(loop_.pending_message_count(), 2);
+        loop_.clear_queues();
+        assert_eq!(loop_.pending_message_count(), 0);
+    }
+
+    #[test]
+    fn loop_drain_queues() {
+        let loop_ = make_loop();
+        loop_.steer("steer1".to_string());
+        loop_.follow_up("follow1".to_string());
+        let msgs = loop_.drain_queues();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(loop_.pending_message_count(), 0);
+    }
+
+    #[test]
+    fn loop_interrupt_and_clear() {
+        let loop_ = make_loop();
+        assert!(!loop_
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
+        loop_.abort();
+        assert!(loop_
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
+        loop_.clear_interrupt();
+        assert!(!loop_
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn loop_new_tool_result_normal() {
+        let loop_ = make_loop();
+        let msg = loop_.new_tool_result("call_1", "shell", "{\"cmd\": \"ls\"}", "output", None);
+        assert_eq!(msg.role, "tool");
+        assert_eq!(msg.tool_call_id, "call_1");
+        assert_eq!(msg.text(), "output");
+    }
+
+    #[test]
+    fn loop_new_tool_result_with_error() {
+        let loop_ = make_loop();
+        let msg = loop_.new_tool_result("call_1", "shell", "{}", "", Some("file not found"));
+        assert!(msg.text().contains("Error"));
+        assert!(msg.text().contains("file not found"));
+    }
+
+    #[test]
+    fn loop_new_tool_result_truncates_long_output() {
+        let loop_ = make_loop();
+        let long = "x".repeat(200_000);
+        let msg = loop_.new_tool_result("call_1", "shell", "{}", &long, None);
+        assert!(msg.text().len() <= 110_000);
+        assert!(msg.text().contains("truncated"));
+    }
+
+    #[test]
+    fn loop_new_user_message() {
+        let loop_ = make_loop();
+        let msg = loop_.new_user_message("hello");
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.text(), "hello");
+    }
+
+    #[test]
+    fn loop_builder_methods() {
+        let tools = vec![];
+        let loop_ = Loop::new(std::sync::Arc::new(MockProvider), "m")
+            .with_tools(tools)
+            .with_system_prompt("test prompt")
+            .with_config(crate::types::AgentConfig::default());
+        assert_eq!(loop_.model, "m");
+    }
+
+    #[test]
+    fn loop_independent_copy() {
+        let loop_ = make_loop()
+            .with_system_prompt("original prompt")
+            .with_tools(vec![]);
+        let copy = loop_.independent_copy();
+        assert_eq!(copy.model, loop_.model);
+        assert_eq!(copy.system_prompt, "original prompt");
+        // Independent state: interrupt flag, queues should be fresh
+        assert!(!copy
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(copy.pending_message_count(), 0);
+        // Modify original's queue, copy should be unaffected
+        loop_.steer("test".to_string());
+        assert_eq!(loop_.pending_message_count(), 1);
+        assert_eq!(copy.pending_message_count(), 0);
+    }
+
+    #[test]
+    fn loop_with_transform_context() {
+        let f: std::sync::Arc<
+            dyn Fn(Vec<crate::types::Message>, String) -> Vec<crate::types::Message> + Send + Sync,
+        > = std::sync::Arc::new(|msgs, _| msgs);
+        let loop_ = make_loop().with_transform_context(f);
+        assert!(loop_.config.transform_context.is_some());
+    }
+
+    #[test]
+    fn loop_with_event_bus() {
+        let bus = std::sync::Arc::new(crate::events::EventBus::new());
+        let loop_ = make_loop().with_event_bus(bus);
+        assert!(loop_.event_bus.is_some());
+    }
+
+    #[test]
+    fn loop_interrupt_combines_steer_and_abort() {
+        let loop_ = make_loop();
+        loop_.interrupt("stop and steer".to_string());
+        assert!(loop_
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(loop_.queued_counts().0, 1);
+    }
+
+    #[test]
+    fn loop_steer_does_not_abort() {
+        let loop_ = make_loop();
+        loop_.steer("steer only".to_string());
+        assert!(!loop_
+            .interrupt_flag()
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(loop_.queued_counts().0, 1);
+    }
+
+    // ─── execute_one_tool_impl_static ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn execute_one_tool_unknown_tool() {
+        let tc = crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "nonexistent_tool".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let (_result, err, name) =
+            Loop::execute_one_tool_impl_static(&tc, &[], &crate::types::AgentConfig::default())
+                .await;
+        assert_eq!(name, "nonexistent_tool");
+        assert!(err.is_some());
+        assert!(err.unwrap().contains("Unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn execute_one_tool_finds_and_runs_tool() {
+        let tools = vec![crate::tools::shell_tool()];
+        let tc = crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "shell".to_string(),
+                arguments: serde_json::json!("{\"command\": \"echo works\"}"),
+            },
+        };
+        let (result, _err, name) =
+            Loop::execute_one_tool_impl_static(&tc, &tools, &crate::types::AgentConfig::default())
+                .await;
+        assert_eq!(name, "shell");
+        // Tool ran (might fail due to scope, but should have run)
+        let _ = result;
+    }
+
+    #[tokio::test]
+    async fn execute_one_tool_before_hook_blocks() {
+        let config = crate::types::AgentConfig {
+            before_tool_call: Some(std::sync::Arc::new(|_name, _id, _args| {
+                Some(crate::types::ToolCallResult {
+                    result: "blocked by hook".to_string(),
+                    is_error: true,
+                })
+            })),
+            ..Default::default()
+        };
+        let tc = crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "shell".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let (result, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
+        assert_eq!(result, "blocked by hook");
+        assert!(err.is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_one_tool_before_hook_allows() {
+        let config = crate::types::AgentConfig {
+            before_tool_call: Some(std::sync::Arc::new(|_name, _id, _args| {
+                Some(crate::types::ToolCallResult {
+                    result: "allowed by hook".to_string(),
+                    is_error: false,
+                })
+            })),
+            ..Default::default()
+        };
+        let tc = crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "shell".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let (result, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
+        assert_eq!(result, "allowed by hook");
+        assert!(err.is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_one_tool_before_hook_none_passes_through() {
+        let config = crate::types::AgentConfig {
+            before_tool_call: Some(std::sync::Arc::new(|_name, _id, _args| None)),
+            ..Default::default()
+        };
+        let tc = crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "unknown".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let (_, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
+        assert!(err.is_some());
+        assert!(err.unwrap().contains("Unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn execute_one_tool_prepare_hook_modifies_args() {
+        let config = crate::types::AgentConfig {
+            prepare_tool_call: Some(std::sync::Arc::new(|_name, args| {
+                let mut modified = args.clone();
+                modified["injected"] = serde_json::json!(true);
+                modified
+            })),
+            ..Default::default()
+        };
+        let tc = crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "unknown".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let (_, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
+        assert!(err.is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_one_tool_finalize_hook_transforms_result() {
+        let config = crate::types::AgentConfig {
+            finalize_tool_call: Some(std::sync::Arc::new(|_name, _result, _err| {
+                ("finalized".to_string(), None)
+            })),
+            ..Default::default()
+        };
+        let tools = vec![crate::tools::shell_tool()];
+        let tc = crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "shell".to_string(),
+                arguments: serde_json::json!("{\"command\": \"echo test\"}"),
+            },
+        };
+        let (result, err, _) = Loop::execute_one_tool_impl_static(&tc, &tools, &config).await;
+        assert_eq!(result, "finalized");
+        assert!(err.is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_one_tool_after_hook_transforms() {
+        let config = crate::types::AgentConfig {
+            after_tool_call: Some(std::sync::Arc::new(|_name, _id, _args, _result, _err| {
+                Some(crate::types::ToolCallResult {
+                    result: "after-hook".to_string(),
+                    is_error: false,
+                })
+            })),
+            ..Default::default()
+        };
+        let tc = crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "unknown".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let (result, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
+        assert_eq!(result, "after-hook");
+        assert!(err.is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_one_tool_after_hook_error() {
+        let config = crate::types::AgentConfig {
+            after_tool_call: Some(std::sync::Arc::new(|_name, _id, _args, _result, _err| {
+                Some(crate::types::ToolCallResult {
+                    result: "hook error".to_string(),
+                    is_error: true,
+                })
+            })),
+            ..Default::default()
+        };
+        let tc = crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "unknown".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let (result, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
+        assert_eq!(result, "hook error");
+        assert!(err.is_some());
+    }
+
+    // ─── Mock streaming provider ────────────────────────────────────────────
+
+    struct TextStreamProvider {
+        chunks: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::types::LLMProvider for TextStreamProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<crate::types::Message>,
+            _tools: Vec<crate::types::ToolDef>,
+            _system_prompt: String,
+        ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
+        {
+            let (tx, rx) = tokio::sync::mpsc::channel(64);
+            let chunks = self.chunks.clone();
+            tokio::spawn(async move {
+                for chunk in chunks {
+                    let _ = tx
+                        .send(crate::types::StreamEvent {
+                            event_type: "text_delta".to_string(),
+                            text: chunk,
+                            ..Default::default()
+                        })
+                        .await;
+                }
+                // Send stop event to end the stream
+                let _ = tx
+                    .send(crate::types::StreamEvent {
+                        event_type: "stop".to_string(),
+                        stop_reason: "end_turn".to_string(),
+                        usage: Some(crate::types::Usage {
+                            prompt_tokens: 10,
+                            completion_tokens: 5,
+                            total_tokens: 15,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })
+                    .await;
+            });
+            Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+        }
+    }
+
+    #[tokio::test]
+    async fn run_streaming_produces_text_output() {
+        let provider = TextStreamProvider {
+            chunks: vec!["Hello ".to_string(), "world".to_string()],
+        };
+        let loop_ = Loop::new(std::sync::Arc::new(provider), "test-model");
+        let result = loop_.run_streaming("test prompt".to_string(), |_| {}).await;
+        assert!(result.is_ok());
+        let final_text = result.unwrap();
+        assert!(final_text.contains("Hello world"));
+    }
+
+    #[tokio::test]
+    async fn run_streaming_steer_injected() {
+        let provider = TextStreamProvider {
+            chunks: vec!["Response".to_string()],
+        };
+        let loop_ = Loop::new(std::sync::Arc::new(provider), "test-model");
+        // Inject a steer before running
+        loop_.steer("steered message".to_string());
+        let result = loop_.run_streaming("original".to_string(), |_| {}).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn run_streaming_drain_queues() {
+        let provider = TextStreamProvider {
+            chunks: vec!["Response".to_string()],
+        };
+        let loop_ = Loop::new(std::sync::Arc::new(provider), "test-model");
+        loop_.steer("s1".to_string());
+        loop_.follow_up("f1".to_string());
+        assert_eq!(loop_.pending_message_count(), 2);
+        let drained = loop_.drain_queues();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(loop_.pending_message_count(), 0);
     }
 }

@@ -932,4 +932,199 @@ mod tests {
             "curl: (6) Could not resolve host"
         ));
     }
+
+    // ─── SandboxTier ────────────────────────────────────────────────────────
+
+    #[test]
+    fn sandbox_tier_parse() {
+        assert_eq!(SandboxTier::parse("off"), SandboxTier::Off);
+        assert_eq!(SandboxTier::parse("sandbox"), SandboxTier::Sandbox);
+        assert_eq!(SandboxTier::parse("manual"), SandboxTier::Manual);
+        assert_eq!(SandboxTier::parse("unknown"), SandboxTier::Manual);
+    }
+
+    #[test]
+    fn sandbox_tier_as_str() {
+        assert_eq!(SandboxTier::Off.as_str(), "off");
+        assert_eq!(SandboxTier::Manual.as_str(), "manual");
+        assert_eq!(SandboxTier::Sandbox.as_str(), "sandbox");
+    }
+
+    #[test]
+    fn sandbox_tier_default_is_manual() {
+        assert_eq!(SandboxTier::default(), SandboxTier::Manual);
+    }
+
+    // ─── SandboxPolicy ─────────────────────────────────────────────────────
+
+    #[test]
+    fn sandbox_policy_default() {
+        let policy = SandboxPolicy::default();
+        assert_eq!(policy.tier, SandboxTier::Manual);
+    }
+
+    // ─── ResolvedSandbox::resolve_with_session ─────────────────────────────
+
+    #[test]
+    fn resolve_with_session_shares_rules() {
+        let ws = temp_workspace("with-session");
+        let session = rules::SessionRules::default();
+        let s = ResolvedSandbox::resolve_with_session(
+            &SandboxPolicy {
+                tier: SandboxTier::Manual,
+            },
+            &ws,
+            session,
+        );
+        assert_eq!(s.tier, SandboxTier::Manual);
+        // workspace is canonicalized (macOS /var → /private/var)
+        assert!(s.workspace.to_string_lossy().contains("with-session"));
+    }
+
+    // ─── boundary_json ─────────────────────────────────────────────────────
+
+    #[test]
+    fn boundary_json_fields() {
+        let ws = temp_workspace("boundary");
+        let s = enabled(&ws);
+        let json = s.boundary_json(Some("violation"), false);
+        assert_eq!(json["violation"], "violation");
+        assert_eq!(json["inside_sandbox"], false);
+        assert_eq!(json["tier"], "manual");
+        assert!(json["cwd"].is_string());
+    }
+
+    #[test]
+    fn boundary_json_no_violation() {
+        let ws = temp_workspace("boundary2");
+        let s = enabled(&ws);
+        let json = s.boundary_json(None, true);
+        assert!(json["violation"].is_null());
+        assert_eq!(json["inside_sandbox"], true);
+    }
+
+    // ─── rule_set ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn rule_set_returns_reference() {
+        let ws = temp_workspace("ruleset");
+        let s = enabled(&ws);
+        let _rs = s.rule_set();
+        // Just verify it doesn't panic and returns a reference
+    }
+
+    // ─── is_secret_path ────────────────────────────────────────────────────
+
+    #[test]
+    fn is_secret_path_with_workspace_files() {
+        let ws = temp_workspace("secret");
+        let s = enabled(&ws);
+        // .env inside workspace is a built-in secret
+        assert!(s.is_secret_path(Path::new(&format!("{ws}/.env"))));
+        assert!(s.is_secret_path(Path::new(&format!("{ws}/.env.local"))));
+        // Regular file is not
+        assert!(!s.is_secret_path(Path::new(&format!("{ws}/public.txt"))));
+    }
+
+    // ─── write_allowed ─────────────────────────────────────────────────────
+
+    #[test]
+    fn write_allowed_inside_workspace() {
+        let ws = temp_workspace("write-allowed");
+        let s = enabled(&ws);
+        assert!(s.write_allowed("test.txt"));
+        assert!(s.write_allowed("subdir/test.txt"));
+    }
+
+    // ─── build_shell_command (non-escalated, non-sandboxed) ────────────────
+
+    #[test]
+    fn build_shell_command_off_tier() {
+        let ws = temp_workspace("build-cmd");
+        let s = ResolvedSandbox::disabled(&ws);
+        let cmd = s.build_shell_command("echo hello", false);
+        let std_cmd = cmd.as_std();
+        let program = std_cmd.get_program().to_string_lossy().to_string();
+        let name = program.rsplit('/').next().unwrap_or(&program);
+        assert!(
+            matches!(name, "bash" | "zsh" | "sh" | "pwsh" | "powershell"),
+            "unexpected shell: {program}"
+        );
+    }
+
+    #[test]
+    fn build_shell_command_escalated_always_uses_shell() {
+        let ws = temp_workspace("esc-cmd");
+        let mut s = ResolvedSandbox::resolve(
+            &SandboxPolicy {
+                tier: SandboxTier::Sandbox,
+            },
+            &ws,
+        );
+        s.available = true;
+        // Escalated should skip the OS sandbox
+        let cmd = s.build_shell_command("echo escalated", true);
+        let std_cmd = cmd.as_std();
+        let program = std_cmd.get_program().to_string_lossy().to_string();
+        let name = program.rsplit('/').next().unwrap_or(&program);
+        assert!(
+            matches!(name, "bash" | "zsh" | "sh" | "pwsh" | "powershell"),
+            "escalated should use platform shell: {program}"
+        );
+    }
+
+    // ─── shell_display_name / shell_supports_chain_operators ───────────────
+
+    #[test]
+    fn shell_display_name_non_empty() {
+        let name = shell_display_name();
+        assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn shell_supports_chain_operators_returns_bool() {
+        let _ = shell_supports_chain_operators();
+    }
+
+    // ─── evaluate with enabled sandbox ─────────────────────────────────────
+
+    #[test]
+    fn evaluate_workspace_read_allowed() {
+        let ws = temp_workspace("eval-read");
+        let s = enabled(&ws);
+        assert_eq!(
+            s.evaluate(Path::new(&format!("{ws}/file.txt")), Op::Read),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn evaluate_workspace_write_allowed() {
+        let ws = temp_workspace("eval-write");
+        let s = enabled(&ws);
+        assert_eq!(
+            s.evaluate(Path::new(&format!("{ws}/file.txt")), Op::Write),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn evaluate_env_in_workspace_asks() {
+        let ws = temp_workspace("eval-env");
+        let s = enabled(&ws);
+        // .env inside workspace is a built-in secret (asks even in-workspace)
+        assert_eq!(
+            s.evaluate(Path::new(&format!("{ws}/.env")), Op::Write),
+            Decision::Ask
+        );
+    }
+
+    // ─── ResolvedSandbox::default ──────────────────────────────────────────
+
+    #[test]
+    fn resolved_sandbox_default_is_disabled() {
+        let s = ResolvedSandbox::default();
+        assert_eq!(s.tier, SandboxTier::Off);
+        assert!(!s.enabled());
+    }
 }

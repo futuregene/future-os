@@ -341,4 +341,36 @@ mod tests {
         drop(log);
         assert_eq!(lines_in(&path).len(), 5000);
     }
+
+    #[test]
+    fn init_installs_global_mirror() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mirror.log");
+        let mirror = init(&path, 100).unwrap();
+        // After init, get() should return the mirror
+        assert!(get().is_some());
+        // Write through mirror
+        mirror.write_stripped("hello\n");
+        mirror.write_stripped("\x1b[35m[thinking]\x1b[0m processing\n");
+        drop(mirror);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("hello"));
+        assert!(content.contains("[thinking] processing"));
+        assert!(!content.contains("\x1b"));
+    }
+
+    #[test]
+    fn mirror_writer_flush_succeeds() {
+        use tracing_subscriber::fmt::MakeWriter;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("flush.log");
+        let mirror = init(&path, 100).unwrap();
+        {
+            let mut writer = mirror.make_writer();
+            writer.write_all(b"flushed content\n").unwrap();
+            writer.flush().unwrap();
+        }
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("flushed content"));
+    }
 }

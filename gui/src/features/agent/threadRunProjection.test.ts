@@ -188,6 +188,43 @@ describe("applyRunMetadata", () => {
     expect(applyRunMetadata(messages, [])).toBe(messages);
   });
 
+  it("leaves the in-flight turn unstamped when its mid-run partial entry is persisted", () => {
+    // The agent's save_callback persists each completed LLM call mid-run, so a
+    // reload during streaming surfaces a partial assistant entry for the
+    // ACTIVE run's turn. Turns then outnumber settled runs — stamping the
+    // newest settled run onto the partial entry misaligns every pairing and
+    // defeats streamingBubbleBase's dedup (the frozen partial renders next to
+    // the growing live bubble).
+    const result = applyRunMetadata([
+      user("u1"),
+      assistant("a1", { content: "first answer" }),
+      user("u2"),
+      assistant("a2-partial", { content: "ABC" }),
+    ], [
+      run("r2", { status: "running", createdAt: 2 }),
+      run("r1", { status: "completed", createdAt: 1, modelId: "m-1" }),
+    ]);
+    // The in-flight turn keeps no runId — the streaming bubble owns it.
+    expect(result[3]?.runId).toBeUndefined();
+    // The settled run pairs with its real owner.
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", modelId: "m-1" });
+  });
+
+  it("still stamps the newest turn when the active run has no persisted entry yet", () => {
+    // Turns == settled runs here: the active run's first LLM call hasn't
+    // completed, so its turn has no entry on disk and the newest assistant
+    // turn belongs to the last settled run.
+    const result = applyRunMetadata([
+      user("u1"),
+      assistant("a1", { content: "answer" }),
+      user("u2"),
+    ], [
+      run("r2", { status: "running", createdAt: 2 }),
+      run("r1", { status: "completed", createdAt: 1 }),
+    ]);
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r1" });
+  });
+
   it("keeps an existing agent-recorded durationMs over the run's wall-clock", () => {
     const result = applyRunMetadata(
       [user("u1"), assistant("a1", { durationMs: 1234 })],
@@ -328,5 +365,42 @@ describe("streamingBubbleBase", () => {
     // as events arrive.
     const base = streamingBubbleBase(current, RUN, BUBBLE, "");
     expect(base?.some(m => m.id === "a-partial")).toBe(false);
+  });
+
+  it("drops the same-turn persisted entry even when it carries another run's id", () => {
+    // Defense in depth: a runId that is NOT the active run's (e.g. a stale
+    // misaligned stamp) must not shield the in-flight turn's mid-run snapshot
+    // from the dedup — the bubble replaces it either way.
+    const persisted = assistant("a-partial", { content: "ABC", runId: "r-old-settled" });
+    const current = [user("u1"), assistant("a1", { content: "earlier reply" }), user("u2"), persisted];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "ABC");
+    expect(base?.some(m => m.id === "a-partial")).toBe(false);
+    expect(base?.some(m => m.id === "a1")).toBe(true);
+  });
+
+  it("drops the same-turn snapshot that has no text yet (thinking/tools-only)", () => {
+    // Mid-run the turn may have produced only thinking + tool calls: the
+    // persisted entry's `content` is empty but its segments still render, so
+    // leaving it in place duplicates the live bubble's thinking/activity.
+    const persisted = assistant("a-partial", {
+      content: "",
+      segments: [
+        { id: "s1", kind: "thinking", text: "Let me think…" },
+        { id: "s2", kind: "activity", item: { id: "t1", kind: "read", status: "completed", target: "/a.ts" } },
+      ],
+    });
+    const current = [user("u1"), assistant("a1", { content: "earlier reply" }), user("u2"), persisted];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "");
+    expect(base?.some(m => m.id === "a-partial")).toBe(false);
+    expect(base?.some(m => m.id === "a1")).toBe(true);
+  });
+
+  it("keeps a compaction divider sitting at the head of the in-flight turn", () => {
+    // A divider is a marker, not a reply snapshot — the bubble must be
+    // appended AFTER it, never replace it.
+    const divider = assistant("div", { content: "", segments: [{ id: "s", kind: "compaction" }] });
+    const current = [user("u1"), divider];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "live text");
+    expect(base?.some(m => m.id === "div")).toBe(true);
   });
 });
