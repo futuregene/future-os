@@ -39,10 +39,20 @@ pub fn create_thread(
 pub async fn rename_thread(
     input: store::RenameThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    let title = input.title.clone();
-    let thread = store::rename_thread(input)?;
-    // Propagate to the agent immediately so the session name stays in sync
-    // (best-effort — a failure here must not fail the local rename).
+    // Propagate to the agent FIRST and only rename the DB row on success. The
+    // agent's session_name is the authoritative name shared with every client
+    // (TUI /name, CLI, channels), and get_thread_agent_state / startup import
+    // converge the DB title toward it — so a local-only rename whose
+    // propagation failed would be silently synced back (reverted) on the next
+    // poll. Renaming is therefore all-or-nothing: if the agent call fails,
+    // the rename fails and the user sees the error in the dialog.
+    // Validate up front (store::rename_thread re-checks) so an invalid title
+    // never reaches the agent.
+    if input.title.trim().is_empty() {
+        return Err("title cannot be empty.".to_string().into());
+    }
+    let thread = store::get_thread(&input.thread_id)?
+        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
     let session_id = thread
         .agent_session_id
         .as_deref()
@@ -50,11 +60,22 @@ pub async fn rename_thread(
         .filter(|id| !id.is_empty())
         .unwrap_or(&thread.id)
         .to_string();
-    if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
-        let cmd = crate::agent_bridge::set_session_name_command(title, session_id);
-        let _ = client.execute_command(cmd).await;
+    let mut client = crate::agent_bridge::connect_agent().await?;
+    let cmd = crate::agent_bridge::set_session_name_command(input.title.clone(), session_id);
+    let resp = client
+        .execute_command(cmd)
+        .await
+        .map_err(|status| {
+            crate::agent_bridge::map_rpc_error("FutureOS rename propagation failed", status)
+        })?
+        .into_inner();
+    if !resp.success && !resp.error.contains("session not found") {
+        return Err(format!("Future Agent rejected the rename: {}", resp.error).into());
     }
-    Ok(thread)
+    // "session not found" is the one benign rejection: the thread has no
+    // agent session (never prompted, or deleted), so nothing can ever sync a
+    // stale name back over this rename.
+    store::rename_thread(input)
 }
 
 #[tauri::command]
@@ -237,8 +258,27 @@ pub async fn get_thread_agent_state(
     if !resp.success {
         return Err(format!("get_state rejected: {}", resp.error).into());
     }
-    serde_json::from_str::<serde_json::Value>(&resp.data)
-        .map_err(|e| format!("get_state parse error: {e}").into())
+    let value = serde_json::from_str::<serde_json::Value>(&resp.data)
+        .map_err(|e| format!("get_state parse error: {e}"))?;
+    // Converge the DB title toward the agent's session_name — the name shared
+    // with every client (TUI `/name`, CLI, channels), whose renames never
+    // reach the GUI DB. The sidebar treats the agent name as authoritative
+    // and falls back to the DB title whenever agent state is unavailable, so
+    // a stale DB title surfaces as "the rename didn't survive a restart".
+    // Best-effort; sync_thread_title never bumps updated_at (sidebar order).
+    if let Some(name) = value
+        .get("session_name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        if name != thread.title {
+            if let Err(error) = store::sync_thread_title(&thread_id, name) {
+                eprintln!("FutureOS thread title sync failed for {thread_id}: {error}");
+            }
+        }
+    }
+    Ok(value)
 }
 
 /// Fetch session entries from the agent (user, assistant, tool messages).

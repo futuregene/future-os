@@ -310,13 +310,30 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     // workspace directory name. Re-sync when the stored title is clearly
     // stale and a better one is available.
     if let Some(existing) = store::find_thread_by_agent_session(&summary.id)? {
-        let is_default = existing.title.is_empty()
-            || existing.title == cwd_basename
-            || existing.title == "New Chat"
-            || existing.title == "新对话";
+        // Converge the DB title to the agent's session_name — the name shared
+        // with every client (TUI `/name`, CLI, channels). Renames made outside
+        // the GUI never reach the GUI DB, and the sidebar falls back to that
+        // stale DB title whenever agent state is unavailable.
+        let mut current_title = existing.title.clone();
+        if let Some(name) = summary
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
+            if name != current_title
+                && crate::store::sync_thread_title(&existing.id, name).unwrap_or(false)
+            {
+                current_title = name.to_string();
+            }
+        }
+        let is_default = current_title.is_empty()
+            || current_title == cwd_basename
+            || current_title == "New Chat"
+            || current_title == "新对话";
         if is_default
             && !best_title.is_empty()
-            && best_title != existing.title
+            && best_title != current_title
             && best_title != cwd_basename
         {
             let input = crate::store::RenameThreadInput {

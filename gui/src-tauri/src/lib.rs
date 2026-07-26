@@ -430,6 +430,7 @@ pub fn run() {
             append_message,
             create_run,
             list_runs,
+            list_latest_run_infos,
             update_run_status,
             abort_run,
             list_run_events,

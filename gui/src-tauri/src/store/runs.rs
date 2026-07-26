@@ -134,6 +134,52 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
         .map_err(crate::AppError::from)
 }
 
+/// The single latest run's basic info for each of `thread_ids`. Powers the
+/// thread-list run-indicator poll: one connection, one query replaces N ×
+/// [`list_runs`] fan-out, which opened N connections and decoded full row sets
+/// 6–12 times per second at idle. Threads with no runs are omitted from the
+/// result — callers treat missing as "no run yet".
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatestRunInfo {
+    pub thread_id: String,
+    pub status: String,
+    pub ended_at: Option<i64>,
+}
+
+pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, crate::AppError> {
+    if thread_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let conn = connect()?;
+    let placeholders: Vec<String> = (0..thread_ids.len())
+        .map(|i| format!("?{}", i + 1))
+        .collect();
+    let sql = format!(
+        "SELECT thread_id, status, ended_at FROM (
+             SELECT thread_id, status, ended_at,
+                    ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC, id DESC) AS rn
+             FROM runs
+             WHERE thread_id IN ({})
+         ) WHERE rn = 1",
+        placeholders.join(",")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = thread_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect();
+    let rows = stmt.query_map(params.as_slice(), |row| {
+        Ok(LatestRunInfo {
+            thread_id: row.get(0)?,
+            status: row.get(1)?,
+            ended_at: row.get(2)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::AppError::from)
+}
+
 /// Which runs' still-open children (pending approvals, running tool calls) a
 /// cancel-cascade settles. The two scopes differ only in how a child's owning
 /// run is matched — everything else about the cascade is identical, which is why

@@ -14,8 +14,8 @@ pub use self::approval::{decide_approval, inject_session_rule};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     connect_agent, delete_session_command, get_session_entries_command, get_state_command,
-    list_streaming_sessions_command, set_cwd_command, set_model_command, set_session_name_command,
-    set_thinking_level_command, RpcResponseExt,
+    list_streaming_sessions_command, map_rpc_error, set_cwd_command, set_model_command,
+    set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub(crate) use self::import::import_missing_sessions;
@@ -110,7 +110,9 @@ pub async fn reload_agent_credentials() -> Result<(), crate::AppError> {
     client
         .execute_command(base_command("reload_auth", String::new()))
         .await
-        .map_err(|error| format!("Unable to refresh Future Agent credentials: {error}"))?
+        // Transport-level Unavailable → AgentUnavailable → treated as success
+        // above ("no in-memory state to refresh on a down agent").
+        .map_err(|status| map_rpc_error("Unable to refresh Future Agent credentials", status))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the credential refresh.")?;
     Ok(())

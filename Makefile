@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help test-gui-rust
+.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help test-gui-rust gui-sidecars
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -72,16 +72,7 @@ else
 	$(SUDO) cp cli/dist/future "$(PREFIX)/future"
 endif
 
-install-gui: install-cli install-agent
-ifeq ($(OS),windows)
-	cmd /c "if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries"
-	$(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)"
-	$(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
-else
-	@mkdir -p gui/src-tauri/binaries
-	cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
-	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
-endif
+install-gui: install-cli install-agent gui-sidecars
 	$(call npm-install-if-needed,gui)
 	cd gui && npx tauri build --no-bundle
 ifeq ($(OS),windows)
@@ -164,9 +155,30 @@ build-cli:
 	$(call npm-install-if-needed,cli)
 	cd cli && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future
 
-build-gui:
+# Internal: copy sidecar binaries (agent + CLI) into the Tauri resource dir.
+# Tauri's externalBin references these at build time; they are embedded next
+# to the GUI binary and extracted on first launch so the GUI can auto-start
+# the agent, run CLI commands (skill bootstrap), etc.
+gui-sidecars: build-agent build-cli
+ifeq ($(OS),windows)
+	cmd /c "if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries"
+	$(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)"
+	$(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
+else
+	@mkdir -p gui/src-tauri/binaries
+	cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
+	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
+endif
+
+# Compile the React frontend only — needed by check-gui and as a dep of build-gui.
+build-gui-dist:
 	$(call npm-install-if-needed,gui)
 	cd gui && npm run build
+
+# Self-contained standalone binary (no installer).  Produces
+#   gui/src-tauri/target/release/futureos$(EXE_SUFFIX)
+build-gui: build-gui-dist gui-sidecars
+	cd gui && npx tauri build --no-bundle
 
 build-channels:
 	cd channels && cargo build --release
@@ -224,7 +236,7 @@ lint-gui:
 stylelint-gui:
 	cd gui && npm run stylelint
 
-check-gui: lint-gui stylelint-gui build-gui
+check-gui: lint-gui stylelint-gui build-gui-dist
 	cd gui/src-tauri && cargo check
 
 fmt:

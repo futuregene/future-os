@@ -6,7 +6,7 @@ import { pollStreamingThreadIds, prefetchAgentState } from "../../../integration
 import {
   getRecentOrCreateDefaultThread,
   initializeAppStore,
-  listRuns,
+  listLatestRunInfos,
   listThreads,
   listWorkspaces,
 } from "../../../integrations/storage/threadStore";
@@ -87,28 +87,33 @@ export function useThreadStore(): ThreadStore {
     // must not reject the whole batch — that would blank every thread's run
     // indicator and surface an unhandled rejection. A failed thread keeps
     // its previous status and self-heals on the next 1.5s tick.
-    const entries = await Promise.all(
-      nextThreads.map(async (thread) => {
-        try {
-          const runs = await listRuns(thread.id);
-          const latest = runs[0];
-          const value = latest ? { endedAt: latest.endedAt ?? null, status: latest.status } : undefined;
-          return { id: thread.id, ok: true as const, value };
-        }
-        catch {
-          return { id: thread.id, ok: false as const };
-        }
-      }),
-    );
+    const ids = nextThreads.map(t => t.id);
+    let infos: Array<{ threadId: string; status: string; endedAt: number | null }> = [];
+    try {
+      infos = await listLatestRunInfos(ids);
+    }
+    catch {
+      // Transient error — keep previous statuses, retry next tick.
+    }
     if (generation !== runStatusGenRef.current) {
       return;
     }
+    const infoMap = new Map(infos.map(info => [info.threadId, info]));
     setThreadRunStatuses((previous) => {
+      let changed = false;
       const next: ThreadRunStatuses = {};
-      for (const entry of entries) {
-        next[entry.id] = entry.ok ? entry.value : previous[entry.id];
+      for (const thread of nextThreads) {
+        const info = infoMap.get(thread.id);
+        const value: ThreadRunInfo | undefined = info
+          ? { endedAt: info.endedAt ?? null, status: info.status as ThreadRunInfo["status"] }
+          : previous[thread.id]; // keep old if no new info
+        if (!changed) {
+          const prev = previous[thread.id];
+          changed = prev?.status !== value?.status || prev?.endedAt !== value?.endedAt;
+        }
+        next[thread.id] = value;
       }
-      return next;
+      return changed ? next : previous;
     });
   }, []);
 
@@ -201,7 +206,13 @@ export function useThreadStore(): ThreadStore {
     for (const thread of activeThreads) {
       next[thread.id] = streamingIds.has(thread.id);
     }
-    setThreadStreamingStatuses(next);
+    setThreadStreamingStatuses(prev =>
+      // Shallow-compare every key — skip the re-render when nothing streamed.
+      Object.keys(next).length === Object.keys(prev).length
+      && Object.keys(next).every(k => prev[k] === next[k])
+        ? prev
+        : next,
+    );
   }, 1000, {
     enabled: activeThreads.length > 0,
     deps: [activeThreads],
