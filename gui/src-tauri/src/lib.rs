@@ -456,6 +456,7 @@ pub fn run() {
             list_available_skills,
             install_skill,
             uninstall_skill,
+            refresh_skills,
             remote_start,
             remote_stop,
             remote_status

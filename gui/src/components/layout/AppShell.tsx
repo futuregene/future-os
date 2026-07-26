@@ -10,6 +10,7 @@ import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
 import { installAgentEventListener } from "../../integrations/agent/agentStateCache";
+import { refreshSkills } from "../../integrations/skills/skillsClient";
 import {
   createWorkspace,
   pinThread,
@@ -90,6 +91,12 @@ export function AppShell() {
     installAgentEventListener();
   }, []);
 
+  // On startup, tell the agent to re-scan skills so any skills installed
+  // outside the GUI (e.g. via CLI) are visible without a restart.
+  useEffect(() => {
+    void refreshSkills();
+  }, []);
+
   const {
     threads,
     workspaces,
@@ -132,6 +139,16 @@ export function AppShell() {
     setSelectedModelId,
     refreshAgentModels,
   } = useAgentConnection(appSettings.hiddenModels);
+
+  // When the agent becomes available (startup, restart, or recovery after
+  // a disconnect), re-trigger the skills scan.  The agent has a 5 s rate
+  // limit so rapid repeats are harmless.
+  useEffect(() => {
+    if (agentConnection.status === "connected") {
+      void refreshSkills();
+    }
+  }, [agentConnection.status]);
+
   const {
     selectedThinkingLevel,
     modelsEmptyReason,
