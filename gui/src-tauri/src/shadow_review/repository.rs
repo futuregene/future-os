@@ -9,16 +9,6 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::AppError;
 
-/// Null device for `core.excludesFile`, so the shadow repo never inherits the
-/// user's global git excludes (§5.5).
-pub fn null_device_path() -> &'static str {
-    if cfg!(windows) {
-        "NUL"
-    } else {
-        "/dev/null"
-    }
-}
-
 fn review_root() -> Result<PathBuf, AppError> {
     let app_dir = crate::store::app_data_path()?.app_dir;
     Ok(PathBuf::from(app_dir).join("review"))
@@ -299,14 +289,35 @@ impl ShadowRepo {
         check_status(&["init"], &output)
     }
 
+    /// Real empty file for `core.excludesFile`, so the shadow repo never
+    /// inherits the user's global git excludes (§5.5). A file rather than the
+    /// null device: git-for-Windows rejects `NUL` outright ("fatal: cannot use
+    /// NUL as an exclude file"), while an empty file behaves the same
+    /// everywhere. Lives inside the shadow git dir, which `ensure_initialized`
+    /// creates before this runs.
+    fn ensure_empty_excludes_file(&self) -> Result<PathBuf, AppError> {
+        let path = self.git_dir.join("empty-excludes");
+        if !path.exists() {
+            fs::write(&path, b"")?;
+        }
+        Ok(path)
+    }
+
     fn configure(&self) -> Result<(), AppError> {
         // §5.2: autocrlf/symlinks are correctness; the rest are large-repo perf.
+        // Forward slashes in the excludes path: unquoted backslashes are
+        // escape characters in git config syntax, and git accepts `/` paths
+        // on every platform (incl. git-for-Windows).
+        let excludes_file = self
+            .ensure_empty_excludes_file()?
+            .to_string_lossy()
+            .replace('\\', "/");
         let pairs: [(&str, &str); 8] = [
             ("core.autocrlf", "false"),
             ("core.symlinks", "true"),
             ("core.fsmonitor", "false"),
             ("core.untrackedCache", "true"),
-            ("core.excludesFile", null_device_path()),
+            ("core.excludesFile", excludes_file.as_str()),
             ("feature.manyFiles", "true"),
             ("index.version", "4"),
             ("index.threads", "true"),

@@ -51,8 +51,25 @@ pub async fn rename_thread(
         .unwrap_or(&thread.id)
         .to_string();
     if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
-        let cmd = crate::agent_bridge::set_session_name_command(title, session_id);
-        let _ = client.execute_command(cmd).await;
+        let cmd = crate::agent_bridge::set_session_name_command(title, session_id.clone());
+        // Without propagation the agent keeps the old name and — being the
+        // authoritative source — later syncs it back over this DB rename.
+        match client.execute_command(cmd).await {
+            Ok(resp) => {
+                let resp = resp.into_inner();
+                if !resp.success {
+                    eprintln!(
+                        "FutureOS rename propagation rejected for {session_id}: {}",
+                        resp.error
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!("FutureOS rename propagation failed for {session_id}: {error}")
+            }
+        }
+    } else {
+        eprintln!("FutureOS rename propagation skipped for {session_id}: agent unreachable");
     }
     Ok(thread)
 }
@@ -237,8 +254,27 @@ pub async fn get_thread_agent_state(
     if !resp.success {
         return Err(format!("get_state rejected: {}", resp.error).into());
     }
-    serde_json::from_str::<serde_json::Value>(&resp.data)
-        .map_err(|e| format!("get_state parse error: {e}").into())
+    let value = serde_json::from_str::<serde_json::Value>(&resp.data)
+        .map_err(|e| format!("get_state parse error: {e}"))?;
+    // Converge the DB title toward the agent's session_name — the name shared
+    // with every client (TUI `/name`, CLI, channels), whose renames never
+    // reach the GUI DB. The sidebar treats the agent name as authoritative
+    // and falls back to the DB title whenever agent state is unavailable, so
+    // a stale DB title surfaces as "the rename didn't survive a restart".
+    // Best-effort; sync_thread_title never bumps updated_at (sidebar order).
+    if let Some(name) = value
+        .get("session_name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        if name != thread.title {
+            if let Err(error) = store::sync_thread_title(&thread_id, name) {
+                eprintln!("FutureOS thread title sync failed for {thread_id}: {error}");
+            }
+        }
+    }
+    Ok(value)
 }
 
 /// Fetch session entries from the agent (user, assistant, tool messages).

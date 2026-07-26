@@ -38,6 +38,13 @@ export function useApprovals(activeThreadId: string | null): ApprovalsState {
     },
     [activeThreadId],
     NO_APPROVALS,
+    {
+      isEqual: (prev, next) =>
+        prev.length === next.length
+        && prev.every((item, idx) =>
+          item.id === next[idx]!.id && item.status === next[idx]!.status
+        ),
+    },
   );
 
   // No `activeThreadId` in the poll deps: useAsyncResource already reloads when

@@ -679,7 +679,10 @@ mod tests {
         let resolved =
             resolve_preview_link_path("/docs/guide/index.md".into(), "../assets/logo.png".into())
                 .unwrap();
-        assert_eq!(resolved.path, "/docs/guide/../assets/logo.png");
+        // Joined with the platform separator (e.g. `guide\../assets` on
+        // Windows) — still a valid, equivalent path for the local OS.
+        let expected = Path::new("/docs/guide").join("../assets/logo.png");
+        assert_eq!(resolved.path, expected.to_string_lossy().into_owned());
         assert_eq!(resolved.name, "logo.png");
     }
 

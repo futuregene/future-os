@@ -36,25 +36,91 @@ fn agent_endpoint() -> String {
     }
 }
 
+/// Process-lifetime runtime that owns the shared agent channel. tonic spawns
+/// the h2 connection's driver task on whatever runtime first touches the
+/// channel, and several startup callers (session import, run reanimation)
+/// `block_on` a throwaway per-thread `Runtime` that is dropped as soon as the
+/// thread returns — which used to kill the driver and poison the cached
+/// channel for the rest of the process (every later call failed with
+/// `Service was not ready: transport error`). Pinning channel creation to a
+/// runtime that never shuts down keeps the connection alive regardless of
+/// which runtime any caller runs on.
+fn agent_channel_runtime() -> tokio::runtime::Handle {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .thread_name("agent-channel")
+                .build()
+                .expect("build agent channel runtime");
+            let handle = runtime.handle().clone();
+            std::thread::Builder::new()
+                .name("agent-channel-runtime".to_string())
+                .spawn(move || {
+                    // Park forever: dropping the runtime would kill the shared
+                    // connection's driver task.
+                    runtime.block_on(std::future::pending::<()>());
+                })
+                .expect("spawn agent channel runtime thread");
+            handle
+        })
+        .clone()
+}
+
 /// Resolve the agent endpoint and open a gRPC client. A connection failure maps
 /// to `AppError::AgentUnavailable` so callers can tolerate a down agent (e.g.
 /// `abort_run` still cancels the run locally).
 pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppError> {
-    let endpoint = agent_endpoint();
+    static AGENT_CHANNEL: tokio::sync::OnceCell<Channel> = tokio::sync::OnceCell::const_new();
+    let endpoint_str = agent_endpoint();
     let unavailable = |error: tonic::transport::Error| {
         crate::AppError::AgentUnavailable(format!(
-            "Unable to connect to Future Agent at {endpoint}: {error}"
+            "Unable to connect to Future Agent at {endpoint_str}: {error}"
         ))
     };
-    let channel = Endpoint::from_shared(endpoint.clone())
+    let endpoint = Endpoint::from_shared(endpoint_str.clone())
         .map_err(unavailable)?
-        .connect_timeout(CONNECT_TIMEOUT)
-        .connect()
+        .connect_timeout(CONNECT_TIMEOUT);
+    // Shared, lazily-established HTTP/2 channel. Previously every command
+    // opened a fresh TCP connection (incl. the per-second status polls), so a
+    // fully idle GUI burnt ~0.25 core in backend just on connect/teardown.
+    // Cloning a Channel is cheap — every clone shares one underlying h2
+    // connection. The channel is created and first used on the pinned
+    // process-lifetime runtime (see agent_channel_runtime) so its connection
+    // driver outlives any caller's runtime. A one-shot health check validates
+    // reachability on first init so callers see a friendly error.
+    let channel = agent_channel_runtime()
+        .spawn(async move {
+            AGENT_CHANNEL
+                .get_or_try_init(|| async {
+                    let ch = endpoint.connect_lazy();
+                    // Validate the lazy channel with a cheap, no-side-effect RPC
+                    // so a down agent surfaces the familiar AgentUnavailable
+                    // message rather than a raw tonic transport error on the
+                    // next real command.
+                    let mut client = FutureAgentClient::new(ch.clone())
+                        .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+                        .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE);
+                    client
+                        .execute_command(list_streaming_sessions_command())
+                        .await
+                        .map_err(|status| {
+                            crate::AppError::AgentUnavailable(format!(
+                                "Unable to connect to Future Agent at {endpoint_str}: {}",
+                                status.message()
+                            ))
+                        })?;
+                    Ok::<Channel, crate::AppError>(ch)
+                })
+                .await
+                .map(|ch| ch.clone())
+        })
         .await
-        .map_err(unavailable)?;
-    // Match the agent server's raised limits: a prompt can carry several
-    // base64-encoded images (two ~3MB images ≈ 7MB), which blows past tonic's
-    // 4MB default and would otherwise fail the send before the run starts.
+        .map_err(|join_error| {
+            crate::AppError::AgentUnavailable(format!("Agent channel task failed: {join_error}"))
+        })??;
     Ok(FutureAgentClient::new(channel)
         .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
         .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE))
@@ -284,4 +350,51 @@ fn command_id() -> String {
         .unwrap_or_default();
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     format!("gui_{millis}_{seq}")
+}
+
+#[cfg(test)]
+mod tests {
+    /// Regression test for the startup channel-poisoning bug: the first
+    /// `connect_agent` caller of the process runs on a throwaway per-thread
+    /// runtime (mirrors lib.rs's session-import startup thread), which is
+    /// dropped as soon as the thread returns. The shared channel must stay
+    /// usable afterwards — before the fix, every later call failed with
+    /// `Service was not ready: transport error` (surfaced as the run
+    /// reanimation failure at startup).
+    ///
+    /// Requires a live agent on 127.0.0.1:50051: `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a running future-agent on 127.0.0.1:50051"]
+    fn shared_channel_survives_caller_runtime_drop() {
+        // First caller on a throwaway runtime, dropped on thread exit.
+        std::thread::spawn(|| {
+            let rt = tokio::runtime::Runtime::new().expect("runtime 1");
+            rt.block_on(async {
+                let mut client = super::connect_agent()
+                    .await
+                    .expect("connect on throwaway runtime");
+                client
+                    .execute_command(super::list_streaming_sessions_command())
+                    .await
+                    .expect("first RPC");
+            });
+        })
+        .join()
+        .expect("first caller thread");
+
+        // Second caller on a fresh runtime (mirrors the run-reanimation
+        // startup thread): with the bug this failed with a transport error.
+        let rt = tokio::runtime::Runtime::new().expect("runtime 2");
+        rt.block_on(async {
+            let mut client = super::connect_agent()
+                .await
+                .expect("connect after caller runtime drop");
+            // Transport-level success is what matters here — an app-level
+            // error (unknown session) still proves the connection works.
+            client
+                .execute_command(super::get_state_command(String::new()))
+                .await
+                .expect("RPC after caller runtime drop");
+        });
+    }
 }

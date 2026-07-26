@@ -22,6 +22,13 @@ export async function listRuns(threadId: string) {
   return invokeCommand<StoredRun[]>("list_runs", { threadId });
 }
 
+export async function listLatestRunInfos(threadIds: string[]) {
+  return invokeCommand<Array<{ threadId: string; status: string; endedAt: number | null }>>(
+    "list_latest_run_infos",
+    { threadIds },
+  );
+}
+
 export async function updateRunStatus(input: {
   runId: string;
   status: StoredRun["status"];

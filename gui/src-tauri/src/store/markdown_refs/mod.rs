@@ -160,11 +160,14 @@ mod tests {
             )
         };
 
-        // Workspace-relative path → inside, shown relative.
+        // Workspace-relative path → inside, shown relative. The absolute path
+        // is joined with the platform separator (`space\sub` on Windows) —
+        // equivalent for the local open/copy actions it feeds.
         let relative = resolve("sub/note.md");
         assert_eq!(relative.status, "resolved");
         let relative = relative.data.expect("data");
-        assert_eq!(relative["path"], "/work/space/sub/note.md");
+        let expected_path = std::path::Path::new("/work/space").join("sub/note.md");
+        assert_eq!(relative["path"], expected_path.to_string_lossy().into_owned());
         assert_eq!(relative["relativePath"], "sub/note.md");
         assert_eq!(relative["insideWorkspace"], true);
         assert_eq!(relative["name"], "note.md");
