@@ -132,7 +132,7 @@ pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppErr
                     Ok::<Channel, crate::AppError>(ch)
                 })
                 .await
-                .map(|ch| ch.clone())
+                .cloned()
         })
         .await
         .map_err(|join_error| {
