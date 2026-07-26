@@ -2,7 +2,7 @@
 //! the agent to confirm idle before snapshotting. These back the abort command
 //! and the parent module's prompt finalization.
 
-use super::client::{base_command, connect_agent, get_state_command, RpcResponseExt};
+use super::client::{base_command, connect_agent, get_state_command, map_rpc_error, RpcResponseExt};
 use crate::store;
 
 pub(super) async fn abort_agent_thread(thread_id: &str) -> Result<(), crate::AppError> {
@@ -15,7 +15,10 @@ pub(super) async fn abort_agent_thread(thread_id: &str) -> Result<(), crate::App
             thread.agent_session_id.unwrap_or(thread.id),
         ))
         .await
-        .map_err(|error| format!("Unable to abort Future Agent run: {error}"))?
+        // Transport-level Unavailable → AgentUnavailable, so `abort_run`
+        // still cancels the run locally when the agent died after the shared
+        // channel was established.
+        .map_err(|status| map_rpc_error("Unable to abort Future Agent run", status))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the abort request.")?;
     Ok(())

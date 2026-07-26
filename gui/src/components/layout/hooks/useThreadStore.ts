@@ -206,7 +206,7 @@ export function useThreadStore(): ThreadStore {
     for (const thread of activeThreads) {
       next[thread.id] = streamingIds.has(thread.id);
     }
-    setThreadStreamingStatuses((prev) =>
+    setThreadStreamingStatuses(prev =>
       // Shallow-compare every key — skip the re-render when nothing streamed.
       Object.keys(next).length === Object.keys(prev).length
       && Object.keys(next).every(k => prev[k] === next[k])

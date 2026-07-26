@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface AsyncResource<T> {
   data: T;
@@ -12,7 +12,7 @@ export interface UseAsyncResourceOptions<T> {
   /**
    * When supplied, a load result that is equal to the current `data` will
    * NOT trigger a re-render — `setState` is short-circuited. Equality is
-   * compared against the **previous** value (new vs. old), so the same array
+   * compared against the previous value (new vs. old), so the same array
    * identity check via `Object.is` is already free; pass this only for
    * structural comparison (e.g. arrays of records keyed by id).
    */
@@ -23,7 +23,7 @@ export interface UseAsyncResourceOptions<T> {
  * Loads an async resource with cancellation safety.  When deps change (e.g.
  * the active thread switched) a full fetch runs and `loading` flips to true.
  * When ONLY `reload()` is called (poll tick, deps unchanged) the fetch is
- * *silent* — `data` stays visible and `loading` stays false so the UI never
+ * silent — `data` stays visible and `loading` stays false so the UI never
  * shows a stale spinner mid-poll.
  */
 export function useAsyncResource<T>(
@@ -45,16 +45,13 @@ export function useAsyncResource<T>(
   }, []);
 
   // Track whether this load is a silent poll tick vs. a deps change (where
-  // `loading` should flip so the user sees a spinner).  Derived in the render
-  // so `useEffect` reads it synchronously — no extra render.
-  const depsChanged = useMemo(() => {
-    if (!mountedRef.current) {
-      return true; // initial mount always shows loading
-    }
-    return prevDepsRef.current.length !== deps.length
-      || prevDepsRef.current.some((dep, idx) => !Object.is(dep, deps[idx]));
-    // eslint-disable-next-line react/exhaustive-deps
-  }, deps);
+  // `loading` should flip so the user sees a spinner). Computed on EVERY
+  // render against the deps snapshotted by the last effect run — a useMemo
+  // keyed on `deps` would only recompute when deps change, so it could never
+  // observe an unchanged-deps poll tick and would stay `true` forever.
+  const depsChanged = !mountedRef.current
+    || prevDepsRef.current.length !== deps.length
+    || prevDepsRef.current.some((dep, idx) => !Object.is(dep, deps[idx]));
 
   useEffect(() => {
     // Snapshot deps for the *next* tick's comparison.

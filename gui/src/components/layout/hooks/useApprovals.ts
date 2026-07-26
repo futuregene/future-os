@@ -42,7 +42,7 @@ export function useApprovals(activeThreadId: string | null): ApprovalsState {
       isEqual: (prev, next) =>
         prev.length === next.length
         && prev.every((item, idx) =>
-          item.id === next[idx]!.id && item.status === next[idx]!.status
+          item.id === next[idx]!.id && item.status === next[idx]!.status,
         ),
     },
   );

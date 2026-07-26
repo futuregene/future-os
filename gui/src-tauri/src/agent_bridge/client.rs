@@ -69,6 +69,23 @@ fn agent_channel_runtime() -> tokio::runtime::Handle {
         .clone()
 }
 
+/// Classify an RPC failure from a shared-channel call. With the cached lazy
+/// channel, `connect_agent` succeeds even when the agent dies *after* the
+/// channel was established — a down agent then surfaces here as a tonic
+/// `Unavailable` transport status. Map that to `AppError::AgentUnavailable`
+/// so the tolerance sites (`abort_run`'s local cancel, credential reload's
+/// "down agent is success") keep working; anything else is an app-level
+/// failure and keeps the generic message variant. The agent reports
+/// command-level failures inside an OK `RpcResponse` (`success = false`),
+/// never as gRPC statuses, so a status error is always transport-level.
+pub fn map_rpc_error(context: &str, status: tonic::Status) -> crate::AppError {
+    if status.code() == tonic::Code::Unavailable {
+        crate::AppError::AgentUnavailable(format!("{context}: {}", status.message()))
+    } else {
+        crate::AppError::Message(format!("{context}: {status}"))
+    }
+}
+
 /// Resolve the agent endpoint and open a gRPC client. A connection failure maps
 /// to `AppError::AgentUnavailable` so callers can tolerate a down agent (e.g.
 /// `abort_run` still cancels the run locally).
