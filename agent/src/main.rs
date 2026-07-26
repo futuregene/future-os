@@ -117,8 +117,12 @@ fn main() -> Result<()> {
     #[cfg(windows)]
     let profiler_guard: Option<()> = {
         if profile_path.is_some() {
-            tracing::warn!("Built-in CPU profiling is not available on Windows (pprof is Unix-only).");
-            tracing::info!("To profile on Windows, use: make profile-quick (requires blondie + admin)");
+            tracing::warn!(
+                "Built-in CPU profiling is not available on Windows (pprof is Unix-only)."
+            );
+            tracing::info!(
+                "To profile on Windows, use: make profile-quick (requires blondie + admin)"
+            );
             tracing::info!("Or run externally: blondie flamegraph future-agent.exe --grpc-addr ... --profile-seconds N");
         }
         None
