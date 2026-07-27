@@ -209,13 +209,21 @@ function labelForActivity(item: AgentActivityItem) {
 
   switch (item.kind) {
     case "read":
-      return i18n.t("agent:activity.read", { prefix });
+      return item.status === "completed"
+        ? i18n.t("agent:activity.readCompleted")
+        : i18n.t("agent:activity.read", { prefix });
     case "shell":
-      return i18n.t("agent:activity.run", { prefix });
+      return item.status === "completed"
+        ? i18n.t("agent:activity.runCompleted")
+        : i18n.t("agent:activity.run", { prefix });
     case "write":
-      return i18n.t("agent:activity.write", { prefix });
+      return item.status === "completed"
+        ? i18n.t("agent:activity.writeCompleted")
+        : i18n.t("agent:activity.write", { prefix });
     case "edit":
-      return i18n.t("agent:activity.edit", { prefix });
+      return item.status === "completed"
+        ? i18n.t("agent:activity.editCompleted")
+        : i18n.t("agent:activity.edit", { prefix });
   }
 }
 

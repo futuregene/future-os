@@ -428,6 +428,7 @@ pub fn run() {
             archive_thread,
             restore_thread,
             delete_thread,
+            batch_delete_threads,
             fork_thread,
             get_session_entries,
             get_thread_agent_state,

@@ -111,8 +111,12 @@ export async function restoreThread(threadId: string) {
   return invokeCommand<StoredThread>("restore_thread", { threadId });
 }
 
-export async function deleteThread(threadId: string) {
-  return invokeCommand<StoredThread>("delete_thread", { threadId });
+export async function deleteThread(input: { threadId: string; deleteFiles?: boolean }) {
+  return invokeCommand<StoredThread>("delete_thread", { input });
+}
+
+export async function batchDeleteThreads(input: { threadIds: string[]; deleteFiles?: boolean }) {
+  return invokeCommand<{ deletedCount: number; failed: string[] }>("batch_delete_threads", { input });
 }
 
 export async function getThreadCleanupSummary(threadId: string) {

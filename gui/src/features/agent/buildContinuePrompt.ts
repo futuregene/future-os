@@ -11,23 +11,15 @@ import { previousUserMessageBefore } from "./agentMessageFormatters";
  */
 export function buildContinuePrompt({
   message,
-  runId,
+  runId: _runId,
   summary,
 }: {
   message?: AgentMessage;
   runId?: string;
   summary?: string;
 }) {
-  const effectiveRunId = runId ?? message?.runId ?? null;
-  const lines = [
-    "继续上一个任务。",
-    "请基于当前线程、最近一次运行状态和工作区当前文件状态继续推进。",
-    "不要重复执行已经成功完成的副作用操作；如果需要再次写入、删除、执行复杂命令，请先说明原因并遵守审批策略。",
-  ];
+  const lines = ["继续上一个任务。"];
 
-  if (effectiveRunId) {
-    lines.push("", `最近 Run: ${effectiveRunId}`);
-  }
   if (message?.content?.trim()) {
     lines.push("", "上一条失败消息摘要:", truncate(message.content.trim(), 1200));
   }
