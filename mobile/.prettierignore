@@ -1,0 +1,6 @@
+android/
+ios/
+coverage/
+node_modules/
+src/version.generated.ts
+package-lock.json

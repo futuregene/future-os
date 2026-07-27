@@ -29,14 +29,14 @@ if ($blondie) {
     $args = @("flamegraph", $Binary, "--", "--grpc-addr", $addr, "--profile-seconds", $Duration, "--verbose")
     $result = & $blondie.Source @args 2>&1
     $exitCode = $LASTEXITCODE
-    
+
     if ($exitCode -eq 0 -and (Test-Path "flamegraph.svg")) {
         Move-Item -Force "flamegraph.svg" $svg
         $sz = (Get-Item $svg).Length
         Write-Host "Flamegraph: $svg ($([Math]::Round($sz/1024, 1)) KB)" -ForegroundColor Green
         exit 0
     }
-    
+
     # blondie failed — show output and fall back
     if ($result -match "NotAnAdmin") {
         Write-Host "[WARN] blondie requires administrator privileges. Run from an elevated prompt for flamegraphs." -ForegroundColor Yellow

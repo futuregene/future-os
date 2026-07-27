@@ -3,10 +3,26 @@
   "description": "Let a phone/web client remotely take over this machine's session (tools still run locally). Once enabled, local conversations are mirrored to the phone, and the phone can drive the same session.",
   "running": "Running",
   "notRunning": "Not running",
-  "natsUrlLabel": "NATS address (client port)",
-  "natsUrlHint": "For local testing use <0>nats://localhost:4222</0>; later use the address of the online relay server.",
-  "pairIdLabel": "Pair ID",
+  "webClient": "Web client",
+  "webClientLan": "Phone / LAN:",
   "stop": "Stop remote",
-  "start": "Start remote",
-  "note": "Note: remote control requires the desktop (GUI + agent) to be online and awake — this is an inherent prerequisite, not a cloud failure."
+  "pairAndStart": "Pair & start",
+  "pairedAs": "Paired as {{pairId}}",
+  "unpair": "Unpair",
+  "pairingCodeLabel": "Pairing code",
+  "pairingQrLabel": "Scan with FutureOS Mobile",
+  "pairingCodeHint": "Scan the QR code with the phone app, or copy the code into the web client, within 5 minutes. It is single-use and contains only a short-lived credential-claim nonce, never an account key or device private key.",
+  "pairingCodeExpiresIn": "expires in {{time}}",
+  "copy": "Copy",
+  "copied": "Copied",
+  "copyFailed": "Copy failed — copy the code manually.",
+  "note": "Remote control requires the desktop (GUI + agent) to be online and awake. Desktop and web use separate NKey private keys with short-lived JWTs; NATS enforces pairId-scoped subject isolation.",
+  "error": {
+    "network": "Cannot reach the Future server. Check your network connection and try again.",
+    "revoked": "This pairing was revoked or is no longer valid. Pair again to continue.",
+    "server": "The Future server returned an error. Please try again later.",
+    "loop_dead": "The command subscription stopped. Restart remote control to recover.",
+    "web_bind": "The local web client could not start (its port may already be in use). The bridge is still running.",
+    "generic": "The remote control action failed. Please try again."
+  }
 }

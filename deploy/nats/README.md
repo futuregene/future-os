@@ -1,50 +1,37 @@
-# Local L0 dev NATS (remote-control relay testing)
+# NATS Relay
 
-> L0 = no auth, **local/trusted-network only — do not expose to the public internet**. See `docs/remote-control-*.md`.
+The relay is already reachable on the public network:
 
-## Prerequisites
-- Docker (Docker Desktop or colima): `docker version` should work.
-- `nats` CLI (for stream creation and validation):
-  ```bash
-  brew install nats-io/nats-tools/nats
-  # Verify: nats --version
-  ```
+- dev/test: `test.future-os.cn` (`4222` client, `9090` WebSocket)
+- production: `future-os.cn` (`4222` client, `9090` WebSocket)
 
-## Start NATS
+Current GUI/Web remote control uses short-lived, pair-scoped NATS user JWTs.
+The test relay must run in operator/account JWT mode. During flow validation it
+intentionally uses plaintext `nats://` and `ws://`; only test data is allowed.
+The old shared token is not a multi-tenant security boundary.
+
+The canonical production template and operator runbook live in
+`../future-server`:
+
+- `config/nats-jwt.conf.example`
+- `docs/remote-control-deployment.md`
+
+Changing the existing test relay from its old shared-token configuration
+requires an operator-run NATS container recreation and matching
+`platform-service` deployment. Old JetStream data does not need to be retained
+for this test cutover.
+
+## Legacy local environment
+
+`nats.conf` and `docker-compose.yml` in this directory remain only for isolated
+testing of older shared-token clients:
+
 ```bash
 cd deploy/nats
 docker compose up -d
-docker compose logs -f nats   # Wait for "Server is ready" + JetStream enabled, then Ctrl-C
+docker compose logs -f nats
+docker compose down
 ```
 
-## Verify connectivity + JetStream
-```bash
-nats server check jetstream        # defaults to nats://localhost:4222
-# Or open http://localhost:8222 in a browser (monitoring page)
-```
-
-## Create dev event stream (pairId=DEVPAIR)
-```bash
-nats stream add EVT_DEVPAIR \
-  --subjects 'p.DEVPAIR.evt.>' \
-  --storage file --retention limits --discard old \
-  --max-age 30m --max-bytes 64MB --max-msg-size 1MB --dupe-window 10m \
-  --defaults
-nats stream ls                     # should show EVT_DEVPAIR
-nats stream info EVT_DEVPAIR
-```
-
-## Quick manual pub/sub test (optional, verify the pipeline)
-```bash
-# Terminal A:
-nats sub 'p.DEVPAIR.evt.>'
-# Terminal B:
-nats pub p.DEVPAIR.evt.s1 'hello'
-# Terminal A should receive 'hello'
-```
-
-## Stop / Cleanup
-```bash
-docker compose down          # stop containers (keep JetStream data volume)
-docker compose down -v       # stop containers + delete data volume (full reset)
-```
+Never expose this legacy local configuration to the public network. It is not a
+valid environment for testing JWT subject isolation.

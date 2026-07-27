@@ -238,7 +238,7 @@ fn error_message_from_body(body: Option<Value>) -> Option<String> {
 
 /// The stored FutureGene API key, or an error when signed out. Mirrors the CLI's
 /// precedence trivially: the GUI only ever writes the key to the `future` entry.
-fn future_api_key() -> Result<String, AppError> {
+pub(crate) fn future_api_key() -> Result<String, AppError> {
     crate::auth_store::read()?
         .get(crate::auth_store::FUTURE_PROVIDER_ID)
         .and_then(|entry| entry.get("key"))

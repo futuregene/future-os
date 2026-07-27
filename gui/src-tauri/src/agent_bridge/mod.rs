@@ -13,9 +13,10 @@ mod stream;
 pub use self::approval::{decide_approval, inject_session_rule};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
-    connect_agent, delete_session_command, get_session_entries_command, get_state_command,
-    list_streaming_sessions_command, map_rpc_error, set_cwd_command, set_model_command,
-    set_session_name_command, set_thinking_level_command, RpcResponseExt,
+    connect_agent, delete_session_command, get_available_models_command,
+    get_session_entries_command, get_state_command, list_streaming_sessions_command, map_rpc_error,
+    set_cwd_command, set_model_command, set_session_name_command, set_thinking_level_command,
+    RpcResponseExt,
 };
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub(crate) use self::import::import_missing_sessions;
@@ -89,6 +90,143 @@ pub async fn get_events_since(
     } else {
         Ok(serde_json::from_str(&response.data)?)
     }
+}
+
+/// Fetch a session's full message history from the agent (LLM Message shape:
+/// `{role, content, tool_calls?}` where `content` is a string or an array of
+/// content blocks). The agent's JSONL is the source of truth for ALL sessions —
+/// including TUI/CLI sessions the GUI store only holds as imported thread stubs
+/// with no message rows — so the remote bridge serves history from here rather
+/// than from the store.
+pub async fn get_session_messages(
+    session_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(base_command("get_messages", session_id))
+        .await
+        .map_err(|status| format!("get_messages failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_messages returned an error")?;
+    if response.data.is_empty() {
+        Ok(serde_json::json!({ "messages": [] }))
+    } else {
+        Ok(serde_json::from_str(&response.data)?)
+    }
+}
+
+/// Fetch the session's current state (model, thinkingLevel, isStreaming, etc.)
+/// from the agent. Used by the remote bridge to populate the web client's
+/// model/thinking selectors.
+pub async fn get_session_state(session_id: String) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(get_state_command(session_id))
+        .await
+        .map_err(|status| format!("get_state failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_state returned an error")?;
+    if response.data.is_empty() {
+        Ok(serde_json::json!({}))
+    } else {
+        Ok(serde_json::from_str(&response.data)?)
+    }
+}
+
+/// Fetch the available model list from the agent (for the web client's model selector).
+pub async fn get_available_models() -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(get_available_models_command())
+        .await
+        .map_err(|status| format!("get_available_models failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_available_models returned an error")?;
+    if response.data.is_empty() {
+        Ok(serde_json::json!({ "models": [] }))
+    } else {
+        Ok(serde_json::from_str(&response.data)?)
+    }
+}
+
+/// Set the model on a live agent session (remote bridge).
+pub async fn set_session_model(
+    session_id: String,
+    model_id: String,
+) -> Result<(), crate::AppError> {
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(set_model_command(model_id, session_id))
+        .await
+        .map_err(|status| format!("set_model failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("set_model returned an error")?;
+    Ok(())
+}
+
+/// Set the thinking level on a live agent session (remote bridge).
+pub async fn set_session_thinking_level(
+    session_id: String,
+    level: String,
+) -> Result<(), crate::AppError> {
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(set_thinking_level_command(level, session_id))
+        .await
+        .map_err(|status| format!("set_thinking_level failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("set_thinking_level returned an error")?;
+    Ok(())
+}
+
+/// Rename a session: update the agent's session name, then mirror to the GUI store.
+pub async fn rename_session(session_id: String, name: String) -> Result<(), crate::AppError> {
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(set_session_name_command(name.clone(), session_id.clone()))
+        .await
+        .map_err(|status| format!("set_session_name failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("set_session_name returned an error")?;
+    // Mirror to GUI store so the sidebar title stays in sync.
+    if let Ok(Some(thread)) = crate::store::find_thread_by_agent_session(&session_id) {
+        let _ = crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id,
+            title: name,
+        });
+    }
+    Ok(())
+}
+
+/// Create a fresh agent session for a just-created thread and persist the
+/// agent-generated session id back onto the thread. Used by the remote
+/// `new_session` command so the client receives the *real* agent session id up
+/// front. If we instead handed the client the thread id, the agent would run
+/// the subsequent prompt under a different (agent-generated) id and every
+/// event subject / history lookup on the client would mismatch — events get
+/// filtered out and `get_messages` finds nothing.
+pub(crate) async fn provision_agent_session(
+    thread_id: &str,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
+) -> Result<String, crate::AppError> {
+    let cwd = workspace_path_for_thread(thread_id)?;
+    let mut client = connect_agent().await?;
+    // Empty stored id → the agent generates a real session id, seeded with the
+    // caller's model / thinking selections (matches the GUI new-chat draft).
+    let ensured = ensure_agent_session(
+        &mut client,
+        "",
+        &cwd,
+        model_id.as_deref(),
+        thinking_level.as_deref(),
+    )
+    .await?;
+    let session_id = ensured.session_id;
+    set_agent_permission_level(&mut client, &session_id, "workspace").await?;
+    set_agent_sandbox_policy(&mut client, &session_id, thread_id).await?;
+    crate::store::update_thread_session_id(thread_id, &session_id)?;
+    Ok(session_id)
 }
 
 /// Tell the running agent to re-read `auth.json` and refresh every live

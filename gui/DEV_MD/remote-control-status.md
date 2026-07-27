@@ -1,58 +1,110 @@
-# 远程控制 · 实现进度（L0 / GUI 内嵌）
+# 远程控制 · 实现进度
 
 > 设计真源：[plan](remote-control-plan.md) · [relay](remote-control-relay.md) · [auth](remote-control-auth.md)。
-> 本文记录**已实现**的部分、怎么跑、下一步。当前处于 **L0（无鉴权，仅本地/受控网络）**。
 
-## 架构决策（本阶段确定）
-- **Bridge 内嵌 GUI Tauri 后端**（不是独立进程）。原因：远程对话要落 GUI 的 SQLite 并在页面实时显示，而 GUI 的持久化是"谁发起谁落库"（`agent_prompt` → `stream.rs` 落 `run_events`）。内嵌后，手机命令走 GUI 现有 prompt 路径，天然落库+显示+镜像。
-- 独立 `remote/` crate 保留为**传输验证骨架 / headless 参考**，非运行必需。
+## 当前阶段
 
-## 已完成
-- **NATS dev 部署** `deploy/nats/`（docker compose + `nats.conf`；JetStream + WebSocket）。
-- **独立 Bridge 骨架** `remote/`（Rust `async-nats`）—— walking-skeleton，验证 命令/事件/gRPC 桥接链路。
-- **Web 验证端** `remote/web/index.html`（`nats.ws`；会话列表 / 新建会话 / 发送 / 流式渲染 / 从事件 subject 自动识别会话）。
-- **GUI 内嵌远程**：
-  - 侧栏 **Remote** 入口 + 页面（启停、NATS 地址、pairId、状态）：`gui/src/features/remote/{RemoteView,remoteClient}.tsx`、`ActivityRail.tsx`、`AppShell.tsx`。
-  - 后端 `gui/src-tauri/src/remote/mod.rs` + `commands/remote.rs`：连 NATS、事件 tap、命令订阅/路由。
-  - 参数存 `app_settings`（`remoteEnabled`/`remotePairId`/`remoteNatsUrl`，默认 `nats://localhost:4222` / `DEVPAIR`）。
-  - **事件 tap**：`stream.rs::collect_agent_response` 每条事件 → `remote::publish_event` → `p.{pairId}.evt.{session}`。
-  - **命令路由**：订 `p.{pairId}.cmd.>`；`list_sessions`/`get_messages`/`new_session` 读写 GUI store；`prompt` 复刻前端 `handleSend`（建 thread/run → append user → `agent_bridge::agent_prompt` → append assistant）→ 落 SQLite + tap 镜像 + `emit_remote_activity` 刷新前端。
-  - `store::find_thread_by_agent_session`（新查询）、`emit_remote_activity`（新事件）。
+L1 JWT 鉴权代码已在 FutureOS GUI、Web 验证端与
+`future-server/platform-service` 三端落地。要进行公网端到端验证，仍需按
+`future-server/docs/remote-control-deployment.md` 完成 NATS operator/account
+切换、部署 platform-service 并重启相关服务。
 
-- **P1 硬化（已完成）**：
-  - agent `SseBroadcaster` 单点盖章 `run_id`（每轮，`is_streaming` false→true 边）+ 单调 `idx`（轮内），单锁保序；当前轮缓冲（`MAX_RUN_EVENTS=20000`）；`events_since` 返回 `min_idx` 供溢出检测；`get_events_since` 命令（+`truncated` 标志）。
-  - GUI 中间区监听 `remote-activity`，远程驱动当前会话时实时刷新（不只侧栏转圈）。
-  - GUI Bridge 事件走 **JetStream 发布** + `Nats-Msg-Id={session}:{runId}:{idx}`（幂等去重 + 落 `EVT_*` 流做回放；未建流优雅降级为实时投递）。
-  - 网页：选中会话加载完整历史（`get_messages`）+ 回放进行中轮（`get_events_since`，`(runId,idx)` 去重）+ **重连自动重放**（`nc.status()` → 重跑 selectSession）+ 溢出提示。
+Android React Native 客户端首版已放在 `mobile/`，复用同一 L1 控制面与
+Bridge RPC。桌面端配对卡已显示手机可扫描的二维码；Web 仍保留为协议验证端。
 
-## 当前能力（L0）
-- GUI 里聊天 → 手机/网页**实时镜像看到**。
-- 手机/网页 → **列会话 / 新建会话 / 发 prompt** → GUI 里**出现线程 + 落库 + 显示**，并镜像回手机。（双向闭环。）
-- **弱网/重连健壮**：中途加入某轮补齐前缀；断线重连自动重放；同一事件多次到达按 `(runId,idx)` 去重。
+旧的共享 NATS token、手填 pairId、按平台域名推导明文 `nats://`/`ws://`
+地址均已从主流程移除。
 
-## 边界 / 未做
-- **无鉴权**（L0）：仅本地/受控网络，**禁公网**。GUI 后端连 `nats://…:4222`（客户端口）；网页连 `ws://…:8080`。
-- **run 边界仅对 prompt 精确（P1 review C2，已知，暂缓）**：`start_run` 只在初始 `prompt` 调；流式中 `steer`/`follow_up` 复用同一 `run_id`（会多发一个 `agent_start`），手机端会把追加回答并进同一气泡。当前手机/网页只发 `prompt`，不受影响；真手机 App 阶段再改 run 模型。
-- **agent_start 非严格 idx 0（review M3）**：客户端以 `runId` 变化判新轮，不依赖 idx 0，故无实际影响。
-- **超长轮（>20000 事件）回放丢前缀**：`truncated` 已提示，不静默；必要时再调大或按时长裁剪。
-- **手机端 abort / 审批未做**：审批目前在 GUI 里点；简单对话不涉及。
-- **L1 鉴权未做**：签发服务在 `future-server`（见 `future-server/docs/remote-control.md`）。
-- 并发：GUI 正在跑某会话时手机又发同一会话 → 被 `PromptSessionGuard` 拒（"already running"）。
+## 已实现
 
-## 怎么跑（L0）
+### Bridge 与业务闭环
+
+- Bridge 内嵌 GUI Tauri 后端，远程 prompt 复用 GUI 持久化与 agent 执行
+  路径；远程对话自动落 SQLite 并通知当前页面刷新。
+- 命令：会话列表/历史、新建、prompt、abort、审批、模型、思考等级、重命名。
+- 运行中语义与 GUI 对齐：同一会话运行中再次发送会被拒，不存在 steer、
+  follow-up 或排队。
+- 审批在 Bridge 与 agent 两层校验 session 归属。
+- 命令按请求 id 单飞并缓存响应，避免重试重复执行。
+- agent 为每轮事件盖 `run_id` 与单调 `idx`；客户端按 `(run_id, idx)` 去重，
+  并用 `get_events_since` 处理重连缺口。
+
+### JWT 配对与设备身份
+
+- GUI 必须先登录 Future 账号。首次“配对并启动”时在本机生成 desktop NKey；
+  seed 仅保存到 `~/.future/remote_pairing.json`（0600）。
+- GUI 以 Future API Key 调用
+  `POST /client/v1/remote/pair/code`，得到 Bridge scoped JWT 与一次性配对码。
+- 配对码版本为 v2，只含 `{nonce, claim_url, exp}`；5 分钟过期且只能消费一次，
+  不含账号密钥、NATS JWT、pairId 或设备私钥。
+- Web 与手机分别在本地生成独立 NKey，并调用 `/pair/claim`。浏览器凭证仍存于
+  localStorage，仅定位为验证端；Android 将 seed、JWT 与刷新 token 分项保存到
+  由 Android Keystore 保护的 SecureStore。
+- Android 只接受桌面端二维码
+  `futureos://remote/pair?code=...&desktopId=...&desktopKey=...`；配对码内的
+  `claim_url` 必须与当前构建环境一致。二维码绑定桌面身份，双方通过 NKey
+  签名的 challenge/response 互相确认；握手完成前不保存凭证，也不接受业务命令。
+  后续重连仍会重新握手，成功后才恢复业务会话。
+- Bridge 刷新 JWT 需要 Future API Key；Web 刷新需要高熵设备刷新 token，服务端
+  只存 SHA-256 哈希。默认 JWT 有效期 15 分钟，两端在到期前刷新并重连。
+- GUI 与 Web 解绑都先调用服务端撤销，再删本地凭证；撤销后不再允许刷新，活跃
+  连接最迟在当前 JWT 到期时失效（本阶段未做 NATS server kick）。
+
+### 服务端强制隔离
+
+- 单 REMOTE NATS account；`future-server` 使用 account seed 签标准 NATS user
+  JWT。
+- Bridge：
+  - pub `p.{pairId}.evt.>`、`p.{pairId}.rep.>`、`p.{pairId}.presence`
+  - sub `p.{pairId}.cmd.>`、`p.{pairId}.rep.{desktopId}.>`
+- Web：
+  - pub `p.{pairId}.cmd.>`
+  - sub `p.{pairId}.evt.>`、`p.{pairId}.rep.{deviceId}.>`、
+    `p.{pairId}.presence`
+- inboxPrefix 收敛到 `p.{pairId}.rep.{deviceId}`。跨 pair 发布/订阅由 NATS
+  服务端拒绝，不再依赖 pairId 不可猜。
+- presence 改为 core NATS 心跳，不使用 KV；因此运行时设备无需任何
+  `$JS.API` 管理权限。
+
+### future-server 控制面
+
+- 新增 `/client/v1/remote` 路由：配对码、claim、刷新、撤销、设备列表。
+- `remote_pair_nonces` 以单条 SQL 原子消费 nonce，避免 TOCTOU。
+- `remote_pairings` 记录账号/桌面/Web 公钥、刷新哈希与生命周期；同一账号下同一
+  desktop 只允许一个 pending/active 绑定，重新配对会撤销旧绑定。
+- 配对时由 platform-service admin credential 创建 `EVT_{pairId}`；撤销时删除。
+  Bridge 无建/删流权限。
+- Rust JWT encoder 已用 NATS 官方 CLI 生成的带过期时间 user JWT 校验 JTI
+  算法和字段结构。
+
+## 当前验证
+
+- `future-server`: `cargo check -p future-platform-service` 通过。
+- `future-server`: remote JWT/identifier 单测通过。
+- GUI Tauri: `cargo check` 通过。
+- Android/React Native 已有 reducer 单测、TypeScript、ESLint 与 Prettier
+  检查；仍需真机完成 JWT-mode NATS 端到端验证。
+
+## 运行方式（完成部署后）
+
 ```bash
-# 1) NATS（首次还需按 deploy/nats/README.md 建 EVT_DEVPAIR 流）
-cd deploy/nats && docker compose up -d
-# 2) GUI：Remote → 启动远程（nats://localhost:4222 / DEVPAIR）
 make run-gui
-# 3) Web 验证端
-cd remote/web && python3 -m http.server 5500   # 浏览器开 http://localhost:5500 → 连接 ws://localhost:8080 / DEVPAIR
 ```
 
-> **JetStream 回放的前提**：事件用 JetStream 发布，重连回放依赖 `EVT_DEVPAIR` 流已建（见上 `deploy/nats/README.md`）。未建流时实时仍工作（core 订阅者照收），仅无持久化/跨轮回放。
+1. GUI 登录 Future 账号。
+2. Remote → “配对并启动”。
+3. Android 客户端扫描二维码；Web 验证端仍可在 `http://localhost:8022`
+   粘贴配对码。
+4. 后续客户端可用本地设备凭证重连，无需再次扫码；显式重新配对或撤销后例外。
 
-## 下一步
-1. **P2 手机端交互**：`abort` 转发（中断进行中 run）、审批 `approval_request`/`approval_decision` 转发 + 手机决策回传、`steer`/`follow_up` 转发（届时按 review C2 给这些路径也 `start_run`，让 run 边界对齐）。
-2. **L1 鉴权**：future-server 签发服务 + 扫码配对 + per-pairId subject 权限 + scoped creds（plan §6 P5、auth）。
-3. **真手机 App / PWA**：替代 `remote/web` 调试页（历史 / 流式 / 审批 / abort UI）。
-4. reply inbox 从默认 `_INBOX.>` 收敛到 `p.{pairId}.rep.{device}`（为 L1 subject 权限铺路）。
+## 尚未完成
+
+- 测试 NATS 切换到 operator/account JWT（暂用明文 `nats://`/`ws://`）并部署
+  platform-service（由运维执行）。
+- 真实环境跨 pair 越权测试、JWT 到期刷新/重连测试与撤销测试。
+- Web JetStream consumer 回放；当前仍以 core event sub +
+  `get_events_since` 回补，`EVT_*` 已持久化但 Web 尚未直接消费。
+- NATS server kick/账号 revocation push；当前撤销保证为 `≤ JWT TTL`。
+- Android 真机矩阵、后台恢复、生物识别、审计、附件与右侧文件面板。
+- iOS 签名、推送、后台恢复与 App Store 隐私清单；当前只预留跨平台业务层和
+  Keychain 配置，不开发 iOS。

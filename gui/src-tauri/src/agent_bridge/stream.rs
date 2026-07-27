@@ -82,15 +82,15 @@ pub(super) async fn collect_agent_response(
 
         persist_run_event_off_thread(run_id, event.r#type.clone(), event.data.clone(), sequence)
             .await;
-        // Remote tap (Step B/P1): mirror events to mobile/web (no-op when no remote connection).
+        // Remote tap (Step B/P1): queue the event for mirroring to mobile/web
+        // (no-op when no remote connection; never blocks this loop).
         crate::remote::publish_event(
             session_id,
             &event.r#type,
             &event.data,
             &event.run_id,
             event.idx,
-        )
-        .await;
+        );
         sequence += 1;
 
         match event.r#type.as_str() {

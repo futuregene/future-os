@@ -27,6 +27,8 @@ pub struct PreparedPrompt {
 pub fn prepare_prompt_persisted(
     thread: &store::ThreadRecord,
     message: String,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
 ) -> Result<PreparedPrompt, crate::AppError> {
     let session_id = thread
         .agent_session_id
@@ -54,8 +56,8 @@ pub fn prepare_prompt_persisted(
         session_id,
         run_id: run.id,
         message,
-        model_id: None,
-        thinking_level: None,
+        model_id,
+        thinking_level,
     })
 }
 

@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help test-gui-rust gui-sidecars
+.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -183,18 +183,21 @@ build-gui: build-gui-dist gui-sidecars
 build-channels:
 	cd channels && cargo build --release
 
+# Mobile native projects are generated locally by Expo and are intentionally
+# not part of the default build. This target builds and installs Android.
+build-mobile-android:
+	$(call npm-install-if-needed,mobile)
+	cd mobile && npm run android
+
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent test-channels test-remote test-cli test-tui test-gui test-gui-rust
+test: test-agent test-channels test-cli test-tui test-gui test-gui-rust test-mobile
 
 test-agent:
 	cd agent && cargo test
 
 test-channels:
 	cd channels && cargo test
-
-test-remote:
-	cd remote && cargo test
 
 test-cli:
 	$(call npm-install-if-needed,cli)
@@ -211,18 +214,19 @@ test-gui:
 test-gui-rust:
 	cd gui/src-tauri && cargo test
 
+test-mobile:
+	$(call npm-install-if-needed,mobile)
+	cd mobile && npm test
+
 # ─── Lint ───────────────────────────────────────────────────────────────────
 
-lint: lint-agent lint-channels lint-remote lint-tui lint-cli lint-gui stylelint-gui
+lint: lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui lint-mobile
 
 lint-agent:
 	cd agent && cargo fmt --check && cargo clippy
 
 lint-channels:
 	cd channels && cargo fmt --check && cargo clippy
-
-lint-remote:
-	cd remote && cargo fmt --check && cargo clippy
 
 lint-tui:
 	cd tui && npm run gen-version && npx tsc --noEmit
@@ -236,12 +240,24 @@ lint-gui:
 stylelint-gui:
 	cd gui && npm run stylelint
 
+lint-mobile:
+	$(call npm-install-if-needed,mobile)
+	cd mobile && npm run typecheck && npm run lint
+
 check-gui: lint-gui stylelint-gui build-gui-dist
 	cd gui/src-tauri && cargo check
+
+check-mobile: lint-mobile test-mobile
+	cd mobile && npm run format:check
 
 fmt:
 	cd agent && cargo fmt
 	cd channels && cargo fmt
+	$(MAKE) fmt-mobile
+
+fmt-mobile:
+	$(call npm-install-if-needed,mobile)
+	cd mobile && npm run format
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 
@@ -279,6 +295,10 @@ else
 	fi
 	cd gui && npm run tauri:dev
 endif
+
+run-mobile-android:
+	$(call npm-install-if-needed,mobile)
+	cd mobile && npm run android:device
 
 package-gui: install-gui
 	node scripts/version.mjs --set-bundle
@@ -414,13 +434,16 @@ help:
 	@echo "  build-cli          Build TypeScript CLI"
 	@echo "  build-gui          Build React/Tauri GUI frontend"
 	@echo "  build-channels      Build channel bridge"
-	@echo "  test               Run all tests (Rust crates + cli/tui/gui)"
-	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI)"
-	@echo "  fmt                Format Rust code (agent + channels)"
+	@echo "  build-mobile-android Generate, build, and install the Android app"
+	@echo "  check-mobile       Typecheck, lint, format-check, and test mobile"
+	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
+	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
+	@echo "  fmt                Format Rust and mobile code"
 	@echo "  run-agent          Run agent directly (debug build)"
 	@echo "  run-tui            Run TUI in dev mode"
 	@echo "  run-cli            Run CLI in dev mode"
 	@echo "  run-gui            Run GUI in dev mode"
+	@echo "  run-mobile-android Run the Android app on a selected device"
 	@echo "  run-channels        Run channel bridge directly (debug build)"
 	@echo "  package-gui        Package GUI desktop bundles"
 	@echo "  profile-agent      CPU profile: build + 90s bench, write flamegraph SVG"

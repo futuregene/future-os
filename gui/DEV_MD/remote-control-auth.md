@@ -1,157 +1,198 @@
 # 鉴权、配对与连接生命周期
 
-> 配套：[总纲](remote-control-plan.md)（决策/术语/阶段真源见其 §0）· [消息中枢（NATS）](remote-control-relay.md)。
-> 回答三件事：**(1) 鉴权虽后做但要有计划、且保证隔离；(2) 配对/持久连接方案与评估；(3) 开发期用 Web 客户端替代 App。** 鉴权成熟度 **L0/L1/L2** 见 [总纲 §0.3](remote-control-plan.md)。
+> 配套：[总纲](remote-control-plan.md) · [消息中枢](remote-control-relay.md) ·
+> [实现进度](remote-control-status.md)。
 
----
+## 1. 安全不变量
 
-## 1. 安全不变量（任何阶段不破坏）
-| # | 不变量 | 由谁保证 |
+| # | 不变量 | 实现 |
 |---|---|---|
-| **I1 消息隔离** | 一个连接只能访问自己 `pairId` 的 subject，别人的**订不到、发不进** | **NATS 服务端强制**：单 account 内按 `pairId` 的 JWT subject 权限；每 pair 一流物理隔离。升级可用 account-per-user |
-| **I2 设备准入** | 新设备入网需 possession（扫 QR）；L2 再加 knowledge（账号登录） | 配对流程 |
-| **I3 持久可撤销** | 配对一次持久；任一方撤销/登出后失效（≤TTL 生效，活跃连接需 server kick，见 §3） | 设备凭证 + 服务端绑定记录 |
-| **I4 最小授权** | 凭证只授予 `p.{pairId}.>`；回复 inbox 收进 `p.{pairId}.rep.{device}.>`（不用默认 `_INBOX.>`）；Bridge **无建/删流权** | NATS user JWT + 客户端 InboxPrefix |
-| **I5 无秘密外泄** | 出站-only；设备私钥永不离开设备；QR 不含密钥/密码 | 配对协议设计 |
-| **I6 L0 显式无强制** | 无鉴权仅限本地/可信网络，绝不公网 | 发布纪律（[总纲 §6](remote-control-plan.md)） |
+| I1 | 一个 pair 的连接不能访问其他 pair subject | NATS user JWT 的 pub/sub allow-list，服务端强制 |
+| I2 | 新设备必须持有桌面显式展示的一次性配对码 | 5 分钟 nonce，数据库单条 SQL 原子消费 |
+| I3 | 每个设备有独立身份，私钥不离设备 | Desktop/Web 分别本地生成 NATS user NKey |
+| I4 | 运行时设备无流管理权限 | 流由 platform-service admin creds 创建/删除 |
+| I5 | 回复 inbox 不能退回宽泛 `_INBOX.>` | `p.{pairId}.rep.{deviceId}` |
+| I6 | 撤销后不能继续刷新 | Bridge 需 Future API Key；Web 需仅存哈希的 refresh token |
 
-> **I1 的"根"**是服务端强制的 JWT subject 权限（非应用逻辑）——某 pair 的凭证连订阅别的 `pairId` 都被 NATS 拒。
-> **一个例外要写实（审批路径）**：agent 的 `ApprovalGate` 是**全局 HashMap、按 `entry_id` 查、无 pair/session 校验**（`approval.rs`）。1:1 下**每 agent=一桌面=一 pair**，天然 pair-scoped；但为防 `entry_id` 泄漏、也为将来 1:N，**须在 agent 的 `ApprovalGate.decide` 加 session 归属校验**（decide 收 `session_id`，与 `PendingApproval.session_id` 比对；Bridge 无 `entry_id→session` 映射，故放 agent 侧）。故审批"零新语义"仅指**命令形态**不变。另注：审批门**无 timeout**（`rx.recv()` 无期限），客户端离线时须由 **Bridge 发 `abort`/`cancel_session` 兜底**，防 session 永久挂住。
+审批路径另外在 Bridge 与 agent 两层校验 session 归属，防止泄漏的 approval id
+被用于批准其他会话。
 
----
+## 2. 信任与身份模型
 
-## 2. 鉴权成熟度与节奏（先 App、后鉴权）
-| 级别 | 配对/校验 | 隔离 | 对应交付 |
-|---|---|---|---|
-| **L0 无鉴权/粗鉴权** | 本地无 / staging 可加单 token 或 IP 白名单 | 无（仅 subject 命名分区） | P2–P4（本地或受控 dev/staging，禁公开无鉴权） |
-| **L1 扫码 + scoped creds** | 仅扫 QR（App 不做账号二次校验） | 账号+设备（服务端强制） | **P5（首个可发布）** |
-| **L2 加因子** | 扫 QR + App 账号登录 + 生物识别 | 同上 + 吊销/审计 | P6 |
-
-> **L1 不是"零鉴权"**：要让隔离在服务端成立，L1 需一个**最小签发服务**——桌面（已用 Future 账号登录）申请配对令牌，App 扫码后换**按 `p.{pairId}.>` 限定**的 NATS creds，签发服务同时**创建 `EVT_{pairId}` 流**。省的是"App 端账号登录"，省不掉"签发 scoped creds + 建流"。subject 从 L0 起就按最终 `p.{pairId}.*` 走，L1 只补签发，不改架构。
-
----
-
-## 3. 身份与隔离模型（账号 + 设备，1 PC ↔ 1 App）
-**已定**：单 NATS account + 按 `pairId` 的 JWT subject 权限（服务端强制、运维轻），严格 1:1。NATS subject 支持扇出，日后 1:1→1:N 只是登记/权限改动、非重构。
-
-```
-单 NATS account（起步）
-  每次配对生成唯一 pairId（源自 futureAccount + desktopId）
-  subject:  p.{pairId}.cmd.{session}   p.{pairId}.evt.{session}   p.{pairId}.rep.{device}
-  stream:   EVT_{pairId}（签发服务在配对时创建、解绑时删）
-  凭证（每设备独立 nkey，私钥不离设备）
+```text
+Future 账号
+  └─ desktop binding (desktopId + desktop user NKey)
+       └─ pairId
+            └─ web/client device (deviceId + client user NKey)
 ```
 
-**NATS 权限矩阵**（签发服务据此签 JWT；每 pair 隔离；最小授权）
-| 主体 | pub | sub | JetStream `$JS.API` | KV |
-|---|---|---|---|---|
-| **Bridge** | `p.{pairId}.evt.>`（发事件到流）、`p.{pairId}.rep.>`（回复） | `p.{pairId}.cmd.>`、自己的 `$JS.ACK.>` | **无**（不建/删/purge 流；仅靠 publish + ack） | 写 `$KV.pairs.{pairId}` |
-| **App/客户端** | `p.{pairId}.cmd.>` | `p.{pairId}.evt.>`、`p.{pairId}.rep.{device}.>`（自己的回复 inbox） | 在该流建/读 consumer：`$JS.API.CONSUMER.CREATE.EVT_{pairId}.*`、`.INFO.*`、`.MSG.NEXT.EVT_{pairId}.*` | 读/watch `$KV.pairs.{pairId}` |
-| **签发服务** | — | — | 建/删流：`$JS.API.STREAM.CREATE/DELETE.EVT_{pairId}` | 建桶 `pairs` |
+- 单个 REMOTE NATS account 承载所有 pair。
+- `pairId` 是命名空间；安全边界来自 JWT ACL，而不是 pairId 难猜。
+- 当前产品仍按 1 PC ↔ 1 Web/App 绑定；重新配对同一 desktop 会撤销旧绑定。
+- 需要更强合规隔离时，可升级为 account-per-user/device，业务 subject 无需改变。
 
-> - **回复 inbox 不用默认 `_INBOX.>`**：那会给宽泛订阅权、破坏隔离。改用 `p.{pairId}.rep.{device}.>` + 客户端 `request()` 设 **InboxPrefix=`p.{pairId}.rep.{device}`**——回复也锁进 pair 命名空间。
-> - **流生命周期归签发服务**（非 Bridge）：Bridge 只 publish，满足最小授权（I4）。`$JS.API`/`$KV` 具体 subject 语法按 NATS 标准。
+## 3. 配对时序
 
-- **"account+设备"的含义**：Future 账号决定"谁能发起配对"；设备 pair 的 subject/流隔离运行时消息。
-- **1:1 在登记层强制**：一桌面至多一个生效 App；重新配对=作废旧绑定（需桌面重新出示 QR）。
-- **升级路径**：若要"同一用户多台 PC 也硬隔离"，把每账号（或每设备）提升为独立 NATS account——subject/流不变、隔离更强，代价是多层 account 运维。
-
-**凭证与撤销生命周期**
+```text
+Desktop                                platform-service                       Web
+   | 本地生成 desktop NKey                    |                                |
+   |-- Future Bearer + desktop public key --->|                                |
+   |   POST /pair/code                        |-- 建 pending binding            |
+   |                                          |-- 建 EVT_{pairId}               |
+   |<-- bridge JWT + v2 pairing code ---------|                                |
+   |                                          |<-- nonce + client public key ---|
+   |                                          |    POST /pair/claim             |
+   |                                          |-- 原子消费 nonce                |
+   |                                          |-- 激活 binding                  |
+   |                                          |-- 签 client JWT                 |
+   |                                          |-- 生成 refresh token/hash       |
+   |                                          |-- JWT + refresh token --------->|
+   |========== scoped NATS JWT ================================ scoped WS ======|
+   |<-- client nonce + both ids/public keys (`pair_handshake`) -----------------|
+   |-- signed desktop challenge + desktop nonce ------------------------------->|
+   |<-- signed full transcript (`pair_handshake_confirm`) ----------------------|
+   |-- final confirmation + current presence --------------------------------->|
+   | 保存 desktop pairing                       |            保存 client pairing |
 ```
-Future 账号 OAuth（已有 cli/auth）→ 证明账号归属
-  → 签发服务（持 account 签名密钥）签 设备 user JWT（+设备自持 nkey seed）= .creds（持久）
-  → 每次连接：NATS 校验签名&权限 → 授权
 
-撤销（写实）：持久 JWT 仅记录撤销**不会自动踢已建连接**。二选一：
-  ① 短期 user JWT（分钟级）+ 刷新——停刷新使下次重连/刷新失效（生效延迟 ≤TTL）【L1 默认】；
-  ② NATS account 吊销列表推送 resolver + **server kick**——踢掉已建连接、真正即时【需强即时时】。
-  ⇒ 措辞：撤销"≤TTL 生效"，"活跃连接需 server kick 才断"——**不是即时**。
+`/pair/claim` 只领取临时连接凭证，不代表产品层配对成功。最终握手转录绑定
+`pairId`、双方 device id、双方 NKey 公钥以及双方随机 nonce；桌面和客户端分别用
+自己的 NKey 私钥签名。客户端只信任二维码绑定的桌面 id/公钥。任何字段错配、签名
+错误、challenge 重放或确认超时都会失败，且业务命令在握手完成前由 Bridge 拒绝。
+
+配对码的 base64url JSON：
+
+```json
+{
+  "v": 2,
+  "nonce": "rpn_...",
+  "claim_url": "https://.../client/v1/remote/pair/claim",
+  "exp": 1780000000
+}
 ```
 
-> **签发服务的落点（已定）**：实现在 **`future-server`（platform-service 的一个路由模块）**，复用其账号/session/device-flow OAuth/Postgres/密钥体系（`resolve_user_from_session`、`routes/device_flow.rs`、`config.rs`）。它持有 **NATS account 签名密钥**（签 user JWT）+ NATS admin creds（配对时建/删 `EVT_{pairId}` 流）；只在**配对/鉴权控制面**，**不在消息数据面**（运行时客户端/Bridge 直连 NATS）。**唯一技术不确定点**：Rust 侧签出 NATS 专有格式的 user JWT——**开工前先 spike**。future-server 侧完整需求见 `future-server/docs/remote-control.md`。
+它不包含 pairId、账号标识、NATS 地址、JWT、refresh token 或任何 NKey seed。
+nonce 仍应视为短期敏感信息，因为 L1 的准入因子就是 possession。
 
----
+## 4. JWT 与权限
 
-## 4. 配对与持久连接（详细 + 评估）
-### 4.1 你的方案 & 评估
-> App 扫桌面 QR →（L2）输账号密码登录 → 建立**持久连接**（无需常连网、无需再扫码）→ App/桌面重启不影响（除非主动断开或一方退出）。
+JWT 是 NATS 专有 claims 格式：
 
-**成立，是成熟的「链接设备」模型**（WhatsApp/Signal/Telegram/Claude Trusted Devices）。
+- header: `{"typ":"JWT","alg":"ed25519-nkey"}`
+- issuer: REMOTE account public NKey
+- subject: 设备 user public NKey
+- `nats.type=user`, `nats.version=2`
+- 默认 `exp=iat+900s`
 
-| 你的点 | 评估 | 落地 |
+权限矩阵：
+
+| 角色 | Publish | Subscribe |
 |---|---|---|
-| 扫 QR 建信任 | ✅（possession 因子） | QR 只放非秘密：natsWsUrl、accountId(不透明)、desktopId、一次性 nonce、exp、签名 |
-| 含"账号信息" | ⚠️ 可含标识、不可含凭证 | 账号归属由登录证明（L2），不由 QR |
-| 输密码登录（一期可无） | ✅（L2 knowledge 因子） | 一期(L1)跳过；L2 复用 Future OAuth，登录后存刷新型凭证、之后免密 |
-| 持久、免再扫、重启不影响 | ✅ | 持久物 = 设备凭证（私钥+JWT）+ 服务端绑定；连接无状态可重建 |
-| 一方退出即失效 | ✅（生效 ≤TTL 或 server kick，见 §3） | 登出=删本地凭证+服务端撤销；"已链接设备"列表可远程登出 |
+| Bridge | `p.{pair}.evt.>`, `p.{pair}.rep.>`, `p.{pair}.presence` | `p.{pair}.cmd.>`, `p.{pair}.rep.{desktop}.>` |
+| Web/App | `p.{pair}.cmd.>` | `p.{pair}.evt.>`, `p.{pair}.rep.{device}.>`, `p.{pair}.presence` |
+| platform-service admin | REMOTE account 管理默认权限 | 用于 `EVT_*` 生命周期，不下发给设备 |
 
-**要点**
-1. **1:1**：放弃"一手机控多机/多手机看一机"，换最简最稳；可逆到 1:N。安全协同：1:1 + **单次原子消费**的 nonce ⇒ QR 只对第一个扫描者生效，压低 L1"仅扫码入网"风险面。
-2. **双因子（L2）**：L1 只扫码=单因子；L2 加账号登录，使"仅凭盗号密码远程入网"不成立。（"GhostPairing" 类攻击提醒：QR 必须短 TTL、单次、显式触发。）
+presence 使用 core subject，不再使用 KV。这样 Bridge/Web 均不需要 `$JS.API`，
+也不会拥有创建或删除流的能力。
 
-### 4.2 配对时序（L1；L2 增第 4–5 步账号校验）
+## 5. 刷新与撤销
+
+### Bridge
+
+`POST /auth/token` 携带 Future Bearer，服务端同时校验：
+
+- 账号拥有该 pair；
+- desktopId 一致；
+- public NKey 与绑定一致；
+- pairing 未撤销。
+
+### Web/App
+
+首次 claim 返回随机 refresh token。服务端只存其 SHA-256；刷新同时校验 pairId、
+deviceId、public NKey、refresh token hash 与 active 状态。
+
+### 撤销语义
+
+撤销会立即：
+
+- 将 binding 标为 revoked；
+- 清空 client refresh hash；
+- 删除 `EVT_{pairId}`。
+
+桌面/账号用 Future Bearer 撤销；Web/App 可用自己的 deviceId、public NKey 与
+refresh token 自助解绑。Web 验证端只有在服务端确认成功或确认凭证已无效后才清除
+本地凭据。
+
+因此任何新刷新都会失败。已建立的 NATS 连接可能存活到当前 JWT 到期；默认上界为
+15 分钟。本阶段没有 resolver revocation push + server kick，文案不得宣称“即时
+断开”。
+
+## 6. 本地持久化
+
+双方都必须等签名握手完成后才写入长期凭证：桌面收到并验证客户端确认签名后原子
+写入；客户端收到桌面的最终确认后写入。仅生成配对码、claim 成功或连上 NATS
+都不会让 GUI/API 报告 `paired=true`。
+
+Desktop `~/.future/remote_pairing.json`（0600）：
+
+```text
+pairId, desktopId, nkeySeed, userJwt, natsUrl, natsWsUrl, jwtExpiresAt
 ```
-1. 桌面 future remote pair → 签发服务 申请 pairNonce（单次, TTL~5min, 绑 accountId+desktopId, 签名）
-   桌面渲染 QR = { v, natsWsUrl, accountId, desktopId, pairNonce, exp, sig }
-2. App 扫 QR → 校验 sig + exp
-3. App 本地生成 nkey（seed 留本地）
-4. [L2] App 账号登录 → accountProof
-5. App → 签发服务 /pair/claim { pairNonce, devicePubKey, accountProof?, deviceMeta }
-6. 签发服务：**原子消费 nonce**（单条 `UPDATE … WHERE used=false` 返回影响行数=1 才通过，防 TOCTOU）
-   （L2 再校 accountProof 与 accountId 一致）→ 生成 pairId → 登记 1:1 绑定
-   → **创建 EVT_{pairId} 流** → 签 scoped user JWT（限 p.{pairId}.>）→ 返回 { pairId, userJWT }
-7. App 落 .creds（seed+JWT）到 keychain。绑定完成
+
+Web 验证端 localStorage：
+
+```text
+pairId, deviceId, seed, userJwt, refreshToken, natsWsUrl, tokenUrl
 ```
 
-### 4.3 会话连接（每次启动，不再扫码）
-```
-App/Bridge 启动 → 读 .creds → nats.connect(natsWsUrl, creds, inboxPrefix) → NATS 校验 → 连上
-重启/断网安全：凭证持久 + 连接无状态可重建；恢复自动重连（无需重配）
-```
+浏览器 localStorage 无法达到系统 keychain 的安全等级，所以 Web 当前仍是验证端。
+正式 App 必须把 seed/refresh token 放进 Keychain/Keystore。
 
-### 4.4 撤销 / 登出（任一方）
-```
-App 登出       → 删本地 .creds + 通知签发服务撤销
-桌面/账号 撤销  → 签发服务撤销设备 JWT（停刷新[≤TTL] 或 account 吊销列表推送+server kick[即时踢连]，见 §3）→ App 需重新配对
-"已链接设备"表  → App/桌面均可查看设备+最近使用+远程登出（仿 WhatsApp）
-```
+## 7. 弱网与自动刷新
 
----
+- Bridge 到期前刷新 JWT，建立新 NATS 连接后原子替换 command loop、JetStream
+  publisher 与 presence heartbeat。
+- Web 到期前刷新 JWT，关闭旧连接并用新 authenticator 重连。
+- NATS 重连后的业务事件缺口仍由 `get_events_since` + `(runId,idx)` 去重补齐；
+  不依赖 JWT 刷新本身保存订阅游标。
 
-## 5. 市场方案对照
-| 方案 | 配对 | 设备身份 | 持久性 | 撤销 | 借鉴 |
-|---|---|---|---|---|---|
-| WhatsApp/Signal 链接设备 | 扫 QR + 主设备签名 | 每设备独立密钥 | 持久，扫一次 | 主设备远程登出 | 每设备密钥、已链接设备列表、远程登出 |
-| Claude Trusted Devices/Dispatch | QR/URL；enroll+近期登录+生物识别 | 每设备凭证 | 持久 | 账号/管理台吊销 | 双因子、短时凭证、生物识别 |
-| Telegram 多设备 | 扫 QR/验证码 | 每会话密钥 | 持久 | 会话列表登出 | QR 免密体验 |
-| Tailscale | 设备 key 入网 | node key | 持久 | 管理台撤销 | 设备级凭证 + 集中撤销 |
+## 8. 服务端接口与存储
 
----
+详见 `future-server/docs/remote-control.md`。核心端点：
 
-## 6. 开发期 Web 验证客户端
-**可行且推荐。** App 本质=「`nats.ws` 客户端 + 渲染」，Web 页面可完全替代它做联调。
+- `POST /client/v1/remote/pair/code`
+- `POST /client/v1/remote/pair/claim`
+- `POST /client/v1/remote/auth/token`
+- `POST /client/v1/remote/pair/revoke`（Future Bearer 或绑定客户端 refresh 凭据）
+- `GET /client/v1/remote/devices`
+- `DELETE /client/v1/remote/devices/:pair_id`
 
-- **形态**：`nats.ws` 网页（可挂在现有 GUI/React 一个路由）。
-- **输入"设备验证信息"**：L0 = NATS WS URL + `pairId`/`session`（或粘贴 dev creds）；L1/L2 = 浏览器 OAuth 换临时 creds。
-- **能力**：读 KV `pairs` → 选会话 → 分页 `get_messages`（历史 renderer）→ consumer 订 `EVT_{pairId}`（按 currentRunId 选轮 + 去重，流 renderer）→ composer 发 prompt/steer/abort、审批。
-- **复用**：GUI 现有 React 渲染组件（流 + 历史两套）+ `proto` 派生 TS 类型。代码骨架见 [中枢 §6](remote-control-relay.md)。
+核心表：
 
-**双重价值**：① 当下 = P2/P3 端到端测试台（无 App Store 摩擦）；② 未来 = 演进为正式 **"Remote Control on Web"**。建议 Web 端提前到 **P2**，原生 App（P4）复用同一渲染层。
+- `remote_pairings`
+- `remote_pair_nonces`
 
----
+## 9. 测试部署门槛
 
-## 7. 待定项
-1. **设备凭证有效期 / 撤销即时性**：短期 JWT + 刷新（生效 ≤TTL，推荐）vs. 长期 JWT + account 吊销列表推送（需 resolver + server kick 才踢活跃连）。
-2. **重复配对策略**：新 App 配对时旧绑定自动作废（推荐）vs. 需桌面显式解绑。
-3. **是否升级 account 硬隔离**：同一用户多 PC 是否要 account 级硬隔离（合规触发才需）。
-4. **Web 客户端定位**：仅测试工具 vs. 正式 Web 端。
+代码完成不等于流程已跑通。当前测试部署必须同时满足：
 
----
+1. NATS 切换为 operator/account JWT resolver，移除全局 token。
+2. 4222 使用明文 `nats://`，9090 使用明文 `ws://`，且只传测试数据。
+3. REMOTE account JWT 启用 JetStream。
+4. platform-service 配置 account seed 与 admin creds 并部署。
+5. 验证跨 pair pub/sub 被 NATS 拒绝。
+6. 验证 nonce 重放、JWT 刷新、撤销与 15 分钟失效上界。
 
-## 附：出处
-- [WhatsApp 多设备加密（每设备密钥/QR/远程登出）](https://engineering.fb.com/2021/07/14/security/whatsapp-multi-device/)
-- [Signal 链接设备](https://signal.org/blog/a-synchronized-start-for-linked-devices/)
-- [NATS 多租户 Accounts](https://docs.nats.io/running-a-nats-service/configuration/securing_nats/accounts)
-- [NATS 去中心化 JWT 鉴权](https://docs.nats.io/running-a-nats-service/configuration/securing_nats/auth_intro/jwt)
-- [Claude Code Remote Control / Trusted Devices](https://code.claude.com/docs/en/remote-control)
+操作步骤见 `future-server/docs/remote-control-deployment.md`。
+
+JWT 负责身份和 subject 授权，不提供传输加密。生产发布前必须恢复 TLS/WSS；当前
+无证书配置不能作为生产方案。
+
+## 10. 后续加固
+
+- NATS account revocation list + resolver push + server kick，实现即时断连。
+- 正式 App 账号二因子、生物识别与系统安全存储。
+- refresh token rotation、设备审计日志与异常频率限制。
+- Web JetStream consumer 回放；当前 `EVT_*` 已创建，但 Web 仍用 core sub +
+  agent buffer 回补。
+- account-per-user/device（合规触发时）。

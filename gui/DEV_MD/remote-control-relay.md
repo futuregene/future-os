@@ -10,7 +10,7 @@
 
 | 中间件 | 契合 | 摩擦 | 判定 |
 |---|---|---|---|
-| **NATS + JetStream** | 官方 **Rust `async-nats`** + `nats.ws`（RN 可用）；request-reply 原生；JetStream 流/回放/去重；单二进制、CNCF；可无鉴权起步 | presence 需少量自建（KV+心跳） | ✅ **采用** |
+| **NATS + JetStream** | 官方 **Rust `async-nats`** + `nats.ws`（RN 可用）；request-reply 原生；JetStream 流/回放/去重；单二进制、CNCF | presence 需少量 core 心跳 | ✅ **采用** |
 | Centrifugo | 电池全 | 模型是"后端发布、客户端订阅"，无法反向调 NAT 后 Bridge；无官方 Rust 客户端 | 备选 |
 | Ably/Pusher/PubNub | 全托管 | SaaS 计费、国内延迟/合规、数据过三方 | 不用 |
 | MQTT（EMQX） | 移动端友好 | 整段事件回放弱 | 不用 |
@@ -19,9 +19,9 @@
 
 ## 2. 拓扑
 ```
-  ┌──────────────┐  nats.ws(WSS)   ┌──────────────────────┐  async-nats(WSS/TLS) ┌──────────────┐
+  ┌──────────────┐  nats.ws(WS)    ┌──────────────────────┐  async-nats(NATS)     ┌──────────────┐
   │ 客户端 Web/App│◀───────────────▶│ NATS + JetStream      │◀────────────────────▶│ 桌面 Bridge   │
-  │ (nats.ws)    │ req cmd/订 evt  │ (future-os.cn)        │ 订 cmd/发 evt/KV      │ (async-nats) │
+  │ (nats.ws)    │ req cmd/订 evt  │ (future-os.cn)        │ 订 cmd/发 evt/presence│ (async-nats) │
   └──────────────┘                 │ + 签发服务(L1)        │                       └──────┬───────┘
                                     └──────────────────────┘                        gRPC(localhost)
                                                                                     ┌──────▼──────┐
@@ -40,7 +40,7 @@ payload：`RpcCommand`（`proto/future.proto:21`，camelCase）、`StreamEvent`�
 | **命令 cmd/resp** | 核心 NATS request-reply | 订 `p.{pairId}.cmd.>`，单条 `.cmd.{session}` | App `request()` 发 `RpcCommand`，Bridge queue 订阅并 reply `RpcResponse` |
 | **事件 event** | **JetStream 每 pair 一流** | 流 `EVT_{pairId}`（签发服务配对时建），subject `p.{pairId}.evt.{session}` | Bridge 只 **publish**；客户端 consumer（filter=某 session）消费+回放 |
 | **回复 inbox** | request-reply 回复 | `p.{pairId}.rep.{device}`（客户端 InboxPrefix） | 不用默认 `_INBOX.>`（维持 pair 隔离，见 [auth §3](remote-control-auth.md)） |
-| **目录/presence** | JetStream KV | 桶 `pairs`，key `{pairId}` | 值含 `{online, lastHeartbeatTs, agentVersion, bridgeVersion, sessions:[{id, streaming, currentRunId, name, updatedAt}]}`（**currentRunId 按 session**，因会话可并发）；Bridge 每 ~20s 写、桶 TTL 60s；客户端 read/watch |
+| **目录/presence** | core NATS | `p.{pairId}.presence` | 值含 `{online,lastHeartbeatTs,sessions:[{id,name,streaming}]}`；Bridge 每 ~20s 写，客户端 60s 未收到视为离线 |
 
 - **每 pair 一流**：一台已配对桌面一个流，**签发服务在配对时建、解绑时删**；2 桌面=2 流，物理隔离、按租户配额、`$JS.API` 权限天然按流切开。**Bridge 只有 publish 权，无 STREAM.CREATE/PURGE/DELETE**（最小授权）。
 - **流配置**：`MaxAge`（如 30min）+ `MaxBytes` + `MaxMsgSize`（如 1MB）+ `discard=old` + **`dupe-window`**（覆盖预期 Bridge 掉线间隔，如 10min）。
@@ -71,7 +71,9 @@ Bridge：只 publish 到 p.{pairId}.evt.{session}，Nats-Msg-Id={session}:{run_i
 
 ## 5. Bridge 集成（Rust / async-nats）
 ```rust
-let nc = async_nats::connect(nats_url).await?;          // 出站；L0 无鉴权 / L1 带 creds
+let nc = ConnectOptions::with_jwt(jwt, sign_with_device_nkey)
+    .custom_inbox_prefix(format!("p.{pairId}.rep.{desktopId}"))
+    .connect(nats_url).await?;
 let js = jetstream::new(nc.clone());
 let inflight = SingleFlight::new();                     // RpcCommand.id → in-flight/已完成，合并重试
 
@@ -81,7 +83,6 @@ async fn pump_events(session) {                         // 幂等启动一次，
     while let Some(ev) = evs.next().await {              // ev 已带 run_id/idx（P1 集中盖章）
         js.publish(subj(pairId, "evt", session), json(&ev))
           .header("Nats-Msg-Id", format!("{session}:{ev.run_id}:{ev.idx}")).await?;
-        if ev.run_id != last_run_id { update_presence_currentRun(session, ev.run_id); }  // 不 purge
     }
 }
 
@@ -98,43 +99,42 @@ while let Some(msg) = sub.next().await {
     });
 }
 
-// presence 心跳（每 session streaming 态 + currentRunId + 版本）
-loop { kv_pairs.put(pairId, directory_json).await?; sleep(20).await; }
+// presence 心跳（core subject；运行设备无需 KV/$JS.API 权限）
+loop { nc.publish(format!("p.{pairId}.presence"), directory_json).await?; sleep(20).await; }
 ```
 Bridge 是 `channels/` 的兄弟组件（Rust）；但**订阅-先于-命令**、**每 session 长期订阅**是净新增（`feishu` 模板是 prompt 后才 per-prompt 订阅，正是本项要避免的竞态）。
 > - **`ensure_pump_started` 幂等**：用每 session `OnceCell`/锁，防并发首命令重复订阅；该 session 的**第一条命令 await pump 就绪**（run buffer 兜底初始 `agent_start`）。
-> - **流不存在时**（L0 未手动建 / 首配对竞态）：`js.publish` 会失败——pump **不得因此崩溃**，应在 presence 标记 degraded + 退避重试（正式期签发服务在 `/pair/claim` 时已先建流）。
+> - 流由 platform-service 在 `/pair/code` 返回成功前创建；Bridge 不拥有建/删流权限。
 
 ## 6. 客户端集成（Web / RN，nats.ws）
 ```ts
-const nc = await connect({ servers: wsUrl, inboxPrefix: `p.${pairId}.rep.${device}`
-                           /*, authenticator: creds (L1) */ });
-const js = jetstream(nc);
+const nc = await connect({
+  servers: wsUrl,
+  inboxPrefix: `p.${pairId}.rep.${device}`,
+  authenticator: jwtAuthenticator(userJwt, deviceSeed),
+});
 
-// 命令：流式命令（prompt/steer）reply 只是 accept-ack；完成看事件流的 agent_end
+// 命令：prompt reply 只是 accept-ack；完成看事件流的 agent_end
 await nc.request(`p.${pairId}.cmd.${session}`, enc(promptCmd), { timeout: 5000 });
 
-// 事件：deliver=all → 按 currentRunId 选当前轮渲染 + (run_id,idx) 去重
-// 初值取自 presence 该 session 的 currentRunId —— 否则中途重连时首个回放事件若非 agent_start，会漏掉整轮
-let cur = presence.sessions[session]?.currentRunId ?? null;
+// 当前实现：core 订实时事件；重连缺口调用 get_events_since 回补
 const seen = new Set();
-const c = await js.consumers.get(`EVT_${pairId}`,
-            { filter_subject: `p.${pairId}.evt.${session}`, deliver_policy: "all" });
-for await (const m of c) {
+const events = nc.subscribe(`p.${pairId}.evt.>`);
+for await (const m of events) {
   const ev = dec(m) as StreamEvent;
-  if (ev.type === "agent_start") cur = ev.run_id;        // 新一轮开始 → 切当前轮
-  if (cur === null) cur = ev.run_id;                     // presence 不可用时的兜底：首个事件定当前轮
-  if (ev.run_id !== cur) continue;                       // 忽略旧轮残留
   const k = `${ev.run_id}:${ev.idx}`; if (seen.has(k)) continue; seen.add(k);
-  streamRenderer.renderByIdx(ev);                        // 按 idx 有序渲染（容忍到达时的小窗口乱序）
+  streamRenderer.renderByIdx(ev);
 }
 
 // 历史滚动：分页 get_messages（LLM Message 形状）→ 独立历史 renderer
 const page = await nc.request(`p.${pairId}.cmd.${session}`, enc(getMessages({offset,limit})));
 historyRenderer.render(page);
 // 目录/presence
-for await (const e of kv_pairs.watch(pairId)) updateSessionList(e);  // 每 session streaming 态
+for await (const e of nc.subscribe(`p.${pairId}.presence`)) updateSessionList(dec(e));
 ```
+
+`EVT_{pairId}` 已由服务端创建并接收 Bridge JetStream publish；Web 直接 consumer
+回放仍是后续增强，当前正确性依赖 agent buffer + `get_events_since`。
 
 ---
 
@@ -142,30 +142,25 @@ for await (const e of kv_pairs.watch(pairId)) updateSessionList(e);  // 每 sess
 - **核心**：单 NATS account + 按 `pairId` 的 JWT subject 权限（服务端强制）；account-per-user 硬隔离为升级路径。
 - **签发服务**：校验 Future 账号（`cli/src/commands/auth.ts` 已有）后签 scoped creds（限 `p.{pairId}.>`）+ **配对时创建 `EVT_{pairId}` 流**；吊销即撤 creds。
 - **Bridge 最小授权**：pub `p.{pairId}.evt.>`/`p.{pairId}.rep.>`、sub `p.{pairId}.cmd.>` + 自己的 `$JS.ACK.>`；**不给 STREAM.CREATE/PURGE/DELETE**。
-- **L0 测试**：NATS 无鉴权直连（仅本地/可信网络）。
+- **L1 代码已完成**：一次性 nonce、双设备 NKey、短期 scoped JWT、分角色刷新与撤销。
+- **部署待办**：测试 Relay 需切换 operator/account resolver；当前先用明文
+  `nats://`/`ws://` 跑通，详见 future-server 部署 runbook。
 
 ---
 
-## 8. 立即可测（L0，本周端到端）
+## 8. 部署后联调
 ```bash
-# 起 NATS（JetStream + WebSocket，无鉴权）；websocket 与 jetstream 在 nats.conf 开启
-docker run -p 4222:4222 -p 8080:8080 -v $PWD/nats.conf:/nats.conf nats -js -c /nats.conf
-
-# 联调期先手动建一个 pair 的事件流（正式期由签发服务建）
-nats stream add EVT_DEVPAIR --subjects 'p.DEVPAIR.evt.>' \
-  --max-age 30m --max-bytes 64MB --max-msg-size 1MB --dupe-window 10m --discard old --storage file
-
-# 桌面: Bridge(async-nats) 连 nats://localhost:4222，桥接本地 agent:50051，pairId=DEVPAIR
-# 网页: nats.ws 连 ws://<host>:8080，request p.DEVPAIR.cmd.{session} / 消费 EVT_DEVPAIR
+# GUI 登录 Future 账号，Remote 页点击“配对并启动”。
+# Web 验证端打开 http://localhost:8022，粘贴一次性配对码。
 ```
-→ 无需等中枢正式部署、无需鉴权即可验证通路。配对/签发/推送后续叠加。
+→ NATS/platform-service 未按 runbook 部署前，配对会返回 remote unavailable。
 
 ---
 
 ## 9. 关键流程
 ### 9.1 接入 + 拉历史 + 订实时
 ```
-客户端连 NATS → KV 读 pairs[{pairId}]（每 session 在线/streaming 态 + currentRunId）
+客户端连 NATS → 订 p.{pairId}.presence（每 session 在线/streaming 态）
 consume EVT_{pairId} filter=p.{pairId}.evt.{session} deliver=all → 按 currentRunId 选当前轮 + 去重渲染
 更早历史 → 分页 get_messages（历史 renderer）
 ```
@@ -187,14 +182,17 @@ Bridge 重连: get_events_since(session, run_id, since_idx) 补缺口 → 重发
 ## 10. 安全（见 [auth](remote-control-auth.md)）
 - **隔离**：单 NATS account + 按 `pairId` 的 JWT subject 权限，服务端强制；每 pair 一流物理隔离；回复 inbox 收进 `p.{pairId}.rep.{device}`。
 - **出站-only**：Bridge 只出站连 NATS，不开入站端口。
-- **传输**：WSS/TLS；creds 按 `p.{pairId}.>` 最小授权（Bridge 无建/删流权）；撤销见 auth §3。
-- **数据边界（写实）**：不存长期历史，只短期缓存最近若干轮事件（含文本/工具/审批内容）；不做 E2EE，靠 TLS + NATS auth + TTL/配额 + 运维；历史/文件在本机（分页 `get_messages`）。
+- **传输**：测试阶段为明文 WS/NATS，只允许测试数据；creds 按
+  `p.{pairId}.>` 最小授权（Bridge 无建/删流权）；撤销见 auth §3。
+- **数据边界（写实）**：不存长期历史，只短期缓存最近若干轮事件（含文本/工具/
+  审批内容）；不做 E2EE。当前靠 NATS auth + TTL/配额验证流程，生产必须再加
+  TLS/WSS；历史/文件在本机（分页 `get_messages`）。
 
 ## 11. 我们仍需自建的（很少）
 1. Subject/资源命名（[总纲 §0.4](remote-control-plan.md)）+ 编解码小库（复用 proto 类型）。
-2. presence 心跳（Bridge 写 KV `pairs`，每 session 态 + currentRunId）。
+2. presence 心跳（Bridge 发 core `p.{pairId}.presence`，每 session 态）。
 3. 客户端 run_id 选轮 + (run_id,idx) 去重逻辑（几行）。
-4. **最小签发服务**（L1：Future 账号 → scoped creds + 建/删流）。
+4. ~~最小签发服务~~（已在 future-server 实现：Future 账号 → scoped JWT + 建/删流）。
 5. 客户端双 renderer（StreamEvent 流 / Message 历史，复用 GUI）。（推送退后。）
 > 路由、扇出、回放、去重（辅）、水平扩展、GC 老化——全由 NATS/JetStream 提供。
 

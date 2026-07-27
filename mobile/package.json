@@ -1,0 +1,51 @@
+{
+  "name": "@future-os/mobile",
+  "version": "0.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "expo": "~57.0.8",
+    "expo-build-properties": "~57.0.7",
+    "expo-camera": "~57.0.3",
+    "expo-device": "~57.0.1",
+    "expo-localization": "~57.0.1",
+    "expo-secure-store": "~57.0.1",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.1",
+    "fast-text-encoding": "^1.0.6",
+    "i18next": "^26.3.6",
+    "lucide-react-native": "^0.548.0",
+    "nats.ws": "^1.30.3",
+    "nkeys.js": "^1.1.0",
+    "react": "19.2.3",
+    "react-i18next": "^17.0.11",
+    "react-native": "0.86.0",
+    "react-native-get-random-values": "^2.0.0",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-svg": "15.15.4"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.1.1",
+    "@types/react": "~19.2.2",
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "^57.0.0",
+    "jest-expo": "^57.0.2",
+    "prettier": "^3.9.6",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "gen-version": "node ../scripts/version.mjs --gen-ts src/version.generated.ts",
+    "postinstall": "npm run gen-version",
+    "start": "npm run gen-version && expo start",
+    "android": "npm run gen-version && expo run:android",
+    "android:device": "npm run gen-version && expo run:android --device",
+    "prebuild:android": "npm run gen-version && expo prebuild --platform android",
+    "typecheck": "npm run gen-version && tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "jest --runInBand",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+  },
+  "private": true
+}
