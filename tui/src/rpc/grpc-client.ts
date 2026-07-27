@@ -604,6 +604,12 @@ export class GrpcClient {
     }, 5000);
 
     call.on("data", (response: any) => {
+      // Discard events from a stale stream — when connectEvents() cancels an
+      // old stream and creates a new one, buffered data events from the old
+      // stream can still arrive asynchronously.  Without this guard those
+      // events leak into the new session's chat, corrupting messages and
+      // leaving the streaming indicator stuck on.
+      if (this.streamCall !== call) return;
       if (connectWatchdog) { clearTimeout(connectWatchdog); connectWatchdog = null; }
       if (!this.connected) {
         this.connected = true;

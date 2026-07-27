@@ -465,6 +465,9 @@ export class App extends Container {
         if (e.text && this.chat) {
           this.chat.updateLastMessage(e.text);
         }
+        // Mark the assistant message as complete so pending→false and the
+        // full markdown render replaces the streaming (prefix-cached) render.
+        this.chat.markLastMessageComplete();
         // Refresh state to update context percentage, token totals, etc.
         this.refresh().then(() => this.requestRender());
         break;
