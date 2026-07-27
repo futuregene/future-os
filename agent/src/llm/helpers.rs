@@ -42,17 +42,17 @@ impl Client {
         }
 
         let effective_format_str = effective_format.as_str();
+        let reasoning_enabled = *thinking_level != "off";
+        let mut level_value = thinking_level.clone();
+
+        let thinking_level_map = self.thinking_level_map.read();
+        if let Some(mapped) = thinking_level_map.get(&*thinking_level) {
+            level_value = mapped.clone();
+        }
+        drop(thinking_level_map);
+        drop(thinking_level);
+
         if !effective_format.is_empty() {
-            let reasoning_enabled = *thinking_level != "off";
-            let mut level_value = thinking_level.clone();
-
-            let thinking_level_map = self.thinking_level_map.read();
-            if let Some(mapped) = thinking_level_map.get(&*thinking_level) {
-                level_value = mapped.clone();
-            }
-            drop(thinking_level_map);
-            drop(thinking_level);
-
             match effective_format_str {
                 "zai" => {
                     body["enable_thinking"] = serde_json::json!(reasoning_enabled);
@@ -66,7 +66,10 @@ impl Client {
                     } else {
                         body["enable_thinking"] = serde_json::json!(reasoning_enabled);
                     }
-                    if reasoning_enabled && *self.compat_supports_reasoning_effort.read() {
+                    // reasoning_effort is always supported on dashscope/aliyuncs
+                    // (qwen format) — send it unconditionally, matching the
+                    // deepseek format which also has no compat gate.
+                    if reasoning_enabled {
                         body["reasoning_effort"] = serde_json::json!(level_value);
                     }
                 }
@@ -107,9 +110,20 @@ impl Client {
                 }
                 _ => {}
             }
+        } else if reasoning_enabled {
+            // No compat thinking format is configured (effective_format is
+            // empty), but the user has explicitly set a non-"off" thinking
+            // level.  The provider is likely an OpenAI-compatible gateway
+            // (FutureAPI, CrossModel, OpenRouter, etc.) that passes
+            // reasoning_effort through to the upstream model.  Send it via
+            // the standard OpenAI parameter so the thinking level takes
+            // effect — without this, the provider defaults to its own
+            // (usually low) thinking budget and long reasoning gets cut off.
+            // When thinking is "off" we intentionally send nothing so the
+            // model doesn't reason at all (OpenAI-compatible models don't
+            // reason unless instructed).
+            body["reasoning_effort"] = serde_json::json!(level_value);
         }
-        // When effective_format is empty (no compat thinking format configured),
-        // don't add any thinking parameters — provider doesn't support it.
     }
 
     pub(super) fn convert_messages_to_openai(

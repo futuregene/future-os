@@ -791,10 +791,17 @@ impl Loop {
                     args: tc.function.arguments.clone(),
                 });
             }
-            // Skip empty assistant messages — the LLM API rejects them
-            // ("content or tool_calls must be set").  This happens when the
-            // model returns only thinking with no text and no tool calls.
-            if !assistant_msg.content.is_empty() || !assistant_msg.tool_calls.is_empty() {
+            // Skip truly empty assistant messages — the LLM API rejects them
+            // ("content or tool_calls must be set").  However, a message that
+            // has reasoning_content (thinking) is NOT empty: the thinking
+            // content was already streamed to the client, and dropping it here
+            // loses the entire response (the GUI shows "没有返回文本").
+            // convert_messages_to_openai sends reasoning_content even when the
+            // content field is omitted, matching the tool_calls-only pattern.
+            if !assistant_msg.content.is_empty()
+                || !assistant_msg.tool_calls.is_empty()
+                || !assistant_msg.thinking.is_empty()
+            {
                 messages.push(assistant_msg);
                 // Persist the assistant response immediately so it survives a
                 // crash mid-run, even if no tools were called in this turn.
