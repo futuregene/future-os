@@ -12,6 +12,8 @@ expo-env.d.ts
 # Native
 .kotlin/
 *.orig.*
+*.keystore
+keystore.properties
 *.jks
 *.p8
 *.p12
