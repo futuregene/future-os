@@ -5,7 +5,7 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -68,6 +68,21 @@ pub(super) fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default()
+}
+
+/// Set by store write paths that change the remote directory snapshot (the
+/// thread/workspace lists, or a run's streaming state). The remote presence
+/// heartbeat drains this flag to publish an immediate full snapshot. Correctness
+/// does NOT depend on it — the heartbeat also recomputes the snapshot signature
+/// every 20s — so a missed mark only delays propagation by up to one heartbeat.
+static CATALOG_DIRTY: AtomicBool = AtomicBool::new(false);
+
+pub fn mark_catalog_dirty() {
+    CATALOG_DIRTY.store(true, Ordering::Release);
+}
+
+pub fn take_catalog_dirty() -> bool {
+    CATALOG_DIRTY.swap(false, Ordering::AcqRel)
 }
 
 /// Turn an "expected to exist" lookup into a hard error when the row is missing.

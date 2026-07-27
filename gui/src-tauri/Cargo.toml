@@ -5,6 +5,10 @@ description = "FutureOS desktop agent workspace"
 authors = ["FutureOS"]
 edition = "2021"
 
+# Keep this crate out of the workspace so make targets that cd in
+# (check-gui / build-gui) work without workspace.members trickery.
+[workspace]
+
 [lib]
 name = "futureos_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

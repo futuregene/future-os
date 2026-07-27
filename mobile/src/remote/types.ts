@@ -36,8 +36,11 @@ export interface RemoteWorkspace {
 }
 
 export interface PresenceSession {
-  id: string;
-  name: string;
+  sessionId: string;
+  threadId: string;
+  title: string;
+  mode?: "chat" | "workspace";
+  workspaceId?: string;
   streaming: boolean;
 }
 
@@ -46,7 +49,8 @@ export interface Presence {
   pairId: string;
   bridgeInstanceId: string;
   lastHeartbeatTs: number;
-  sessions: PresenceSession[];
+  sessions?: PresenceSession[];
+  workspaces?: RemoteWorkspace[];
 }
 
 export interface RemoteModel {

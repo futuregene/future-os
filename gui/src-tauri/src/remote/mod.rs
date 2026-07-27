@@ -509,19 +509,45 @@ fn spawn_presence_heartbeat(
     bridge_instance_id: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(20));
+        // 1s tick, cheap while idle (just drain the dirty flag). A full directory
+        // snapshot is published whenever its signature changes — either a store
+        // write set the dirty flag (near-real-time), or the 20s self-heal
+        // recomputed a different signature (catches any missed mark, so syncing
+        // never silently stalls). The 20s counter resets on every change so a
+        // burst of edits doesn't also fire a redundant light heartbeat; while
+        // nothing changes, only a tiny liveness payload goes out every 20s.
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut last_sig = String::new();
+        let mut secs_since_snapshot: u8 = 20; // first tick publishes a baseline
         loop {
             interval.tick().await;
-            let payload = build_presence_payload(&pair_id, &bridge_instance_id);
-            let Ok(bytes) = serde_json::to_vec(&payload) else {
+            let dirty = crate::store::take_catalog_dirty();
+            if !dirty && secs_since_snapshot < 20 {
+                secs_since_snapshot += 1;
                 continue;
-            };
-            if let Err(e) = client
-                .publish(format!("p.{pair_id}.presence"), bytes.into())
-                .await
-            {
-                eprintln!("remote: presence heartbeat write failed: {e}");
             }
+            let (snapshot, sig) = build_presence_snapshot(&pair_id, &bridge_instance_id);
+            if sig != last_sig {
+                if let Ok(bytes) = serde_json::to_vec(&snapshot) {
+                    if let Err(e) = client
+                        .publish(format!("p.{pair_id}.presence"), bytes.into())
+                        .await
+                    {
+                        eprintln!("remote: presence publish failed: {e}");
+                    }
+                }
+                last_sig = sig;
+            } else if let Ok(bytes) =
+                serde_json::to_vec(&light_presence_payload(&pair_id, &bridge_instance_id))
+            {
+                if let Err(e) = client
+                    .publish(format!("p.{pair_id}.presence"), bytes.into())
+                    .await
+                {
+                    eprintln!("remote: presence heartbeat write failed: {e}");
+                }
+            }
+            secs_since_snapshot = 0;
         }
     })
 }
@@ -613,30 +639,94 @@ fn spawn_credential_refresh(
     })
 }
 
-/// Build the presence JSON for the current state.
-fn build_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
+/// Append one signature field as `<byte-len>:<bytes>`. Because every record
+/// emits a fixed number of fields in a fixed order, length-prefixing makes the
+/// whole catalog signature unambiguous without any record/field separator — so a
+/// title that happens to contain a separator character can't collide two
+/// different catalogs into the same signature (which would silently skip a sync).
+fn push_sig_field(sig: &mut String, value: &str) {
+    sig.push_str(&value.len().to_string());
+    sig.push(':');
+    sig.push_str(value);
+}
+
+/// Build the full presence snapshot (directory + per-session streaming) together
+/// with a signature that changes iff the snapshot's UI-visible content changes.
+/// The signature is recomputed straight from the store each call, so it can never
+/// drift from reality: a missed dirty-mark only delays propagation (the 20s
+/// heartbeat recomputes and self-heals), it never desyncs.
+fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_json::Value, String) {
     let active_sessions: Vec<String> = crate::store::active_run_sessions().unwrap_or_default();
     let threads = crate::store::list_threads().unwrap_or_default();
-    let sessions: Vec<serde_json::Value> = threads
-        .iter()
-        .map(|t| {
-            let sid = t.agent_session_id.as_deref().unwrap_or(&t.id);
-            json!({
-                "id": sid,
-                "name": t.title,
-                "streaming": active_sessions.contains(&sid.to_string()),
-            })
-        })
-        .collect();
+    let workspaces = crate::store::list_workspaces().unwrap_or_default();
+
+    let mut sessions: Vec<serde_json::Value> = Vec::new();
+    let mut signature = String::new();
+    for t in &threads {
+        let Some(sid) = t
+            .agent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let streaming = active_sessions.iter().any(|active| active == sid);
+        sessions.push(json!({
+            "sessionId": sid,
+            "threadId": t.id,
+            "title": t.title,
+            "mode": t.mode,
+            "workspaceId": t.workspace_id,
+            "streaming": streaming,
+        }));
+        signature.push('s');
+        push_sig_field(&mut signature, sid);
+        push_sig_field(&mut signature, &t.id);
+        push_sig_field(&mut signature, &t.title);
+        push_sig_field(&mut signature, &t.mode);
+        push_sig_field(&mut signature, &t.workspace_id);
+        push_sig_field(&mut signature, if streaming { "1" } else { "0" });
+    }
+
+    let mut workspace_values: Vec<serde_json::Value> = Vec::new();
+    for w in &workspaces {
+        if w.kind != "user" {
+            continue;
+        }
+        if let Ok(value) = serde_json::to_value(w) {
+            workspace_values.push(value);
+        }
+        signature.push('w');
+        push_sig_field(&mut signature, &w.id);
+        push_sig_field(&mut signature, &w.name);
+    }
+
+    let payload = json!({
+        "online": true,
+        "pairId": pair_id,
+        "bridgeInstanceId": bridge_instance_id,
+        "lastHeartbeatTs": unix_timestamp(),
+        "sessions": sessions,
+        "workspaces": workspace_values,
+    });
+    (payload, signature)
+}
+
+/// Full directory snapshot for the handshake and on-demand `get_presence`
+/// (always complete, so a freshly connected client gets a usable baseline).
+fn build_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
+    build_presence_snapshot(pair_id, bridge_instance_id).0
+}
+
+/// Liveness-only heartbeat (no directory). Sent every ~20s while the catalog is
+/// unchanged so an idle link carries almost no traffic.
+fn light_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
     json!({
         "online": true,
         "pairId": pair_id,
         "bridgeInstanceId": bridge_instance_id,
-        "lastHeartbeatTs": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or_default(),
-        "sessions": sessions,
+        "lastHeartbeatTs": unix_timestamp(),
     })
 }
 
