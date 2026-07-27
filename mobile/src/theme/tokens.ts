@@ -10,6 +10,7 @@ export const colors = {
   inkStrong: "#0f172a",
   accent: "#2563eb",
   accentSoft: "#e8f0ff",
+  accentHover: "#1d4ed8",
   accentDisabled: "#bfdbfe",
   focus: "#93c5fd",
   success: "#15803d",
@@ -25,7 +26,7 @@ export const colors = {
   infoSoft: "#eff6ff",
   infoLine: "#bfdbfe",
   generating: "#f59e0b",
-  overlay: "rgba(15, 23, 42, 0.62)",
+  overlay: "rgba(0, 0, 0, 0.6)",
 } as const;
 
 export const spacing = {

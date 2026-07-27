@@ -44,7 +44,37 @@ describe("stream event reducer", () => {
       idx: 2,
     });
     expect(started.streaming).toBe(true);
-    expect(approval.items[0]).toMatchObject({ kind: "approval" });
+    expect(approval.items.find(item => item.kind === "approval")).toMatchObject({
+      kind: "approval",
+    });
     expect(ended.streaming).toBe(false);
+  });
+
+  test("shows a run while streaming and attaches its duration to the response", () => {
+    const started = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-1",
+      idx: 0,
+    });
+    const run = started.items.find(item => item.kind === "run");
+    if (!run || run.kind !== "run") throw new Error("run indicator was not created");
+    run.startedAt = Date.now() - 3_000;
+    const text = applyStreamEvent(started, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "done" }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const ended = applyStreamEvent(text, {
+      type: "agent_end",
+      data: "{}",
+      runId: "run-1",
+      idx: 2,
+    });
+    expect(ended.items.some(item => item.kind === "run")).toBe(false);
+    expect(ended.items.find(item => item.kind === "message")).toMatchObject({
+      durationMs: expect.any(Number),
+    });
   });
 });

@@ -1,5 +1,6 @@
 import { StatusBar } from "expo-status-bar";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ChatScreen } from "./src/screens/ChatScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
 import { SessionsScreen } from "./src/screens/SessionsScreen";
@@ -23,10 +24,12 @@ function AppContent() {
 
 export default function App() {
   return (
-    <RemoteProvider>
-      <StatusBar style="dark" />
-      <AppContent />
-    </RemoteProvider>
+    <SafeAreaProvider>
+      <RemoteProvider>
+        <StatusBar style="dark" />
+        <AppContent />
+      </RemoteProvider>
+    </SafeAreaProvider>
   );
 }
 

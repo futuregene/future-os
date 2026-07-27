@@ -3,7 +3,6 @@
   "version": "0.0.0",
   "main": "index.ts",
   "dependencies": {
-    "@react-native-picker/picker": "2.11.4",
     "expo": "~57.0.8",
     "expo-build-properties": "~57.0.7",
     "expo-camera": "~57.0.3",
@@ -21,6 +20,7 @@
     "react-i18next": "^17.0.11",
     "react-native": "0.86.0",
     "react-native-get-random-values": "^2.0.0",
+    "react-native-safe-area-context": "~5.7.0",
     "react-native-svg": "15.15.4"
   },
   "devDependencies": {

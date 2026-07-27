@@ -1,7 +1,8 @@
-import { Check, ChevronDown, ChevronUp, CircleAlert, Wrench, X } from "lucide-react-native";
-import { useState } from "react";
+import { Check, ChevronDown, ChevronUp, CircleAlert, Copy, Wrench, X } from "lucide-react-native";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Clipboard, Pressable, StyleSheet, Text, View } from "react-native";
+import { MarkdownText } from "./MarkdownText";
 import type { TimelineItem } from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
@@ -11,25 +12,62 @@ interface TimelineCardProps {
   onDecision(id: string, decision: "approved" | "rejected"): Promise<void>;
 }
 
+function formatDuration(durationMs: number): string {
+  return `${Math.max(1, Math.round(durationMs / 1_000))}s`;
+}
+
+function RunIndicator({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(startedAt);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <View style={styles.runIndicator}>
+      <View style={styles.runDot} />
+      <Text style={styles.runDuration}>{formatDuration(now - startedAt)}</Text>
+    </View>
+  );
+}
+
 export function TimelineCard({ item, onDecision }: TimelineCardProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   if (item.kind === "message") {
+    if (item.role === "assistant") {
+      return (
+        <View style={styles.assistantMessage}>
+          <MarkdownText text={item.text} />
+          {item.durationMs != null && (
+            <View style={styles.messageFooter}>
+              <Text style={styles.messageDuration}>{formatDuration(item.durationMs)}</Text>
+              <Pressable
+                accessibilityLabel="Copy response"
+                accessibilityRole="button"
+                hitSlop={8}
+                onPress={() => Clipboard.setString(item.text)}
+                style={styles.copyButton}
+              >
+                <Copy color={colors.inkMuted} size={16} />
+                <Text style={styles.copyLabel}>Copy</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      );
+    }
     return (
-      <View
-        style={[
-          styles.message,
-          item.role === "user" ? styles.userMessage : styles.assistantMessage,
-        ]}
-      >
-        <Text style={[styles.messageText, item.role === "user" && styles.userText]} selectable>
+      <View style={[styles.message, styles.userMessage]}>
+        <Text style={[styles.messageText, styles.userText]} selectable>
           {item.text}
         </Text>
       </View>
     );
   }
+
+  if (item.kind === "run") return <RunIndicator startedAt={item.startedAt} />;
 
   if (item.kind === "thinking") {
     return (
@@ -130,14 +168,32 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
   },
   userMessage: { alignSelf: "flex-end", backgroundColor: colors.accent },
-  assistantMessage: {
-    alignSelf: "flex-start",
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.lineSoft,
-  },
+  assistantMessage: { alignSelf: "stretch", paddingHorizontal: spacing.xs },
   messageText: { color: colors.ink, fontSize: 15, lineHeight: 22 },
   userText: { color: colors.surface },
+  messageFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    marginTop: -spacing.xs,
+  },
+  messageDuration: { color: colors.inkMuted, fontSize: 12 },
+  copyButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingVertical: spacing.xs,
+  },
+  copyLabel: { color: colors.inkMuted, fontSize: 12, fontWeight: "600" },
+  runIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.sm,
+  },
+  runDot: { width: 14, height: 14, borderRadius: radius.pill, backgroundColor: colors.generating },
+  runDuration: { color: colors.inkMuted, fontSize: 16 },
   secondaryCard: {
     borderLeftWidth: 2,
     borderLeftColor: colors.line,

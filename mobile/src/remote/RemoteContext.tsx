@@ -28,6 +28,7 @@ import {
   saveLastModel,
   saveLastThinking,
 } from "./storage";
+import { modelProviderFromReference, modelReference } from "./types";
 import type {
   ConnectionPhase,
   HistoryMessage,
@@ -36,6 +37,7 @@ import type {
   RemoteModel,
   RemoteSession,
   RemoteSessionState,
+  RemoteWorkspace,
   StreamEvent,
   ThinkingLevel,
 } from "./types";
@@ -46,6 +48,10 @@ interface SessionsData {
 
 interface ModelsData {
   models: RemoteModel[];
+}
+
+interface WorkspacesData {
+  workspaces: RemoteWorkspace[];
 }
 
 interface HistoryData {
@@ -73,6 +79,7 @@ interface RemoteContextValue {
   presence: Presence | null;
   desktopOnline: boolean;
   sessions: RemoteSession[];
+  workspaces: RemoteWorkspace[];
   models: RemoteModel[];
   selectedSessionId: string;
   selectedTitle: string;
@@ -85,8 +92,9 @@ interface RemoteContextValue {
   reconnect(): Promise<void>;
   unpair(): Promise<void>;
   refreshSessions(): Promise<void>;
+  refreshWorkspaces(): Promise<void>;
   selectSession(sessionId: string): Promise<void>;
-  newConversation(): Promise<void>;
+  newConversation(mode?: "chat" | "workspace", workspaceId?: string): Promise<void>;
   closeConversation(): void;
   sendMessage(text: string): Promise<void>;
   abort(): Promise<void>;
@@ -104,20 +112,30 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [credentials, setCredentials] = useState<RemoteCredentials | null>(null);
   const [presence, setPresence] = useState<Presence | null>(null);
   const [sessions, setSessions] = useState<RemoteSession[]>([]);
+  const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([]);
   const [models, setModels] = useState<RemoteModel[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
+  const [draftMode, setDraftMode] = useState<"chat" | "workspace">("chat");
+  const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
   const [timeline, setTimeline] = useState<TimelineState>(emptyTimeline);
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
   const [busy, setBusy] = useState(false);
   const [clock, setClock] = useState(Date.now());
   const clientRef = useRef<RemoteClient | null>(null);
+  const credentialsRef = useRef<RemoteCredentials | null>(null);
   const selectedRef = useRef("");
   const presenceRef = useRef<Presence | null>(null);
   const timelineRef = useRef<TimelineState>(emptyTimeline());
   const recoverRef = useRef<() => Promise<void>>(async () => undefined);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const scheduleReconnectRef = useRef<() => void>(() => undefined);
 
+  useEffect(() => {
+    credentialsRef.current = credentials;
+  }, [credentials]);
   useEffect(() => {
     selectedRef.current = selectedSessionId;
   }, [selectedSessionId]);
@@ -151,6 +169,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     }
   }, []);
 
+  const refreshWorkspaces = useCallback(async () => {
+    const client = clientRef.current;
+    if (!client) return;
+    try {
+      const response = await client.request<WorkspacesData>({ type: "list_workspaces" }, "list");
+      setWorkspaces(response.data.workspaces ?? []);
+    } catch {
+      setWorkspaces([]);
+    }
+  }, []);
+
   const handleEvent = useCallback(
     (event: StreamEvent, sessionId: string) => {
       if (!sessionId || sessionId !== selectedRef.current) return;
@@ -166,6 +195,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     async (nextCredentials: RemoteCredentials) => {
       await clientRef.current?.close();
       const fresh = await ensureFreshCredentials(nextCredentials);
+      credentialsRef.current = fresh;
+      setCredentials(fresh);
       setError(null);
       setPhase("connecting");
       const client = new RemoteClient(fresh, {
@@ -183,23 +214,58 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           setTimeline(state => ({ ...state, streaming }));
         },
         onConnectionState: state => {
-          if (state === "connected") setPhase("connected");
-          if (state === "reconnecting") setPhase("reconnecting");
+          if (state === "connected") {
+            if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+            reconnectAttemptRef.current = 0;
+            setPhase("connected");
+          }
+          if (state === "reconnecting" || state === "disconnected") {
+            setPhase("reconnecting");
+            scheduleReconnectRef.current();
+          }
         },
         onReconnected: () => {
           void recoverRef.current();
         },
         onError: nextError => {
           setError(nextError.message);
-          setPhase("error");
+          setPhase("reconnecting");
+          scheduleReconnectRef.current();
         },
       });
       clientRef.current = client;
       await client.open();
-      await Promise.all([refreshModels(), refreshSessions()]);
+      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
     },
-    [handleEvent, refreshModels, refreshSessions],
+    [handleEvent, refreshModels, refreshSessions, refreshWorkspaces],
   );
+
+  useEffect(() => {
+    scheduleReconnectRef.current = () => {
+      if (reconnectTimerRef.current || !credentialsRef.current) return;
+      const delay = Math.min(30_000, 1_000 * 2 ** reconnectAttemptRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        const stored = credentialsRef.current;
+        if (!stored) return;
+        void (async () => {
+          try {
+            await connect(stored);
+          } catch (nextError) {
+            setError(nextError instanceof Error ? nextError.message : String(nextError));
+            reconnectAttemptRef.current += 1;
+            scheduleReconnectRef.current();
+          }
+        })();
+      }, delay);
+    };
+    return () => {
+      scheduleReconnectRef.current = () => undefined;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    };
+  }, [connect]);
 
   useEffect(() => {
     let active = true;
@@ -215,7 +281,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       } catch (nextError) {
         if (!active) return;
         setError(nextError instanceof Error ? nextError.message : String(nextError));
-        setPhase("error");
+        setPhase("reconnecting");
+        scheduleReconnectRef.current();
       }
     })();
     return () => {
@@ -269,6 +336,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const current = credentials;
     setBusy(true);
     try {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+      reconnectAttemptRef.current = 0;
+      credentialsRef.current = null;
       await clientRef.current?.close();
       clientRef.current = null;
       if (current) await revokeCredentials(current);
@@ -276,6 +347,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setCredentials(null);
       setPresence(null);
       setSessions([]);
+      setWorkspaces([]);
       setSelectedSessionId("");
       setDraft(false);
       setTimeline(emptyTimeline());
@@ -337,18 +409,18 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     recoverRef.current = async () => {
+      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
       const sessionId = selectedRef.current;
       if (!sessionId) return;
       try {
         let next = await loadHistory(sessionId);
         if (timelineRef.current.streaming) next = await backfill(sessionId, next);
         setTimeline(next);
-        await refreshSessions();
       } catch (nextError) {
         setError(nextError instanceof Error ? nextError.message : String(nextError));
       }
     };
-  }, [backfill, loadHistory, refreshSessions]);
+  }, [backfill, loadHistory, refreshModels, refreshSessions, refreshWorkspaces]);
 
   const selectSession = useCallback(
     async (sessionId: string) => {
@@ -371,12 +443,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           sessionId,
         );
         const currentModel = response.data.model ?? "";
-        const matchingModel = models.find(
-          model =>
-            model.id === currentModel ||
-            (model.provider && `${model.provider}/${model.id}` === currentModel),
-        );
-        setModelId(matchingModel?.id ?? currentModel);
+        const matchingModel = models.find(model => modelReference(model) === currentModel);
+        setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
         setThinkingLevelState(response.data.thinkingLevel ?? "off");
       } finally {
         setBusy(false);
@@ -385,26 +453,34 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     [backfill, loadHistory, models],
   );
 
-  const newConversation = useCallback(async () => {
-    const [lastModel, lastThinking] = await Promise.all([loadLastModel(), loadLastThinking()]);
-    const defaultModel =
-      (lastModel && models.some(model => model.id === lastModel) ? lastModel : null) ??
-      models.find(model => model.id === "deepseek-v4-pro")?.id ??
-      models.find(model => model.isDefault)?.id ??
-      models[0]?.id ??
-      "";
-    setSelectedSessionId("");
-    selectedRef.current = "";
-    setDraft(true);
-    setTimeline(emptyTimeline());
-    setModelId(defaultModel);
-    setThinkingLevelState((lastThinking as ThinkingLevel | null) ?? "off");
-  }, [models]);
+  const newConversation = useCallback(
+    async (mode: "chat" | "workspace" = "chat", workspaceId = "") => {
+      const [lastModel, lastThinking] = await Promise.all([loadLastModel(), loadLastThinking()]);
+      const defaultOption = models.find(model => model.isDefault);
+      const defaultModel =
+        (lastModel && models.some(model => modelReference(model) === lastModel)
+          ? lastModel
+          : null) ??
+        (defaultOption ? modelReference(defaultOption) : null) ??
+        (models[0] ? modelReference(models[0]) : "");
+      setSelectedSessionId("");
+      selectedRef.current = "";
+      setDraft(true);
+      setDraftMode(mode);
+      setDraftWorkspaceId(workspaceId);
+      setTimeline(emptyTimeline());
+      setModelId(defaultModel);
+      setThinkingLevelState((lastThinking as ThinkingLevel | null) ?? "off");
+    },
+    [models],
+  );
 
   const closeConversation = useCallback(() => {
     setSelectedSessionId("");
     selectedRef.current = "";
     setDraft(false);
+    setDraftMode("chat");
+    setDraftWorkspaceId("");
     setTimeline(emptyTimeline());
   }, []);
 
@@ -423,7 +499,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             sessionId: selectedRef.current,
             message: text.trim(),
             modelId,
+            providerId: modelProviderFromReference(modelId),
             level: thinkingLevel,
+            ...(draft && draftMode === "workspace"
+              ? { mode: "workspace", workspaceId: draftWorkspaceId }
+              : {}),
           },
           selectedRef.current,
         );
@@ -432,6 +512,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           selectedRef.current = nextSessionId;
           setSelectedSessionId(nextSessionId);
           setDraft(false);
+          setDraftMode("chat");
+          setDraftWorkspaceId("");
           await refreshSessions();
         }
         if (wasDraft && nextSessionId) {
@@ -442,7 +524,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         setBusy(false);
       }
     },
-    [backfill, busy, draft, modelId, refreshSessions, thinkingLevel, timeline],
+    [
+      backfill,
+      busy,
+      draft,
+      draftMode,
+      draftWorkspaceId,
+      modelId,
+      refreshSessions,
+      thinkingLevel,
+      timeline,
+    ],
   );
 
   const abort = useCallback(async () => {
@@ -457,7 +549,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const client = clientRef.current;
     if (client && selectedRef.current) {
       await client.request(
-        { type: "set_model", sessionId: selectedRef.current, modelId: nextModelId },
+        {
+          type: "set_model",
+          sessionId: selectedRef.current,
+          modelId: nextModelId,
+          providerId: modelProviderFromReference(nextModelId),
+        },
         selectedRef.current,
       );
     }
@@ -518,6 +615,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       presence,
       desktopOnline,
       sessions,
+      workspaces,
       models,
       selectedSessionId,
       selectedTitle,
@@ -530,6 +628,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       reconnect,
       unpair,
       refreshSessions,
+      refreshWorkspaces,
       selectSession,
       newConversation,
       closeConversation,
@@ -557,12 +656,14 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       presence,
       reconnect,
       refreshSessions,
+      refreshWorkspaces,
       rename,
       selectSession,
       selectedSessionId,
       selectedTitle,
       sendMessage,
       sessions,
+      workspaces,
       setModel,
       setThinkingLevel,
       thinkingLevel,

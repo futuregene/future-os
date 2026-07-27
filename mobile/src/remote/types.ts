@@ -24,6 +24,15 @@ export interface RemoteSession {
   sessionId: string;
   threadId: string;
   title: string;
+  mode?: "chat" | "workspace";
+  workspaceId?: string;
+}
+
+export interface RemoteWorkspace {
+  id: string;
+  name: string;
+  path: string;
+  description?: string;
 }
 
 export interface PresenceSession {
@@ -47,12 +56,23 @@ export interface RemoteModel {
   isDefault?: boolean;
 }
 
+/** Stable agent model identifier; model ids are only unique within a provider. */
+export function modelReference(model: Pick<RemoteModel, "id" | "provider">): string {
+  if (!model.provider || model.id.startsWith(`${model.provider}/`)) return model.id;
+  return `${model.provider}/${model.id}`;
+}
+
+export function modelProviderFromReference(modelReference: string): string | undefined {
+  const separator = modelReference.indexOf("/");
+  return separator > 0 ? modelReference.slice(0, separator) : undefined;
+}
+
 export interface RemoteSessionState {
   model?: string;
   thinkingLevel?: ThinkingLevel;
 }
 
-export type ThinkingLevel = "off" | "low" | "medium" | "high";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface HistoryMessage {
   role: "user" | "assistant" | "tool" | string;
@@ -82,12 +102,19 @@ export type TimelineItem =
       role: "user" | "assistant";
       text: string;
       runId?: string;
+      durationMs?: number;
     }
   | {
       id: string;
       kind: "thinking";
       text: string;
       complete: boolean;
+      runId?: string;
+    }
+  | {
+      id: string;
+      kind: "run";
+      startedAt: number;
       runId?: string;
     }
   | {
@@ -131,8 +158,10 @@ export interface RemoteCommand {
   offset?: number;
   limit?: number;
   modelId?: string;
+  providerId?: string;
   level?: string;
   name?: string;
+  workspaceId?: string;
   protocolVersion?: number;
   pairId?: string;
   deviceId?: string;

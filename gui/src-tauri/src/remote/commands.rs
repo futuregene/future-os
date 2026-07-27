@@ -89,9 +89,12 @@ struct IncomingCmd {
     limit: i64,
     // set_model / set_thinking_level
     model_id: String,
+    provider_id: String,
     level: String,
     // set_session_name
     name: String,
+    // prompt creation mode / existing workspace selection
+    workspace_id: String,
     // signed application-level pairing handshake
     protocol_version: u32,
     pair_id: String,
@@ -118,8 +121,10 @@ impl Default for IncomingCmd {
             offset: 0,
             limit: 0,
             model_id: String::new(),
+            provider_id: String::new(),
             level: String::new(),
             name: String::new(),
+            workspace_id: String::new(),
             protocol_version: 0,
             pair_id: String::new(),
             device_id: String::new(),
@@ -290,12 +295,36 @@ async fn handle_command(
                 let sessions: Vec<Value> = threads
                     .into_iter()
                     .filter_map(|t| {
-                        t.agent_session_id.map(
-                            |sid| json!({ "sessionId": sid, "title": t.title, "threadId": t.id }),
-                        )
+                        t.agent_session_id.map(|sid| {
+                            json!({
+                                "sessionId": sid,
+                                "title": t.title,
+                                "threadId": t.id,
+                                "mode": t.mode,
+                                "workspaceId": t.workspace_id,
+                            })
+                        })
                     })
                     .collect();
                 reply(client, &msg, true, json!({ "sessions": sessions }), None).await;
+            }
+            Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+        },
+        "list_workspaces" => match crate::store::list_workspaces() {
+            Ok(workspaces) => {
+                let workspaces: Vec<Value> = workspaces
+                    .into_iter()
+                    .filter(|workspace| workspace.kind == "user")
+                    .filter_map(|workspace| serde_json::to_value(workspace).ok())
+                    .collect();
+                reply(
+                    client,
+                    &msg,
+                    true,
+                    json!({ "workspaces": workspaces }),
+                    None,
+                )
+                .await;
             }
             Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
         },
@@ -378,13 +407,15 @@ async fn handle_command(
             // client can latch onto the real session id. Model / thinking level
             // travel with the first prompt so the freshly-created session is
             // seeded with the user's draft selections.
-            let model_id = (!cmd.model_id.trim().is_empty()).then(|| cmd.model_id.clone());
+            let model_id = qualified_model_id(&cmd.model_id, &cmd.provider_id);
             let thinking_level = (!cmd.level.trim().is_empty()).then(|| cmd.level.clone());
             match prepare_remote_prompt(
                 &cmd.session_id,
                 cmd.message.clone(),
                 model_id,
                 thinking_level,
+                cmd.mode.clone(),
+                cmd.workspace_id.clone(),
             )
             .await
             {
@@ -452,7 +483,7 @@ async fn handle_command(
         "set_model" => {
             match crate::agent_bridge::set_session_model(
                 cmd.session_id.clone(),
-                cmd.model_id.clone(),
+                qualified_model_id(&cmd.model_id, &cmd.provider_id).unwrap_or_default(),
             )
             .await
             {
@@ -697,6 +728,22 @@ fn new_chat_thread_input() -> crate::store::CreateThreadInput {
     }
 }
 
+/// Model ids from the agent catalogue are only unique inside their provider.
+/// The Agent RPC accepts a single qualified `provider/model` value, so normalize
+/// new mobile commands and keep legacy already-qualified callers working.
+fn qualified_model_id(model_id: &str, provider_id: &str) -> Option<String> {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return None;
+    }
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() || model_id.contains('/') {
+        Some(model_id.to_string())
+    } else {
+        Some(format!("{provider_id}/{model_id}"))
+    }
+}
+
 /// Find the thread for `session_id` (create a new chat thread when unknown —
 /// remote policy), then persist user message + run via `agent_bridge::headless`.
 async fn prepare_remote_prompt(
@@ -704,6 +751,8 @@ async fn prepare_remote_prompt(
     message: String,
     model_id: Option<String>,
     thinking_level: Option<String>,
+    mode: String,
+    workspace_id: String,
 ) -> Result<crate::agent_bridge::PreparedPrompt, crate::AppError> {
     let thread = match crate::store::find_thread_by_agent_session(session_id)? {
         Some(thread) => thread,
@@ -712,7 +761,23 @@ async fn prepare_remote_prompt(
             // from it (mirrors the GUI new-chat draft), and immediately gets a
             // real agent session id so the ack, the event subjects, and history
             // all agree from the start (no empty row, no id drift).
-            let mut input = new_chat_thread_input();
+            let mut input = if mode == "workspace" {
+                if workspace_id.trim().is_empty() {
+                    return Err(crate::AppError::Message(
+                        "Select a workspace before starting a workspace conversation.".to_string(),
+                    ));
+                }
+                crate::store::CreateThreadInput {
+                    mode: "workspace".to_string(),
+                    title: None,
+                    workspace_id: Some(workspace_id),
+                    workspace_path: None,
+                    workspace_name: None,
+                    agent_session_id: None,
+                }
+            } else {
+                new_chat_thread_input()
+            };
             input.title = Some(derive_thread_title(&message));
             let mut thread = crate::store::create_thread(input)?;
             match crate::agent_bridge::provision_agent_session(

@@ -63,17 +63,30 @@ export class RemoteClient {
   private async openSocket(): Promise<void> {
     const generation = ++this.generation;
     const seed = encoder.encode(this.credentials.seed);
-    const connection = await connect({
-      servers: this.credentials.natsWsUrl,
-      inboxPrefix: `p.${this.credentials.pairId}.rep.${this.credentials.deviceId}`,
-      authenticator: jwtAuthenticator(this.credentials.userJwt, seed),
-    });
+    let connection: NatsConnection;
+    try {
+      connection = await connect({
+        servers: this.credentials.natsWsUrl,
+        inboxPrefix: `p.${this.credentials.pairId}.rep.${this.credentials.deviceId}`,
+        authenticator: jwtAuthenticator(this.credentials.userJwt, seed),
+      });
+    } catch (error) {
+      throw errorWithContext(
+        `nats_connect_failed (${safeServerLabel(this.credentials.natsWsUrl)})`,
+        error,
+      );
+    }
     if (this.stopped || generation !== this.generation) {
       await connection.close();
       return;
     }
     try {
-      const confirmation = await this.ensureHandshake(connection);
+      let confirmation: HandshakeConfirmation;
+      try {
+        confirmation = await this.ensureHandshake(connection);
+      } catch (error) {
+        throw errorWithContext("desktop_handshake_failed", error);
+      }
       if (this.stopped || generation !== this.generation) {
         await connection.close();
         return;
@@ -293,5 +306,27 @@ export class RemoteClient {
 }
 
 function asError(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
+  return errorWithContext("remote_error", value);
+}
+
+function errorWithContext(context: string, value: unknown): Error {
+  const record =
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+  const rawMessage = value instanceof Error ? value.message : value;
+  const message = typeof rawMessage === "string" ? rawMessage.trim() : "";
+  const code = typeof record?.code === "string" ? record.code.trim() : "";
+  const name = typeof record?.name === "string" ? record.name.trim() : "";
+  const detail = [code, message, name && name !== "Error" ? name : ""].find(Boolean) ?? "unknown";
+  const error = new Error(`${context}: ${detail}`);
+  if (value instanceof Error) error.cause = value;
+  return error;
+}
+
+function safeServerLabel(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return "invalid server URL";
+  }
 }

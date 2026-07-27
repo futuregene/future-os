@@ -1,6 +1,7 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { Clipboard, ScanLine, ShieldCheck } from "lucide-react-native";
-import { useCallback, useRef, useState } from "react";
+import type { TFunction } from "i18next";
+import { Clipboard, ScanLine } from "lucide-react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
@@ -9,50 +10,76 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   StyleSheet,
   Text,
   TextInput,
   TouchableWithoutFeedback,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
 import { pairingCodeFromQr } from "../remote/codec";
 import { useRemote } from "../remote/RemoteContext";
 import { colors, radius, spacing } from "../theme/tokens";
 import { VERSION } from "../version.generated";
 
-function pairingErrorKey(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (message === "unexpected_pairing_host") return "pairing.host";
-  if (message === "invalid_pairing_code") return "pairing.invalid";
-  return "common.error";
+function pairingErrorMessage(error: unknown, t: TFunction): string {
+  const rawMessage = error instanceof Error ? error.message : error;
+  const message = (typeof rawMessage === "string" ? rawMessage.trim() : "") || "unknown error";
+  if (message === "unexpected_pairing_host") return t("pairing.host");
+  if (message === "invalid_pairing_code") return t("pairing.invalid");
+  return t("pairing.failedWithReason", { reason: message });
 }
 
 export function PairingScreen() {
   const { t } = useTranslation();
   const remote = useRemote();
   const [permission, requestPermission] = useCameraPermissions();
-  const [scanError, setScanError] = useState<string | null>(null);
   const scanLocked = useRef(false);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualCode, setManualCode] = useState("");
   const [manualError, setManualError] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  useEffect(
+    () => () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    },
+    [],
+  );
+
+  const showToast = useCallback((message: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToastMessage(message);
+    toastTimer.current = setTimeout(() => {
+      setToastMessage(null);
+      toastTimer.current = null;
+    }, 4_500);
+  }, []);
 
   const doPair = useCallback(
     async (code: string) => {
-      setScanError(null);
       setManualError(null);
       try {
         await remote.pair(code);
       } catch (error) {
-        const key = pairingErrorKey(error);
-        setScanError(t(key));
-        setManualError(t(key));
+        const message = pairingErrorMessage(error, t);
+        const record =
+          typeof error === "object" && error !== null ? (error as Record<string, unknown>) : null;
+        console.warn("remote pairing failed", {
+          name: typeof record?.name === "string" ? record.name : typeof error,
+          message: typeof record?.message === "string" ? record.message : "",
+          code: record?.code,
+          cause: error instanceof Error ? error.cause : undefined,
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+        setManualError(message);
+        showToast(message);
         throw error;
       }
     },
-    [remote, t],
+    [remote, showToast, t],
   );
 
   const handleScan = useCallback(
@@ -60,7 +87,7 @@ export function PairingScreen() {
       if (scanLocked.current || remote.busy) return;
       const code = pairingCodeFromQr(data);
       if (!code) {
-        setScanError(t("pairing.invalid"));
+        showToast(t("pairing.invalid"));
         return;
       }
       scanLocked.current = true;
@@ -72,7 +99,7 @@ export function PairingScreen() {
         }, 1200);
       }
     },
-    [doPair, remote.busy, t],
+    [doPair, remote.busy, showToast, t],
   );
 
   const handleManualSubmit = useCallback(async () => {
@@ -82,6 +109,7 @@ export function PairingScreen() {
     const code = pairingCodeFromQr(trimmed);
     if (!code) {
       setManualError(t("pairing.invalid"));
+      showToast(t("pairing.invalid"));
       return;
     }
     try {
@@ -90,22 +118,14 @@ export function PairingScreen() {
     } catch {
       // error shown via manualError in doPair
     }
-  }, [doPair, manualCode, t]);
+  }, [doPair, manualCode, showToast, t]);
 
   const scanning = remote.phase === "claiming" || remote.busy;
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView edges={["top", "bottom"]} style={styles.safe}>
       <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
         <View style={styles.page}>
-          <View style={styles.header}>
-            <View style={styles.brandMark}>
-              <ShieldCheck color={colors.accent} size={24} strokeWidth={2.2} />
-            </View>
-            <Text style={styles.brand}>{t("appName")}</Text>
-            <Text style={styles.kicker}>{t("remote")}</Text>
-          </View>
-
           <View style={styles.copy}>
             <Text style={styles.title}>{t("pairing.title")}</Text>
             <Text style={styles.description}>{t("pairing.description")}</Text>
@@ -137,26 +157,28 @@ export function PairingScreen() {
             )}
           </View>
 
-          <Pressable
-            accessibilityRole="button"
-            disabled={scanning}
-            onPress={() => {
-              setManualCode("");
-              setManualError(null);
-              setManualOpen(true);
-            }}
-            style={({ pressed }) => [styles.manualButton, pressed && styles.manualPressed]}
-          >
-            <Clipboard color={colors.inkSoft} size={17} />
-            <Text style={styles.manualLabel}>{t("pairing.manual")}</Text>
-          </Pressable>
+          <View style={styles.footer}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={scanning}
+              onPress={() => {
+                setManualCode("");
+                setManualError(null);
+                setManualOpen(true);
+              }}
+              style={({ pressed }) => [styles.manualButton, pressed && styles.manualPressed]}
+            >
+              <Clipboard color={colors.inkSoft} size={17} />
+              <Text style={styles.manualLabel}>{t("pairing.manual")}</Text>
+            </Pressable>
+            <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
+          </View>
 
-          {(scanError || remote.error) && (
-            <Text accessibilityRole="alert" style={styles.error}>
-              {scanError ?? t(pairingErrorKey(remote.error))}
-            </Text>
+          {toastMessage && (
+            <View accessibilityRole="alert" style={styles.toast}>
+              <Text style={styles.toastText}>{toastMessage}</Text>
+            </View>
           )}
-          <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
 
           <Modal
             animationType="fade"
@@ -182,9 +204,7 @@ export function PairingScreen() {
                   style={styles.codeInput}
                   value={manualCode}
                 />
-                {manualError && (
-                  <Text style={styles.manualError}>{manualError}</Text>
-                )}
+                {manualError && <Text style={styles.manualError}>{manualError}</Text>}
                 <View style={styles.dialogActions}>
                   <View style={styles.dialogAction}>
                     <Button
@@ -215,18 +235,7 @@ export function PairingScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.canvas },
   page: { flex: 1, paddingHorizontal: spacing.xl, paddingTop: spacing.xl },
-  header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  brandMark: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.md,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.accentSoft,
-  },
-  brand: { color: colors.inkStrong, fontSize: 19, fontWeight: "700" },
-  kicker: { color: colors.inkMuted, fontSize: 14 },
-  copy: { marginTop: spacing.xxl, marginBottom: spacing.xl },
+  copy: { marginBottom: spacing.xl },
   title: { color: colors.inkStrong, fontSize: 28, fontWeight: "700", letterSpacing: -0.5 },
   description: { color: colors.inkSoft, fontSize: 16, lineHeight: 24, marginTop: spacing.md },
   scanner: {
@@ -279,21 +288,30 @@ const styles = StyleSheet.create({
   },
   manualPressed: { backgroundColor: colors.surfaceSubtle },
   manualLabel: { color: colors.inkSoft, fontSize: 14, fontWeight: "600" },
-  error: {
-    marginTop: spacing.md,
-    padding: spacing.md,
-    borderRadius: radius.md,
-    color: colors.danger,
-    backgroundColor: colors.dangerSoft,
-    borderWidth: 1,
-    borderColor: colors.dangerLine,
-  },
+  footer: { marginTop: "auto" },
   version: {
     color: colors.inkMuted,
     fontSize: 12,
     textAlign: "center",
-    paddingVertical: spacing.lg,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.sm,
   },
+  toast: {
+    position: "absolute",
+    right: spacing.xl,
+    bottom: spacing.xl,
+    left: spacing.xl,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.inkStrong,
+    shadowColor: "#000",
+    shadowOpacity: 0.16,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
+  },
+  toastText: { color: colors.surface, fontSize: 14, fontWeight: "600", textAlign: "center" },
   overlay: {
     flex: 1,
     alignItems: "center",

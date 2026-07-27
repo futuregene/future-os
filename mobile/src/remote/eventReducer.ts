@@ -69,9 +69,17 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
   let streaming = state.streaming;
 
   switch (event.type) {
-    case "agent_start":
+    case "agent_start": {
       streaming = true;
+      const id = `run:${runId ?? event.idx ?? items.length}`;
+      items = upsertItem(
+        items,
+        id,
+        () => ({ id, kind: "run", startedAt: Date.now(), runId }),
+        item => item,
+      );
       break;
+    }
     case "text_chunk": {
       const id = `assistant:${runId ?? event.idx ?? items.length}`;
       const chunk = textValue(data.text);
@@ -151,9 +159,20 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
         },
       ];
       break;
-    case "agent_end":
+    case "agent_end": {
       streaming = false;
+      const runItem = items.find(item => item.kind === "run" && item.runId === runId);
+      const durationMs =
+        runItem && runItem.kind === "run" ? Date.now() - runItem.startedAt : undefined;
+      items = items
+        .filter(item => item.kind !== "run" || item.runId !== runId)
+        .map(item =>
+          item.kind === "message" && item.role === "assistant" && item.runId === runId && durationMs
+            ? { ...item, durationMs }
+            : item,
+        );
       break;
+    }
     default:
       break;
   }
