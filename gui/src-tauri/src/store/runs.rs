@@ -96,7 +96,9 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
             now
         ],
     )?;
-    loaded(get_run(&id)?, "Created run")
+    let run = loaded(get_run(&id)?, "Created run")?;
+    mark_catalog_dirty();
+    Ok(run)
 }
 
 /// Resolved agent session ids of every run that is not yet terminal — i.e. the
@@ -266,6 +268,9 @@ pub fn update_run_status_if_active(input: UpdateRunStatusInput) -> Result<bool, 
     let tx = conn.transaction()?;
     let changed = update_run_status_if_active_tx(&tx, &input, now)?;
     tx.commit()?;
+    if changed {
+        mark_catalog_dirty();
+    }
     Ok(changed)
 }
 
@@ -334,7 +339,11 @@ pub fn fail_run_if_active(
         ),
         params![error_message, error_type, now, run_id],
     )?;
-    Ok(affected > 0)
+    let changed = affected > 0;
+    if changed {
+        mark_catalog_dirty();
+    }
+    Ok(changed)
 }
 
 pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {

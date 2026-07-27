@@ -140,6 +140,7 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
 
     let thread = loaded(get_thread_in(&tx, &thread_id)?, "Created thread")?;
     tx.commit()?;
+    mark_catalog_dirty();
     Ok(thread)
 }
 
@@ -176,7 +177,9 @@ pub fn rename_thread(input: RenameThreadInput) -> Result<ThreadRecord, crate::Ap
         params![title, now, input.thread_id],
     )?;
 
-    loaded(get_thread(&input.thread_id)?, "Thread")
+    let thread = loaded(get_thread(&input.thread_id)?, "Thread")?;
+    mark_catalog_dirty();
+    Ok(thread)
 }
 
 pub(super) fn sync_thread_title_in(
@@ -194,6 +197,9 @@ pub(super) fn sync_thread_title_in(
          WHERE id = ?2 AND status != 'deleted' AND title != ?1",
         params![title, thread_id],
     )?;
+    if changed > 0 {
+        mark_catalog_dirty();
+    }
     Ok(changed > 0)
 }
 
@@ -229,6 +235,7 @@ pub fn update_thread_session_id(thread_id: &str, session_id: &str) -> Result<(),
          WHERE id = ?3 AND status != 'deleted'",
         params![session_id, now, thread_id],
     )?;
+    mark_catalog_dirty();
     Ok(())
 }
 
@@ -244,6 +251,7 @@ pub fn move_thread_to_workspace(
          WHERE id = ?3 AND status != 'deleted'",
         params![workspace_id, now, thread_id],
     )?;
+    mark_catalog_dirty();
     Ok(())
 }
 
@@ -385,6 +393,7 @@ pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
     }
     tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
     tx.commit()?;
+    mark_catalog_dirty();
 
     Ok(thread)
 }

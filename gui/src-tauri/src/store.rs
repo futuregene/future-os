@@ -66,6 +66,7 @@ pub use threads::{
     rename_thread, restore_thread, sync_thread_title, update_thread_model,
     update_thread_session_id, update_thread_thinking_level, ThreadRecord,
 };
+pub use util::{mark_catalog_dirty, take_catalog_dirty};
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
     create_workspace, delete_workspace, get_or_create_chat_workspace, get_workspace,
