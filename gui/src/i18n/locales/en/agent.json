@@ -35,33 +35,40 @@
     "noActiveThread": "No active thread.",
     "jumpToLatest": "Jump to latest",
     "defaultTitle": "FutureOS",
-    "agentDoneNoText": "Future Agent finished but returned no text.",
-    "messagesLoadFailed": "Failed to load FutureOS messages: {{message}}",
+    "agentDoneNoText": "The assistant finished but returned no text.",
+    "messagesLoadFailed": "Couldn't load this conversation. Please try again — if it keeps happening, restart FutureOS.",
     "alreadyRunning": "A response is already in progress for this conversation.",
-    "sessionRecreated": "The previous agent session for this conversation was unavailable (its data was lost), so a fresh session was started. The history above is kept for reference, but the agent can no longer see it.",
+    "sessionRecreated": "The previous background record of this conversation was lost, so a fresh one was started. The history above is kept, but the assistant can no longer see it.",
     "responseInterrupted": "The response was interrupted before it finished."
   },
   "failure": {
-    "connect": "Future Agent connection failed: {{message}}\n\nMake sure the agent is running and FUTURE_AGENT_GRPC_ADDR points to 127.0.0.1:50051.",
-    "run": "Run failed: {{message}}"
+    "connect": "Couldn't connect to the FutureOS background service.\n\nPlease quit FutureOS completely, reopen it, and try again.",
+    "run": "Run failed: {{message}}",
+    "unknown": "The run failed. Please try again later.",
+    "insufficientCredit": "Insufficient account balance, so this run could not finish. Please top up at https://future-os.cn/platform/#recharge and try again — if you are on a team account, ask your admin to recharge.",
+    "auth": "Model authentication failed: the API key is invalid or expired. Check your model provider settings and try again.",
+    "rateLimited": "Too many requests — the model service is rate limiting. Please wait a moment and try again.",
+    "serverError": "The model service is temporarily unavailable (HTTP {{status}}). Please try again later.",
+    "contextLimit": "The conversation exceeds the model's context length limit. Start a new conversation or compact the current context, then try again.",
+    "network": "Network error — the model service is unreachable. Check your connection and try again."
   },
   "notice": {
     "retry": "Retry",
     "agentUnavailable": {
-      "title": "Future Agent is not running",
-      "detail": "Start Future Agent first, then click Retry."
+      "title": "FutureOS background service is not running",
+      "detail": "Please reopen FutureOS, then click Retry."
     },
     "modelError": {
       "title": "Failed to load models",
-      "detail": "The agent is reachable, but the model list could not be fetched."
+      "detail": "The background service is connected, but the model list couldn't be loaded. Please try again later."
     },
     "connectionError": {
       "title": "Connection error",
-      "detail": "Check FUTURE_AGENT_GRPC_ADDR and try again."
+      "detail": "Please reopen FutureOS and try again."
     },
     "needsLogin": {
       "title": "No model configured",
-      "detail": "Connected to Future Agent, but no models are available yet. Sign in with FutureOS, or configure your own API provider (OpenAI, DeepSeek, etc.).",
+      "detail": "The background service is connected, but no models are available yet. Sign in with FutureOS, or set up your own model service (OpenAI, DeepSeek, etc.).",
       "action": "Configure providers"
     },
     "noModels": {
@@ -87,7 +94,7 @@
     "attachRejectedLimit": "{{name}} (up to {{count}} images)",
     "attachRejectedReason": "{{name}} ({{reason}})",
     "model": "Model",
-    "startAgentForModels": "Start Future Agent to load models.",
+    "startAgentForModels": "Reopen FutureOS to load models.",
     "allModelsDisabled": "Models are loaded but all disabled. Enable one in Settings.",
     "thinkingLevel": "Thinking level",
     "thinkingLevelLabels": {

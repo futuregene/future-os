@@ -5,7 +5,7 @@ import type { AgentMessage, MessageSegment } from "./agentThreadTypes";
 import { getRun, listRunEvents, listRunEventsBulk, listRunEventsSince, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { buildAssistantRunProjection, createRunProjector } from "./agentActivity";
-import { matchesSettledRun } from "./agentMessageFormatters";
+import { buildAgentFailureContent, matchesSettledRun } from "./agentMessageFormatters";
 
 /** Apply a patch to the single message with `id`, leaving the rest untouched. */
 export function patchMessage(
@@ -344,7 +344,17 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
   // active run to an old assistant turn (positional misalignment after an
   // abort) would steal the runId and block the streaming bubble from ever
   // appearing.
-  const settled = runs.filter(run => matchesSettledRun(run.status));
+  const settledAll = runs.filter(run => matchesSettledRun(run.status));
+
+  // Exclude orphan runs (no turn inside their window — the run failed before
+  // the agent saved any assistant entry). Pairing them positionally would stamp
+  // the failure onto the previous turn and misalign every older pairing.
+  // Guard: only trust window matching when at least one run actually matches a
+  // turn — legacy sessions without entry timestamps would orphan every run and
+  // wipe out all pairing, so fall back to the positional behavior there.
+  const settled = settledAll.some(run => runMatchesAnyTurn(run, messages))
+    ? settledAll.filter(run => !isOrphanRun(run, messages))
+    : settledAll;
 
   // The agent's save_callback persists each completed LLM call MID-RUN, so an
   // active (still-streaming) run can already have a partial assistant entry on
@@ -355,7 +365,7 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
   // and — worse — defeats streamingBubbleBase's duplicate detection, so the
   // frozen partial renders next to the growing live bubble (the "ABC, ABC →
   // ABC, ABCDE" duplicate).
-  const inFlight = runs.length - settled.length;
+  const inFlight = runs.filter(run => !matchesSettledRun(run.status)).length;
   const skipNewest = Math.min(Math.max(turnIndices.length - settled.length, 0), inFlight);
   const assignable = turnIndices.slice(skipNewest);
 
@@ -387,6 +397,49 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
 function runEndedIso(run: StoredRun): string | null {
   const ms = run.endedAt ?? run.updatedAt;
   return typeof ms === "number" ? storedTimeToIso(ms) : null;
+}
+
+/**
+ * Slack when matching a turn's timestamp against a run's [start, end] window —
+ * covers the gap between the user entry's save time and the run's creation,
+ * plus minor clock granularity differences.
+ */
+const RUN_WINDOW_TOLERANCE_MS = 30_000;
+
+/**
+ * A run's [start, end] window (ms) widened by tolerance, or null when the run
+ * carries no usable start time (legacy rows) and window matching can't apply.
+ */
+function runWindow(run: StoredRun): { start: number; end: number } | null {
+  if (typeof run.startedAt !== "number")
+    return null;
+  const end = run.endedAt ?? run.updatedAt ?? run.startedAt;
+  return { start: run.startedAt - RUN_WINDOW_TOLERANCE_MS, end: end + RUN_WINDOW_TOLERANCE_MS };
+}
+
+/** Whether any projected assistant turn's timestamp falls inside the run's window. */
+function runMatchesAnyTurn(run: StoredRun, messages: AgentMessage[]): boolean {
+  const window = runWindow(run);
+  if (!window)
+    return false;
+  return messages.some((message) => {
+    if (message.role !== "assistant" || isCompactionDivider(message))
+      return false;
+    const at = Date.parse(message.createdAt);
+    return Number.isFinite(at) && at >= window.start && at <= window.end;
+  });
+}
+
+/**
+ * A settled run that produced NO assistant turn in the session JSONL — e.g. the
+ * very first LLM call failed (insufficient credit, auth) or the run died before
+ * any entry was saved. Positional newest-first pairing would stamp such a run
+ * onto the PREVIOUS turn, misaligning every older pairing; detect it by
+ * timestamp so it can be excluded from pairing and surfaced as its own failure
+ * bubble instead ({@link recoverFailedRuns}).
+ */
+function isOrphanRun(run: StoredRun, messages: AgentMessage[]): boolean {
+  return runWindow(run) !== null && !runMatchesAnyTurn(run, messages);
 }
 
 /** Whether a turn projected from session entries carries nothing renderable. */
@@ -445,6 +498,59 @@ export async function recoverAbortedTurns(messages: AgentMessage[]): Promise<Age
   catch {
     return messages;
   }
+}
+
+/**
+ * Restore failure bubbles for runs that failed before the agent saved any
+ * assistant entry (e.g. the first LLM call rejected with HTTP 402 insufficient
+ * credit). The live send pipeline shows a failure bubble for these, but the
+ * agent session JSONL — the reload source of truth — has no trace of the turn,
+ * so without this the error silently vanishes on a thread switch / reload. The
+ * SQLite `runs` table still carries status + errorMessage, so rebuild the same
+ * friendly failure bubble the live path showed and splice it in at the run's
+ * chronological position (usually the tail; mid-history when the user retried
+ * and a later turn succeeded).
+ */
+export function recoverFailedRuns(messages: AgentMessage[], runs: StoredRun[]): AgentMessage[] {
+  // Same guard as applyRunMetadata: when NO run window matches any turn, the
+  // session's timestamps are meaningless (legacy entries get load-time `now`
+  // backfilled by the agent), every run would look like an orphan, and bubbles
+  // would be spliced to the wrong end of history. Skip recovery there — it
+  // degrades to main's behavior instead of inventing misplaced bubbles.
+  if (!runs.some(run => runMatchesAnyTurn(run, messages)))
+    return messages;
+  const orphans = runs.filter(run =>
+    run.status === "failed"
+    && !messages.some(message => message.runId === run.id)
+    && isOrphanRun(run, messages));
+  if (orphans.length === 0)
+    return messages;
+
+  const out = [...messages];
+  // `runs` arrive newest-first; insert oldest-first so earlier insertions
+  // don't shift the position of later ones.
+  for (const run of [...orphans].reverse()) {
+    const bubble: AgentMessage = {
+      // Stable id derived from the run — repeated reloads rebuild the same
+      // bubble instead of keying off a random client id.
+      id: `failed_${run.id}`,
+      role: "assistant",
+      authorKey: "author.researchCopilot",
+      content: buildAgentFailureContent(run.errorMessage ?? ""),
+      status: "failed",
+      runId: run.id,
+      modelId: run.modelId ?? undefined,
+      createdAt: runEndedIso(run) ?? new Date().toISOString(),
+      durationMs: runDurationMs(run),
+    };
+    const bubbleAt = Date.parse(bubble.createdAt);
+    const index = out.findIndex(message => Date.parse(message.createdAt) > bubbleAt);
+    if (index === -1)
+      out.push(bubble);
+    else
+      out.splice(index, 0, bubble);
+  }
+  return out;
 }
 
 let clientIdCounter = 0;

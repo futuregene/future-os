@@ -193,7 +193,7 @@ export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) 
   // Well-known models get their preferred default, overriding whatever
   // the agent's list_models returns (which currently hardcodes "high").
   if (modelId === "deepseek-v4-pro" || modelId.endsWith("/deepseek-v4-pro"))
-    return "xhigh";
+    return "high";
   return modelOption(modelId, models)?.thinkingLevel ?? undefined;
 }
 

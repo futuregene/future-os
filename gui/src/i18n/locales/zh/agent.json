@@ -31,33 +31,40 @@
     "noActiveThread": "没有活动对话。",
     "jumpToLatest": "回到最新",
     "defaultTitle": "FutureOS",
-    "agentDoneNoText": "Future Agent 已完成，但没有返回文本。",
-    "messagesLoadFailed": "FutureOS 消息读取失败：{{message}}",
+    "agentDoneNoText": "助手已完成回复，但没有返回内容。",
+    "messagesLoadFailed": "对话记录加载失败，请稍后重试；如果反复出现，请重新打开 FutureOS。",
     "alreadyRunning": "该对话已有一个回复正在进行中。",
-    "sessionRecreated": "该对话此前的 Agent 会话已不可用（数据丢失），已开启新会话。上方历史消息保留供查阅，但 Agent 已无法看到它们。",
+    "sessionRecreated": "此对话之前的后台记录已丢失，已自动开始新的对话。上方的历史消息仍然保留，但助手已经看不到它们了。",
     "responseInterrupted": "回复在完成前被中断。"
   },
   "failure": {
-    "connect": "Future Agent 连接失败：{{message}}\n\n请确认 Agent 已启动，并且 FUTURE_AGENT_GRPC_ADDR 指向 127.0.0.1:50051。",
-    "run": "运行失败：{{message}}"
+    "connect": "无法连接 FutureOS 后台服务。\n\n请完全退出 FutureOS 后重新打开，然后再试一次。",
+    "run": "运行失败：{{message}}",
+    "unknown": "运行失败，请稍后重试。",
+    "insufficientCredit": "账户余额不足，本次对话未能完成。请前往 https://future-os.cn/platform/#recharge 充值后重试；如果您使用的是团队账户，请联系管理员充值。",
+    "auth": "模型服务验证失败：密钥无效或已过期。请检查模型提供商配置后重试。",
+    "rateLimited": "请求过于频繁，模型服务已触发限流。请稍等片刻后重试。",
+    "serverError": "模型服务暂时不可用（HTTP {{status}}）。请稍后重试。",
+    "contextLimit": "对话内容超出模型的上下文长度限制。建议开启新对话，或压缩当前上下文后重试。",
+    "network": "网络连接异常，无法访问模型服务。请检查网络连接后重试。"
   },
   "notice": {
     "retry": "重试",
     "agentUnavailable": {
-      "title": "Future Agent 未运行",
-      "detail": "请先启动 Future Agent，然后点击重试。"
+      "title": "FutureOS 后台服务未启动",
+      "detail": "请重新打开 FutureOS，然后点击重试。"
     },
     "modelError": {
       "title": "模型加载失败",
-      "detail": "Agent 可连接，但获取模型列表失败。"
+      "detail": "后台服务连接正常，但模型列表加载失败，请稍后重试。"
     },
     "connectionError": {
       "title": "连接异常",
-      "detail": "请检查 FUTURE_AGENT_GRPC_ADDR 后重试。"
+      "detail": "请重新打开 FutureOS 后重试。"
     },
     "needsLogin": {
       "title": "尚未配置模型",
-      "detail": "已连接 Future Agent，但还没有可用模型。你可以登录 FutureOS 账号，或直接配置自己的 API 提供商（如 OpenAI、DeepSeek 等）。",
+      "detail": "后台服务已连接，但还没有可用模型。你可以登录 FutureOS 账号，或直接配置自己的模型服务（如 OpenAI、DeepSeek 等）。",
       "action": "配置提供商"
     },
     "noModels": {
@@ -83,7 +90,7 @@
     "attachRejectedLimit": "{{name}}（最多 {{count}} 张图片）",
     "attachRejectedReason": "{{name}}（{{reason}}）",
     "model": "模型",
-    "startAgentForModels": "启动 Future Agent 以加载模型。",
+    "startAgentForModels": "请重新打开 FutureOS 以加载模型。",
     "allModelsDisabled": "已加载到模型，但已全部禁用。请在设置中启用。",
     "thinkingLevel": "思考强度",
     "thinkingLevelLabels": {

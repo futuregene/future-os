@@ -9,7 +9,7 @@ import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun } from "./agentMessageFormatters";
 import { entriesToMessages } from "./entryProjection";
-import { applyRunMetadata, recoverAbortedTurns } from "./threadRunProjection";
+import { applyRunMetadata, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
   threadId: string | null;
@@ -147,8 +147,13 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
       // An aborted turn has no reply in the session JSONL — recover the partial
       // text the model streamed (persisted as run events) so it isn't lost.
       const recovered = await recoverAbortedTurns(withRunMeta);
+      // A run that failed before any assistant entry was saved (e.g. the model
+      // API rejected the first call) leaves no trace in the session JSONL —
+      // rebuild its failure bubble from the run record so the error survives a
+      // thread switch instead of silently disappearing.
+      const withFailures = recoverFailedRuns(recovered, runs);
       await refreshRecentRun(tid, wid).catch(() => {});
-      return { status: "loaded", messages: recovered };
+      return { status: "loaded", messages: withFailures };
     }
     catch (error) {
       return { status: "failed", error: errorMessage(error) };
