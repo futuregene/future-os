@@ -1,7 +1,7 @@
 import type { UpdateStatus } from "../../components/layout/hooks/useUpdateChecker";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import { Boxes, FlaskConical, Info, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound } from "lucide-react";
+import { Boxes, FlaskConical, Info, RefreshCw, RotateCcw, Settings2, Smartphone, Sparkles, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
@@ -13,10 +13,11 @@ import { EnvironmentPage } from "./EnvironmentPage";
 import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
 import { ProvidersPage } from "./ProvidersPage";
+import { RemotePage } from "./RemotePage";
 import { ResetPage } from "./ResetPage";
 import { UpdatePage } from "./UpdatePage";
 
-export type SettingsTab = "general" | "account" | "update" | "about" | "providers" | "models" | "environment" | "reset";
+export type SettingsTab = "general" | "remote" | "account" | "update" | "about" | "providers" | "models" | "environment" | "reset";
 
 // `devOnly` items are only shown on non-release builds — the environment switch
 // is a dev affordance; release builds are production-locked.
@@ -24,6 +25,7 @@ const NAV_GROUPS = [
   {
     items: [
       { icon: Settings2, labelKey: "dialog.tabs.general", value: "general" as const },
+      { icon: Smartphone, labelKey: "dialog.tabs.remote", value: "remote" as const, devOnly: true },
       { icon: UserRound, labelKey: "dialog.tabs.account", value: "account" as const },
       { icon: RefreshCw, labelKey: "dialog.tabs.update", value: "update" as const },
       { icon: Info, labelKey: "dialog.tabs.about", value: "about" as const },
@@ -48,6 +50,7 @@ const NAV_GROUPS = [
 
 const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
   general: "dialog.tabs.general",
+  remote: "dialog.tabs.remote",
   account: "dialog.tabs.account",
   update: "dialog.tabs.update",
   about: "dialog.tabs.about",
@@ -98,10 +101,10 @@ export function SettingsDialog({
     }
   }, [open, initialTab]);
 
-  // Never strand on the (hidden) environment tab on a release build.
+  // Never strand on a dev-only tab (environment / remote) on a release build.
   useEffect(() => {
-    if (!showEnvironment && tab === "environment") {
-      setTab("reset");
+    if (!showEnvironment && (tab === "environment" || tab === "remote")) {
+      setTab("general");
     }
   }, [showEnvironment, tab]);
 
@@ -171,6 +174,14 @@ export function SettingsDialog({
                     onToggleShowThinking={value => onChangeSettings({ showThinking: value })}
                     autoUpgradeSkills={appSettings.autoUpgradeSkills}
                     onToggleAutoUpgradeSkills={value => onChangeSettings({ autoUpgradeSkills: value })}
+                  />
+                )
+              : null}
+            {tab === "remote" && showEnvironment
+              ? (
+                  <RemotePage
+                    autoConnectRemote={appSettings.autoConnectRemote}
+                    onToggleAutoConnectRemote={value => onChangeSettings({ autoConnectRemote: value })}
                   />
                 )
               : null}

@@ -375,6 +375,33 @@ pub fn run() {
             // Shadow-review maintenance (consistency check + crash recovery) runs
             // off the launch path so it never delays the window.
             std::thread::spawn(shadow_review::run_startup_maintenance);
+            // Remote auto-connect: a desktop can pair with exactly one phone, so
+            // when the user has opted in (Settings → Remote) and a pairing is
+            // already persisted, reconnect to that device on launch — they can
+            // still disconnect by hand from the Remote view. Runs off the launch
+            // path (NATS connect does network IO) so it never delays the window.
+            // Gated to non-release builds to match the Remote nav entry, which is
+            // hidden in release builds: autostarting an invisible bridge there
+            // would leave the user no way to stop it. The store is initialized
+            // above, so the setting read is safe here.
+            if !build_info::is_release()
+                && store::get_app_settings()
+                    .map(|settings| settings.auto_connect_remote)
+                    .unwrap_or(false)
+                && remote::pairing::load_creds().is_some()
+            {
+                std::thread::spawn(|| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("tokio runtime");
+                    rt.block_on(async {
+                        if let Err(error) = remote::start(remote::RemoteStartInput {}).await {
+                            eprintln!("FutureOS remote auto-connect failed: {error}");
+                        }
+                    });
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

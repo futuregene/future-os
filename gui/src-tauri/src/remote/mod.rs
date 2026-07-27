@@ -403,8 +403,12 @@ pub fn status() -> RemoteStatus {
         }
         // A bridge that stopped on its own (revoked pairing) explains itself
         // through the last recorded error code instead of a bare "not running".
+        // When stopped, surface the persisted pair_id so the frontend can still
+        // show the paired row (disconnected state) — the authoritative pairing
+        // fact is the persisted credential, not the runtime STATE.
         None => RemoteStatus {
             error_code: LAST_ERROR_CODE.lock().unwrap().clone(),
+            pair_id: pairing::load_creds().map(|c| c.pair_id).unwrap_or_default(),
             ..empty()
         },
     }

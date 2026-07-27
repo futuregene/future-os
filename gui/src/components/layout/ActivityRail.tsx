@@ -1,5 +1,7 @@
 import type { LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { RemoteIndicator } from "./hooks/useRemoteStatus";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import {
   Blocks,
@@ -57,6 +59,8 @@ interface ActivityRailProps {
   onSelectThread: (thread: StoredThread) => void;
   onTogglePinThread: (thread: StoredThread) => void;
   onToggleExpanded: () => void;
+  /** Remote bridge connection state for the nav indicator dot (dev-only). */
+  remoteIndicator?: RemoteIndicator;
 }
 
 // Data / Skill entries are temporarily hidden from the navigation:
@@ -96,6 +100,7 @@ export function ActivityRail({
   onSelectThread,
   onTogglePinThread,
   onToggleExpanded,
+  remoteIndicator,
 }: ActivityRailProps) {
   const { t } = useTranslation("layout");
   // Shared overlay scrollbar for the conversation list, matching the chat view.
@@ -105,6 +110,18 @@ export function ActivityRail({
   // into a release build.
   const build = useBuildInfo();
   const showRemote = build.data ? !build.data.isRelease : false;
+  // Connection indicator overlaid on the Remote nav icon: blue when connected,
+  // amber when the bridge reports an error, nothing when disconnected.
+  const remoteDot = showRemote && remoteIndicator
+    ? (
+        <span
+          className={cn(
+            "absolute -right-1 -top-1 size-2 rounded-full",
+            remoteIndicator === "connected" ? "bg-accent" : "bg-warning",
+          )}
+        />
+      )
+    : null;
   // Reserve the top-left inset for the macOS traffic lights, except in
   // fullscreen where the lights are hidden and the inset is dead space.
   const isFullscreen = useIsFullscreen();
@@ -275,7 +292,7 @@ export function ActivityRail({
                   <NavButton icon={Sparkles} label={t("activityRail.models")} onClick={onOpenModels} />
                   <NavButton icon={Blocks} label={t("activityRail.skills")} active={active === "skill"} onClick={() => onChange("skill")} />
                   {showRemote
-                    ? <NavButton icon={Smartphone} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
+                    ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
                     : null}
                 </div>
                 {featureItems.length > 0
@@ -562,7 +579,12 @@ export function ActivityRail({
                 {showRemote
                   ? (
                       <IconButton
-                        icon={<Smartphone className="size-4" />}
+                        icon={(
+                          <span className="relative inline-flex">
+                            <Smartphone className="size-4" />
+                            {remoteDot}
+                          </span>
+                        )}
                         label={t("activityRail.remote")}
                         active={active === "remote"}
                         onClick={() => onChange("remote")}
@@ -710,6 +732,7 @@ function NavButton({
   onClick,
   active = false,
   primary = false,
+  indicator = null,
 }: {
   icon: LucideIcon;
   label: string;
@@ -717,6 +740,8 @@ function NavButton({
   active?: boolean;
   /** New Chat: solid ink label with no hover recolor, muted icon. */
   primary?: boolean;
+  /** Optional dot overlaid on the icon's top-right (e.g. remote connection). */
+  indicator?: ReactNode;
 }) {
   return (
     <button
@@ -728,7 +753,10 @@ function NavButton({
       onClick={onClick}
       type="button"
     >
-      <Icon className={cn("size-4 shrink-0", primary && "text-ink-soft")} />
+      <span className="relative inline-flex shrink-0">
+        <Icon className={cn("size-4", primary && "text-ink-soft")} />
+        {indicator}
+      </span>
       <span className="truncate">{label}</span>
     </button>
   );

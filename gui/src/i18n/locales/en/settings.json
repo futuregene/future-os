@@ -22,6 +22,12 @@
     "title": "Auto-upgrade skills",
     "description": "Silently upgrade installed skills to their latest version each time the app opens"
   },
+  "remote": {
+    "autoConnect": {
+      "title": "Auto-connect remote device on launch",
+      "description": "When a phone is already paired, connect to it automatically each time the app opens. You can still disconnect by hand."
+    }
+  },
   "update": {
     "sectionTitle": "Software update",
     "title": "Check for updates",
@@ -51,6 +57,7 @@
     },
     "tabs": {
       "general": "General",
+      "remote": "Remote",
       "account": "Account",
       "update": "Check for updates",
       "about": "About",

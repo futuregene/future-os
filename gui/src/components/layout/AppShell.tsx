@@ -17,6 +17,7 @@ import {
   restoreThread,
 } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
+import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { ToastHost } from "../ui/ToastHost";
@@ -31,6 +32,7 @@ import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
 import { useFutureSignedIn } from "./hooks/useFutureSignedIn";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
+import { useRemoteStatus } from "./hooks/useRemoteStatus";
 import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
@@ -144,6 +146,14 @@ export function AppShell() {
     setSelectedModelId,
     refreshAgentModels,
   } = useAgentConnection(appSettings.hiddenModels);
+
+  // Remote control is dev-only: poll its status (for the sidebar indicator dot)
+  // only on non-release builds, and never while build info is still loading.
+  // Returns { status, indicator, refresh } — RemoteView reads `status` directly
+  // so its blue dot always matches the sidebar indicator.
+  const build = useBuildInfo();
+  const showRemote = Boolean(build.data && !build.data.isRelease);
+  const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(showRemote);
 
   // When the agent becomes available (startup, restart, or recovery after
   // a disconnect), re-trigger the skills scan.  The agent has a 5 s rate
@@ -367,6 +377,7 @@ export function AppShell() {
     onSelectThread: handleSelectThread,
     onTogglePinThread: handleTogglePinThread,
     onToggleExpanded: handleToggleLeftPanel,
+    remoteIndicator,
   };
 
   // Forced login: until the FutureOS account is confirmed, block the whole app
@@ -435,7 +446,7 @@ export function AppShell() {
               )
             : section === "remote"
               ? (
-                  <RemoteView appSettings={appSettings} leftPanelExpanded={leftExpanded} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} />
+                  <RemoteView appSettings={appSettings} leftPanelExpanded={leftExpanded} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
                 )
               : storeError
                 ? (
