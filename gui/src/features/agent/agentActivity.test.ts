@@ -331,9 +331,9 @@ describe("createRunProjector incremental ingestion", () => {
     const projector = createRunProjector();
 
     // Feed in uneven chunks, as the 220ms incremental poll would deliver them.
-    let projection = projector.ingest(full.slice(0, 3));
-    projection = projector.ingest(full.slice(3, 6));
-    projection = projector.ingest(full.slice(6));
+    projector.ingest(full.slice(0, 3));
+    projector.ingest(full.slice(3, 6));
+    const projection = projector.ingest(full.slice(6));
 
     expect(projection).toEqual(expected);
     expect(projector.lastSequence).toBe(full.length - 1);
