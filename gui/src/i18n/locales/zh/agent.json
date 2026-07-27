@@ -18,6 +18,10 @@
     "run": "{{prefix}}运行",
     "write": "{{prefix}}写入",
     "edit": "{{prefix}}编辑",
+    "readCompleted": "已读取",
+    "runCompleted": "已运行",
+    "writeCompleted": "已写入",
+    "editCompleted": "已编辑",
     "failed": {
       "shell": "运行失败",
       "edit": "编辑失败",

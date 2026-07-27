@@ -41,7 +41,14 @@
     "delete": "Delete",
     "revealInFinder": "Open Folder",
     "workspaceActions": "Workspace actions for {{name}}",
-    "pinnedHeader": "Pinned"
+    "pinnedHeader": "Pinned",
+    "selectThreads": "Select conversations...",
+    "selectThread": "Select {{title}}",
+    "selectAll": "Select all",
+    "deselectAll": "Deselect all",
+    "chatSectionActions": "Chat section actions",
+    "threadsSelected": "{{count}} selected",
+    "deleteSelected": "Delete selected"
   },
   "appShell": {
     "storeInitFailed": "FutureOS local storage failed to initialize: ",
@@ -58,7 +65,14 @@
     "deleting": "Deleting...",
     "artifacts": "Artifacts",
     "deleteWorkspaceDescription": "This removes only the chat. Workspace files will not be changed.",
-    "deleteChatDescription": "This chat will be removed from the sidebar."
+    "deleteChatDescription": "This chat will be removed from the sidebar.",
+    "batchDeleteTitle": "Delete Conversations",
+    "batchDeleteSummary": "{{count}} conversation(s) selected",
+    "batchDeleteMixedDescription": "{{chatCount}} chat(s) and {{wsCount}} workspace conversation(s) will be removed from the sidebar. Workspace files are not affected.",
+    "andMore": "and {{count}} more",
+    "workspaceFilesUnaffected": "{{count}} workspace conversation(s): files on disk will not be deleted.",
+    "deleteAssociatedFiles": "Also delete associated file content for {{count}} chat(s)",
+    "deleteAssociatedFiles_other": "Also delete associated file content for {{count}} chat(s)"
   },
   "contextPanel": {
     "runs": "Runs",

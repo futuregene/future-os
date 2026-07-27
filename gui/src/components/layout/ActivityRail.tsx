@@ -13,8 +13,10 @@ import {
   Smartphone,
   Sparkles,
   SquarePen,
+  Trash2,
+  X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
@@ -22,9 +24,10 @@ import { isMacOS } from "../../lib/platform";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useIsFullscreen } from "../../lib/useIsFullscreen";
 import { startWindowDrag } from "../../lib/windowDrag";
+import { Button } from "../ui/Button";
 import { FloatingScrollbar } from "../ui/FloatingScrollbar";
 import { IconButton } from "../ui/IconButton";
-import { WorkspaceHeaderMenu } from "./ActivityRailMenus";
+import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ThreadListItem } from "./ThreadListItem";
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "remote" | "settings";
@@ -41,6 +44,7 @@ interface ActivityRailProps {
   unreadThreadIds: Set<string>;
   workspaces: StoredWorkspace[];
   onChange: (section: ActivitySection) => void;
+  onBatchDeleteThreads: (threads: StoredThread[]) => void;
   onDeleteThread: (thread: StoredThread) => void;
   onNewChat: (workspaceId?: string) => void;
   onOpenModels: () => void;
@@ -79,6 +83,7 @@ export function ActivityRail({
   unreadThreadIds,
   workspaces,
   onChange,
+  onBatchDeleteThreads,
   onDeleteThread,
   onNewChat,
   onOpenModels,
@@ -111,6 +116,12 @@ export function ActivityRail({
   // independent of the per-workspace group collapse above.
   const [workspaceSectionCollapsed, setWorkspaceSectionCollapsed] = useState(false);
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
+  // Batch selection mode.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectionScope, setSelectionScope] = useState<"chat" | string>("chat");
+  const [selectedThreadIds, setSelectedThreadIds] = useState<Set<string>>(() => new Set());
+  // Chat section header menu.
+  const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
 
   function toggleWorkspaceCollapsed(workspaceId: string) {
     setCollapsedWorkspaces((current) => {
@@ -122,9 +133,88 @@ export function ActivityRail({
       return next;
     });
   }
+
+  function toggleThreadSelection(thread: StoredThread) {
+    setSelectedThreadIds((current) => {
+      const next = new Set(current);
+      if (next.has(thread.id)) {
+        next.delete(thread.id);
+      }
+      else {
+        next.add(thread.id);
+      }
+      return next;
+    });
+  }
+
+  function exitSelectionMode() {
+    setSelectionMode(false);
+    setSelectedThreadIds(new Set());
+  }
+
+  // Esc key exits selection mode.
+  useEffect(() => {
+    if (!selectionMode)
+      return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        exitSelectionMode();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectionMode]);
+
   const visibleThreads = sortThreads(
     threads.filter(thread => thread.status === "active"),
   );
+
+  // Scope-filtered threads for the current selection mode.
+  const scopedThreads = visibleThreads.filter((thread) => {
+    if (selectionScope === "chat")
+      return thread.mode === "chat";
+    return thread.mode === "workspace" && thread.workspaceId === selectionScope;
+  });
+
+  function enterChatSelectionMode() {
+    setSelectionScope("chat");
+    setSelectedThreadIds(new Set());
+    setSelectionMode(true);
+  }
+
+  function enterWorkspaceSelectionMode(workspaceId: string) {
+    setSelectionScope(workspaceId);
+    setSelectedThreadIds(new Set());
+    setSelectionMode(true);
+  }
+
+  function selectAll() {
+    setSelectedThreadIds(new Set(scopedThreads.map(t => t.id)));
+  }
+
+  function deselectAll() {
+    setSelectedThreadIds(new Set());
+  }
+
+  /** Whether a thread is selectable in the current selection scope. */
+  function isThreadInScope(thread: StoredThread) {
+    if (selectionScope === "chat")
+      return thread.mode === "chat";
+    return thread.mode === "workspace" && thread.workspaceId === selectionScope;
+  }
+
+  /** Whether this thread should show a selection checkbox. */
+  function threadSelectionMode(thread: StoredThread): boolean {
+    return selectionMode && isThreadInScope(thread);
+  }
+
+  function handleStartBatchDelete() {
+    const selectedThreads = visibleThreads.filter(t => selectedThreadIds.has(t.id));
+    if (selectedThreads.length === 0)
+      return;
+    onBatchDeleteThreads(selectedThreads);
+    exitSelectionMode();
+  }
   // Pinned threads are hoisted into a single global section (regardless of
   // workspace/chat); the per-group lists show only the unpinned rest.
   const pinnedThreads = visibleThreads.filter(thread => thread.pinned);
@@ -222,14 +312,17 @@ export function ActivityRail({
                                 key={thread.id}
                                 menuOpen={openThreadMenuId === thread.id}
                                 runStatus={threadRunStatuses[thread.id]}
+                                selected={selectedThreadIds.has(thread.id)}
+                                selectionMode={threadSelectionMode(thread)}
                                 thread={thread}
                                 unread={unreadThreadIds.has(thread.id)}
                                 onDeleteThread={onDeleteThread}
                                 onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
                                 onRenameThread={onRenameThread}
                                 onRestoreThread={onRestoreThread}
-                                onSelectThread={onSelectThread}
+                                onSelectThread={selectionMode ? (isThreadInScope(thread) ? () => toggleThreadSelection(thread) : () => {}) : onSelectThread}
                                 onTogglePinThread={onTogglePinThread}
+                                onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
                               />
                             ))}
                           </div>
@@ -300,6 +393,7 @@ export function ActivityRail({
                                 onDelete={onDeleteWorkspace}
                                 onOpenChange={open => setOpenWorkspaceMenuId(open ? workspace.id : null)}
                                 onRename={onRenameWorkspace}
+                                onSelect={selectionMode ? undefined : () => enterWorkspaceSelectionMode(workspace.id)}
                               />
                               <button
                                 aria-label={t("activityRail.newChatInWorkspace", { name: workspace.name })}
@@ -321,6 +415,8 @@ export function ActivityRail({
                                         key={thread.id}
                                         menuOpen={openThreadMenuId === thread.id}
                                         runStatus={threadRunStatuses[thread.id]}
+                                        selected={selectedThreadIds.has(thread.id)}
+                                        selectionMode={threadSelectionMode(thread)}
                                         thread={thread}
                                         unread={unreadThreadIds.has(thread.id)}
                                         compact
@@ -328,8 +424,9 @@ export function ActivityRail({
                                         onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
                                         onRenameThread={onRenameThread}
                                         onRestoreThread={onRestoreThread}
-                                        onSelectThread={onSelectThread}
+                                        onSelectThread={selectionMode ? (isThreadInScope(thread) ? () => toggleThreadSelection(thread) : () => {}) : onSelectThread}
                                         onTogglePinThread={onTogglePinThread}
+                                        onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
                                       />
                                     ))}
                                   </div>
@@ -350,6 +447,15 @@ export function ActivityRail({
                               : t("activityRail.collapseChatSection")}
                             onToggle={() => setChatSectionCollapsed(value => !value)}
                           />
+                          {!selectionMode
+                            ? (
+                                <ChatSectionMenu
+                                  open={chatSectionMenuOpen}
+                                  onOpenChange={setChatSectionMenuOpen}
+                                  onSelect={enterChatSelectionMode}
+                                />
+                              )
+                            : null}
                           <button
                             aria-label={t("activityRail.newChatShort")}
                             className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
@@ -372,17 +478,65 @@ export function ActivityRail({
                           menuOpen={openThreadMenuId === thread.id}
                           runStatus={threadRunStatuses[thread.id]}
                           isStreaming={threadStreamingStatuses[thread.id]}
+                          selected={selectedThreadIds.has(thread.id)}
+                          selectionMode={threadSelectionMode(thread)}
                           thread={thread}
                           unread={unreadThreadIds.has(thread.id)}
                           onDeleteThread={onDeleteThread}
                           onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
                           onRenameThread={onRenameThread}
                           onRestoreThread={onRestoreThread}
-                          onSelectThread={onSelectThread}
+                          onSelectThread={selectionMode ? (isThreadInScope(thread) ? () => toggleThreadSelection(thread) : () => {}) : onSelectThread}
                           onTogglePinThread={onTogglePinThread}
+                          onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
                         />
                       ))}
                     </div>
+                    {/* Batch selection action bar. */}
+                    {selectionMode
+                      ? (
+                          <div className="sticky bottom-0 z-10 -mx-2 -mb-0.5 border-t border-line-soft bg-surface px-2 py-2">
+                            <div className="flex items-center gap-2">
+                              <SelectAllCheckbox
+                                checked={scopedThreads.length > 0 && selectedThreadIds.size === scopedThreads.length}
+                                indeterminate={selectedThreadIds.size > 0 && selectedThreadIds.size < scopedThreads.length}
+                                onChange={() => {
+                                  if (selectedThreadIds.size === scopedThreads.length) {
+                                    deselectAll();
+                                  }
+                                  else {
+                                    selectAll();
+                                  }
+                                }}
+                              />
+                              <span className="flex-1 text-xs text-ink-soft">
+                                {selectedThreadIds.size > 0
+                                  ? t("activityRail.threadsSelected", { count: selectedThreadIds.size })
+                                  : t("activityRail.selectAll")}
+                              </span>
+                              <Button
+                                disabled={selectedThreadIds.size === 0}
+                                leftIcon={<Trash2 className="size-3.5" />}
+                                onClick={handleStartBatchDelete}
+                                size="sm"
+                                type="button"
+                                variant="danger"
+                              >
+                                {t("activityRail.deleteSelected")}
+                              </Button>
+                              <Button
+                                leftIcon={<X className="size-3.5" />}
+                                onClick={exitSelectionMode}
+                                size="sm"
+                                type="button"
+                                variant="secondary"
+                              >
+                                {t("common:cancel")}
+                              </Button>
+                            </div>
+                          </div>
+                        )
+                      : null}
                   </div>
                   <FloatingScrollbar
                     scrollbar={listScrollbar.scrollbar}
@@ -491,6 +645,32 @@ function sortThreads(items: StoredThread[]) {
 
 function threadSortTime(thread: StoredThread) {
   return thread.lastMessageAt ?? thread.lastOpenedAt ?? thread.updatedAt ?? thread.createdAt;
+}
+
+/** Tri-state checkbox for select-all / deselect-all in the selection action bar. */
+function SelectAllCheckbox({
+  checked,
+  indeterminate,
+  onChange,
+}: {
+  checked: boolean;
+  indeterminate: boolean;
+  onChange: () => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current)
+      ref.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return (
+    <input
+      ref={ref}
+      checked={checked}
+      className="size-4 shrink-0 rounded border-line accent-accent"
+      onChange={onChange}
+      type="checkbox"
+    />
+  );
 }
 
 /**

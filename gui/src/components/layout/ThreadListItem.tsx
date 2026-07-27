@@ -7,7 +7,10 @@ import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ThreadItemMenu } from "./ActivityRailMenus";
 
-/** A single sidebar thread row: title, run/unread indicator, and actions menu. */
+/**
+ * A single sidebar thread row: title, run/unread indicator, and actions menu.
+ * When the sidebar is in selection mode, a checkbox replaces the run indicator.
+ */
 export function ThreadListItem({
   active,
   archived,
@@ -15,6 +18,8 @@ export function ThreadListItem({
   isStreaming,
   menuOpen,
   runStatus,
+  selected,
+  selectionMode,
   thread,
   unread,
   onDeleteThread,
@@ -23,6 +28,7 @@ export function ThreadListItem({
   onRestoreThread,
   onSelectThread,
   onTogglePinThread,
+  onToggleSelection,
 }: {
   active: boolean;
   archived?: boolean;
@@ -31,6 +37,8 @@ export function ThreadListItem({
   isStreaming?: boolean;
   menuOpen: boolean;
   runStatus?: ThreadRunInfo;
+  selected?: boolean;
+  selectionMode?: boolean;
   thread: StoredThread;
   unread?: boolean;
   onDeleteThread: (thread: StoredThread) => void;
@@ -39,6 +47,7 @@ export function ThreadListItem({
   onRestoreThread: (thread: StoredThread) => void;
   onSelectThread: (thread: StoredThread) => void;
   onTogglePinThread: (thread: StoredThread) => void;
+  onToggleSelection?: (thread: StoredThread) => void;
 }) {
   const { t } = useTranslation("layout");
   const menuRef = useDismissableLayer<HTMLDivElement>({
@@ -102,24 +111,53 @@ export function ThreadListItem({
         {displayTitle}
       </span>
       {archived ? <span className="pointer-events-none shrink-0 text-[11px] text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
-      <span className="pointer-events-none flex shrink-0">
-        <ThreadRunIndicator status={effectiveRunStatus} unread={unread} />
-      </span>
-      <button
-        aria-label={t("activityRail.threadActions", { title: displayTitle })}
-        className={cn(
-          "relative z-10 hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft group-hover/thread:inline-flex",
-          menuOpen && "inline-flex",
-        )}
-        onClick={(event) => {
-          event.stopPropagation();
-          onMenuOpenChange(!menuOpen);
-        }}
-        title={t("activityRail.threadActions", { title: displayTitle })}
-        type="button"
-      >
-        <MoreHorizontal className="size-3.5" />
-      </button>
+      {selectionMode
+        ? (
+            <button
+              aria-label={t("activityRail.selectThread", { title: displayTitle })}
+              className={cn(
+                "relative z-10 flex size-5 shrink-0 items-center justify-center rounded transition-colors",
+                selected
+                  ? "bg-accent text-white"
+                  : "border border-line-soft text-transparent hover:border-line",
+              )}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleSelection?.(thread);
+              }}
+              type="button"
+            >
+              {selected
+                ? (
+                    <svg className="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  )
+                : null}
+            </button>
+          )
+        : (
+            <>
+              <span className="pointer-events-none flex shrink-0">
+                <ThreadRunIndicator status={effectiveRunStatus} unread={unread} />
+              </span>
+              <button
+                aria-label={t("activityRail.threadActions", { title: displayTitle })}
+                className={cn(
+                  "relative z-10 hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft group-hover/thread:inline-flex",
+                  menuOpen && "inline-flex",
+                )}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onMenuOpenChange(!menuOpen);
+                }}
+                title={t("activityRail.threadActions", { title: displayTitle })}
+                type="button"
+              >
+                <MoreHorizontal className="size-3.5" />
+              </button>
+            </>
+          )}
       {menuOpen
         ? (
             <ThreadItemMenu

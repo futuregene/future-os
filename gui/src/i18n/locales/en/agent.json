@@ -1,7 +1,7 @@
 {
   "author": {
     "you": "You",
-    "researchCopilot": "Future Copilot",
+    "researchCopilot": "FutureOS",
     "system": "FutureOS"
   },
   "activity": {
@@ -18,10 +18,14 @@
     "editFiles_other": "{{prefix}}{{count}} files edited",
     "readFiles_one": "{{prefix}}{{count}} file read",
     "readFiles_other": "{{prefix}}{{count}} files read",
-    "read": "{{prefix}}read",
-    "run": "{{prefix}}run",
-    "write": "{{prefix}}write",
-    "edit": "{{prefix}}edit",
+    "read": "{{prefix}}reading",
+    "run": "{{prefix}}command",
+    "write": "{{prefix}}writing",
+    "edit": "{{prefix}}editing",
+    "readCompleted": "Read a file",
+    "runCompleted": "Ran a command",
+    "writeCompleted": "Wrote a file",
+    "editCompleted": "Edited a file",
     "failed": {
       "shell": "Command failed",
       "edit": "Edit failed",
@@ -76,7 +80,7 @@
     }
   },
   "composer": {
-    "placeholder": "Ask Future Copilot to plan, research, analyze, edit, or prepare a workflow...",
+    "placeholder": "Ask FutureOS to plan, research, analyze, edit, or prepare a workflow...",
     "attachFiles": "Attach files",
     "attachFilesHint": "Attach files (images, PDF, text)",
     "attachLimitReached": "Attachment limit reached (4 per turn)",
@@ -130,7 +134,7 @@
     "headerTitle": "New conversation",
     "chatSubtitle": "Chat",
     "welcome": "Welcome",
-    "placeholder": "Ask Future Copilot to plan, research, analyze, edit, or prepare a workflow...",
+    "placeholder": "Ask FutureOS to plan, research, analyze, edit, or prepare a workflow...",
     "workspace": "Workspace",
     "noWorkspaces": "No workspaces yet.",
     "openExisting": "Open workspace",
