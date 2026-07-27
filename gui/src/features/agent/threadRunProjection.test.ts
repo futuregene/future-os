@@ -1,7 +1,7 @@
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { describe, expect, it } from "vitest";
-import { applyRecoveredEvents, applyRunMetadata, deriveRenderFields, patchMessage, runDurationMs, streamingBubbleBase } from "./threadRunProjection";
+import { applyRecoveredEvents, applyRunMetadata, deriveRenderFields, patchMessage, recoverFailedRuns, runDurationMs, streamingBubbleBase } from "./threadRunProjection";
 
 function message(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
   return {
@@ -167,11 +167,81 @@ describe("applyRunMetadata", () => {
   it("stamps an aborted (empty) turn with the run's end time — the stop time", () => {
     const stopMs = Date.parse("2026-07-01T10:00:06.000Z");
     const result = applyRunMetadata(
-      [user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }), assistant("a1", { content: "" })],
+      [
+        user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+        // The turn's projected time falls inside the run's window (as real
+        // session-derived turns do) so window matching can pair them.
+        assistant("a1", { content: "", createdAt: "2026-07-01T10:00:01.000Z" }),
+      ],
       [run("r1", { status: "cancelled", startedAt: stopMs - 6000, endedAt: stopMs })],
     );
     expect(result[1]?.createdAt).toBe(new Date(stopMs).toISOString());
     expect(result[1]?.stopped).toBe(true);
+  });
+
+  it("does not stamp a run that failed before any assistant entry onto the previous turn", () => {
+    // r2 (402 insufficient credit) died before the agent saved an entry: the
+    // projected history ends with u2. Positional newest-first pairing would
+    // stamp r2 onto a1 — the previous, successful turn — and mislabel it as
+    // failed. Window matching excludes the orphan instead.
+    const result = applyRunMetadata([
+      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+      assistant("a1", { content: "answer", createdAt: "2026-07-01T10:00:05.000Z" }),
+      user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
+    ], [
+      run("r2", {
+        status: "failed",
+        startedAt: Date.parse("2026-07-01T10:05:00.000Z"),
+        endedAt: Date.parse("2026-07-01T10:05:02.000Z"),
+      }),
+      run("r1", {
+        status: "completed",
+        startedAt: Date.parse("2026-07-01T10:00:00.000Z"),
+        endedAt: Date.parse("2026-07-01T10:00:06.000Z"),
+      }),
+    ]);
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete" });
+  });
+
+  it("keeps later turns aligned when a middle run left no assistant entry", () => {
+    // Turn 2's run failed without an entry; turn 3 succeeded afterwards.
+    const result = applyRunMetadata([
+      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+      assistant("a1", { content: "one", createdAt: "2026-07-01T10:00:05.000Z" }),
+      user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
+      user("u3", { createdAt: "2026-07-01T10:10:00.000Z" }),
+      assistant("a3", { content: "three", createdAt: "2026-07-01T10:10:05.000Z" }),
+    ], [
+      run("r3", {
+        status: "completed",
+        startedAt: Date.parse("2026-07-01T10:10:00.000Z"),
+        endedAt: Date.parse("2026-07-01T10:10:06.000Z"),
+      }),
+      run("r2", {
+        status: "failed",
+        startedAt: Date.parse("2026-07-01T10:05:00.000Z"),
+        endedAt: Date.parse("2026-07-01T10:05:02.000Z"),
+      }),
+      run("r1", {
+        status: "completed",
+        startedAt: Date.parse("2026-07-01T10:00:00.000Z"),
+        endedAt: Date.parse("2026-07-01T10:00:06.000Z"),
+      }),
+    ]);
+    expect(result[4]).toMatchObject({ id: "a3", runId: "r3", status: "complete" });
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete" });
+  });
+
+  it("falls back to positional pairing when no run window matches any turn (legacy timestamps)", () => {
+    const result = applyRunMetadata([
+      user("u1"),
+      assistant("a1"),
+    ], [
+      run("r1", { status: "failed", startedAt: 1000, endedAt: 2000 }),
+    ]);
+    // a1's 2026 timestamp is outside r1's window, but with no window matches at
+    // all the positional fallback must still stamp the run.
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "failed" });
   });
 
   it("keeps a completed turn's own reply time rather than restamping it", () => {
@@ -231,6 +301,99 @@ describe("applyRunMetadata", () => {
       [run("r1", { startedAt: 1000, endedAt: 9000 })],
     );
     expect(result[1]?.durationMs).toBe(1234);
+  });
+});
+
+describe("recoverFailedRuns", () => {
+  const r1Window = {
+    startedAt: Date.parse("2026-07-01T10:00:00.000Z"),
+    endedAt: Date.parse("2026-07-01T10:00:06.000Z"),
+  };
+  const r2Window = {
+    startedAt: Date.parse("2026-07-01T10:05:00.000Z"),
+    endedAt: Date.parse("2026-07-01T10:05:02.000Z"),
+  };
+
+  it("appends a failure bubble for a run that failed before any assistant entry", () => {
+    const result = recoverFailedRuns([
+      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+      assistant("a1", { content: "answer", createdAt: "2026-07-01T10:00:05.000Z" }),
+      user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
+    ], [
+      run("r2", { status: "failed", errorMessage: "API request failed (HTTP 402). insufficient credit", ...r2Window }),
+      run("r1", { status: "completed", ...r1Window }),
+    ]);
+    expect(result).toHaveLength(4);
+    const bubble = result[3]!;
+    expect(bubble).toMatchObject({
+      id: "failed_r2",
+      role: "assistant",
+      runId: "r2",
+      status: "failed",
+      createdAt: new Date(r2Window.endedAt).toISOString(),
+    });
+    expect(bubble.content.trim()).not.toBe("");
+  });
+
+  it("inserts the bubble at its chronological position when a later turn succeeded", () => {
+    const result = recoverFailedRuns([
+      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+      assistant("a1", { content: "one", createdAt: "2026-07-01T10:00:05.000Z", runId: "r1" }),
+      user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
+      user("u3", { createdAt: "2026-07-01T10:10:00.000Z" }),
+      assistant("a3", { content: "three", createdAt: "2026-07-01T10:10:05.000Z", runId: "r3" }),
+    ], [
+      run("r3", {
+        status: "completed",
+        startedAt: Date.parse("2026-07-01T10:10:00.000Z"),
+        endedAt: Date.parse("2026-07-01T10:10:06.000Z"),
+      }),
+      run("r2", { status: "failed", errorMessage: "boom", ...r2Window }),
+      run("r1", { status: "completed", ...r1Window }),
+    ]);
+    expect(result.map(m => m.id)).toEqual(["u1", "a1", "u2", "failed_r2", "u3", "a3"]);
+  });
+
+  it("leaves messages unchanged when the failed run already owns a projected turn", () => {
+    const messages = [
+      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+      assistant("a1", { content: "partial", createdAt: "2026-07-01T10:00:05.000Z", runId: "r1", status: "failed" }),
+    ];
+    const result = recoverFailedRuns(messages, [
+      run("r1", { status: "failed", errorMessage: "boom", ...r1Window }),
+    ]);
+    expect(result).toBe(messages);
+  });
+
+  it("ignores failed runs without a usable start time (legacy rows)", () => {
+    const messages = [user("u1"), assistant("a1", { content: "answer" })];
+    const result = recoverFailedRuns(messages, [
+      run("r1", { status: "failed", errorMessage: "boom" }),
+    ]);
+    expect(result).toBe(messages);
+  });
+
+  it("ignores completed and cancelled runs", () => {
+    const messages = [user("u1", { createdAt: "2026-07-01T10:00:00.000Z" })];
+    const result = recoverFailedRuns(messages, [
+      run("r2", { status: "completed", ...r2Window }),
+      run("r1", { status: "cancelled", ...r1Window }),
+    ]);
+    expect(result).toBe(messages);
+  });
+
+  it("skips recovery entirely when no run window matches any turn (legacy timestamps)", () => {
+    // Legacy session entries have no real timestamps (the agent backfills
+    // load-time `now`), so every turn sits after every run — window matching is
+    // meaningless and bubbles would land at the wrong end of history.
+    const messages = [
+      user("u1", { createdAt: "2026-07-20T09:00:00.000Z" }),
+      assistant("a1", { content: "answer", createdAt: "2026-07-20T09:00:01.000Z" }),
+    ];
+    const result = recoverFailedRuns(messages, [
+      run("r1", { status: "failed", errorMessage: "boom", ...r1Window }),
+    ]);
+    expect(result).toBe(messages);
   });
 });
 

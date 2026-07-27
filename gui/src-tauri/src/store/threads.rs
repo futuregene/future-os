@@ -369,7 +369,29 @@ pub(super) fn delete_thread_children_in(
 /// `commands::delete_thread`). Returns the pre-delete record so callers that
 /// expected the old soft-delete return value keep working. Temp chat workspaces
 /// are flagged for cleanup exactly as before.
+///
+/// When `delete_files` is true and the thread is chat-mode, the temporary
+/// workspace directory on disk is removed immediately instead of being flagged
+/// for background cleanup. Workspace-mode threads are never touched.
 pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
+    delete_thread_inner(thread_id, false)
+}
+
+/// Like [`delete_thread`] but also removes the temporary chat workspace
+/// directory on disk when `delete_files` is true. Workspace-mode threads
+/// are never touched on disk regardless of this flag.
+pub fn delete_thread_with_files(
+    thread_id: &str,
+    delete_files: bool,
+) -> Result<ThreadRecord, crate::AppError> {
+    delete_thread_inner(thread_id, delete_files)
+}
+
+/// Internal helper with the `delete_files` flag (see [`delete_thread`]).
+pub(crate) fn delete_thread_inner(
+    thread_id: &str,
+    delete_files: bool,
+) -> Result<ThreadRecord, crate::AppError> {
     let now = now_millis();
     let mut conn = connect()?;
     let thread = loaded(get_thread(thread_id)?, "Thread")?;
@@ -380,22 +402,95 @@ pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
     delete_thread_children_in(&tx, thread_id)?;
 
     if thread.mode == "chat" {
-        tx.execute(
-            "UPDATE workspaces
-             SET cleanup_status = 'pending_cleanup',
-                 cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
-                 updated_at = ?1
-             WHERE id = ?2
-               AND kind = 'temporary'
-               AND cleanup_status = 'active'",
-            params![now, thread.workspace_id],
-        )?;
+        if delete_files {
+            // Mark cleaned immediately (skip the pending_cleanup phase) so
+            // orphans reconcilers won't re-attempt the now-removed directory.
+            tx.execute(
+                "UPDATE workspaces
+                 SET cleanup_status = 'cleaned',
+                     cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
+                     cleaned_at = ?1,
+                     updated_at = ?1
+                 WHERE id = ?2
+                   AND kind = 'temporary'",
+                params![now, thread.workspace_id],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE workspaces
+                 SET cleanup_status = 'pending_cleanup',
+                     cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
+                     updated_at = ?1
+                 WHERE id = ?2
+                   AND kind = 'temporary'
+                   AND cleanup_status = 'active'",
+                params![now, thread.workspace_id],
+            )?;
+        }
     }
     tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
     tx.commit()?;
     mark_catalog_dirty();
 
+    // Remove the directory on disk AFTER the transaction commits — if the
+    // directory deletion fails the DB row is already gone, which is the safer
+    // failure mode (side-effect-last).
+    if delete_files && thread.mode == "chat" {
+        // The workspace path for chat threads is the chat-workspace dir named
+        // after either the agent session id or the thread id.
+        let dir_key = thread
+            .agent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(thread_id);
+        let dir = super::db::chat_workspace_path(dir_key)?;
+        if dir.exists() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // Also remove the legacy directory named after the thread id if it
+        // differs from the session id (migration edge case).
+        if dir_key != thread_id {
+            let legacy_dir = super::db::chat_workspace_path(thread_id)?;
+            if legacy_dir.exists() {
+                let _ = std::fs::remove_dir_all(&legacy_dir);
+            }
+        }
+    }
+
     Ok(thread)
+}
+
+/// Batch-delete multiple threads. For each thread:
+/// - The DB row and children are hard-deleted.
+/// - For chat-mode threads with `delete_files`, the temporary workspace
+///   directory on disk is removed.
+/// - For workspace-mode threads, only the DB row is deleted; files are never
+///   touched regardless of `delete_files`.
+///
+/// Each thread delete is independent — one failure does not roll back
+/// already-deleted siblings. Returns a summary.
+pub fn batch_delete_threads(
+    input: &super::records::BatchDeleteThreadsInput,
+) -> Result<super::records::BatchDeleteResult, crate::AppError> {
+    let mut deleted_count = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+
+    for thread_id in &input.thread_ids {
+        match delete_thread_inner(thread_id, input.delete_files) {
+            Ok(_) => {
+                deleted_count += 1;
+            }
+            Err(error) => {
+                failed.push(format!("{thread_id}: {error}"));
+            }
+        }
+    }
+
+    Ok(super::records::BatchDeleteResult {
+        deleted_count,
+        failed,
+    })
 }
 
 /// Defensive / one-time sweep: hard-delete any threads still parked in the

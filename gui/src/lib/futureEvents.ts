@@ -32,6 +32,12 @@ export interface FutureEventMap {
    * auto-upgrade) — an open Skills view should reload its lists.
    */
   "skills-changed": void;
+  /**
+   * Emitted when the FutureOS account login state changes (device login
+   * authorized, sign-out, or the `future` builtin key edited by hand) — the
+   * app-wide login gate reloads so the forced-login overlay appears / clears.
+   */
+  "future-auth-changed": void;
 }
 
 type FutureEventName = keyof FutureEventMap;

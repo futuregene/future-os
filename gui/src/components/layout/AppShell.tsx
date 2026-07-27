@@ -23,10 +23,12 @@ import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
+import { ForceLoginGate } from "./ForceLoginGate";
 import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useApprovals } from "./hooks/useApprovals";
 import { useAppSettings } from "./hooks/useAppSettings";
 import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
+import { useFutureSignedIn } from "./hooks/useFutureSignedIn";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
 import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
@@ -69,6 +71,9 @@ export function AppShell() {
   const { appSettings, changeSettings } = useAppSettings();
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
+  // Drives the forced-login gate below. Kept with the other top-level hooks so
+  // the early returns further down stay after every hook call (rules of hooks).
+  const { signedIn, initialLoading } = useFutureSignedIn();
 
   const centerRef = useRef<HTMLElement>(null);
   const {
@@ -180,12 +185,16 @@ export function AppShell() {
   const {
     renameDialog,
     deleteDialog,
+    batchDeleteDialog,
     setRenameDialog,
     setDeleteDialog,
+    setBatchDeleteDialog,
     openRename,
     confirmRename,
     openDelete,
     confirmDelete,
+    openBatchDelete,
+    confirmBatchDelete,
   } = useThreadDialogs({ activeThreadId, refreshStore });
   const {
     renameDialog: workspaceRenameDialog,
@@ -348,6 +357,7 @@ export function AppShell() {
     onOpenModels: handleOpenModels,
     onNewChat: handleOpenNewChat,
     onNewWorkspace: handleOpenNewWorkspace,
+    onBatchDeleteThreads: openBatchDelete,
     onDeleteThread: openDelete,
     onRenameThread: openRename,
     onDeleteWorkspace: openWorkspaceDelete,
@@ -358,6 +368,20 @@ export function AppShell() {
     onTogglePinThread: handleTogglePinThread,
     onToggleExpanded: handleToggleLeftPanel,
   };
+
+  // Forced login: until the FutureOS account is confirmed, block the whole app
+  // with the login gate. `initialLoading` covers only the first probe so a
+  // signed-in user never sees the gate flash; reloads on auth change are silent
+  // (data stays non-null), so sign-in / sign-out never flash this neutral frame.
+  if (initialLoading) {
+    return (
+      <div className="flex h-full items-center justify-center bg-canvas">
+        <span className="size-6 animate-spin rounded-full border-2 border-accent-soft border-t-accent" />
+      </div>
+    );
+  }
+  if (!signedIn)
+    return <ForceLoginGate />;
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden bg-canvas text-ink">
@@ -476,10 +500,13 @@ export function AppShell() {
         ? <div className="fixed inset-0 z-50 cursor-ew-resize select-none" />
         : null}
       <AppShellDialogs
+        batchDeleteDialog={batchDeleteDialog}
         deleteDialog={deleteDialog}
         renameDialog={renameDialog}
+        setBatchDeleteDialog={setBatchDeleteDialog}
         setDeleteDialog={setDeleteDialog}
         setRenameDialog={setRenameDialog}
+        onConfirmBatchDeleteThread={() => void confirmBatchDelete()}
         onConfirmDeleteThread={() => void confirmDelete()}
         onConfirmRenameThread={() => void confirmRename()}
       />

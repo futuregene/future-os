@@ -127,27 +127,56 @@ fn rank_files(files: Vec<WalkedFile>, query: &str, limit: usize) -> Vec<Workspac
     }
 
     let matcher = SkimMatcherV2::default();
-    let mut scored: Vec<(i64, WalkedFile)> = files
+    let query_lower = query.to_lowercase();
+    let mut scored: Vec<(u8, i64, SystemTime, WalkedFile)> = files
         .into_iter()
         .filter_map(|file| {
-            matcher
-                .fuzzy_match(&file.rel, query)
-                .map(|score| (score, file))
+            // Match-quality bucket (lower = better). A hit on the file *name*
+            // outranks a hit elsewhere in the path, which outranks a gap-tolerant
+            // fuzzy hit — so the obvious best match stays on top instead of a deep
+            // path that merely fuzzy-contains the query. Substring tests are
+            // case-folded; the fuzzy score (smart-case) is only a tie-break.
+            let name = file_name(&file.rel).to_lowercase();
+            let bucket = if name == query_lower {
+                0
+            } else if name.starts_with(&query_lower) {
+                1
+            } else if name.contains(&query_lower) {
+                2
+            } else if file.rel.to_lowercase().contains(&query_lower) {
+                3
+            } else if matcher.fuzzy_match(&file.rel, query).is_some() {
+                4
+            } else {
+                return None;
+            };
+            let fuzzy = matcher.fuzzy_match(&file.rel, query).unwrap_or(0);
+            Some((bucket, fuzzy, file.modified, file))
         })
         .collect();
-    // Higher score first; tie-break on shorter path, then lexical order.
+    // Bucket first, then tighter fuzzy score, then recency, then shorter /
+    // lexical path as a stable final tie-break.
     scored.sort_by(|left, right| {
-        right
-            .0
-            .cmp(&left.0)
-            .then_with(|| left.1.rel.len().cmp(&right.1.rel.len()))
-            .then_with(|| left.1.rel.cmp(&right.1.rel))
+        left.0
+            .cmp(&right.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| left.3.rel.len().cmp(&right.3.rel.len()))
+            .then_with(|| left.3.rel.cmp(&right.3.rel))
     });
     scored
         .into_iter()
         .take(limit)
-        .map(|(_, file)| to_result(file))
+        .map(|(_, _, _, file)| to_result(file))
         .collect()
+}
+
+/// Last path component of a POSIX-style relative path (the part after the final `/`).
+fn file_name(rel: &str) -> &str {
+    match rel.rfind('/') {
+        Some(index) => &rel[index + 1..],
+        None => rel,
+    }
 }
 
 fn to_result(file: WalkedFile) -> WorkspaceFileResult {
@@ -264,5 +293,19 @@ mod tests {
     fn filetime_set(path: &Path, when: SystemTime) {
         let file = fs::OpenOptions::new().write(true).open(path).expect("open");
         file.set_modified(when).expect("set mtime");
+    }
+
+    #[test]
+    fn name_match_beats_path_only_and_fuzzy() {
+        let tree = TempTree::new("rank-buckets");
+        tree.write("docs/report.md", ""); // name substring  -> bucket 2
+        tree.write("reports/notes.md", ""); // path substring  -> bucket 3
+        tree.write("src/r_e_port.rs", ""); // fuzzy only      -> bucket 4
+
+        let results = rank_files(walk_workspace_files(&tree.0), "report", 10);
+        let p = paths(&results);
+        assert_eq!(p.first(), Some(&"docs/report.md"));
+        assert_eq!(p.get(1), Some(&"reports/notes.md"));
+        assert_eq!(p.get(2), Some(&"src/r_e_port.rs"));
     }
 }
