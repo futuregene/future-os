@@ -525,6 +525,7 @@ async fn handle_command(
 
 const HANDSHAKE_PROTOCOL_VERSION: u32 = 1;
 
+#[allow(clippy::too_many_arguments)]
 fn handshake_transcript(
     pair_id: &str,
     desktop_id: &str,
