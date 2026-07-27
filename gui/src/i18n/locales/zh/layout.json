@@ -88,5 +88,12 @@
     "deleteTitle": "删除工作区",
     "deleteDescription": "此工作区及其对话将从侧边栏移除，磁盘上的文件不会被删除。",
     "nameEmpty": "名称不能为空。"
+  },
+  "gate": {
+    "title": "欢迎使用 FutureOS",
+    "subtitle": "一站式 AI 科研工作台，集成主流模型与 100+ 科研技能",
+    "login": "登录 / 注册",
+    "loggingIn": "登录中",
+    "retry": "重试"
   }
 }

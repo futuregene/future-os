@@ -88,5 +88,12 @@
     "deleteTitle": "Delete workspace",
     "deleteDescription": "This workspace and its chats are removed from the sidebar; files on disk are not deleted.",
     "nameEmpty": "Name cannot be empty."
+  },
+  "gate": {
+    "title": "Welcome to FutureOS",
+    "subtitle": "An all-in-one AI research workbench with leading models and 100+ research skills",
+    "login": "Sign in / Sign up",
+    "loggingIn": "Signing in",
+    "retry": "Retry"
   }
 }
