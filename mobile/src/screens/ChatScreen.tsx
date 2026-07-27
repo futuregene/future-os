@@ -393,7 +393,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 21,
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
+    paddingTop: spacing.md,
     paddingBottom: spacing.md,
     textAlignVertical: "top",
   },
