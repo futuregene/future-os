@@ -77,6 +77,21 @@ function MessageBlockImpl({
   // A local narrowed to the non-empty segment array (or null) so the render can
   // map over it without a non-null assertion.
   const segments = !isUser && message.segments && message.segments.length > 0 ? message.segments : null;
+  // While streaming, only the LAST text/thinking segment is still growing —
+  // mark it `live` so its code blocks skip re-highlighting on every 220ms
+  // poll tick (O(block) per tick → O(n²) over the reply). Closed segments
+  // keep full rendering. Once the run settles, `streaming` flips off and the
+  // tail re-renders fully highlighted.
+  const liveSegmentId = streaming && segments
+    ? (() => {
+        for (let index = segments.length - 1; index >= 0; index--) {
+          const segment = segments[index]!;
+          if (segment.kind === "text" || segment.kind === "thinking")
+            return segment.id;
+        }
+        return null;
+      })()
+    : null;
   // Plain-text payload for the copy button: joined text slices when the reply is
   // segmented, otherwise the raw content. Activity lines are excluded.
   const copyableText = (segments
@@ -131,6 +146,7 @@ function MessageBlockImpl({
                         <MarkdownContent
                           content={segment.text}
                           key={segment.id}
+                          live={segment.id === liveSegmentId}
                           workspaceId={workspaceId}
                         />
                       );
@@ -142,6 +158,7 @@ function MessageBlockImpl({
                         ? (
                             <ThinkingBlock
                               key={segment.id}
+                              live={segment.id === liveSegmentId}
                               text={segment.text}
                               workspaceId={workspaceId}
                             />
@@ -158,7 +175,7 @@ function MessageBlockImpl({
             : message.content
               ? isUser
                 ? <UserMessageText content={message.content} />
-                : <MarkdownContent content={message.content} workspaceId={workspaceId} />
+                : <MarkdownContent content={message.content} workspaceId={workspaceId} live={streaming} />
               : null}
           {message.attachments && message.attachments.length > 0
             ? (

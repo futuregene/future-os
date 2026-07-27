@@ -22,6 +22,16 @@ export async function listRuns(threadId: string) {
   return invokeCommand<StoredRun[]>("list_runs", { threadId });
 }
 
+/** The thread's most recent run, or null (recent-run poll — one row). */
+export async function getLatestRun(threadId: string) {
+  return invokeCommand<StoredRun | null>("get_latest_run", { threadId });
+}
+
+/** A single run by id (settle checks — direct PK lookup). */
+export async function getRun(runId: string) {
+  return invokeCommand<StoredRun | null>("get_run", { runId });
+}
+
 export async function listLatestRunInfos(threadIds: string[]) {
   return invokeCommand<Array<{ threadId: string; status: string; endedAt: number | null }>>(
     "list_latest_run_infos",
@@ -49,6 +59,14 @@ export async function listRunEvents(runId: string) {
   return invokeCommand<StoredRunEvent[]>("list_run_events", { runId });
 }
 
+/**
+ * Incremental variant for the live-preview poll: only events with
+ * `sequence > sinceSequence` cross IPC. Pass -1 for the full log.
+ */
+export async function listRunEventsSince(runId: string, sinceSequence: number) {
+  return invokeCommand<StoredRunEvent[]>("list_run_events_since", { runId, sinceSequence });
+}
+
 /** Fetch run events for multiple runs in a single IPC call. */
 export async function listRunEventsBulk(runIds: string[]) {
   return invokeCommand<[string, StoredRunEvent[]][]>("list_run_events_bulk", { runIds });
@@ -56,6 +74,11 @@ export async function listRunEventsBulk(runIds: string[]) {
 
 export async function listToolCalls(runId: string) {
   return invokeCommand<StoredToolCall[]>("list_tool_calls", { runId });
+}
+
+/** Tool calls for many runs in a single IPC call (context panel poll). */
+export async function listToolCallsBulk(runIds: string[]) {
+  return invokeCommand<[string, StoredToolCall[]][]>("list_tool_calls_bulk", { runIds });
 }
 
 export async function listToolOutputs(runId: string, toolCallId: string) {

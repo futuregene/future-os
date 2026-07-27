@@ -2,7 +2,7 @@ import type { StoredArtifact } from "../../integrations/storage/threadStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, Download, ExternalLink, Maximize2, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { CopyButton } from "../../components/ui/CopyButton";
@@ -23,7 +23,12 @@ import { pathBasename } from "../../lib/workspacePath";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
 import { MarkdownContent } from "../markdown/MarkdownContent";
-import { PdfPreview } from "./PdfPreview";
+
+// pdfjs-dist is ~500KB of the main bundle's eager parse cost while PDF preview
+// is a rare path — split it out and load it on first use.
+const PdfPreview = lazy(() =>
+  import("./PdfPreview").then(module => ({ default: module.PdfPreview })),
+);
 
 interface ArtifactDetailPanelProps {
   artifact: StoredArtifact;
@@ -235,7 +240,9 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
         {!fileMissing && shouldShowPdfPreview
           ? (
               <div className="mt-3">
-                <PdfPreview path={artifact.path!} />
+                <Suspense fallback={null}>
+                  <PdfPreview path={artifact.path!} />
+                </Suspense>
               </div>
             )
           : null}

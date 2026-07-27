@@ -2,6 +2,7 @@ import type { ReviewBase } from "../../../integrations/storage/review";
 import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall } from "../../../integrations/storage/threadStore";
 import type { WorkspaceReviewCapabilities } from "../../../integrations/storage/types";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { matchesSettledRun } from "../../../features/agent/agentMessageFormatters";
 import { upsertFutureReferenceEntries } from "../../../features/markdown/futureReferenceStore";
 import {
   ensureWorkspaceGit,
@@ -9,7 +10,7 @@ import {
   getWorkspaceReviewCapabilities,
   listArtifacts,
   listRuns,
-  listToolCalls,
+  listToolCallsBulk,
 } from "../../../integrations/storage/threadStore";
 import { usePolling } from "../../../lib/usePolling";
 
@@ -107,7 +108,8 @@ export function useContextData({
       ]);
       // Only chat threads use Artifacts; workspace threads show Review (§14.6).
       const nextArtifacts = activeThreadMode === "workspace" ? [] : await listArtifacts(activeThreadId);
-      const toolEntries = await Promise.all(nextRuns.map(async run => [run.id, await listToolCalls(run.id)] as const));
+      // One batched IPC for all runs' tool calls (was one round-trip per run).
+      const toolEntries = await listToolCallsBulk(nextRuns.map(run => run.id));
 
       if (!isCurrentRefresh())
         return;
@@ -209,11 +211,17 @@ export function useContextData({
     // eslint-disable-next-line react/exhaustive-deps
   }, [activeTab, reviewBase, debouncedReviewCustomBase]);
 
-  usePolling(() => refreshContextRef.current(), 1500, {
+  // Poll cadence follows activity: fast while a run is live (tool calls and
+  // statuses accumulate in near real time), slow once everything settles —
+  // idle-panel data (git review, artifacts) moves rarely, and the expensive
+  // queries behind it are already cached/batched. External changes (another
+  // client driving the session) surface within the slow tick.
+  const hasActiveRun = runs.some(run => !matchesSettledRun(run.status));
+  usePolling(() => refreshContextRef.current(), hasActiveRun ? 1500 : 5000, {
     enabled: Boolean(activeThreadId) && expanded,
     // Intentionally no refreshContext dep: the parameter-driven effect above
     // owns param-change fetches; the poll only needs to tick periodically.
-    deps: [],
+    deps: [hasActiveRun],
   });
 
   return {

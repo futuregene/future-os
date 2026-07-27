@@ -325,7 +325,12 @@ pub fn run() {
             // machine). Runs off the launch path — failures are logged but the
             // UI renders immediately. The store must be initialized first.
             std::thread::spawn(|| {
-                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                // Single-threaded runtime: `Runtime::new()` is multi_thread and
+                // would spawn num_cpus workers for this one-shot task.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio runtime");
                 rt.block_on(async {
                     if let Err(error) = agent_bridge::import_missing_sessions().await {
                         eprintln!("FutureOS session import failed: {error}");
@@ -355,7 +360,12 @@ pub fn run() {
             // streaming (the agent survived a GUI crash). Spawned off the launch
             // path so it never delays the window.
             std::thread::spawn(|| {
-                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                // Single-threaded runtime: `Runtime::new()` is multi_thread and
+                // would spawn num_cpus workers for this one-shot task.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio runtime");
                 rt.block_on(async {
                     // Give the agent a few seconds to come up; then test.
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -429,13 +439,17 @@ pub fn run() {
             list_messages,
             append_message,
             create_run,
+            get_latest_run,
+            get_run,
             list_runs,
             list_latest_run_infos,
             update_run_status,
             abort_run,
             list_run_events,
             list_run_events_bulk,
+            list_run_events_since,
             list_tool_calls,
+            list_tool_calls_bulk,
             list_tool_outputs,
             list_approval_requests,
             decide_approval_request,

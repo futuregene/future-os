@@ -11,7 +11,7 @@ import {
   targetFromArgs,
 } from "./toolActivityModel";
 
-interface AssistantRunProjection {
+export interface AssistantRunProjection {
   activityItems: AgentActivityItem[];
   content: string;
   /** Text and activity in chronological order — drives inline rendering. */
@@ -55,8 +55,25 @@ interface ToolActivity {
   order: number;
 }
 
-export function buildAssistantRunProjection(events: StoredRunEvent[]): AssistantRunProjection {
-  const sortedEvents = [...events].sort((a, b) => a.sequence - b.sequence);
+/**
+ * A stateful, incremental projector over a run's event log. The live-preview
+ * poll fetches only the events it hasn't seen (`list_run_events_since`) and
+ * ingests them here, so each tick costs O(new events) for parsing plus
+ * O(slots) for the snapshot — instead of re-parsing and re-projecting the
+ * whole log every 220ms (O(n) per tick, O(n²) over a run).
+ */
+export interface RunProjector {
+  /** Highest event sequence ingested so far (-1 when none). */
+  readonly lastSequence: number;
+  /**
+   * Ingest a batch of events and return the current projection snapshot.
+   * Batches are sorted by sequence internally; events already ingested
+   * (sequence <= lastSequence) are skipped, so overlapping batches are safe.
+   */
+  ingest: (events: StoredRunEvent[]) => AssistantRunProjection;
+}
+
+export function createRunProjector(): RunProjector {
   const toolActivities = new Map<string, ToolActivity>();
   // Ordered timeline of the turn. Text accumulates into the open text slot;
   // each tool call pins a slot at the point it started.
@@ -75,19 +92,20 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
   let usageOutputSum = 0;
   let sawUsageEvent = false;
   let agentEndOutput = 0;
+  let lastSequence = -1;
 
-  for (const event of sortedEvents) {
+  function processEvent(event: StoredRunEvent) {
     const payload = parseEventPayload(event.payload);
 
     if (event.eventType === "usage") {
       usageOutputSum += usageOutputTokens(payload);
       sawUsageEvent = true;
-      continue;
+      return;
     }
 
     if (event.eventType === "agent_end") {
       agentEndOutput = usageOutputTokens(payload);
-      continue;
+      return;
     }
 
     if (event.eventType === "text_chunk") {
@@ -103,7 +121,7 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
       if (text.trim()) {
         sawVisibleWork = true;
       }
-      continue;
+      return;
     }
 
     if (event.eventType === "thinking_start") {
@@ -113,7 +131,7 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
       openThinking = { type: "thinking", text: "" };
       slots.push(openThinking);
       openText = null;
-      continue;
+      return;
     }
 
     if (event.eventType === "thinking_delta") {
@@ -127,13 +145,13 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
         }
         openThinking.text += text;
       }
-      continue;
+      return;
     }
 
     if (event.eventType === "thinking_end") {
       thinking = false;
       openThinking = null;
-      continue;
+      return;
     }
 
     // Context compaction ran this turn (usually at the top, before any text).
@@ -149,7 +167,7 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
         openText = null;
         openThinking = null;
       }
-      continue;
+      return;
     }
 
     if (event.eventType === "toolcall_start" || event.eventType === "tool_start") {
@@ -171,16 +189,16 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
         openThinking = null;
         sawVisibleWork = true;
       }
-      continue;
+      return;
     }
 
     if (event.eventType === "toolcall_delta") {
       if (!activeToolCallId)
-        continue;
+        return;
 
       const existing = toolActivities.get(activeToolCallId);
       if (!existing)
-        continue;
+        return;
 
       const nextArgsText = `${existing.argsText ?? ""}${textFromPayload(payload)}`;
       const target = targetFromToolArgs(existing.kind, nextArgsText);
@@ -194,13 +212,13 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
             }
           : {}),
       });
-      continue;
+      return;
     }
 
     if (event.eventType === "tool_end" || event.eventType === "tool_result") {
       const tool = toolFromPayload(payload, event.sequence);
       if (!tool)
-        continue;
+        return;
 
       const toolId = explicitToolId(payload) ?? latestRunningToolId(toolActivities, tool.kind) ?? tool.id;
       const existing = toolActivities.get(toolId);
@@ -227,30 +245,58 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
     }
   }
 
-  const segments = buildSegments(slots, toolActivities);
+  function snapshot(): AssistantRunProjection {
+    const segments = buildSegments(slots, toolActivities);
 
-  // Flat activity list kept for back-compat (legacy render path / callers).
-  const items = collapseToolActivities([...toolActivities.values()].sort((a, b) => a.order - b.order));
-  // Mid-reasoning with nothing visible yet. Reported as a flag (consumed by the
-  // footer hint) rather than injected as a top-of-message "thinking" activity.
-  const thinkingActive = Boolean(thinking) && !content.trim() && !sawVisibleWork;
+    // Flat activity list kept for back-compat (legacy render path / callers).
+    const items = collapseToolActivities([...toolActivities.values()].sort((a, b) => a.order - b.order));
+    // Mid-reasoning with nothing visible yet. Reported as a flag (consumed by the
+    // footer hint) rather than injected as a top-of-message "thinking" activity.
+    const thinkingActive = Boolean(thinking) && !content.trim() && !sawVisibleWork;
 
-  // Concatenated reasoning (blocks joined by blank lines) — the inline segments
-  // carry the ordered form; this is the whole-turn text for any non-inline use.
-  const thinkingText = slots
-    .filter((slot): slot is Extract<Slot, { type: "thinking" }> => slot.type === "thinking")
-    .map(slot => slot.text.trim())
-    .filter(Boolean)
-    .join("\n\n");
+    // Concatenated reasoning (blocks joined by blank lines) — the inline segments
+    // carry the ordered form; this is the whole-turn text for any non-inline use.
+    const thinkingText = slots
+      .filter((slot): slot is Extract<Slot, { type: "thinking" }> => slot.type === "thinking")
+      .map(slot => slot.text.trim())
+      .filter(Boolean)
+      .join("\n\n");
+
+    return {
+      activityItems: items,
+      content,
+      segments,
+      outputTokens: sawUsageEvent ? usageOutputSum : agentEndOutput,
+      thinking: thinkingText,
+      thinkingActive,
+    };
+  }
 
   return {
-    activityItems: items,
-    content,
-    segments,
-    outputTokens: sawUsageEvent ? usageOutputSum : agentEndOutput,
-    thinking: thinkingText,
-    thinkingActive,
+    get lastSequence() {
+      return lastSequence;
+    },
+    ingest(events) {
+      const sorted = [...events].sort((a, b) => a.sequence - b.sequence);
+      for (const event of sorted) {
+        // Skip already-ingested events (overlapping batches), but compare
+        // against the pre-batch watermark so two events sharing one sequence
+        // within a single batch are both processed.
+        if (event.sequence <= lastSequence)
+          continue;
+        processEvent(event);
+      }
+      if (sorted.length > 0) {
+        lastSequence = Math.max(lastSequence, sorted[sorted.length - 1]!.sequence);
+      }
+      return snapshot();
+    },
   };
+}
+
+/** One-shot full projection (settle path, tests): project the entire log. */
+export function buildAssistantRunProjection(events: StoredRunEvent[]): AssistantRunProjection {
+  return createRunProjector().ingest(events);
 }
 
 function numberFromPayload(payload: unknown, keys: string[]): number {

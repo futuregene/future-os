@@ -37,9 +37,15 @@ function classifyAgentConnectionError(message: string): AgentConnectionState["ki
   if (normalized.includes("unable to connect to future agent")) {
     return "agent_unavailable";
   }
+  // "Unable to load Future Agent models" surfaces when the gRPC call itself
+  // fails (agent unreachable), not a model-data problem.
+  if (normalized.includes("unable to load future agent models")) {
+    return "agent_unavailable";
+  }
+  // Genuine model errors: agent returned but data is invalid / request rejected.
   if (
-    normalized.includes("unable to load future agent models")
-    || normalized.includes("model")
+    normalized.includes("invalid model data")
+    || normalized.includes("rejected the model list")
     || normalized.includes("list_models")
   ) {
     return "model_error";

@@ -453,7 +453,8 @@ pub fn prune_thread_changesets(
 /// `NOT EXISTS(after)` dropped it, leaving such Runs permanently
 /// changeset-less.
 pub fn list_unmaterialized_runs() -> Result<Vec<(String, String, String)>, crate::AppError> {
-    list_unmaterialized_runs_in(&connect()?)
+    let conn = connect()?;
+    list_unmaterialized_runs_in(&conn)
 }
 
 fn list_unmaterialized_runs_in(

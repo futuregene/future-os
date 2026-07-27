@@ -1,9 +1,10 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
+import type { AssistantRunProjection, RunProjector } from "./agentActivity";
 import type { AgentMessage, MessageSegment } from "./agentThreadTypes";
-import { listRunEvents, listRunEventsBulk, listRuns, storedTimeToIso } from "../../integrations/storage/threadStore";
+import { getRun, listRunEvents, listRunEventsBulk, listRunEventsSince, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { buildAssistantRunProjection } from "./agentActivity";
+import { buildAssistantRunProjection, createRunProjector } from "./agentActivity";
 import { matchesSettledRun } from "./agentMessageFormatters";
 
 /** Apply a patch to the single message with `id`, leaving the rest untouched. */
@@ -21,8 +22,25 @@ export function patchMessage(
   );
 }
 
+// ── Incremental live-preview projection ──────────────────────────────────
+// The 220ms live-preview poll used to fetch the run's ENTIRE event log every
+// tick and re-project it from scratch (O(n) per tick → O(n²) over a run, with
+// every payload re-parsed and re-serialized across IPC). Instead, each run
+// keeps a stateful projector here; every tick fetches only the events with
+// `sequence > lastSequence` and ingests just those.
+interface LiveProjectionEntry {
+  projector: RunProjector;
+  /** Null only between projector creation and the first ingest (same tick). */
+  projection: AssistantRunProjection | null;
+}
+
+/** Max cached runs before evicting the least-recently-used projector. */
+const LIVE_PROJECTION_CACHE_MAX = 8;
+
+const liveProjectionCache = new Map<string, LiveProjectionEntry>();
+
 /**
- * Fetch a run's events and project them for a live preview, honoring the
+ * Fetch a run's unseen events and advance its cached projector, honoring the
  * `shouldApply` guard (a stale async result is dropped by returning null). Emits
  * `file-tree-refresh` when tool activity appears — the agent may have created or
  * modified files. Shared prologue of the two live-preview writers below.
@@ -30,14 +48,42 @@ export function patchMessage(
 async function projectRunForLivePreview(
   runId: string,
   shouldApply: () => boolean,
-): Promise<ReturnType<typeof buildAssistantRunProjection> | null> {
-  const events = await listRunEvents(runId);
+): Promise<AssistantRunProjection | null> {
+  const cached = liveProjectionCache.get(runId) ?? null;
+  const since = cached?.projector.lastSequence ?? -1;
+  let events = await listRunEventsSince(runId, since);
   if (!shouldApply())
     return null;
-  const projection = buildAssistantRunProjection(events);
-  if (projection.activityItems.length > 0)
+
+  if (cached && events.length > 0 && events[0]!.sequence <= since) {
+    // Sequence regressed under us — the agent realigned mid-stream (e.g. its
+    // fallback restarted the event log for a new run). The incremental tail is
+    // meaningless against the old projector: drop it and rebuild from the
+    // full log once.
+    liveProjectionCache.delete(runId);
+    events = await listRunEventsSince(runId, -1);
+    if (!shouldApply())
+      return null;
+  }
+
+  let entry = liveProjectionCache.get(runId);
+  if (!entry) {
+    entry = { projector: createRunProjector(), projection: null };
+  }
+  // LRU touch; bound the cache so long sessions don't accumulate projectors.
+  liveProjectionCache.delete(runId);
+  liveProjectionCache.set(runId, entry);
+  while (liveProjectionCache.size > LIVE_PROJECTION_CACHE_MAX) {
+    const oldest = liveProjectionCache.keys().next().value;
+    if (oldest === undefined)
+      break;
+    liveProjectionCache.delete(oldest);
+  }
+
+  entry.projection = entry.projector.ingest(events);
+  if (entry.projection.activityItems.length > 0)
     emitFutureEvent("file-tree-refresh", undefined);
-  return projection;
+  return entry.projection;
 }
 
 /**
@@ -408,10 +454,13 @@ export function clientId(prefix: string) {
   return `${prefix}_${Date.now()}_${clientIdCounter}`;
 }
 
-export async function loadCurrentRun(threadId: string, runId: string) {
+/**
+ * A run's current record by id (settle checks) — direct PK lookup, not a
+ * full per-thread list.
+ */
+export async function loadCurrentRun(runId: string) {
   try {
-    const runs = await listRuns(threadId);
-    return runs.find(run => run.id === runId) ?? null;
+    return await getRun(runId);
   }
   catch {
     return null;

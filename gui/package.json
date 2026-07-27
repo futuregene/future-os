@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc && vite build",
-    "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" && npm run typecheck",
     "test": "vitest run",
     "stylelint": "stylelint \"src/**/*.css\"",
     "preview": "vite preview --host 127.0.0.1",

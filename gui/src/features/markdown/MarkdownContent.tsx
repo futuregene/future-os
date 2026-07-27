@@ -3,6 +3,7 @@ import type { StoredFile } from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
 import { useMemo } from "react";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
+import { LiveMarkdownProvider } from "./LiveMarkdownContext";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
 import { PreviewMarkdownContext, usePreviewMarkdown } from "./PreviewMarkdownContext";
 import { CodeBlock } from "./renderers/CodeBlock";
@@ -23,13 +24,22 @@ interface MarkdownContentProps {
    * The chat stream omits it, keeping its link behavior unchanged.
    */
   basePath?: string;
+  /**
+   * True for the still-growing tail of a streaming reply (see
+   * `LiveMarkdownContext`): code blocks render plain until the segment closes.
+   */
+  live?: boolean;
 }
 
-export function MarkdownContent({ content, workspaceId, basePath }: MarkdownContentProps) {
+export function MarkdownContent({ content, workspaceId, basePath, live }: MarkdownContentProps) {
   const document = useMemo(() => parseFutureMarkdown(content), [content]);
   useFutureReferences(workspaceId, document.references);
 
-  const body = <div className="space-y-3">{document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`))}</div>;
+  const body = (
+    <LiveMarkdownProvider value={Boolean(live)}>
+      <div className="space-y-3">{document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`))}</div>
+    </LiveMarkdownProvider>
+  );
   if (basePath)
     return <PreviewMarkdownContext value={{ basePath }}>{body}</PreviewMarkdownContext>;
   return body;

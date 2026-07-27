@@ -72,15 +72,84 @@ pub(super) fn ensure_app_dirs() -> Result<(), crate::AppError> {
     fs::create_dir_all(chat_workspaces_root()?).map_err(crate::AppError::from)
 }
 
-pub(super) fn connect() -> Result<Connection, crate::AppError> {
+/// Maximum idle connections kept warm in the pool. WAL allows one writer plus
+/// concurrent readers, and the store's queries are all small, so a handful of
+/// connections covers every poll path without queueing.
+const POOL_MAX_IDLE: usize = 4;
+
+/// Process-wide connection pool. Previously every store call opened a fresh
+/// SQLite connection (file open + 3 PRAGMAs + WAL handshake) — several times
+/// per second on the 1.5s poll paths, and 3× per artifact write. Connections
+/// are keyed to the current db path: tests that override HOME get a fresh pool
+/// instead of stale connections into the previous HOME's database.
+static POOL: std::sync::LazyLock<std::sync::Mutex<(std::path::PathBuf, Vec<Connection>)>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new((std::path::PathBuf::new(), Vec::new())));
+
+/// A connection checked out from [`POOL`]; returns to the pool on drop.
+/// Derefs to [`Connection`], so existing call sites (queries, prepared
+/// statements, `transaction()` via `DerefMut`) work unchanged.
+pub(super) struct PooledConnection {
+    conn: Option<Connection>,
+}
+
+impl std::ops::Deref for PooledConnection {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.conn
+            .as_ref()
+            .expect("pooled connection live until drop")
+    }
+}
+
+impl std::ops::DerefMut for PooledConnection {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.conn
+            .as_mut()
+            .expect("pooled connection live until drop")
+    }
+}
+
+impl Drop for PooledConnection {
+    fn drop(&mut self) {
+        let Some(conn) = self.conn.take() else {
+            return;
+        };
+        let Ok(path) = db_path() else {
+            return;
+        };
+        if let Ok(mut pool) = POOL.lock() {
+            // Return only if the pool still points at this database (a HOME
+            // override mid-process swaps the path) and it has room.
+            if pool.0 == path && pool.1.len() < POOL_MAX_IDLE {
+                pool.1.push(conn);
+            }
+        }
+    }
+}
+
+pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
+    let path = db_path()?;
+    if let Ok(mut pool) = POOL.lock() {
+        if pool.0 != path {
+            // HOME changed (test override) — drop connections into the old
+            // database and re-key the pool.
+            pool.1.clear();
+            pool.0 = path.clone();
+        }
+        if let Some(conn) = pool.1.pop() {
+            // Directory creation is skipped on the pooled path — the dirs
+            // provably existed when the pooled connection was first opened.
+            return Ok(PooledConnection { conn: Some(conn) });
+        }
+    }
     ensure_app_dirs()?;
-    let conn = Connection::open(db_path()?)?;
+    let conn = Connection::open(path)?;
     conn.execute_batch(
         "PRAGMA foreign_keys = ON;
          PRAGMA busy_timeout = 5000;
          PRAGMA journal_mode = WAL;",
     )?;
-    Ok(conn)
+    Ok(PooledConnection { conn: Some(conn) })
 }
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
