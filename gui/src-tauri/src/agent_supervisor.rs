@@ -215,19 +215,28 @@ pub fn confirm_quit(app: AppHandle) {
         // Abort each running session best-effort — an unreachable agent or a
         // session that finished in the meantime is a harmless no-op.
         tauri::async_runtime::block_on(async {
-            for session in &sessions {
-                if let Err(error) = crate::agent_bridge::abort_session(session).await {
-                    eprintln!("FutureOS: failed to abort session {session} on quit: {error}");
-                }
-            }
+            // Abort all sessions in parallel, then wait for all to go idle.
+            // Sequential waits would make force-quit take 3s per session;
+            // concurrent gRPC calls over the shared channel complete together.
+            let abort_futs: Vec<_> = sessions
+                .iter()
+                .map(|session| async move {
+                    if let Err(error) = crate::agent_bridge::abort_session(session).await {
+                        eprintln!("FutureOS: failed to abort session {session} on quit: {error}");
+                    }
+                })
+                .collect();
+            futures::future::join_all(abort_futs).await;
             // Give the agent a moment for its abort to settle before the process
             // exits or kills the sidecar. Without this the agent's LLM stream is
             // torn down while it's still processing the abort interrupt, leaving a
             // "LLM stream ended without a terminal signal" WARN in the agent log.
             // Best-effort: an unreachable agent returns immediately.
-            for session in &sessions {
-                crate::agent_bridge::wait_for_agent_idle(session).await;
-            }
+            let wait_futs: Vec<_> = sessions
+                .iter()
+                .map(|session| crate::agent_bridge::wait_for_agent_idle(session))
+                .collect();
+            futures::future::join_all(wait_futs).await;
         });
         // Kill the bundled sidecar if we own it (no-op for an external agent).
         shutdown_agent();

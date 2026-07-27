@@ -90,8 +90,8 @@ pub(crate) async fn wait_for_agent_idle(session_id: &str) {
     let Ok(mut client) = connect_agent().await else {
         return;
     };
-    // ~3s budget at 200ms intervals.
-    for _ in 0..15 {
+    // ~5s budget at 200ms intervals.
+    for _ in 0..25 {
         match client
             .execute_command(get_state_command(session_id.to_string()))
             .await

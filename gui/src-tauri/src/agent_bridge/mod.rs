@@ -494,33 +494,58 @@ async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), S
 async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), String> {
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
 
-    // Backfill: the agent's event buffer holds the whole current-run log.
-    // Drop the local log first — it ends at the crash point, and the
-    // backfill covers everything from turn-start, so keeping both would
-    // double the event log. After clearing, replay from the agent so
-    // the local log is complete and matches the single-source-of-truth
-    // shape `collect_remote_stream` expects for a fresh run.
-    crate::store::clear_run_event_buffer(run_id);
-    crate::store::delete_run_events_file(run_id);
+    // Backfill: fetch the agent's buffered events FIRST. Only replace the
+    // local log after the fetch succeeds with non-empty events — clearing
+    // before fetching would destroy the pre-crash history on failure.
+    let backfill_events: Vec<(String, String)> = if let Ok(backfill) =
+        get_events_since(session_id.to_string(), run_id.to_string(), -1).await
+    {
+        backfill
+            .get("events")
+            .and_then(|v| v.as_array())
+            .map(|events| {
+                events
+                    .iter()
+                    .map(|item| {
+                        let t = item
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let d = item
+                            .get("data")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        (t, d)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     let mut sequence = 0i64;
-    if let Ok(backfill) = get_events_since(session_id.to_string(), run_id.to_string(), -1).await {
-        if let Some(events) = backfill.get("events").and_then(|v| v.as_array()) {
-            for item in events {
-                let evt_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let evt_data = item.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                crate::store::append_run_event(crate::store::AppendRunEventInput {
-                    run_id: run_id.to_string(),
-                    event_type: evt_type.to_string(),
-                    payload: if evt_data.is_empty() {
-                        None
-                    } else {
-                        Some(evt_data.to_string())
-                    },
-                    sequence,
-                })
-                .map_err(|e| format!("append_backfill: {e}"))?;
-                sequence += 1;
-            }
+    if !backfill_events.is_empty() {
+        // The backfill covers the entire turn-from-start, so the pre-crash
+        // local log (which ends at the crash point) would duplicate events.
+        // Safe to replace now that we know the agent delivered.
+        crate::store::clear_run_event_buffer(run_id);
+        crate::store::delete_run_events_file(run_id);
+        for (evt_type, evt_data) in backfill_events {
+            crate::store::append_run_event(crate::store::AppendRunEventInput {
+                run_id: run_id.to_string(),
+                event_type: evt_type,
+                payload: if evt_data.is_empty() {
+                    None
+                } else {
+                    Some(evt_data)
+                },
+                sequence,
+            })
+            .map_err(|e| format!("append_backfill: {e}"))?;
+            sequence += 1;
         }
     }
 
