@@ -1,6 +1,6 @@
 import type { StoredRunEvent } from "../../integrations/storage/threadStore";
 import { describe, expect, it } from "vitest";
-import { buildAssistantRunProjection, isSoftExit, nonZeroExitCode } from "./agentActivity";
+import { buildAssistantRunProjection, createRunProjector, isSoftExit, nonZeroExitCode } from "./agentActivity";
 
 function events(list: Array<[string, Record<string, unknown>]>): StoredRunEvent[] {
   return list.map(([eventType, payload], index) => ({
@@ -307,5 +307,70 @@ describe("nonZeroExitCode", () => {
     expect(isSoftExit(1, "grep foo file")).toBe(true);
     // A real command-not-found (exit 1, first token not a soft-fail program) stays a failure.
     expect(isSoftExit(1, "future tools call parse_doc")).toBe(false);
+  });
+});
+
+describe("createRunProjector incremental ingestion", () => {
+  const full = events([
+    ["thinking_start", {}],
+    ["thinking_delta", { text: "reasoning " }],
+    ["thinking_delta", { text: "more" }],
+    ["thinking_end", {}],
+    ["text_chunk", { text: "First. " }],
+    ["tool_start", read("t1", "/a.ts")[0]],
+    ["toolcall_delta", { text: "{\"path\":\"/a" }],
+    ["toolcall_delta", { text: ".ts\"}" }],
+    ["tool_end", read("t1", "/a.ts")[0]],
+    ["text_chunk", { text: "Second." }],
+    ["usage", { usage: { completion_tokens: 42 } }],
+    ["agent_end", { usage: { completion_tokens: 99 } }],
+  ]);
+
+  it("matches the one-shot projection when fed in chunks", () => {
+    const expected = buildAssistantRunProjection(full);
+    const projector = createRunProjector();
+
+    // Feed in uneven chunks, as the 220ms incremental poll would deliver them.
+    let projection = projector.ingest(full.slice(0, 3));
+    projection = projector.ingest(full.slice(3, 6));
+    projection = projector.ingest(full.slice(6));
+
+    expect(projection).toEqual(expected);
+    expect(projector.lastSequence).toBe(full.length - 1);
+  });
+
+  it("skips already-ingested events in overlapping batches", () => {
+    const expected = buildAssistantRunProjection(full);
+    const projector = createRunProjector();
+
+    projector.ingest(full.slice(0, 6));
+    // Overlapping redelivery (events 4-7) must not double-apply text/tools.
+    const projection = projector.ingest(full.slice(4));
+
+    expect(projection).toEqual(expected);
+  });
+
+  it("processes two events sharing one sequence within a single batch", () => {
+    const projector = createRunProjector();
+    const batch = events([
+      ["text_chunk", { text: "a" }],
+      ["text_chunk", { text: "b" }],
+    ]).map(event => ({ ...event, sequence: 7 }));
+
+    const projection = projector.ingest(batch);
+
+    expect(projection.content).toBe("ab");
+    expect(projector.lastSequence).toBe(7);
+    // ...but a later batch re-delivering that watermark is deduped.
+    expect(projector.ingest(batch).content).toBe("ab");
+  });
+
+  it("returns a stable empty snapshot before any event lands", () => {
+    const projector = createRunProjector();
+    const projection = projector.ingest([]);
+
+    expect(projection.content).toBe("");
+    expect(projection.segments).toHaveLength(0);
+    expect(projector.lastSequence).toBe(-1);
   });
 });

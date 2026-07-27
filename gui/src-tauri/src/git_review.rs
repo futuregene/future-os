@@ -8,7 +8,7 @@ use std::{
 
 use crate::store;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitReview {
     is_git_workspace: bool,
@@ -32,6 +32,23 @@ pub struct GitReviewFile {
     diff: String,
 }
 
+/// Cache of the last computed review per (workspace, base, custom_base), keyed
+/// by a cheap fingerprint. The Review tab polls every 1.5s; an uncached fetch
+/// spawns 6+ git processes (incl. the full `--unified=80` patch) and reads
+/// every untracked file into memory. The fingerprint costs two small spawns
+/// (rev-parse + status) plus a metadata stat per changed file, and skips the
+/// whole computation while nothing relevant moved.
+/// (workspace_id, base, custom_base) → (fingerprint, review).
+type ReviewCacheKey = (String, String, String);
+type ReviewCacheEntry = (String, GitReview);
+
+static REVIEW_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<ReviewCacheKey, ReviewCacheEntry>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Bound the cache (one entry per workspace/base combo in practice).
+const REVIEW_CACHE_MAX: usize = 32;
+
 pub fn get_git_review(
     workspace_id: String,
     base: Option<String>,
@@ -52,6 +69,20 @@ pub fn get_git_review(
             deletions: 0,
             files: Vec::new(),
         });
+    }
+
+    let cache_key = (
+        workspace_id.clone(),
+        base.clone().unwrap_or_default(),
+        custom_base.clone().unwrap_or_default(),
+    );
+    let fingerprint = review_fingerprint(&workspace_path);
+    if let Ok(cache) = REVIEW_CACHE.lock() {
+        if let Some((cached_fingerprint, review)) = cache.get(&cache_key) {
+            if *cached_fingerprint == fingerprint {
+                return Ok(review.clone());
+            }
+        }
     }
 
     let branch = git_output(&workspace_path, ["branch", "--show-current"])
@@ -81,7 +112,7 @@ pub fn get_git_review(
     let additions = files.iter().map(|file| file.additions).sum();
     let deletions = files.iter().map(|file| file.deletions).sum();
 
-    Ok(GitReview {
+    let review = GitReview {
         is_git_workspace: true,
         workspace_path: workspace.path,
         branch,
@@ -91,10 +122,118 @@ pub fn get_git_review(
         additions,
         deletions,
         files,
-    })
+    };
+
+    if let Ok(mut cache) = REVIEW_CACHE.lock() {
+        if cache.len() >= REVIEW_CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(cache_key, (fingerprint, review.clone()));
+    }
+    Ok(review)
 }
 
+/// A cheap staleness signal for the review cache. Components:
+/// - HEAD sha (commits, checkouts to a different commit);
+/// - the `.git/HEAD` file content (`git checkout -b` switches branches at the
+///   SAME commit — the sha is unchanged but the branch label in the review
+///   must update);
+/// - the status output (staging, new/deleted files);
+/// - the git index mtime (re-staging identical content);
+/// - FETCH_HEAD / packed-refs mtimes (a `git fetch` moves upstream refs
+///   without touching HEAD, index, or the working tree — the upstream and
+///   merge-base diff bases would otherwise serve stale results);
+/// - the size+mtime of every file the status lists (edits to an
+///   already-modified file don't change the status text, so without this the
+///   main "agent keeps editing a file" flow would serve stale diffs).
+///
+/// Two small git spawns + a few metadata stats — no patch generation, no file
+/// content reads. Known gap: a force-updated LOOSE ref (`git branch -f`) that
+/// touches neither packed-refs nor FETCH_HEAD stays stale until any other
+/// input moves; acceptable for a 1.5s-refresh UI cache.
+fn review_fingerprint(workspace_path: &Path) -> String {
+    use std::fmt::Write;
+    let head = git_output(workspace_path, ["rev-parse", "HEAD"]).unwrap_or_default();
+    let status = git_output(
+        workspace_path,
+        ["status", "--short", "--untracked-files=all"],
+    )
+    .unwrap_or_default();
+    let git_dir = workspace_path.join(".git");
+    let mut fingerprint = String::with_capacity(head.len() + status.len() + 256);
+    fingerprint.push_str(head.trim());
+    fingerprint.push('\n');
+    fingerprint.push_str(&status);
+
+    if let Ok(head_ref) = fs::read_to_string(git_dir.join("HEAD")) {
+        let _ = write!(fingerprint, "\nHEAD:{}", head_ref.trim());
+    }
+    for meta_file in ["index", "FETCH_HEAD", "packed-refs"] {
+        if let Ok(mtime) = fs::metadata(git_dir.join(meta_file)).and_then(|meta| meta.modified()) {
+            let _ = write!(fingerprint, "\n{meta_file}:{mtime:?}");
+        }
+    }
+
+    for path in status_paths(&status) {
+        if let Ok(meta) = fs::metadata(workspace_path.join(&path)) {
+            let mtime = meta.modified().ok();
+            let _ = write!(fingerprint, "\n{path}:{}:{mtime:?}", meta.len());
+        }
+    }
+    fingerprint
+}
+
+/// The paths listed by `git status --short` (renames resolve to the new path).
+fn status_paths(status: &str) -> Vec<String> {
+    status
+        .lines()
+        .filter_map(|line| {
+            if line.len() < 4 {
+                return None;
+            }
+            let raw_path = line[3..].trim();
+            Some(
+                raw_path
+                    .rsplit_once(" -> ")
+                    .map(|(_, next)| next)
+                    .unwrap_or(raw_path)
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Short-TTL cache for [`is_git_workspace`]: the check forks `git rev-parse`
+/// and sits on the artifact-persist path (every write/edit tool_end) plus the
+/// review poll. A workspace's git-ness changes only via an external
+/// `git init`/deletion of `.git`, so 30s of staleness is harmless.
+static GIT_WORKSPACE_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<PathBuf, (bool, std::time::Instant)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+const GIT_WORKSPACE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+const GIT_WORKSPACE_CACHE_MAX: usize = 64;
+
 pub fn is_git_workspace(path: &Path) -> bool {
+    let key = canonical_or_raw(path);
+    if let Ok(cache) = GIT_WORKSPACE_CACHE.lock() {
+        if let Some((result, at)) = cache.get(&key) {
+            if at.elapsed() < GIT_WORKSPACE_CACHE_TTL {
+                return *result;
+            }
+        }
+    }
+    let result = is_git_workspace_uncached(path);
+    if let Ok(mut cache) = GIT_WORKSPACE_CACHE.lock() {
+        if cache.len() >= GIT_WORKSPACE_CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(key, (result, std::time::Instant::now()));
+    }
+    result
+}
+
+fn is_git_workspace_uncached(path: &Path) -> bool {
     let Ok(root) = git_output(path, ["rev-parse", "--show-toplevel"]) else {
         return false;
     };
@@ -314,4 +453,29 @@ fn git_output<const N: usize>(
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_paths;
+
+    #[test]
+    fn status_paths_extracts_plain_and_renamed_paths() {
+        let status = " M src/a.ts\n?? src/new file.md\nR  old.ts -> src/renamed.ts\nA  added.rs\n";
+        assert_eq!(
+            status_paths(status),
+            vec![
+                "src/a.ts".to_string(),
+                "src/new file.md".to_string(),
+                "src/renamed.ts".to_string(),
+                "added.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn status_paths_skips_short_and_empty_lines() {
+        assert!(status_paths("").is_empty());
+        assert!(status_paths("##\n M").is_empty());
+    }
 }

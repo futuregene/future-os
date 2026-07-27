@@ -2,7 +2,7 @@ import type { StoredRun } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
-import { getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
+import { getLatestRun, getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
 import { usePolling } from "../../lib/usePolling";
@@ -94,11 +94,12 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
   const refreshRecentRun = useCallback(async (targetThreadId: string, targetWorkspaceId?: string | null) => {
     const generation = ++recentRunGenRef.current;
     try {
-      const runs = await listRuns(targetThreadId);
+      // One row, not the thread's whole run history — this fires every 1.5s
+      // while a run is active.
+      const latestRun = await getLatestRun(targetThreadId);
       if (generation !== recentRunGenRef.current) {
         return;
       }
-      const latestRun = runs[0] ?? null;
       if (targetThreadId === activeThreadIdRef.current) {
         setRecentRun(latestRun);
       }

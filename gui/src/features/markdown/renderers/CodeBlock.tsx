@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../../components/ui/CopyButton";
 import { useCopyState } from "../../../components/ui/useCopyState";
+import { useLiveMarkdown } from "../LiveMarkdownContext";
 import { useCodeHighlighter } from "../useCodeHighlighter";
 
 export function CodeBlock({
@@ -14,7 +15,14 @@ export function CodeBlock({
   const { t } = useTranslation("markdown");
   const { copiedKey, copy } = useCopyState();
   const { highlight, isLoaded } = useCodeHighlighter();
-  const highlighted = useMemo(() => highlight(code, language), [highlight, code, language]);
+  // The live tail of a streaming reply renders plain: re-tokenizing a growing
+  // code block on every 220ms poll tick is O(block) per tick → O(n²) over the
+  // reply. Full highlighting returns when the segment closes / the run settles.
+  const live = useLiveMarkdown();
+  const highlighted = useMemo(
+    () => (live ? null : highlight(code, language)),
+    [highlight, code, language, live],
+  );
 
   // Fallback to plain text if highlighter not loaded or language not supported
   if (!isLoaded || !highlighted) {

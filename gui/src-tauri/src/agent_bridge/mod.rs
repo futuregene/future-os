@@ -697,6 +697,22 @@ static OBSERVER_CANCEL: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
 
 /// Start observing a session's settings changes in the background.  Subscribes
 /// to the agent's StreamEvents and forwards settings-change events to the
+/// Event types the session observer forwards to the webview. Whitelist, kept
+/// in sync with the frontend consumers: `user_message` (zero-latency user
+/// bubble in useThreadMessages) plus the settings-change set applied by
+/// agentStateCache (`applySettingsEvent`). Everything else — in particular the
+/// per-token `text_chunk`/`thinking_delta`/`tool_*` stream — is dropped here,
+/// before the JSON rebuild + Tauri emit, because no frontend listener reads it.
+const OBSERVER_FORWARDED_EVENTS: &[&str] = &[
+    "user_message",
+    "model_changed",
+    "thinking_level_changed",
+    "permission_level_changed",
+    "session_name_changed",
+    "cwd_changed",
+    "config_reloaded",
+];
+
 /// frontend via Tauri `agent-event` events so the UI reflects model /
 /// thinking / name / cwd changes in near real-time (< 1s).
 ///
@@ -757,10 +773,16 @@ pub fn start_observing_session(session_id: String) {
                             _ => break, // stream ended or error — reconnect
                         };
 
-                        // Forward ALL events to the frontend so content
-                        // (user_message, text_chunk, agent_start, etc.) and
-                        // settings changes are received in real-time without
-                        // polling.  The frontend dispatches by event type.
+                        // Forward only the events the frontend actually
+                        // consumes (see OBSERVER_FORWARDED_EVENTS). Per-token
+                        // content events (text_chunk, thinking_delta, tool_*)
+                        // used to be JSON-rebuilt and emitted across IPC on
+                        // every token only to be discarded by the single
+                        // listener — the frontend renders content from the
+                        // persisted run-event log instead.
+                        if !OBSERVER_FORWARDED_EVENTS.contains(&event.r#type.as_str()) {
+                            continue;
+                        }
                         if let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&event.data) {
                             if let serde_json::Value::Object(ref mut map) = payload {
                                 map.insert("sessionId".to_string(),

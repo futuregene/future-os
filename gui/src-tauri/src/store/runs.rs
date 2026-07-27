@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::db::*;
@@ -43,7 +43,7 @@ pub struct RunEventRecord {
     pub created_at: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct ToolCallRecord {
@@ -132,6 +132,26 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
     let rows = stmt.query_map(params![thread_id], run_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
+}
+
+/// The thread's single most recent run (same ordering/tiebreak as
+/// [`latest_run_infos`]). Backs the 1.5s recent-run poll during an active run,
+/// which used to transfer the thread's entire run history every tick.
+pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::AppError> {
+    let conn = connect()?;
+    conn.query_row(
+        &format!(
+            "SELECT {RUN_COLUMNS}
+                 FROM runs
+                 WHERE thread_id = ?1
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1"
+        ),
+        params![thread_id],
+        run_from_row,
+    )
+    .optional()
+    .map_err(crate::AppError::from)
 }
 
 /// The single latest run's basic info for each of `thread_ids`. Powers the
@@ -321,6 +341,50 @@ pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppEr
     Ok(read_run_events(run_id))
 }
 
+/// The tail of a run's events with `sequence > since_sequence`, in append
+/// order. Backs the frontend's 220ms live-preview poll: instead of cloning and
+/// re-serializing the whole log every tick (O(n) per tick → O(n²) over a run),
+/// only the events the caller hasn't seen cross IPC. `since_sequence < 0`
+/// returns the full log (same as [`list_run_events`]).
+pub fn list_run_events_since(
+    run_id: &str,
+    since_sequence: i64,
+) -> Result<Vec<RunEventRecord>, crate::AppError> {
+    if since_sequence < 0 {
+        return Ok(read_run_events(run_id));
+    }
+    // Filter rather than slice: every buffer writer today appends in
+    // monotonically increasing sequence order (one collector per run), but
+    // that invariant is implicit — a scan keeps the tail correct even if a
+    // future writer appends out of order, and still clones only the new
+    // events. The scan is integer compares; the clone was the real cost.
+    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
+        if let Some(events) = buf.get(run_id) {
+            return Ok(events
+                .iter()
+                .filter(|event| event.sequence > since_sequence)
+                .cloned()
+                .collect());
+        }
+    }
+    Ok(read_events_from_disk(run_id)
+        .into_iter()
+        .filter(|event| event.sequence > since_sequence)
+        .collect())
+}
+
+/// Whether any events for `run_id` exist locally (buffer or persisted log).
+/// Cheap — no event cloning — so the incremental-read command can decide
+/// whether an empty tail means "no new events" or "cold buffer, ask the agent".
+pub fn has_run_events(run_id: &str) -> bool {
+    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
+        if buf.get(run_id).is_some_and(|events| !events.is_empty()) {
+            return true;
+        }
+    }
+    run_events_path(run_id).is_some_and(|path| path.exists())
+}
+
 pub fn list_run_events_bulk(
     run_ids: &[String],
 ) -> Result<Vec<(String, Vec<RunEventRecord>)>, crate::AppError> {
@@ -343,6 +407,146 @@ static RUN_EVENT_BUFFER: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, Vec<RunEventRecord>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+// ── Async disk writer ─────────────────────────────────────────────────
+// Run events are appended to a per-run JSONL log so the Runs panel survives
+// an app restart. Writes go through a single background thread holding one
+// open BufWriter per active run, coalescing bursts into one flush — previously
+// every event did its own open/append/close syscall trio, several times per
+// second while streaming.
+enum WriterMsg {
+    Event(RunEventRecord),
+    /// Flush and close the run's writer, then ack. Sent before the run's log
+    /// is read from disk (settle) or deleted: the ack guarantees the file is
+    /// complete and closed before the caller proceeds (Windows also refuses
+    /// to delete an open file).
+    Close {
+        run_id: String,
+        ack: std::sync::mpsc::Sender<()>,
+    },
+    /// Flush and close every writer (clear_all_data), then ack.
+    CloseAll {
+        ack: std::sync::mpsc::Sender<()>,
+    },
+}
+
+static DISK_WRITER: std::sync::LazyLock<std::sync::mpsc::Sender<WriterMsg>> =
+    std::sync::LazyLock::new(spawn_disk_writer);
+
+fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
+    let (tx, rx) = std::sync::mpsc::channel::<WriterMsg>();
+    std::thread::Builder::new()
+        .name("run-event-writer".to_string())
+        .spawn(move || {
+            let mut writers: HashMap<String, std::io::BufWriter<std::fs::File>> = HashMap::new();
+            while let Ok(msg) = rx.recv() {
+                match msg {
+                    WriterMsg::Event(first) => {
+                        write_event(&mut writers, &first);
+                        // Coalesce a burst into one flush. Close messages are
+                        // handled inline — a try_recv that consumed one must
+                        // not drop it.
+                        loop {
+                            match rx.try_recv() {
+                                Ok(WriterMsg::Event(record)) => {
+                                    write_event(&mut writers, &record);
+                                }
+                                Ok(WriterMsg::Close { run_id, ack }) => {
+                                    if let Some(mut writer) = writers.remove(&run_id) {
+                                        let _ = writer.flush();
+                                    }
+                                    let _ = ack.send(());
+                                }
+                                Ok(WriterMsg::CloseAll { ack }) => {
+                                    for (_, mut writer) in writers.drain() {
+                                        let _ = writer.flush();
+                                    }
+                                    let _ = ack.send(());
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        for writer in writers.values_mut() {
+                            let _ = writer.flush();
+                        }
+                    }
+                    WriterMsg::Close { run_id, ack } => {
+                        if let Some(mut writer) = writers.remove(&run_id) {
+                            let _ = writer.flush();
+                        }
+                        let _ = ack.send(());
+                    }
+                    WriterMsg::CloseAll { ack } => {
+                        for (_, mut writer) in writers.drain() {
+                            let _ = writer.flush();
+                        }
+                        let _ = ack.send(());
+                    }
+                }
+            }
+        })
+        .expect("spawn run-event writer thread");
+    tx
+}
+
+fn write_event(
+    writers: &mut HashMap<String, std::io::BufWriter<std::fs::File>>,
+    record: &RunEventRecord,
+) {
+    let writer = match writers.entry(record.run_id.clone()) {
+        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            let Some(path) = run_events_path(&record.run_id) else {
+                return;
+            };
+            let Ok(file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            else {
+                return;
+            };
+            entry.insert(std::io::BufWriter::new(file))
+        }
+    };
+    if let Ok(line) = serde_json::to_string(record) {
+        let _ = writeln!(writer, "{line}");
+    }
+}
+
+/// Flush + close the run's writer on the disk-writer thread and wait for the
+/// ack (bounded), so a following disk read sees the complete log and a
+/// following delete doesn't hit an open handle.
+fn close_disk_writer(run_id: &str) {
+    let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+    if DISK_WRITER
+        .send(WriterMsg::Close {
+            run_id: run_id.to_string(),
+            ack: ack_tx,
+        })
+        .is_ok()
+    {
+        let _ = ack_rx.recv_timeout(std::time::Duration::from_secs(2));
+    }
+}
+
+/// Flush + close every writer and wait for the ack (bounded).
+fn close_all_disk_writers() {
+    let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+    if DISK_WRITER
+        .send(WriterMsg::CloseAll { ack: ack_tx })
+        .is_ok()
+    {
+        let _ = ack_rx.recv_timeout(std::time::Duration::from_secs(2));
+    }
+}
+
+/// Force the async disk writer to flush a run's log — synchronization point
+/// for tests that assert on the log file's existence.
+#[cfg(test)]
+pub(crate) fn flush_run_event_log_for_test(run_id: &str) {
+    close_disk_writer(run_id);
+}
+
 /// Directory holding per-run event logs: `~/.future/app/run_events/`.
 fn run_events_dir() -> Option<PathBuf> {
     let dir = app_dir().ok()?.join("run_events");
@@ -363,22 +567,11 @@ fn run_events_path(run_id: &str) -> Option<PathBuf> {
     Some(run_events_dir()?.join(format!("{run_id}.jsonl")))
 }
 
-/// Append one event as a JSON line to the run's log (best-effort; a failed
-/// write just means that event won't survive a restart).
-fn persist_event_to_disk(record: &RunEventRecord) {
-    let Some(path) = run_events_path(&record.run_id) else {
-        return;
-    };
-    let Ok(line) = serde_json::to_string(record) else {
-        return;
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{line}");
-    }
+/// Queue one event for the run's JSONL log (best-effort; a dead writer thread
+/// just means that event won't survive a restart — same contract as the old
+/// synchronous write, whose errors were also dropped).
+fn persist_event_to_disk(record: RunEventRecord) {
+    let _ = DISK_WRITER.send(WriterMsg::Event(record));
 }
 
 /// Read a run's events from the persisted log (one JSON object per line).
@@ -423,105 +616,200 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
             .or_default()
             .push(record.clone());
     }
-    persist_event_to_disk(&record);
+    persist_event_to_disk(record.clone());
     Ok(record)
 }
 
 /// Drop a settled run's in-memory events (called on `agent_end`). The persisted
 /// log stays, so reads still work — this only bounds memory so a long-lived app
-/// doesn't accumulate every run's events forever.
+/// doesn't accumulate every run's events forever. The disk writer is flushed
+/// FIRST (its ack guarantees the log is complete), so the post-clear disk
+/// reads see every event the buffer held.
 pub fn clear_run_event_buffer(run_id: &str) {
+    close_disk_writer(run_id);
     if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
         buf.remove(run_id);
     }
 }
 
 /// Delete a run's persisted event log (called when the run/thread is deleted).
+/// The writer is closed first — Windows refuses to delete an open file.
 pub fn delete_run_events_file(run_id: &str) {
+    close_disk_writer(run_id);
     if let Some(path) = run_events_path(run_id) {
         let _ = std::fs::remove_file(path);
+    }
+    if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
+        cache.remove(run_id);
     }
 }
 
 /// Remove the whole run-events directory (called by `clear_all_data`).
 pub fn clear_all_run_events_files() {
+    close_all_disk_writers();
     if let Ok(dir) = app_dir() {
         let _ = std::fs::remove_dir_all(dir.join("run_events"));
     }
     if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
         buf.clear();
     }
+    if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
+        cache.clear();
+    }
 }
 
+/// Per-run incremental tool-call projection. The context panel polls tool
+/// calls for every run every 1.5s; rebuilding from the full event log each
+/// time costs O(events) per run per poll (clone + JSON parse of every event).
+/// Events are append-only, so the projection can advance over just the new
+/// tail instead. State survives the run settling (the events are then
+/// immutable on disk) and is dropped only when the run's log is deleted.
+struct ToolProjectionState {
+    tools: Vec<ToolCallRecord>,
+    index_by_id: HashMap<String, usize>,
+    /// Highest event sequence folded into `tools` so far.
+    last_sequence: i64,
+}
+
+static TOOL_PROJECTION_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, ToolProjectionState>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Bound the cache (entries are small: one record per tool call).
+const TOOL_PROJECTION_CACHE_MAX: usize = 64;
+
 pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> {
-    // Reconstruct each tool call from its tool_start / tool_end events (the
-    // tool_calls table was dropped). Both events carry the agent's stable tool
-    // id, so pair by id — a single "current" slot would mispair overlapping
-    // (parallel) tool calls.
-    let events = read_run_events(run_id);
+    Ok(tool_calls_for_run(run_id))
+}
 
-    let mut tools: Vec<ToolCallRecord> = Vec::new();
-    let mut index_by_id: HashMap<String, usize> = HashMap::new();
+/// Tool calls for many runs in one call — backs the context panel's poll,
+/// which used to fan out one IPC round-trip per run every 1.5s. Every run id
+/// appears in the result (with an empty vec when it has no tool activity) so
+/// the caller's `Object.fromEntries` shape is unchanged.
+pub fn list_tool_calls_bulk(
+    run_ids: &[String],
+) -> Result<Vec<(String, Vec<ToolCallRecord>)>, crate::AppError> {
+    Ok(run_ids
+        .iter()
+        .map(|run_id| (run_id.clone(), tool_calls_for_run(run_id)))
+        .collect())
+}
 
-    for event in &events {
-        match event.event_type.as_str() {
-            "tool_start" | "toolcall_start" => {
-                // Use the same fallback as the frontend (agentActivity.ts:445):
-                // `${toolName}_${sequence}`.  When the payload lacks an explicit
-                // tool_id, the front-end generates this synthetic id — we must
-                // match it so the tool detail lookup succeeds.
-                let id = event_tool_id(event).unwrap_or_else(|| {
-                    let (name, _, _) = parse_tool_start_payload(event.payload.as_deref());
-                    let seq = event.sequence;
-                    if name.is_empty() {
-                        event.id.clone()
-                    } else {
-                        format!("{name}_{seq}")
-                    }
-                });
-                let (name, kind, input) = parse_tool_start_payload(event.payload.as_deref());
-                if let Some(&idx) = index_by_id.get(&id) {
-                    // The same call announced twice: `toolcall_start` fires first
-                    // with empty args (they stream in via toolcall_delta), then
-                    // the execution `tool_start` carries the complete args. Enrich
-                    // the existing record rather than adding an empty duplicate.
-                    if input.as_deref().is_some_and(|s| !s.is_empty()) {
-                        tools[idx].input = input;
-                    }
-                    if !name.is_empty() {
-                        tools[idx].name = name;
-                        tools[idx].kind = kind;
-                    }
-                } else {
-                    index_by_id.insert(id.clone(), tools.len());
-                    tools.push(ToolCallRecord {
-                        id,
-                        run_id: event.run_id.clone(),
-                        name,
-                        kind,
-                        input,
-                        status: "running".to_string(),
-                        started_at: Some(event.created_at),
-                        ended_at: None,
-                        created_at: event.created_at,
-                    });
-                }
-            }
-            "tool_end" | "tool_result" => {
-                let idx = event_tool_id(event)
-                    .as_deref()
-                    .and_then(|id| index_by_id.get(id).copied());
-                if let Some(idx) = idx {
-                    let command = shell_command_from_input(tools[idx].input.as_deref());
-                    tools[idx].status =
-                        tool_end_status(event.payload.as_deref(), command.as_deref());
-                    tools[idx].ended_at = Some(event.created_at);
-                }
-            }
-            _ => {}
+/// The run's tool calls, advancing the cached projection over only the events
+/// appended since the last call. The cache mutex is held across the event
+/// read — the lock order (tool cache → event buffer) is used nowhere in
+/// reverse, so there's no deadlock cycle, and holding it prevents two
+/// concurrent pollers from double-applying the same tail.
+fn tool_calls_for_run(run_id: &str) -> Vec<ToolCallRecord> {
+    let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() else {
+        // Poisoned lock: fall back to a one-shot full rebuild.
+        return tool_calls_from_events(&read_run_events(run_id));
+    };
+    if cache.len() >= TOOL_PROJECTION_CACHE_MAX && !cache.contains_key(run_id) {
+        cache.clear();
+    }
+    let last_sequence = cache
+        .get(run_id)
+        .map(|state| state.last_sequence)
+        .unwrap_or(-1);
+    let new_events = list_run_events_since(run_id, last_sequence).unwrap_or_default();
+    if new_events.is_empty() {
+        return cache
+            .get(run_id)
+            .map(|state| state.tools.clone())
+            .unwrap_or_default();
+    }
+    let state = cache
+        .entry(run_id.to_string())
+        .or_insert_with(|| ToolProjectionState {
+            tools: Vec::new(),
+            index_by_id: HashMap::new(),
+            last_sequence: -1,
+        });
+    for event in &new_events {
+        apply_tool_event(state, event);
+        if event.sequence > state.last_sequence {
+            state.last_sequence = event.sequence;
         }
     }
-    Ok(tools)
+    state.tools.clone()
+}
+
+/// Reconstruct each tool call from its tool_start / tool_end events (the
+/// tool_calls table was dropped). Both events carry the agent's stable tool
+/// id, so pair by id — a single "current" slot would mispair overlapping
+/// (parallel) tool calls.
+fn tool_calls_from_events(events: &[RunEventRecord]) -> Vec<ToolCallRecord> {
+    let mut state = ToolProjectionState {
+        tools: Vec::new(),
+        index_by_id: HashMap::new(),
+        last_sequence: -1,
+    };
+    for event in events {
+        apply_tool_event(&mut state, event);
+    }
+    state.tools
+}
+
+/// Fold one event into the tool-call projection (see [`tool_calls_from_events`]).
+fn apply_tool_event(state: &mut ToolProjectionState, event: &RunEventRecord) {
+    let tools = &mut state.tools;
+    let index_by_id = &mut state.index_by_id;
+    match event.event_type.as_str() {
+        "tool_start" | "toolcall_start" => {
+            // Use the same fallback as the frontend (agentActivity.ts:445):
+            // `${toolName}_${sequence}`.  When the payload lacks an explicit
+            // tool_id, the front-end generates this synthetic id — we must
+            // match it so the tool detail lookup succeeds.
+            let id = event_tool_id(event).unwrap_or_else(|| {
+                let (name, _, _) = parse_tool_start_payload(event.payload.as_deref());
+                let seq = event.sequence;
+                if name.is_empty() {
+                    event.id.clone()
+                } else {
+                    format!("{name}_{seq}")
+                }
+            });
+            let (name, kind, input) = parse_tool_start_payload(event.payload.as_deref());
+            if let Some(&idx) = index_by_id.get(&id) {
+                // The same call announced twice: `toolcall_start` fires first
+                // with empty args (they stream in via toolcall_delta), then
+                // the execution `tool_start` carries the complete args. Enrich
+                // the existing record rather than adding an empty duplicate.
+                if input.as_deref().is_some_and(|s| !s.is_empty()) {
+                    tools[idx].input = input;
+                }
+                if !name.is_empty() {
+                    tools[idx].name = name;
+                    tools[idx].kind = kind;
+                }
+            } else {
+                index_by_id.insert(id.clone(), tools.len());
+                tools.push(ToolCallRecord {
+                    id,
+                    run_id: event.run_id.clone(),
+                    name,
+                    kind,
+                    input,
+                    status: "running".to_string(),
+                    started_at: Some(event.created_at),
+                    ended_at: None,
+                    created_at: event.created_at,
+                });
+            }
+        }
+        "tool_end" | "tool_result" => {
+            let idx = event_tool_id(event)
+                .as_deref()
+                .and_then(|id| index_by_id.get(id).copied());
+            if let Some(idx) = idx {
+                let command = shell_command_from_input(tools[idx].input.as_deref());
+                tools[idx].status = tool_end_status(event.payload.as_deref(), command.as_deref());
+                tools[idx].ended_at = Some(event.created_at);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The agent's stable tool-call id from a buffered tool event payload
@@ -767,6 +1055,111 @@ mod tests {
             params![id, status],
         )
         .expect("insert run");
+    }
+
+    /// Seed the process-global event buffer directly (no disk writes) with
+    /// `count` events sequenced 0..count, returning the unique run id used.
+    /// `tag` keeps concurrently-running tests off each other's buffer entry.
+    fn seed_event_buffer(tag: &str, count: i64) -> String {
+        let run_id = format!("test_since_{tag}_{}", std::process::id());
+        let mut buf = RUN_EVENT_BUFFER.lock().expect("lock event buffer");
+        let events = buf.entry(run_id.clone()).or_default();
+        events.clear();
+        for sequence in 0..count {
+            events.push(RunEventRecord {
+                id: format!("e{sequence}"),
+                run_id: run_id.clone(),
+                event_type: "text_chunk".to_string(),
+                payload: None,
+                sequence,
+                created_at: sequence,
+            });
+        }
+        run_id
+    }
+
+    #[test]
+    fn list_run_events_since_returns_only_the_unseen_tail() {
+        let run_id = seed_event_buffer("tail", 10);
+
+        let tail = list_run_events_since(&run_id, 4).expect("tail read");
+        assert_eq!(tail.len(), 5, "sequences 5..=9");
+        assert_eq!(tail[0].sequence, 5);
+        assert_eq!(tail[8 - 5].sequence, 8);
+
+        // At the watermark: nothing new.
+        assert!(list_run_events_since(&run_id, 9)
+            .expect("no new")
+            .is_empty());
+        // Beyond the watermark (caller ahead of the log): still nothing.
+        assert!(list_run_events_since(&run_id, 100)
+            .expect("ahead")
+            .is_empty());
+        // Negative watermark: the full log, matching list_run_events.
+        assert_eq!(list_run_events_since(&run_id, -1).expect("full").len(), 10);
+
+        clear_run_event_buffer(&run_id);
+    }
+
+    #[test]
+    fn has_run_events_tracks_buffer_contents() {
+        let run_id = seed_event_buffer("has", 3);
+        assert!(has_run_events(&run_id));
+        clear_run_event_buffer(&run_id);
+        // Buffer entry gone; no disk log was written by the seed, so absent.
+        assert!(!has_run_events(&run_id));
+    }
+
+    /// Push one event into the process-global buffer (no disk writes).
+    fn push_tool_event(run_id: &str, event_type: &str, payload: &str, sequence: i64) {
+        let mut buf = RUN_EVENT_BUFFER.lock().expect("lock event buffer");
+        buf.entry(run_id.to_string())
+            .or_default()
+            .push(RunEventRecord {
+                id: format!("e{sequence}"),
+                run_id: run_id.to_string(),
+                event_type: event_type.to_string(),
+                payload: Some(payload.to_string()),
+                sequence,
+                created_at: sequence,
+            });
+    }
+
+    #[test]
+    fn tool_calls_advance_incrementally_without_duplicates() {
+        let run_id = format!("test_tools_{}", std::process::id());
+        push_tool_event(
+            &run_id,
+            "tool_start",
+            r#"{"tool_id":"t1","tool_name":"read","tool_args":"{\"path\":\"/a.ts\"}"}"#,
+            0,
+        );
+        push_tool_event(&run_id, "tool_end", r#"{"tool_id":"t1","text":"ok"}"#, 1);
+
+        let first = list_tool_calls(&run_id).expect("first read");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].status, "completed");
+
+        // A second identical read must not duplicate the already-folded events.
+        let second = list_tool_calls(&run_id).expect("second read");
+        assert_eq!(second.len(), 1);
+
+        // A later event is folded in on the next read.
+        push_tool_event(
+            &run_id,
+            "tool_start",
+            r#"{"tool_id":"t2","tool_name":"edit","tool_args":"{\"path\":\"/b.ts\"}"}"#,
+            2,
+        );
+        let third = list_tool_calls(&run_id).expect("third read");
+        assert_eq!(third.len(), 2);
+        assert_eq!(third[1].name, "edit");
+        assert_eq!(third[1].status, "running");
+
+        clear_run_event_buffer(&run_id);
+        if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
+            cache.remove(&run_id);
+        }
     }
 
     fn insert_thread(conn: &Connection, id: &str, agent_session_id: Option<&str>) {

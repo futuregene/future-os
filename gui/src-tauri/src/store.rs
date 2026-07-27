@@ -50,10 +50,13 @@ pub use review_snapshots::{
     mark_snapshot_failed, prune_thread_changesets, upsert_run_changeset, ReviewChangesetRecord,
     ReviewFileChangeRecord, ReviewSnapshotRecord,
 };
+#[cfg(test)]
+pub(crate) use runs::flush_run_event_log_for_test;
 pub use runs::{
     active_run_sessions, append_run_event, clear_all_run_events_files, clear_run_event_buffer,
-    create_run, delete_run_events_file, fail_run_if_active, get_tool_call_input, latest_run_infos,
-    list_run_events, list_run_events_bulk, list_runs, list_tool_calls, list_tool_outputs,
+    create_run, delete_run_events_file, fail_run_if_active, get_tool_call_input, has_run_events,
+    latest_run, latest_run_infos, list_run_events, list_run_events_bulk, list_run_events_since,
+    list_runs, list_tool_calls, list_tool_calls_bulk, list_tool_outputs,
     update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord,
     ToolOutputRecord,
 };
