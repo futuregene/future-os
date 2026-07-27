@@ -72,6 +72,11 @@ export function useSendMessage({
       );
     }
     catch (error) {
+      // Run failures are already surfaced as friendly failure bubbles by the
+      // pipeline itself; what escapes to here is pre-pipeline validation (e.g.
+      // attachment decode/size rejections — already user-friendly copy) or a
+      // truly unexpected error. Show it verbatim — wrapping it in a "run
+      // failed" template would mislabel validation feedback.
       emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
       throw error;
     }

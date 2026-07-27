@@ -42,7 +42,7 @@
     "revealInFinder": "打开文件夹",
     "workspaceActions": "{{name}} 的操作",
     "pinnedHeader": "置顶",
-    "selectThreads": "选择聊天…",
+    "selectThreads": "选择聊天",
     "selectThread": "选择 {{title}}",
     "selectAll": "全选",
     "deselectAll": "取消全选",
