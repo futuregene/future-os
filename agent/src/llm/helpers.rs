@@ -283,22 +283,26 @@ impl Client {
             }
         }
 
-        // Reasoning content (from extra fields for DeepSeek-style)
-        if let Some(rc) = delta.get("reasoning_content").or(delta.get("thinking")) {
-            if let Some(s) = rc.as_str() {
+        // Text content (skip empty strings so usage in same chunk is not lost).
+        // MUST come before reasoning_content: some providers (e.g. kimi-k2.7-code
+        // through realapi-aliyun) send BOTH content AND reasoning_content in the
+        // same delta.  Checking reasoning_content first would return early and
+        // silently drop the visible content — the user sees only a fragment.
+        if let Some(text) = delta.get("content").or(delta.get("text")) {
+            if let Some(s) = text.as_str() {
                 if !s.is_empty() {
-                    event.event_type = "thinking_delta".to_string();
+                    event.event_type = "text_delta".to_string();
                     event.text = s.to_string();
                     return Ok(event);
                 }
             }
         }
 
-        // Text content (skip empty strings so usage in same chunk is not lost)
-        if let Some(text) = delta.get("content").or(delta.get("text")) {
-            if let Some(s) = text.as_str() {
+        // Reasoning content (from extra fields for DeepSeek-style)
+        if let Some(rc) = delta.get("reasoning_content").or(delta.get("thinking")) {
+            if let Some(s) = rc.as_str() {
                 if !s.is_empty() {
-                    event.event_type = "text_delta".to_string();
+                    event.event_type = "thinking_delta".to_string();
                     event.text = s.to_string();
                     return Ok(event);
                 }
@@ -427,6 +431,23 @@ mod usage_parse_tests {
         );
         assert_eq!(event.tool_id, "call_001");
         assert_eq!(event.tool_name, "read");
+    }
+
+    #[test]
+    fn content_before_reasoning_when_both_present() {
+        // Regression: kimi-k2.7-code through realapi-aliyun sends chunks
+        // where BOTH content and reasoning_content are non-empty in the
+        // same delta.  Content MUST be emitted (as text_delta) even when
+        // reasoning_content is also present — prioritizing reasoning
+        // would silently drop visible text.
+        let data = r#"{"choices":[{"index":0,"delta":{"content":"你好！","reasoning_content":"The user said hello"}}]}"#;
+        let event = Client::parse_sse_chunk(data).expect("parse");
+        assert_eq!(
+            event.event_type, "text_delta",
+            "content must be emitted when both content and reasoning_content are present, got {}",
+            event.event_type
+        );
+        assert_eq!(event.text, "你好！");
     }
 }
 
