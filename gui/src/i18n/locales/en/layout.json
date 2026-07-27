@@ -42,7 +42,7 @@
     "revealInFinder": "Open Folder",
     "workspaceActions": "Workspace actions for {{name}}",
     "pinnedHeader": "Pinned",
-    "selectThreads": "Select conversations...",
+    "selectThreads": "Select chats...",
     "selectThread": "Select {{title}}",
     "selectAll": "Select all",
     "deselectAll": "Deselect all",
