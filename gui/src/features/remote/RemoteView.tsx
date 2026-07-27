@@ -1,5 +1,6 @@
 import type { AppSettings } from "../../integrations/storage/appSettings";
 import type { RemotePairingStatus, RemoteStatus } from "./remoteClient";
+import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
@@ -63,7 +64,12 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
 
   usePolling(async () => {
     try {
-      setStatus(await getRemoteStatus());
+      const [nextStatus, nextPairing] = await Promise.all([
+        getRemoteStatus(),
+        getRemotePairingStatus(),
+      ]);
+      setStatus(nextStatus);
+      setPairing(nextPairing);
     }
     catch {
       // Keep the last known status on a failed poll.
@@ -79,6 +85,15 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
       return null;
     return Math.max(0, expiresAt - Math.floor(now / 1000));
   }, [pairingCode, status?.pairingCodeExpiresAt, now]);
+  const pairingQrValue = useMemo(
+    () =>
+      pairingCode
+        ? `futureos://remote/pair?code=${encodeURIComponent(pairingCode)}&desktopId=${
+          encodeURIComponent(status?.desktopId ?? "")
+        }&desktopKey=${encodeURIComponent(status?.desktopPublicKey ?? "")}`
+        : null,
+    [pairingCode, status?.desktopId, status?.desktopPublicKey],
+  );
 
   async function handleStart() {
     setBusy(true);
@@ -129,10 +144,10 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
   }
 
   async function copyCode() {
-    if (!pairingCode)
+    if (!pairingQrValue)
       return;
     try {
-      await navigator.clipboard.writeText(pairingCode);
+      await navigator.clipboard.writeText(pairingQrValue);
       setCopied(true);
       setTimeout(setCopied, 1500, false);
     }
@@ -178,15 +193,6 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
                   )
                 : null}
             </div>
-            {running && status?.webLanUrl
-              ? (
-                  <p className="mt-2 select-all text-xs text-ink-muted">
-                    {t("webClientLan")}
-                    {" "}
-                    <span className="text-ink-soft">{status.webLanUrl}</span>
-                  </p>
-                )
-              : null}
           </div>
 
           {isPaired && !running
@@ -224,8 +230,29 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
                       {copied ? t("copied") : t("copy")}
                     </Button>
                   </div>
-                  <code className="block break-all rounded bg-surface px-3 py-2 text-xs text-ink">{pairingCode}</code>
-                  <p className="text-xs text-ink-muted">{t("pairingCodeHint")}</p>
+                  <div className="grid gap-4 md:grid-cols-[auto_1fr] md:items-center">
+                    {pairingQrValue
+                      ? (
+                          <div className="mx-auto rounded-lg border border-line bg-surface p-3 md:mx-0">
+                            <QRCodeSVG
+                              aria-label={t("pairingQrLabel")}
+                              bgColor="transparent"
+                              className="text-ink-strong"
+                              fgColor="currentColor"
+                              level="M"
+                              role="img"
+                              size={176}
+                              value={pairingQrValue}
+                            />
+                          </div>
+                        )
+                      : null}
+                    <div className="min-w-0 space-y-2">
+                      <p className="text-xs font-medium text-ink-soft">{t("pairingQrLabel")}</p>
+                      <code className="block break-all rounded bg-surface px-3 py-2 text-xs text-ink">{pairingQrValue}</code>
+                      <p className="text-xs text-ink-muted">{t("pairingCodeHint")}</p>
+                    </div>
+                  </div>
                 </div>
               )
             : null}

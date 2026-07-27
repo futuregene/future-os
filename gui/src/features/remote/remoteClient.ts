@@ -9,6 +9,9 @@ export interface RemoteStatus {
   pairingCode: string | null;
   /** Unix-seconds expiry of pairingCode (for the countdown); null when no code. */
   pairingCodeExpiresAt: number | null;
+  /** Desktop identity authenticated by the signed client/bridge handshake. */
+  desktopId: string;
+  desktopPublicKey: string;
   /** Web client URL for this machine (localhost); null if the web server failed to bind. */
   webUrl: string | null;
   /** Web client URL a phone on the same LAN can reach; null if unavailable. */

@@ -3,12 +3,16 @@
 //! `agent_bridge::headless` so the persist/finalize contract is shared with
 //! the rest of the backend.
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -20,6 +24,42 @@ type ReplySlot = Arc<tokio::sync::Mutex<Option<Vec<u8>>>>;
 /// on every swap — a client retrying right after a swap would re-execute a
 /// command the old loop had already run (for `prompt`, a duplicated message).
 pub(super) type ReplySlots = Arc<Mutex<HashMap<String, ReplySlot>>>;
+
+#[derive(Clone)]
+pub(super) struct HandshakeState {
+    creds: crate::remote::pairing::PairingCreds,
+    confirmed: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
+    bridge_instance_id: String,
+    pending: Arc<Mutex<HashMap<String, PendingHandshake>>>,
+}
+
+#[derive(Clone)]
+struct PendingHandshake {
+    transcript: String,
+    device_id: String,
+    client_public_key: String,
+}
+
+impl HandshakeState {
+    pub(super) fn new(
+        creds: crate::remote::pairing::PairingCreds,
+        confirmed: Arc<AtomicBool>,
+        bridge_instance_id: String,
+    ) -> Self {
+        Self {
+            creds,
+            confirmed,
+            active: Arc::new(AtomicBool::new(false)),
+            bridge_instance_id,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub(super) fn bridge_instance_id(&self) -> &str {
+        &self.bridge_instance_id
+    }
+}
 
 pub(super) fn new_reply_slots() -> ReplySlots {
     Arc::new(Mutex::new(HashMap::new()))
@@ -52,6 +92,16 @@ struct IncomingCmd {
     level: String,
     // set_session_name
     name: String,
+    // signed application-level pairing handshake
+    protocol_version: u32,
+    pair_id: String,
+    device_id: String,
+    client_public_key: String,
+    client_nonce: String,
+    desktop_nonce: String,
+    expected_desktop_id: String,
+    expected_desktop_public_key: String,
+    client_signature: String,
 }
 
 impl Default for IncomingCmd {
@@ -70,6 +120,15 @@ impl Default for IncomingCmd {
             model_id: String::new(),
             level: String::new(),
             name: String::new(),
+            protocol_version: 0,
+            pair_id: String::new(),
+            device_id: String::new(),
+            client_public_key: String::new(),
+            client_nonce: String::new(),
+            desktop_nonce: String::new(),
+            expected_desktop_id: String::new(),
+            expected_desktop_public_key: String::new(),
+            client_signature: String::new(),
         }
     }
 }
@@ -78,6 +137,7 @@ pub(super) async fn command_loop(
     client: async_nats::Client,
     pair_id: String,
     reply_slots: ReplySlots,
+    handshake: HandshakeState,
 ) {
     let subject = format!("p.{pair_id}.cmd.>");
     let queue = format!("bridge.{pair_id}");
@@ -92,9 +152,10 @@ pub(super) async fn command_loop(
     while let Some(msg) = sub.next().await {
         let client = client.clone();
         let reply_slots = reply_slots.clone();
+        let handshake = handshake.clone();
         // Spawn per command: prevent a slow command from blocking others.
         tokio::spawn(async move {
-            handle_command_singleflight(&client, msg, reply_slots).await;
+            handle_command_singleflight(&client, msg, reply_slots, handshake).await;
         });
     }
 }
@@ -107,13 +168,14 @@ async fn handle_command_singleflight(
     client: &async_nats::Client,
     msg: async_nats::Message,
     reply_slots: ReplySlots,
+    handshake: HandshakeState,
 ) {
     let command_id = serde_json::from_slice::<IncomingCmd>(&msg.payload)
         .ok()
         .map(|cmd| cmd.id)
         .filter(|id| !id.is_empty());
     let Some(command_id) = command_id else {
-        handle_command(client, msg).await;
+        handle_command(client, msg, handshake).await;
         return;
     };
 
@@ -153,7 +215,7 @@ async fn handle_command_singleflight(
 
     let capture = Arc::new(Mutex::new(None));
     REPLY_CAPTURE
-        .scope(capture.clone(), handle_command(client, msg))
+        .scope(capture.clone(), handle_command(client, msg, handshake))
         .await;
     *cached = capture.lock().unwrap().clone();
 }
@@ -162,7 +224,11 @@ async fn handle_command_singleflight(
 // enforced ACL is scoped to this pair. Session/approval ownership is still
 // checked in the command handlers because subject isolation and application
 // authorization are separate boundaries.
-async fn handle_command(client: &async_nats::Client, msg: async_nats::Message) {
+async fn handle_command(
+    client: &async_nats::Client,
+    msg: async_nats::Message,
+    handshake: HandshakeState,
+) {
     let cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
         Ok(cmd) => cmd,
         Err(e) => {
@@ -178,7 +244,47 @@ async fn handle_command(client: &async_nats::Client, msg: async_nats::Message) {
         }
     };
 
+    let handshake_command = matches!(
+        cmd.cmd_type.as_str(),
+        "pair_handshake" | "pair_handshake_confirm"
+    );
+    if !handshake_command && !handshake.active.load(Ordering::Acquire) {
+        reply(
+            client,
+            &msg,
+            false,
+            Value::Null,
+            Some("pairing_handshake_required"),
+        )
+        .await;
+        return;
+    }
+
     match cmd.cmd_type.as_str() {
+        "pair_handshake" => {
+            handle_pair_handshake(client, &msg, &cmd, &handshake).await;
+        }
+        "pair_handshake_confirm" => {
+            handle_pair_handshake_confirm(client, &msg, &cmd, &handshake).await;
+        }
+        // Presence is normally pushed every 20 seconds. A client that subscribes
+        // after the latest heartbeat would otherwise look offline until the next
+        // tick because core NATS subscriptions do not replay old messages.
+        "get_presence" => {
+            let pair_id = msg
+                .subject
+                .strip_prefix("p.")
+                .and_then(|subject| subject.split('.').next())
+                .unwrap_or_default();
+            reply(
+                client,
+                &msg,
+                true,
+                super::build_presence_payload(pair_id, &handshake.bridge_instance_id),
+                None,
+            )
+            .await;
+        }
         "list_sessions" => match crate::store::list_threads() {
             Ok(threads) => {
                 let sessions: Vec<Value> = threads
@@ -384,6 +490,200 @@ async fn handle_command(client: &async_nats::Client, msg: async_nats::Message) {
             .await;
         }
     }
+}
+
+const HANDSHAKE_PROTOCOL_VERSION: u32 = 1;
+
+fn handshake_transcript(
+    pair_id: &str,
+    desktop_id: &str,
+    desktop_public_key: &str,
+    bridge_instance_id: &str,
+    device_id: &str,
+    client_public_key: &str,
+    client_nonce: &str,
+    desktop_nonce: &str,
+) -> String {
+    [
+        "futureos-remote-handshake-v1",
+        pair_id,
+        desktop_id,
+        desktop_public_key,
+        bridge_instance_id,
+        device_id,
+        client_public_key,
+        client_nonce,
+        desktop_nonce,
+    ]
+    .join("\n")
+}
+
+async fn handle_pair_handshake(
+    client: &async_nats::Client,
+    msg: &async_nats::Message,
+    cmd: &IncomingCmd,
+    state: &HandshakeState,
+) {
+    state.active.store(false, Ordering::Release);
+    let desktop_public_key = match crate::remote::pairing::public_key(&state.creds) {
+        Ok(key) => key,
+        Err(error) => {
+            reply(client, msg, false, Value::Null, Some(&error.to_string())).await;
+            return;
+        }
+    };
+    let valid = cmd.protocol_version == HANDSHAKE_PROTOCOL_VERSION
+        && cmd.pair_id == state.creds.pair_id
+        && cmd.expected_desktop_id == state.creds.desktop_id
+        && cmd.expected_desktop_public_key == desktop_public_key
+        && cmd.device_id.starts_with("dev_")
+        && cmd.client_public_key.starts_with('U')
+        && (16..=256).contains(&cmd.client_nonce.len());
+    if !valid {
+        reply(
+            client,
+            msg,
+            false,
+            Value::Null,
+            Some("pairing_identity_mismatch"),
+        )
+        .await;
+        return;
+    }
+
+    let desktop_nonce = nkeys::KeyPair::new_user().public_key();
+    let transcript = handshake_transcript(
+        &state.creds.pair_id,
+        &state.creds.desktop_id,
+        &desktop_public_key,
+        &state.bridge_instance_id,
+        &cmd.device_id,
+        &cmd.client_public_key,
+        &cmd.client_nonce,
+        &desktop_nonce,
+    );
+    let key_pair = match nkeys::KeyPair::from_seed(&state.creds.nkey_seed) {
+        Ok(key_pair) => key_pair,
+        Err(error) => {
+            reply(client, msg, false, Value::Null, Some(&error.to_string())).await;
+            return;
+        }
+    };
+    let signature = match key_pair.sign(transcript.as_bytes()) {
+        Ok(signature) => URL_SAFE_NO_PAD.encode(signature),
+        Err(error) => {
+            reply(client, msg, false, Value::Null, Some(&error.to_string())).await;
+            return;
+        }
+    };
+    state.pending.lock().unwrap().clear();
+    state.pending.lock().unwrap().insert(
+        desktop_nonce.clone(),
+        PendingHandshake {
+            transcript,
+            device_id: cmd.device_id.clone(),
+            client_public_key: cmd.client_public_key.clone(),
+        },
+    );
+    reply(
+        client,
+        msg,
+        true,
+        json!({
+            "protocolVersion": HANDSHAKE_PROTOCOL_VERSION,
+            "pairId": state.creds.pair_id,
+            "desktopId": state.creds.desktop_id,
+            "desktopPublicKey": desktop_public_key,
+            "bridgeInstanceId": state.bridge_instance_id,
+            "deviceId": cmd.device_id,
+            "clientPublicKey": cmd.client_public_key,
+            "clientNonce": cmd.client_nonce,
+            "desktopNonce": desktop_nonce,
+            "desktopSignature": signature,
+        }),
+        None,
+    )
+    .await;
+}
+
+async fn handle_pair_handshake_confirm(
+    client: &async_nats::Client,
+    msg: &async_nats::Message,
+    cmd: &IncomingCmd,
+    state: &HandshakeState,
+) {
+    let pending = state.pending.lock().unwrap().remove(&cmd.desktop_nonce);
+    let Some(pending) = pending else {
+        reply(
+            client,
+            msg,
+            false,
+            Value::Null,
+            Some("pairing_challenge_expired"),
+        )
+        .await;
+        return;
+    };
+    if cmd.device_id != pending.device_id {
+        reply(
+            client,
+            msg,
+            false,
+            Value::Null,
+            Some("pairing_identity_mismatch"),
+        )
+        .await;
+        return;
+    }
+    let signature = URL_SAFE_NO_PAD.decode(&cmd.client_signature).ok();
+    let verified = signature
+        .and_then(|signature| {
+            nkeys::KeyPair::from_public_key(&pending.client_public_key)
+                .ok()
+                .map(|key| {
+                    key.verify(pending.transcript.as_bytes(), &signature)
+                        .is_ok()
+                })
+        })
+        .unwrap_or(false);
+    if !verified {
+        reply(
+            client,
+            msg,
+            false,
+            Value::Null,
+            Some("pairing_signature_invalid"),
+        )
+        .await;
+        return;
+    }
+    if !state.confirmed.load(Ordering::Acquire) {
+        if let Err(error) = crate::remote::pairing::save_creds(&state.creds) {
+            reply(client, msg, false, Value::Null, Some(&error.to_string())).await;
+            return;
+        }
+        state.confirmed.store(true, Ordering::Release);
+    }
+    state.active.store(true, Ordering::Release);
+    reply(
+        client,
+        msg,
+        true,
+        json!({
+            "confirmed": true,
+            "pairId": state.creds.pair_id,
+            "desktopId": state.creds.desktop_id,
+            "bridgeInstanceId": state.bridge_instance_id,
+            "deviceId": cmd.device_id,
+            "desktopNonce": cmd.desktop_nonce,
+            "presence": super::build_presence_payload(
+                &state.creds.pair_id,
+                &state.bridge_instance_id,
+            ),
+        }),
+        None,
+    )
+    .await;
 }
 
 fn new_chat_thread_input() -> crate::store::CreateThreadInput {
@@ -630,6 +930,58 @@ async fn publish_reply_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handshake_transcript_binds_both_device_identities_and_nonces() {
+        let transcript = handshake_transcript(
+            "pair_1",
+            "desktop_1",
+            "UDESKTOP",
+            "bridge_1",
+            "dev_1",
+            "UCLIENT",
+            "client_nonce",
+            "desktop_nonce",
+        );
+        assert_eq!(
+            transcript,
+            "futureos-remote-handshake-v1\npair_1\ndesktop_1\nUDESKTOP\nbridge_1\ndev_1\nUCLIENT\nclient_nonce\ndesktop_nonce"
+        );
+        assert_ne!(
+            transcript,
+            handshake_transcript(
+                "pair_1",
+                "desktop_other",
+                "UDESKTOP",
+                "bridge_1",
+                "dev_1",
+                "UCLIENT",
+                "client_nonce",
+                "desktop_nonce",
+            )
+        );
+    }
+
+    #[test]
+    fn handshake_signature_rejects_tampered_transcript() {
+        let desktop = nkeys::KeyPair::new_user();
+        let transcript = handshake_transcript(
+            "pair_1",
+            "desktop_1",
+            &desktop.public_key(),
+            "bridge_1",
+            "dev_1",
+            "UCLIENT",
+            "client_nonce",
+            "desktop_nonce",
+        );
+        let signature = desktop.sign(transcript.as_bytes()).unwrap();
+        let verifier = nkeys::KeyPair::from_public_key(&desktop.public_key()).unwrap();
+        assert!(verifier.verify(transcript.as_bytes(), &signature).is_ok());
+        assert!(verifier
+            .verify(format!("{transcript}_tampered").as_bytes(), &signature)
+            .is_err());
+    }
 
     fn text_message(text: &str) -> Value {
         json!({ "role": "assistant", "content": text })

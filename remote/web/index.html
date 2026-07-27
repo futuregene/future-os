@@ -143,7 +143,7 @@
 
 <script type="module">
 import { connect, jwtAuthenticator } from "https://cdn.jsdelivr.net/npm/nats.ws@1/+esm";
-import { createUser, fromSeed } from "https://cdn.jsdelivr.net/npm/nkeys.js@1/+esm";
+import { createUser, fromPublic, fromSeed } from "https://cdn.jsdelivr.net/npm/nkeys.js@1/+esm";
 
 const $ = (id) => document.getElementById(id);
 const enc = (o) => new TextEncoder().encode(JSON.stringify(o));
@@ -159,6 +159,8 @@ let sending = false;     // 正在等待 prompt 的 ack：防双击/超时重发
 let presenceTimer = null; // 本地定时器：周期重算 presence 是否过期（watch 无事件时的兜底）
 let availableModels = []; // list_models 结果缓存，连接时拉一次
 let credentialRefreshTimer = null;
+let confirmedBridgeInstanceId = "";
+let handshakePromise = null;
 
 function setStatus(t, cls) { const s = $("status"); s.textContent = t; s.className = cls || ""; }
 function log(el) { $("log").appendChild(el); el.scrollIntoView({ block: "end" }); }
@@ -186,6 +188,18 @@ function decodePairingCode(s) {
     if (pc?.v !== 2) return null;
     if (pc.exp && Math.floor(Date.now() / 1000) > pc.exp) return null;
     return pc;
+  } catch { return null; }
+}
+
+function parsePairingInvitation(value) {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "futureos:" || url.host !== "remote" || url.pathname !== "/pair") return null;
+    const code = url.searchParams.get("code");
+    const desktopId = url.searchParams.get("desktopId");
+    const desktopPublicKey = url.searchParams.get("desktopKey");
+    if (!code || !desktopId?.startsWith("desktop_") || !desktopPublicKey?.startsWith("U")) return null;
+    return { code, desktopId, desktopPublicKey };
   } catch { return null; }
 }
 
@@ -222,8 +236,9 @@ async function responseJson(response) {
   return body;
 }
 
-async function claimPairing(code) {
-  const pc = decodePairingCode(code);
+async function claimPairing(value) {
+  const invitation = parsePairingInvitation(value);
+  const pc = invitation && decodePairingCode(invitation.code);
   if (!pc?.nonce || !pc?.claim_url) throw new Error("配对码无效或已过期");
   const kp = createUser();
   const seed = new TextDecoder().decode(kp.getSeed());
@@ -246,8 +261,9 @@ async function claimPairing(code) {
     refreshToken: body.refresh_token,
     natsWsUrl: body.nats_ws_url,
     tokenUrl: pc.claim_url.replace(/\/pair\/claim$/, "/auth/token"),
+    expectedDesktopId: invitation.desktopId,
+    expectedDesktopPublicKey: invitation.desktopPublicKey,
   };
-  storeCredentials(creds);
   return creds;
 }
 
@@ -265,7 +281,6 @@ async function refreshCredentials(creds) {
     }),
   }));
   const refreshed = { ...creds, userJwt: body.user_jwt, natsWsUrl: body.nats_ws_url };
-  storeCredentials(refreshed);
   return refreshed;
 }
 
@@ -284,6 +299,97 @@ function scheduleCredentialRefresh(creds) {
   }, delay);
 }
 
+function handshakeTranscript(challenge) {
+  return [
+    "futureos-remote-handshake-v1",
+    challenge.pairId,
+    challenge.desktopId,
+    challenge.desktopPublicKey,
+    challenge.bridgeInstanceId,
+    challenge.deviceId,
+    challenge.clientPublicKey,
+    challenge.clientNonce,
+    challenge.desktopNonce,
+  ].join("\n");
+}
+
+function encodeBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeBase64Url(value) {
+  try {
+    let base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+    while (base64.length % 4) base64 += "=";
+    return Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+  } catch { return null; }
+}
+
+async function performHandshake(creds) {
+  if (!creds.expectedDesktopId || !creds.expectedDesktopPublicKey) {
+    throw new Error("旧凭证未绑定桌面身份，请解除配对后重新扫码");
+  }
+  const kp = fromSeed(new TextEncoder().encode(creds.seed));
+  const clientPublicKey = kp.getPublicKey();
+  const clientNonce = `challenge_${crypto.randomUUID().replace(/-/g, "")}`;
+  const challenge = (await request({
+    type: "pair_handshake",
+    protocolVersion: 1,
+    pairId: creds.pairId,
+    deviceId: creds.deviceId,
+    clientPublicKey,
+    clientNonce,
+    expectedDesktopId: creds.expectedDesktopId,
+    expectedDesktopPublicKey: creds.expectedDesktopPublicKey,
+  }, "handshake")).data;
+  const valid = challenge?.protocolVersion === 1
+    && challenge.pairId === creds.pairId
+    && challenge.desktopId === creds.expectedDesktopId
+    && challenge.desktopPublicKey === creds.expectedDesktopPublicKey
+    && challenge.bridgeInstanceId
+    && challenge.deviceId === creds.deviceId
+    && challenge.clientPublicKey === clientPublicKey
+    && challenge.clientNonce === clientNonce
+    && challenge.desktopNonce;
+  if (!valid) throw new Error("桌面身份不匹配");
+  const transcript = handshakeTranscript(challenge);
+  const signature = decodeBase64Url(challenge.desktopSignature);
+  if (!signature || !fromPublic(creds.expectedDesktopPublicKey).verify(new TextEncoder().encode(transcript), signature)) {
+    throw new Error("桌面签名校验失败");
+  }
+  const clientSignature = encodeBase64Url(kp.sign(new TextEncoder().encode(transcript)));
+  const confirmation = (await request({
+    type: "pair_handshake_confirm",
+    deviceId: creds.deviceId,
+    desktopNonce: challenge.desktopNonce,
+    clientSignature,
+  }, "handshake")).data;
+  if (!confirmation?.confirmed
+    || confirmation.pairId !== creds.pairId
+    || confirmation.desktopId !== creds.expectedDesktopId
+    || confirmation.bridgeInstanceId !== challenge.bridgeInstanceId
+    || confirmation.deviceId !== creds.deviceId
+    || confirmation.desktopNonce !== challenge.desktopNonce
+    || confirmation.presence?.bridgeInstanceId !== challenge.bridgeInstanceId) {
+    throw new Error("桌面未确认配对");
+  }
+  confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
+  return confirmation;
+}
+
+function ensureHandshake(creds) {
+  if (handshakePromise) return handshakePromise;
+  const pending = performHandshake(creds);
+  handshakePromise = pending;
+  pending.then(
+    () => { if (handshakePromise === pending) handshakePromise = null; },
+    () => { if (handshakePromise === pending) handshakePromise = null; },
+  );
+  return pending;
+}
+
 async function connectWithCredentials(creds) {
   pair = creds.pairId;
   const seed = new TextEncoder().encode(creds.seed);
@@ -293,6 +399,9 @@ async function connectWithCredentials(creds) {
     authenticator: jwtAuthenticator(creds.userJwt, seed),
   };
   nc = await connect(opts);
+  const confirmation = await ensureHandshake(creds);
+  storeCredentials(creds);
+  onPresenceUpdate(confirmation.presence);
   setStatus("已连接", "ok");
   $("newsess").disabled = false; $("refresh").disabled = false; $("connect").disabled = true;
   $("unlink").disabled = false;
@@ -357,7 +466,23 @@ async function doConnect() {
 async function watchPresence() {
   const sub = nc.subscribe(`p.${pair}.presence`);
   try {
-    for await (const message of sub) onPresenceUpdate(dec(message));
+    for await (const message of sub) {
+      const data = dec(message);
+      if (!data?.bridgeInstanceId || data.bridgeInstanceId !== confirmedBridgeInstanceId) {
+        try {
+          setStatus("桌面已重启，正在重新验证身份…");
+          const creds = storedCredentials();
+          if (!creds) throw new Error("本地配对凭证不存在");
+          const confirmation = await ensureHandshake(creds);
+          onPresenceUpdate(confirmation.presence);
+          setStatus("已连接", "ok");
+        } catch (error) {
+          setStatus("桌面身份验证失败: " + (error?.message || String(error)), "err");
+        }
+      } else {
+        onPresenceUpdate(data);
+      }
+    }
   } catch { /* connection close */ }
 }
 
@@ -419,8 +544,17 @@ async function watchConnStatus() {
     for await (const s of nc.status()) {
       if (s.type === "disconnect") setStatus("连接断开，重连中…", "err");
       else if (s.type === "reconnect") {
-        setStatus("已重连", "ok");
-        if (session) selectSession(session);
+        try {
+          setStatus("已重连，正在验证桌面身份…");
+          const creds = storedCredentials();
+          if (!creds) throw new Error("本地配对凭证不存在");
+          const confirmation = await ensureHandshake(creds);
+          onPresenceUpdate(confirmation.presence);
+          setStatus("已重连", "ok");
+          if (session) selectSession(session);
+        } catch (error) {
+          setStatus("重连身份验证失败: " + (error?.message || String(error)), "err");
+        }
       }
     }
   } catch { /* 连接关闭时迭代结束，正常退出 */ }

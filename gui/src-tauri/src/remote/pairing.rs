@@ -14,6 +14,8 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairingCreds {
+    #[serde(default)]
+    pub handshake_version: u32,
     pub pair_id: String,
     pub desktop_id: String,
     pub nkey_seed: String,
@@ -59,6 +61,12 @@ pub fn save_creds(creds: &PairingCreds) -> Result<(), crate::AppError> {
     let value = serde_json::to_value(creds)
         .map_err(|error| crate::AppError::Message(format!("encode pairing creds: {error}")))?;
     crate::config_io::write_json_atomic(&path, &value, true)
+}
+
+pub fn public_key(creds: &PairingCreds) -> Result<String, crate::AppError> {
+    nkeys::KeyPair::from_seed(&creds.nkey_seed)
+        .map(|key_pair| key_pair.public_key())
+        .map_err(|error| crate::AppError::Message(format!("read desktop NKey: {error}")))
 }
 
 pub fn clear_creds() -> Result<(), crate::AppError> {
@@ -129,6 +137,7 @@ pub async fn create_pairing() -> Result<(PairingCreds, String, Option<i64>), cra
     let jwt_expires_at = jwt_expiry(&response.user_jwt)?;
     let code_expires_at = pairing_code_expiry(&response.pairing_code);
     let creds = PairingCreds {
+        handshake_version: 1,
         pair_id: response.pair_id,
         desktop_id,
         nkey_seed,

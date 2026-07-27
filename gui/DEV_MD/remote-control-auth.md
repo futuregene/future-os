@@ -48,7 +48,17 @@ Desktop                                platform-service                       We
    |                                          |-- 生成 refresh token/hash       |
    |                                          |-- JWT + refresh token --------->|
    |========== scoped NATS JWT ================================ scoped WS ======|
+   |<-- client nonce + both ids/public keys (`pair_handshake`) -----------------|
+   |-- signed desktop challenge + desktop nonce ------------------------------->|
+   |<-- signed full transcript (`pair_handshake_confirm`) ----------------------|
+   |-- final confirmation + current presence --------------------------------->|
+   | 保存 desktop pairing                       |            保存 client pairing |
 ```
+
+`/pair/claim` 只领取临时连接凭证，不代表产品层配对成功。最终握手转录绑定
+`pairId`、双方 device id、双方 NKey 公钥以及双方随机 nonce；桌面和客户端分别用
+自己的 NKey 私钥签名。客户端只信任二维码绑定的桌面 id/公钥。任何字段错配、签名
+错误、challenge 重放或确认超时都会失败，且业务命令在握手完成前由 Bridge 拒绝。
 
 配对码的 base64url JSON：
 
@@ -118,6 +128,10 @@ refresh token 自助解绑。Web 验证端只有在服务端确认成功或确�
 断开”。
 
 ## 6. 本地持久化
+
+双方都必须等签名握手完成后才写入长期凭证：桌面收到并验证客户端确认签名后原子
+写入；客户端收到桌面的最终确认后写入。仅生成配对码、claim 成功或连上 NATS
+都不会让 GUI/API 报告 `paired=true`。
 
 Desktop `~/.future/remote_pairing.json`（0600）：
 

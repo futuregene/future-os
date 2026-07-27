@@ -13,7 +13,10 @@ pub(crate) mod pairing;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 /// Port for the embedded web client HTTP server.
 const WEB_PORT: u16 = 8022;
@@ -46,6 +49,9 @@ struct RemoteState {
     client: async_nats::Client,
     nats_url: String,
     pair_id: String,
+    desktop_id: String,
+    desktop_public_key: String,
+    bridge_instance_id: String,
     /// Ordered event queue → single drain task per connection. The drain holds
     /// a clone of the client (via the JetStream context) so the connection
     /// stays alive while events are in flight.
@@ -67,6 +73,9 @@ struct RemoteState {
     /// fire-once value lost the moment you switch views.
     pairing_code: Option<String>,
     pairing_code_expires_at: Option<i64>,
+    /// New pairings remain pending until the client and bridge complete the
+    /// signed application-level handshake.
+    pairing_confirmed: Arc<AtomicBool>,
 }
 
 static STATE: Mutex<Option<RemoteState>> = Mutex::new(None);
@@ -99,6 +108,9 @@ pub struct RemoteStatus {
     /// Unix-seconds expiry of `pairing_code` (for the UI countdown); `None`
     /// when there's no code.
     pub pairing_code_expires_at: Option<i64>,
+    /// Desktop identity bound into the QR invitation and signed handshake.
+    pub desktop_id: String,
+    pub desktop_public_key: String,
     /// Web client URL for this machine (localhost); `None` if the web server
     /// failed to bind.
     pub web_url: Option<String>,
@@ -122,6 +134,8 @@ fn empty() -> RemoteStatus {
         pair_id: String::new(),
         pairing_code: None,
         pairing_code_expires_at: None,
+        desktop_id: String::new(),
+        desktop_public_key: String::new(),
         web_url: None,
         web_lan_url: None,
         error_code: None,
@@ -146,7 +160,12 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
         Ok(client) => client,
         Err(error) => return start_failure(error),
     };
-    pairing::save_creds(&creds)?;
+    let pairing_confirmed = Arc::new(AtomicBool::new(pairing_code.is_none()));
+    if pairing_confirmed.load(Ordering::Acquire) {
+        pairing::save_creds(&creds)?;
+    }
+    let desktop_public_key = pairing::public_key(&creds)?;
+    let bridge_instance_id = format!("bridge_{}", nkeys::KeyPair::new_user().public_key());
     let js = async_nats::jetstream::new(client.clone());
     let pair_id = creds.pair_id.clone();
 
@@ -156,15 +175,27 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
     // retried prompt = a duplicated user message + run).
     let reply_slots = commands::new_reply_slots();
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
+    let handshake_state = commands::HandshakeState::new(
+        creds.clone(),
+        pairing_confirmed.clone(),
+        bridge_instance_id.clone(),
+    );
 
     let cmd_task = tokio::spawn(commands::command_loop(
         client.clone(),
         pair_id.clone(),
         reply_slots.clone(),
+        handshake_state.clone(),
     ));
     let event_task = spawn_event_publisher(js, event_rx);
-    let heartbeat_task = spawn_presence_heartbeat(client.clone(), pair_id.clone());
-    let refresh_task = spawn_credential_refresh(pair_id.clone(), reply_slots);
+    let heartbeat_task =
+        spawn_presence_heartbeat(client.clone(), pair_id.clone(), bridge_instance_id.clone());
+    let refresh_task = spawn_credential_refresh(
+        pair_id.clone(),
+        reply_slots,
+        pairing_confirmed.clone(),
+        handshake_state,
+    );
     // Bind the web server up front so a busy port is reported, not silent. A
     // failed bind is non-fatal: the bridge still runs, it just has no web UI.
     let (web_task, web_url, web_lan_url) = match bind_web_listener().await {
@@ -189,6 +220,8 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
         pair_id: pair_id.clone(),
         pairing_code: pairing_code.clone(),
         pairing_code_expires_at,
+        desktop_id: creds.desktop_id.clone(),
+        desktop_public_key: desktop_public_key.clone(),
         web_url: web_url.clone(),
         web_lan_url: web_lan_url.clone(),
         error_code: web_bind_failed.then(|| "web_bind".to_string()),
@@ -198,6 +231,9 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
         client,
         nats_url: creds.nats_url,
         pair_id,
+        desktop_id: creds.desktop_id,
+        desktop_public_key,
+        bridge_instance_id,
         event_tx,
         event_task,
         cmd_task,
@@ -208,6 +244,7 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
         web_lan_url,
         pairing_code,
         pairing_code_expires_at,
+        pairing_confirmed,
     });
     Ok(status)
 }
@@ -219,6 +256,14 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
 async fn establish() -> Result<(pairing::PairingCreds, Option<String>, Option<i64>), crate::AppError>
 {
     match pairing::load_creds() {
+        Some(creds) if creds.handshake_version != 1 => {
+            // Credentials created before the signed mutual handshake have no
+            // QR-bound peer identity. They cannot be upgraded safely in place.
+            eprintln!("remote: replacing legacy pairing without a signed handshake");
+            pairing::clear_creds()?;
+            let (creds, code, exp) = pairing::create_pairing().await?;
+            Ok((creds, Some(code), exp))
+        }
         Some(creds) => match pairing::refresh_bridge_jwt(creds).await {
             Ok(creds) => Ok((creds, None, None)),
             Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
@@ -293,6 +338,7 @@ pub fn stop() -> RemoteStatus {
             let payload = serde_json::to_vec(&json!({
                 "online": false,
                 "pairId": pair_id,
+                "bridgeInstanceId": state.bridge_instance_id.clone(),
                 "lastHeartbeatTs": unix_timestamp(),
                 "sessions": [],
             }))
@@ -324,7 +370,9 @@ pub fn status() -> RemoteStatus {
                 && s.client.connection_state() == async_nats::connection::State::Connected;
             // Re-expose the pairing code until it expires so the UI keeps it
             // after navigating away and back (it's no longer a show-once value).
-            let code_fresh = s.pairing_code.is_some()
+            let confirmed = s.pairing_confirmed.load(Ordering::Acquire);
+            let code_fresh = !confirmed
+                && s.pairing_code.is_some()
                 && s.pairing_code_expires_at
                     .is_some_and(|exp| exp > unix_timestamp() as i64);
             let (pairing_code, pairing_code_expires_at) = if code_fresh {
@@ -339,6 +387,8 @@ pub fn status() -> RemoteStatus {
                 pair_id: s.pair_id.clone(),
                 pairing_code,
                 pairing_code_expires_at,
+                desktop_id: s.desktop_id.clone(),
+                desktop_public_key: s.desktop_public_key.clone(),
                 web_url: s.web_url.clone(),
                 web_lan_url: s.web_lan_url.clone(),
                 error_code: if loop_dead {
@@ -456,12 +506,13 @@ fn spawn_event_publisher(
 fn spawn_presence_heartbeat(
     client: async_nats::Client,
     pair_id: String,
+    bridge_instance_id: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(20));
         loop {
             interval.tick().await;
-            let payload = build_presence_payload(&pair_id);
+            let payload = build_presence_payload(&pair_id, &bridge_instance_id);
             let Ok(bytes) = serde_json::to_vec(&payload) else {
                 continue;
             };
@@ -478,9 +529,14 @@ fn spawn_presence_heartbeat(
 fn spawn_credential_refresh(
     pair_id: String,
     reply_slots: commands::ReplySlots,
+    pairing_confirmed: Arc<AtomicBool>,
+    handshake_state: commands::HandshakeState,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
+            while !pairing_confirmed.load(Ordering::Acquire) {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
             let Some(creds) = pairing::load_creds().filter(|creds| creds.pair_id == pair_id) else {
                 return;
             };
@@ -521,8 +577,13 @@ fn spawn_credential_refresh(
                 client.clone(),
                 pair_id.clone(),
                 reply_slots.clone(),
+                handshake_state.clone(),
             ));
-            let new_heartbeat = spawn_presence_heartbeat(client.clone(), pair_id.clone());
+            let new_heartbeat = spawn_presence_heartbeat(
+                client.clone(),
+                pair_id.clone(),
+                handshake_state.bridge_instance_id().to_string(),
+            );
             // Hold the STATE lock across the generation check AND the creds
             // save: saving outside the lock raced `unpair()` (stop → clear
             // creds) and could resurrect a just-revoked credential file.
@@ -553,7 +614,7 @@ fn spawn_credential_refresh(
 }
 
 /// Build the presence JSON for the current state.
-fn build_presence_payload(pair_id: &str) -> serde_json::Value {
+fn build_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
     let active_sessions: Vec<String> = crate::store::active_run_sessions().unwrap_or_default();
     let threads = crate::store::list_threads().unwrap_or_default();
     let sessions: Vec<serde_json::Value> = threads
@@ -570,6 +631,7 @@ fn build_presence_payload(pair_id: &str) -> serde_json::Value {
     json!({
         "online": true,
         "pairId": pair_id,
+        "bridgeInstanceId": bridge_instance_id,
         "lastHeartbeatTs": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

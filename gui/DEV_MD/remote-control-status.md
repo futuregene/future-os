@@ -9,6 +9,9 @@ L1 JWT 鉴权代码已在 FutureOS GUI、Web 验证端与
 `future-server/docs/remote-control-deployment.md` 完成 NATS operator/account
 切换、部署 platform-service 并重启相关服务。
 
+Android React Native 客户端首版已放在 `mobile/`，复用同一 L1 控制面与
+Bridge RPC。桌面端配对卡已显示手机可扫描的二维码；Web 仍保留为协议验证端。
+
 旧的共享 NATS token、手填 pairId、按平台域名推导明文 `nats://`/`ws://`
 地址均已从主流程移除。
 
@@ -34,8 +37,14 @@ L1 JWT 鉴权代码已在 FutureOS GUI、Web 验证端与
   `POST /client/v1/remote/pair/code`，得到 Bridge scoped JWT 与一次性配对码。
 - 配对码版本为 v2，只含 `{nonce, claim_url, exp}`；5 分钟过期且只能消费一次，
   不含账号密钥、NATS JWT、pairId 或设备私钥。
-- Web 本地生成独立 NKey，调用 `/pair/claim` 后保存自己的 JWT、seed 与刷新
-  token。浏览器存储为 localStorage，仅定位为验证端；正式 App 应使用 keychain。
+- Web 与手机分别在本地生成独立 NKey，并调用 `/pair/claim`。浏览器凭证仍存于
+  localStorage，仅定位为验证端；Android 将 seed、JWT 与刷新 token 分项保存到
+  由 Android Keystore 保护的 SecureStore。
+- Android 只接受桌面端二维码
+  `futureos://remote/pair?code=...&desktopId=...&desktopKey=...`；配对码内的
+  `claim_url` 必须与当前构建环境一致。二维码绑定桌面身份，双方通过 NKey
+  签名的 challenge/response 互相确认；握手完成前不保存凭证，也不接受业务命令。
+  后续重连仍会重新握手，成功后才恢复业务会话。
 - Bridge 刷新 JWT 需要 Future API Key；Web 刷新需要高熵设备刷新 token，服务端
   只存 SHA-256 哈希。默认 JWT 有效期 15 分钟，两端在到期前刷新并重连。
 - GUI 与 Web 解绑都先调用服务端撤销，再删本地凭证；撤销后不再允许刷新，活跃
@@ -73,7 +82,8 @@ L1 JWT 鉴权代码已在 FutureOS GUI、Web 验证端与
 - `future-server`: `cargo check -p future-platform-service` 通过。
 - `future-server`: remote JWT/identifier 单测通过。
 - GUI Tauri: `cargo check` 通过。
-- Web/React 仍需完成前端 build/lint 与真实 JWT-mode NATS 端到端验证。
+- Android/React Native 已有 reducer 单测、TypeScript、ESLint 与 Prettier
+  检查；仍需真机完成 JWT-mode NATS 端到端验证。
 
 ## 运行方式（完成部署后）
 
@@ -82,9 +92,10 @@ make run-gui
 ```
 
 1. GUI 登录 Future 账号。
-2. Remote → “配对并启动”，复制一次性配对码。
-3. 打开 `http://localhost:8022`，粘贴配对码并连接。
-4. 后续浏览器可用本地设备凭证重连，无需再次扫码；显式重新配对或撤销后例外。
+2. Remote → “配对并启动”。
+3. Android 客户端扫描二维码；Web 验证端仍可在 `http://localhost:8022`
+   粘贴配对码。
+4. 后续客户端可用本地设备凭证重连，无需再次扫码；显式重新配对或撤销后例外。
 
 ## 尚未完成
 
@@ -94,4 +105,6 @@ make run-gui
 - Web JetStream consumer 回放；当前仍以 core event sub +
   `get_events_since` 回补，`EVT_*` 已持久化但 Web 尚未直接消费。
 - NATS server kick/账号 revocation push；当前撤销保证为 `≤ JWT TTL`。
-- 正式移动 App/keychain、生物识别、审计、附件与右侧文件面板。
+- Android 真机矩阵、后台恢复、生物识别、审计、附件与右侧文件面板。
+- iOS 签名、推送、后台恢复与 App Store 隐私清单；当前只预留跨平台业务层和
+  Keychain 配置，不开发 iOS。
