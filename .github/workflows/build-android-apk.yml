@@ -55,6 +55,7 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
+          mkdir -p mobile/android/app
           echo "$KEYSTORE_BASE64" | base64 -d > mobile/android/app/futureos-release.keystore
           cat > mobile/android/app/keystore.properties <<EOF
           storeFile=futureos-release.keystore
@@ -109,3 +110,5 @@ jobs:
           APK="FutureOS_${V}.apk"
           ossutil cp -f "$APK" "oss://$OSS_BUCKET/test/android/$APK"
           ossutil stat "oss://$OSS_BUCKET/test/android/$APK"
+          echo "==> Download URL:"
+          echo "https://dl.future-os.cn/test/android/$APK"
