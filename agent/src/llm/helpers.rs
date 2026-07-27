@@ -42,17 +42,17 @@ impl Client {
         }
 
         let effective_format_str = effective_format.as_str();
+        let reasoning_enabled = *thinking_level != "off";
+        let mut level_value = thinking_level.clone();
+
+        let thinking_level_map = self.thinking_level_map.read();
+        if let Some(mapped) = thinking_level_map.get(&*thinking_level) {
+            level_value = mapped.clone();
+        }
+        drop(thinking_level_map);
+        drop(thinking_level);
+
         if !effective_format.is_empty() {
-            let reasoning_enabled = *thinking_level != "off";
-            let mut level_value = thinking_level.clone();
-
-            let thinking_level_map = self.thinking_level_map.read();
-            if let Some(mapped) = thinking_level_map.get(&*thinking_level) {
-                level_value = mapped.clone();
-            }
-            drop(thinking_level_map);
-            drop(thinking_level);
-
             match effective_format_str {
                 "zai" => {
                     body["enable_thinking"] = serde_json::json!(reasoning_enabled);
@@ -66,7 +66,10 @@ impl Client {
                     } else {
                         body["enable_thinking"] = serde_json::json!(reasoning_enabled);
                     }
-                    if reasoning_enabled && *self.compat_supports_reasoning_effort.read() {
+                    // reasoning_effort is always supported on dashscope/aliyuncs
+                    // (qwen format) — send it unconditionally, matching the
+                    // deepseek format which also has no compat gate.
+                    if reasoning_enabled {
                         body["reasoning_effort"] = serde_json::json!(level_value);
                     }
                 }
@@ -107,9 +110,20 @@ impl Client {
                 }
                 _ => {}
             }
+        } else if reasoning_enabled {
+            // No compat thinking format is configured (effective_format is
+            // empty), but the user has explicitly set a non-"off" thinking
+            // level.  The provider is likely an OpenAI-compatible gateway
+            // (FutureAPI, CrossModel, OpenRouter, etc.) that passes
+            // reasoning_effort through to the upstream model.  Send it via
+            // the standard OpenAI parameter so the thinking level takes
+            // effect — without this, the provider defaults to its own
+            // (usually low) thinking budget and long reasoning gets cut off.
+            // When thinking is "off" we intentionally send nothing so the
+            // model doesn't reason at all (OpenAI-compatible models don't
+            // reason unless instructed).
+            body["reasoning_effort"] = serde_json::json!(level_value);
         }
-        // When effective_format is empty (no compat thinking format configured),
-        // don't add any thinking parameters — provider doesn't support it.
     }
 
     pub(super) fn convert_messages_to_openai(
@@ -283,22 +297,26 @@ impl Client {
             }
         }
 
-        // Reasoning content (from extra fields for DeepSeek-style)
-        if let Some(rc) = delta.get("reasoning_content").or(delta.get("thinking")) {
-            if let Some(s) = rc.as_str() {
+        // Text content (skip empty strings so usage in same chunk is not lost).
+        // MUST come before reasoning_content: some providers (e.g. kimi-k2.7-code
+        // through realapi-aliyun) send BOTH content AND reasoning_content in the
+        // same delta.  Checking reasoning_content first would return early and
+        // silently drop the visible content — the user sees only a fragment.
+        if let Some(text) = delta.get("content").or(delta.get("text")) {
+            if let Some(s) = text.as_str() {
                 if !s.is_empty() {
-                    event.event_type = "thinking_delta".to_string();
+                    event.event_type = "text_delta".to_string();
                     event.text = s.to_string();
                     return Ok(event);
                 }
             }
         }
 
-        // Text content (skip empty strings so usage in same chunk is not lost)
-        if let Some(text) = delta.get("content").or(delta.get("text")) {
-            if let Some(s) = text.as_str() {
+        // Reasoning content (from extra fields for DeepSeek-style)
+        if let Some(rc) = delta.get("reasoning_content").or(delta.get("thinking")) {
+            if let Some(s) = rc.as_str() {
                 if !s.is_empty() {
-                    event.event_type = "text_delta".to_string();
+                    event.event_type = "thinking_delta".to_string();
                     event.text = s.to_string();
                     return Ok(event);
                 }
@@ -427,6 +445,23 @@ mod usage_parse_tests {
         );
         assert_eq!(event.tool_id, "call_001");
         assert_eq!(event.tool_name, "read");
+    }
+
+    #[test]
+    fn content_before_reasoning_when_both_present() {
+        // Regression: kimi-k2.7-code through realapi-aliyun sends chunks
+        // where BOTH content and reasoning_content are non-empty in the
+        // same delta.  Content MUST be emitted (as text_delta) even when
+        // reasoning_content is also present — prioritizing reasoning
+        // would silently drop visible text.
+        let data = r#"{"choices":[{"index":0,"delta":{"content":"你好！","reasoning_content":"The user said hello"}}]}"#;
+        let event = Client::parse_sse_chunk(data).expect("parse");
+        assert_eq!(
+            event.event_type, "text_delta",
+            "content must be emitted when both content and reasoning_content are present, got {}",
+            event.event_type
+        );
+        assert_eq!(event.text, "你好！");
     }
 }
 

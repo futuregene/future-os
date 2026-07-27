@@ -9,9 +9,12 @@ import { MarkdownContent } from "../markdown/MarkdownContent";
 export function ThinkingBlock({
   text,
   workspaceId,
+  live,
 }: {
   text: string;
   workspaceId?: string | null;
+  /** True while this reasoning block is the growing tail of a streaming reply. */
+  live?: boolean;
 }) {
   return (
     <div
@@ -22,7 +25,7 @@ export function ThinkingBlock({
         "[&_*]:text-ink-muted",
       )}
     >
-      <MarkdownContent content={text} workspaceId={workspaceId} />
+      <MarkdownContent content={text} workspaceId={workspaceId} live={live} />
     </div>
   );
 }

@@ -22,7 +22,7 @@ pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, Prepared
 pub(crate) use self::import::import_missing_sessions;
 pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;
-pub(crate) use self::run_control::abort_session;
+pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
 pub use self::session::fork_agent_session;
 pub use self::skills::{list_installed_skills, refresh_skills, InstalledSkill};
 pub use review::retry as retry_run_review;
@@ -35,7 +35,7 @@ use std::{
 
 pub use self::client::AttachmentInput;
 use self::client::{base_command, prompt_command};
-use self::run_control::{mark_run_failed_if_active, wait_for_agent_idle};
+use self::run_control::mark_run_failed_if_active;
 use self::session::{
     ensure_agent_session, is_chat_thread, set_agent_permission_level, set_agent_sandbox_policy,
     workspace_path_for_thread,
@@ -631,6 +631,62 @@ async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), S
 
 async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), String> {
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+
+    // Backfill: fetch the agent's buffered events FIRST. Only replace the
+    // local log after the fetch succeeds with non-empty events — clearing
+    // before fetching would destroy the pre-crash history on failure.
+    let backfill_events: Vec<(String, String)> = if let Ok(backfill) =
+        get_events_since(session_id.to_string(), run_id.to_string(), -1).await
+    {
+        backfill
+            .get("events")
+            .and_then(|v| v.as_array())
+            .map(|events| {
+                events
+                    .iter()
+                    .map(|item| {
+                        let t = item
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let d = item
+                            .get("data")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        (t, d)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let mut sequence = 0i64;
+    if !backfill_events.is_empty() {
+        // The backfill covers the entire turn-from-start, so the pre-crash
+        // local log (which ends at the crash point) would duplicate events.
+        // Safe to replace now that we know the agent delivered.
+        crate::store::clear_run_event_buffer(run_id);
+        crate::store::delete_run_events_file(run_id);
+        for (evt_type, evt_data) in backfill_events {
+            crate::store::append_run_event(crate::store::AppendRunEventInput {
+                run_id: run_id.to_string(),
+                event_type: evt_type,
+                payload: if evt_data.is_empty() {
+                    None
+                } else {
+                    Some(evt_data)
+                },
+                sequence,
+            })
+            .map_err(|e| format!("append_backfill: {e}"))?;
+            sequence += 1;
+        }
+    }
+
     let mut stream = client
         .stream_events(StreamRequest {
             event_types: vec![],
@@ -639,8 +695,6 @@ async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), St
         .await
         .map_err(|e| format!("stream_events: {e}"))?
         .into_inner();
-
-    let mut sequence = 0i64;
 
     loop {
         let event = tokio::time::timeout(std::time::Duration::from_secs(600), stream.message())
@@ -835,6 +889,22 @@ static OBSERVER_CANCEL: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
 
 /// Start observing a session's settings changes in the background.  Subscribes
 /// to the agent's StreamEvents and forwards settings-change events to the
+/// Event types the session observer forwards to the webview. Whitelist, kept
+/// in sync with the frontend consumers: `user_message` (zero-latency user
+/// bubble in useThreadMessages) plus the settings-change set applied by
+/// agentStateCache (`applySettingsEvent`). Everything else — in particular the
+/// per-token `text_chunk`/`thinking_delta`/`tool_*` stream — is dropped here,
+/// before the JSON rebuild + Tauri emit, because no frontend listener reads it.
+const OBSERVER_FORWARDED_EVENTS: &[&str] = &[
+    "user_message",
+    "model_changed",
+    "thinking_level_changed",
+    "permission_level_changed",
+    "session_name_changed",
+    "cwd_changed",
+    "config_reloaded",
+];
+
 /// frontend via Tauri `agent-event` events so the UI reflects model /
 /// thinking / name / cwd changes in near real-time (< 1s).
 ///
@@ -895,10 +965,16 @@ pub fn start_observing_session(session_id: String) {
                             _ => break, // stream ended or error — reconnect
                         };
 
-                        // Forward ALL events to the frontend so content
-                        // (user_message, text_chunk, agent_start, etc.) and
-                        // settings changes are received in real-time without
-                        // polling.  The frontend dispatches by event type.
+                        // Forward only the events the frontend actually
+                        // consumes (see OBSERVER_FORWARDED_EVENTS). Per-token
+                        // content events (text_chunk, thinking_delta, tool_*)
+                        // used to be JSON-rebuilt and emitted across IPC on
+                        // every token only to be discarded by the single
+                        // listener — the frontend renders content from the
+                        // persisted run-event log instead.
+                        if !OBSERVER_FORWARDED_EVENTS.contains(&event.r#type.as_str()) {
+                            continue;
+                        }
                         if let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&event.data) {
                             if let serde_json::Value::Object(ref mut map) = payload {
                                 map.insert("sessionId".to_string(),

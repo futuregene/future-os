@@ -65,6 +65,10 @@ windows = { version = "0.61", features = [
 
 # Stripped symbols + no debug info: smaller desktop binary and less link/scan
 # I/O, negligible runtime cost for a Tauri shell. See ../../.cargo/config.toml.
+# Thin LTO: cross-crate inlining for a few % runtime win and a smaller binary.
+# codegen-units stays at the default (16) — 1 would squeeze a bit more but
+# multiplies release build time, which CI pays on every tag.
 [profile.release]
 debug = false
 strip = true
+lto = "thin"

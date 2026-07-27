@@ -174,7 +174,7 @@ export async function runSendPipeline(
     // images already had their temp original moved into the thread's origin dir
     // by persistImageAttachments (which deletes the temp copy).
 
-    const currentRun = await loadCurrentRun(thread.id, run.id);
+    const currentRun = await loadCurrentRun(run.id);
     if (currentRun && matchesSettledRun(currentRun.status)) {
       // The run settled while we awaited the agent. For a user abort
       // (`cancelled`) the agent stopped mid-reply: keep the partial text so it
@@ -288,7 +288,7 @@ export async function runSendPipeline(
       await safeListRunEvents(run.id),
       storedAssistantMessage.content,
     );
-    const settledRun = await loadCurrentRun(thread.id, run.id);
+    const settledRun = await loadCurrentRun(run.id);
     const durationMs = runDurationMs(settledRun, runStartAnchorMs);
 
     if (isCurrentSend()) {
@@ -311,7 +311,7 @@ export async function runSendPipeline(
 
     const message = errorMessage(error);
     if (run) {
-      const currentRun = await loadCurrentRun(thread.id, run.id);
+      const currentRun = await loadCurrentRun(run.id);
       if (!currentRun || !matchesSettledRun(currentRun.status)) {
         await updateRunStatusSafe(run.id, "failed", message);
       }

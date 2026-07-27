@@ -614,6 +614,9 @@ mod tests {
             sequence: 1,
         })
         .expect("append event");
+        // Disk writes are async (single writer thread) — flush before
+        // asserting on the file.
+        crate::store::flush_run_event_log_for_test(&run.id);
         let log_path = PathBuf::from(
             crate::store::app_data_path()
                 .expect("app data path")
