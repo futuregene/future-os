@@ -172,7 +172,7 @@ if [[ "$MODE" == "release" ]]; then
   # ── release APK ───────────────────────────────────────────────────────────
 
   # Kill any lingering Metro so the emulator doesn't try to connect to it
-  adb -e shell am force-stop cn.futureos.mobile 2>/dev/null || true
+  adb -e shell am force-stop cn.future_os.mobile 2>/dev/null || true
 
   # Ensure gradle can find the SDK even when ANDROID_HOME isn't inherited
   echo "sdk.dir=$ANDROID_HOME" > "$MOBILE_DIR/android/local.properties"
@@ -194,7 +194,7 @@ if [[ "$MODE" == "release" ]]; then
   adb -e install -r "$APK"
 
   echo "Starting app..."
-  adb -e shell am start -n cn.futureos.mobile/.MainActivity
+  adb -e shell am start -n cn.future_os.mobile/.MainActivity
 
   APK_SIZE=$(du -h "$APK" | cut -f1)
   echo ""
