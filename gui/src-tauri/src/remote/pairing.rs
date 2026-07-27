@@ -281,7 +281,11 @@ async fn response_error(response: reqwest::Response, action: &str) -> crate::App
         status.as_u16(),
         code,
         message,
-        body.as_ref().map(serde_json::to_string).transpose().unwrap_or_default().unwrap_or_default(),
+        body.as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .unwrap_or_default()
+            .unwrap_or_default(),
     );
     crate::AppError::Remote {
         status: status.as_u16(),
