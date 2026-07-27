@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::client::{base_command, connect_agent, RpcResponseExt};
+use super::client::{base_command, connect_agent, map_rpc_error, RpcResponseExt};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,7 +31,7 @@ pub async fn list_agent_models() -> Result<Vec<AgentModelOption>, crate::AppErro
     let response = client
         .execute_command(base_command("list_models", String::new()))
         .await
-        .map_err(|error| format!("Unable to load Future Agent models: {error}"))?
+        .map_err(|status| map_rpc_error("Unable to load Future Agent models", status))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the model list request.")?;
 
