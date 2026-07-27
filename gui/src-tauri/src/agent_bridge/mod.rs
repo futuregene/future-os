@@ -21,7 +21,7 @@ pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, Prepared
 pub(crate) use self::import::import_missing_sessions;
 pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;
-pub(crate) use self::run_control::abort_session;
+pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
 pub use self::session::fork_agent_session;
 pub use self::skills::{list_installed_skills, refresh_skills, InstalledSkill};
 pub use review::retry as retry_run_review;
@@ -34,7 +34,7 @@ use std::{
 
 pub use self::client::AttachmentInput;
 use self::client::{base_command, prompt_command};
-use self::run_control::{mark_run_failed_if_active, wait_for_agent_idle};
+use self::run_control::mark_run_failed_if_active;
 use self::session::{
     ensure_agent_session, is_chat_thread, set_agent_permission_level, set_agent_sandbox_policy,
     workspace_path_for_thread,

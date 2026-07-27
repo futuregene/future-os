@@ -86,12 +86,12 @@ pub(super) fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
 /// Poll the Agent's `get_state.isStreaming` until it reports idle (or a short
 /// timeout / the agent disappears). Best-effort confirmation that the Agent has
 /// stopped writing files before the after snapshot (§6.2).
-pub(super) async fn wait_for_agent_idle(session_id: &str) {
+pub(crate) async fn wait_for_agent_idle(session_id: &str) {
     let Ok(mut client) = connect_agent().await else {
         return;
     };
-    // ~5s budget at 200ms intervals.
-    for _ in 0..25 {
+    // ~3s budget at 200ms intervals.
+    for _ in 0..15 {
         match client
             .execute_command(get_state_command(session_id.to_string()))
             .await
