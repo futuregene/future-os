@@ -174,31 +174,12 @@ export function FutureLoginDialog({
 
         {phase === "waiting" && start
           ? (
-              <>
-                <div className="space-y-1">
-                  <span className="text-xs font-medium text-ink-muted">{t("futureLogin.verifyCode")}</span>
-                  <div className="flex items-center gap-3">
-                    <code className="select-all rounded-md bg-surface-subtle px-3 py-2 font-mono text-2xl font-semibold tracking-[0.2em] text-ink">
-                      {start.userCode}
-                    </code>
-                    <Button onClick={() => void copyText(start.userCode)} size="sm" variant="secondary">
-                      {t("futureLogin.copyCode")}
-                    </Button>
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <span className="text-xs font-medium text-ink-muted">{t("futureLogin.authLink")}</span>
-                  <div className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate rounded-md bg-surface-subtle px-2 py-1.5 text-sm text-ink-soft" title={start.verificationUriComplete}>
-                      {start.verificationUriComplete}
-                    </span>
-                    <Button onClick={() => void handleCopyLink()} size="sm" variant="secondary">
-                      {copied ? t("futureLogin.copied") : t("futureLogin.copyLink")}
-                    </Button>
-                  </div>
-                </div>
+              <div className="space-y-3">
+                <Button onClick={() => void handleCopyLink()} size="sm" variant="secondary">
+                  {copied ? t("futureLogin.copied") : t("futureLogin.copyLink")}
+                </Button>
                 <p className="text-sm text-ink-muted">{t("futureLogin.waiting")}</p>
-              </>
+              </div>
             )
           : null}
 
