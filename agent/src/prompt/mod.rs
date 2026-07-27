@@ -227,6 +227,7 @@ fn format_skills_section(skills: &[&Skill]) -> String {
         "Use the read tool to load a skill's file when the task matches its description.\n",
     );
     sb.push_str("When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n");
+    sb.push_str("A `/<skill-name>` token in a user message (at the start or mid-sentence) is an explicit invocation: load and follow that skill's SKILL.md, and treat the rest of the message as its input.\n");
     sb.push('\n');
     sb.push_str("<available_skills>\n");
     for s in skills {
