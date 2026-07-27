@@ -137,7 +137,7 @@ export function MentionEditor({
     }
     let cancelled = false;
     const timer = setTimeout(() => {
-      searchWorkspaceFiles({ limit: 20, query, workspaceId })
+      searchWorkspaceFiles({ limit: 10, query, workspaceId })
         .then((next) => {
           if (!cancelled) {
             setResults(next);

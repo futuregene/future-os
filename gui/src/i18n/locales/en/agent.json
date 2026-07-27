@@ -76,7 +76,7 @@
     }
   },
   "composer": {
-    "placeholder": "Ask Future Copilot to plan, research, analyze, edit, or prepare a workflow...",
+    "placeholder": "Describe a task, @ to add content to context, / to use skills",
     "attachFiles": "Attach files",
     "attachFilesHint": "Attach files (images, PDF, text)",
     "attachLimitReached": "Attachment limit reached (4 per turn)",
@@ -130,7 +130,7 @@
     "headerTitle": "New conversation",
     "chatSubtitle": "Chat",
     "welcome": "Welcome",
-    "placeholder": "Ask Future Copilot to plan, research, analyze, edit, or prepare a workflow...",
+    "placeholder": "Describe a task, @ to add content to context, / to use skills",
     "workspace": "Workspace",
     "noWorkspaces": "No workspaces yet.",
     "openExisting": "Open workspace",

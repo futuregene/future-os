@@ -72,7 +72,7 @@
     }
   },
   "composer": {
-    "placeholder": "让未来助手帮你规划、研究、分析、编辑或准备一个工作流…",
+    "placeholder": "描述任务，@ 内容添加到上下文，/ 使用技能",
     "attachFiles": "添加附件",
     "attachFilesHint": "添加附件（图片、PDF、文本）",
     "attachLimitReached": "已达到附件上限（每轮 4 个）",
@@ -126,7 +126,7 @@
     "headerTitle": "新对话",
     "chatSubtitle": "普通对话",
     "welcome": "欢迎使用",
-    "placeholder": "让未来助手帮你规划、研究、分析、编辑或准备一个工作流…",
+    "placeholder": "描述任务，@ 内容添加到上下文，/ 使用技能",
     "workspace": "工作区",
     "noWorkspaces": "还没有工作区。",
     "openExisting": "打开工作区",
