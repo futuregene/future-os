@@ -19,6 +19,20 @@ const DEFAULT_TIMEOUT_SECS: u64 = 600;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
 const STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS: u64 = 15;
 
+/// Why the LLM SSE read loop exited before seeing a genuine terminal signal
+/// (`[DONE]` or `finish_reason`). Distinguishes abort/disconnect (expected —
+/// log at INFO) from provider-side drops (actionable — log at WARN).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamExitCause {
+    /// The consumer (run loop) dropped the receiver — user abort or client
+    /// disconnect. Expected truncation, not a provider failure.
+    ConsumerDropped,
+    /// The provider closed the HTTP connection without a terminal signal.
+    UpstreamEof,
+    /// No SSE data arrived within the idle window.
+    IdleTimeout,
+}
+
 // ─── LLM Client ────────────────────────────────────────────────────────────
 
 pub struct Client {
@@ -378,7 +392,9 @@ impl crate::types::LLMProvider for Client {
             // leave an actionable trace instead of a silent truncation.
             let stream_started_at = std::time::Instant::now();
             let mut total_bytes: usize = 0;
-            let mut idle_timed_out = false;
+            // Why the read loop exited (only consulted when !saw_terminal).
+            // Set at every break point; early returns skip the WARN block.
+            let exit_cause: StreamExitCause;
 
             // Helper to emit events from a parsed SSE data line, handling
             // thinking/tool-call bookending (matches original per-line logic).
@@ -513,16 +529,23 @@ impl crate::types::LLMProvider for Client {
                     // and the run loop abandoned this stream. Stop reading right
                     // away instead of draining the HTTP body until the idle
                     // timeout, which leaked a live connection for up to 45s on
-                    // every interrupt.
-                    _ = tx.closed() => break,
+                    // every interrupt. This is an expected exit, not a provider
+                    // failure — recorded so the end-of-stream log stays quiet.
+                    _ = tx.closed() => {
+                        exit_cause = StreamExitCause::ConsumerDropped;
+                        break;
+                    },
                     res = tokio::time::timeout(
                         std::time::Duration::from_secs(idle_timeout_secs),
                         stream.next(),
                     ) => match res {
                         Ok(Some(chunk_result)) => chunk_result,
-                        Ok(None) => break,
+                        Ok(None) => {
+                            exit_cause = StreamExitCause::UpstreamEof;
+                            break;
+                        }
                         Err(_) => {
-                            idle_timed_out = true;
+                            exit_cause = StreamExitCause::IdleTimeout;
                             break;
                         }
                     },
@@ -632,25 +655,38 @@ impl crate::types::LLMProvider for Client {
             }
 
             // If we never saw a genuine terminal signal, the read loop exited
-            // via idle timeout or a premature EOF — the response is a truncated
-            // prefix. Mark the synthetic stop so the run loop can distinguish it
-            // from a clean completion instead of persisting a cut-off reply as a
-            // success.
+            // via consumer drop, idle timeout, or a premature EOF. Only the
+            // last two are provider issues worth a WARN — a consumer drop is
+            // an expected abort/disconnect and logs at INFO instead.
             let stop_reason = if saw_terminal {
                 String::new()
             } else {
-                warn!(
-                    elapsed_ms = stream_started_at.elapsed().as_millis() as u64,
-                    bytes = total_bytes,
-                    in_tool_call = in_tool_call,
-                    cause = if idle_timed_out {
-                        "idle_timeout"
-                    } else {
-                        "upstream_eof"
-                    },
-                    "LLM stream ended without a terminal signal ([DONE]/finish_reason \
-                     missing) — response truncated mid-flight"
-                );
+                match exit_cause {
+                    StreamExitCause::ConsumerDropped => {
+                        info!(
+                            elapsed_ms = stream_started_at.elapsed().as_millis() as u64,
+                            bytes = total_bytes,
+                            in_tool_call = in_tool_call,
+                            "LLM stream dropped by consumer (abort/disconnect)"
+                        );
+                    }
+                    StreamExitCause::IdleTimeout | StreamExitCause::UpstreamEof => {
+                        warn!(
+                            elapsed_ms = stream_started_at.elapsed().as_millis() as u64,
+                            bytes = total_bytes,
+                            in_tool_call = in_tool_call,
+                            cause = match exit_cause {
+                                StreamExitCause::IdleTimeout => "idle_timeout",
+                                StreamExitCause::UpstreamEof => "upstream_eof",
+                                // Unreachable: ConsumerDropped is dispatched
+                                // above; included for match exhaustiveness.
+                                StreamExitCause::ConsumerDropped => "unknown",
+                            },
+                            "LLM stream ended without a terminal signal ([DONE]/finish_reason \
+                             missing) — response truncated mid-flight"
+                        );
+                    }
+                }
                 "truncated".to_string()
             };
             let _ = tx
