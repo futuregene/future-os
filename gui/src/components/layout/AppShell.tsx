@@ -185,12 +185,16 @@ export function AppShell() {
   const {
     renameDialog,
     deleteDialog,
+    batchDeleteDialog,
     setRenameDialog,
     setDeleteDialog,
+    setBatchDeleteDialog,
     openRename,
     confirmRename,
     openDelete,
     confirmDelete,
+    openBatchDelete,
+    confirmBatchDelete,
   } = useThreadDialogs({ activeThreadId, refreshStore });
   const {
     renameDialog: workspaceRenameDialog,
@@ -353,6 +357,7 @@ export function AppShell() {
     onOpenModels: handleOpenModels,
     onNewChat: handleOpenNewChat,
     onNewWorkspace: handleOpenNewWorkspace,
+    onBatchDeleteThreads: openBatchDelete,
     onDeleteThread: openDelete,
     onRenameThread: openRename,
     onDeleteWorkspace: openWorkspaceDelete,
@@ -495,10 +500,13 @@ export function AppShell() {
         ? <div className="fixed inset-0 z-50 cursor-ew-resize select-none" />
         : null}
       <AppShellDialogs
+        batchDeleteDialog={batchDeleteDialog}
         deleteDialog={deleteDialog}
         renameDialog={renameDialog}
+        setBatchDeleteDialog={setBatchDeleteDialog}
         setDeleteDialog={setDeleteDialog}
         setRenameDialog={setRenameDialog}
+        onConfirmBatchDeleteThread={() => void confirmBatchDelete()}
         onConfirmDeleteThread={() => void confirmDelete()}
         onConfirmRenameThread={() => void confirmRename()}
       />

@@ -266,6 +266,33 @@ pub struct PinThreadInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteThreadInput {
+    pub thread_id: String,
+    /// For chat-mode threads only: also delete the temporary workspace
+    /// directory on disk. Ignored for workspace-mode threads.
+    #[serde(default)]
+    pub delete_files: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchDeleteThreadsInput {
+    pub thread_ids: Vec<String>,
+    /// For chat-mode threads only: also delete the temporary workspace
+    /// directory on disk. Ignored for workspace-mode threads.
+    #[serde(default)]
+    pub delete_files: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchDeleteResult {
+    pub deleted_count: usize,
+    pub failed: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RenameWorkspaceInput {
     pub workspace_id: String,
     pub name: String,

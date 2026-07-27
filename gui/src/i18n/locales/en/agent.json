@@ -1,27 +1,27 @@
 {
   "author": {
     "you": "You",
-    "researchCopilot": "Future Copilot",
+    "researchCopilot": "FutureOS",
     "system": "FutureOS"
   },
   "activity": {
     "thinking": "Thinking",
-    "prefix": {
-      "running": "Running ",
-      "completed": "Ran "
-    },
-    "runCommands_one": "{{prefix}}{{count}} command",
-    "runCommands_other": "{{prefix}}{{count}} commands",
-    "writeFiles_one": "{{prefix}}{{count}} file written",
-    "writeFiles_other": "{{prefix}}{{count}} files written",
-    "editFiles_one": "{{prefix}}{{count}} file edited",
-    "editFiles_other": "{{prefix}}{{count}} files edited",
-    "readFiles_one": "{{prefix}}{{count}} file read",
-    "readFiles_other": "{{prefix}}{{count}} files read",
-    "read": "{{prefix}}read",
-    "run": "{{prefix}}run",
-    "write": "{{prefix}}write",
-    "edit": "{{prefix}}edit",
+    "runCommands_one": "Ran {{count}} command",
+    "runCommands_other": "Ran {{count}} commands",
+    "writeFiles_one": "Wrote {{count}} file",
+    "writeFiles_other": "Wrote {{count}} files",
+    "editFiles_one": "Edited {{count}} file",
+    "editFiles_other": "Edited {{count}} files",
+    "readFiles_one": "Read {{count}} file",
+    "readFiles_other": "Read {{count}} files",
+    "reading": "Reading a file",
+    "runningCommand": "Running a command",
+    "writing": "Writing a file",
+    "editing": "Editing a file",
+    "readCompleted": "Read a file",
+    "runCompleted": "Ran a command",
+    "writeCompleted": "Wrote a file",
+    "editCompleted": "Edited a file",
     "failed": {
       "shell": "Command failed",
       "edit": "Edit failed",
@@ -76,7 +76,7 @@
     }
   },
   "composer": {
-    "placeholder": "Describe a task, @ to add content to context, / to use skills",
+    "placeholder": "Describe the task, @ to add files, / to use skills",
     "attachFiles": "Attach files",
     "attachFilesHint": "Attach files (images, PDF, text)",
     "attachLimitReached": "Attachment limit reached (4 per turn)",
@@ -101,6 +101,7 @@
     "send": "Send",
     "stop": "Stop",
     "noFiles": "No matching files.",
+    "noSkillMatches": "No matching skills.",
     "approval": "Approval mode",
     "approvalTier": {
       "manual": "Manual",
@@ -130,7 +131,7 @@
     "headerTitle": "New conversation",
     "chatSubtitle": "Chat",
     "welcome": "Welcome",
-    "placeholder": "Describe a task, @ to add content to context, / to use skills",
+    "placeholder": "Describe the task, @ to add files, / to use skills",
     "workspace": "Workspace",
     "noWorkspaces": "No workspaces yet.",
     "openExisting": "Open workspace",

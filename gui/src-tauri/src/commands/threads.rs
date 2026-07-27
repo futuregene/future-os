@@ -144,8 +144,10 @@ pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::A
 }
 
 #[tauri::command]
-pub async fn delete_thread(thread_id: String) -> Result<store::ThreadRecord, crate::AppError> {
-    let thread = store::delete_thread(&thread_id)?;
+pub async fn delete_thread(
+    input: store::DeleteThreadInput,
+) -> Result<store::ThreadRecord, crate::AppError> {
+    let thread = store::delete_thread_with_files(&input.thread_id, input.delete_files)?;
     // Also delete the agent session JSONL (the source of truth) so the mirror and
     // the agent stay consistent. The session id mirrors the GUI's own resolution:
     // agent_session_id when set, else the thread id. Best-effort — a failure here
@@ -162,6 +164,47 @@ pub async fn delete_thread(thread_id: String) -> Result<store::ThreadRecord, cra
         let _ = client.execute_command(cmd).await;
     }
     Ok(thread)
+}
+
+/// Batch-delete multiple threads. For each thread, the DB row + children are
+/// hard-deleted and the agent session JSONL is removed. For chat-mode threads
+/// with `delete_files`, the temporary workspace directory on disk is also
+/// removed. Workspace-mode threads are never touched on disk regardless of
+/// `delete_files`. Returns a summary of deleted count and failures.
+#[tauri::command]
+pub async fn batch_delete_threads(
+    input: store::BatchDeleteThreadsInput,
+) -> Result<store::BatchDeleteResult, crate::AppError> {
+    // Pre-resolve session ids so we can delete agent JSONL files even for
+    // threads that fail the store delete (best-effort).
+    let session_info: Vec<(String, String)> = input
+        .thread_ids
+        .iter()
+        .filter_map(|tid| {
+            store::get_thread(tid).ok().flatten().map(|t| {
+                let sid = t
+                    .agent_session_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or(&t.id)
+                    .to_string();
+                (t.id.clone(), sid)
+            })
+        })
+        .collect();
+
+    let result = store::batch_delete_threads(&input)?;
+
+    // Delete agent session JSONLs for every thread (best-effort).
+    if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
+        for (_, session_id) in &session_info {
+            let cmd = crate::agent_bridge::delete_session_command(session_id.clone());
+            let _ = client.execute_command(cmd).await;
+        }
+    }
+
+    Ok(result)
 }
 
 /// Bulk streaming-status query: ONE agent RPC (`list_streaming_sessions`,

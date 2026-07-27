@@ -18,20 +18,35 @@ export interface RenameDialogState {
   value: string;
 }
 
+export interface BatchDeleteDialogState {
+  error: string | null;
+  submitting: boolean;
+  deleteFiles: boolean;
+  threads: StoredThread[];
+  chatThreadCount: number;
+  workspaceThreadCount: number;
+}
+
 interface AppShellDialogsProps {
+  batchDeleteDialog: BatchDeleteDialogState | null;
   deleteDialog: DeleteDialogState | null;
+  onConfirmBatchDeleteThread: () => void;
   onConfirmDeleteThread: () => void;
   onConfirmRenameThread: () => void;
   renameDialog: RenameDialogState | null;
+  setBatchDeleteDialog: Dispatch<SetStateAction<BatchDeleteDialogState | null>>;
   setDeleteDialog: Dispatch<SetStateAction<DeleteDialogState | null>>;
   setRenameDialog: Dispatch<SetStateAction<RenameDialogState | null>>;
 }
 
 export function AppShellDialogs({
+  batchDeleteDialog,
   deleteDialog,
+  onConfirmBatchDeleteThread,
   onConfirmDeleteThread,
   onConfirmRenameThread,
   renameDialog,
+  setBatchDeleteDialog,
   setDeleteDialog,
   setRenameDialog,
 }: AppShellDialogsProps) {
@@ -71,6 +86,62 @@ export function AppShellDialogs({
             : null}
         </div>
       </ConfirmDeleteDialog>
+      <ConfirmDeleteDialog
+        description={batchDeleteDialog ? batchDeleteDescription(batchDeleteDialog, t) : undefined}
+        error={batchDeleteDialog?.error ?? null}
+        onClose={() => setBatchDeleteDialog(null)}
+        onConfirm={onConfirmBatchDeleteThread}
+        open={Boolean(batchDeleteDialog)}
+        submitting={batchDeleteDialog?.submitting ?? false}
+        title={t("appShellDialogs.batchDeleteTitle")}
+      >
+        {batchDeleteDialog
+          ? (
+              <div className="space-y-3">
+                <div className="rounded-md border border-line-soft bg-surface-subtle p-3 text-sm text-ink">
+                  <div className="mb-1 font-medium">{t("appShellDialogs.batchDeleteSummary", { count: batchDeleteDialog.threads.length })}</div>
+                  <ul className="list-inside list-disc space-y-0.5 text-ink-soft">
+                    {batchDeleteDialog.threads.slice(0, 5).map(thread => (
+                      <li key={thread.id} className="truncate">{thread.title}</li>
+                    ))}
+                    {batchDeleteDialog.threads.length > 5
+                      ? (
+                          <li className="text-ink-muted">
+                            {t("appShellDialogs.andMore", { count: batchDeleteDialog.threads.length - 5 })}
+                          </li>
+                        )
+                      : null}
+                  </ul>
+                </div>
+                {batchDeleteDialog.workspaceThreadCount > 0
+                  ? (
+                      <div className="rounded-md border border-line-soft bg-surface px-3 py-2 text-xs text-ink-soft">
+                        {t("appShellDialogs.workspaceFilesUnaffected", { count: batchDeleteDialog.workspaceThreadCount })}
+                      </div>
+                    )
+                  : null}
+                {batchDeleteDialog.chatThreadCount > 0
+                  ? (
+                      <label className="flex cursor-pointer items-center gap-2 rounded-md border border-line-soft bg-surface px-3 py-2">
+                        <input
+                          checked={batchDeleteDialog.deleteFiles}
+                          className="size-4 shrink-0 rounded border-line accent-accent"
+                          disabled={batchDeleteDialog.submitting}
+                          onChange={event =>
+                            setBatchDeleteDialog(current =>
+                              current ? { ...current, deleteFiles: event.target.checked } : current)}
+                          type="checkbox"
+                        />
+                        <span className="text-sm text-ink-soft">
+                          {t("appShellDialogs.deleteAssociatedFiles", { count: batchDeleteDialog.chatThreadCount })}
+                        </span>
+                      </label>
+                    )
+                  : null}
+              </div>
+            )
+          : null}
+      </ConfirmDeleteDialog>
     </>
   );
 }
@@ -85,10 +156,23 @@ function ArtifactCount({ count }: { count: number }) {
   );
 }
 
-function deleteThreadDescription(thread: StoredThread, t: (key: string) => string) {
+function deleteThreadDescription(thread: StoredThread, t: (key: string, options?: Record<string, unknown>) => string) {
   if (thread.mode === "workspace") {
     return t("appShellDialogs.deleteWorkspaceDescription");
   }
 
+  return t("appShellDialogs.deleteChatDescription");
+}
+
+function batchDeleteDescription(state: BatchDeleteDialogState, t: (key: string, options?: Record<string, unknown>) => string) {
+  if (state.workspaceThreadCount > 0 && state.chatThreadCount > 0) {
+    return t("appShellDialogs.batchDeleteMixedDescription", {
+      chatCount: state.chatThreadCount,
+      wsCount: state.workspaceThreadCount,
+    });
+  }
+  if (state.workspaceThreadCount > 0) {
+    return t("appShellDialogs.deleteWorkspaceDescription");
+  }
   return t("appShellDialogs.deleteChatDescription");
 }

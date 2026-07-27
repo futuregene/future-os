@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
-import { Archive, FolderOpen, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide-react";
+import { Archive, CheckSquare, FolderOpen, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { openPath } from "../../integrations/storage/files";
 import { cn } from "../../lib/cn";
@@ -61,9 +61,8 @@ export function ThreadItemMenu({
 }
 
 /**
- * Workspace-header actions dropdown (rename / reveal in file manager / delete).
- * Open state is controlled by the caller so the same menu can be triggered from
- * either the `...` button or a right-click on the workspace row.
+ * Workspace-header actions dropdown (rename / reveal in file manager /
+ * select conversations / delete).
  */
 export function WorkspaceHeaderMenu({
   workspace,
@@ -71,16 +70,16 @@ export function WorkspaceHeaderMenu({
   onDelete,
   onOpenChange,
   onRename,
+  onSelect,
 }: {
   workspace: StoredWorkspace;
   open: boolean;
   onDelete: (workspace: StoredWorkspace) => void;
   onOpenChange: (open: boolean) => void;
   onRename: (workspace: StoredWorkspace) => void;
+  onSelect?: () => void;
 }) {
   const { t } = useTranslation("layout");
-  // Label follows OS convention: Finder (macOS) / File Explorer (Windows) /
-  // File Manager (Linux and other).
   const revealLabel = t("activityRail.revealInFinder");
   const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => onOpenChange(false) });
   const { menuRef, dropUp } = useDropUpMenu(open);
@@ -117,8 +116,64 @@ export function WorkspaceHeaderMenu({
               <ThreadMenuItem icon={<FolderOpen className="size-3.5" />} onClick={() => void openPath(workspace.path).catch(() => {})} onClose={() => onOpenChange(false)}>
                 {revealLabel}
               </ThreadMenuItem>
+              {onSelect
+                ? (
+                    <ThreadMenuItem icon={<CheckSquare className="size-3.5" />} onClick={onSelect} onClose={() => onOpenChange(false)}>
+                      {t("activityRail.selectThreads")}
+                    </ThreadMenuItem>
+                  )
+                : null}
               <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(workspace)} onClose={() => onOpenChange(false)}>
                 {t("activityRail.delete")}
+              </ThreadMenuItem>
+            </MenuPanel>
+          )
+        : null}
+    </div>
+  );
+}
+
+/**
+ * Chat section header menu: select conversations for batch deletion.
+ */
+export function ChatSectionMenu({
+  open,
+  onOpenChange,
+  onSelect,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSelect: () => void;
+}) {
+  const { t } = useTranslation("layout");
+  const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => onOpenChange(false) });
+  const { menuRef, dropUp } = useDropUpMenu(open);
+
+  return (
+    <div className="relative" ref={layerRef}>
+      <button
+        aria-label={t("activityRail.chatSectionActions")}
+        className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpenChange(!open);
+        }}
+        title={t("activityRail.chatSectionActions")}
+        type="button"
+      >
+        <MoreHorizontal className="size-3.5" />
+      </button>
+      {open
+        ? (
+            <MenuPanel
+              ref={menuRef}
+              className={cn(
+                "absolute right-0 z-40 w-max min-w-36 p-1",
+                dropUp ? "bottom-7" : "top-7",
+              )}
+            >
+              <ThreadMenuItem icon={<CheckSquare className="size-3.5" />} onClick={onSelect} onClose={() => onOpenChange(false)}>
+                {t("activityRail.selectThreads")}
               </ThreadMenuItem>
             </MenuPanel>
           )

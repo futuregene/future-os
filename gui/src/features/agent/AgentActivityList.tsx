@@ -196,37 +196,29 @@ function labelForActivity(item: AgentActivityItem) {
   if (item.status === "failed")
     return failedLabel(item.kind);
 
-  const prefix = statusPrefix(item.status);
+  // Collapsed bursts only ever group completed calls, so group labels are
+  // always past tense and self-contained ("Edited 3 files") — a shared
+  // "Ran "/"已" prefix can't conjugate across tool kinds.
   if (count > 1) {
     if (item.kind === "shell")
-      return i18n.t("agent:activity.runCommands", { prefix, count });
+      return i18n.t("agent:activity.runCommands", { count });
     if (item.kind === "write")
-      return i18n.t("agent:activity.writeFiles", { prefix, count });
+      return i18n.t("agent:activity.writeFiles", { count });
     if (item.kind === "read")
-      return i18n.t("agent:activity.readFiles", { prefix, count });
-    return i18n.t("agent:activity.editFiles", { prefix, count });
+      return i18n.t("agent:activity.readFiles", { count });
+    return i18n.t("agent:activity.editFiles", { count });
   }
 
+  const running = item.status === "running";
   switch (item.kind) {
     case "read":
-      return i18n.t("agent:activity.read", { prefix });
+      return i18n.t(running ? "agent:activity.reading" : "agent:activity.readCompleted");
     case "shell":
-      return i18n.t("agent:activity.run", { prefix });
+      return i18n.t(running ? "agent:activity.runningCommand" : "agent:activity.runCompleted");
     case "write":
-      return i18n.t("agent:activity.write", { prefix });
+      return i18n.t(running ? "agent:activity.writing" : "agent:activity.writeCompleted");
     case "edit":
-      return i18n.t("agent:activity.edit", { prefix });
-  }
-}
-
-function statusPrefix(status: AgentActivityItem["status"]) {
-  switch (status) {
-    case "running":
-      return i18n.t("agent:activity.prefix.running");
-    case "completed":
-      return i18n.t("agent:activity.prefix.completed");
-    case "failed":
-      return "";
+      return i18n.t(running ? "agent:activity.editing" : "agent:activity.editCompleted");
   }
 }
 

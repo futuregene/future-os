@@ -2,7 +2,7 @@ import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { MessageAttachment } from "./agentThreadTypes";
-import type { MentionEditorHandle } from "./MentionEditor";
+import type { MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, TriangleAlert, X } from "lucide-react";
@@ -11,6 +11,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
+import { listAvailableSkills, listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { deleteTempAttachment, savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { formatBytes } from "../../lib/format";
@@ -114,7 +115,7 @@ export function Composer({
   draftKey,
   onDragStateChange,
 }: ComposerProps) {
-  const { t } = useTranslation("agent");
+  const { t, i18n } = useTranslation("agent");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   // Drag-over verdict: null (no drag), "accept" (droppable), "reject"
@@ -132,6 +133,41 @@ export function Composer({
   // until it settles.
   const [sendPending, setSendPending] = useState(false);
   const editorRef = useRef<MentionEditorHandle | null>(null);
+
+  // Installed skills for the `/` menu. The name stays the English slash-command
+  // name; the description follows the UI language (mirrors SkillsView). Skill
+  // frontmatter often lacks name_zh/description_zh, so fall back to the
+  // platform catalogue (which always carries zh text) for those.
+  const [skills, setSkills] = useState<SkillMentionOption[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const useZh = i18n.language !== "en";
+    Promise.all([
+      listInstalledSkills(),
+      // Best-effort: the catalogue needs the platform; offline it just
+      // contributes no zh fallback.
+      listAvailableSkills().catch(() => [] as Awaited<ReturnType<typeof listAvailableSkills>>),
+    ])
+      .then(([installed, catalogue]) => {
+        if (cancelled)
+          return;
+        const zhById = new Map(catalogue.map(entry => [entry.id, entry]));
+        setSkills(installed.map((skill) => {
+          const nameZh = skill.nameZh || zhById.get(skill.id)?.nameZh || null;
+          const descriptionZh = skill.descriptionZh || zhById.get(skill.id)?.descriptionZh || null;
+          return {
+            name: skill.name,
+            description: useZh ? descriptionZh || skill.description : skill.description,
+            nameZh,
+            descriptionZh,
+          };
+        }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [i18n.language]);
 
   // ── Per-conversation draft (sessionStorage, keyed by draftKey) ──────────────
   // Live mirrors so the persist path always reads current values regardless of
@@ -481,6 +517,7 @@ export function Composer({
         ref={editorRef}
         className={textareaClassName}
         workspaceId={workspaceId}
+        skills={skills}
         disabled={disabled}
         placeholder={placeholder ?? t("composer.placeholder")}
         onSubmit={submitValue}

@@ -41,7 +41,14 @@
     "delete": "删除",
     "revealInFinder": "打开文件夹",
     "workspaceActions": "{{name}} 的操作",
-    "pinnedHeader": "置顶"
+    "pinnedHeader": "置顶",
+    "selectThreads": "选择聊天…",
+    "selectThread": "选择 {{title}}",
+    "selectAll": "全选",
+    "deselectAll": "取消全选",
+    "chatSectionActions": "对话区操作",
+    "threadsSelected": "已选择 {{count}} 个",
+    "deleteSelected": "删除所选"
   },
   "appShell": {
     "storeInitFailed": "FutureOS 本地存储初始化失败：",
@@ -58,7 +65,14 @@
     "deleting": "删除中…",
     "artifacts": "Artifacts",
     "deleteWorkspaceDescription": "仅删除此对话，工作区文件不会被更改。",
-    "deleteChatDescription": "此对话将从侧边栏移除。"
+    "deleteChatDescription": "此对话将从侧边栏移除。",
+    "batchDeleteTitle": "删除对话",
+    "batchDeleteSummary": "已选择 {{count}} 个对话",
+    "batchDeleteMixedDescription": "{{chatCount}} 个普通对话和 {{wsCount}} 个工作区对话将从侧边栏移除。工作区文件不受影响。",
+    "andMore": "以及其他 {{count}} 个",
+    "workspaceFilesUnaffected": "{{count}} 个工作区对话：磁盘上的文件不会被删除。",
+    "deleteAssociatedFiles": "同时删除 {{count}} 个对话的相关文件内容",
+    "deleteAssociatedFiles_other": "同时删除 {{count}} 个对话的相关文件内容"
   },
   "contextPanel": {
     "runs": "运行",

@@ -6,18 +6,18 @@
   },
   "activity": {
     "thinking": "正在思考",
-    "prefix": {
-      "running": "正在",
-      "completed": "已"
-    },
-    "runCommands": "{{prefix}}运行 {{count}} 条命令",
-    "writeFiles": "{{prefix}}写入 {{count}} 个文件",
-    "editFiles": "{{prefix}}编辑 {{count}} 个文件",
-    "readFiles": "{{prefix}}读取 {{count}} 个文件",
-    "read": "{{prefix}}读取",
-    "run": "{{prefix}}运行",
-    "write": "{{prefix}}写入",
-    "edit": "{{prefix}}编辑",
+    "runCommands": "已运行 {{count}} 条命令",
+    "writeFiles": "已写入 {{count}} 个文件",
+    "editFiles": "已编辑 {{count}} 个文件",
+    "readFiles": "已读取 {{count}} 个文件",
+    "reading": "正在读取",
+    "runningCommand": "正在运行",
+    "writing": "正在写入",
+    "editing": "正在编辑",
+    "readCompleted": "已读取",
+    "runCompleted": "已运行",
+    "writeCompleted": "已写入",
+    "editCompleted": "已编辑",
     "failed": {
       "shell": "运行失败",
       "edit": "编辑失败",
@@ -72,7 +72,7 @@
     }
   },
   "composer": {
-    "placeholder": "描述任务，@ 内容添加到上下文，/ 使用技能",
+    "placeholder": "描述任务，@文件 添加到上下文，按 / 使用技能",
     "attachFiles": "添加附件",
     "attachFilesHint": "添加附件（图片、PDF、文本）",
     "attachLimitReached": "已达到附件上限（每轮 4 个）",
@@ -97,6 +97,7 @@
     "send": "发送",
     "stop": "停止",
     "noFiles": "未找到文件。",
+    "noSkillMatches": "没有匹配的技能。",
     "approval": "审批模式",
     "approvalTier": {
       "manual": "手动审批",
@@ -126,7 +127,7 @@
     "headerTitle": "新对话",
     "chatSubtitle": "普通对话",
     "welcome": "欢迎使用",
-    "placeholder": "描述任务，@ 内容添加到上下文，/ 使用技能",
+    "placeholder": "描述任务，@文件 添加到上下文，按 / 使用技能",
     "workspace": "工作区",
     "noWorkspaces": "还没有工作区。",
     "openExisting": "打开工作区",
