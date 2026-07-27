@@ -62,7 +62,6 @@ jobs:
               - 'proto/**'
               - 'agent/**'
               - 'channels/**'
-              - 'remote/**'
             gui_tauri:
               - 'gui/src-tauri/**'
               - '.cargo/**'
@@ -131,7 +130,7 @@ jobs:
           : > "gui/src-tauri/binaries/future-agent-$triple"
           : > "gui/src-tauri/binaries/future-$triple"
 
-      # ── Workspace crates (agent / channels / remote) ──
+      # ── Workspace crates (agent / channels) ──
       # --all because the root manifest is a virtual workspace (no [package]);
       # --manifest-path would fail with "Failed to find targets".
       - name: rustfmt (workspace)
@@ -214,7 +213,7 @@ jobs:
   # Windows, and vice versa) with no PR signal. This matrix runs `cargo check`
   # on every release target so a missing `cfg`/crate surfaces on the PR.
   #
-  # Scope: the whole workspace (agent / channels / remote) plus the GUI Tauri
+  # Scope: the whole workspace (agent / channels) plus the GUI Tauri
   # backend. `cargo check` type-checks without linking the final crate, but it
   # DOES link build scripts / proc-macros, so each OS still needs its linker
   # story: Linux needs mold (`.cargo/config.toml`'s -fuse-ld=mold) and the
