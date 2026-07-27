@@ -130,7 +130,7 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
 
     // Prefer the "complete" URL (carries the user code); fall back to the bare
     // verification URI. Validate before doing anything with it.
-    let verification = device
+    let base = device
         .verification_uri_complete
         .clone()
         .filter(|value| !value.trim().is_empty())
@@ -139,16 +139,22 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
         .ok_or_else(|| {
             AppError::Message("Device code response is missing the authorization URL.".to_string())
         })?;
-    validate_browser_url(&verification)?;
+    validate_browser_url(&base)?;
+
+    // Tag the page we open with the current platform so the authorization page
+    // can tailor itself. The user code is no longer shown to the user — the page
+    // opens straight away and the poll loop is unchanged.
+    let verification = append_login_platform(base);
+    let verification_uri = device
+        .verification_uri
+        .unwrap_or_else(|| verification.clone());
 
     // Best-effort: failure is fine, the dialog shows a copyable link.
     open_browser(&verification);
 
     Ok(FutureLoginStart {
         user_code: device.user_code,
-        verification_uri: device
-            .verification_uri
-            .unwrap_or_else(|| verification.clone()),
+        verification_uri,
         verification_uri_complete: verification,
         interval: device.interval,
         expires_in: device.expires_in,
@@ -303,6 +309,36 @@ fn open_browser(url: &str) {
     let _ = open::that_detached(url);
 }
 
+/// Map the compile target to the platform label the authorization page expects
+/// (`macOS` / `Windows` / `Linux`); any other target yields an empty value.
+fn login_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macOS"
+    } else if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "linux") {
+        "Linux"
+    } else {
+        ""
+    }
+}
+
+/// Append `platform=<login_platform>` to the authorization URL so the opened page
+/// knows the client OS. The existing query (e.g. the embedded user code) is
+/// preserved; an unparseable URL is returned unchanged (it already passed
+/// validation, so this is only a defensive fallback).
+fn append_login_platform(url: String) -> String {
+    match reqwest::Url::parse(&url) {
+        Ok(mut parsed) => {
+            parsed
+                .query_pairs_mut()
+                .append_pair("platform", login_platform());
+            parsed.to_string()
+        }
+        Err(_) => url,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +369,32 @@ mod tests {
             Some("desc")
         );
         assert_eq!(error_message_from_body(Some(json!({ "error": "x" }))), None);
+    }
+
+    #[test]
+    fn append_login_platform_preserves_query_and_tags_platform() {
+        let out =
+            append_login_platform("https://example.com/device?user_code=ABCD-1234".to_string());
+        let parsed = reqwest::Url::parse(&out).expect("valid url");
+        let pairs: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(
+            pairs.get("user_code").map(String::as_str),
+            Some("ABCD-1234")
+        );
+        assert_eq!(
+            pairs.get("platform").map(String::as_str),
+            Some(login_platform())
+        );
+    }
+
+    #[test]
+    fn append_login_platform_adds_param_without_existing_query() {
+        let out = append_login_platform("https://example.com/device".to_string());
+        let parsed = reqwest::Url::parse(&out).expect("valid url");
+        let pairs: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(
+            pairs.get("platform").map(String::as_str),
+            Some(login_platform())
+        );
     }
 }
