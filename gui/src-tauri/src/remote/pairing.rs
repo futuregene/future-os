@@ -276,6 +276,17 @@ async fn response_error(response: reqwest::Response, action: &str) -> crate::App
         .filter(|message| !message.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| format!("Failed to {action} (HTTP {})", status.as_u16()));
+    eprintln!(
+        "remote: {action} failed: HTTP {}, code={:?}, message={}, body={}",
+        status.as_u16(),
+        code,
+        message,
+        body.as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .unwrap_or_default()
+            .unwrap_or_default(),
+    );
     crate::AppError::Remote {
         status: status.as_u16(),
         code,

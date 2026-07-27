@@ -19,6 +19,10 @@ pub struct AppSettings {
     /// Silently upgrade installed skills to their latest catalogue version on
     /// app open (and immediately when toggled on). Off by default.
     pub auto_upgrade_skills: bool,
+    /// Auto-connect the single paired remote device on app launch. Off by
+    /// default. Remote control is a dev-only feature, so this is only consulted
+    /// on non-release builds (see the startup auto-connect in `lib.rs`).
+    pub auto_connect_remote: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,12 +32,14 @@ pub struct UpdateAppSettingsInput {
     pub hidden_models: Option<Vec<String>>,
     pub show_thinking: Option<bool>,
     pub auto_upgrade_skills: Option<bool>,
+    pub auto_connect_remote: Option<bool>,
 }
 
 const KEY_APPROVAL_TIER: &str = "approval_tier";
 const KEY_HIDDEN_MODELS: &str = "hidden_models";
 const KEY_SHOW_THINKING: &str = "show_thinking";
 const KEY_AUTO_UPGRADE_SKILLS: &str = "auto_upgrade_skills";
+const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 /// One-shot marker: the GUI has run the built-in skill bootstrap once. Set only
 /// after a successful run so a first launch that's offline retries next time.
 /// Kept out of [`AppSettings`] — it's backend-internal, never sent to the UI.
@@ -72,6 +78,14 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
             now,
         )?;
     }
+    if let Some(auto_connect_remote) = input.auto_connect_remote {
+        write_value(
+            &tx,
+            KEY_AUTO_CONNECT_REMOTE,
+            if auto_connect_remote { "true" } else { "false" },
+            now,
+        )?;
+    }
 
     let settings = read_app_settings(&tx)?;
     tx.commit()?;
@@ -105,11 +119,15 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let auto_upgrade_skills = read_value(conn, KEY_AUTO_UPGRADE_SKILLS)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default — keeps skills current without manual intervention.
+    let auto_connect_remote = read_value(conn, KEY_AUTO_CONNECT_REMOTE)?
+        .map(|value| value == "true")
+        .unwrap_or(false); // Off by default — remote auto-connect is opt-in.
     Ok(AppSettings {
         approval_tier,
         hidden_models,
         show_thinking,
         auto_upgrade_skills,
+        auto_connect_remote,
     })
 }
 

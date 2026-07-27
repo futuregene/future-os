@@ -1,17 +1,15 @@
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import type { RemotePairingStatus, RemoteStatus } from "./remoteClient";
+import type { RemoteStatus } from "./remoteClient";
 import { QRCodeSVG } from "qrcode.react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ConfirmDeleteDialog } from "../../components/layout/EntityDialogs";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/cn";
-import { useAsyncResource } from "../../lib/useAsyncResource";
 import { usePolling } from "../../lib/usePolling";
 import { startWindowDrag } from "../../lib/windowDrag";
 import {
-  getRemotePairingStatus,
-  getRemoteStatus,
   openUrl,
   startRemote,
   stopRemote,
@@ -23,6 +21,13 @@ interface RemoteViewProps {
   leftPanelExpanded: boolean;
   onChangeSettings: (patch: Partial<AppSettings>) => void;
   onToggleLeftPanel: () => void;
+  /**
+   * Shared remote bridge status polled at the app level — the same source
+   * that feeds the sidebar indicator dot, so they always agree.
+   */
+  remoteStatus: RemoteStatus | null;
+  /** Refresh the shared status immediately after a user action. */
+  onRefreshRemote: () => Promise<void>;
 }
 
 function formatCountdown(totalSeconds: number): string {
@@ -31,68 +36,57 @@ function formatCountdown(totalSeconds: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewProps) {
+/**
+ * Short display form of a pair id: drop the `pair_` prefix (redundant next to the
+ * "Paired as" label) and upper-case the remainder so it reads as a code, not a
+ * lowercase hash. Unknown shapes pass through unchanged.
+ */
+function formatPairId(pairId: string | null | undefined): string {
+  if (!pairId)
+    return "";
+  return (pairId.startsWith("pair_") ? pairId.slice(5) : pairId).toUpperCase();
+}
+
+export function RemoteView({
+  leftPanelExpanded,
+  onToggleLeftPanel,
+  remoteStatus,
+  onRefreshRemote,
+}: RemoteViewProps) {
   const { t } = useTranslation("remote");
   const [copied, setCopied] = useState(false);
-  const { data: loadedStatus } = useAsyncResource<RemoteStatus | null>(getRemoteStatus, [], null);
-  const { data: loadedPairing } = useAsyncResource<RemotePairingStatus | null>(
-    getRemotePairingStatus,
-    [],
-    null,
-  );
-  const [status, setStatus] = useState<RemoteStatus | null>(null);
-  const [pairing, setPairing] = useState<RemotePairingStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (loadedStatus)
-      setStatus(loadedStatus);
-  }, [loadedStatus]);
-
-  useEffect(() => {
-    if (loadedPairing)
-      setPairing(loadedPairing);
-  }, [loadedPairing]);
-
-  const running = status?.running ?? false;
-  const isPaired = pairing?.paired ?? false;
-  const activeErrorCode = errorCode ?? (error ? null : status?.errorCode ?? null);
+  // --- derived from the shared app-level status (same source as the sidebar indicator) ---
+  const running = remoteStatus?.running ?? false;
+  // Backend `status()` now includes the persisted pair_id even when stopped, so
+  // this is authoritative for "paired" across all states: idle, running, and
+  // previously-stopped-but-credential-still-here.  Empty when truly unpaired.
+  const isPaired = Boolean(remoteStatus?.pairId);
+  const activeErrorCode = errorCode ?? (error ? null : remoteStatus?.errorCode ?? null);
   const errorText = activeErrorCode ? t(`error.${activeErrorCode}`) : error;
   const showError = Boolean(activeErrorCode || error);
 
-  usePolling(async () => {
-    try {
-      const [nextStatus, nextPairing] = await Promise.all([
-        getRemoteStatus(),
-        getRemotePairingStatus(),
-      ]);
-      setStatus(nextStatus);
-      setPairing(nextPairing);
-    }
-    catch {
-      // Keep the last known status on a failed poll.
-    }
-  }, 5000, { enabled: running && !busy });
-
-  const pairingCode = status?.pairingCode ?? null;
+  const pairingCode = remoteStatus?.pairingCode ?? null;
   const [now, setNow] = useState(() => Date.now());
   usePolling(() => setNow(Date.now()), 1000, { enabled: pairingCode != null });
   const remainingSeconds = useMemo(() => {
-    const expiresAt = status?.pairingCodeExpiresAt;
+    const expiresAt = remoteStatus?.pairingCodeExpiresAt;
     if (!pairingCode || expiresAt == null)
       return null;
     return Math.max(0, expiresAt - Math.floor(now / 1000));
-  }, [pairingCode, status?.pairingCodeExpiresAt, now]);
+  }, [pairingCode, remoteStatus?.pairingCodeExpiresAt, now]);
   const pairingQrValue = useMemo(
     () =>
       pairingCode
         ? `futureos://remote/pair?code=${encodeURIComponent(pairingCode)}&desktopId=${
-          encodeURIComponent(status?.desktopId ?? "")
-        }&desktopKey=${encodeURIComponent(status?.desktopPublicKey ?? "")}`
+          encodeURIComponent(remoteStatus?.desktopId ?? "")
+        }&desktopKey=${encodeURIComponent(remoteStatus?.desktopPublicKey ?? "")}`
         : null,
-    [pairingCode, status?.desktopId, status?.desktopPublicKey],
+    [pairingCode, remoteStatus?.desktopId, remoteStatus?.desktopPublicKey],
   );
 
   async function handleStart() {
@@ -100,15 +94,14 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
     setError(null);
     setErrorCode(null);
     try {
-      const next = await startRemote({});
-      setStatus(next);
-      setPairing(await getRemotePairingStatus());
+      await startRemote({});
     }
     catch {
       setErrorCode("generic");
     }
     finally {
       setBusy(false);
+      await onRefreshRemote();
     }
   }
 
@@ -117,13 +110,14 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
     setError(null);
     setErrorCode(null);
     try {
-      setStatus(await stopRemote());
+      await stopRemote();
     }
     catch {
       setErrorCode("generic");
     }
     finally {
       setBusy(false);
+      await onRefreshRemote();
     }
   }
 
@@ -132,14 +126,14 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
     setError(null);
     setErrorCode(null);
     try {
-      setStatus(await unpairRemote());
-      setPairing(await getRemotePairingStatus());
+      await unpairRemote();
     }
     catch {
       setErrorCode("generic");
     }
     finally {
       setBusy(false);
+      await onRefreshRemote();
     }
   }
 
@@ -173,36 +167,32 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
         <div className="mx-auto w-full max-w-xl space-y-6">
           <p className="text-sm text-ink-muted">{t("description")}</p>
 
-          <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={cn("inline-block size-2 rounded-full", running ? "bg-accent" : "bg-ink-muted/60")} />
-              <span className="text-sm font-medium text-ink">{running ? t("running") : t("notRunning")}</span>
-              {running && status?.webUrl
-                ? (
-                    <span className="flex items-center gap-1 text-xs text-ink-muted">
-                      ·
-                      <span>{t("webClient")}</span>
-                      <button
-                        className="text-accent underline"
-                        onClick={() => void openUrl(status.webUrl!)}
-                        type="button"
-                      >
-                        {status.webUrl}
-                      </button>
-                    </span>
-                  )
-                : null}
-            </div>
-          </div>
-
-          {isPaired && !running
+          {isPaired && !pairingCode
             ? (
-                <div className="rounded-lg border border-line-soft bg-surface-subtle p-4 text-sm">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-block size-2 rounded-full bg-accent" />
-                    <span className="font-medium text-ink">
-                      {t("pairedAs", { pairId: pairing?.pairId ?? "" })}
+                <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className={cn("inline-block size-2 shrink-0 rounded-full", running ? "bg-accent" : "bg-ink-muted/60")} />
+                    <span className="min-w-0 truncate text-sm font-medium text-ink">
+                      {t(running ? "connectedAs" : "pairedAs", { pairId: formatPairId(remoteStatus?.pairId) })}
                     </span>
+                    <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+                      <Button
+                        disabled={busy}
+                        onClick={() => void (running ? handleStop() : handleStart())}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        {running ? t("disconnect") : t("connect")}
+                      </Button>
+                      <Button
+                        disabled={busy}
+                        onClick={() => setConfirmOpen(true)}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        {t("unpair")}
+                      </Button>
+                    </div>
                   </div>
                 </div>
               )
@@ -226,14 +216,19 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
                         </span>
                       )}
                     </span>
-                    <Button onClick={() => void copyCode()} size="sm" variant="secondary">
-                      {copied ? t("copied") : t("copy")}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button onClick={() => void copyCode()} size="sm" variant="secondary">
+                        {copied ? t("copied") : t("copy")}
+                      </Button>
+                      <Button disabled={busy} onClick={() => void handleStop()} size="sm" variant="secondary">
+                        {t("cancel")}
+                      </Button>
+                    </div>
                   </div>
-                  <div className="grid gap-4 md:grid-cols-[auto_1fr] md:items-center">
+                  <div className="flex flex-col items-center gap-2">
                     {pairingQrValue
                       ? (
-                          <div className="mx-auto rounded-lg border border-line bg-surface p-3 md:mx-0">
+                          <div className="rounded-lg border border-line bg-surface p-3">
                             <QRCodeSVG
                               aria-label={t("pairingQrLabel")}
                               bgColor="transparent"
@@ -247,42 +242,55 @@ export function RemoteView({ leftPanelExpanded, onToggleLeftPanel }: RemoteViewP
                           </div>
                         )
                       : null}
-                    <div className="min-w-0 space-y-2">
-                      <p className="text-xs font-medium text-ink-soft">{t("pairingQrLabel")}</p>
-                      <code className="block break-all rounded bg-surface px-3 py-2 text-xs text-ink">{pairingQrValue}</code>
-                      <p className="text-xs text-ink-muted">{t("pairingCodeHint")}</p>
-                    </div>
+                    <p className="text-center text-xs font-medium text-ink-soft">{t("pairingQrLabel")}</p>
+                    <p className="text-center text-xs text-ink-muted">{t("pairingCodeHint")}</p>
                   </div>
                 </div>
               )
             : null}
 
-          <div className="flex flex-wrap gap-2">
-            {running
-              ? (
-                  <>
-                    <Button disabled={busy} onClick={() => void handleStop()} variant="secondary">
-                      {t("stop")}
-                    </Button>
-                    {isPaired
-                      ? (
-                          <Button disabled={busy} onClick={() => void handleUnpair()} variant="secondary">
-                            {t("unpair")}
-                          </Button>
-                        )
-                      : null}
-                  </>
-                )
-              : (
+          {!isPaired && !pairingCode
+            ? (
+                <div className="flex flex-wrap gap-2">
                   <Button disabled={busy} onClick={() => void handleStart()} variant="primary">
                     {t("pairAndStart")}
                   </Button>
-                )}
-          </div>
+                </div>
+              )
+            : null}
 
           <p className="text-xs text-ink-muted">{t("note")}</p>
+          {running && remoteStatus?.webUrl
+            ? (
+                <p className="flex items-center gap-1 text-xs text-ink-muted">
+                  <span>{t("webClient")}</span>
+                  <button
+                    className="text-accent underline"
+                    onClick={() => void openUrl(remoteStatus.webUrl!)}
+                    type="button"
+                  >
+                    {remoteStatus.webUrl}
+                  </button>
+                </p>
+              )
+            : null}
         </div>
       </div>
+
+      <ConfirmDeleteDialog
+        description={t("unpairConfirmDesc")}
+        error={null}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={() => {
+          setConfirmOpen(false);
+          void handleUnpair();
+        }}
+        open={confirmOpen}
+        submitting={false}
+        title={t("unpairConfirmTitle")}
+      >
+        <p className="text-sm text-ink-soft">{t("pairedAs", { pairId: formatPairId(remoteStatus?.pairId) })}</p>
+      </ConfirmDeleteDialog>
     </section>
   );
 }

@@ -13,6 +13,12 @@ export interface AppSettings {
    * immediately when toggled on). Off by default.
    */
   autoUpgradeSkills: boolean;
+  /**
+   * Auto-connect the single paired remote device on app launch (the user can
+   * still disconnect by hand). Off by default. The Remote feature is dev-only,
+   * so this only takes effect on non-release builds.
+   */
+  autoConnectRemote: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
@@ -21,6 +27,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   hiddenModels: [],
   showThinking: false,
   autoUpgradeSkills: false,
+  autoConnectRemote: false,
 };
 
 export async function getAppSettings() {
@@ -32,6 +39,7 @@ export async function updateAppSettings(input: {
   hiddenModels?: string[];
   showThinking?: boolean;
   autoUpgradeSkills?: boolean;
+  autoConnectRemote?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });
 }
