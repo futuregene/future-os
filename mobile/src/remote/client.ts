@@ -9,7 +9,15 @@ import {
   type HandshakeChallenge,
   verifyDesktopChallenge,
 } from "./handshake";
-import type { Presence, PresenceSession, RemoteCommand, RemoteCredentials, RemoteWorkspace, RpcResponse, StreamEvent } from "./types";
+import type {
+  Presence,
+  PresenceSession,
+  RemoteCommand,
+  RemoteCredentials,
+  RemoteWorkspace,
+  RpcResponse,
+  StreamEvent,
+} from "./types";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

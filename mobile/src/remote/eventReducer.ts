@@ -1,4 +1,11 @@
-import type { ApprovalPayload, HistoryMessage, StreamEvent, TimelineItem } from "./types";
+import type {
+  ApprovalPayload,
+  HistoryAttachment,
+  HistoryEntry,
+  HistoryMessage,
+  StreamEvent,
+  TimelineItem,
+} from "./types";
 import { messageText } from "./codec";
 
 export interface TimelineState {
@@ -28,6 +35,28 @@ export function timelineFromHistory(messages: HistoryMessage[]): TimelineState {
       role: message.role,
       text,
       runId: message.run_id,
+    });
+  });
+  return { ...emptyTimeline(), items };
+}
+
+/** Display entries from `get_session_entries` — carries user attachments. */
+export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
+  const items: TimelineItem[] = [];
+  entries.forEach((entry, index) => {
+    if (entry.role !== "user" && entry.role !== "assistant") return;
+    const text = typeof entry.content === "string" ? entry.content : "";
+    const attachments = (entry.meta?.attachments ?? []).filter(
+      (attachment): attachment is HistoryAttachment =>
+        !!attachment && typeof attachment.path === "string" && attachment.path.length > 0,
+    );
+    if (!text.trim() && attachments.length === 0) return;
+    items.push({
+      id: `history:${entry.id ?? index}`,
+      kind: "message",
+      role: entry.role,
+      text,
+      ...(attachments.length > 0 ? { attachments } : {}),
     });
   });
   return { ...emptyTimeline(), items };

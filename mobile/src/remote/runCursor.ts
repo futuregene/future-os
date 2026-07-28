@@ -33,7 +33,11 @@ export function newCursor(): RunCursor {
  * - idx = high-water + 1, or first event for this run → "apply" (advance cursor).
  * - idx > high-water + 1 → "gap" (fromIdx = current high-water).
  */
-export function nextEvent(cursor: RunCursor, runId: string | undefined | null, idx: number | undefined | null): CursorEvent {
+export function nextEvent(
+  cursor: RunCursor,
+  runId: string | undefined | null,
+  idx: number | undefined | null,
+): CursorEvent {
   if (!runId || idx == null) return { kind: "untracked" };
 
   const high = cursor.get(runId);

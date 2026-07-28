@@ -13,6 +13,7 @@ import {
   applyStreamEvent,
   emptyTimeline,
   markApprovalDecision,
+  timelineFromEntries,
   timelineFromHistory,
   type TimelineState,
 } from "./eventReducer";
@@ -38,6 +39,7 @@ import {
 import { modelProviderFromReference, modelReference } from "./types";
 import type {
   ConnectionPhase,
+  HistoryEntry,
   HistoryMessage,
   Presence,
   RemoteCredentials,
@@ -63,6 +65,13 @@ interface WorkspacesData {
 
 interface HistoryData {
   messages: HistoryMessage[];
+  total?: number;
+  hasMore?: boolean;
+  nextOffset?: number;
+}
+
+interface EntriesData {
+  entries: HistoryEntry[];
   total?: number;
   hasMore?: boolean;
   nextOffset?: number;
@@ -418,6 +427,27 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const loadHistory = useCallback(async (sessionId: string): Promise<TimelineState> => {
     const client = clientRef.current;
     if (!client) return emptyTimeline();
+    // Prefer display entries — they carry user attachments (message-shaped
+    // history doesn't). Older desktops that don't know get_session_entries
+    // reply "Unsupported command" and fall through to the fallback below.
+    try {
+      const entries: HistoryEntry[] = [];
+      let offset = 0;
+      for (;;) {
+        const response = await client.request<EntriesData>(
+          { type: "get_session_entries", sessionId, offset },
+          sessionId,
+        );
+        entries.push(...(response.data.entries ?? []));
+        if (!response.data.hasMore) break;
+        const next = response.data.nextOffset;
+        if (typeof next !== "number" || next <= offset) break;
+        offset = next;
+      }
+      return timelineFromEntries(entries);
+    } catch {
+      // Fall through to message-shaped history.
+    }
     const history: HistoryMessage[] = [];
     let offset = 0;
     for (;;) {
@@ -479,7 +509,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // Rebuild cursor from the resynced timeline events.
       const cursor = cursorRef.current;
       for (const item of next.items) {
-        if (item.runId && "idx" in item && typeof (item as Record<string, unknown>).idx === "number") {
+        if (
+          item.runId &&
+          "idx" in item &&
+          typeof (item as Record<string, unknown>).idx === "number"
+        ) {
           advanceCursor(cursor, item.runId, (item as unknown as { idx: number }).idx);
         }
       }
@@ -603,6 +637,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setSelectedSessionId(sessionId);
       selectedRef.current = sessionId;
       setDraft(false);
+      // Clear the previous conversation up front — it must not stay on screen
+      // while the new session's history is in flight.
+      setTimeline(emptyTimeline());
       try {
         let next = await loadHistory(sessionId);
         const streaming =
@@ -633,6 +670,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         const matchingModel = models.find(model => modelReference(model) === currentModel);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
         setThinkingLevelState(response.data.thinkingLevel ?? "off");
+      } catch (nextError) {
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
       } finally {
         syncLockRef.current = false;
         setBusy(false);

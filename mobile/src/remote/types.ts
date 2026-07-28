@@ -80,8 +80,28 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 
 export interface HistoryMessage {
   role: "user" | "assistant" | "tool" | string;
-  content: string | { type?: string; text?: string }[];
+  /** Omitted on the wire when null — e.g. tool-call-only assistant messages. */
+  content?: string | { type?: string; text?: string }[] | null;
   run_id?: string;
+}
+
+/** Attachment chip on a user entry — mirrors the desktop `meta.attachments`. */
+export interface HistoryAttachment {
+  path: string;
+  name: string;
+  kind?: "image" | "file" | null;
+}
+
+/**
+ * Display-shaped session entry from `get_session_entries` (the agent's JSONL,
+ * same source the desktop GUI renders). Content is plain text; user entries
+ * carry attachments on `meta`.
+ */
+export interface HistoryEntry {
+  id?: string;
+  role: string;
+  content?: string | null;
+  meta?: { attachments?: HistoryAttachment[] | null } | null;
 }
 
 export interface StreamEvent {
@@ -95,8 +115,11 @@ export interface ApprovalPayload {
   approval_request_id: string;
   tool_name?: string;
   risk_level?: string;
+  kind?: string;
   title?: string;
   summary?: string;
+  /** Agent-built action object (writes/paths/command) — path is surfaced to the user. */
+  action?: unknown;
 }
 
 export type TimelineItem =
@@ -107,6 +130,7 @@ export type TimelineItem =
       text: string;
       runId?: string;
       durationMs?: number;
+      attachments?: HistoryAttachment[];
     }
   | {
       id: string;

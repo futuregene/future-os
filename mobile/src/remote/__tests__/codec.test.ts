@@ -65,4 +65,9 @@ describe("history text", () => {
       ]),
     ).toBe("onetwo");
   });
+
+  test("tolerates missing or null content (tool-call-only messages)", () => {
+    expect(messageText(undefined)).toBe("");
+    expect(messageText(null)).toBe("");
+  });
 });

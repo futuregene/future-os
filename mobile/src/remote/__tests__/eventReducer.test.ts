@@ -1,4 +1,75 @@
-import { applyStreamEvent, emptyTimeline } from "../eventReducer";
+import {
+  applyStreamEvent,
+  emptyTimeline,
+  timelineFromEntries,
+  timelineFromHistory,
+} from "../eventReducer";
+
+describe("history reducer", () => {
+  test("skips tool-call-only messages whose content is omitted on the wire", () => {
+    const timeline = timelineFromHistory([
+      { role: "user", content: "hi" },
+      // Assistant tool-call messages serialize without a content field.
+      { role: "assistant" },
+      { role: "tool", content: null },
+      { role: "assistant", content: "done" },
+    ]);
+    expect(timeline.items).toEqual([
+      expect.objectContaining({ kind: "message", role: "user", text: "hi" }),
+      expect.objectContaining({ kind: "message", role: "assistant", text: "done" }),
+    ]);
+  });
+});
+
+describe("entry reducer", () => {
+  test("projects user/assistant entries and carries attachments", () => {
+    const timeline = timelineFromEntries([
+      {
+        id: "e1",
+        role: "user",
+        content: "check this",
+        meta: {
+          attachments: [
+            { path: "/tmp/a.png", name: "a.png", kind: "image" },
+            { path: "/tmp/b.pdf", name: "b.pdf", kind: "file" },
+          ],
+        },
+      },
+      { id: "e2", role: "assistant", content: "looks good" },
+      { id: "e3", role: "tool", content: "tool output" },
+    ]);
+    expect(timeline.items).toEqual([
+      expect.objectContaining({
+        kind: "message",
+        role: "user",
+        text: "check this",
+        attachments: [
+          { path: "/tmp/a.png", name: "a.png", kind: "image" },
+          { path: "/tmp/b.pdf", name: "b.pdf", kind: "file" },
+        ],
+      }),
+      expect.objectContaining({ kind: "message", role: "assistant", text: "looks good" }),
+    ]);
+  });
+
+  test("keeps attachment-only user entries and drops malformed attachments", () => {
+    const timeline = timelineFromEntries([
+      {
+        id: "e1",
+        role: "user",
+        content: "",
+        meta: {
+          attachments: [{ path: "/tmp/a.png", name: "a.png" }, { name: "no-path" } as never],
+        },
+      },
+      { id: "e2", role: "user", content: "" },
+    ]);
+    expect(timeline.items).toHaveLength(1);
+    expect(timeline.items[0]).toMatchObject({
+      attachments: [{ path: "/tmp/a.png", name: "a.png" }],
+    });
+  });
+});
 
 describe("stream event reducer", () => {
   test("deduplicates and appends text chunks by run", () => {

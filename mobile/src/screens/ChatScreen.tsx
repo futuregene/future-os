@@ -1,7 +1,8 @@
 import { ArrowDown, ArrowLeft, Check, ChevronDown, Send, Square } from "lucide-react-native";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ActivityIndicator,
   BackHandler,
   FlatList,
   KeyboardAvoidingView,
@@ -17,7 +18,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
-import { TimelineCard } from "../components/TimelineCard";
+import { PendingApprovalCard, TimelineCard } from "../components/TimelineCard";
 import { useRemote } from "../remote/RemoteContext";
 import { modelReference, type ThinkingLevel, type TimelineItem } from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
@@ -37,6 +38,44 @@ export function ChatScreen() {
   const activeModel = remote.models.find(model => modelReference(model) === remote.modelId);
   const activeModelLabel =
     activeModel?.label || activeModel?.id || remote.modelId || t("chat.model");
+
+  // Approvals live docked above the composer (not inline in the transcript), and
+  // only while undecided — once a decision lands the card disappears.
+  const timelineItems = useMemo(() => remote.timeline.items, [remote.timeline]);
+  const transcriptItems = useMemo(
+    () => timelineItems.filter(item => item.kind !== "approval"),
+    [timelineItems],
+  );
+  const pendingApprovals = useMemo(
+    () =>
+      timelineItems.filter(
+        (item): item is Extract<TimelineItem, { kind: "approval" }> =>
+          item.kind === "approval" && !item.decision,
+      ),
+    [timelineItems],
+  );
+  const [approvalSubmitting, setApprovalSubmitting] = useState<string | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  // History load is in flight (selectSession holds busy until it lands) — show
+  // a spinner instead of flashing the "no history" empty state.
+  const loadingHistory = !remote.draft && remote.busy && timelineItems.length === 0;
+  // The first content render snaps to the end without animation; only later
+  // appends (streaming, new messages) scroll animated.
+  const landedRef = useRef(false);
+  const decideApproval = useCallback(
+    async (id: string, decision: "approved" | "rejected") => {
+      setApprovalSubmitting(id);
+      setApprovalError(null);
+      try {
+        await remote.decideApproval(id, decision);
+      } catch {
+        setApprovalError(t("approval.submitFailed"));
+      } finally {
+        setApprovalSubmitting(null);
+      }
+    },
+    [remote, t],
+  );
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -98,22 +137,30 @@ export function ChatScreen() {
           <FlatList
             contentContainerStyle={[
               styles.timeline,
-              remote.timeline.items.length === 0 && styles.emptyTimeline,
+              { paddingBottom: pendingApprovals.length > 0 ? 300 : 148 },
+              timelineItems.length === 0 && styles.emptyTimeline,
             ]}
-            data={remote.timeline.items}
+            data={transcriptItems}
             keyExtractor={item => item.id}
-            ListEmptyComponent={<Text style={styles.empty}>{t("chat.noHistory")}</Text>}
+            ListEmptyComponent={
+              loadingHistory ? (
+                <ActivityIndicator color={colors.accent} />
+              ) : (
+                <Text style={styles.empty}>{t("chat.noHistory")}</Text>
+              )
+            }
             onContentSizeChange={() => {
-              if (atLatest) listRef.current?.scrollToEnd({ animated: true });
+              if (!atLatest) return;
+              if (!landedRef.current && transcriptItems.length === 0) return;
+              listRef.current?.scrollToEnd({ animated: landedRef.current });
+              landedRef.current = true;
             }}
             onScroll={event => {
               const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
               setAtLatest(contentOffset.y + layoutMeasurement.height >= contentSize.height - 24);
             }}
             ref={listRef}
-            renderItem={({ item }) => (
-              <TimelineCard item={item} onDecision={remote.decideApproval} />
-            )}
+            renderItem={({ item }) => <TimelineCard item={item} />}
             scrollEventThrottle={16}
             scrollIndicatorInsets={{ bottom: 0 }}
             style={styles.timelineList}
@@ -146,6 +193,20 @@ export function ChatScreen() {
             {showOffline && (
               <Text style={styles.offlineComposer}>{t("connection.offlineHint")}</Text>
             )}
+            {pendingApprovals.map(item => (
+              <View key={item.id} style={styles.dockedApproval}>
+                <PendingApprovalCard
+                  error={
+                    approvalSubmitting === item.payload.approval_request_id ? null : approvalError
+                  }
+                  onDecision={decision =>
+                    void decideApproval(item.payload.approval_request_id, decision)
+                  }
+                  payload={item.payload}
+                  submitting={approvalSubmitting === item.payload.approval_request_id}
+                />
+              </View>
+            ))}
             <View style={styles.composerArea}>
               <View style={styles.composer}>
                 <TextInput
@@ -374,6 +435,10 @@ const styles = StyleSheet.create({
     paddingTop: spacing.xs,
     paddingBottom: spacing.md,
     backgroundColor: "transparent",
+  },
+  dockedApproval: {
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.sm,
   },
   composer: {
     borderWidth: 1,

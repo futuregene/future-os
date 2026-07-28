@@ -38,9 +38,12 @@ export const spacing = {
   xxl: 32,
 } as const;
 
+// Corner radii mirror the desktop Tailwind scale (rounded-sm/md/lg = 4/6/8px) so
+// cards, buttons and bubbles read the same on phone and desktop. `pill` stays a
+// full round for capsule chips/dots.
 export const radius = {
-  sm: 8,
-  md: 12,
-  lg: 18,
+  sm: 4,
+  md: 6,
+  lg: 8,
   pill: 999,
 } as const;

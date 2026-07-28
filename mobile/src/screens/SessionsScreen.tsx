@@ -29,6 +29,10 @@ import { colors, radius, spacing } from "../theme/tokens";
 
 type Tab = "workspace" | "chat";
 
+// Scroll offsets survive the list's unmount when the user dives into a
+// conversation and back (and tab switches, which also remount the lists).
+const listScrollOffsets: Record<Tab, number> = { chat: 0, workspace: 0 };
+
 export function SessionsScreen() {
   const { t } = useTranslation();
   const remote = useRemote();
@@ -197,21 +201,31 @@ export function SessionsScreen() {
             contentContainerStyle={
               remote.workspaces.length === 0 ? styles.emptyList : styles.workspaceList
             }
+            contentOffset={{ x: 0, y: listScrollOffsets.workspace }}
             data={remote.workspaces}
             keyExtractor={item => item.id}
             ListEmptyComponent={workspaceEmpty}
+            onScroll={event => {
+              listScrollOffsets.workspace = event.nativeEvent.contentOffset.y;
+            }}
             renderItem={renderWorkspace}
+            scrollEventThrottle={16}
             scrollIndicatorInsets={{ right: 0 }}
             style={styles.list}
           />
         ) : (
           <FlatList
             contentContainerStyle={chats.length === 0 ? styles.emptyList : styles.chatList}
+            contentOffset={{ x: 0, y: listScrollOffsets.chat }}
             data={chats}
             ItemSeparatorComponent={() => <View style={styles.listGap} />}
             keyExtractor={item => item.sessionId}
             ListEmptyComponent={!connected ? offlineEmpty : createChatEmpty}
+            onScroll={event => {
+              listScrollOffsets.chat = event.nativeEvent.contentOffset.y;
+            }}
             renderItem={({ item }) => renderSession(item)}
+            scrollEventThrottle={16}
             scrollIndicatorInsets={{ right: 0 }}
             style={styles.list}
           />
