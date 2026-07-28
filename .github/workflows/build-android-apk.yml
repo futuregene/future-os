@@ -1,0 +1,113 @@
+name: Build Android APK
+
+permissions: read-all
+
+on:
+  workflow_dispatch:
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      is_release: ${{ steps.v.outputs.is_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Resolve version
+        id: v
+        run: node scripts/version.mjs --github-output
+
+  build-apk:
+    name: Build APK
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      FUTURE_VERSION: ${{ needs.version.outputs.version }}
+      IS_RELEASE: ${{ needs.version.outputs.is_release }}
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
+
+      - name: Setup ossutil
+        run: bash scripts/setup-ossutil.sh
+
+      - name: Restore keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p mobile/android/app
+          echo "$KEYSTORE_BASE64" | base64 -d > mobile/android/app/futureos-release.keystore
+          cat > mobile/android/app/keystore.properties <<EOF
+          storeFile=futureos-release.keystore
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=futureos
+          keyPassword=$KEYSTORE_PASSWORD
+          EOF
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - name: Generate version
+        working-directory: mobile
+        run: npm run gen-version
+
+      - name: Prebuild Android
+        working-directory: mobile
+        run: npx expo prebuild --platform android
+
+      - name: Build release APK
+        working-directory: mobile/android
+        run: ./gradlew assembleRelease
+
+      - name: Rename APK
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk \
+             "FutureOS_${V}.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: futureos-android-apk
+          if-no-files-found: error
+          overwrite: true
+          path: FutureOS_${{ needs.version.outputs.version }}.apk
+          retention-days: 3
+
+      - name: Upload APK to OSS
+        run: |
+          set -euo pipefail
+          V="${{ needs.version.outputs.version }}"
+          APK="FutureOS_${V}.apk"
+          ossutil cp -f "$APK" "oss://$OSS_BUCKET/test/android/$APK"
+          ossutil stat "oss://$OSS_BUCKET/test/android/$APK"
+          echo "==> Download URL:"
+          echo "https://dl.future-os.cn/test/android/$APK"
