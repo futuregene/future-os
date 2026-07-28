@@ -146,10 +146,34 @@ impl AppState {
     /// running session keeps using a stale key. Sessions actively streaming are
     /// skipped by `reload_credentials` and pick up the new key on their next
     /// `set_model`.
+    ///
+    /// Sessions that were created before any credentials existed (model is empty)
+    /// get a default model resolved and applied, so the user can prompt immediately
+    /// after login without switching threads.
     pub fn reload_all_credentials(&self) {
         let sessions = self.sessions.read();
         for sess in sessions.values() {
-            sess.read().reload_credentials();
+            let model_is_empty = { sess.read().model.is_empty() };
+            if model_is_empty {
+                // Session created before login — resolve and apply default model.
+                // Re-check emptiness inside the write lock to avoid TOCTOU: another
+                // thread may have set a model between our read and write locks.
+                if let Some(mut session) = sess.try_write() {
+                    if session.model.is_empty() {
+                        let registry = self.model_registry.read();
+                        let default_model =
+                            crate::models::get_default_model_with(&registry).unwrap_or_default();
+                        if !default_model.is_empty() {
+                            let _ = session.set_model(&default_model);
+                        }
+                    } else {
+                        // Model was set concurrently — just refresh credentials
+                        session.reload_credentials();
+                    }
+                }
+            } else {
+                sess.read().reload_credentials();
+            }
         }
     }
 }
