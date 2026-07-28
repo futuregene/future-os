@@ -36,9 +36,6 @@ const MAX_EVENT_BYTES: usize = 900 * 1024;
 /// One agent event queued for publishing, in agent-emission order.
 struct EventPublish {
     subject: String,
-    /// `Nats-Msg-Id` for JetStream dupe-window dedup; `None` for events
-    /// without a run id (they can't be deduplicated anyway).
-    msg_id: Option<String>,
     payload: Vec<u8>,
 }
 
@@ -53,8 +50,8 @@ struct RemoteState {
     desktop_public_key: String,
     bridge_instance_id: String,
     /// Ordered event queue → single drain task per connection. The drain holds
-    /// a clone of the client (via the JetStream context) so the connection
-    /// stays alive while events are in flight.
+    /// a clone of the client so the connection stays alive while events are in
+    /// flight.
     event_tx: tokio::sync::mpsc::Sender<EventPublish>,
     event_task: tokio::task::JoinHandle<()>,
     cmd_task: tokio::task::JoinHandle<()>,
@@ -166,7 +163,6 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
     }
     let desktop_public_key = pairing::public_key(&creds)?;
     let bridge_instance_id = format!("bridge_{}", nkeys::KeyPair::new_user().public_key());
-    let js = async_nats::jetstream::new(client.clone());
     let pair_id = creds.pair_id.clone();
 
     // Command-id dedup cache lives OUTSIDE the command loop: credential
@@ -187,7 +183,7 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
         reply_slots.clone(),
         handshake_state.clone(),
     ));
-    let event_task = spawn_event_publisher(js, event_rx);
+    let event_task = spawn_event_publisher(client.clone(), event_rx);
     let heartbeat_task =
         spawn_presence_heartbeat(client.clone(), pair_id.clone(), bridge_instance_id.clone());
     let refresh_task = spawn_credential_refresh(
@@ -340,7 +336,6 @@ pub fn stop() -> RemoteStatus {
                 "pairId": pair_id,
                 "bridgeInstanceId": state.bridge_instance_id.clone(),
                 "lastHeartbeatTs": unix_timestamp(),
-                "sessions": [],
             }))
             .unwrap_or_default();
             let _ = client.publish(subject, payload.into()).await;
@@ -424,17 +419,12 @@ pub fn status() -> RemoteStatus {
 /// N+1 before idx N under load — the client dedups by (runId,idx) but renders
 /// in arrival order, so reordering garbled streamed text).
 ///
-/// The drain publishes through JetStream with `Nats-Msg-Id = {session}:{runId}:{idx}`:
-///  - Idempotent: re-sent/replayed events deduplicated by broker via dupe-window;
-///  - Durable: when an `EVT_{pairId}` stream exists, written to it for replay;
-///  - Graceful degradation: without a matching stream the publish fails fast
-///    (`no responders`) and is logged; real-time delivery to core subscribers
-///    is unaffected for the events that do get through.
+/// The drain publishes via core NATS (fire-and-forget). Completeness is
+/// guaranteed at the application layer: the client recovers gaps via
+/// `get_events_since` backfill on reattach or jitter-gap detection.
 ///
-/// The ack future is deliberately NOT awaited (fire-and-forget), so a slow or
-/// missing stream cannot stall the agent event loop. On queue overflow the
-/// newest event is dropped and logged; the web client heals the gap via
-/// `get_events_since` backfill on its next reattach.
+/// On queue overflow the newest event is dropped and logged; the client heals
+/// the gap via `get_events_since` backfill on its next reattach.
 pub fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &str, idx: i64) {
     let target = {
         let guard = STATE.lock().unwrap();
@@ -453,10 +443,8 @@ pub fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &st
     let Ok(payload) = serde_json::to_vec(&body) else {
         return;
     };
-    let msg_id = (!run_id.is_empty()).then(|| format!("{session_id}:{run_id}:{idx}"));
     let event = EventPublish {
         subject: format!("p.{pair_id}.evt.{session_id}"),
-        msg_id,
         payload,
     };
     if tx.try_send(event).is_err() {
@@ -482,25 +470,15 @@ fn cap_event_data(data: &str) -> std::borrow::Cow<'_, str> {
 /// Serially publishes queued events on one connection, preserving agent
 /// emission order. Exits when every sender is dropped (stop, or a credential
 /// refresh that swapped in a new queue): on refresh the old drain is NOT
-/// aborted — it keeps its JetStream context (and thus the old client) alive
-/// until its backlog is flushed, avoiding a mid-stream gap at the swap point.
+/// aborted — it keeps its client clone alive until its backlog is flushed,
+/// avoiding a mid-stream gap at the swap point.
 fn spawn_event_publisher(
-    js: async_nats::jetstream::Context,
+    client: async_nats::Client,
     mut rx: tokio::sync::mpsc::Receiver<EventPublish>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
-            let result = match event.msg_id {
-                Some(msg_id) => {
-                    let mut headers = async_nats::HeaderMap::new();
-                    headers.insert("Nats-Msg-Id", msg_id.as_str());
-                    js.publish_with_headers(event.subject, headers, event.payload.into())
-                        .await
-                }
-                None => js.publish(event.subject, event.payload.into()).await,
-            };
-            // Ack future dropped on purpose (fire-and-forget, see publish_event).
-            if let Err(error) = result {
+            if let Err(error) = client.publish(event.subject, event.payload.into()).await {
                 eprintln!("remote: event publish failed: {error}");
             }
         }
@@ -513,35 +491,20 @@ fn spawn_presence_heartbeat(
     bridge_instance_id: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        // 1s tick, cheap while idle (just drain the dirty flag). A full directory
-        // snapshot is published whenever its signature changes — either a store
-        // write set the dirty flag (near-real-time), or the 20s self-heal
-        // recomputed a different signature (catches any missed mark, so syncing
-        // never silently stalls). The 20s counter resets on every change so a
-        // burst of edits doesn't also fire a redundant light heartbeat; while
-        // nothing changes, only a tiny liveness payload goes out every 20s.
+        // Three independent publish channels:
+        //   p.{pair}.presence          — liveness micro-packet every 1s
+        //   p.{pair}.state.sessions    — session list on signature change + 20s self-heal
+        //   p.{pair}.state.workspaces  — workspace list on dirty + 20s self-heal
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-        let mut last_sig = String::new();
-        let mut secs_since_snapshot: u8 = 20; // first tick publishes a baseline
+        let mut last_sessions_sig = String::new();
+        let mut last_workspaces_sig = String::new();
+        let mut secs_since_sessions: u8 = 20; // first tick publishes a baseline
+        let mut secs_since_workspaces: u8 = 20;
         loop {
             interval.tick().await;
-            let dirty = crate::store::take_catalog_dirty();
-            if !dirty && secs_since_snapshot < 20 {
-                secs_since_snapshot += 1;
-                continue;
-            }
-            let (snapshot, sig) = build_presence_snapshot(&pair_id, &bridge_instance_id);
-            if sig != last_sig {
-                if let Ok(bytes) = serde_json::to_vec(&snapshot) {
-                    if let Err(e) = client
-                        .publish(format!("p.{pair_id}.presence"), bytes.into())
-                        .await
-                    {
-                        eprintln!("remote: presence publish failed: {e}");
-                    }
-                }
-                last_sig = sig;
-            } else if let Ok(bytes) =
+
+            // 1. Liveness micro-packet (every tick).
+            if let Ok(bytes) =
                 serde_json::to_vec(&light_presence_payload(&pair_id, &bridge_instance_id))
             {
                 if let Err(e) = client
@@ -551,7 +514,39 @@ fn spawn_presence_heartbeat(
                     eprintln!("remote: presence heartbeat write failed: {e}");
                 }
             }
-            secs_since_snapshot = 0;
+
+            // 2. Sessions snapshot (signature change or 20s self-heal).
+            let dirty = crate::store::take_catalog_dirty();
+            secs_since_sessions += 1;
+            secs_since_workspaces += 1;
+            let (sessions_payload, sessions_sig) = build_sessions_snapshot(&pair_id);
+            if sessions_sig != last_sessions_sig || secs_since_sessions >= 20 {
+                if let Ok(bytes) = serde_json::to_vec(&sessions_payload) {
+                    if let Err(e) = client
+                        .publish(format!("p.{pair_id}.state.sessions"), bytes.into())
+                        .await
+                    {
+                        eprintln!("remote: state.sessions publish failed: {e}");
+                    }
+                }
+                last_sessions_sig = sessions_sig;
+                secs_since_sessions = 0;
+            }
+
+            // 3. Workspaces snapshot (dirty flag or 20s self-heal).
+            let (workspaces_payload, workspaces_sig) = build_workspaces_snapshot();
+            if dirty || workspaces_sig != last_workspaces_sig || secs_since_workspaces >= 20 {
+                if let Ok(bytes) = serde_json::to_vec(&workspaces_payload) {
+                    if let Err(e) = client
+                        .publish(format!("p.{pair_id}.state.workspaces"), bytes.into())
+                        .await
+                    {
+                        eprintln!("remote: state.workspaces publish failed: {e}");
+                    }
+                }
+                last_workspaces_sig = workspaces_sig;
+                secs_since_workspaces = 0;
+            }
         }
     })
 }
@@ -600,9 +595,8 @@ fn spawn_credential_refresh(
                     continue;
                 }
             };
-            let js = async_nats::jetstream::new(client.clone());
             let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
-            let new_event = spawn_event_publisher(js, event_rx);
+            let new_event = spawn_event_publisher(client.clone(), event_rx);
             let new_cmd = tokio::spawn(commands::command_loop(
                 client.clone(),
                 pair_id.clone(),
@@ -721,6 +715,65 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
 /// (always complete, so a freshly connected client gets a usable baseline).
 fn build_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
     build_presence_snapshot(pair_id, bridge_instance_id).0
+}
+
+/// Sessions-only snapshot for `p.{pair}.state.sessions`.
+fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
+    let active_sessions: Vec<String> = crate::store::active_run_sessions().unwrap_or_default();
+    let threads = crate::store::list_threads().unwrap_or_default();
+
+    let mut sessions: Vec<serde_json::Value> = Vec::new();
+    let mut signature = String::new();
+    for t in &threads {
+        let Some(sid) = t
+            .agent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let streaming = active_sessions.iter().any(|active| active == sid);
+        sessions.push(json!({
+            "sessionId": sid,
+            "threadId": t.id,
+            "title": t.title,
+            "mode": t.mode,
+            "workspaceId": t.workspace_id,
+            "streaming": streaming,
+        }));
+        push_sig_field(&mut signature, sid);
+        push_sig_field(&mut signature, &t.id);
+        push_sig_field(&mut signature, &t.title);
+        push_sig_field(&mut signature, &t.mode);
+        push_sig_field(&mut signature, &t.workspace_id);
+        push_sig_field(&mut signature, if streaming { "1" } else { "0" });
+    }
+
+    let payload = json!({
+        "pairId": pair_id,
+        "sessions": sessions,
+    });
+    (payload, signature)
+}
+
+/// Workspaces-only snapshot for `p.{pair}.state.workspaces`.
+fn build_workspaces_snapshot() -> (serde_json::Value, String) {
+    let workspaces = crate::store::list_workspaces().unwrap_or_default();
+    let mut workspace_values: Vec<serde_json::Value> = Vec::new();
+    let mut signature = String::new();
+    for w in &workspaces {
+        if w.kind != "user" {
+            continue;
+        }
+        if let Ok(value) = serde_json::to_value(w) {
+            workspace_values.push(value);
+        }
+        push_sig_field(&mut signature, &w.id);
+        push_sig_field(&mut signature, &w.name);
+    }
+    let payload = json!({ "workspaces": workspace_values });
+    (payload, signature)
 }
 
 /// Liveness-only heartbeat (no directory). Sent every ~20s while the catalog is
