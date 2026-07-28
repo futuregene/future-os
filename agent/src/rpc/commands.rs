@@ -181,7 +181,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 Err(error) => RpcResponse::build_fail(id, "approval_decision", &error),
             }
         }
-        "new_session" => cmd_new_session(state, &cmd, id),
+        // NOTE: `new_session` is intentionally NOT matched here — it is handled
+        // in the sessionless branch above (a new session has no existing session
+        // to resolve). An arm here would be unreachable dead code.
         "get_state" => match get_state_internal(state, &cmd.session_id) {
             Some(state_val) => RpcResponse::ok(id, "get_state", state_val),
             None => RpcResponse::build_fail(id, "get_state", "session not found"),
@@ -402,10 +404,6 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "abort_retry" => {
             rlock!(session, id).abort();
             RpcResponse::ok(id, "abort_retry", serde_json::json!({}))
-        }
-        "abort_shell" => {
-            // Shell abort is handled by the agent loop
-            RpcResponse::ok(id, "abort_shell", serde_json::json!({}))
         }
         "cycle_model" => {
             // Cycle to next available model.  Scoping is client-side (TUI/GUI).
@@ -1582,6 +1580,59 @@ mod tests {
     }
 
     #[test]
+    fn sessionless_commands_do_not_require_session_id() {
+        // Regression: every sessionless command must be dispatched WITHOUT
+        // resolving a session. If one is accidentally moved into the
+        // session-scoped branch, an empty session_id trips the resolution gate
+        // and the caller gets "session not found — pass a valid session_id..."
+        // (that exact phrase is unique to the gate). make_cmd() always injects
+        // a session id so it can't catch this — build each command by hand with
+        // an empty session and assert we never hit the gate.
+        //
+        // `reload_auth` and `shutdown` are deliberately excluded: they carry
+        // process-global side effects (credential reload / shutdown flag) that
+        // don't belong in a swept table.
+        let sessionless = [
+            "get_agent_info",
+            "list_models",
+            "list_sessions",
+            "list_streaming_sessions",
+            "new_session",
+            "switch_session",
+            "delete_session",
+            "get_fork_messages",
+            "get_commands",
+            "refresh_skills",
+            "set_enabled_models",
+        ];
+        for cmd_type in sessionless {
+            let state = make_app_state();
+            let cmd: RpcCommand = serde_json::from_str(&format!(
+                r#"{{"id":"test_cmd","type":"{cmd_type}","sessionId":""}}"#
+            ))
+            .unwrap();
+            assert!(cmd.session_id.is_empty());
+            let resp = parse_response(&handle_command_internal(&state, cmd));
+            let error = resp["error"].as_str().unwrap_or("");
+            // The command must actually exist (the fallback echoes cmd_type, so
+            // a successful dispatch and a typo both return command == cmd_type —
+            // "unknown command" in the error is the real tell).
+            assert!(
+                !error.contains("unknown command"),
+                "sessionless cmd {cmd_type} is not a known command: {error}"
+            );
+            // And it must not have failed at the session-resolution gate. A
+            // command may still fail for its own reasons (e.g. switch_session
+            // with an empty target) — that's fine; only the gate phrase is a
+            // regression signal.
+            assert!(
+                !error.contains("pass a valid session_id"),
+                "sessionless cmd {cmd_type} required a session: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn shutdown_sets_flag() {
         let state = make_app_state();
         let cmd = make_cmd("shutdown");
@@ -1802,14 +1853,6 @@ mod tests {
     fn abort_retry_works() {
         let state = make_app_state();
         let cmd = make_cmd("abort_retry");
-        let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-    }
-
-    #[test]
-    fn abort_shell_works() {
-        let state = make_app_state();
-        let cmd = make_cmd("abort_shell");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
     }
