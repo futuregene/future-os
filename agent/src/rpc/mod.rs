@@ -158,7 +158,7 @@ impl AppState {
                 // Session created before login — resolve and apply default model.
                 // Re-check emptiness inside the write lock to avoid TOCTOU: another
                 // thread may have set a model between our read and write locks.
-                if let Ok(mut session) = sess.try_write() {
+                if let Some(mut session) = sess.try_write() {
                     if session.model.is_empty() {
                         let registry = self.model_registry.read();
                         let default_model =
