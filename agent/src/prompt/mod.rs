@@ -85,9 +85,9 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         sections.push(opts.append_prompt.clone());
     }
 
-    // 6. Environment: date, working directory, and host platform — always
-    //    included so the model generates platform-appropriate shell commands
-    //    and paths.
+    // 6. Environment: date, working directory, host platform, and session info
+    //    — always included so the model generates platform-appropriate shell
+    //    commands, paths, and can self-identify its own session.
     {
         let mut info = vec!["# Environment".to_string(), String::new()];
         if !opts.date.is_empty() {
@@ -102,6 +102,15 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
                 "When looking for a file, search within the current working directory \
                  first; only widen the search to the rest of the filesystem if it is \
                  clearly not there. Avoid scanning the entire filesystem up front."
+                    .to_string(),
+            );
+        }
+        if !opts.session_id.is_empty() {
+            info.push(format!("Current session ID: {}", opts.session_id));
+            info.push(
+                "You can reference this session ID when you need to identify or \
+                 report which conversation you are part of. This is your own \
+                 session — you are self-aware of this identifier."
                     .to_string(),
             );
         }
@@ -126,6 +135,9 @@ pub struct PromptOptions {
     pub memory_content: String,
     pub append_prompt: String,
     pub prompt_guidelines: Vec<String>,
+    /// Session ID — injected into the environment section so the model can
+    /// self-identify and reference its own conversation.
+    pub session_id: String,
 }
 
 // ─── Identity Section ───────────────────────────────────────────────────────
