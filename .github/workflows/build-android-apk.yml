@@ -30,6 +30,10 @@ jobs:
     env:
       FUTURE_VERSION: ${{ needs.version.outputs.version }}
       IS_RELEASE: ${{ needs.version.outputs.is_release }}
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -49,6 +53,9 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           packages: 'platforms;android-36 build-tools;36.0.0'
+
+      - name: Setup ossutil
+        run: bash scripts/setup-ossutil.sh
 
       - name: Restore keystore
         env:
@@ -95,15 +102,7 @@ jobs:
           path: FutureOS_${{ needs.version.outputs.version }}.apk
           retention-days: 3
 
-      - name: Setup ossutil
-        run: bash scripts/setup-ossutil.sh
-
       - name: Upload APK to OSS
-        env:
-          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
-          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
-          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
-          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: |
           set -euo pipefail
           V="${{ needs.version.outputs.version }}"
