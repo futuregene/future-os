@@ -52,6 +52,7 @@ export function useAgentThreadState({
     refreshRecentRun,
     setMessages,
     setRecentRun,
+    messagesGenRef,
   } = useThreadMessages({ threadId, workspaceId, agentSessionId: thread?.agentSessionId });
 
   // The run this thread is currently executing, if any. Runs stream server-side
@@ -90,6 +91,7 @@ export function useAgentThreadState({
     setMessages,
     refreshRecentRun,
     reloadMessagesQuiet,
+    messagesGenRef,
   });
 
   // Interrupt the in-flight run for this thread. Best-effort: the backend stops
