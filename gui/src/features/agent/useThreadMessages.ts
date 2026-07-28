@@ -20,15 +20,47 @@ interface UseThreadMessagesInput {
 interface ThreadCacheEntry {
   messages: AgentMessage[];
   recentRun: StoredRun | null;
+  /** Raw entry count from the last getSessionEntries call; skips re-projection
+   *  on background refresh when unchanged. */
+  entryCount: number;
 }
 
 type AgentLoadResult
-  = | { status: "loaded"; messages: AgentMessage[] }
-    | { status: "empty" }
+  = | { status: "loaded"; messages: AgentMessage[]; entryCount: number }
+    | { status: "empty"; entryCount: number }
     | { status: "failed"; error: string };
 
 /** Max cached threads before evicting the oldest. */
 const CACHE_MAX = 20;
+
+/**
+ * Drop the mid-run partial snapshot (the agent's save_callback persists each
+ * completed LLM call while a run is in flight).  It sits after the last user
+ * message, has no runId, and would render beside the live streaming bubble as a
+ * duplicate.  The bubble re-projects the full event log, so nothing is lost.
+ * Returns a new array when a snapshot was found, otherwise the input unchanged.
+ */
+function dropInFlightSnapshot(messages: AgentMessage[]): AgentMessage[] {
+  const lastUserIdx = messages.map(m => m.role).lastIndexOf("user");
+  if (lastUserIdx < 0)
+    return messages;
+  // Find the last assistant message after the last user message.
+  for (let i = messages.length - 1; i > lastUserIdx; i--) {
+    const message = messages[i]!;
+    if (message.role === "assistant" && !message.runId && !isCompactionDivider(message)) {
+      return messages.filter(m => m.id !== message.id);
+    }
+  }
+  return messages;
+}
+
+/** A compaction divider is projected as an assistant message but is not a real turn. */
+function isCompactionDivider(message: AgentMessage): boolean {
+  return message.role === "assistant"
+    && !message.content
+    && message.segments?.length === 1
+    && message.segments[0]?.kind === "compaction";
+}
 
 // Flash-free loading indicator (mirrors the right-context panel, useContextData):
 // a thread load usually resolves in tens of ms, so hold off showing the "loading"
@@ -54,6 +86,13 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
   const [loadingIndicator, setLoadingIndicator] = useState(false);
   const indicatorShownAtRef = useRef<number | null>(null);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
+
+  // ── Generation counter for message writes ────────────────────────────
+  // Functional-updater paths bump this after writing; direct-replacement
+  // paths (loadFromAgent callers) snapshot it before the async work and
+  // discard their write if it changed — so a streaming upsert or a real-time
+  // user-message event that lands during an in-flight load isn't clobbered.
+  const messagesGenRef = useRef<number>(0);
 
   // In-memory cache of recently loaded threads. Switching back to a cached
   // thread restores messages instantly and then refreshes in the background.
@@ -116,12 +155,23 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
   // without flipping the full-screen loading state — used to swap a synthetic
   // streaming bubble for the persisted assistant message once a background run
   // settles. Keeps the current messages if the agent has nothing (never blanks).
-  const reloadMessagesQuiet = useCallback(async (targetThreadId: string) => {
+  //
+  // `force` (default false) skips the generation-counter guard.  Callers that
+  // are the authoritative settle writer (useRunReattach settle effect) pass
+  // `true` because at that point the streaming interval has already stopped and
+  // no further ticks will repair a discarded write.
+  const reloadMessagesQuiet = useCallback(async (targetThreadId: string, force = false) => {
+    const gen = force ? undefined : messagesGenRef.current;
     const result = await loadFromAgent(targetThreadId);
     if (result.status !== "loaded" || targetThreadId !== activeThreadIdRef.current)
       return;
+    // If another writer bumped the generation counter while we were in-flight
+    // (streaming upsert, real-time user message), our snapshot-based array would
+    // overwrite that update — discard it instead; the live path is authoritative.
+    if (!force && gen !== undefined && messagesGenRef.current !== gen)
+      return;
     setMessages(result.messages);
-    cachePut(targetThreadId, { messages: result.messages, recentRun: null });
+    cachePut(targetThreadId, { messages: result.messages, recentRun: null, entryCount: result.entryCount });
     // loadFromAgent is a hoisted inner function; this reload fires only on
     // explicit call, so it's intentionally excluded from the deps.
     // eslint-disable-next-line react/exhaustive-deps
@@ -134,11 +184,12 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
   async function loadFromAgent(tid: string, wid?: string | null): Promise<AgentLoadResult> {
     try {
       const result = await getSessionEntries(tid);
-      if (!result?.entries?.length)
-        return { status: "empty" };
+      const entryCount = result?.entries?.length ?? 0;
+      if (!entryCount)
+        return { status: "empty", entryCount: 0 };
       const messages = entriesToMessages(result.entries as unknown as import("./entryProjection").SessionEntry[]);
       if (!messages.length)
-        return { status: "empty" };
+        return { status: "empty", entryCount };
       // Agent JSONL doesn't record a run's GUI-side outcome (failed/cancelled/
       // model) — backfill it from the SQLite `runs` table so a reload keeps the
       // Retry/Continue button, the "stopped" marker, and the model badge.
@@ -153,7 +204,7 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
       // thread switch instead of silently disappearing.
       const withFailures = recoverFailedRuns(recovered, runs);
       await refreshRecentRun(tid, wid).catch(() => {});
-      return { status: "loaded", messages: withFailures };
+      return { status: "loaded", messages: withFailures, entryCount };
     }
     catch (error) {
       return { status: "failed", error: errorMessage(error) };
@@ -177,18 +228,53 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
         setRecentRun(cached.recentRun);
         setLoadingThread(false);
         // Background refresh from the agent session (empty when it has none).
+        // Use a functional updater that preserves any live streaming bubble
+        // (stream_<runId>) that was inserted by useRunReattach while the async
+        // load was in flight — a plain setMessages(restored) would clobber it.
         const result = await loadFromAgent(threadId, workspaceId);
         if (!cancelled && threadId === activeThreadIdRef.current && result.status !== "failed") {
+          // Entry count unchanged — no new user messages or assistant replies
+          // landed since we cached.  Skip the projection+merge; the live
+          // streaming bubble (if any) is already rendering via useRunReattach.
+          if (result.entryCount === cached.entryCount)
+            return;
           const restored = result.status === "loaded" ? result.messages : [];
-          setMessages(restored);
-          cachePut(threadId, { messages: restored, recentRun: null });
+          setMessages((current) => {
+            // Preserve streaming bubbles whose run hasn't settled yet.
+            const settledRunIds = new Set(restored.filter(m => m.runId).map(m => m.runId));
+            const keepBubbles = current.filter(
+              m => m.id.startsWith("stream_") && !settledRunIds.has(m.runId),
+            );
+            // When a streaming bubble is alive, the agent's save_callback may
+            // have persisted a mid-run partial snapshot of the same turn (an
+            // assistant message with no runId at the tail).  Drop it so the
+            // turn renders once — the live bubble re-projects the full event
+            // log, so nothing is lost.
+            let restoredOut = restored;
+            if (keepBubbles.length > 0) {
+              restoredOut = dropInFlightSnapshot(restored);
+            }
+            // Streaming bubbles go at the end, after all persisted history.
+            return [...restoredOut, ...keepBubbles];
+          });
+          cachePut(threadId, { messages: restored, recentRun: null, entryCount: result.entryCount });
         }
         return;
       }
 
       setLoadingThread(true);
+      // Snapshot gen so a real-time user message that arrives during the
+      // first load doesn't get overwritten by the freshly-projected array.
+      const firstGen = messagesGenRef.current;
       const result = await loadFromAgent(threadId, workspaceId);
       if (!cancelled) {
+        if (messagesGenRef.current !== firstGen) {
+          // A concurrent writer (real-time user message) bumped gen while we
+          // were loading — our snapshot is stale.  Don't overwrite, but DO
+          // clear the loading indicator so the UI isn't stuck.
+          setLoadingThread(false);
+          return;
+        }
         if (result.status === "failed") {
           setMessages([
             {
@@ -203,7 +289,7 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
         else {
           const restoredMessages = result.status === "loaded" ? result.messages : [];
           setMessages(restoredMessages);
-          cachePut(threadId, { messages: restoredMessages, recentRun: null });
+          cachePut(threadId, { messages: restoredMessages, recentRun: null, entryCount: result.entryCount });
         }
         setLoadingThread(false);
       }
@@ -357,6 +443,9 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
           createdAt: new Date().toISOString(),
         } satisfies AgentMessage];
       });
+      // Bump the generation counter so any in-flight direct replacement
+      // (loadFromAgent callers) sees that state moved under them and discards.
+      messagesGenRef.current += 1;
     };
     window.addEventListener("future:agent-event", handler);
     return () => window.removeEventListener("future:agent-event", handler);
@@ -371,5 +460,6 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
     refreshRecentRun,
     setMessages,
     setRecentRun,
+    messagesGenRef,
   };
 }

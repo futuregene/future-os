@@ -17,7 +17,11 @@ interface UseRunReattachInput {
   sendingRef: MutableRefObject<boolean>;
   setMessages: Dispatch<SetStateAction<AgentMessage[]>>;
   refreshRecentRun: (threadId: string, workspaceId?: string | null) => Promise<void>;
-  reloadMessagesQuiet: (targetThreadId: string) => Promise<void>;
+  reloadMessagesQuiet: (targetThreadId: string, force?: boolean) => Promise<void>;
+  // Generation counter shared with useThreadMessages: bump after every
+  // streaming upsert so in-flight direct-replacement loads see the change
+  // and discard themselves instead of clobbering the live bubble.
+  messagesGenRef: MutableRefObject<number>;
 }
 
 /**
@@ -35,6 +39,7 @@ export function useRunReattach({
   setMessages,
   refreshRecentRun,
   reloadMessagesQuiet,
+  messagesGenRef,
 }: UseRunReattachInput) {
   const prevActiveRunIdRef = useRef<string | null>(null);
 
@@ -70,7 +75,13 @@ export function useRunReattach({
     const tick = () => {
       if (cancelled)
         return;
-      void upsertStreamingPreview(runId, startedAt, setMessages, () => !cancelled);
+      void upsertStreamingPreview(runId, startedAt, setMessages, () => !cancelled).then(() => {
+        // Bump the generation counter after every streaming upsert so
+        // any in-flight direct-replacement load (loadFromAgent callers)
+        // sees that state changed under them and discards its write
+        // instead of clobbering the live bubble.
+        messagesGenRef.current += 1;
+      });
     };
     tick();
     const timer = window.setInterval(tick, 220);
@@ -88,7 +99,11 @@ export function useRunReattach({
     const previous = prevActiveRunIdRef.current;
     prevActiveRunIdRef.current = activeRunId;
     if (previous && !activeRunId && !sendingRef.current && threadId) {
-      void reloadMessagesQuiet(threadId);
+      // Force-reload: the streaming interval has already stopped.
+      // Skipping the generation-counter guard ensures the persisted
+      // assistant message replaces the synthetic bubble even if the
+      // last tick bumped gen moments ago.
+      void reloadMessagesQuiet(threadId, true);
     }
   }, [activeRunId, reloadMessagesQuiet, sendingRef, threadId]);
 
