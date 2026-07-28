@@ -1368,7 +1368,11 @@ fn cmd_reload_config(
                 );
             }
         };
-        (sess.cwd.clone(), loop_.tools.clone(), sess.session_id.clone())
+        (
+            sess.cwd.clone(),
+            loop_.tools.clone(),
+            sess.session_id.clone(),
+        )
     };
 
     // Re-discover skills (blocking I/O, no locks held).  Invalidate the
