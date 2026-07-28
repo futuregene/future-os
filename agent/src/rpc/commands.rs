@@ -1299,42 +1299,23 @@ fn cmd_clone(
     RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
 }
 
-/// Minimum interval between forced skills-cache refreshes. CLI/GUI fire one
-/// notification per install/uninstall operation, so a burst of operations
-/// (or several frontends at once) must not trigger repeated disk scans —
-/// requests inside this window are served from the still-fresh cache.
-const SKILLS_REFRESH_MIN_INTERVAL_SECS: u64 = 5;
-
 fn cmd_refresh_skills(id: &str) -> String {
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-
-    static LAST_REFRESH: Mutex<Option<Instant>> = Mutex::new(None);
-
-    // Rate-limit: only invalidate + rescan when the last forced refresh is
-    // older than the minimum interval. Otherwise keep the cache as-is;
-    // `discover_skills_cached` will serve it (it is fresh by construction).
-    let now = Instant::now();
-    let refreshed = {
-        let mut last = LAST_REFRESH.lock().unwrap();
-        match *last {
-            Some(t)
-                if now.duration_since(t)
-                    < Duration::from_secs(SKILLS_REFRESH_MIN_INTERVAL_SECS) =>
-            {
-                false
-            }
-            _ => {
-                *last = Some(now);
-                true
-            }
-        }
-    };
-    if refreshed {
-        // Invalidate the skills cache so freshly installed skills are
-        // visible on the next prompt without waiting for the 60s TTL.
-        crate::skills::invalidate_skills_cache();
-    }
+    // Always invalidate the cache. install/uninstall write to disk *after* the
+    // previous scan, so the cache is stale for them no matter how recently it
+    // was refreshed; invalidation is O(1) and the rescan below repopulates it
+    // (and warms the cache so the GUI's follow-up get_commands hits the fast
+    // path with the new state).
+    //
+    // This used to be gated behind a 5 s minimum-interval rate limit, but that
+    // limit was process-global and kept getting consumed by the harmless scan
+    // the GUI fires on startup / page open / agent (re)connect. The invalidation
+    // that actually matters — the one right after a write — then landed inside
+    // the window and was silently skipped, so get_commands kept returning the
+    // pre-install cache and the Skills view showed the old installed/uninstalled
+    // state until the app was restarted (which resets the limit and forces a
+    // scan). Burst protection is not needed here: invalidation has no I/O cost,
+    // and a rescan is a cheap local walk of two directories.
+    crate::skills::invalidate_skills_cache();
     let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
     RpcResponse::ok(
@@ -1343,9 +1324,7 @@ fn cmd_refresh_skills(id: &str) -> String {
         serde_json::json!({
             "skills_count": skill_names.len(),
             "skills": skill_names,
-            // false when served from cache due to the minimum-interval
-            // rate limit — callers can log this for debugging.
-            "refreshed": refreshed,
+            "refreshed": true,
         }),
     )
 }
@@ -1577,19 +1556,6 @@ mod tests {
             resp["data"]["skills"].as_array().unwrap().len() as u64
         );
         assert!(resp["data"]["refreshed"].is_boolean());
-    }
-
-    #[test]
-    fn refresh_skills_rate_limits_bursts() {
-        // A second call within the minimum interval must be served from the
-        // cache (`refreshed: false`) instead of rescanning the skill dirs.
-        // Robust against test ordering: any earlier refresh within the
-        // window only makes `refreshed: false` more likely.
-        let state = make_app_state();
-        handle_command_internal(&state, make_cmd("refresh_skills"));
-        let resp = parse_response(&handle_command_internal(&state, make_cmd("refresh_skills")));
-        assert_eq!(resp["success"], true);
-        assert_eq!(resp["data"]["refreshed"], false);
     }
 
     #[test]
