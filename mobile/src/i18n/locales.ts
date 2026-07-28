@@ -34,6 +34,9 @@ export const resources = {
         settings: "Settings",
         settingsPlaceholder: "Remote settings will appear here.",
         empty: "No desktop sessions yet.",
+        emptyConnectedTitle: "No conversations yet",
+        emptyConnectedHint:
+          "You're connected to the desktop. Start a new conversation to begin chatting.",
         new: "New conversation",
         refresh: "Refresh",
         unpair: "Unpair device",
@@ -119,6 +122,8 @@ export const resources = {
         settings: "设置",
         settingsPlaceholder: "远程设置将在这里提供。",
         empty: "桌面端还没有会话。",
+        emptyConnectedTitle: "还没有对话",
+        emptyConnectedHint: "已连接到桌面端，创建一个新对话即可开始聊天。",
         new: "新对话",
         refresh: "刷新",
         unpair: "解除设备配对",

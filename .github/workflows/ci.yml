@@ -36,6 +36,7 @@ jobs:
       gui_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.gui_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       cli: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.cli == 'true' || steps.filter.outputs.ci == 'true' }}
       tui: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.tui == 'true' || steps.filter.outputs.ci == 'true' }}
+      mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
     steps:
       - id: force
         shell: bash
@@ -73,6 +74,10 @@ jobs:
               - 'cli/**'
             tui:
               - 'tui/**'
+            mobile:
+              - 'mobile/**'
+              - '!mobile/android/**'
+              - '!mobile/ios/**'
 
   # ─── Rust lint gate (Linux): fmt + clippy ─────────────────────────────────
   # Lint all workspace crates plus the GUI Tauri backend. Tests run in the
@@ -432,3 +437,36 @@ jobs:
       - name: vitest
         working-directory: gui
         run: npm run test
+
+  # ─── Mobile: typecheck + eslint + jest ───────────────────────────────────
+  mobile:
+    name: Mobile typecheck + lint + test
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: mobile
+        run: npm run typecheck
+
+      - name: ESLint
+        working-directory: mobile
+        run: npm run lint
+
+      - name: jest
+        working-directory: mobile
+        run: npm test

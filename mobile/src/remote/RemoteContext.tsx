@@ -191,6 +191,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     [refreshSessions],
   );
 
+  const closeConversation = useCallback(() => {
+    setSelectedSessionId("");
+    selectedRef.current = "";
+    setDraft(false);
+    setDraftMode("chat");
+    setDraftWorkspaceId("");
+    setTimeline(emptyTimeline());
+    void refreshSessions();
+    void refreshWorkspaces();
+  }, [refreshSessions, refreshWorkspaces]);
+
   const connect = useCallback(
     async (nextCredentials: RemoteCredentials) => {
       await clientRef.current?.close();
@@ -207,11 +218,26 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         onEvent: handleEvent,
         onPresence: nextPresence => {
           setPresence(nextPresence);
-          const currentId = selectedRef.current;
-          if (!currentId) return;
-          const streaming =
-            nextPresence.sessions?.find(session => session.id === currentId)?.streaming ?? false;
-          setTimeline(state => ({ ...state, streaming }));
+          if (Array.isArray(nextPresence.sessions)) {
+            const list: RemoteSession[] = nextPresence.sessions.map(s => ({
+              sessionId: s.sessionId,
+              threadId: s.threadId,
+              title: s.title,
+              mode: s.mode,
+              workspaceId: s.workspaceId,
+            }));
+            setSessions(list);
+            setWorkspaces(nextPresence.workspaces ?? []);
+            const currentId = selectedRef.current;
+            if (currentId && !list.some(item => item.sessionId === currentId)) {
+              closeConversation();
+            } else if (currentId) {
+              const streaming =
+                nextPresence.sessions.find(session => session.sessionId === currentId)?.streaming ??
+                false;
+              setTimeline(state => ({ ...state, streaming }));
+            }
+          }
         },
         onConnectionState: state => {
           if (state === "connected") {
@@ -238,7 +264,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       await client.open();
       await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
     },
-    [handleEvent, refreshModels, refreshSessions, refreshWorkspaces],
+    [closeConversation, handleEvent, refreshModels, refreshSessions, refreshWorkspaces],
   );
 
   useEffect(() => {
@@ -433,8 +459,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       try {
         let next = await loadHistory(sessionId);
         const streaming =
-          presenceRef.current?.sessions.find(session => session.id === sessionId)?.streaming ??
-          false;
+          presenceRef.current?.sessions?.find(session => session.sessionId === sessionId)
+            ?.streaming ?? false;
         if (streaming) next = await backfill(sessionId, next);
         next = { ...next, streaming };
         setTimeline(next);
@@ -474,15 +500,6 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     },
     [models],
   );
-
-  const closeConversation = useCallback(() => {
-    setSelectedSessionId("");
-    selectedRef.current = "";
-    setDraft(false);
-    setDraftMode("chat");
-    setDraftWorkspaceId("");
-    setTimeline(emptyTimeline());
-  }, []);
 
   const sendMessage = useCallback(
     async (text: string) => {

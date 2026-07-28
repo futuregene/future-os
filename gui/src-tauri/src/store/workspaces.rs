@@ -57,7 +57,9 @@ pub fn create_workspace(input: CreateWorkspaceInput) -> Result<WorkspaceRecord, 
     let name = input
         .name
         .unwrap_or_else(|| workspace_name_from_path(&path));
-    get_or_create_user_workspace(name, path, input.description)
+    let workspace = get_or_create_user_workspace(name, path, input.description)?;
+    mark_catalog_dirty();
+    Ok(workspace)
 }
 
 pub(super) fn get_or_create_user_workspace(
@@ -196,7 +198,9 @@ pub fn rename_workspace(input: RenameWorkspaceInput) -> Result<WorkspaceRecord, 
         params![name, now, input.workspace_id],
     )?;
 
-    loaded(get_workspace_in(&conn, &input.workspace_id)?, "Workspace")
+    let workspace = loaded(get_workspace_in(&conn, &input.workspace_id)?, "Workspace")?;
+    mark_catalog_dirty();
+    Ok(workspace)
 }
 
 /// Resolve the agent session id of every thread in `workspace_id` (session id =
@@ -226,6 +230,7 @@ pub fn delete_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::Ap
     let tx = conn.transaction()?;
     delete_workspace_in(&tx, workspace_id)?;
     tx.commit()?;
+    mark_catalog_dirty();
     Ok(workspace)
 }
 

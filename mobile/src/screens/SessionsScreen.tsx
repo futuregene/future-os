@@ -6,6 +6,7 @@ import {
   MessageCircle,
   Plus,
   Settings,
+  Unplug,
   X,
 } from "lucide-react-native";
 import { useMemo, useState } from "react";
@@ -110,6 +111,39 @@ export function SessionsScreen() {
   };
 
   const connected = remote.desktopOnline;
+
+  const offlineEmpty = (
+    <View style={styles.emptyState}>
+      <View style={[styles.emptyIcon, styles.emptyIconOffline]}>
+        <Unplug color={colors.danger} size={26} />
+      </View>
+      <Text style={styles.emptyTitle}>{t("connection.offline")}</Text>
+      <Text style={styles.emptyHint}>{t("connection.offlineHint")}</Text>
+    </View>
+  );
+
+  const createChatEmpty = (
+    <View style={styles.emptyState}>
+      <View style={[styles.emptyIcon, styles.emptyIconIdle]}>
+        <MessageCircle color={colors.accent} size={26} />
+      </View>
+      <Text style={styles.emptyTitle}>{t("sessions.emptyConnectedTitle")}</Text>
+      <Text style={styles.emptyHint}>{t("sessions.emptyConnectedHint")}</Text>
+      <Button
+        compact
+        icon={<Plus color={colors.surface} size={16} />}
+        label={t("sessions.new")}
+        onPress={openNew}
+      />
+    </View>
+  );
+
+  const workspaceEmpty = !connected ? (
+    offlineEmpty
+  ) : (
+    <Text style={styles.empty}>{t("sessions.noWorkspaces")}</Text>
+  );
+
   return (
     <SafeAreaView edges={["top", "bottom"]} style={styles.safe}>
       <View style={styles.page}>
@@ -165,7 +199,7 @@ export function SessionsScreen() {
             }
             data={remote.workspaces}
             keyExtractor={item => item.id}
-            ListEmptyComponent={<Text style={styles.empty}>{t("sessions.noWorkspaces")}</Text>}
+            ListEmptyComponent={workspaceEmpty}
             renderItem={renderWorkspace}
             scrollIndicatorInsets={{ right: 0 }}
             style={styles.list}
@@ -176,21 +210,23 @@ export function SessionsScreen() {
             data={chats}
             ItemSeparatorComponent={() => <View style={styles.listGap} />}
             keyExtractor={item => item.sessionId}
-            ListEmptyComponent={<Text style={styles.empty}>{t("sessions.empty")}</Text>}
+            ListEmptyComponent={!connected ? offlineEmpty : createChatEmpty}
             renderItem={({ item }) => renderSession(item)}
             scrollIndicatorInsets={{ right: 0 }}
             style={styles.list}
           />
         )}
 
-        <Pressable
-          accessibilityLabel={t("sessions.new")}
-          accessibilityRole="button"
-          onPress={openNew}
-          style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
-        >
-          <Plus color={colors.surface} size={27} />
-        </Pressable>
+        {connected && (
+          <Pressable
+            accessibilityLabel={t("sessions.new")}
+            accessibilityRole="button"
+            onPress={openNew}
+            style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
+          >
+            <Plus color={colors.surface} size={27} />
+          </Pressable>
+        )}
 
         <Modal
           animationType="fade"
@@ -376,6 +412,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   empty: { color: colors.inkMuted, fontSize: 14 },
+  emptyState: {
+    width: "100%",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.xl,
+  },
+  emptyIcon: {
+    width: 56,
+    height: 56,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.lg,
+  },
+  emptyIconOffline: { backgroundColor: colors.dangerSoft },
+  emptyIconIdle: { backgroundColor: colors.accentSoft },
+  emptyTitle: {
+    alignSelf: "stretch",
+    textAlign: "center",
+    color: colors.ink,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  emptyHint: {
+    alignSelf: "stretch",
+    textAlign: "center",
+    color: colors.inkMuted,
+    fontSize: 13,
+    lineHeight: 19,
+  },
   emptyInside: {
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,

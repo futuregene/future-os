@@ -152,7 +152,7 @@ const dec = (m) => JSON.parse(new TextDecoder().decode(m.data));
 let nc = null, pair = "", session = "", bubble = null, thinkEl = null;
 let curRun = null; const seenEvents = new Set();
 const toolChips = new Map();
-let sessions = []; // 最近一次 list_sessions 结果，用于标题查找 + 高亮
+let sessions = []; let sessionsSig = ""; // 最近一次 list_sessions 结果，用于标题查找 + 高亮
 let presence = null; // 桌面在线状态 + 每 session streaming
 let isStreaming = false; // 当前选中会话是否在流式中（从事件或 presence 推断）
 let sending = false;     // 正在等待 prompt 的 ack：防双击/超时重发产生重复消息
@@ -486,6 +486,10 @@ async function watchPresence() {
   } catch { /* connection close */ }
 }
 
+function sessionsSignature(list) {
+  return list.map(x => (x.sessionId || "") + "\t" + (x.title || "")).join("\n");
+}
+
 function onPresenceUpdate(data) {
   presence = data;
   refreshPresenceIndicator();
@@ -493,6 +497,31 @@ function onPresenceUpdate(data) {
   if (data?.sessions && session) {
     const s = data.sessions.find(x => x.id === session);
     if (s) updateStreamingState(s.streaming);
+  }
+  // 目录快照同步（删除/新建/重命名）：用 presence 的会话快照覆盖
+  // 本地 sessions 数组，仅在内容变化时替换，避免每 20s 重绘。
+  if (Array.isArray(data.sessions)) {
+    const snap = data.sessions.map(s => ({
+      sessionId: s.sessionId,
+      threadId: s.threadId || s.sessionId,
+      title: s.title || "",
+      mode: s.mode,
+      workspaceId: s.workspaceId,
+    }));
+    const sig = sessionsSignature(snap);
+    if (sig !== sessionsSig) {
+      sessions = snap;
+      sessionsSig = sig;
+      // 若当前选中会话被桌面删除 → 退回新对话草稿态
+      if (session && !snap.some(x => x.sessionId === session)) {
+        newSession();
+      }
+    }
+    // streaming 态：字段已改名 sessionId，保留发送键/停止键同步
+    if (session) {
+      const s = data.sessions.find(x => x.sessionId === session);
+      if (s) updateStreamingState(s.streaming);
+    }
   }
   renderSessionList(); // 刷新列表上的 streaming 指示
 }
@@ -593,7 +622,7 @@ function newSession() {
 async function listSessions() {
   try {
     const r = await request({ type: "list_sessions" }, "list");
-    sessions = r?.data?.sessions || [];
+    sessions = r?.data?.sessions || []; sessionsSig = sessionsSignature(sessions);
     renderSessionList();
   } catch (e) {
     const errDiv = document.createElement("div");
@@ -613,7 +642,7 @@ function renderSessionList() {
     row.dataset.sid = s.sessionId;
     const t = document.createElement("div"); t.className = "st";
     // presence 里有该 session 的 streaming 态 → 显示蓝点
-    const pInfo = presence?.sessions?.find(x => x.id === s.sessionId);
+    const pInfo = presence?.sessions?.find(x => x.sessionId === s.sessionId);
     if (pInfo?.streaming) {
       const dot = document.createElement("span"); dot.className = "streaming-dot";
       t.appendChild(dot);
@@ -651,7 +680,7 @@ async function selectSession(sid) {
   $("chatTitle").textContent = sessionTitle(sid);
   $("msg").disabled = false;
   // 从 presence 恢复 streaming 态（决定发送键是"发送"还是"停止"）
-  const pInfo = presence?.sessions?.find(x => x.id === sid);
+  const pInfo = presence?.sessions?.find(x => x.sessionId === sid);
   updateStreamingState(pInfo?.streaming ?? false);
   $("app").classList.add("show-chat"); // 移动端进入对话；宽屏无副作用
   // 高亮列表
