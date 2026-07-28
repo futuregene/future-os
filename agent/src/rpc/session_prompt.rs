@@ -735,6 +735,7 @@ impl ServerSession {
             skills,
             agent_content,
             memory_content,
+            session_id: self.session_id.clone(),
             prompt_guidelines: vec![
                 // The write-via-shell prohibition is platform-neutral, but its
                 // examples must name the redirection forms the host's shell

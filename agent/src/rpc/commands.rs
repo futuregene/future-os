@@ -1356,7 +1356,7 @@ fn cmd_reload_config(
     id: &str,
 ) -> String {
     // Re-discover skills and re-read context files, then rebuild system prompt.
-    let (cwd, tools) = {
+    let (cwd, tools, session_id) = {
         let sess = rlock!(session, id);
         let loop_ = match sess.agent_loop.try_read() {
             Ok(l) => l,
@@ -1368,7 +1368,7 @@ fn cmd_reload_config(
                 );
             }
         };
-        (sess.cwd.clone(), loop_.tools.clone())
+        (sess.cwd.clone(), loop_.tools.clone(), sess.session_id.clone())
     };
 
     // Re-discover skills (blocking I/O, no locks held).  Invalidate the
@@ -1402,6 +1402,7 @@ fn cmd_reload_config(
         tools: tools.clone(),
         skills: skills.clone(),
         agent_content: agent_content.clone(),
+        session_id: session_id.clone(),
         ..Default::default()
     });
 
