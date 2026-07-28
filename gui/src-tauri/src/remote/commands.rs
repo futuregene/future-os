@@ -385,6 +385,30 @@ async fn handle_command(
             )
             .await;
         }
+        "get_session_entries" => {
+            // Display-shaped history (plain-text content + per-entry meta with
+            // user attachments) for clients that render attachment chips.
+            // Paged for the same NATS payload cap as get_messages.
+            let offset = cmd.offset.max(0) as usize;
+            let limit = if cmd.limit > 0 {
+                cmd.limit as usize
+            } else {
+                DEFAULT_MESSAGE_PAGE_LIMIT
+            };
+            match crate::agent_bridge::get_session_entries(cmd.session_id.clone()).await {
+                Ok(data) => {
+                    reply(
+                        client,
+                        &msg,
+                        true,
+                        paginate_items(entries_vec(data), offset, limit, "entries"),
+                        None,
+                    )
+                    .await;
+                }
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
         "get_events_since" => {
             // P1c: replay buffered events for the current in-progress run, so late-joining clients can catch up on missed prefix events.
             match crate::agent_bridge::get_events_since(
@@ -859,23 +883,35 @@ fn messages_vec(data: Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// Page a full message list into a reply that fits the NATS payload cap.
+/// Extract the `entries` array from an agent `get_session_entries` reply.
+fn entries_vec(data: Value) -> Vec<Value> {
+    data.get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn paginate_messages(messages: Vec<Value>, offset: usize, limit: usize) -> Value {
+    paginate_items(messages, offset, limit, "messages")
+}
+
+/// Page a full item list into a reply that fits the NATS payload cap.
 ///
-/// Each message is content-capped first (so no single message is huge), then
-/// messages are accumulated from `offset` until the serialized page would
-/// exceed [`MESSAGES_PAGE_BYTES`] or `limit` is reached (always at least one
-/// message — it's already capped). Returns the page plus cursor fields the
+/// Each item is content-capped first (so no single item is huge), then items
+/// are accumulated from `offset` until the serialized page would exceed
+/// [`MESSAGES_PAGE_BYTES`] or `limit` is reached (always at least one item —
+/// it's already capped). Returns the page (under `key`) plus cursor fields the
 /// client uses to fetch the remainder.
-fn paginate_messages(mut messages: Vec<Value>, offset: usize, limit: usize) -> Value {
-    for message in messages.iter_mut() {
-        truncate_message_content(message, MESSAGE_CONTENT_CAP_BYTES);
+fn paginate_items(mut items: Vec<Value>, offset: usize, limit: usize, key: &str) -> Value {
+    for item in items.iter_mut() {
+        truncate_message_content(item, MESSAGE_CONTENT_CAP_BYTES);
     }
-    let total = messages.len();
+    let total = items.len();
     let start = offset.min(total);
     let mut end = start;
     let mut bytes = 0usize;
-    for (index, message) in messages.iter().skip(start).enumerate() {
-        let size = serde_json::to_vec(message)
+    for (index, item) in items.iter().skip(start).enumerate() {
+        let size = serde_json::to_vec(item)
             .map(|bytes| bytes.len())
             .unwrap_or(0);
         if index > 0 && (index >= limit || bytes + size > MESSAGES_PAGE_BYTES) {
@@ -884,14 +920,15 @@ fn paginate_messages(mut messages: Vec<Value>, offset: usize, limit: usize) -> V
         bytes += size;
         end += 1;
     }
-    let page: Vec<Value> = messages.drain(start..end).collect();
-    json!({
-        "messages": page,
+    let page: Vec<Value> = items.drain(start..end).collect();
+    let mut value = json!({
         "offset": start,
         "nextOffset": end,
         "total": total,
         "hasMore": end < total,
-    })
+    });
+    value[key] = json!(page);
+    value
 }
 
 /// Cap the serialized size of a single message by truncating its `content`

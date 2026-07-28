@@ -115,6 +115,25 @@ pub async fn get_session_messages(
     }
 }
 
+/// Fetch a session's display entries (user/assistant/tool + session_info) from
+/// the agent. Unlike `get_session_messages` (LLM wire shape), entries are
+/// display-shaped — plain-text content plus per-entry `meta` (user attachments
+/// with cached thumbnails), which is how the GUI rebuilds attachment chips.
+pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(get_session_entries_command(session_id))
+        .await
+        .map_err(|status| format!("get_session_entries failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_session_entries returned an error")?;
+    if response.data.is_empty() {
+        Ok(serde_json::json!({ "entries": [] }))
+    } else {
+        Ok(serde_json::from_str(&response.data)?)
+    }
+}
+
 /// Fetch the session's current state (model, thinkingLevel, isStreaming, etc.)
 /// from the agent. Used by the remote bridge to populate the web client's
 /// model/thinking selectors.

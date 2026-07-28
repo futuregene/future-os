@@ -13,12 +13,20 @@ import {
   applyStreamEvent,
   emptyTimeline,
   markApprovalDecision,
+  timelineFromEntries,
   timelineFromHistory,
   type TimelineState,
 } from "./eventReducer";
 import { RemoteClient } from "./client";
 import { claimPairingCode, ensureFreshCredentials, revokeCredentials } from "./pairing";
 import { isDesktopOnline } from "./presence";
+import {
+  advanceCursor,
+  newCursor,
+  nextEvent,
+  rebuildCursorFromEvents,
+  type RunCursor,
+} from "./runCursor";
 import {
   clearCredentials,
   loadCredentials,
@@ -31,6 +39,7 @@ import {
 import { modelProviderFromReference, modelReference } from "./types";
 import type {
   ConnectionPhase,
+  HistoryEntry,
   HistoryMessage,
   Presence,
   RemoteCredentials,
@@ -56,6 +65,13 @@ interface WorkspacesData {
 
 interface HistoryData {
   messages: HistoryMessage[];
+  total?: number;
+  hasMore?: boolean;
+  nextOffset?: number;
+}
+
+interface EntriesData {
+  entries: HistoryEntry[];
   total?: number;
   hasMore?: boolean;
   nextOffset?: number;
@@ -132,6 +148,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const scheduleReconnectRef = useRef<() => void>(() => undefined);
+  // Integrity: sync lock + pending buffer + per-run cursor for gap detection.
+  const syncLockRef = useRef(false);
+  const pendingRef = useRef<Array<{ event: StreamEvent; sessionId: string }>>([]);
+  const cursorRef = useRef<RunCursor>(newCursor());
+  const gapInFlightRef = useRef(false);
 
   useEffect(() => {
     credentialsRef.current = credentials;
@@ -183,6 +204,24 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const handleEvent = useCallback(
     (event: StreamEvent, sessionId: string) => {
       if (!sessionId || sessionId !== selectedRef.current) return;
+      // While a recovery/resync is in progress, buffer live events.
+      if (syncLockRef.current) {
+        pendingRef.current.push({ event, sessionId });
+        return;
+      }
+      const verdict = nextEvent(cursorRef.current, event.runId, event.idx);
+      if (verdict.kind === "dup") return;
+      if (verdict.kind === "gap") {
+        // Buffer the gap-triggering event; do NOT apply out of order.
+        pendingRef.current.push({ event, sessionId });
+        syncLockRef.current = true;
+        void fillGapRef.current(sessionId, event.runId ?? "", verdict.fromIdx);
+        return;
+      }
+      // "apply" or "untracked"
+      if (verdict.kind === "apply") {
+        advanceCursor(cursorRef.current, event.runId!, verdict.idx);
+      }
       setTimeline(state => applyStreamEvent(state, event));
       if (event.type === "agent_end") {
         void refreshSessions();
@@ -218,26 +257,27 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         onEvent: handleEvent,
         onPresence: nextPresence => {
           setPresence(nextPresence);
-          if (Array.isArray(nextPresence.sessions)) {
-            const list: RemoteSession[] = nextPresence.sessions.map(s => ({
-              sessionId: s.sessionId,
-              threadId: s.threadId,
-              title: s.title,
-              mode: s.mode,
-              workspaceId: s.workspaceId,
-            }));
-            setSessions(list);
-            setWorkspaces(nextPresence.workspaces ?? []);
-            const currentId = selectedRef.current;
-            if (currentId && !list.some(item => item.sessionId === currentId)) {
-              closeConversation();
-            } else if (currentId) {
-              const streaming =
-                nextPresence.sessions.find(session => session.sessionId === currentId)?.streaming ??
-                false;
-              setTimeline(state => ({ ...state, streaming }));
-            }
+        },
+        onSessions: sessionList => {
+          const list: RemoteSession[] = sessionList.map(s => ({
+            sessionId: s.sessionId,
+            threadId: s.threadId,
+            title: s.title,
+            mode: s.mode,
+            workspaceId: s.workspaceId,
+          }));
+          setSessions(list);
+          const currentId = selectedRef.current;
+          if (currentId && !list.some(item => item.sessionId === currentId)) {
+            closeConversation();
+          } else if (currentId) {
+            const streaming =
+              sessionList.find(session => session.sessionId === currentId)?.streaming ?? false;
+            setTimeline(state => ({ ...state, streaming }));
           }
+        },
+        onWorkspaces: workspaceList => {
+          setWorkspaces(workspaceList);
         },
         onConnectionState: state => {
           if (state === "connected") {
@@ -387,6 +427,27 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const loadHistory = useCallback(async (sessionId: string): Promise<TimelineState> => {
     const client = clientRef.current;
     if (!client) return emptyTimeline();
+    // Prefer display entries — they carry user attachments (message-shaped
+    // history doesn't). Older desktops that don't know get_session_entries
+    // reply "Unsupported command" and fall through to the fallback below.
+    try {
+      const entries: HistoryEntry[] = [];
+      let offset = 0;
+      for (;;) {
+        const response = await client.request<EntriesData>(
+          { type: "get_session_entries", sessionId, offset },
+          sessionId,
+        );
+        entries.push(...(response.data.entries ?? []));
+        if (!response.data.hasMore) break;
+        const next = response.data.nextOffset;
+        if (typeof next !== "number" || next <= offset) break;
+        offset = next;
+      }
+      return timelineFromEntries(entries);
+    } catch {
+      // Fall through to message-shaped history.
+    }
     const history: HistoryMessage[] = [];
     let offset = 0;
     for (;;) {
@@ -403,47 +464,166 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     return timelineFromHistory(history);
   }, []);
 
-  const backfill = useCallback(async (sessionId: string, initial: TimelineState) => {
-    const client = clientRef.current;
-    if (!client) return initial;
-    try {
-      const response = await client.request<EventsData>(
-        { type: "get_events_since", sessionId, sinceIdx: -1 },
-        sessionId,
-      );
-      let next = initial;
-      for (const event of response.data.events ?? []) next = applyStreamEvent(next, event);
-      if (response.data.truncated) {
-        next = {
-          ...next,
-          items: [
-            ...next.items,
-            {
-              id: `truncated:${Date.now()}`,
-              kind: "notice",
-              tone: "warning",
-              text: "truncated",
-            },
-          ],
-        };
+  const backfill = useCallback(
+    async (sessionId: string, initial: TimelineState, runId?: string, sinceIdx?: number) => {
+      const client = clientRef.current;
+      if (!client) return initial;
+      try {
+        const response = await client.request<EventsData>(
+          { type: "get_events_since", sessionId, runId, sinceIdx: sinceIdx ?? -1 },
+          sessionId,
+        );
+        let next = initial;
+        for (const event of response.data.events ?? []) next = applyStreamEvent(next, event);
+        if (response.data.truncated) {
+          next = {
+            ...next,
+            items: [
+              ...next.items,
+              {
+                id: `truncated:${Date.now()}`,
+                kind: "notice",
+                tone: "warning",
+                text: "truncated",
+              },
+            ],
+          };
+        }
+        return next;
+      } catch {
+        return initial;
       }
-      return next;
-    } catch {
-      return initial;
-    }
-  }, []);
+    },
+    [],
+  );
+
+  // ── Gap-fill and full-resync (integrity layer) ──
+
+  const fullResync = useCallback(
+    async (sessionId: string) => {
+      let next = await loadHistory(sessionId);
+      const streaming =
+        presenceRef.current?.sessions?.find(s => s.sessionId === sessionId)?.streaming ?? false;
+      if (streaming) next = await backfill(sessionId, next);
+      next = { ...next, streaming };
+      // Rebuild cursor from the resynced timeline events.
+      const cursor = cursorRef.current;
+      for (const item of next.items) {
+        if (
+          item.runId &&
+          "idx" in item &&
+          typeof (item as Record<string, unknown>).idx === "number"
+        ) {
+          advanceCursor(cursor, item.runId, (item as unknown as { idx: number }).idx);
+        }
+      }
+      setTimeline(next);
+    },
+    [backfill, loadHistory],
+  );
+
+  const fillGapRef = useRef<(sessionId: string, runId: string, fromIdx: number) => Promise<void>>(
+    async () => undefined,
+  );
+
+  useEffect(() => {
+    fillGapRef.current = async (sessionId: string, runId: string, fromIdx: number) => {
+      if (gapInFlightRef.current) return;
+      gapInFlightRef.current = true;
+      try {
+        const client = clientRef.current;
+        if (!client) throw new Error("no client");
+        const response = await client.request<EventsData>(
+          { type: "get_events_since", sessionId, runId, sinceIdx: fromIdx },
+          sessionId,
+        );
+        const events = response.data.events ?? [];
+        const firstIdx = events.length > 0 ? events[0]!.idx : undefined;
+        // If the agent buffer overflowed (dropped head), firstIdx will be > fromIdx+1.
+        if (events.length > 0 && firstIdx != null && firstIdx > fromIdx + 1) {
+          await fullResync(sessionId);
+          return;
+        }
+        // Apply fetched events in order (dedup in reducer handles overlaps).
+        setTimeline(prev => events.reduce((state, ev) => applyStreamEvent(state, ev), prev));
+        // Advance cursor for all fetched events.
+        for (const ev of events) {
+          if (ev.runId && ev.idx != null) advanceCursor(cursorRef.current, ev.runId, ev.idx);
+        }
+        // Flush pending buffer (may contain the gap-triggering event + subsequent ones).
+        const pending = pendingRef.current;
+        pendingRef.current = [];
+        if (pending.length > 0) {
+          setTimeline(prev => {
+            let state = prev;
+            for (const { event } of pending) {
+              const v = nextEvent(cursorRef.current, event.runId, event.idx);
+              if (v.kind === "dup") continue;
+              if (v.kind === "gap") {
+                // Another gap during flush — retry once, then full resync.
+                void (async () => {
+                  try {
+                    await fullResync(sessionId);
+                  } finally {
+                    syncLockRef.current = false;
+                    gapInFlightRef.current = false;
+                  }
+                })();
+                return state;
+              }
+              if (v.kind === "apply") advanceCursor(cursorRef.current, event.runId!, v.idx);
+              state = applyStreamEvent(state, event);
+            }
+            return state;
+          });
+        }
+      } catch {
+        // Request failed (agent restart, etc.) — degrade to full resync.
+        try {
+          await fullResync(sessionId);
+        } catch {
+          // Last resort: nothing more we can do.
+        }
+      } finally {
+        pendingRef.current = [];
+        syncLockRef.current = false;
+        gapInFlightRef.current = false;
+      }
+    };
+  }, [fullResync]);
 
   useEffect(() => {
     recoverRef.current = async () => {
-      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
-      const sessionId = selectedRef.current;
-      if (!sessionId) return;
+      syncLockRef.current = true;
       try {
+        await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
+        const sessionId = selectedRef.current;
+        if (!sessionId) return;
         let next = await loadHistory(sessionId);
-        if (timelineRef.current.streaming) next = await backfill(sessionId, next);
+        // Use fresh presence snapshot for streaming (not stale timelineRef).
+        const streaming =
+          presenceRef.current?.sessions?.find(s => s.sessionId === sessionId)?.streaming ?? false;
+        if (streaming) next = await backfill(sessionId, next);
+        next = { ...next, streaming };
+        // Rebuild cursor from the recovered state.
+        cursorRef.current = newCursor();
+        rebuildCursorFromEvents(
+          cursorRef.current,
+          (next as TimelineState & { items: Array<{ runId?: string; idx?: number }> }).items,
+        );
         setTimeline(next);
+        // Fold any events buffered during recovery.
+        const pending = pendingRef.current;
+        pendingRef.current = [];
+        if (pending.length > 0) {
+          setTimeline(prev =>
+            pending.reduce((state, { event }) => applyStreamEvent(state, event), prev),
+          );
+        }
       } catch (nextError) {
         setError(nextError instanceof Error ? nextError.message : String(nextError));
+      } finally {
+        syncLockRef.current = false;
       }
     };
   }, [backfill, loadHistory, refreshModels, refreshSessions, refreshWorkspaces]);
@@ -453,9 +633,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       const client = clientRef.current;
       if (!client) return;
       setBusy(true);
+      syncLockRef.current = true;
       setSelectedSessionId(sessionId);
       selectedRef.current = sessionId;
       setDraft(false);
+      // Clear the previous conversation up front — it must not stay on screen
+      // while the new session's history is in flight.
+      setTimeline(emptyTimeline());
       try {
         let next = await loadHistory(sessionId);
         const streaming =
@@ -463,7 +647,21 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             ?.streaming ?? false;
         if (streaming) next = await backfill(sessionId, next);
         next = { ...next, streaming };
+        // Reset cursor for the new session.
+        cursorRef.current = newCursor();
+        rebuildCursorFromEvents(
+          cursorRef.current,
+          (next as TimelineState & { items: Array<{ runId?: string; idx?: number }> }).items,
+        );
         setTimeline(next);
+        // Fold any events buffered during the switch.
+        const pending = pendingRef.current;
+        pendingRef.current = [];
+        if (pending.length > 0) {
+          setTimeline(prev =>
+            pending.reduce((state, { event }) => applyStreamEvent(state, event), prev),
+          );
+        }
         const response = await client.request<RemoteSessionState>(
           { type: "get_state", sessionId },
           sessionId,
@@ -472,7 +670,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         const matchingModel = models.find(model => modelReference(model) === currentModel);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
         setThinkingLevelState(response.data.thinkingLevel ?? "off");
+      } catch (nextError) {
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
       } finally {
+        syncLockRef.current = false;
         setBusy(false);
       }
     },

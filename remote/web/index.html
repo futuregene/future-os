@@ -409,6 +409,7 @@ async function connectWithCredentials(creds) {
   (async () => { for await (const m of sub) onEvent(dec(m), m.subject); })();
   watchConnStatus();
   watchPresence();
+  watchState();
   if (presenceTimer) clearInterval(presenceTimer);
   presenceTimer = setInterval(refreshPresenceIndicator, 10000);
   scheduleCredentialRefresh(creds);
@@ -486,6 +487,22 @@ async function watchPresence() {
   } catch { /* connection close */ }
 }
 
+async function watchState() {
+  const sub = nc.subscribe(`p.${pair}.state.>`);
+  const prefix = `p.${pair}.state.`;
+  try {
+    for await (const message of sub) {
+      const suffix = message.subject.slice(prefix.length);
+      const data = dec(message);
+      if (suffix === "sessions") {
+        onSessionsUpdate(data?.sessions ?? []);
+      } else if (suffix === "workspaces") {
+        onWorkspacesUpdate(data?.workspaces ?? []);
+      }
+    }
+  } catch { /* connection close */ }
+}
+
 function sessionsSignature(list) {
   return list.map(x => (x.sessionId || "") + "\t" + (x.title || "")).join("\n");
 }
@@ -493,15 +510,26 @@ function sessionsSignature(list) {
 function onPresenceUpdate(data) {
   presence = data;
   refreshPresenceIndicator();
+  // Liveness only — sessions/workspaces arrive via state.* topics.
+  // Handle legacy payloads that still embed sessions (handshake confirmation).
+  if (Array.isArray(data.sessions)) {
+    onSessionsUpdate(data.sessions);
+  }
+  if (Array.isArray(data.workspaces)) {
+    onWorkspacesUpdate(data.workspaces);
+  }
+}
+
+function onSessionsUpdate(sessionList) {
   // 更新当前会话 streaming 态
-  if (data?.sessions && session) {
-    const s = data.sessions.find(x => x.id === session);
+  if (session && Array.isArray(sessionList)) {
+    const s = sessionList.find(x => x.sessionId === session);
     if (s) updateStreamingState(s.streaming);
   }
-  // 目录快照同步（删除/新建/重命名）：用 presence 的会话快照覆盖
-  // 本地 sessions 数组，仅在内容变化时替换，避免每 20s 重绘。
-  if (Array.isArray(data.sessions)) {
-    const snap = data.sessions.map(s => ({
+  // 目录快照同步（删除/新建/重命名）：用会话快照覆盖
+  // 本地 sessions 数组，仅在内容变化时替换，避免重绘。
+  if (Array.isArray(sessionList)) {
+    const snap = sessionList.map(s => ({
       sessionId: s.sessionId,
       threadId: s.threadId || s.sessionId,
       title: s.title || "",
@@ -519,11 +547,19 @@ function onPresenceUpdate(data) {
     }
     // streaming 态：字段已改名 sessionId，保留发送键/停止键同步
     if (session) {
-      const s = data.sessions.find(x => x.sessionId === session);
+      const s = sessionList.find(x => x.sessionId === session);
       if (s) updateStreamingState(s.streaming);
     }
   }
   renderSessionList(); // 刷新列表上的 streaming 指示
+}
+
+function onWorkspacesUpdate(workspaceList) {
+  // Workspaces are fetched via list_workspaces on demand; push is a hint.
+  // For now just trigger a refresh if the list changed.
+  if (Array.isArray(workspaceList)) {
+    void listSessions(); // re-render (workspaces affect mode display)
+  }
 }
 
 // 重算并渲染桌面在线/离线指示器。watch 是事件驱动的——桌面停止后 KV 不再

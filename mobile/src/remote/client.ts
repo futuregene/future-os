@@ -9,7 +9,15 @@ import {
   type HandshakeChallenge,
   verifyDesktopChallenge,
 } from "./handshake";
-import type { Presence, RemoteCommand, RemoteCredentials, RpcResponse, StreamEvent } from "./types";
+import type {
+  Presence,
+  PresenceSession,
+  RemoteCommand,
+  RemoteCredentials,
+  RemoteWorkspace,
+  RpcResponse,
+  StreamEvent,
+} from "./types";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -29,6 +37,8 @@ export interface RemoteClientCallbacks {
   onCredentials(credentials: RemoteCredentials): void;
   onEvent(event: StreamEvent, sessionId: string): void;
   onPresence(presence: Presence): void;
+  onSessions(sessions: PresenceSession[]): void;
+  onWorkspaces(workspaces: RemoteWorkspace[]): void;
   onConnectionState(state: "connected" | "reconnecting" | "disconnected"): void;
   onReconnected(): void;
   onError(error: Error): void;
@@ -100,7 +110,8 @@ export class RemoteClient {
       throw error;
     }
     this.subscribeEvents(connection, generation);
-    this.subscribePresence(connection, generation);
+    this.subscribeLiveness(connection, generation);
+    this.subscribeState(connection, generation);
     this.watchStatus(connection, generation);
     this.scheduleRefresh();
   }
@@ -123,7 +134,7 @@ export class RemoteClient {
     })();
   }
 
-  private subscribePresence(connection: NatsConnection, generation: number): void {
+  private subscribeLiveness(connection: NatsConnection, generation: number): void {
     const subscription = connection.subscribe(`p.${this.credentials.pairId}.presence`);
     void (async () => {
       try {
@@ -142,6 +153,27 @@ export class RemoteClient {
             this.callbacks.onReconnected();
           } else {
             this.callbacks.onPresence(presence);
+          }
+        }
+      } catch (error) {
+        if (!this.stopped) this.callbacks.onError(asError(error));
+      }
+    })();
+  }
+
+  private subscribeState(connection: NatsConnection, generation: number): void {
+    const subscription = connection.subscribe(`p.${this.credentials.pairId}.state.>`);
+    void (async () => {
+      try {
+        for await (const message of subscription) {
+          if (this.stopped || generation !== this.generation) break;
+          const suffix = message.subject.slice(`p.${this.credentials.pairId}.state.`.length);
+          if (suffix === "sessions") {
+            const data = decodeJson<{ sessions?: PresenceSession[] }>(message.data);
+            this.callbacks.onSessions(data.sessions ?? []);
+          } else if (suffix === "workspaces") {
+            const data = decodeJson<{ workspaces?: RemoteWorkspace[] }>(message.data);
+            this.callbacks.onWorkspaces(data.workspaces ?? []);
           }
         }
       } catch (error) {

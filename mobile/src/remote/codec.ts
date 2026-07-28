@@ -64,6 +64,7 @@ export function jwtExpiry(jwt: string): number {
 
 export function messageText(content: HistoryMessage["content"]): string {
   if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
   return content
     .filter(block => block?.type === "text")
     .map(block => block.text ?? "")
