@@ -108,6 +108,9 @@
     "subtitle": "An all-in-one AI research workbench with leading models and 100+ research skills",
     "login": "Sign in / Sign up",
     "loggingIn": "Signing in",
-    "retry": "Retry"
+    "retry": "Retry",
+    "envLabel": "Environment",
+    "envProduction": "Production",
+    "envTest": "Test"
   }
 }
