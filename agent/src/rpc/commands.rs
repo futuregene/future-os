@@ -56,6 +56,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "delete_session" => return cmd_delete_session(state, &cmd, id),
         "get_fork_messages" => return cmd_get_fork_messages(state, &cmd, id),
         "get_commands" => return cmd_get_commands(id),
+        // System-wide, no session needed: invalidates the skills discovery
+        // cache. Must stay sessionless — the GUI/CLI call it right after
+        // install/uninstall without a session_id, and a "session not found"
+        // here silently left the cache stale (the installed list never
+        // refreshed until restart / TTL expiry).
+        "refresh_skills" => return cmd_refresh_skills(id),
         "set_enabled_models" => {
             // Scoped models are managed entirely by the TUI/client; the agent
             // returns all available models. Kept as a no-op for compatibility.
@@ -501,7 +507,6 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "export_html", serde_json::json!({"path": output_path}))
         }
         "reload_config" => cmd_reload_config(state, &session, id),
-        "refresh_skills" => cmd_refresh_skills(id),
         "set_cwd" => {
             // Trim trailing whitespace / separators so the saved cwd is
             // always a clean directory path — "project/ " produces a
@@ -1556,6 +1561,24 @@ mod tests {
             resp["data"]["skills"].as_array().unwrap().len() as u64
         );
         assert!(resp["data"]["refreshed"].is_boolean());
+    }
+
+    #[test]
+    fn refresh_skills_works_without_session_id() {
+        // Regression: refresh_skills is sessionless. The GUI/CLI fire it right
+        // after install/uninstall with NO session_id; when it lived in the
+        // session-scoped branch this returned "session not found", the skills
+        // cache was never invalidated, and the installed list stayed stale
+        // until restart / TTL expiry. make_cmd() always injects a session id,
+        // so it hid this — build the command by hand with an empty session.
+        let state = make_app_state();
+        let cmd: RpcCommand =
+            serde_json::from_str(r#"{"id":"test_cmd","type":"refresh_skills","sessionId":""}"#)
+                .unwrap();
+        assert!(cmd.session_id.is_empty());
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["command"], "refresh_skills");
     }
 
     #[test]
