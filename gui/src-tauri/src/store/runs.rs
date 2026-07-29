@@ -267,6 +267,7 @@ pub fn update_run_status_if_active(input: UpdateRunStatusInput) -> Result<bool, 
     tx.commit()?;
     if changed {
         mark_catalog_dirty();
+        emit_run_status_update(&input.run_id, &input.status, now);
     }
     Ok(changed)
 }
@@ -339,8 +340,21 @@ pub fn fail_run_if_active(
     let changed = affected > 0;
     if changed {
         mark_catalog_dirty();
+        emit_run_status_update(run_id, "failed", now);
     }
     Ok(changed)
+}
+
+fn emit_run_status_update(run_id: &str, status: &str, revision: i64) {
+    if let Ok(Some(run)) = get_run(run_id) {
+        crate::emit_thread_runtime_updated(crate::ThreadRuntimeUpdate {
+            thread_id: run.thread_id,
+            run_id: run_id.to_string(),
+            revision,
+            status: status.to_string(),
+            reset_projection: false,
+        });
+    }
 }
 
 pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
@@ -348,7 +362,7 @@ pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppEr
 }
 
 /// The tail of a run's events with `sequence > since_sequence`, in append
-/// order. Backs the frontend's 220ms live-preview poll: instead of cloning and
+/// order. Backs the frontend's pushed live-preview projection: instead of cloning and
 /// re-serializing the whole log every tick (O(n) per tick → O(n²) over a run),
 /// only the events the caller hasn't seen cross IPC. `since_sequence < 0`
 /// returns the full log (same as [`list_run_events`]).

@@ -18,6 +18,18 @@ describe("entriesToMessages", () => {
     expect(messages[1]?.createdAt).toBe(asstTs);
   });
 
+  it("projects a finalized assistant entry's canonical run id", () => {
+    const messages = entriesToMessages([
+      { id: "u1", role: "user", content: "hi", meta: { run_id: "run-1" } },
+      { id: "a1", role: "assistant", content: "hello", meta: { run_id: "run-1" } },
+    ]);
+
+    // User metadata identifies the accepted prompt but must not suppress the
+    // live assistant bubble. Only a finalized assistant entry owns the turn.
+    expect(messages[0]?.runId).toBeUndefined();
+    expect(messages[1]?.runId).toBe("run-1");
+  });
+
   it("produces only the user message for a turn with no assistant entry", () => {
     // A streaming or aborted turn: the agent recorded the user prompt but has
     // not yet written (or will never write) an assistant reply.  An empty

@@ -3,6 +3,8 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 // Generated proto code (from future.proto) — checked into src/generated/
 mod proto {
@@ -53,6 +55,7 @@ pub enum AgentEvent {
 #[derive(Clone)]
 pub struct AgentClient {
     inner: FutureAgentClient<tonic::transport::Channel>,
+    active_runs: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl AgentClient {
@@ -70,7 +73,10 @@ impl AgentClient {
             .await
             .map_err(|e| anyhow!("Failed to connect to agent at {}: {}", addr, e))?;
         let inner = FutureAgentClient::new(channel);
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            active_runs: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     /// Execute a command and return the parsed JSON response data.
@@ -133,7 +139,7 @@ impl AgentClient {
         session_id: &str,
         message: &str,
         images: Vec<ImageInput>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let proto_images: Vec<proto::ImageContent> = images
             .into_iter()
             .map(|img| proto::ImageContent {
@@ -146,22 +152,45 @@ impl AgentClient {
             })
             .collect();
 
-        self.call(
-            "prompt",
-            session_id,
-            RpcCommand {
-                message: message.to_string(),
-                images: proto_images,
-                ..Default::default()
-            },
-        )
-        .await?;
-        Ok(())
+        let ack = self
+            .call(
+                "prompt",
+                session_id,
+                RpcCommand {
+                    message: message.to_string(),
+                    images: proto_images,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let run_id = ack["run_id"]
+            .as_str()
+            .or_else(|| ack["runId"].as_str())
+            .ok_or_else(|| anyhow!("prompt response missing canonical run id"))?
+            .to_string();
+        if let Ok(mut active_runs) = self.active_runs.lock() {
+            active_runs.insert(session_id.to_string(), run_id.clone());
+        }
+        Ok(run_id)
     }
 
     /// Abort current generation.
     pub async fn abort(&mut self, session_id: &str) -> Result<()> {
-        self.call("abort", session_id, Default::default()).await?;
+        let run_id = self
+            .active_runs
+            .lock()
+            .ok()
+            .and_then(|active_runs| active_runs.get(session_id).cloned())
+            .unwrap_or_default();
+        self.call(
+            "abort",
+            session_id,
+            RpcCommand {
+                run_id,
+                ..Default::default()
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -329,6 +358,7 @@ impl AgentClient {
         let request = tonic::Request::new(StreamRequest {
             session_id: session_id.to_string(),
             event_types: vec![],
+            ..Default::default()
         });
         let stream = self
             .inner
@@ -471,6 +501,7 @@ mod tests {
             data: data.to_string(),
             run_id: "run_1".to_string(),
             idx: 0,
+            ..Default::default()
         }
     }
 

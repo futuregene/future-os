@@ -46,6 +46,10 @@ export interface RpcCommand {
   noTools?: boolean;
   // set_ephemeral
   ephemeral?: boolean;
+  runId?: string;
+  sinceIdx?: number;
+  requestedRunId?: string;
+  clientRequestId?: string;
 }
 
 // ============================================================================
@@ -110,6 +114,14 @@ export interface RpcSessionState {
   tokensCacheR?: number;
   tokensCacheW?: number;
   totalCost?: number;
+  activeRun?: ActiveRunState | null;
+}
+
+export interface ActiveRunState {
+  runId: string;
+  epoch: number;
+  state: "starting" | "running" | "cancelling" | "cancellation_stuck" | "finalizing";
+  lastEventIdx: number;
 }
 
 // ============================================================================
@@ -147,8 +159,19 @@ export interface ModelInfo {
 
 export interface AgentEvent {
   type: string;
+  runId?: string;
+  idx?: number;
+  projectionSnapshot?: boolean;
+  snapshotCursor?: number;
+  snapshotEvents?: ProjectedRunEvent[];
   text?: string;
   tool_id?: string;
   tool_name?: string;
   [key: string]: unknown;
+}
+
+export interface ProjectedRunEvent {
+  type: string;
+  data: string;
+  idx: number;
 }

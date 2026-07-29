@@ -7,6 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| local_dev_version(&base));
     println!("cargo:rustc-env=FUTURE_VERSION={version}");
     println!("cargo:rerun-if-env-changed=FUTURE_VERSION");
+    println!("cargo:rerun-if-env-changed=REGENERATE_PROTO");
 
     tauri_build::build();
 

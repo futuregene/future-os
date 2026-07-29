@@ -2,9 +2,10 @@ import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
+import { listen } from "@tauri-apps/api/event";
 import i18n from "../../i18n";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
-import { appendMessage, createRun, storedTimeToIso } from "../../integrations/storage/threadStore";
+import { createRun, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
@@ -14,13 +15,14 @@ import {
   updateRunStatusSafe,
 } from "./agentMessageFormatters";
 import { buildReferencePrompt } from "./buildReferencePrompt";
-import { attachmentInputs, stringifyMessageContent } from "./messageContent";
+import { attachmentInputs } from "./messageContent";
 import { persistImageAttachments } from "./threadAttachments";
 import {
   clientId,
   deriveRenderFields,
   loadCurrentRun,
   patchMessage,
+  resetRunProjection,
   runDurationMs,
   safeListRunEvents,
   updatePendingMessageFromRunEvents,
@@ -57,15 +59,10 @@ export async function runSendPipeline(
   // concrete error instead of showing an attachment the model never received.
   const importedAttachments = await persistImageAttachments(attachments, thread.id);
 
-  // Timer handle is local to this send, not a shared ref: a prior fix regression
-  // let one thread's send clear another thread's stream timer, freezing the live
-  // bubble. Ownership stays with the closure.
-  let streamTimer: number | null = null;
-  const clearStreamTimer = () => {
-    if (streamTimer !== null) {
-      window.clearInterval(streamTimer);
-      streamTimer = null;
-    }
+  let stopStreamUpdates: (() => void) | null = null;
+  const clearStreamUpdates = () => {
+    stopStreamUpdates?.();
+    stopStreamUpdates = null;
   };
   const optimisticUserId = clientId("pending_user");
   const pendingId = clientId("pending");
@@ -98,33 +95,17 @@ export async function runSendPipeline(
   let run: StoredRun | null = null;
 
   try {
-    const messageContent = importedAttachments.length > 0
-      ? stringifyMessageContent(content, importedAttachments)
-      : content;
     const promptContent = await buildReferencePrompt(thread.workspaceId, content, content);
 
     if (isCurrentSend()) {
       patchMessage(setMessages, optimisticUserId, { attachments: importedAttachments });
     }
 
-    const storedUserMessage = await appendMessage({
-      threadId: thread.id,
-      role: "user",
-      contentType: importedAttachments.length > 0 ? "mixed" : "markdown",
-      content: messageContent,
-      status: "complete",
-    });
-
-    if (isCurrentSend()) {
-      patchMessage(setMessages, optimisticUserId, {
-        id: storedUserMessage.id,
-        createdAt: storedTimeToIso(storedUserMessage.createdAt),
-      });
-    }
-
     run = await createRun({
       threadId: thread.id,
-      triggerMessageId: storedUserMessage.id,
+      // Agent JSONL is the message source of truth. A client-local optimistic
+      // id must not be stored as though it were an Agent entry id.
+      triggerMessageId: null,
       modelId,
     });
 
@@ -134,13 +115,21 @@ export async function runSendPipeline(
       patchMessage(setMessages, pendingId, { runId: run?.id ?? null });
     }
 
-    clearStreamTimer();
+    clearStreamUpdates();
     if (isCurrentSend()) {
-      streamTimer = window.setInterval(() => {
-        if (run && isCurrentSend()) {
+      stopStreamUpdates = await listen<{
+        threadId: string;
+        runId: string;
+        revision: number;
+        status: string;
+        resetProjection: boolean;
+      }>("thread-runtime-updated", (event) => {
+        if (run && event.payload.runId === run.id && isCurrentSend()) {
+          if (event.payload.resetProjection)
+            resetRunProjection(run.id);
           void updatePendingMessageFromRunEvents(run.id, pendingId, setMessages, isCurrentSend);
         }
-      }, 220);
+      });
     }
 
     const agentSessionId = thread.agentSessionId?.trim() || null;
@@ -157,7 +146,7 @@ export async function runSendPipeline(
       attachmentInputs(importedAttachments),
       thinkingLevel,
     );
-    clearStreamTimer();
+    clearStreamUpdates();
 
     if (reply.sessionRecreated) {
       // The agent lost this thread's session (data gone or cwd drift) and a
@@ -190,14 +179,7 @@ export async function runSendPipeline(
           // already-generated text permanently. This local send is the
           // only writer for the run, so there's no double-insert; on return to
           // the thread the reload restores it (stopped, per run.status).
-          const storedAssistantMessage = await appendMessage({
-            threadId: thread.id,
-            runId: run.id,
-            role: "assistant",
-            contentType: "markdown",
-            content: partial,
-            status: "complete",
-          });
+          const storedAssistantMessage = clientMessageRecord(run.id, partial, "complete");
           if (isCurrentSend()) {
             const abortedRender = deriveRenderFields(
               await safeListRunEvents(run.id),
@@ -243,14 +225,11 @@ export async function runSendPipeline(
       if (isCurrentSend()) {
         await refreshRecentRun(thread.id, thread.workspaceId);
       }
-      const storedAssistantMessage = await appendMessage({
-        threadId: thread.id,
-        runId: run.id,
-        role: "assistant",
-        contentType: "markdown",
-        content: reply.content.trim() || buildAgentFailureContent(interruptedMessage),
-        status: "failed",
-      });
+      const storedAssistantMessage = clientMessageRecord(
+        run.id,
+        reply.content.trim() || buildAgentFailureContent(interruptedMessage),
+        "failed",
+      );
       const partialRender = deriveRenderFields(
         await safeListRunEvents(run.id),
         storedAssistantMessage.content,
@@ -273,14 +252,11 @@ export async function runSendPipeline(
     if (isCurrentSend()) {
       await refreshRecentRun(thread.id, thread.workspaceId);
     }
-    const storedAssistantMessage = await appendMessage({
-      threadId: thread.id,
-      runId: run.id,
-      role: "assistant",
-      contentType: "markdown",
-      content: reply.content.trim() || i18n.t("agent:thread.agentDoneNoText"),
-      status: "complete",
-    });
+    const storedAssistantMessage = clientMessageRecord(
+      run.id,
+      reply.content.trim() || i18n.t("agent:thread.agentDoneNoText"),
+      "complete",
+    );
 
     // Streaming polls can lag the final text tail; re-project the now-complete
     // events so the inline segments match the persisted reply exactly.
@@ -307,7 +283,7 @@ export async function runSendPipeline(
     }
   }
   catch (error) {
-    clearStreamTimer();
+    clearStreamUpdates();
 
     const message = errorMessage(error);
     if (run) {
@@ -320,14 +296,7 @@ export async function runSendPipeline(
       }
     }
     const storedAssistantMessage = run
-      ? await appendMessage({
-          threadId: thread.id,
-          runId: run.id,
-          role: "assistant",
-          contentType: "markdown",
-          content: buildAgentFailureContent(message),
-          status: "failed",
-        })
+      ? clientMessageRecord(run.id, buildAgentFailureContent(message), "failed")
       : null;
     if (isCurrentSend()) {
       patchMessage(setMessages, pendingId, previous => ({
@@ -342,4 +311,14 @@ export async function runSendPipeline(
       onThreadActivity();
     }
   }
+}
+
+function clientMessageRecord(runId: string, content: string, status: "complete" | "failed") {
+  return {
+    id: clientId("local_assistant"),
+    runId,
+    content,
+    status,
+    createdAt: Date.now(),
+  };
 }

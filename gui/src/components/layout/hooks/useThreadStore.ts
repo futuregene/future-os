@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import i18n from "../../../i18n";
 import { pollStreamingThreadIds, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
@@ -190,10 +191,33 @@ export function useThreadStore(): ThreadStore {
     };
   }, []);
 
-  usePolling(() => refreshThreadRunStatuses(activeThreads), 1500, {
+  // Push updates are the primary path; this low-frequency pass is only
+  // reconciliation for a lost desktop event or backend restart.
+  usePolling(() => refreshThreadRunStatuses(activeThreads), 30_000, {
     enabled: activeThreads.length > 0,
     deps: [activeThreads, refreshThreadRunStatuses],
   });
+  useEffect(() => {
+    const unlisten = listen<{
+      threadId: string;
+      runId: string;
+      revision: number;
+      status: string;
+      resetProjection: boolean;
+    }>("thread-runtime-updated", (event) => {
+      const { threadId, status } = event.payload;
+      const terminal = ["completed", "failed", "cancelled"].includes(status);
+      setThreadRunStatuses(previous => ({
+        ...previous,
+        [threadId]: terminal
+          ? { status: status as ThreadRunInfo["status"], endedAt: Date.now() }
+          : { status: "running", endedAt: null },
+      }));
+    });
+    return () => {
+      void unlisten.then(stop => stop());
+    };
+  }, []);
   // Poll agent streaming status so threads that are being prompted by other
   // clients (TUI, CLI) show a running indicator without waiting for a local
   // StoredRun entry. ONE bulk call for all threads — the agent only scans

@@ -7,7 +7,6 @@ mod artifacts;
 mod cleanup;
 mod db;
 mod markdown_refs;
-mod messages;
 mod records;
 mod review_snapshots;
 mod runs;
@@ -42,7 +41,6 @@ pub use db::{
     thread_images_dir,
 };
 pub use markdown_refs::resolve_markdown_references;
-pub use messages::{append_message, list_messages, MessageRecord};
 pub use records::*;
 pub use review_snapshots::{
     create_review_snapshot, get_last_run_changeset, get_review_snapshot, get_run_changeset,

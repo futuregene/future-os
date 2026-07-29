@@ -1,6 +1,6 @@
-//! Prompt → persist pipeline for headless callers (no webview driving the
-//! store): create the run + user message, drive [`super::agent_prompt`], and
-//! finalize the run + assistant message with the SAME semantics the frontend
+//! Prompt pipeline for headless callers (no webview driving the store): create
+//! the local run, drive [`super::agent_prompt`], and finalize run metadata with
+//! the SAME semantics the frontend
 //! `handleSend` applies (CAS-guarded status writes; a stream that closes before
 //! `agent_end` persists the partial text but fails the run). Keeping this in
 //! `agent_bridge` means the finalization contract lives in one backend place —
@@ -22,7 +22,7 @@ pub struct PreparedPrompt {
     thinking_level: Option<String>,
 }
 
-/// Persist the user message and create the run for `thread`, returning the
+/// Create the run for `thread`, returning the
 /// identifiers the caller can immediately ack to its client.
 pub fn prepare_prompt_persisted(
     thread: &store::ThreadRecord,
@@ -35,18 +35,9 @@ pub fn prepare_prompt_persisted(
         .clone()
         .unwrap_or_else(|| thread.id.clone());
 
-    let user_msg = store::append_message(store::AppendMessageInput {
-        thread_id: thread.id.clone(),
-        run_id: None,
-        role: "user".to_string(),
-        content_type: Some("markdown".to_string()),
-        content: message.clone(),
-        status: Some("complete".to_string()),
-    })?;
-
     let run = store::create_run(store::CreateRunInput {
         thread_id: thread.id.clone(),
-        trigger_message_id: Some(user_msg.id),
+        trigger_message_id: None,
         model_provider: None,
         model_id: None,
     })?;
@@ -61,8 +52,8 @@ pub fn prepare_prompt_persisted(
     })
 }
 
-/// Drive the agent for a [`PreparedPrompt`] and finalize run + assistant
-/// message (mirrors the frontend `handleSend` settle branches).
+/// Drive the agent for a [`PreparedPrompt`] and finalize local run metadata.
+/// Conversation messages are persisted once, by the Agent JSONL writer.
 pub async fn run_prepared_prompt(prepared: PreparedPrompt) -> Result<(), crate::AppError> {
     let PreparedPrompt {
         thread_id,
@@ -95,35 +86,14 @@ pub async fn run_prepared_prompt(prepared: PreparedPrompt) -> Result<(), crate::
                 error_message: Some("Response interrupted before completion.".to_string()),
                 error_type: Some("stream_interrupted".to_string()),
             });
-            let _ = store::append_message(store::AppendMessageInput {
-                thread_id,
-                run_id: Some(run_id),
-                role: "assistant".to_string(),
-                content_type: Some("markdown".to_string()),
-                content: response.content,
-                status: Some("failed".to_string()),
-            });
             Ok(())
         }
-        Ok(response) => {
+        Ok(_) => {
             let _ = store::update_run_status_if_active(store::UpdateRunStatusInput {
                 run_id: run_id.clone(),
                 status: "completed".to_string(),
                 error_message: None,
                 error_type: None,
-            });
-            let content = if response.content.trim().is_empty() {
-                "Future Agent completed but returned no text.".to_string()
-            } else {
-                response.content
-            };
-            let _ = store::append_message(store::AppendMessageInput {
-                thread_id,
-                run_id: Some(run_id),
-                role: "assistant".to_string(),
-                content_type: Some("markdown".to_string()),
-                content,
-                status: Some("complete".to_string()),
             });
             Ok(())
         }
@@ -133,14 +103,6 @@ pub async fn run_prepared_prompt(prepared: PreparedPrompt) -> Result<(), crate::
                 status: "failed".to_string(),
                 error_message: Some(error.to_string()),
                 error_type: None,
-            });
-            let _ = store::append_message(store::AppendMessageInput {
-                thread_id,
-                run_id: Some(run_id),
-                role: "assistant".to_string(),
-                content_type: Some("markdown".to_string()),
-                content: format!("Future Agent error: {error}"),
-                status: Some("failed".to_string()),
             });
             Err(error)
         }

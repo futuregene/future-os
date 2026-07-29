@@ -15,6 +15,12 @@ export interface AgentSessionState {
   parentSessionId?: string | null;
   /** Whether the agent is currently streaming a response for this session. */
   isStreaming?: boolean;
+  activeRun?: {
+    runId: string;
+    epoch: number;
+    state: "starting" | "running" | "cancelling" | "cancellation_stuck" | "finalizing";
+    lastEventIdx: number;
+  } | null;
 }
 
 interface CacheEntry {
@@ -76,6 +82,7 @@ export async function getAgentState(threadId: string): Promise<AgentSessionState
         cwd: typeof raw.cwd === "string" ? raw.cwd : null,
         parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
         isStreaming: typeof raw.isStreaming === "boolean" ? raw.isStreaming : undefined,
+        activeRun: parseActiveRun(raw.activeRun),
       };
       if ((versions.get(threadId) ?? 0) === requestVersion) {
         cache.set(threadId, { state, fetchedAt: Date.now() });
@@ -91,6 +98,20 @@ export async function getAgentState(threadId: string): Promise<AgentSessionState
     });
   inFlight.set(threadId, request);
   return request;
+}
+
+function parseActiveRun(value: unknown): AgentSessionState["activeRun"] {
+  if (!value || typeof value !== "object")
+    return null;
+  const run = value as Record<string, unknown>;
+  if (typeof run.runId !== "string" || typeof run.state !== "string")
+    return null;
+  return {
+    runId: run.runId,
+    epoch: typeof run.epoch === "number" ? run.epoch : 0,
+    state: run.state as NonNullable<AgentSessionState["activeRun"]>["state"],
+    lastEventIdx: typeof run.lastEventIdx === "number" ? run.lastEventIdx : -1,
+  };
 }
 
 /**

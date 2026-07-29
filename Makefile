@@ -389,9 +389,9 @@ generate-models:
 	python3 scripts/generate_models.py
 
 generate-proto:
-	REGENERATE_PROTO=1 cd agent && cargo build
-	REGENERATE_PROTO=1 cd channels && cargo build
-	REGENERATE_PROTO=1 cd gui/src-tauri && cargo build
+	cd agent && REGENERATE_PROTO=1 cargo build
+	cd channels && REGENERATE_PROTO=1 cargo build
+	cd gui/src-tauri && REGENERATE_PROTO=1 cargo build
 	cd tui && npm run generate-proto
 
 # ─── Clean ──────────────────────────────────────────────────────────────────

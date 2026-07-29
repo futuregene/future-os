@@ -1,5 +1,9 @@
 //! Session management — 1:1 compatible with Go internal/session/
 
+mod persistence;
+
+pub use persistence::SessionPersistence;
+
 use crate::types::{Message, ToolCall};
 use crate::utils::{default_session_dir, generate_entry_id, generate_id};
 use anyhow::{anyhow, Context, Result};
@@ -349,6 +353,57 @@ impl Manager {
         Ok(())
     }
 
+    /// Atomically update one field in the `session_info` entry without loading
+    /// or rewriting the conversation through the repair pipeline.
+    ///
+    /// This is the safe metadata path while a run is active: `load()` repairs
+    /// dangling tool calls in memory for LLM consumption, and persisting that
+    /// repaired snapshot before the real tool result arrives would create a
+    /// duplicate tool entry.
+    pub fn update_session_info(
+        &self,
+        session_id: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<()> {
+        let path = self.session_path(session_id);
+        if !path.exists() {
+            return Err(anyhow!("session file does not exist yet"));
+        }
+        let lock_path = path.with_extension("jsonl.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(&lock_path)
+            .context("open session lock file")?;
+        let mut file_lock = fd_lock::RwLock::new(lock_file);
+        let _guard = file_lock.write().context("acquire session write lock")?;
+
+        let file = File::open(&path).context("open session file")?;
+        let mut entries = Vec::new();
+        for line in BufReader::new(file).lines() {
+            let line = line.context("read session line")?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            entries.push(
+                serde_json::from_str::<SessionEntry>(&line)
+                    .context("parse session entry for metadata update")?,
+            );
+        }
+        let info = entries
+            .iter_mut()
+            .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .and_then(|entry| entry.content.as_mut())
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| anyhow!("session {session_id} has no session_info object"))?;
+        info.insert(key.to_string(), value);
+
+        Self::write_entries_atomically(&path, &entries)
+    }
+
     pub fn save(&self, session: &Session) -> Result<()> {
         let path = self.session_path(&session.id);
         fs::create_dir_all(&self.dir).context("create session dir")?;
@@ -368,12 +423,16 @@ impl Manager {
         let mut file_lock = fd_lock::RwLock::new(lock_file);
         let _guard = file_lock.write().context("acquire session write lock")?;
 
+        Self::write_entries_atomically(&path, &session.entries)
+    }
+
+    fn write_entries_atomically(path: &Path, entries: &[SessionEntry]) -> Result<()> {
         // Write to a temp file and rename atomically so a mid-write crash
         // never leaves a partially-written (corrupt) JSONL behind.
         let tmp_path = path.with_extension("jsonl.tmp");
         let file = File::create(&tmp_path).context("create temp session file")?;
         let mut w = std::io::BufWriter::new(file);
-        for entry in &session.entries {
+        for entry in entries {
             let json = serde_json::to_string(entry).context("serialize entry")?;
             writeln!(w, "{}", json).context("write entry")?;
         }
@@ -393,7 +452,7 @@ impl Manager {
         // external locker's hold time.
         let mut rename_attempts = 0u32;
         loop {
-            match fs::rename(&tmp_path, &path) {
+            match fs::rename(&tmp_path, path) {
                 Ok(()) => break,
                 Err(e) if rename_attempts >= 5 => {
                     return Err(e).context("rename temp to final after 5 attempts");
@@ -410,7 +469,6 @@ impl Manager {
             }
         }
 
-        // Lock released when _guard goes out of scope
         Ok(())
     }
 
@@ -1971,6 +2029,67 @@ mod tests {
             on_disk.lines().count(),
             2,
             "dangling repair must not be persisted to the session file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn metadata_update_does_not_persist_dangling_tool_repair() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_metadata_dangling_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session.entries.push(SessionEntry::session_info(
+            serde_json::json!({"model": "gpt-4o"}),
+            "gpt-4o".to_string(),
+            String::new(),
+        ));
+        session.entries.push(SessionEntry::new_assistant(
+            serde_json::json!("running tool"),
+            vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({"cmd": "ls"}),
+                },
+            }],
+        ));
+        manager.save(&session).unwrap();
+
+        manager
+            .update_session_info(
+                &session.id,
+                "session_name",
+                serde_json::json!("renamed while running"),
+            )
+            .unwrap();
+
+        let on_disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
+        let entries: Vec<SessionEntry> = on_disk
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            2,
+            "metadata update must not persist a synthetic tool result"
+        );
+        assert!(entries
+            .iter()
+            .all(|entry| entry.entry_type != ENTRY_TYPE_TOOL));
+        assert_eq!(
+            entries[0]
+                .content
+                .as_ref()
+                .and_then(|content| content.get("session_name")),
+            Some(&serde_json::json!("renamed while running"))
         );
 
         let _ = std::fs::remove_dir_all(&dir);

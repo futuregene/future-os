@@ -32,7 +32,15 @@ const __dirname = dirname(__filename);
 
 // ─── Embedded Proto ──────────────────────────────────────────────────────
 
-const EMBEDDED_PROTO = `syntax = "proto3";
+const EMBEDDED_PROTO = `// future.proto — Protocol Buffers schema for FutureAgent
+//
+// This is the canonical API definition for the FutureAgent engine.
+// Generated Rust code (agent/src/grpc/generated/proto.rs) is used by
+// the agent, channel bridge, TUI, and CLI.
+//
+// Field numbers are stable and MUST NOT be reused.
+
+syntax = "proto3";
 
 package proto;
 
@@ -40,108 +48,379 @@ option go_package = "github.com/futuregene/future-os/proto/go;proto";
 option java_package = "ai.proto";
 option java_multiple_files = true;
 
+// =============================================================================
+// RPC Commands — sent by clients (TUI / channel bridge / CLI) to the agent
+// =============================================================================
+
 message RpcCommand {
+  // Unique request correlation ID (UUID v4).  Echoed back in RpcResponse.id
+  // so the client can match requests to responses.
   string id = 1;
+
+  // Command name, e.g. "prompt", "get_state", "new_session", "abort".
+  // Determines which handler processes this request.
   string type = 2;
+
+  // ── Prompting ──────────────────────────────────────────────────────────
+
+  // User prompt text.  Required for "prompt", "steer", "follow_up".
   string message = 10;
+
+  // Images attached to the prompt (base64, URL, or file path).
   repeated ImageContent images = 11;
+
+  // How to queue the prompt: "steer" (interrupt current run) or
+  // "followUp" (enqueue after current run completes).
   string streaming_behavior = 12;
+
+  // ── fork / new_session ─────────────────────────────────────────────────
+
+  // Parent session ID when forking.  If empty, fork uses the current
+  // session.  Also used by new_session to record lineage.
   string parent_session = 20;
+
+  // ── set_model ──────────────────────────────────────────────────────────
+
+  // Canonical model ID.  If it contains a "/", the part before the slash
+  // is treated as the provider.  Example: "deepseek/deepseek-chat".
   string model_id = 31;
+
+  // ── set_thinking_level ─────────────────────────────────────────────────
+
+  // Thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
   string level = 40;
+
+  // ── set_steering_mode / set_follow_up_mode ─────────────────────────────
+
+  // Queue mode: "all" (accept all) or "one-at-a-time" (replace pending).
   string mode = 50;
+
+  // ── compact ────────────────────────────────────────────────────────────
+
+  // Optional custom instructions for the compaction summariser.
   string custom_instructions = 60;
+
+  // ── set_auto_compaction / set_auto_retry ───────────────────────────────
+
+  // Toggle flag (true = on, false = off).
   bool enabled = 70;
+
+  // ── shell (execute shell command via the agent) ─────────────────────────
+
+  // Shell command string.  Used when cmd_type = "shell".
   string command = 80;
+
+  // ── Session bookkeeping ────────────────────────────────────────────────
+
+  // Target session ID.  Almost every command requires this so the
+  // agent knows which session to operate on.  new_session uses it
+  // as the requested ID (generated if empty).
   string session_id = 91;
+
+  // Entry ID within a session (e.g. a specific tool-call for approval).
   string entry_id = 92;
+
+  // Session name (set by /name command).  Used with set_session_name.
   string name = 93;
+
+  // ── new_session cwd ────────────────────────────────────────────────────
+
+  // Working directory for the new session.  The agent resolves "~" and
+  // relative paths.  Defaults to ~/.future/agent/workspace.
   string cwd = 95;
+
+  // ── set_system_prompt ──────────────────────────────────────────────────
+
+  // Custom system prompt that replaces or appends to the built-in prompt.
   string system_prompt = 100;
+
+  // ── set_tools / disable_tools ──────────────────────────────────────────
+
+  // List of tool names to enable (e.g. ["read", "write", "edit", "shell"]).
   repeated string tools = 110;
+
+  // ── set_ephemeral ──────────────────────────────────────────────────────
+
+  // If true, the session is not persisted to disk.
   bool ephemeral = 120;
+
+  // ── set_enabled_models ─────────────────────────────────────────────────
+
+  // List of model IDs that the user is allowed to select.  Empty means
+  // all models are available.
   repeated string enabled_models = 130;
+
+  // ── get_events_since (P1) ──────────────────────────────────────────────
+  // Replay current-run events with idx > since_idx; run_id scopes the request
+  // (a mismatch means the run rolled over and the caller must realign).
   int64 since_idx = 140;
   string run_id = 141;
+
+  // Optional run identity proposed by a client that has already created its
+  // local run record. The Agent validates/adopts it atomically and returns the
+  // canonical id in the prompt acknowledgement.
+  string requested_run_id = 142;
+
+  // Idempotency key for retrying StartRun independently of run identity.
+  string client_request_id = 143;
+
+  // ── set_sandbox_policy ─────────────────────────────────────────────────
+  // Session sandbox + approval policy (typed sub-message, not JSON-in-string).
+  // Read when type == "set_sandbox_policy".
   SandboxPolicy sandbox_policy = 150;
+
+  // ── Attachments (GUI) ──────────────────────────────────────────────────
+  // Structured attachments referenced by absolute local path. The agent
+  // injects each file's path into the model-visible message (so the model can
+  // read it with its own tools) and records the list in the user entry's meta.
+  // Images additionally carry base64 and are sent as image_url when the active
+  // model accepts image input; otherwise they degrade to a path reference.
   repeated Attachment attachments = 151;
 }
 
+// ── Attachment ───────────────────────────────────────────────────────────────
+// A local file the user attached to a prompt. Files are NOT copied — the path
+// is the original on-disk location, read on demand by the agent's tools.
+
 message Attachment {
+  // Absolute local filesystem path (original, not a workspace copy). For images
+  // the agent reads + (down)encodes this to base64 itself — base64 never travels
+  // over the wire.
   string path = 1;
+  // "image" | "file".
   string kind = 2;
+  // Display name (basename), for UI + the injected path block.
   string name = 3;
+
+  reserved 4;  // was \`base64\` — images are now read from \`path\` on the agent
+
+  // Optional absolute path to a cached thumbnail (images only). Not model-facing
+  // — carried through to the user entry's meta so the GUI can render the chip
+  // after a reload (messages are reconstructed from the agent JSONL).
   string thumbnail = 5;
 }
 
+// ── SandboxPolicy ────────────────────────────────────────────────────────────
+// OS-sandbox boundary + approval policy for a session. The agent enforces the
+// sandbox on spawned shell commands (Seatbelt on macOS) and uses the approval
+// policy to decide when to raise approval requests. See gui/SANDBOX_PLAN.md.
+
 message SandboxPolicy {
+  // Rules live in on-disk files the agent reads directly (gui/APPROVAL_PLAN.md);
+  // only the approval tier travels over the wire.
+  reserved 1 to 5;  // v1: sandbox_mode / writable_roots / network_access / approval_policy / rules
+  reserved 6;        // v2a: bool enabled (superseded by tier)
+  // "off" (unrestricted) | "manual" (approval required) | "sandbox" (macOS Seatbelt, macOS only).
   string tier = 7;
 }
 
+// ── ImageContent ───────────────────────────────────────────────────────────
+
 message ImageContent {
+  // Image source type: "image_url", "image_base64", or "image_file".
   string type = 1;
+
+  // Mutually exclusive content reference.
   oneof content {
+    // Remote image URL (HTTP/HTTPS).
     string url = 10;
+    // Base64-encoded image data.
     string base64 = 11;
   }
+
+  // Local filesystem path after the image is saved to disk.
   string file_path = 12;
 }
 
+// =============================================================================
+// RPC Responses — returned by the agent for every ExecuteCommand call
+// =============================================================================
+
 message RpcResponse {
+  // Echo of the request ID for correlation.
   string id = 1;
+
+  // Fixed literal "response".
   string type = 2;
+
+  // The command this response belongs to (echo of RpcCommand.type).
   string command = 3;
+
+  // true on success, false on error.
   bool success = 4;
+
+  // JSON-serialised response payload.  Structure depends on the command.
   string data = 5;
+
+  // Error message when success is false.
   string error = 6;
 }
 
+// =============================================================================
+// Session State — returned by get_state (the fields displayed in /status)
+// =============================================================================
+
 message SessionState {
+  // Currently active model ID (e.g. "deepseek-v4-pro").
   string model = 1;
+
+  // Thinking / effort level: "off", "minimal", "low", "medium", "high", "xhigh".
   string thinking_level = 2;
+
+  // Whether the agent loop is currently processing a prompt.
   bool is_streaming = 3;
+
+  // Whether a compaction run is in progress (always false in current code).
   bool is_compacting = 4;
+
+  // Steering queue mode: "all" or "one-at-a-time".
   string steering_mode = 5;
+
+  // Follow-up queue mode: "all" or "one-at-a-time".
   string follow_up_mode = 6;
+
+  // Reserved for session file path.  Always null in current code.
   string session_file = 7;
+
+  // Current session ID (unique, generated on creation).
   string session_id = 8;
+
+  // User-assigned session name, or empty if unnamed.
   string session_name = 9;
+
+  // Whether this session was explicitly created via /new (vs. auto-created).
   bool explicit_session = 10;
+
+  // Whether automatic context compaction is enabled.
   bool auto_compaction_enabled = 11;
+
+  // Number of user messages (prompts + steer + follow_up).  Excludes
+  // internal tool/assistant messages.  Displayed as "Queries" in /status.
   int32 query_count = 12;
+
+  // Number of messages queued but not yet processed (steering + follow_up).
   int32 pending_message_count = 13;
+
+  // Agent version string (from Cargo.toml).
   string version = 14;
+
+  // Working directory for the session.
   string cwd = 15;
+
+  // Discovered skill names available in this session.
   repeated string skills = 16;
+
+  // Context file paths loaded via CLAUDE.md / AGENTS.md / GEMINI.md.
   repeated string context_files = 17;
+
+  // Reserved for UI extensions.  Always null in current code.
   repeated string extensions = 18;
+
+  // Current estimated context token count (from last API call's prompt_tokens,
+  // with fallback to heuristic estimation).
   int64 context_tokens = 19;
+
+  // Model's maximum context window in tokens.
   int64 context_window = 20;
+
+  // context_tokens as a percentage of context_window (0.0–100.0).
   double context_percent = 21;
+
+  // Cumulative input tokens consumed in this session.
   int64 tokens_in = 22;
+
+  // Cumulative output tokens produced in this session.
   int64 tokens_out = 23;
+
+  // Cumulative cost in CNY (¥).
   double total_cost = 24;
+
+  // Whether the current model supports image input (multimodal).
   bool image_support = 25;
+
+  // Cumulative cache-read tokens (prompt caching hits).
   int64 tokens_cache_r = 26;
+
+  // Cumulative cache-write tokens (prompt caching writes).
   int64 tokens_cache_w = 27;
+
+  // Tool execution permission level: "all" (unrestricted), "workspace"
+  // (cwd only), or "none" (read-only tools).
   string permission_level = 28;
 }
 
+// =============================================================================
+// gRPC Service Definition
+// =============================================================================
+
 service FutureAgent {
+  // Unary RPC: send a command, get a response.
+  // Used by the TUI and channel bridge for all non-streaming operations
+  // (prompt, get_state, new_session, abort, set_model, etc.).
   rpc ExecuteCommand(RpcCommand) returns (RpcResponse);
+
+  // Server-side streaming RPC: subscribe to agent events.
+  // The TUI uses this for real-time text/tool/thinking updates.
   rpc StreamEvents(StreamRequest) returns (stream StreamEvent);
 }
 
+// ── StreamRequest ───────────────────────────────────────────────────────────
+
 message StreamRequest {
+  // Optional list of event types to receive.  Empty = all events.
+  // Valid types: "ping", "agent_start", "agent_end", "text_chunk",
+  // "thinking_start", "thinking_delta", "thinking_end", "tool_start",
+  // "tool_delta", "tool_end", "approval_request", "error", "stop".
   repeated string event_types = 1;
+
+  // Scope events to a specific session.  Required so the agent
+  // knows which session's broadcaster to subscribe to.
   string session_id = 2;
+
+  // Atomic resume parameters. When atomic_attach is true, the server registers
+  // the receiver and snapshots buffered events under the journal's same lock.
+  string run_id = 3;
+  int64 after_idx = 4;
+  bool atomic_attach = 5;
 }
 
+// ── StreamEvent ─────────────────────────────────────────────────────────────
+
 message StreamEvent {
+  // Event type string (see StreamRequest.event_types).
   string type = 1;
+
+  // JSON-serialised event payload.  Structure depends on the event type.
+  // Examples:
+  //   text_chunk:    {"text": "Hello"}
+  //   thinking_delta: {"text": "I need to..."}
+  //   tool_start:    {"tool_id": "...", "tool_name": "read"}
+  //   tool_end:      {"tool_id": "...", "text": "output..."}
+  //   tool_delta:    {"tool_id": "...", "text": "partial args..."}
+  //   approval_request: {"approval_request_id": "...", "tool_name": "shell", ...}
+  //   agent_end:     {"error": "..."}  (error present only on failure)
   string data = 2;
+
+  // P1: client-side ordering/dedup. run_id is unique per user run (assigned once
+  // at the is_streaming false→true edge); idx is monotonic within a run.
   string run_id = 3;
   int64 idx = 4;
+
+  // When true, this frame replaces the consumer's local projection through
+  // snapshot_cursor. It is returned by atomic AttachRun when the requested
+  // cursor predates the bounded replay ring.
+  bool projection_snapshot = 5;
+  repeated ProjectedRunEvent snapshot_events = 6;
+  int64 snapshot_cursor = 7;
+}
+
+// A compressed semantic event contained in a projection snapshot. Its idx is
+// the latest source cursor folded into this event, preserving chronological
+// ordering while allowing adjacent token deltas to be coalesced.
+message ProjectedRunEvent {
+  string type = 1;
+  string data = 2;
+  int64 idx = 3;
 }
 `;
 
@@ -330,10 +609,15 @@ export class RunClient {
         try {
           const rawData =
             typeof response.data === "string"
-              ? JSON.parse(response.data)
+              ? (response.data ? JSON.parse(response.data) : {})
               : response.data;
           const event: AgentEvent = {
             type: response.type || "message",
+            runId: response.runId,
+            idx: Number(response.idx ?? 0),
+            projectionSnapshot: Boolean(response.projectionSnapshot),
+            snapshotCursor: Number(response.snapshotCursor ?? 0),
+            snapshotEvents: response.snapshotEvents ?? [],
             ...rawData,
           };
           events.push(event);

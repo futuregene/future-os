@@ -104,20 +104,40 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             };
             let mut sess = wlock!(session, id);
-            if sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
-                RpcResponse::build_fail(
+            if let Some(lease) = sess.runtime.request_lease(&cmd.client_request_id) {
+                return RpcResponse::ok(
                     id,
                     "prompt",
-                    "agent is still streaming; wait or abort first",
-                )
-            } else {
-                match sess.prompt(&cmd.message, &cmd.images, &cmd.attachments) {
-                    Ok(()) => RpcResponse::ok(id, "prompt", serde_json::json!({})),
-                    Err(e) => RpcResponse::build_fail(id, "prompt", &e.to_string()),
-                }
+                    serde_json::json!({
+                        "run_id": lease.run_id,
+                        "run_epoch": lease.epoch,
+                        "accepted_state": "existing",
+                    }),
+                );
+            }
+            match sess.prompt(
+                &cmd.message,
+                &cmd.images,
+                &cmd.attachments,
+                Some(&cmd.requested_run_id),
+                Some(&cmd.client_request_id),
+            ) {
+                Ok(lease) => RpcResponse::ok(
+                    id,
+                    "prompt",
+                    serde_json::json!({
+                        "run_id": lease.run_id,
+                        "run_epoch": lease.epoch,
+                        "accepted_state": "running",
+                    }),
+                ),
+                Err(e) => RpcResponse::build_fail(id, "prompt", &e.to_string()),
             }
         }
-        "steer" => match wlock!(session, id).steer(&cmd.message) {
+        "steer" => match wlock!(session, id).steer_run(
+            &cmd.message,
+            (!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()),
+        ) {
             Ok(()) => RpcResponse::ok(id, "steer", serde_json::json!({})),
             Err(e) => RpcResponse::build_fail(id, "steer", &e.to_string()),
         },
@@ -132,7 +152,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "agent is shutting down; no new prompts accepted",
                 );
             }
-            match wlock!(session, id).follow_up(&cmd.message) {
+            match wlock!(session, id).follow_up_run(
+                &cmd.message,
+                (!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()),
+            ) {
                 Ok(()) => RpcResponse::ok(id, "follow_up", serde_json::json!({})),
                 Err(e) => RpcResponse::build_fail(id, "follow_up", &e.to_string()),
             }
@@ -141,15 +164,19 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // abort() only needs &self — take a read lock so a concurrent
             // reader (get_state polling) can never make the abort a no-op,
             // which a failed try_write() silently did.
-            let session_id = {
+            let abort_result = {
                 let sess = rlock!(session, id);
-                sess.abort();
-                sess.session_id.clone()
+                sess.abort_run((!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()))
+                    .map(|()| sess.session_id.clone())
+            };
+            let session_id = match abort_result {
+                Ok(session_id) => session_id,
+                Err(error) => return RpcResponse::build_fail(id, "abort", &error.to_string()),
             };
             state
                 .approval_gate
                 .cancel_session(&session_id, "Cancelled because the run was terminated.");
-            RpcResponse::ok(id, "abort", serde_json::json!({}))
+            RpcResponse::ok(id, "abort", serde_json::json!({"run_id": cmd.run_id}))
         }
         "approval_decision" => {
             let (approved, status) = match cmd.mode.as_str() {
@@ -194,15 +221,19 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "get_events_since" => {
             // P1: backfill current-run events with idx > since_idx (Bridge reconnect).
-            let (run_id, events, min_idx) = {
+            let replay = {
                 let sess = rlock!(session, id);
                 sess.broadcaster.events_since(&cmd.run_id, cmd.since_idx)
             };
-            // A full backfill (`since_idx < 0`) whose earliest buffered event is
-            // past idx 0 means the run's opening was dropped on buffer overflow —
-            // tell the client so it can flag the gap rather than show a truncated
-            // reconstruction as if complete.
-            let truncated = cmd.since_idx < 0 && min_idx > 0;
+            let (run_id, events, _min_idx, projection) = match replay {
+                Ok(replay) => replay,
+                Err(error) => {
+                    return RpcResponse::build_fail(id, "get_events_since", &error.to_string());
+                }
+            };
+            // A cursor older than the replay ring returns a complete compressed
+            // projection instead of a knowingly incomplete event tail.
+            let truncated = projection.is_some();
             let events: Vec<serde_json::Value> = events
                 .into_iter()
                 .map(|e| {
@@ -214,10 +245,29 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     })
                 })
                 .collect();
+            let projection = projection.map(|snapshot| {
+                serde_json::json!({
+                    "runId": snapshot.run_id,
+                    "cursor": snapshot.cursor,
+                    "events": snapshot.events.into_iter().map(|event| {
+                        serde_json::json!({
+                            "type": event.event_type,
+                            "data": event.data,
+                            "runId": event.run_id,
+                            "idx": event.idx,
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            });
             RpcResponse::ok(
                 id,
                 "get_events_since",
-                serde_json::json!({"runId": run_id, "events": events, "truncated": truncated}),
+                serde_json::json!({
+                    "runId": run_id,
+                    "events": events,
+                    "truncated": truncated,
+                    "projection": projection,
+                }),
             )
         }
         "set_model" => {
@@ -366,30 +416,22 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "set_session_name" => {
-            let (session_manager, session_id) = {
+            let (session_manager, session_id, persistence) = {
                 let mut sess = wlock!(session, id);
                 sess.set_session_name(&cmd.name);
-                (sess.session_manager.clone(), sess.session_id.clone())
+                (
+                    sess.session_manager.clone(),
+                    sess.session_id.clone(),
+                    sess.persistence.clone(),
+                )
             };
-            // Update session_info so name survives restarts
-            if let Ok(mut s) = session_manager.load(&session_id) {
-                // Update session_info entry's session_name field
-                if let Some(info_entry) = s
-                    .entries
-                    .iter_mut()
-                    .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+            // Update session_info in the same order as run persistence.
+            if session_manager.find(&session_id).is_some() {
+                if let Err(error) = persistence
+                    .update_info("session_name", serde_json::Value::String(cmd.name.clone()))
                 {
-                    if let Some(ref mut content) = info_entry.content {
-                        if let Some(obj) = content.as_object_mut() {
-                            obj.insert(
-                                "session_name".to_string(),
-                                serde_json::Value::String(cmd.name.clone()),
-                            );
-                        }
-                    }
+                    tracing::error!("Failed to persist session name: {error:#}");
                 }
-                s.name = cmd.name.clone();
-                let _ = session_manager.save(&s);
             }
             let broadcaster = {
                 let sess = rlock!(session, id);
@@ -510,24 +552,22 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // always a clean directory path — "project/ " produces a
             // phantom workspace name (" ") on import.
             let cwd: String = cmd.cwd.trim().trim_end_matches(['/', '\\']).to_string();
-            let (session_manager, session_id) = {
+            let (session_manager, session_id, persistence) = {
                 let mut sess = wlock!(session, id);
                 sess.set_cwd(&cwd);
-                (sess.session_manager.clone(), sess.session_id.clone())
+                (
+                    sess.session_manager.clone(),
+                    sess.session_id.clone(),
+                    sess.persistence.clone(),
+                )
             };
             // Persist to session JSONL so the cwd survives restarts.
-            if let Ok(mut s) = session_manager.load(&session_id) {
-                // Update the session_info entry's cwd in the content JSON.
-                if let Some(info) = s
-                    .entries
-                    .iter_mut()
-                    .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
-                    .and_then(|e| e.content.as_mut())
+            if session_manager.find(&session_id).is_some() {
+                if let Err(error) =
+                    persistence.update_info("cwd", serde_json::Value::String(cwd.clone()))
                 {
-                    info["cwd"] = serde_json::Value::String(cwd.clone());
+                    tracing::error!("Failed to persist cwd: {error:#}");
                 }
-                s.cwd = cwd.clone();
-                let _ = session_manager.save(&s);
             }
             let broadcaster = {
                 let sess = rlock!(session, id);
@@ -1721,6 +1761,43 @@ mod tests {
     }
 
     #[test]
+    fn stale_run_scoped_commands_are_rejected_without_touching_current_run() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        let lease = session
+            .read()
+            .runtime
+            .begin(Some("run-current"), None)
+            .unwrap();
+
+        for command_type in ["steer", "follow_up", "abort"] {
+            let mut cmd = make_cmd(command_type);
+            cmd.run_id = "run-old".to_string();
+            cmd.message = "late control".to_string();
+            let response = parse_response(&handle_command_internal(&state, cmd));
+            assert_eq!(response["success"], false, "{command_type}");
+            assert!(response["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("run-old")));
+            assert_eq!(
+                session.read().runtime.snapshot().unwrap().phase,
+                crate::runtime::RunPhase::Starting
+            );
+        }
+
+        let mut abort = make_cmd("abort");
+        abort.run_id = "run-current".to_string();
+        let response = parse_response(&handle_command_internal(&state, abort));
+        assert_eq!(response["success"], true);
+        assert_eq!(
+            session.read().runtime.snapshot().unwrap().phase,
+            crate::runtime::RunPhase::Cancelling
+        );
+        assert!(session.read().runtime.begin_finalizing(&lease));
+        assert!(session.read().runtime.finish(&lease));
+    }
+
+    #[test]
     fn get_messages_returns_empty() {
         let state = make_app_state();
         let cmd = make_cmd("get_messages");
@@ -1900,14 +1977,16 @@ mod tests {
     }
 
     #[test]
-    fn get_events_since_empty() {
+    fn get_events_since_rejects_unknown_run() {
         let state = make_app_state();
         let mut cmd = make_cmd("get_events_since");
         cmd.run_id = "run_1".to_string();
         cmd.since_idx = -1;
         let resp = parse_response(&handle_command_internal(&state, cmd));
-        assert_eq!(resp["success"], true);
-        assert!(resp["data"]["events"].is_array());
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not the active run")));
     }
 
     #[test]

@@ -77,6 +77,14 @@ pub struct RpcCommand {
     pub since_idx: i64,
     #[prost(string, tag = "141")]
     pub run_id: ::prost::alloc::string::String,
+    /// Optional run identity proposed by a client that has already created its
+    /// local run record. The Agent validates/adopts it atomically and returns the
+    /// canonical id in the prompt acknowledgement.
+    #[prost(string, tag = "142")]
+    pub requested_run_id: ::prost::alloc::string::String,
+    /// Idempotency key for retrying StartRun independently of run identity.
+    #[prost(string, tag = "143")]
+    pub client_request_id: ::prost::alloc::string::String,
     /// ── set_sandbox_policy ─────────────────────────────────────────────────
     /// Session sandbox + approval policy (typed sub-message, not JSON-in-string).
     /// Read when type == "set_sandbox_policy".
@@ -264,6 +272,14 @@ pub struct StreamRequest {
     /// knows which session's broadcaster to subscribe to.
     #[prost(string, tag = "2")]
     pub session_id: ::prost::alloc::string::String,
+    /// Atomic resume parameters. When atomic_attach is true, the server registers
+    /// the receiver and snapshots buffered events under the journal's same lock.
+    #[prost(string, tag = "3")]
+    pub run_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "4")]
+    pub after_idx: i64,
+    #[prost(bool, tag = "5")]
+    pub atomic_attach: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StreamEvent {
@@ -286,6 +302,27 @@ pub struct StreamEvent {
     #[prost(string, tag = "3")]
     pub run_id: ::prost::alloc::string::String,
     #[prost(int64, tag = "4")]
+    pub idx: i64,
+    /// When true, this frame replaces the consumer's local projection through
+    /// snapshot_cursor. It is returned by atomic AttachRun when the requested
+    /// cursor predates the bounded replay ring.
+    #[prost(bool, tag = "5")]
+    pub projection_snapshot: bool,
+    #[prost(message, repeated, tag = "6")]
+    pub snapshot_events: ::prost::alloc::vec::Vec<ProjectedRunEvent>,
+    #[prost(int64, tag = "7")]
+    pub snapshot_cursor: i64,
+}
+/// A compressed semantic event contained in a projection snapshot. Its idx is
+/// the latest source cursor folded into this event, preserving chronological
+/// ordering while allowing adjacent token deltas to be coalesced.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectedRunEvent {
+    #[prost(string, tag = "1")]
+    pub r#type: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub data: ::prost::alloc::string::String,
+    #[prost(int64, tag = "3")]
     pub idx: i64,
 }
 /// Generated client implementations.

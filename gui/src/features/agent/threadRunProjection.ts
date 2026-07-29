@@ -23,7 +23,7 @@ export function patchMessage(
 }
 
 // ── Incremental live-preview projection ──────────────────────────────────
-// The 220ms live-preview poll used to fetch the run's ENTIRE event log every
+// Runtime-update projection used to fetch the run's ENTIRE event log every
 // tick and re-project it from scratch (O(n) per tick → O(n²) over a run, with
 // every payload re-parsed and re-serialized across IPC). Instead, each run
 // keeps a stateful projector here; every tick fetches only the events with
@@ -38,6 +38,15 @@ interface LiveProjectionEntry {
 const LIVE_PROJECTION_CACHE_MAX = 8;
 
 const liveProjectionCache = new Map<string, LiveProjectionEntry>();
+
+/**
+ * Drop an incremental projector after the backend replaces its local event
+ * log with an Agent projection snapshot. The next push rebuilds from the new
+ * complete log instead of appending compressed snapshot text to a stale prefix.
+ */
+export function resetRunProjection(runId: string) {
+  liveProjectionCache.delete(runId);
+}
 
 /**
  * Fetch a run's unseen events and advance its cached projector, honoring the
@@ -322,21 +331,37 @@ function isCompactionDivider(message: AgentMessage): boolean {
  * losing the Retry/Continue affordance, the "stopped" marker, and the model
  * badge.
  *
- * `runs` arrive newest-first (`list_runs` orders by `created_at DESC`); real
- * assistant turns arrive oldest-first. Aligning from the newest end pairs the
- * most-recent turn with the most-recent run — the pairing that matters, since a
- * failure lands on the latest turn and `canRecover` only applies to the last
- * message. Counts can differ (a run that failed before emitting an assistant
- * entry, or a fork/import that synthesized a `completed` run); the extra items
- * on either end are simply ignored rather than force-matched into a misalignment.
+ * New Agent entries carry canonical run ids and bind exactly. The positional /
+ * timestamp logic below is retained only as a compatibility reader for legacy
+ * JSONL written before run identity was persisted.
  */
 export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): AgentMessage[] {
   if (!runs.length)
     return messages;
+  const runsById = new Map(runs.map(run => [run.id, run]));
+  const patched = [...messages];
+  const boundRunIds = new Set<string>();
+
+  for (let index = 0; index < patched.length; index++) {
+    const message = patched[index]!;
+    if (message.role !== "assistant" || !message.runId)
+      continue;
+    const run = runsById.get(message.runId);
+    if (!run)
+      continue;
+    patched[index] = applyRunToMessage(message, run);
+    boundRunIds.add(run.id);
+  }
+
   // Indices of real assistant turns, oldest-first; reversed to newest-first to
-  // zip against the newest-first runs.
-  const turnIndices = messages
-    .map((message, index) => (message.role === "assistant" && !isCompactionDivider(message) ? index : -1))
+  // zip against newest-first legacy runs. Canonically-bound turns never enter
+  // this fallback.
+  const turnIndices = patched
+    .map((message, index) => (
+      message.role === "assistant" && !message.runId && !isCompactionDivider(message)
+        ? index
+        : -1
+    ))
     .filter(index => index >= 0)
     .reverse();
 
@@ -344,7 +369,8 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
   // active run to an old assistant turn (positional misalignment after an
   // abort) would steal the runId and block the streaming bubble from ever
   // appearing.
-  const settledAll = runs.filter(run => matchesSettledRun(run.status));
+  const settledAll = runs.filter(run =>
+    matchesSettledRun(run.status) && !boundRunIds.has(run.id));
 
   // Exclude orphan runs (no turn inside their window — the run failed before
   // the agent saved any assistant entry). Pairing them positionally would stamp
@@ -369,28 +395,30 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
   const skipNewest = Math.min(Math.max(turnIndices.length - settled.length, 0), inFlight);
   const assignable = turnIndices.slice(skipNewest);
 
-  const patched = [...messages];
   for (let i = 0; i < assignable.length && i < settled.length; i++) {
     const index = assignable[i]!;
     const run = settled[i]!;
-    const message = patched[index]!;
-    // An aborted turn projects with no content and no reply time (the agent
-    // saved no assistant entry). Stamp it with the run's end time — the actual
-    // stop time — instead of the session-derived fallback. A turn with real
-    // content keeps its own recorded reply time.
-    const isEmpty = !message.content.trim() && !message.segments?.length;
-    const stopTime = isEmpty ? runEndedIso(run) : null;
-    patched[index] = {
-      ...message,
-      runId: run.id,
-      modelId: run.modelId ?? message.modelId,
-      stopped: run.status === "cancelled",
-      status: run.status === "failed" ? "failed" : (message.status ?? "complete"),
-      durationMs: message.durationMs ?? runDurationMs(run),
-      createdAt: stopTime ?? message.createdAt,
-    };
+    patched[index] = applyRunToMessage(patched[index]!, run);
   }
   return patched;
+}
+
+function applyRunToMessage(message: AgentMessage, run: StoredRun): AgentMessage {
+  // An aborted turn projects with no content and no reply time (the agent
+  // saved no assistant entry). Stamp it with the run's end time — the actual
+  // stop time — instead of the session-derived fallback. A turn with real
+  // content keeps its own recorded reply time.
+  const isEmpty = !message.content.trim() && !message.segments?.length;
+  const stopTime = isEmpty ? runEndedIso(run) : null;
+  return {
+    ...message,
+    runId: run.id,
+    modelId: run.modelId ?? message.modelId,
+    stopped: run.status === "cancelled",
+    status: run.status === "failed" ? "failed" : (message.status ?? "complete"),
+    durationMs: message.durationMs ?? runDurationMs(run),
+    createdAt: stopTime ?? message.createdAt,
+  };
 }
 
 /** The run's end (stop) time as ISO, or null when the run recorded none. */

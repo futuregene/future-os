@@ -3,19 +3,52 @@
 //! and the parent module's prompt finalization.
 
 use super::client::{
-    base_command, connect_agent, get_state_command, map_rpc_error, RpcResponseExt,
+    connect_agent, get_state_command, map_rpc_error, run_control_command, RpcResponseExt,
 };
+use super::replica::AGENT_REPLICAS;
 use crate::store;
 
-pub(super) async fn abort_agent_thread(thread_id: &str) -> Result<(), crate::AppError> {
+async fn canonical_active_run_id(
+    client: &mut crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    session_id: &str,
+) -> Result<Option<String>, crate::AppError> {
+    let response = client
+        .execute_command(get_state_command(session_id.to_string()))
+        .await
+        .map_err(|status| map_rpc_error("Unable to read Future Agent run state", status))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the state request.")?;
+    let state: serde_json::Value = serde_json::from_str(&response.data)
+        .map_err(|error| format!("Future Agent returned invalid state: {error}"))?;
+    Ok(state
+        .get("activeRun")
+        .and_then(|run| run.get("runId"))
+        .and_then(|run_id| run_id.as_str())
+        .filter(|run_id| !run_id.is_empty())
+        .map(str::to_string))
+}
+
+pub(super) async fn abort_agent_thread(
+    thread_id: &str,
+    local_run_id: Option<&str>,
+) -> Result<(), crate::AppError> {
     let thread =
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let session_id = thread.agent_session_id.unwrap_or(thread.id);
     let mut client = connect_agent().await?;
+    let canonical_run_id = match local_run_id.filter(|run_id| !run_id.is_empty()) {
+        Some(local_run_id) => Some(
+            AGENT_REPLICAS
+                .canonical_for_local(local_run_id)
+                // GUI-originated runs use their SQLite id as the Agent's
+                // requested/canonical id. A mapping is only required for the
+                // synthetic local rows used while observing another client.
+                .unwrap_or_else(|| local_run_id.to_string()),
+        ),
+        None => canonical_active_run_id(&mut client, &session_id).await?,
+    };
     client
-        .execute_command(base_command(
-            "abort",
-            thread.agent_session_id.unwrap_or(thread.id),
-        ))
+        .execute_command(run_control_command("abort", session_id, canonical_run_id))
         .await
         // Transport-level Unavailable → AgentUnavailable, so `abort_run`
         // still cancels the run locally when the agent died after the shared
@@ -35,8 +68,13 @@ pub(super) async fn abort_agent_thread(thread_id: &str) -> Result<(), crate::App
 /// already finished is a harmless no-op on the agent side.
 pub(crate) async fn abort_session(session_id: &str) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
+    let canonical_run_id = canonical_active_run_id(&mut client, session_id).await?;
     client
-        .execute_command(base_command("abort", session_id.to_string()))
+        .execute_command(run_control_command(
+            "abort",
+            session_id.to_string(),
+            canonical_run_id,
+        ))
         .await
         .map_err(|error| format!("Unable to abort Future Agent session: {error}"))?
         .into_inner()
@@ -51,7 +89,7 @@ pub async fn abort_run(
     thread_id: String,
     run_id: String,
 ) -> Result<store::RunRecord, crate::AppError> {
-    if let Err(error) = abort_agent_thread(&thread_id).await {
+    if let Err(error) = abort_agent_thread(&thread_id, Some(&run_id)).await {
         if !is_agent_unavailable_error(&error) {
             return Err(error);
         }

@@ -158,6 +158,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             enabled_models: Some(cmd.enabled_models),
             run_id: cmd.run_id,
             since_idx: cmd.since_idx,
+            requested_run_id: cmd.requested_run_id,
+            client_request_id: cmd.client_request_id,
             sandbox_policy: cmd
                 .sandbox_policy
                 .map(|policy| crate::sandbox::SandboxPolicy {
@@ -165,8 +167,15 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 }),
         };
 
-        // Handle the command
-        let resp_str = handle_command_internal(&self.state, internal_cmd);
+        // The command dispatcher still contains legacy synchronous JSONL and
+        // shell paths. Keep those off tonic's async workers while the per-
+        // session ordered persistence worker is introduced incrementally.
+        let command_state = self.state.clone();
+        let resp_str = tokio::task::spawn_blocking(move || {
+            handle_command_internal(&command_state, internal_cmd)
+        })
+        .await
+        .map_err(|error| tonic::Status::internal(format!("command task failed: {error}")))?;
 
         // Parse the response
         #[derive(serde::Deserialize)]
@@ -208,6 +217,9 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         let session_id = req.session_id;
         let event_types: std::collections::HashSet<String> = req.event_types.into_iter().collect();
         let filter_enabled = !event_types.is_empty();
+        let atomic_attach = req.atomic_attach;
+        let requested_run_id = req.run_id;
+        let after_idx = req.after_idx;
 
         // Sessions are equal peers — every subscription must name its
         // session.  An empty id previously subscribed to a global/default
@@ -222,7 +234,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 "session {session_id} not found"
             )));
         };
-        let rx = {
+        let (rx, mut initial_events) = {
             let sess = session.read();
             if self.state.verbose {
                 tracing::debug!(
@@ -231,19 +243,75 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     sess.messages.read().len()
                 );
             }
-            sess.broadcaster.subscribe()
+            if atomic_attach {
+                let attachment = sess
+                    .broadcaster
+                    .attach(&requested_run_id, after_idx)
+                    .map_err(|error| tonic::Status::failed_precondition(error.to_string()))?;
+                let mut initial = Vec::new();
+                if let Some(projection) = attachment.projection {
+                    initial.push(proto::StreamEvent {
+                        r#type: "run_snapshot".to_string(),
+                        data: String::new(),
+                        run_id: projection.run_id,
+                        idx: projection.cursor,
+                        projection_snapshot: true,
+                        snapshot_events: projection
+                            .events
+                            .into_iter()
+                            .map(|event| proto::ProjectedRunEvent {
+                                r#type: event.event_type,
+                                data: event.data,
+                                idx: event.idx,
+                            })
+                            .collect(),
+                        snapshot_cursor: projection.cursor,
+                    });
+                }
+                initial.extend(
+                    attachment
+                        .events
+                        .into_iter()
+                        .map(|event| proto::StreamEvent {
+                            r#type: event.event_type,
+                            data: event.data,
+                            run_id: event.run_id,
+                            idx: event.idx,
+                            projection_snapshot: false,
+                            snapshot_events: Vec::new(),
+                            snapshot_cursor: 0,
+                        }),
+                );
+                (attachment.receiver, initial)
+            } else {
+                (
+                    sess.broadcaster.subscribe(),
+                    vec![proto::StreamEvent {
+                        r#type: "ping".to_string(),
+                        data: r#"{"type":"ping"}"#.to_string(),
+                        run_id: String::new(),
+                        idx: 0,
+                        projection_snapshot: false,
+                        snapshot_events: Vec::new(),
+                        snapshot_cursor: 0,
+                    }],
+                )
+            }
         };
+
+        if filter_enabled {
+            initial_events.retain(|event| {
+                event.projection_snapshot
+                    || event.r#type == "stream_gap"
+                    || event_types.contains(&event.r#type)
+            });
+        }
 
         // Clone for the lag-warning closure below — `session_id` is moved
         // into the `ping` stream and can't be borrowed across the chain.
         let lag_session_id = session_id.clone();
 
-        let ping = tokio_stream::once(Ok(proto::StreamEvent {
-            r#type: "ping".to_string(),
-            data: r#"{"type":"ping"}"#.to_string(),
-            run_id: String::new(),
-            idx: 0,
-        }));
+        let snapshot = tokio_stream::iter(initial_events.into_iter().map(Ok));
         let events = BroadcastStream::new(rx)
             .filter(move |r| {
                 if !filter_enabled {
@@ -265,18 +333,20 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     data: event.data,
                     run_id: event.run_id,
                     idx: event.idx,
+                    projection_snapshot: false,
+                    snapshot_events: Vec::new(),
+                    snapshot_cursor: 0,
                 })),
-                // Log lagged messages but do NOT terminate the stream.
-                // Lag is expected under load (text_chunk bursts); the client
-                // can recover by re-reading state (get_state / get_events_since).
                 Err(e) => {
                     tracing::warn!(
-                        "SSE stream lagged (session={lag_session_id}): {e} — skipping, stream continues"
+                        "SSE stream lagged (session={lag_session_id}): {e} — terminating for cursor resume"
                     );
-                    None
+                    Some(Err(tonic::Status::data_loss(format!(
+                        "event stream gap for session {lag_session_id}; reconnect with atomic attach"
+                    ))))
                 }
             });
-        let stream = ping.chain(events);
+        let stream = snapshot.chain(events);
 
         Ok(tonic::Response::new(Box::pin(stream)))
     }

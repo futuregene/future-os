@@ -5,7 +5,6 @@ import i18n from "../../i18n";
 import { getLatestRun, getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
-import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun } from "./agentMessageFormatters";
 import { entriesToMessages } from "./entryProjection";
@@ -339,72 +338,9 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
 
   const isRunActive = Boolean(recentRun && !matchesSettledRun(recentRun.status));
 
-  // Poll the run's status while it's in flight so a background settle is picked
-  // up. `refreshRecentRun` guards its own state (generation + active-thread ref),
-  // so the immediate tick and any thread-switch overlap are race-safe.
-  usePolling(
-    () => {
-      if (threadId)
-        void refreshRecentRun(threadId, workspaceId);
-    },
-    1500,
-    { enabled: Boolean(threadId) && isRunActive, deps: [threadId, workspaceId, refreshRecentRun] },
-  );
-
-  // When another client (TUI, CLI, phone) is streaming on this thread's
-  // session, ask the Tauri backend to create a synthetic run and subscribe to
-  // the agent's live event stream.  Events are persisted locally, so the
-  // existing reattach machinery (refreshRecentRun → useRunReattach) picks up
-  // the streaming bubble automatically.  No local StoredRun existed before.
-  //
-  // Guards:
-  //   attachedRef — don't re-attach while the same streaming session is active
-  //   isRunActive — don't attach while a local run (incl. our own synthetic
-  //     one) is still in flight; the existing reattach poll handles it
+  // Remote runs are discovered from the already-open session event stream.
+  // This replaces the old per-thread 2s get_state poll.
   const attachedRef = useRef(false);
-  usePolling(
-    async () => {
-      if (!threadId || isRunActive)
-        return;
-      // Per-thread streaming check for the OPEN thread only (reattach).
-      // Deliberately uncached: attach decisions need fresh truth, unlike
-      // the thread-list indicator which uses the bulk poll.
-      let streaming = false;
-      try {
-        const raw = await invokeCommand<Record<string, unknown>>("get_thread_agent_state", { threadId });
-        streaming = raw.isStreaming === true;
-      }
-      catch {
-        // Agent unreachable — treat as not streaming; retry next tick.
-      }
-      if (streaming && !attachedRef.current) {
-        try {
-          const result = await invokeCommand<{ runId?: string }>("attach_remote_stream", { threadId });
-          // An empty runId means a run was already recently settled — don't
-          // retry until the agent confirms streaming has stopped.
-          attachedRef.current = true;
-          if (result?.runId) {
-            // Reload agent entries so user message + history are visible,
-            // then kick refreshRecentRun so useRunReattach picks up the
-            // synthetic run and starts the streaming bubble on its own.
-            await reloadMessagesQuiet(threadId);
-            await refreshRecentRun(threadId, workspaceId);
-          }
-        }
-        catch {
-          // Agent unreachable — will retry next tick.
-        }
-      }
-      else if (!streaming) {
-        attachedRef.current = false;
-      }
-    },
-    2000,
-    {
-      enabled: Boolean(threadId),
-      deps: [threadId, refreshRecentRun, reloadMessagesQuiet, workspaceId, isRunActive],
-    },
-  );
 
   // ── Real-time user_message from StreamEvents observer ────────────
   // Inserts the user message directly from the Tauri event stream
@@ -422,6 +358,26 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
       } | undefined;
       if (!detail || detail.sessionId !== agentSessionId)
         return;
+      if (detail.eventType === "agent_end") {
+        attachedRef.current = false;
+        return;
+      }
+      if (detail.eventType === "agent_start") {
+        if (isRunActive || attachedRef.current)
+          return;
+        attachedRef.current = true;
+        void invokeCommand<{ runId?: string }>("attach_remote_stream", { threadId })
+          .then(async (result) => {
+            if (!result?.runId)
+              return;
+            await reloadMessagesQuiet(threadId);
+            await refreshRecentRun(threadId, workspaceId);
+          })
+          .catch(() => {
+            attachedRef.current = false;
+          });
+        return;
+      }
       if (detail.eventType !== "user_message")
         return;
 
@@ -451,7 +407,14 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
     };
     window.addEventListener("future:agent-event", handler);
     return () => window.removeEventListener("future:agent-event", handler);
-  }, [threadId, agentSessionId]);
+  }, [
+    agentSessionId,
+    isRunActive,
+    refreshRecentRun,
+    reloadMessagesQuiet,
+    threadId,
+    workspaceId,
+  ]);
 
   return {
     loadingThread,

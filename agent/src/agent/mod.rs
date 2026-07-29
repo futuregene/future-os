@@ -121,14 +121,13 @@ impl Loop {
     /// config, system prompt and event bus, but FRESH steering/follow-up
     /// queues, token counters, interrupt flag and compaction state.
     ///
-    /// Every `ServerSession` gets its own copy instead of sharing one global
-    /// loop, so a streaming run (which holds `loop.read()` for its whole
-    /// duration) never blocks another session's `set_model`/
-    /// `set_thinking_level` (`try_write`), and per-session state — interrupt
-    /// flag, steering queues, token counters, tool-execution hooks — can no
-    /// longer leak across sessions.  The provider `Arc` is cloned only as a
-    /// seed: `ServerSession::set_model` replaces it with a freshly-built
-    /// client for the session's own model before the first prompt.
+    /// `ServerSession` first uses this to isolate sessions from the process
+    /// template, then snapshots its session-owned control plane again at each
+    /// run boundary. A streaming run never holds the control-plane lock across
+    /// model/tool awaits, and interrupt flags, queues, counters, and execution
+    /// hooks cannot leak across sessions or adjacent runs. The provider `Arc`
+    /// is cloned only as a seed: `ServerSession::set_model` replaces it with a
+    /// freshly-built client for the session's selected model.
     pub fn independent_copy(&self) -> Loop {
         let mut copy = Loop::new(self.provider.clone(), &self.model)
             .with_tools(self.tools.clone())
@@ -182,37 +181,11 @@ impl Loop {
         tool_event_cb: &Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
         on_tool_result: &Option<PersistCallback>,
     ) {
-        let use_parallel = if !self.config.tools_execution_mode.is_empty() {
-            self.config.tools_execution_mode == "parallel"
-        } else {
-            self.parallel_tools
-        };
-
-        if use_parallel && tool_calls.len() > 1 {
-            self.execute_tools_parallel(turn, tool_calls, messages, tool_event_cb, on_tool_result)
-                .await;
-        } else {
-            self.execute_tools_sequential(
-                turn,
-                tool_calls,
-                messages,
-                tool_event_cb,
-                on_tool_result,
-            )
-            .await;
-        }
-    }
-
-    async fn execute_tools_parallel(
-        &self,
-        turn: usize,
-        tool_calls: &[ToolCall],
-        messages: &mut Vec<AgentMessage>,
-        tool_event_cb: &Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
-        on_tool_result: &Option<PersistCallback>,
-    ) {
-        // AgentConfig contains non-Clone hooks, so parallel mode currently
-        // preserves deterministic sequential execution.
+        // `parallel_tools` and `tools_execution_mode` remain readable only for
+        // historical config compatibility. They never provided real parallel
+        // execution, so the runtime exposes one honest deterministic behavior.
+        // A future parallel executor must return as a new capability together
+        // with explicit same-workspace write-conflict semantics.
         self.execute_tools_sequential(turn, tool_calls, messages, tool_event_cb, on_tool_result)
             .await;
     }
@@ -588,6 +561,10 @@ impl PendingMessageQueue {
 
     pub fn enqueue(&self, msg: String) {
         let _ = self.tx.try_send(msg);
+    }
+
+    pub(crate) fn sender(&self) -> mpsc::Sender<String> {
+        self.tx.clone()
     }
 
     pub fn drain(&self) -> Vec<String> {

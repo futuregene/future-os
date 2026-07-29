@@ -66,7 +66,7 @@ export function MessageList({ messages, showThinking, onContinue, onFork, onRetr
 
   // Only the LAST message can be a recovery target — computing the previous
   // user message for every row is O(n²) and causes scroll jank during
-  // streaming (every 220 ms tick rescans the whole list).
+  // streaming (every pushed delta rescans the whole list).
   const lastUserMessage = messages.length > 0
     ? previousUserMessageBefore(messages, messages.length - 1)
     : null;

@@ -109,7 +109,7 @@ Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from s
 | `engine/mod.rs` | `Engine` struct: wires provider, tools, session, and agent loop together |
 | `llm/mod.rs` | OpenAI-compatible streaming HTTP client (reqwest + SSE parsing). Supports thinking/reasoning content extraction, tool call accumulation from streaming chunks |
 | `grpc/mod.rs` | gRPC server using tonic. Implements `FutureAgent` service: `ExecuteCommand` (unary), `StreamEvents` (server-side streaming) |
-| `rpc/mod.rs` | Command handler dispatch (25+ commands) and `ServerSession` state management. SSE event broadcasting via tokio broadcast channel (capacity: 4096) |
+| `rpc/mod.rs` | Command handler dispatch (25+ commands) and `ServerSession` state management. SSE event broadcasting via tokio broadcast channel (capacity: 256; resume ring: 2000) |
 | `session/mod.rs` | Conversation persistence as JSONL files in `~/.future/agent/sessions/<encoded-cwd>/`. Tree-structured entries with ParentID for forks. `Manager` handles save/load/list |
 | `types/mod.rs` | Core types: `Message`, `StreamEvent`, `AgentTool`, `ToolDef`, `AgentConfig`, `LLMProvider` trait, `ContentBlock` (polymorphic text/image/tool_result) |
 | `sandbox/mod.rs` | OS-level sandbox for tool execution: `ResolvedSandbox` (tier: off/manual/seatbelt), `EscalationRequest`/`EscalationRequester` for post-hoc approval of out-of-sandbox operations. macOS Seatbelt via `seatbelt.rs`, cross-platform path rules via `rules.rs` |

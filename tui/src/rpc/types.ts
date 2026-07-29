@@ -38,6 +38,10 @@ export interface RpcCommand {
   entryId?: string;
   name?: string;
   outputPath?: string;
+  runId?: string;
+  sinceIdx?: number;
+  requestedRunId?: string;
+  clientRequestId?: string;
 }
 
 // ============================================================================
@@ -118,6 +122,14 @@ export interface RpcSessionState {
   tokensCacheR?: number;
   tokensCacheW?: number;
   totalCost?: number;
+  activeRun?: ActiveRunState | null;
+}
+
+export interface ActiveRunState {
+  runId: string;
+  epoch: number;
+  state: "starting" | "running" | "cancelling" | "cancellation_stuck" | "finalizing";
+  lastEventIdx: number;
 }
 
 // ============================================================================
@@ -154,8 +166,19 @@ export interface ModelInfo {
 
 export type AgentEvent = {
   type: string;
+  runId?: string;
+  idx?: number;
+  projectionSnapshot?: boolean;
+  snapshotCursor?: number;
+  snapshotEvents?: ProjectedRunEvent[];
   text?: string;   // text_chunk, agent_end, tool_delta
   tool_id?: string;
   tool_name?: string;
   [key: string]: unknown;
 };
+
+export interface ProjectedRunEvent {
+  type: string;
+  data: string;
+  idx: number;
+}
