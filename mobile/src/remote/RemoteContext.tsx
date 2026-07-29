@@ -182,7 +182,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const scheduleReconnectRef = useRef<() => void>(() => undefined);
   // Integrity: sync lock + pending buffer + per-run cursor for gap detection.
   const syncLockRef = useRef(false);
-  const pendingRef = useRef<Array<{ event: StreamEvent; sessionId: string }>>([]);
+  const pendingRef = useRef<{ event: StreamEvent; sessionId: string }[]>([]);
   const cursorRef = useRef<RunCursor>(newCursor());
   const gapInFlightRef = useRef(false);
 
@@ -662,7 +662,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         cursorRef.current = newCursor();
         rebuildCursorFromEvents(
           cursorRef.current,
-          (next as TimelineState & { items: Array<{ runId?: string; idx?: number }> }).items,
+          (next as TimelineState & { items: { runId?: string; idx?: number }[] }).items,
         );
         setTimeline(next);
         // Fold any events buffered during recovery.
@@ -710,7 +710,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         cursorRef.current = newCursor();
         rebuildCursorFromEvents(
           cursorRef.current,
-          (next as TimelineState & { items: Array<{ runId?: string; idx?: number }> }).items,
+          (next as TimelineState & { items: { runId?: string; idx?: number }[] }).items,
         );
         setTimeline(next);
         // Fold any events buffered during the switch.

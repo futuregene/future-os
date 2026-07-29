@@ -78,7 +78,7 @@ export function advanceCursor(cursor: RunCursor, runId: string, idx: number): vo
  */
 export function rebuildCursorFromEvents(
   cursor: RunCursor,
-  events: Array<{ runId?: string | null; idx?: number | null }>,
+  events: { runId?: string | null; idx?: number | null }[],
 ): void {
   for (const event of events) {
     if (event.runId && event.idx != null) {
