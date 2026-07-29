@@ -22,7 +22,7 @@ export async function listRuns(threadId: string) {
   return invokeCommand<StoredRun[]>("list_runs", { threadId });
 }
 
-/** The thread's most recent run, or null (recent-run poll — one row). */
+/** The thread's most recent run, or null. */
 export async function getLatestRun(threadId: string) {
   return invokeCommand<StoredRun | null>("get_latest_run", { threadId });
 }
@@ -33,7 +33,7 @@ export async function getRun(runId: string) {
 }
 
 export async function listLatestRunInfos(threadIds: string[]) {
-  return invokeCommand<Array<{ threadId: string; status: string; endedAt: number | null }>>(
+  return invokeCommand<Array<{ threadId: string; runId: string; status: string; endedAt: number | null }>>(
     "list_latest_run_infos",
     { threadIds },
   );

@@ -13,8 +13,8 @@ pub fn list_runs(thread_id: String) -> Result<Vec<store::RunRecord>, crate::AppE
     store::list_runs(&thread_id)
 }
 
-/// The thread's most recent run, or None. Powers the 1.5s recent-run poll
-/// during an active run — one row instead of the thread's full run history.
+/// The thread's most recent run, or None. Used for initial load and pushed
+/// terminal reconciliation without decoding the thread's full run history.
 #[tauri::command]
 pub fn get_latest_run(thread_id: String) -> Result<Option<store::RunRecord>, crate::AppError> {
     store::latest_run(&thread_id)
@@ -27,9 +27,8 @@ pub fn get_run(run_id: String) -> Result<Option<store::RunRecord>, crate::AppErr
     store::get_run(&run_id)
 }
 
-/// Batch query: the latest run's (status, ended_at) for each thread in one IPC.
-/// Replaces the per-thread [`list_runs`] fan-out that powered the thread-list
-/// run-indicator poll (N connections, N full row-sets 6+ times per second).
+/// Batch query: the latest run identity/status for each thread in one IPC.
+/// Used by the low-frequency thread-list reconciliation path.
 #[tauri::command]
 pub fn list_latest_run_infos(
     thread_ids: Vec<String>,

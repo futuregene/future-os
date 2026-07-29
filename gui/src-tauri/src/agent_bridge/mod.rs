@@ -746,16 +746,12 @@ async fn collect_stored_replica(
             .map_err(|e| format!("update_status: {e}"))?;
         }
     }
-    crate::emit_thread_runtime_updated(crate::ThreadRuntimeUpdate {
+    crate::emit_thread_runtime_updated(
         thread_id,
-        run_id: local_run_id.to_string(),
-        revision: crate::store::list_run_events(local_run_id)
-            .ok()
-            .and_then(|events| events.into_iter().map(|event| event.sequence).max())
-            .unwrap_or(-1),
-        status: terminal.to_string(),
-        reset_projection: false,
-    });
+        local_run_id.to_string(),
+        terminal.to_string(),
+        false,
+    );
     crate::store::clear_run_event_buffer(local_run_id);
     Ok(())
 }

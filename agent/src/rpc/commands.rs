@@ -1717,6 +1717,63 @@ mod tests {
     }
 
     #[test]
+    fn get_state_preserves_markerless_legacy_history_without_reporting_interruption() {
+        // Backward compatibility: sessions written before run lifecycle markers
+        // (run_started/run_terminal) existed carry no run identity in their
+        // JSONL. They must never be misclassified as an interrupted run, and
+        // the compatibility read must not rewrite or discard their history
+        // (no run_id backfill is performed on legacy data).
+        let state = make_app_state();
+        let session_id = "gi-legacy";
+        let info = crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock", "session_name": "n"}),
+            "mock".to_string(),
+            "low".to_string(),
+        );
+        let session = crate::session::Session::snapshot(
+            session_id.to_string(),
+            state.welcome_cwd.clone(),
+            "mock".to_string(),
+            "n".to_string(),
+            String::new(),
+            vec![
+                info,
+                crate::session::SessionEntry::new_user("user", serde_json::json!("legacy turn")),
+                crate::session::SessionEntry::new_assistant(
+                    serde_json::json!("legacy reply"),
+                    vec![],
+                ),
+            ],
+        );
+        state.session_manager.save(&session).unwrap();
+
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd_for("get_state", session_id),
+        ));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["activeRun"].is_null());
+        // No run_started marker → nothing unterminated → not interrupted.
+        assert!(resp["data"]["interruptedRun"].is_null());
+        let loaded = state.session_manager.load(session_id).unwrap();
+        assert!(loaded
+            .entries
+            .iter()
+            .any(|entry| entry.content == Some(serde_json::json!("legacy turn"))));
+        assert!(loaded
+            .entries
+            .iter()
+            .any(|entry| entry.content == Some(serde_json::json!("legacy reply"))));
+        assert!(loaded.entries.iter().all(|entry| {
+            !matches!(
+                entry.entry_type.as_str(),
+                crate::session::ENTRY_TYPE_RUN_STARTED | crate::session::ENTRY_TYPE_RUN_TERMINAL
+            )
+        }));
+        let _ = state.session_manager.delete(session_id);
+    }
+
+    #[test]
     fn refresh_skills_returns_skill_list() {
         let state = make_app_state();
         let cmd = make_cmd("refresh_skills");

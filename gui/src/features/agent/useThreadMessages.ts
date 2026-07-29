@@ -149,8 +149,9 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   const refreshRecentRun = useCallback(async (targetThreadId: string, targetWorkspaceId?: string | null) => {
     const generation = ++recentRunGenRef.current;
     try {
-      // One row, not the thread's whole run history — this fires every 1.5s
-      // while a run is active.
+      // One row, not the thread's whole run history. Invoked on push events
+      // (thread-runtime-updated terminal / remote-activity) and loads — there is
+      // no longer a periodic timer driving it.
       const latestRun = await getLatestRun(targetThreadId);
       if (generation !== recentRunGenRef.current) {
         return;
