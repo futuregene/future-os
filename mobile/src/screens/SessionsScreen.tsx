@@ -1,5 +1,4 @@
 import {
-  ChevronRight,
   Folder,
   Link2,
   LogOut,
@@ -12,6 +11,7 @@ import {
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ActivityIndicator,
   Alert,
   FlatList,
   Modal,
@@ -29,6 +29,35 @@ import { colors, radius, spacing } from "../theme/tokens";
 
 type Tab = "workspace" | "chat";
 
+// Persist the selected tab across screen transitions (SessionsScreen is
+// unmounted when entering a chat and remounted when returning).
+let lastTab: Tab = "chat";
+
+function SessionStatusIndicator({ status, unread }: { status?: string; unread?: boolean }) {
+  if (status === "queued" || status === "running" || status === "waiting_approval") {
+    return (
+      <View style={styles.indicator}>
+        <ActivityIndicator color={colors.accent} size={14} />
+      </View>
+    );
+  }
+  if (unread && status === "completed") {
+    return (
+      <View style={styles.indicator}>
+        <View style={[styles.statusDot, styles.statusCompleted]} />
+      </View>
+    );
+  }
+  if (unread && status === "failed") {
+    return (
+      <View style={styles.indicator}>
+        <View style={[styles.statusDot, styles.statusFailed]} />
+      </View>
+    );
+  }
+  return <View style={styles.indicator} />;
+}
+
 // Scroll offsets survive the list's unmount when the user dives into a
 // conversation and back (and tab switches, which also remount the lists).
 const listScrollOffsets: Record<Tab, number> = { chat: 0, workspace: 0 };
@@ -36,7 +65,11 @@ const listScrollOffsets: Record<Tab, number> = { chat: 0, workspace: 0 };
 export function SessionsScreen() {
   const { t } = useTranslation();
   const remote = useRemote();
-  const [tab, setTab] = useState<Tab>("chat");
+  const [tab, setTabState] = useState<Tab>(lastTab);
+  const setTab = (next: Tab) => {
+    lastTab = next;
+    setTabState(next);
+  };
   const [newOpen, setNewOpen] = useState(false);
   const [newMode, setNewMode] = useState<Tab>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
@@ -89,7 +122,10 @@ export function SessionsScreen() {
       <Text numberOfLines={1} style={styles.sessionTitle}>
         {item.title || t("sessions.unnamed")}
       </Text>
-      <ChevronRight color={colors.inkMuted} size={18} />
+      <SessionStatusIndicator
+        status={item.status}
+        unread={remote.unreadSessions.has(item.sessionId)}
+      />
     </Pressable>
   );
 
@@ -408,7 +444,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     backgroundColor: colors.accentSoft,
   },
-  workspaceName: { flex: 1, color: colors.inkSoft, fontSize: 13, fontWeight: "700" },
+  workspaceName: { flex: 1, color: colors.inkSoft, fontSize: 16, fontWeight: "700" },
   session: {
     minHeight: 52,
     flexDirection: "row",
@@ -418,6 +454,10 @@ const styles = StyleSheet.create({
   },
   workspaceSession: { paddingLeft: 48 },
   sessionTitle: { flex: 1, color: colors.ink, fontSize: 17, fontWeight: "400", lineHeight: 20 },
+  indicator: { width: 20, height: 20, alignItems: "center", justifyContent: "center" },
+  statusDot: { width: 8, height: 8, borderRadius: radius.pill },
+  statusCompleted: { backgroundColor: colors.success },
+  statusFailed: { backgroundColor: colors.danger },
   pressed: { backgroundColor: colors.surfaceSubtle },
   emptyList: {
     flexGrow: 1,

@@ -292,16 +292,28 @@ async fn handle_command(
         }
         "list_sessions" => match crate::store::list_threads() {
             Ok(threads) => {
+                let active_sessions: Vec<String> =
+                    crate::store::active_run_sessions().unwrap_or_default();
+                let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
+                let run_infos = crate::store::latest_run_infos(&thread_ids).unwrap_or_default();
+                let run_status_by_thread: std::collections::HashMap<&str, &str> = run_infos
+                    .iter()
+                    .map(|info| (info.thread_id.as_str(), info.status.as_str()))
+                    .collect();
                 let sessions: Vec<Value> = threads
                     .into_iter()
                     .filter_map(|t| {
                         t.agent_session_id.map(|sid| {
+                            let streaming = active_sessions.iter().any(|active| active == &sid);
+                            let status = run_status_by_thread.get(t.id.as_str()).copied();
                             json!({
                                 "sessionId": sid,
                                 "title": t.title,
                                 "threadId": t.id,
                                 "mode": t.mode,
                                 "workspaceId": t.workspace_id,
+                                "streaming": streaming,
+                                "status": status,
                             })
                         })
                     })
