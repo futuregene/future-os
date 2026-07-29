@@ -33,7 +33,6 @@ pub struct RunRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 pub struct RunEventRecord {
     pub id: String,
     pub run_id: String,
@@ -45,7 +44,6 @@ pub struct RunEventRecord {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 pub struct ToolCallRecord {
     pub id: String,
     pub run_id: String,
@@ -60,7 +58,6 @@ pub struct ToolCallRecord {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 pub struct ToolOutputRecord {
     pub id: String,
     pub tool_call_id: String,

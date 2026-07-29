@@ -292,16 +292,28 @@ async fn handle_command(
         }
         "list_sessions" => match crate::store::list_threads() {
             Ok(threads) => {
+                let active_sessions: Vec<String> =
+                    crate::store::active_run_sessions().unwrap_or_default();
+                let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
+                let run_infos = crate::store::latest_run_infos(&thread_ids).unwrap_or_default();
+                let run_status_by_thread: std::collections::HashMap<&str, &str> = run_infos
+                    .iter()
+                    .map(|info| (info.thread_id.as_str(), info.status.as_str()))
+                    .collect();
                 let sessions: Vec<Value> = threads
                     .into_iter()
                     .filter_map(|t| {
                         t.agent_session_id.map(|sid| {
+                            let streaming = active_sessions.iter().any(|active| active == &sid);
+                            let status = run_status_by_thread.get(t.id.as_str()).copied();
                             json!({
                                 "sessionId": sid,
                                 "title": t.title,
                                 "threadId": t.id,
                                 "mode": t.mode,
                                 "workspaceId": t.workspace_id,
+                                "streaming": streaming,
+                                "status": status,
                             })
                         })
                     })
@@ -549,27 +561,31 @@ async fn handle_command(
 
 const HANDSHAKE_PROTOCOL_VERSION: u32 = 1;
 
-#[allow(clippy::too_many_arguments)]
-fn handshake_transcript(
-    pair_id: &str,
-    desktop_id: &str,
-    desktop_public_key: &str,
-    bridge_instance_id: &str,
-    device_id: &str,
-    client_public_key: &str,
-    client_nonce: &str,
-    desktop_nonce: &str,
-) -> String {
+/// Inputs bound into the pairing handshake transcript. Every field is an
+/// `&str`, so a positional call could silently transpose two of them and sign
+/// a different transcript — named fields make that a compile error instead.
+struct HandshakeTranscript<'a> {
+    pair_id: &'a str,
+    desktop_id: &'a str,
+    desktop_public_key: &'a str,
+    bridge_instance_id: &'a str,
+    device_id: &'a str,
+    client_public_key: &'a str,
+    client_nonce: &'a str,
+    desktop_nonce: &'a str,
+}
+
+fn handshake_transcript(parts: &HandshakeTranscript<'_>) -> String {
     [
         "futureos-remote-handshake-v1",
-        pair_id,
-        desktop_id,
-        desktop_public_key,
-        bridge_instance_id,
-        device_id,
-        client_public_key,
-        client_nonce,
-        desktop_nonce,
+        parts.pair_id,
+        parts.desktop_id,
+        parts.desktop_public_key,
+        parts.bridge_instance_id,
+        parts.device_id,
+        parts.client_public_key,
+        parts.client_nonce,
+        parts.desktop_nonce,
     ]
     .join("\n")
 }
@@ -608,16 +624,16 @@ async fn handle_pair_handshake(
     }
 
     let desktop_nonce = nkeys::KeyPair::new_user().public_key();
-    let transcript = handshake_transcript(
-        &state.creds.pair_id,
-        &state.creds.desktop_id,
-        &desktop_public_key,
-        &state.bridge_instance_id,
-        &cmd.device_id,
-        &cmd.client_public_key,
-        &cmd.client_nonce,
-        &desktop_nonce,
-    );
+    let transcript = handshake_transcript(&HandshakeTranscript {
+        pair_id: &state.creds.pair_id,
+        desktop_id: &state.creds.desktop_id,
+        desktop_public_key: &desktop_public_key,
+        bridge_instance_id: &state.bridge_instance_id,
+        device_id: &cmd.device_id,
+        client_public_key: &cmd.client_public_key,
+        client_nonce: &cmd.client_nonce,
+        desktop_nonce: &desktop_nonce,
+    });
     let key_pair = match nkeys::KeyPair::from_seed(&state.creds.nkey_seed) {
         Ok(key_pair) => key_pair,
         Err(error) => {
@@ -1036,48 +1052,48 @@ mod tests {
 
     #[test]
     fn handshake_transcript_binds_both_device_identities_and_nonces() {
-        let transcript = handshake_transcript(
-            "pair_1",
-            "desktop_1",
-            "UDESKTOP",
-            "bridge_1",
-            "dev_1",
-            "UCLIENT",
-            "client_nonce",
-            "desktop_nonce",
-        );
+        let transcript = handshake_transcript(&HandshakeTranscript {
+            pair_id: "pair_1",
+            desktop_id: "desktop_1",
+            desktop_public_key: "UDESKTOP",
+            bridge_instance_id: "bridge_1",
+            device_id: "dev_1",
+            client_public_key: "UCLIENT",
+            client_nonce: "client_nonce",
+            desktop_nonce: "desktop_nonce",
+        });
         assert_eq!(
             transcript,
             "futureos-remote-handshake-v1\npair_1\ndesktop_1\nUDESKTOP\nbridge_1\ndev_1\nUCLIENT\nclient_nonce\ndesktop_nonce"
         );
         assert_ne!(
             transcript,
-            handshake_transcript(
-                "pair_1",
-                "desktop_other",
-                "UDESKTOP",
-                "bridge_1",
-                "dev_1",
-                "UCLIENT",
-                "client_nonce",
-                "desktop_nonce",
-            )
+            handshake_transcript(&HandshakeTranscript {
+                pair_id: "pair_1",
+                desktop_id: "desktop_other",
+                desktop_public_key: "UDESKTOP",
+                bridge_instance_id: "bridge_1",
+                device_id: "dev_1",
+                client_public_key: "UCLIENT",
+                client_nonce: "client_nonce",
+                desktop_nonce: "desktop_nonce",
+            })
         );
     }
 
     #[test]
     fn handshake_signature_rejects_tampered_transcript() {
         let desktop = nkeys::KeyPair::new_user();
-        let transcript = handshake_transcript(
-            "pair_1",
-            "desktop_1",
-            &desktop.public_key(),
-            "bridge_1",
-            "dev_1",
-            "UCLIENT",
-            "client_nonce",
-            "desktop_nonce",
-        );
+        let transcript = handshake_transcript(&HandshakeTranscript {
+            pair_id: "pair_1",
+            desktop_id: "desktop_1",
+            desktop_public_key: &desktop.public_key(),
+            bridge_instance_id: "bridge_1",
+            device_id: "dev_1",
+            client_public_key: "UCLIENT",
+            client_nonce: "client_nonce",
+            desktop_nonce: "desktop_nonce",
+        });
         let signature = desktop.sign(transcript.as_bytes()).unwrap();
         let verifier = nkeys::KeyPair::from_public_key(&desktop.public_key()).unwrap();
         assert!(verifier.verify(transcript.as_bytes(), &signature).is_ok());

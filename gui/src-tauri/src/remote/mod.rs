@@ -658,6 +658,13 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
     let threads = crate::store::list_threads().unwrap_or_default();
     let workspaces = crate::store::list_workspaces().unwrap_or_default();
 
+    let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
+    let run_infos = crate::store::latest_run_infos(&thread_ids).unwrap_or_default();
+    let run_status_by_thread: std::collections::HashMap<&str, &str> = run_infos
+        .iter()
+        .map(|info| (info.thread_id.as_str(), info.status.as_str()))
+        .collect();
+
     let mut sessions: Vec<serde_json::Value> = Vec::new();
     let mut signature = String::new();
     for t in &threads {
@@ -670,6 +677,7 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
             continue;
         };
         let streaming = active_sessions.iter().any(|active| active == sid);
+        let status = run_status_by_thread.get(t.id.as_str()).copied();
         sessions.push(json!({
             "sessionId": sid,
             "threadId": t.id,
@@ -677,6 +685,7 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
             "mode": t.mode,
             "workspaceId": t.workspace_id,
             "streaming": streaming,
+            "status": status,
         }));
         signature.push('s');
         push_sig_field(&mut signature, sid);
@@ -685,6 +694,7 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
         push_sig_field(&mut signature, &t.mode);
         push_sig_field(&mut signature, &t.workspace_id);
         push_sig_field(&mut signature, if streaming { "1" } else { "0" });
+        push_sig_field(&mut signature, status.unwrap_or(""));
     }
 
     let mut workspace_values: Vec<serde_json::Value> = Vec::new();
@@ -722,6 +732,13 @@ fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
     let active_sessions: Vec<String> = crate::store::active_run_sessions().unwrap_or_default();
     let threads = crate::store::list_threads().unwrap_or_default();
 
+    let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
+    let run_infos = crate::store::latest_run_infos(&thread_ids).unwrap_or_default();
+    let run_status_by_thread: std::collections::HashMap<&str, &str> = run_infos
+        .iter()
+        .map(|info| (info.thread_id.as_str(), info.status.as_str()))
+        .collect();
+
     let mut sessions: Vec<serde_json::Value> = Vec::new();
     let mut signature = String::new();
     for t in &threads {
@@ -734,6 +751,7 @@ fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
             continue;
         };
         let streaming = active_sessions.iter().any(|active| active == sid);
+        let status = run_status_by_thread.get(t.id.as_str()).copied();
         sessions.push(json!({
             "sessionId": sid,
             "threadId": t.id,
@@ -741,6 +759,7 @@ fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
             "mode": t.mode,
             "workspaceId": t.workspace_id,
             "streaming": streaming,
+            "status": status,
         }));
         push_sig_field(&mut signature, sid);
         push_sig_field(&mut signature, &t.id);
@@ -748,6 +767,7 @@ fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
         push_sig_field(&mut signature, &t.mode);
         push_sig_field(&mut signature, &t.workspace_id);
         push_sig_field(&mut signature, if streaming { "1" } else { "0" });
+        push_sig_field(&mut signature, status.unwrap_or(""));
     }
 
     let payload = json!({

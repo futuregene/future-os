@@ -96,6 +96,7 @@ interface RemoteContextValue {
   desktopOnline: boolean;
   sessions: RemoteSession[];
   workspaces: RemoteWorkspace[];
+  unreadSessions: Set<string>;
   models: RemoteModel[];
   selectedSessionId: string;
   selectedTitle: string;
@@ -122,12 +123,43 @@ interface RemoteContextValue {
 
 const RemoteContext = createContext<RemoteContextValue | null>(null);
 
+const RUNNING_STATUSES = new Set(["running", "queued", "waiting_approval"]);
+const FINISHED_STATUSES = new Set(["completed", "failed"]);
+
+/**
+ * Compares each session's status against the previously seen status map and
+ * returns the ids whose run just finished (running/queued/waiting_approval →
+ * completed/failed), plus the new status map. Pure — the caller owns state.
+ */
+function detectFinished(
+  prevStatus: Record<string, string | undefined>,
+  sessions: RemoteSession[],
+): { finished: string[]; next: Record<string, string | undefined> } {
+  const finished: string[] = [];
+  const next: Record<string, string | undefined> = {};
+  for (const s of sessions) {
+    const before = prevStatus[s.sessionId];
+    if (
+      before !== undefined &&
+      RUNNING_STATUSES.has(before) &&
+      s.status &&
+      FINISHED_STATUSES.has(s.status)
+    ) {
+      finished.push(s.sessionId);
+    }
+    next[s.sessionId] = s.status;
+  }
+  return { finished, next };
+}
+
 export function RemoteProvider({ children }: PropsWithChildren) {
   const [phase, setPhase] = useState<ConnectionPhase>("booting");
   const [error, setError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<RemoteCredentials | null>(null);
   const [presence, setPresence] = useState<Presence | null>(null);
   const [sessions, setSessions] = useState<RemoteSession[]>([]);
+  const [unreadSessions, setUnreadSessions] = useState<Set<string>>(() => new Set());
+  const lastStatusRef = useRef<Record<string, string | undefined>>({});
   const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([]);
   const [models, setModels] = useState<RemoteModel[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
@@ -150,7 +182,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const scheduleReconnectRef = useRef<() => void>(() => undefined);
   // Integrity: sync lock + pending buffer + per-run cursor for gap detection.
   const syncLockRef = useRef(false);
-  const pendingRef = useRef<Array<{ event: StreamEvent; sessionId: string }>>([]);
+  const pendingRef = useRef<{ event: StreamEvent; sessionId: string }[]>([]);
   const cursorRef = useRef<RunCursor>(newCursor());
   const gapInFlightRef = useRef(false);
 
@@ -172,7 +204,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     if (!client) return;
     try {
       const response = await client.request<SessionsData>({ type: "list_sessions" }, "list");
-      setSessions(response.data.sessions ?? []);
+      const list = response.data.sessions ?? [];
+      const { finished, next } = detectFinished(lastStatusRef.current, list);
+      lastStatusRef.current = next;
+      setSessions(list);
+      if (finished.length > 0) {
+        setUnreadSessions(prev => {
+          const nextUnread = new Set(prev);
+          for (const id of finished) nextUnread.add(id);
+          return nextUnread;
+        });
+      }
     } catch {
       // If the connection has gone (refresh/reconnect cycle), swallow
       // the error — the reconnect handler will re-fetch.
@@ -265,8 +307,19 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             title: s.title,
             mode: s.mode,
             workspaceId: s.workspaceId,
+            streaming: s.streaming,
+            status: s.status,
           }));
+          const { finished, next } = detectFinished(lastStatusRef.current, list);
+          lastStatusRef.current = next;
           setSessions(list);
+          if (finished.length > 0) {
+            setUnreadSessions(prev => {
+              const nextUnread = new Set(prev);
+              for (const id of finished) nextUnread.add(id);
+              return nextUnread;
+            });
+          }
           const currentId = selectedRef.current;
           if (currentId && !list.some(item => item.sessionId === currentId)) {
             closeConversation();
@@ -609,7 +662,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         cursorRef.current = newCursor();
         rebuildCursorFromEvents(
           cursorRef.current,
-          (next as TimelineState & { items: Array<{ runId?: string; idx?: number }> }).items,
+          (next as TimelineState & { items: { runId?: string; idx?: number }[] }).items,
         );
         setTimeline(next);
         // Fold any events buffered during recovery.
@@ -637,6 +690,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setSelectedSessionId(sessionId);
       selectedRef.current = sessionId;
       setDraft(false);
+      setUnreadSessions(prev => {
+        if (!prev.has(sessionId)) return prev;
+        const nextUnread = new Set(prev);
+        nextUnread.delete(sessionId);
+        return nextUnread;
+      });
       // Clear the previous conversation up front — it must not stay on screen
       // while the new session's history is in flight.
       setTimeline(emptyTimeline());
@@ -651,7 +710,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         cursorRef.current = newCursor();
         rebuildCursorFromEvents(
           cursorRef.current,
-          (next as TimelineState & { items: Array<{ runId?: string; idx?: number }> }).items,
+          (next as TimelineState & { items: { runId?: string; idx?: number }[] }).items,
         );
         setTimeline(next);
         // Fold any events buffered during the switch.
@@ -834,6 +893,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       desktopOnline,
       sessions,
       workspaces,
+      unreadSessions,
       models,
       selectedSessionId,
       selectedTitle,
@@ -881,6 +941,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedTitle,
       sendMessage,
       sessions,
+      unreadSessions,
       workspaces,
       setModel,
       setThinkingLevel,

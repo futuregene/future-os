@@ -243,7 +243,6 @@ pub struct UpdateThreadModelInput {
     #[allow(dead_code)]
     #[serde(default)]
     pub model_provider: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     pub model_id: Option<String>,
 }
@@ -252,7 +251,6 @@ pub struct UpdateThreadModelInput {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateThreadThinkingLevelInput {
     pub thread_id: String,
-    #[allow(dead_code)]
     #[serde(default)]
     pub thinking_level: Option<String>,
 }

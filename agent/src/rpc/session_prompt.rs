@@ -570,7 +570,39 @@ impl ServerSession {
                                 entries,
                             );
                             if let Err(e) = session_manager.save(&session) {
-                                tracing::error!("Failed to save session: {}", e);
+                                // The session file is the source of truth for every
+                                // client that connects later.  If this save fails
+                                // the in-memory state is ahead of disk.  Retry a
+                                // few times with backoff; if all attempts fail,
+                                // log loudly so the operator can investigate.
+                                tracing::error!("Failed to save session (will retry): {e:#}");
+                                let mut attempts = 0u32;
+                                let mut last_err = e;
+                                while attempts < 5 {
+                                    attempts += 1;
+                                    let wait_ms = 200u64 << attempts; // 400, 800, 1600, 3200, 6400
+                                    std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                                    match session_manager.save(&session) {
+                                        Ok(()) => {
+                                            tracing::info!(
+                                                "Session save succeeded on retry {attempts}"
+                                            );
+                                            break;
+                                        }
+                                        Err(next) => last_err = next,
+                                    }
+                                }
+                                if attempts == 5 {
+                                    // All retries exhausted — the session is
+                                    // permanently out of sync with disk.  The
+                                    // prompt response still carries the full
+                                    // answer to the caller, so the user isn't
+                                    // blocked, but a later reload will be
+                                    // missing this run's entries.
+                                    tracing::error!(
+                                        "Session save failed after 5 retries: {last_err:#}"
+                                    );
+                                }
                             }
                         }
                     }
@@ -847,8 +879,14 @@ impl ServerSession {
             parent_session_id,
             entries,
         );
+        // Best-effort early save: the canonical run-end save (above, line ~572)
+        // captures the full state.  If this fails the session is still writable
+        // by the run-end path, so log and continue.
         if let Err(e) = self.session_manager.save(&session) {
-            tracing::error!("Failed to persist user message: {}", e);
+            tracing::error!(
+                "Failed to persist user message (best-effort, run-end save will retry): {}",
+                e
+            );
         }
     }
 }

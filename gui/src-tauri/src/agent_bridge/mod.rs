@@ -765,17 +765,21 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "Thread has no agent session".to_string())?;
 
-    // Don't create a duplicate run if one is already collecting or was
-    // recently settled.  The frontend polls get_state for is_streaming and
-    // the run settlement races with that poll — a just-settled run can look
-    // like "no active run" for a tick, causing a duplicate creation.
+    // Don't create a duplicate run if one is already active or waiting on an
+    // approval decision.  A run parked at "waiting_approval" is still
+    // consuming the agent's event stream; attaching a second synthetic run
+    // would spawn a second collector writing duplicate events and misalign
+    // run-to-turn pairing in applyRunMetadata.
+    //
+    // The frontend polls get_state for is_streaming and the run settlement
+    // races with that poll — a just-settled run can look like "no active
+    // run" for a tick, causing a duplicate creation.
+    fn is_active(status: &str) -> bool {
+        status == "running" || status == "waiting_approval"
+    }
     let existing_runs = crate::store::list_runs(thread_id).unwrap_or_default();
-    if existing_runs.iter().any(|r| r.status == "running") {
-        return Ok(existing_runs
-            .iter()
-            .find(|r| r.status == "running")
-            .map(|r| r.id.clone())
-            .unwrap_or_default());
+    if let Some(active) = existing_runs.iter().find(|r| is_active(&r.status)) {
+        return Ok(active.id.clone());
     }
     // Also skip if a run completed in the last 10s — the agent's is_streaming
     // flag may not have cleared yet and the frontend poll would trigger a

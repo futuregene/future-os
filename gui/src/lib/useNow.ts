@@ -50,10 +50,11 @@ function noopSubscribe(): () => void {
 export function useNow(intervalMs: number = 60_000, enabled: boolean = true): number {
   const bucket = useSyncExternalStore(
     enabled ? subscribe : noopSubscribe,
-    enabled ? () => Math.floor(currentTick / intervalMs) : () => 0,
+    () => Math.floor(currentTick / intervalMs),
     () => 0,
   );
-  // Disabled: no subscription; the value refreshes whenever the component
-  // re-renders for other reasons (it isn't displayed while disabled anyway).
-  return enabled ? bucket * intervalMs : Date.now();
+  // Disabled: no subscription, so no tick-driven re-renders; the snapshot is
+  // still re-read on any re-render, so the value tracks the shared tick. The
+  // only consumer (MessageMeta's elapsed timer) ignores it while disabled.
+  return bucket * intervalMs;
 }

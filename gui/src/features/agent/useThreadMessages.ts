@@ -20,8 +20,10 @@ interface UseThreadMessagesInput {
 interface ThreadCacheEntry {
   messages: AgentMessage[];
   recentRun: StoredRun | null;
-  /** Raw entry count from the last getSessionEntries call; skips re-projection
-   *  on background refresh when unchanged. */
+  /**
+   * Raw entry count from the last getSessionEntries call; skips re-projection
+   * on background refresh when unchanged.
+   */
   entryCount: number;
 }
 

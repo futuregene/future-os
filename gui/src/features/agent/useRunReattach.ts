@@ -90,7 +90,7 @@ export function useRunReattach({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeRunId, activeRunStartedAt, sendingRef, setMessages, threadId]);
+  }, [activeRunId, activeRunStartedAt, sendingRef, setMessages, threadId, messagesGenRef]);
 
   // When a run this view was previewing (but did not itself start) settles,
   // reload the thread so the synthetic streaming bubble is replaced by the

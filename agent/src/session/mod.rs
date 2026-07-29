@@ -384,7 +384,31 @@ impl Manager {
             .into_inner()
             .map_err(|_| anyhow::anyhow!("flush failed"))?;
         file.sync_all().context("fsync temp session file")?;
-        fs::rename(&tmp_path, &path).context("rename temp to final")?;
+
+        // On Windows an external locker (antivirus, Windows Search, OneDrive)
+        // can briefly hold the target after fsync, causing rename to fail with
+        // a sharing violation.  Exponential-backoff retry tolerates those
+        // transient holds while keeping the advisory write lock — no reader can
+        // enter until we release _guard, so the retry is bounded only by the
+        // external locker's hold time.
+        let mut rename_attempts = 0u32;
+        loop {
+            match fs::rename(&tmp_path, &path) {
+                Ok(()) => break,
+                Err(e) if rename_attempts >= 5 => {
+                    return Err(e).context("rename temp to final after 5 attempts");
+                }
+                Err(e) => {
+                    rename_attempts += 1;
+                    let wait_ms = 50u64 << rename_attempts; // 50, 100, 200, 400, 800
+                    tracing::warn!(
+                        "rename attempt {rename_attempts} failed for {}: {e}; retrying in {wait_ms}ms",
+                        path.display(),
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                }
+            }
+        }
 
         // Lock released when _guard goes out of scope
         Ok(())
@@ -527,6 +551,23 @@ impl Manager {
     }
 
     pub(crate) fn load_path(&self, path: &Path, id: &str) -> Result<Session> {
+        // Acquire a shared (read) advisory lock so a concurrent save() —
+        // which takes an exclusive (write) lock — cannot execute its
+        // temp → final rename while we are reading.  Without this, a read
+        // racing a rename on Windows can encounter a sharing violation or
+        // a partially-replaced file when an external locker (antivirus,
+        // Windows Search, OneDrive) briefly holds the target.
+        let lock_path = path.with_extension("jsonl.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(&lock_path)
+            .context("open session lock file")?;
+        let file_lock = fd_lock::RwLock::new(lock_file);
+        let _guard = file_lock.read().context("acquire session read lock")?;
+
         let file = File::open(path).context("open session file")?;
         let reader = BufReader::new(file);
         let mut entries = vec![];

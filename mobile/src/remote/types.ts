@@ -26,6 +26,8 @@ export interface RemoteSession {
   title: string;
   mode?: "chat" | "workspace";
   workspaceId?: string;
+  streaming: boolean;
+  status?: string;
 }
 
 export interface RemoteWorkspace {
@@ -42,6 +44,7 @@ export interface PresenceSession {
   mode?: "chat" | "workspace";
   workspaceId?: string;
   streaming: boolean;
+  status?: string;
 }
 
 export interface Presence {
