@@ -25,6 +25,10 @@ import { colors, radius, spacing } from "../theme/tokens";
 
 const thinkingLevels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
+// How close to the bottom counts as "at latest" (px). Shared by the atLatest
+// detection and the scroll target so the two never disagree.
+const AT_LATEST_THRESHOLD = 32;
+
 export function ChatScreen() {
   const { t } = useTranslation();
   const remote = useRemote();
@@ -34,6 +38,12 @@ export function ChatScreen() {
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
   const [showOffline, setShowOffline] = useState(false);
   const [atLatest, setAtLatest] = useState(true);
+  // Measured height of the floating composer dock — the list's bottom padding
+  // tracks it so the last message always lands just above the composer (no
+  // gap, no hidden content) regardless of docked approvals or input height.
+  const [composerHeight, setComposerHeight] = useState(0);
+  const contentHeightRef = useRef(0);
+  const layoutHeightRef = useRef(0);
   const title = remote.draft ? t("chat.new") : remote.selectedTitle || t("sessions.unnamed");
   const activeModel = remote.models.find(model => modelReference(model) === remote.modelId);
   const activeModelLabel =
@@ -104,10 +114,22 @@ export function ChatScreen() {
     }
   };
 
+  // The bottom-most scroll offset: full content height minus the viewport,
+  // never negative. Recomputed from measured sizes so it stays correct as the
+  // composer (bottom padding) and content grow.
+  const maxScrollOffset = () =>
+    Math.max(0, contentHeightRef.current - layoutHeightRef.current);
+
+  // scrollToEnd is unreliable on Android for the first layout of a large
+  // history (it can no-op or use a stale content size, leaving a gap). An
+  // explicit offset computed from the measured content size is deterministic;
+  // the rAF retry catches content that finishes laying out a frame late.
   const scrollToLatest = () => {
     setAtLatest(true);
-    listRef.current?.scrollToEnd({ animated: true });
-    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
+    listRef.current?.scrollToOffset({ animated: true, offset: maxScrollOffset() });
+    requestAnimationFrame(() =>
+      listRef.current?.scrollToOffset({ animated: true, offset: maxScrollOffset() }),
+    );
   };
 
   return (
@@ -137,7 +159,7 @@ export function ChatScreen() {
           <FlatList
             contentContainerStyle={[
               styles.timeline,
-              { paddingBottom: pendingApprovals.length > 0 ? 300 : 148 },
+              { paddingBottom: composerHeight + spacing.lg },
               timelineItems.length === 0 && styles.emptyTimeline,
             ]}
             data={transcriptItems}
@@ -149,15 +171,25 @@ export function ChatScreen() {
                 <Text style={styles.empty}>{t("chat.noHistory")}</Text>
               )
             }
-            onContentSizeChange={() => {
+            onContentSizeChange={(_w, h) => {
+              contentHeightRef.current = h;
               if (!atLatest) return;
               if (!landedRef.current && transcriptItems.length === 0) return;
-              listRef.current?.scrollToEnd({ animated: landedRef.current });
+              listRef.current?.scrollToOffset({
+                animated: landedRef.current,
+                offset: maxScrollOffset(),
+              });
               landedRef.current = true;
+            }}
+            onLayout={event => {
+              layoutHeightRef.current = event.nativeEvent.layout.height;
             }}
             onScroll={event => {
               const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-              setAtLatest(contentOffset.y + layoutMeasurement.height >= contentSize.height - 24);
+              setAtLatest(
+                contentOffset.y + layoutMeasurement.height >=
+                  contentSize.height - AT_LATEST_THRESHOLD,
+              );
             }}
             ref={listRef}
             renderItem={({ item }) => <TimelineCard item={item} />}
@@ -167,7 +199,10 @@ export function ChatScreen() {
             ItemSeparatorComponent={() => <View style={styles.itemGap} />}
           />
 
-          <View style={styles.composerDock}>
+          <View
+            onLayout={event => setComposerHeight(event.nativeEvent.layout.height)}
+            style={styles.composerDock}
+          >
             <View pointerEvents="none" style={styles.composerFade}>
               <Svg height="100%" width="100%">
                 <Defs>
@@ -387,7 +422,7 @@ const styles = StyleSheet.create({
   controlDisabled: { opacity: 0.5 },
   chatContent: { flex: 1 },
   timelineList: { flex: 1 },
-  timeline: { padding: spacing.lg, paddingBottom: 148 },
+  timeline: { padding: spacing.lg },
   emptyTimeline: { flexGrow: 1, alignItems: "center", justifyContent: "center" },
   empty: { color: colors.inkMuted, fontSize: 14 },
   itemGap: { height: spacing.md },
