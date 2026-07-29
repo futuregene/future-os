@@ -65,6 +65,12 @@ pub struct Loop {
     /// point. The run loop checks this after transform_context and returns an
     /// error instead of silently proceeding with full context.
     pub compaction_failed: Arc<AtomicBool>,
+    /// Set to true when auto-compaction actually replaced the in-memory message
+    /// history during a run. The run-end persistence path reads this to decide
+    /// between an append-only commit (history unchanged) and a full rewrite
+    /// (compaction made the in-memory history diverge from the appended JSONL).
+    /// Cleared at the start of each run.
+    pub compaction_occurred: Arc<AtomicBool>,
     /// Cached model registry — avoids re-deserialising the 906-model catalog
     /// on auto-compaction checks and image-support queries inside the hot loop.
     pub model_registry: Option<Arc<parking_lot::RwLock<crate::models::Registry>>>,
@@ -93,6 +99,7 @@ impl Loop {
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             compaction_failed: Arc::new(AtomicBool::new(false)),
+            compaction_occurred: Arc::new(AtomicBool::new(false)),
             model_registry: None,
         }
     }

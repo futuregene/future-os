@@ -1055,13 +1055,36 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
     let entries: Vec<serde_json::Value> = session_manager
         .load(&session_id)
         .map(|s| {
+            // The authoritative metadata is the last session_info snapshot
+            // (the append-only commit path appends a fresh one per run). Surface
+            // it in the first session_info slot — where clients (CLI info, fork)
+            // look — and drop the stale earlier ones so callers see exactly one.
+            let authoritative_info = s
+                .entries
+                .iter()
+                .rev()
+                .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+                .and_then(|e| e.content.clone());
+            let mut emitted_session_info = false;
             s.entries
                 .iter()
                 .filter(|e| {
-                    matches!(
+                    if !matches!(
                         e.entry_type.as_str(),
                         "user" | "assistant" | "tool" | "session_info"
-                    )
+                    ) {
+                        return false;
+                    }
+                    // Keep only the first session_info slot; its content is
+                    // replaced with the authoritative (last) snapshot below, and
+                    // the stale later snapshots are dropped.
+                    if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
+                        if emitted_session_info {
+                            return false;
+                        }
+                        emitted_session_info = true;
+                    }
+                    true
                 })
                 .map(|e| {
                     let content_text = e
@@ -1135,7 +1158,10 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     // model / thinking_level struct fields so callers can
                     // read fork metadata without a second RPC.
                     if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
-                        if let Some(ref content) = e.content {
+                        // Use the authoritative (last) snapshot's content so the
+                        // single emitted session_info reflects current metadata,
+                        // not the stale values from session creation.
+                        if let Some(ref content) = authoritative_info {
                             entry["content"] = content.clone();
                         }
                     }

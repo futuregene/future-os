@@ -1338,10 +1338,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rewrite_failure_keeps_session_persistence_degraded() {
-        let mut session = make_persistent_test_session("rewrite-failure");
+    async fn commit_failure_keeps_session_persistence_degraded() {
+        let mut session = make_persistent_test_session("commit-failure");
         std::fs::create_dir_all(&session.cwd).unwrap();
         session.set_auto_retry(false);
+        // The append-only run commit fails, and so does the healing full-rewrite
+        // fallback — so the run cannot be persisted at all and the session must
+        // stay fenced in PersistenceDegraded (no new run may start).
+        session.persistence.fail_next_commit();
         session.persistence.fail_next_rewrite();
         session
             .prompt("must remain fenced", &[], &[], Some("run-degraded"), None)

@@ -27,6 +27,26 @@ pub const ENTRY_TYPE_SESSION_INFO: &str = "session_info";
 pub const ENTRY_TYPE_THINKING_LEVEL_CHANGE: &str = "thinking_level_change";
 pub const ENTRY_TYPE_CUSTOM: &str = "custom";
 pub const ENTRY_TYPE_CUSTOM_MESSAGE: &str = "custom_message";
+/// Run lifecycle markers. These bound a run in the append-only journal:
+/// `run_started` is written durably with the accepted user message, and
+/// `run_terminal` is written at the run's commit boundary. A `run_started`
+/// with no matching `run_terminal` identifies a run interrupted by a crash or
+/// agent restart (see the restart-recovery protocol). They carry no model
+/// content and are filtered out of every conversation/context projection.
+pub const ENTRY_TYPE_RUN_STARTED: &str = "run_started";
+pub const ENTRY_TYPE_RUN_TERMINAL: &str = "run_terminal";
+
+/// Terminal state recorded on a `run_terminal` marker.
+pub const RUN_STATE_COMPLETED: &str = "completed";
+pub const RUN_STATE_ERROR: &str = "error";
+pub const RUN_STATE_CANCELLED: &str = "cancelled";
+
+/// True for entry types that are run lifecycle markers rather than
+/// conversation content. Forks skip these (they belong to the parent's runs)
+/// and every context/display projection filters them out.
+pub fn is_run_marker(entry_type: &str) -> bool {
+    matches!(entry_type, ENTRY_TYPE_RUN_STARTED | ENTRY_TYPE_RUN_TERMINAL)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
@@ -178,6 +198,59 @@ impl SessionEntry {
             meta: None,
         }
     }
+
+    /// Marker written durably with the accepted user message to record that a
+    /// run with this canonical id began. `content` carries `{ run_id, epoch }`.
+    pub fn run_started(run_id: &str, epoch: u64) -> Self {
+        Self {
+            id: generate_entry_id(),
+            entry_type: ENTRY_TYPE_RUN_STARTED.to_string(),
+            role: ENTRY_TYPE_SYSTEM.to_string(),
+            content: Some(serde_json::json!({ "run_id": run_id, "epoch": epoch })),
+            tool_calls: vec![],
+            timestamp: Local::now(),
+            tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            thinking: String::new(),
+            meta: None,
+        }
+    }
+
+    /// Marker written at a run's commit boundary. `content` carries
+    /// `{ run_id, state, run_tokens, run_duration_ms }` plus `error` when
+    /// `state` is `error`. A run is only recoverable as completed once this
+    /// marker is durable.
+    pub fn run_terminal(
+        run_id: &str,
+        state: &str,
+        run_tokens: i64,
+        run_duration_ms: i64,
+        error: Option<&str>,
+    ) -> Self {
+        let mut content = serde_json::json!({
+            "run_id": run_id,
+            "state": state,
+            "run_tokens": run_tokens,
+            "run_duration_ms": run_duration_ms,
+        });
+        if let Some(error) = error {
+            content["error"] = serde_json::Value::String(error.to_string());
+        }
+        Self {
+            id: generate_entry_id(),
+            entry_type: ENTRY_TYPE_RUN_TERMINAL.to_string(),
+            role: ENTRY_TYPE_SYSTEM.to_string(),
+            content: Some(content),
+            tool_calls: vec![],
+            timestamp: Local::now(),
+            tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            thinking: String::new(),
+            meta: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -289,8 +362,12 @@ impl Session {
     }
 
     pub fn get_session_info(&self) -> Option<&serde_json::Value> {
+        // The last session_info entry is authoritative: the append-only commit
+        // path appends a fresh complete snapshot at the end of each run rather
+        // than rewriting the file, so the newest metadata is always last.
         self.entries
             .iter()
+            .rev()
             .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
             .and_then(|e| e.content.as_ref())
     }
@@ -320,14 +397,32 @@ impl Manager {
     /// (JSON + newline pre-assembled) so a crash mid-write at most loses
     /// the last entry rather than producing a partially-written line.
     pub fn append_entries(&self, session_id: &str, entries: &[SessionEntry]) -> Result<()> {
-        use std::io::Write;
+        self.with_session_write_lock(session_id, |path| {
+            Self::append_entries_locked(path, entries, false)
+        })
+    }
+
+    /// Append entries with an fsync durability boundary. Used by the run commit
+    /// path so a successful return guarantees the terminal marker and refreshed
+    /// session_info are on disk, not just in the page cache.
+    pub fn append_entries_synced(&self, session_id: &str, entries: &[SessionEntry]) -> Result<()> {
+        self.with_session_write_lock(session_id, |path| {
+            Self::append_entries_locked(path, entries, true)
+        })
+    }
+
+    /// Run `f` while holding the session's advisory write lock (the same lock
+    /// save/append/load use), so a read-modify-append stays atomic with respect
+    /// to concurrent writers.
+    fn with_session_write_lock<T>(
+        &self,
+        session_id: &str,
+        f: impl FnOnce(&Path) -> Result<T>,
+    ) -> Result<T> {
         let path = self.session_path(session_id);
         if !path.exists() {
             return Err(anyhow::anyhow!("session file does not exist yet"));
         }
-
-        // Acquire the same advisory file lock as save() so appends and saves
-        // to the same session are serialised.
         let lock_path = path.with_extension("jsonl.lock");
         let lock_file = std::fs::OpenOptions::new()
             .create(true)
@@ -338,10 +433,17 @@ impl Manager {
             .context("open session lock file")?;
         let mut file_lock = fd_lock::RwLock::new(lock_file);
         let _guard = file_lock.write().context("acquire session write lock")?;
+        f(&path)
+    }
 
+    /// Append entries to a session file whose advisory write lock is already
+    /// held. When `sync` is true the file is fsync'd before returning,
+    /// providing an explicit durability boundary (the run commit point).
+    fn append_entries_locked(path: &Path, entries: &[SessionEntry], sync: bool) -> Result<()> {
+        use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .append(true)
-            .open(&path)
+            .open(path)
             .with_context(|| format!("open session file for append: {}", path.display()))?;
         for entry in entries {
             let json = serde_json::to_string(entry).context("serialize entry")?;
@@ -350,58 +452,59 @@ impl Manager {
             file.write_all(&line).context("write entry")?;
         }
         file.flush().context("flush")?;
+        if sync {
+            file.sync_all().context("fsync session file")?;
+        }
         Ok(())
     }
 
-    /// Atomically update one field in the `session_info` entry without loading
-    /// or rewriting the conversation through the repair pipeline.
+    /// Update one field of the authoritative (last) `session_info` snapshot by
+    /// appending a fresh, complete `session_info` entry — no full-file rewrite.
     ///
-    /// This is the safe metadata path while a run is active: `load()` repairs
-    /// dangling tool calls in memory for LLM consumption, and persisting that
-    /// repaired snapshot before the real tool result arrives would create a
-    /// duplicate tool entry.
+    /// The append-only commit path relies on the last session_info being a full
+    /// snapshot, so a metadata update merges the new key over the latest content
+    /// and appends the result as the new authoritative entry. This is the safe
+    /// metadata path while a run is active: `load()` repairs dangling tool calls
+    /// in memory for LLM consumption, and persisting that repaired snapshot
+    /// before the real tool result arrives would create a duplicate tool entry.
     pub fn update_session_info(
         &self,
         session_id: &str,
         key: &str,
         value: serde_json::Value,
     ) -> Result<()> {
-        let path = self.session_path(session_id);
-        if !path.exists() {
-            return Err(anyhow!("session file does not exist yet"));
-        }
-        let lock_path = path.with_extension("jsonl.lock");
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .read(true)
-            .open(&lock_path)
-            .context("open session lock file")?;
-        let mut file_lock = fd_lock::RwLock::new(lock_file);
-        let _guard = file_lock.write().context("acquire session write lock")?;
-
-        let file = File::open(&path).context("open session file")?;
-        let mut entries = Vec::new();
-        for line in BufReader::new(file).lines() {
-            let line = line.context("read session line")?;
-            if line.trim().is_empty() {
-                continue;
+        self.with_session_write_lock(session_id, |path| {
+            // Read only the authoritative (last) session_info content. Identify
+            // candidate lines cheaply first so large tool/assistant lines are
+            // never deserialized.
+            let file = File::open(path).context("open session file")?;
+            let mut latest_info: Option<serde_json::Value> = None;
+            for line in BufReader::new(file).lines() {
+                let line = line.context("read session line")?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if Self::cheap_entry_type(&line) != Some(ENTRY_TYPE_SESSION_INFO) {
+                    continue;
+                }
+                if let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) {
+                    if let Some(content) = entry.content {
+                        latest_info = Some(content);
+                    }
+                }
             }
-            entries.push(
-                serde_json::from_str::<SessionEntry>(&line)
-                    .context("parse session entry for metadata update")?,
-            );
-        }
-        let info = entries
-            .iter_mut()
-            .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
-            .and_then(|entry| entry.content.as_mut())
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| anyhow!("session {session_id} has no session_info object"))?;
-        info.insert(key.to_string(), value);
+            let mut info = latest_info
+                .and_then(|v| v.as_object().cloned())
+                .ok_or_else(|| anyhow!("session {session_id} has no session_info object"))?;
+            info.insert(key.to_string(), value);
 
-        Self::write_entries_atomically(&path, &entries)
+            let entry = SessionEntry::session_info(
+                serde_json::Value::Object(info),
+                String::new(),
+                String::new(),
+            );
+            Self::append_entries_locked(path, &[entry], false)
+        })
     }
 
     pub fn save(&self, session: &Session) -> Result<()> {
@@ -686,6 +789,7 @@ impl Manager {
         let updated_at = entries.last().map(|e| e.timestamp).unwrap_or(created_at);
         let cwd = entries
             .iter()
+            .rev()
             .find_map(|e| {
                 if e.entry_type == ENTRY_TYPE_SESSION_INFO {
                     e.content
@@ -718,6 +822,7 @@ impl Manager {
                 // always sets it to ""), so fall back to the session_info entry.
                 entries
                     .iter()
+                    .rev()
                     .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
                     .and_then(|e| e.content.as_ref())
                     .and_then(|c| c.get("model"))
@@ -728,6 +833,7 @@ impl Manager {
             .unwrap_or_default();
         let name = entries
             .iter()
+            .rev()
             .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
             .and_then(|e| e.content.as_ref())
             .and_then(|c| c.get("session_name"))
@@ -737,6 +843,7 @@ impl Manager {
             .unwrap_or_default();
         let parent_session_id = entries
             .iter()
+            .rev()
             .find_map(|e| {
                 if e.entry_type == ENTRY_TYPE_SESSION_INFO {
                     e.content
@@ -825,7 +932,9 @@ impl Manager {
                 if first_message.is_none() {
                     first_message = Self::summary_first_message(entry);
                 }
-            } else if entry.entry_type == ENTRY_TYPE_SESSION_INFO && session_info_name.is_none() {
+            } else if entry.entry_type == ENTRY_TYPE_SESSION_INFO {
+                // Last non-empty session_name wins (append-only commits add a
+                // fresh session_info per run; a rename shows up in a later one).
                 if let Some(ref content_val) = entry.content {
                     if let Some(n) = content_val.get("session_name").and_then(|v| v.as_str()) {
                         let trimmed = n.trim();
@@ -884,29 +993,28 @@ impl Manager {
                         if let Some(c) = content.get("cwd").and_then(|v| v.as_str()) {
                             cwd = c.to_string();
                         }
-                        if name.is_empty() {
-                            if let Some(n) = content
-                                .get("session_name")
-                                .and_then(|v| v.as_str())
-                                .map(str::trim)
-                                .filter(|s| !s.is_empty())
-                            {
-                                name = n.to_string();
-                            }
+                        if let Some(n) = content
+                            .get("session_name")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            // Last non-empty wins: the append-only commit path
+                            // appends a fresh session_info per run, so the newest
+                            // name (e.g. after a rename) is the last one.
+                            name = n.to_string();
                         }
                         if let Some(p) = content.get("parent_session_id").and_then(|v| v.as_str()) {
                             parent_session_id = p.to_string();
                         }
                     }
-                    if model.is_empty() {
-                        if let Some(ref content) = e.content {
-                            if let Some(m) = content
-                                .get("model")
-                                .and_then(|v| v.as_str())
-                                .filter(|s| !s.is_empty())
-                            {
-                                model = m.to_string();
-                            }
+                    if let Some(ref content) = e.content {
+                        if let Some(m) = content
+                            .get("model")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                        {
+                            model = m.to_string(); // last non-empty wins
                         }
                     }
                 }
@@ -1076,13 +1184,17 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     for e in &mut entries {
         e.id = generate_entry_id();
     }
-    // Read parent metadata from the session_info entry.  The values live on
+    // Read parent metadata from the authoritative (last) session_info snapshot.
+    // The append-only commit path appends a fresh session_info per run, so the
+    // fork must inherit the parent's CURRENT model/name/thinking level (last),
+    // not the values recorded at session creation (first). The values live on
     // the SessionEntry struct fields (model, thinking_level) and also inside
     // the content JSON (created_by, session_name).
     let parent_info = parent
         .entries
-        .first()
-        .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO);
+        .iter()
+        .rev()
+        .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO);
 
     // Prefer the parent's actual level: the session_info struct field, then the
     // content JSON (forked parents carry it there) — only fall back to a literal
@@ -1166,10 +1278,11 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
 
 fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a SessionEntry> {
     // Include all entries from the beginning up to and including from_id,
-    // skipping the original session_info (fork_session prepends its own).
+    // skipping the original session_info (fork_session prepends its own) and
+    // run lifecycle markers (they belong to the parent's runs, not the fork).
     let mut result = vec![];
     for e in entries.iter() {
-        if e.entry_type != ENTRY_TYPE_SESSION_INFO {
+        if e.entry_type != ENTRY_TYPE_SESSION_INFO && !is_run_marker(&e.entry_type) {
             result.push(e);
         }
         if e.id == from_id {
@@ -2076,16 +2189,32 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(
-            entries.len(),
-            2,
+        // The metadata update appends a fresh authoritative session_info rather
+        // than rewriting through the repair pipeline, so no synthetic tool result
+        // is persisted for the dangling tool_call.
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.entry_type != ENTRY_TYPE_TOOL),
             "metadata update must not persist a synthetic tool result"
         );
-        assert!(entries
-            .iter()
-            .all(|entry| entry.entry_type != ENTRY_TYPE_TOOL));
+        // The dangling assistant entry is left untouched (still exactly one).
         assert_eq!(
-            entries[0]
+            entries
+                .iter()
+                .filter(|entry| entry.entry_type == ENTRY_TYPE_ASSISTANT)
+                .count(),
+            1
+        );
+        // The authoritative (last) session_info carries the new name; the update
+        // is append-only, so it lands after the original session_info.
+        let last_info = entries
+            .iter()
+            .rev()
+            .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .expect("a session_info snapshot must exist");
+        assert_eq!(
+            last_info
                 .content
                 .as_ref()
                 .and_then(|content| content.get("session_name")),
@@ -2093,6 +2222,268 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_markers_have_correct_type_and_content() {
+        let started = SessionEntry::run_started("run-1", 7);
+        assert_eq!(started.entry_type, ENTRY_TYPE_RUN_STARTED);
+        assert_eq!(started.role, ENTRY_TYPE_SYSTEM);
+        let c = started.content.as_ref().unwrap();
+        assert_eq!(c["run_id"], "run-1");
+        assert_eq!(c["epoch"], 7);
+
+        let terminal = SessionEntry::run_terminal("run-1", RUN_STATE_COMPLETED, 42, 1500, None);
+        assert_eq!(terminal.entry_type, ENTRY_TYPE_RUN_TERMINAL);
+        let c = terminal.content.as_ref().unwrap();
+        assert_eq!(c["run_id"], "run-1");
+        assert_eq!(c["state"], "completed");
+        assert_eq!(c["run_tokens"], 42);
+        assert_eq!(c["run_duration_ms"], 1500);
+        assert!(c.get("error").is_none());
+
+        let failed = SessionEntry::run_terminal("run-1", RUN_STATE_ERROR, 0, 10, Some("boom"));
+        assert_eq!(failed.content.as_ref().unwrap()["error"], "boom");
+
+        assert!(is_run_marker(ENTRY_TYPE_RUN_STARTED));
+        assert!(is_run_marker(ENTRY_TYPE_RUN_TERMINAL));
+        assert!(!is_run_marker(ENTRY_TYPE_ASSISTANT));
+        assert!(!is_run_marker(ENTRY_TYPE_SESSION_INFO));
+    }
+
+    fn temp_manager(tag: &str) -> (std::path::PathBuf, Manager) {
+        let dir = std::env::temp_dir().join(format!("future-{tag}-{}", generate_id()));
+        let manager = Manager::new(dir.clone());
+        (dir, manager)
+    }
+
+    #[test]
+    fn load_reads_last_session_info_as_authoritative() {
+        let (dir, manager) = temp_manager("last-info");
+        let info_v0 = SessionEntry::session_info(
+            serde_json::json!({"cwd": "/a", "model": "old", "session_name": "first", "parent_session_id": ""}),
+            "old".to_string(),
+            "low".to_string(),
+        );
+        let session = Session::snapshot(
+            "s-last".to_string(),
+            "/a".to_string(),
+            "old".to_string(),
+            "first".to_string(),
+            String::new(),
+            vec![
+                info_v0,
+                SessionEntry::new_user("user", serde_json::json!("hi")),
+            ],
+        );
+        manager.save(&session).unwrap();
+        // Append a newer authoritative session_info (as a run commit would).
+        let info_v1 = SessionEntry::session_info(
+            serde_json::json!({"cwd": "/a", "model": "new", "session_name": "renamed", "parent_session_id": ""}),
+            "new".to_string(),
+            "high".to_string(),
+        );
+        manager.append_entries("s-last", &[info_v1]).unwrap();
+
+        let loaded = manager.load("s-last").unwrap();
+        assert_eq!(loaded.model, "new");
+        assert_eq!(loaded.name, "renamed");
+        assert_eq!(loaded.get_session_info().unwrap()["model"], "new");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn update_session_info_appends_complete_snapshot() {
+        let (dir, manager) = temp_manager("update-info");
+        let info = SessionEntry::session_info(
+            serde_json::json!({"cwd": "/a", "model": "m1", "session_name": "n1", "tokens_in": 5}),
+            "m1".to_string(),
+            "low".to_string(),
+        );
+        let session = Session::snapshot(
+            "s-upd".to_string(),
+            "/a".to_string(),
+            "m1".to_string(),
+            "n1".to_string(),
+            String::new(),
+            vec![
+                info,
+                SessionEntry::new_user("user", serde_json::json!("hi")),
+            ],
+        );
+        manager.save(&session).unwrap();
+
+        // Update one field; the appended snapshot must remain complete (other
+        // fields are merged over the latest session_info, not lost).
+        manager
+            .update_session_info("s-upd", "model", serde_json::json!("m2"))
+            .unwrap();
+
+        let loaded = manager.load("s-upd").unwrap();
+        let info = loaded.get_session_info().unwrap();
+        assert_eq!(info["model"], "m2");
+        assert_eq!(info["session_name"], "n1");
+        assert_eq!(info["tokens_in"], 5);
+        // A new session_info was appended (append-only), not rewritten in place.
+        let info_count = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .count();
+        assert_eq!(info_count, 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn entries_to_agent_messages_skips_run_markers_and_extra_info() {
+        let entries = vec![
+            SessionEntry::session_info(
+                serde_json::json!({"model": "m"}),
+                "m".to_string(),
+                "low".to_string(),
+            ),
+            SessionEntry::new_user("user", serde_json::json!("q")),
+            SessionEntry::run_started("run-1", 1),
+            SessionEntry::new_assistant(serde_json::json!("a"), vec![]),
+            SessionEntry::run_terminal("run-1", RUN_STATE_COMPLETED, 1, 1, None),
+            SessionEntry::session_info(
+                serde_json::json!({"model": "m"}),
+                "m".to_string(),
+                "low".to_string(),
+            ),
+        ];
+        let msgs = entries_to_agent_messages(&entries, false);
+        // Only the user + assistant content enters the model context; run
+        // markers and session_info snapshots are filtered out.
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+    }
+
+    #[test]
+    fn fork_inherits_last_session_info_and_skips_markers() {
+        let (dir, manager) = temp_manager("fork-last");
+        let info_v0 = SessionEntry::session_info(
+            serde_json::json!({"cwd": "/a", "model": "old", "session_name": "orig", "thinking_level": "low"}),
+            "old".to_string(),
+            "low".to_string(),
+        );
+        let user = SessionEntry::new_user("user", serde_json::json!("hi"));
+        let user_id = user.id.clone();
+        let session = Session::snapshot(
+            "s-fork".to_string(),
+            "/a".to_string(),
+            "old".to_string(),
+            "orig".to_string(),
+            String::new(),
+            vec![info_v0, user, SessionEntry::run_started("r", 1)],
+        );
+        manager.save(&session).unwrap();
+        // A later run commit changes the model and adds a terminal marker plus a
+        // fresh authoritative session_info.
+        let info_v1 = SessionEntry::session_info(
+            serde_json::json!({"cwd": "/a", "model": "new", "session_name": "renamed", "thinking_level": "high"}),
+            "new".to_string(),
+            "high".to_string(),
+        );
+        manager
+            .append_entries(
+                "s-fork",
+                &[
+                    SessionEntry::new_assistant(serde_json::json!("a"), vec![]),
+                    SessionEntry::run_terminal("r", RUN_STATE_COMPLETED, 1, 1, None),
+                    info_v1,
+                ],
+            )
+            .unwrap();
+
+        let parent = manager.load("s-fork").unwrap();
+        let forked = fork_session(&parent, &user_id);
+        // The fork inherits the CURRENT (last) model/name, not the original.
+        assert_eq!(forked.model, "new");
+        assert!(forked.name.contains("renamed"));
+        // No run markers or duplicate session_info leak into the fork.
+        assert!(!forked.entries.iter().any(|e| is_run_marker(&e.entry_type)));
+        let info_count = forked
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .count();
+        assert_eq!(info_count, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn append_only_run_journal_roundtrips() {
+        // Simulate a full append-only run lifecycle on disk and verify the
+        // journal loads cleanly: the model context excludes markers, the
+        // authoritative session_info is the last one, and the run boundary is
+        // recorded by a started + terminal marker pair.
+        let (dir, manager) = temp_manager("journal");
+        let info = SessionEntry::session_info(
+            serde_json::json!({"cwd": "/a", "model": "m", "session_name": "n", "tokens_out": 0}),
+            "m".to_string(),
+            "low".to_string(),
+        );
+        let session = Session::snapshot(
+            "s-journal".to_string(),
+            "/a".to_string(),
+            "m".to_string(),
+            "n".to_string(),
+            String::new(),
+            vec![info],
+        );
+        manager.save(&session).unwrap();
+
+        // Run 1: user + run_started appended at accept; assistant + run_terminal
+        // + refreshed session_info appended at commit.
+        manager
+            .append_entries(
+                "s-journal",
+                &[
+                    SessionEntry::new_user("user", serde_json::json!("q1")),
+                    SessionEntry::run_started("run-1", 1),
+                ],
+            )
+            .unwrap();
+        let commit_info = SessionEntry::session_info(
+            serde_json::json!({"cwd": "/a", "model": "m", "session_name": "n", "tokens_out": 100}),
+            "m".to_string(),
+            "low".to_string(),
+        );
+        manager
+            .append_entries(
+                "s-journal",
+                &[
+                    SessionEntry::new_assistant(serde_json::json!("a1"), vec![]),
+                    SessionEntry::run_terminal("run-1", RUN_STATE_COMPLETED, 100, 500, None),
+                    commit_info,
+                ],
+            )
+            .unwrap();
+
+        let loaded = manager.load("s-journal").unwrap();
+        // Authoritative metadata is the last (commit) snapshot.
+        assert_eq!(loaded.get_session_info().unwrap()["tokens_out"], 100);
+        // Model context is exactly the conversation, no markers.
+        let msgs = entries_to_agent_messages(&loaded.entries, false);
+        assert_eq!(msgs.len(), 2);
+        // The run boundary is recoverable from the markers.
+        let started: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_RUN_STARTED)
+            .collect();
+        let terminal: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_RUN_TERMINAL)
+            .collect();
+        assert_eq!(started.len(), 1);
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(started[0].content.as_ref().unwrap()["run_id"], "run-1");
+        assert_eq!(terminal[0].content.as_ref().unwrap()["state"], "completed");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
