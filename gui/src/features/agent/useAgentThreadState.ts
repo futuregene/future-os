@@ -9,6 +9,7 @@ import { useThreadMessages } from "./useThreadMessages";
 
 interface UseAgentThreadStateInput {
   thread: StoredThread | null;
+  workspacePath?: string | null;
   loadingStore: boolean;
   modelId: string;
   thinkingLevel: string;
@@ -28,6 +29,7 @@ function activeRunIdOf(recentRun: StoredRun | null, threadId: string | null): st
 
 export function useAgentThreadState({
   thread,
+  workspacePath,
   loadingStore,
   modelId,
   thinkingLevel,
@@ -48,12 +50,13 @@ export function useAgentThreadState({
     loadingIndicator,
     messages,
     recentRun,
+    renderWorkspace,
     reloadMessagesQuiet,
     refreshRecentRun,
     setMessages,
     setRecentRun,
     messagesGenRef,
-  } = useThreadMessages({ threadId, workspaceId, agentSessionId: thread?.agentSessionId });
+  } = useThreadMessages({ threadId, workspaceId, workspacePath, agentSessionId: thread?.agentSessionId });
 
   // The run this thread is currently executing, if any. Runs stream server-side
   // and persist their events regardless of which thread is in the foreground, so
@@ -142,5 +145,6 @@ export function useAgentThreadState({
     loadingIndicator,
     messages,
     recentRun,
+    renderWorkspace,
   };
 }

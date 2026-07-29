@@ -13,6 +13,7 @@ import { applyRunMetadata, recoverAbortedTurns, recoverFailedRuns } from "./thre
 interface UseThreadMessagesInput {
   threadId: string | null;
   workspaceId?: string | null;
+  workspacePath?: string | null;
   agentSessionId?: string | null;
 }
 
@@ -75,8 +76,22 @@ const LOADING_INDICATOR_MIN_MS = 200;
  * thread switch, keeps a live run polling while one is active, and caches
  * recently-visited threads so switching back is instant.
  */
-export function useThreadMessages({ threadId, workspaceId, agentSessionId }: UseThreadMessagesInput) {
+export function useThreadMessages({ threadId, workspaceId, workspacePath, agentSessionId }: UseThreadMessagesInput) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
+  // The workspace the message tree renders against, committed in the same render
+  // as `messages` (see the set points below). `thread.workspaceId` flips the
+  // instant the user switches conversations but `messages` only update once the
+  // load settles; if the message tree read the live workspace it would re-resolve
+  // the stale messages' file links out of the new workspace for a torn frame (a
+  // relative path flashing to its absolute form). Holding the workspace here — in
+  // lockstep with `messages`, never derived from the live `thread` — means it can
+  // only change in the same batch that swaps the messages, so no torn frame is
+  // possible. Streaming / real-time writes are same-conversation and deliberately
+  // leave this untouched.
+  const [renderWorkspace, setRenderWorkspace] = useState(() => ({
+    workspaceId: workspaceId ?? null,
+    workspacePath: workspacePath ?? null,
+  }));
   // Truthful data-loading state: gates pendingPrompt delivery (useAgentThreadState)
   // and must flip the instant a load starts/ends. The UI reads the debounced
   // `loadingIndicator` below instead, so this can stay honest without flashing.
@@ -218,6 +233,7 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
     async function loadThreadMessages() {
       if (!threadId) {
         setMessages([]);
+        setRenderWorkspace({ workspaceId: null, workspacePath: null });
         setLoadingThread(false);
         return;
       }
@@ -227,6 +243,7 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
       if (cached) {
         setMessages(cached.messages);
         setRecentRun(cached.recentRun);
+        setRenderWorkspace({ workspaceId: workspaceId ?? null, workspacePath: workspacePath ?? null });
         setLoadingThread(false);
         // Background refresh from the agent session (empty when it has none).
         // Use a functional updater that preserves any live streaming bubble
@@ -292,6 +309,7 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
           setMessages(restoredMessages);
           cachePut(threadId, { messages: restoredMessages, recentRun: null, entryCount: result.entryCount });
         }
+        setRenderWorkspace({ workspaceId: workspaceId ?? null, workspacePath: workspacePath ?? null });
         setLoadingThread(false);
       }
     }
@@ -304,7 +322,7 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
     // loadFromAgent is an unstable inner function; the reload must fire on
     // thread/workspace change only, not on every render, so it's excluded.
     // eslint-disable-next-line react/exhaustive-deps
-  }, [refreshRecentRun, workspaceId, threadId]);
+  }, [refreshRecentRun, workspaceId, workspacePath, threadId]);
 
   // Derive the flash-free indicator from the truthful `loadingThread`: show it
   // only if loading outlasts LOADING_INDICATOR_DELAY_MS, and once shown hold it
@@ -421,6 +439,7 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
     loadingIndicator,
     messages,
     recentRun,
+    renderWorkspace,
     reloadMessagesQuiet,
     refreshRecentRun,
     setMessages,

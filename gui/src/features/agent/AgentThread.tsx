@@ -80,8 +80,10 @@ export function AgentThread({
     loadingThread,
     loadingIndicator,
     messages,
+    renderWorkspace,
   } = useAgentThreadState({
     thread,
+    workspacePath,
     loadingStore,
     modelId,
     thinkingLevel,
@@ -226,8 +228,8 @@ export function AgentThread({
                       <MessageList
                         messages={messages}
                         showThinking={showThinking}
-                        workspaceId={thread?.workspaceId}
-                        workspacePath={workspacePath}
+                        workspaceId={renderWorkspace.workspaceId}
+                        workspacePath={renderWorkspace.workspacePath}
                         onContinue={handleContinueMessage}
                         onFork={handleFork}
                         onRetry={handleRetryMessage}
