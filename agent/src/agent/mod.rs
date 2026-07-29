@@ -1,7 +1,6 @@
 //! Agent Loop — 1:1 compatible with Go internal/agent/
 
 mod run_loop;
-use crate::events::EventBus;
 use crate::types::{
     AgentMessage, AgentTool, ContentBlock, LLMProvider, Message, StreamEvent, ToolCall,
 };
@@ -46,7 +45,6 @@ pub struct Loop {
     pub tools: Vec<AgentTool>,
     pub config: crate::types::AgentConfig,
     pub verbose: bool,
-    pub event_bus: Option<Arc<EventBus>>,
     pub session_id: String,
     pub steering_queue: PendingMessageQueue,
     pub follow_up_queue: PendingMessageQueue,
@@ -65,6 +63,16 @@ pub struct Loop {
     /// point. The run loop checks this after transform_context and returns an
     /// error instead of silently proceeding with full context.
     pub compaction_failed: Arc<AtomicBool>,
+    /// Set to true when auto-compaction actually replaced the in-memory message
+    /// history during a run. The run-end persistence path reads this to decide
+    /// between an append-only commit (history unchanged) and a full rewrite
+    /// (compaction made the in-memory history diverge from the appended JSONL).
+    /// Cleared at the start of each run.
+    pub compaction_occurred: Arc<AtomicBool>,
+    /// Set when the provider stream ended without a genuine terminal event.
+    /// Read by the run commit path so both the journal and `agent_end` preserve
+    /// `incomplete` instead of presenting a truncated prefix as completed.
+    pub stream_incomplete: Arc<AtomicBool>,
     /// Cached model registry — avoids re-deserialising the 906-model catalog
     /// on auto-compaction checks and image-support queries inside the hot loop.
     pub model_registry: Option<Arc<parking_lot::RwLock<crate::models::Registry>>>,
@@ -79,7 +87,6 @@ impl Loop {
             tools: vec![],
             config: crate::types::AgentConfig::default(),
             verbose: false,
-            event_bus: None,
             session_id: String::new(),
             steering_queue: PendingMessageQueue::new(64, "all"),
             follow_up_queue: PendingMessageQueue::new(64, "all"),
@@ -93,6 +100,8 @@ impl Loop {
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             compaction_failed: Arc::new(AtomicBool::new(false)),
+            compaction_occurred: Arc::new(AtomicBool::new(false)),
+            stream_incomplete: Arc::new(AtomicBool::new(false)),
             model_registry: None,
         }
     }
@@ -112,13 +121,8 @@ impl Loop {
         self
     }
 
-    pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
-        self.event_bus = Some(bus);
-        self
-    }
-
     /// Create an independent copy of this loop: same provider, model, tools,
-    /// config, system prompt and event bus, but FRESH steering/follow-up
+    /// config and system prompt, but FRESH steering/follow-up
     /// queues, token counters, interrupt flag and compaction state.
     ///
     /// `ServerSession` first uses this to isolate sessions from the process
@@ -135,7 +139,6 @@ impl Loop {
             .with_config(self.config.clone());
         copy.verbose = self.verbose;
         copy.parallel_tools = self.parallel_tools;
-        copy.event_bus = self.event_bus.clone();
         copy.model_registry = self.model_registry.clone();
         copy
     }
@@ -857,13 +860,6 @@ mod tests {
     }
 
     #[test]
-    fn loop_with_event_bus() {
-        let bus = std::sync::Arc::new(crate::events::EventBus::new());
-        let loop_ = make_loop().with_event_bus(bus);
-        assert!(loop_.event_bus.is_some());
-    }
-
-    #[test]
     fn loop_interrupt_combines_steer_and_abort() {
         let loop_ = make_loop();
         loop_.interrupt("stop and steer".to_string());
@@ -1138,6 +1134,22 @@ mod tests {
         assert!(result.is_ok());
         let final_text = result.unwrap();
         assert!(final_text.contains("Hello world"));
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn provider_eof_without_stop_marks_run_incomplete() {
+        let loop_ = make_loop();
+        let result = loop_.run_streaming("test prompt".to_string(), |_| {}).await;
+        assert!(result.is_ok());
+        assert!(
+            loop_
+                .stream_incomplete
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "EOF without a provider stop frame must not be a clean completion"
+        );
     }
 
     #[tokio::test]

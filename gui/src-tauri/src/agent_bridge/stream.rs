@@ -34,13 +34,7 @@ async fn persist_run_event_off_thread(
     let _ = tokio::task::spawn_blocking(move || {
         persist_run_event(run_id.as_deref(), &event_type, &data, sequence);
         if let Some(run_id) = emitted_run_id {
-            crate::emit_thread_runtime_updated(crate::ThreadRuntimeUpdate {
-                thread_id,
-                run_id,
-                revision: sequence,
-                status,
-                reset_projection: false,
-            });
+            crate::emit_thread_runtime_updated(thread_id, run_id, status, false);
         }
     })
     .await;
@@ -50,7 +44,6 @@ async fn replace_projection_off_thread(
     thread_id: &str,
     local_run_id: Option<&str>,
     events: Vec<(String, String, i64)>,
-    cursor: i64,
 ) {
     let thread_id = thread_id.to_string();
     let local_run_id = local_run_id.map(str::to_string);
@@ -70,13 +63,12 @@ async fn replace_projection_off_thread(
             }
         }
         if let Some(run_id) = emitted_run_id {
-            crate::emit_thread_runtime_updated(crate::ThreadRuntimeUpdate {
+            crate::emit_thread_runtime_updated(
                 thread_id,
                 run_id,
-                revision: cursor,
-                status: if terminal { "finalizing" } else { "running" }.to_string(),
-                reset_projection: true,
-            });
+                if terminal { "finalizing" } else { "running" }.to_string(),
+                true,
+            );
         }
     })
     .await;
@@ -201,13 +193,7 @@ pub(super) async fn collect_agent_response(
                         )
                     })
                     .collect();
-                replace_projection_off_thread(
-                    thread_id,
-                    local_run_id,
-                    snapshot_events,
-                    event.snapshot_cursor,
-                )
-                .await;
+                replace_projection_off_thread(thread_id, local_run_id, snapshot_events).await;
 
                 content.clear();
                 waiting_for_approval = false;

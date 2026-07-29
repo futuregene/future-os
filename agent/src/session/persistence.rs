@@ -25,6 +25,14 @@ enum PersistenceCommand {
         session: Session,
         ack: mpsc::SyncSender<std::result::Result<(), String>>,
     },
+    /// Append the run's terminal entries (run_terminal marker + refreshed
+    /// session_info) as an explicit durability boundary. Ordered after every
+    /// mid-run append, so it observes any earlier append failure via last_error
+    /// and refuses to commit an incomplete run.
+    CommitRun {
+        entries: Vec<SessionEntry>,
+        ack: mpsc::SyncSender<std::result::Result<(), String>>,
+    },
     Barrier(mpsc::SyncSender<std::result::Result<(), String>>),
 }
 
@@ -42,6 +50,8 @@ struct PersistenceInner {
     idle_timeout: Duration,
     #[cfg(test)]
     fail_next_rewrite: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    fail_next_commit: std::sync::atomic::AtomicBool,
 }
 
 /// Ordered, lazily-started persistence queue for one session.
@@ -75,6 +85,8 @@ impl SessionPersistence {
                 idle_timeout,
                 #[cfg(test)]
                 fail_next_rewrite: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                fail_next_commit: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -117,6 +129,28 @@ impl SessionPersistence {
         receive_ack(ack_rx)
     }
 
+    /// Append the run's terminal entries as this run's explicit durability
+    /// boundary. Because the queue is FIFO, this runs after every mid-run
+    /// append; a successful return means the whole run (user/assistant/tool +
+    /// terminal marker + refreshed session_info) is durably on disk. Returns an
+    /// error if any earlier append failed, signaling the caller to heal with a
+    /// full rewrite instead of committing an incomplete run.
+    pub fn commit_run(&self, entries: Vec<SessionEntry>) -> Result<()> {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        self.send_boundary(PersistenceCommand::CommitRun {
+            entries,
+            ack: ack_tx,
+        })?;
+        receive_ack(ack_rx)
+    }
+
+    /// Clear any recorded append error. Called at run start so the run-end
+    /// commit decision (append-only commit vs healing rewrite) reflects only the
+    /// current run's append health, not a stale error from an earlier run.
+    pub fn reset_error(&self) {
+        *self.inner.last_error.lock() = None;
+    }
+
     pub fn last_error(&self) -> Option<String> {
         self.inner.last_error.lock().clone()
     }
@@ -124,6 +158,11 @@ impl SessionPersistence {
     #[cfg(test)]
     pub(crate) fn fail_next_rewrite(&self) {
         self.inner.fail_next_rewrite.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_commit(&self) {
+        self.inner.fail_next_commit.store(true, Ordering::Release);
     }
 
     fn try_send(&self, mut command: PersistenceCommand) -> Result<()> {
@@ -230,7 +269,23 @@ fn run_worker(
                     .as_ref()
                     .is_some_and(|slot| slot.generation == generation)
                 {
-                    *worker = None;
+                    // A sender may have cloned this generation's sender and
+                    // queued a command after recv_timeout fired but before we
+                    // acquired the worker lock. Drain that handoff while the
+                    // lock excludes new senders; otherwise clearing the slot
+                    // and dropping the receiver would lose an acknowledged
+                    // append at the retirement boundary.
+                    match receiver.try_recv() {
+                        Ok(command) => {
+                            drop(worker);
+                            execute(&state, command);
+                            continue;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {
+                            *worker = None;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => {}
+                    }
                 }
                 return;
             }
@@ -269,6 +324,40 @@ fn execute(state: &PersistenceInner, command: PersistenceCommand) {
             // A successful full snapshot contains the complete in-memory run,
             // so it is the one command that resolves earlier append failures.
             record_result(state, &result, true);
+            let _ = ack.send(result);
+        }
+        PersistenceCommand::CommitRun { entries, ack } => {
+            // A prior append failure means the on-disk run is incomplete and a
+            // terminal marker cannot heal it. Refuse to commit so the caller
+            // falls back to a full rewrite (which does heal). Otherwise append
+            // the terminal entries with an fsync durability boundary.
+            //
+            // Bind the prior error to a local FIRST: matching directly on
+            // `state.last_error.lock().clone()` would hold the mutex guard
+            // across the whole match, deadlocking against record_result's
+            // re-lock below (parking_lot is not re-entrant).
+            let prior_error = state.last_error.lock().clone();
+            let result = match prior_error {
+                Some(error) => Err(format!(
+                    "refusing to commit run: an earlier append failed ({error})"
+                )),
+                None => {
+                    #[cfg(test)]
+                    let injected_failure = state.fail_next_commit.swap(false, Ordering::AcqRel);
+                    #[cfg(not(test))]
+                    let injected_failure = false;
+                    let appended = if injected_failure {
+                        Err("injected run commit failure".to_string())
+                    } else {
+                        state
+                            .manager
+                            .append_entries_synced(&state.session_id, &entries)
+                            .map_err(|error| error.to_string())
+                    };
+                    record_result(state, &appended, false);
+                    appended
+                }
+            };
             let _ = ack.send(result);
         }
         PersistenceCommand::Barrier(ack) => {
@@ -310,9 +399,13 @@ fn merge_latest_session_info(state: &PersistenceInner, target: &mut Session) {
     let Ok(latest) = state.manager.load(&state.session_id) else {
         return;
     };
+    // The authoritative on-disk metadata is the LAST session_info (the
+    // append-only commit path and update_session_info append a fresh snapshot
+    // per change), so merge from the last one — not the stale first snapshot.
     let Some(latest_info) = latest
         .entries
         .iter()
+        .rev()
         .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
         .and_then(|entry| entry.content.as_ref())
         .and_then(serde_json::Value::as_object)
@@ -540,6 +633,79 @@ mod tests {
             .filter(|entry| entry.entry_type == super::super::ENTRY_TYPE_ASSISTANT)
             .count();
         assert_eq!(assistant_count, 100);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn commit_run_appends_terminal_marker_durably() {
+        let (_dir, manager, _) = fixture();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            "session-1".to_string(),
+            Duration::from_secs(1),
+        );
+        let terminal = SessionEntry::run_terminal(
+            "run-commit",
+            super::super::RUN_STATE_COMPLETED,
+            9,
+            100,
+            None,
+        );
+        persistence.commit_run(vec![terminal]).unwrap();
+
+        let loaded = manager.load("session-1").unwrap();
+        let terminal_entry = loaded
+            .entries
+            .iter()
+            .find(|e| e.entry_type == super::super::ENTRY_TYPE_RUN_TERMINAL)
+            .expect("terminal marker must be persisted");
+        assert_eq!(
+            terminal_entry.content.as_ref().unwrap()["run_id"],
+            "run-commit"
+        );
+    }
+
+    #[test]
+    fn commit_run_refuses_after_an_earlier_append_failure() {
+        let (dir, manager, session) = fixture();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            "session-1".to_string(),
+            Duration::from_secs(1),
+        );
+        // Force the next append to fail by removing the file; the queued append
+        // records the error, which barrier surfaces.
+        std::fs::remove_file(manager.session_path("session-1")).unwrap();
+        persistence
+            .append(vec![SessionEntry::new_assistant(
+                serde_json::json!("lost"),
+                vec![],
+            )])
+            .unwrap();
+        assert!(persistence.barrier().is_err());
+
+        // Recreate the file: even though a write would now succeed, commit_run
+        // must still refuse because an earlier append in this run was lost (the
+        // on-disk run is incomplete; the caller heals via a full rewrite).
+        manager.save(&session).unwrap();
+        let terminal = SessionEntry::run_terminal(
+            "run-commit",
+            super::super::RUN_STATE_COMPLETED,
+            9,
+            100,
+            None,
+        );
+        assert!(
+            persistence.commit_run(vec![terminal]).is_err(),
+            "commit must refuse when an earlier append failed"
+        );
+        // No terminal marker was written by the refused commit.
+        let loaded = manager.load("session-1").unwrap();
+        assert!(!loaded
+            .entries
+            .iter()
+            .any(|e| e.entry_type == super::super::ENTRY_TYPE_RUN_TERMINAL));
 
         let _ = std::fs::remove_dir_all(dir);
     }

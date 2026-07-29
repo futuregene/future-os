@@ -1,8 +1,3 @@
-use crate::events::{
-    self, agent_end, agent_end_with_stop_reason, agent_start, error_event, message_end,
-    message_start, text_delta, text_end, text_start, thinking_delta, thinking_end, thinking_start,
-    tool_end, tool_start, toolcall_delta, toolcall_end, toolcall_start, turn_start, usage_event,
-};
 use crate::types::{
     AgentMessage, AgentToolCall, ContentBlock, ConvertFromLLM, ConvertToLLM, Message, StreamEvent,
     ToolCall,
@@ -43,9 +38,6 @@ impl Loop {
         };
 
         // Emit agent_start
-        if let Some(ref bus) = self.event_bus {
-            bus.emit(agent_start(&self.session_id, &ctx.model, ""));
-        }
         on_event(StreamEvent {
             event_type: "agent_start".to_string(),
             ..Default::default()
@@ -53,7 +45,6 @@ impl Loop {
 
         let tool_defs: Vec<_> = self.tools.iter().map(|t| t.def.clone()).collect();
         let mut last_error: Option<anyhow::Error> = None;
-        let mut last_stop_reason = String::new();
         let mut retry_attempt = 0;
 
         if self.verbose {
@@ -69,13 +60,6 @@ impl Loop {
         loop {
             // Check max turn limit (0 = unlimited)
             if max_turns > 0 && turn >= max_turns {
-                if let Some(ref bus) = self.event_bus {
-                    bus.emit(agent_end_with_stop_reason(
-                        "max_turns",
-                        None,
-                        &last_stop_reason,
-                    ));
-                }
                 if let Some(last_error) = last_error {
                     return Err(last_error.context("exceeded max turns"));
                 }
@@ -94,9 +78,6 @@ impl Loop {
             if self.is_interrupted() {
                 if steering_before == 0 {
                     // Pure interrupt → exit cleanly
-                    if let Some(ref bus) = self.event_bus {
-                        bus.emit(agent_end("interrupted", None));
-                    }
                     return Ok((String::new(), messages));
                 }
                 // Steering message was queued → reset interrupt flag and continue
@@ -104,9 +85,6 @@ impl Loop {
             }
 
             // Emit turn_start
-            if let Some(ref bus) = self.event_bus {
-                bus.emit(turn_start(turn));
-            }
 
             // Apply TransformContext if configured (e.g., compaction)
             let work_messages = if let Some(ref transform_fn) = self.config.transform_context {
@@ -119,24 +97,20 @@ impl Loop {
                     // compacted ones so the save path persists the trimmed
                     // history instead of the full (now discarded) prefix.
                     messages = result.clone();
-                    if let Some(ref bus) = self.event_bus {
-                        bus.emit(events::compaction_start("auto"));
-                    }
-                    let mut comp_result = self.last_compaction_result.lock();
-                    let compaction_info = comp_result.clone();
-                    *comp_result = None;
-                    if let Some(ref bus) = self.event_bus {
-                        let (tokens_before, summary) = compaction_info
-                            .as_ref()
-                            .map(|r| (r.tokens_before, r.summary.clone()))
-                            .unwrap_or((0, String::new()));
-                        bus.emit(events::compaction_end(
-                            tokens_before,
-                            &summary,
-                            false,
-                            "auto",
-                        ));
-                    }
+                    let compaction = self.last_compaction_result.lock().take();
+                    let (tokens_before, summary) = compaction
+                        .map(|result| (result.tokens_before, result.summary))
+                        .unwrap_or((0, String::new()));
+                    on_event(StreamEvent {
+                        event_type: "compaction_end".to_string(),
+                        payload: Some(serde_json::json!({
+                            "tokens_before": tokens_before,
+                            "summary": summary,
+                            "aborted": false,
+                            "reason": "auto",
+                        })),
+                        ..Default::default()
+                    });
                 }
                 result
             } else {
@@ -149,21 +123,12 @@ impl Loop {
                 .compaction_failed
                 .swap(false, std::sync::atomic::Ordering::SeqCst)
             {
-                if let Some(ref bus) = self.event_bus {
-                    bus.emit(error_event(
-                        "Context compaction failed: unable to find a valid cut point. \
-                         The conversation is too long and cannot continue.",
-                    ));
-                }
                 return Err(anyhow!(
                     "context compaction failed: conversation overflows model context window"
                 ));
             }
 
             // Emit message_start
-            if let Some(ref bus) = self.event_bus {
-                bus.emit(message_start("assistant"));
-            }
 
             // Convert to LLM format
             let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
@@ -199,9 +164,6 @@ impl Loop {
             {
                 Some(r) => r,
                 None => {
-                    if let Some(ref bus) = self.event_bus {
-                        bus.emit(agent_end("interrupted", None));
-                    }
                     return Ok((String::new(), messages));
                 }
             };
@@ -209,9 +171,6 @@ impl Loop {
             let mut rx = match stream_result {
                 Ok(rx) => rx,
                 Err(e) => {
-                    if let Some(ref bus) = self.event_bus {
-                        bus.emit(error_event(&e.to_string()));
-                    }
                     last_error = Some(e);
                     if self.config.max_retries > 0
                         && retry_attempt < self.config.max_retries as usize
@@ -222,9 +181,6 @@ impl Loop {
                         // count), so it can't help on the first call.
                         let err_msg = format!("{}", last_error.as_ref().unwrap());
                         if is_retryable_size_error(&err_msg) {
-                            if let Some(ref bus) = self.event_bus {
-                                bus.emit(events::compaction_start("auto"));
-                            }
                             // Resolve the model's actual context window so we don't
                             // over-compact large-context models (1M+).
                             // Use the cached registry from the loop to avoid
@@ -252,10 +208,17 @@ impl Loop {
                             );
                             messages = ConvertFromLLM(compacted);
                             if let Some(r) = compact_result {
+                                on_event(StreamEvent {
+                                    event_type: "compaction_end".to_string(),
+                                    payload: Some(serde_json::json!({
+                                        "tokens_before": r.tokens_before,
+                                        "summary": r.summary.clone(),
+                                        "aborted": false,
+                                        "reason": "auto",
+                                    })),
+                                    ..Default::default()
+                                });
                                 *self.last_compaction_result.lock() = Some(r);
-                                if let Some(ref bus) = self.event_bus {
-                                    bus.emit(events::compaction_end(0, "", false, "auto"));
-                                }
                             } else {
                                 // Forced compaction (context-length error) failed to
                                 // find any valid cut point. The conversation cannot
@@ -263,12 +226,6 @@ impl Loop {
                                 tracing::error!(
                                     "forced compaction after context-length error failed"
                                 );
-                                if let Some(ref bus) = self.event_bus {
-                                    bus.emit(error_event(
-                                        "Context compaction failed: unable to find a valid \
-                                         cut point. The conversation is too long and cannot continue.",
-                                    ));
-                                }
                                 return Err(anyhow!(
                                     "context compaction failed: conversation overflows model context window"
                                 ));
@@ -277,20 +234,10 @@ impl Loop {
                         // Don't burn a retry (and its backoff) if the user
                         // already asked to stop.
                         if self.is_interrupted() {
-                            if let Some(ref bus) = self.event_bus {
-                                bus.emit(agent_end("interrupted", None));
-                            }
                             return Ok((String::new(), messages));
                         }
                         retry_attempt += 1;
                         let delay_ms = 2000 * (1 << (retry_attempt - 1));
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(events::auto_retry_start(
-                                retry_attempt,
-                                self.config.max_retries as usize,
-                                delay_ms,
-                            ));
-                        }
                         // Interruptible backoff: wake up immediately when the
                         // user hits stop instead of sleeping out the full delay
                         // (2s + 4s + 8s = up to 14s of unresponsiveness).
@@ -301,15 +248,9 @@ impl Loop {
                             )
                             .await
                         {
-                            if let Some(ref bus) = self.event_bus {
-                                bus.emit(agent_end("interrupted", None));
-                            }
                             return Ok((String::new(), messages));
                         }
                         continue;
-                    }
-                    if let Some(ref bus) = self.event_bus {
-                        bus.emit(agent_end("error", None));
                     }
                     let err = last_error.unwrap();
                     tracing::error!("LLM call failed: {:#}", err);
@@ -319,9 +260,6 @@ impl Loop {
 
             // Reset retry on successful stream
             if retry_attempt > 0 {
-                if let Some(ref bus) = self.event_bus {
-                    bus.emit(events::auto_retry_end());
-                }
                 retry_attempt = 0;
             }
 
@@ -338,6 +276,7 @@ impl Loop {
             // timeout or premature EOF without a finish_reason / `[DONE]`).
             // The accumulated text is a prefix, not a finished answer.
             let mut stream_truncated = false;
+            let mut saw_terminal_event = false;
 
             loop {
                 let event_idle_timeout = if current_tool_calls
@@ -387,7 +326,7 @@ impl Loop {
                         // `incomplete`, not a silent `complete`. (A normal end
                         // arrives as the channel closing right after a `stop`,
                         // which is not a timeout.)
-                        if event_timed_out {
+                        if event_timed_out || !saw_terminal_event {
                             stream_truncated = true;
                         }
                         break;
@@ -411,25 +350,16 @@ impl Loop {
                         if self.verbose {
                             crate::eprint_log!("\n{}[thinking]{} ", C_MAGENTA, C_RESET);
                         }
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(thinking_start());
-                        }
                     }
                     "thinking_delta" => {
                         reasoning_text.push_str(&event.text);
                         if self.verbose {
                             crate::eprint_log!("{}", event.text);
                         }
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(thinking_delta(&event.text));
-                        }
                     }
                     "thinking_end" => {
                         if self.verbose {
                             crate::eprintln_log!(); // blank line after thinking
-                        }
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(thinking_end());
                         }
                     }
                     "text" | "text_delta" => {
@@ -442,21 +372,11 @@ impl Loop {
                             crate::eprint_log!("{}", event.text);
                         }
                         on_text(event.text.clone());
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(text_delta(&event.text));
-                        }
                     }
-                    "text_start" => {
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(text_start());
-                        }
-                    }
+                    "text_start" => {}
                     "text_end" => {
                         if self.verbose {
                             crate::eprintln_log!(); // blank line after output
-                        }
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(text_end());
                         }
                     }
                     "toolcall_start" => {
@@ -499,24 +419,6 @@ impl Loop {
                                             }
                                         }
                                     }
-                                    // Emit toolcall_delta so the TUI can stream arg display
-                                    if let Some(ref bus) = self.event_bus {
-                                        bus.emit(toolcall_delta(
-                                            event
-                                                .tool_call
-                                                .as_ref()
-                                                .and_then(|tc| {
-                                                    if let serde_json::Value::String(ref s) =
-                                                        tc.function.arguments
-                                                    {
-                                                        Some(s.as_str())
-                                                    } else {
-                                                        None
-                                                    }
-                                                })
-                                                .unwrap_or(""),
-                                        ));
-                                    }
                                     continue;
                                 }
                             }
@@ -530,9 +432,6 @@ impl Loop {
                         // Finalize any existing tool call at this index (different id)
                         if let Some(tc) = current_tool_calls[idx].take() {
                             tool_calls.push(finalize_agent_tool_call(tc));
-                            if let Some(ref bus) = self.event_bus {
-                                bus.emit(toolcall_end());
-                            }
                         }
 
                         let args = event
@@ -545,9 +444,6 @@ impl Loop {
                             name: event.tool_name.clone(),
                             args,
                         });
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(toolcall_start(&event.tool_name, &event.tool_id));
-                        }
                     }
                     "toolcall_delta" => {
                         let idx = event.tc_index;
@@ -585,9 +481,6 @@ impl Loop {
                                 args: serde_json::Value::String(event.text.clone()),
                             });
                         }
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(toolcall_delta(&event.text));
-                        }
                     }
                     "tool_call" | "toolcall_end" => {
                         if let Some(ref u) = event.usage {
@@ -596,9 +489,6 @@ impl Loop {
                         for tc_opt in current_tool_calls.iter_mut() {
                             if let Some(tc) = tc_opt.take() {
                                 tool_calls.push(finalize_agent_tool_call(tc));
-                                if let Some(ref bus) = self.event_bus {
-                                    bus.emit(toolcall_end());
-                                }
                             }
                         }
                     }
@@ -606,27 +496,19 @@ impl Loop {
                         if self.verbose {
                             tracing::info!("[tool] {} → starting", event.tool_name);
                         }
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(tool_start(&event.tool_name, &event.tool_id));
-                        }
                     }
                     "tool_end" => {
                         if self.verbose {
                             tracing::info!("[tool] {} ← done", event.tool_name);
-                        }
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(tool_end(&event.tool_name, &event.tool_id));
                         }
                     }
                     "usage" => {
                         if let Some(ref u) = event.usage {
                             self.process_usage_event(u, &mut total_usage);
                         }
-                        if !event.stop_reason.is_empty() {
-                            last_stop_reason = event.stop_reason.clone();
-                        }
                     }
                     "stop" => {
+                        saw_terminal_event = true;
                         // A `truncated` stop_reason means the stream was cut off
                         // mid-flight (idle timeout / premature EOF) rather than
                         // reaching a real finish. Remember it so the turn ends as
@@ -642,17 +524,11 @@ impl Loop {
                         for tc_opt in current_tool_calls.iter_mut() {
                             if let Some(tc) = tc_opt.take() {
                                 tool_calls.push(finalize_agent_tool_call(tc));
-                                if let Some(ref bus) = self.event_bus {
-                                    bus.emit(toolcall_end());
-                                }
                             }
                         }
                     }
                     "error" => {
                         stream_error = Some(anyhow!("{}", event.error_text));
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(error_event(&event.error_text));
-                        }
                     }
                     _ => {}
                 }
@@ -661,9 +537,6 @@ impl Loop {
             for tc_opt in current_tool_calls.iter_mut() {
                 if let Some(tc) = tc_opt.take() {
                     tool_calls.push(finalize_agent_tool_call(tc));
-                    if let Some(ref bus) = self.event_bus {
-                        bus.emit(toolcall_end());
-                    }
                 }
             }
 
@@ -679,6 +552,7 @@ impl Loop {
                  assistant_text: &str,
                  reasoning_text: &str,
                  tool_calls: &[ToolCall]| {
+                    let first_new_message = messages.len();
                     let mut msg = AgentMessage {
                         role: "assistant".to_string(),
                         content: if !assistant_text.is_empty() {
@@ -717,6 +591,16 @@ impl Loop {
                             ..Default::default()
                         });
                     }
+                    // Partial output is part of the authoritative conversation,
+                    // just like a normally completed assistant/tool message.
+                    // Persist every entry added by this interrupt path so the
+                    // append-only terminal commit cannot leave memory and JSONL
+                    // permanently divergent after abort/restart.
+                    if let Some(ref save) = ctx.save_callback {
+                        for message in &messages[first_new_message..] {
+                            save(message);
+                        }
+                    }
                 };
 
             // Check for stream errors before processing results
@@ -725,9 +609,6 @@ impl Loop {
                 if !self.steering_queue.is_empty() {
                     messages = self.drain_steering(messages, &ctx.on_user_message);
                     continue;
-                }
-                if let Some(ref bus) = self.event_bus {
-                    bus.emit(agent_end("interrupted", None));
                 }
                 build_partial_assistant(
                     &mut messages,
@@ -745,9 +626,6 @@ impl Loop {
                 if irx.try_recv().is_ok() {
                     // Same interrupt path as above
                     if self.steering_queue.is_empty() {
-                        if let Some(ref bus) = self.event_bus {
-                            bus.emit(agent_end("interrupted", None));
-                        }
                         build_partial_assistant(
                             &mut messages,
                             &assistant_text,
@@ -766,9 +644,6 @@ impl Loop {
             }
 
             // Emit message_end
-            if let Some(ref bus) = self.event_bus {
-                bus.emit(message_end("assistant"));
-            }
 
             // Build assistant message
             let mut assistant_msg = AgentMessage {
@@ -827,13 +702,8 @@ impl Loop {
             // queue or presenting a cut-off reply as `complete`. Tool calls, if
             // any, are left unexecuted — their arguments may be partial.
             if stream_truncated {
-                if let Some(ref bus) = self.event_bus {
-                    bus.emit(agent_end_with_stop_reason(
-                        "incomplete",
-                        total_usage.as_ref(),
-                        &last_stop_reason,
-                    ));
-                }
+                self.stream_incomplete
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 if self.verbose {
                     tracing::warn!(
                         "[agent] stream truncated turns={} output_len={}",
@@ -848,13 +718,6 @@ impl Loop {
             if let Some(ref stop_fn) = self.config.stop_condition {
                 let llm_msgs: Vec<Message> = ConvertToLLM(&messages);
                 if stop_fn(llm_msgs, &assistant_text) {
-                    if let Some(ref bus) = self.event_bus {
-                        bus.emit(agent_end_with_stop_reason(
-                            "stop_condition",
-                            total_usage.as_ref(),
-                            &last_stop_reason,
-                        ));
-                    }
                     return Ok((assistant_text, messages));
                 }
             }
@@ -863,9 +726,6 @@ impl Loop {
             if tool_calls.is_empty() {
                 if !self.follow_up_queue.is_empty() {
                     messages = self.drain_follow_up(messages, &ctx.on_user_message);
-                    if let Some(ref bus) = self.event_bus {
-                        bus.emit(events::turn_end(turn));
-                    }
                     if let Some(ref u) = total_usage {
                         let cost = u.credit_cost.unwrap_or(0.0);
                         tracing::info!(
@@ -883,13 +743,6 @@ impl Loop {
                         ..Default::default()
                     });
                     continue;
-                }
-                if let Some(ref bus) = self.event_bus {
-                    bus.emit(agent_end_with_stop_reason(
-                        "complete",
-                        total_usage.as_ref(),
-                        &last_stop_reason,
-                    ));
                 }
                 if self.verbose {
                     tracing::info!(
@@ -935,10 +788,6 @@ impl Loop {
                 &ctx.on_tool_result,
             )
             .await;
-
-            if let Some(ref bus) = self.event_bus {
-                bus.emit(events::turn_end(turn));
-            }
 
             // Log per-turn usage: tokens and cost.
             if let Some(ref u) = total_usage {
@@ -1058,9 +907,6 @@ impl Loop {
         // inflates the total by N×. Instead, credit_cost is applied once at
         // the end of the LLM call using the final value from total_usage.
         *total_usage = Some(u.clone());
-        if let Some(ref bus) = self.event_bus {
-            bus.emit(usage_event(u));
-        }
     }
 }
 

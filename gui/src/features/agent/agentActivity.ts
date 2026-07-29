@@ -192,7 +192,7 @@ export function createRunProjector(): RunProjector {
       return;
     }
 
-    if (event.eventType === "toolcall_delta") {
+    if (event.eventType === "tool_delta" || event.eventType === "toolcall_delta") {
       if (!activeToolCallId)
         return;
 

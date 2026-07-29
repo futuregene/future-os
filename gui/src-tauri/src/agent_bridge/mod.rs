@@ -14,7 +14,7 @@ mod stream;
 pub use self::approval::{decide_approval, inject_session_rule};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
-    connect_agent, delete_session_command, get_available_models_command,
+    connect_agent, delete_session_command, get_available_models_command, get_run_state_command,
     get_session_entries_command, get_state_command, list_streaming_sessions_command, map_rpc_error,
     set_cwd_command, set_model_command, set_session_name_command, set_thinking_level_command,
     RpcResponseExt,
@@ -576,7 +576,7 @@ fn auto_name_thread(thread_id: &str, first_message: &str) {
 /// cancelled by startup convergence, check the agent's actual session state.
 /// If the agent is still streaming, reanimate the run (back to "running") and
 /// spawn a background event collector so the frontend's reattach poll picks up
-/// the live preview. If the agent already finished, mark the run completed.
+/// the live preview. If it already finished, mirror its durable journal state.
 pub async fn reconcile_interrupted_runs() {
     let Ok(runs) = crate::store::list_interrupted_runs() else {
         return;
@@ -596,27 +596,68 @@ pub async fn reconcile_interrupted_runs() {
     }
 }
 
+/// Reconcile one run that the synchronous startup phase cancelled as
+/// interrupted, against the Agent's authoritative view of its session.
+///
+/// The Agent's `get_state` reports `activeRun` (a live run) and `interruptedRun`
+/// (a run that began but never committed — recovered as interrupted-by-restart).
+/// The GUI passes its local run id as `requested_run_id` and the Agent adopts it
+/// as the canonical id, so canonical == local here. Three cases:
+///
+/// 1. The Agent is still running THIS exact run (`activeRun.runId == run_id`):
+///    reanimate it and spawn a collector so the live preview resumes. We match on
+///    the run id, not just "the session is streaming", so a stale local run is
+///    never reattached against a different run's stream.
+/// 2. The Agent confirms THIS run as interrupted (`interruptedRun.runId ==
+///    run_id`): it began but never committed. The sync phase already cancelled it
+///    with `error_type='interrupted'`; keep that accurate terminal state rather
+///    than falsely settling it as completed.
+/// 3. Neither: use `requestedRun` to mirror the exact durable terminal state.
+///    If the Agent has no marker for this id, conservatively leave interrupted.
 async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), String> {
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
     let state = client
-        .execute_command(get_state_command(session_id.to_string()))
+        .execute_command(get_run_state_command(
+            session_id.to_string(),
+            run_id.to_string(),
+        ))
         .await
         .map_err(|e| format!("get_state: {e}"))?
         .into_inner();
+    if !state.success {
+        // The Agent could not resolve this session (its JSONL is gone, or the
+        // Agent cannot hydrate it). Treat the run as orphaned: leave it in the
+        // interrupted state the synchronous phase set rather than asserting it
+        // completed, so it stays visible as interrupted instead of vanishing
+        // into a false "completed".
+        eprintln!(
+            "FutureOS startup reconcile: get_state failed for run {run_id} ({}); leaving interrupted",
+            state.error
+        );
+        return Ok(());
+    }
     let state_value = serde_json::from_str::<serde_json::Value>(&state.data).unwrap_or_default();
     let is_streaming = state_value
         .get("isStreaming")
         .and_then(|s| s.as_bool())
         .unwrap_or(false);
-    let canonical_run_id = state_value
+    let active_run_id = state_value
         .get("activeRun")
         .and_then(|run| run.get("runId"))
         .and_then(|id| id.as_str())
         .map(str::to_string);
+    let interrupted_run_id = state_value
+        .get("interruptedRun")
+        .and_then(|run| run.get("runId"))
+        .and_then(|id| id.as_str())
+        .map(str::to_string);
+    let requested_terminal = state_value
+        .get("requestedRun")
+        .filter(|value| value.is_object());
 
-    if is_streaming {
-        let canonical_run_id = canonical_run_id
-            .ok_or_else(|| "active Agent run omitted canonical run id".to_string())?;
+    if is_streaming && active_run_id.as_deref() == Some(run_id) {
+        // canonical == local: the Agent adopted this run's requested_run_id.
+        let canonical_run_id = run_id.to_string();
         crate::store::reanimate_run(run_id).map_err(|e| format!("reanimate: {e}"))?;
         let run_id = run_id.to_string();
         let session_id = session_id.to_string();
@@ -640,9 +681,23 @@ async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), S
                 eprintln!("FutureOS reanimated collector for {run_id} failed: {e}");
             }
         });
-    } else {
-        crate::store::settle_interrupted_run(run_id, "completed")
+    } else if interrupted_run_id.as_deref() == Some(run_id) {
+        // The Agent confirms this run began but never committed (interrupted by
+        // the restart). The synchronous phase already cancelled it with
+        // error_type='interrupted'; leave that accurate state in place.
+        eprintln!("FutureOS startup reconcile: run {run_id} confirmed interrupted by restart; leaving cancelled");
+    } else if let Some(terminal) = requested_terminal {
+        let state = terminal
+            .get("state")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "requestedRun omitted terminal state".to_string())?;
+        let error = terminal.get("error").and_then(|value| value.as_str());
+        crate::store::settle_interrupted_run_from_agent(run_id, state, error)
             .map_err(|e| format!("settle: {e}"))?;
+    } else {
+        eprintln!(
+            "FutureOS startup reconcile: no durable terminal for run {run_id}; leaving interrupted"
+        );
     }
     Ok(())
 }
@@ -691,16 +746,12 @@ async fn collect_stored_replica(
             .map_err(|e| format!("update_status: {e}"))?;
         }
     }
-    crate::emit_thread_runtime_updated(crate::ThreadRuntimeUpdate {
+    crate::emit_thread_runtime_updated(
         thread_id,
-        run_id: local_run_id.to_string(),
-        revision: crate::store::list_run_events(local_run_id)
-            .ok()
-            .and_then(|events| events.into_iter().map(|event| event.sequence).max())
-            .unwrap_or(-1),
-        status: terminal.to_string(),
-        reset_projection: false,
-    });
+        local_run_id.to_string(),
+        terminal.to_string(),
+        false,
+    );
     crate::store::clear_run_event_buffer(local_run_id);
     Ok(())
 }

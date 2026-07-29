@@ -226,7 +226,7 @@ pub(crate) fn emit_remote_activity(thread_id: &str) {
     }
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ThreadRuntimeUpdate {
     pub thread_id: String,
@@ -236,10 +236,58 @@ pub(crate) struct ThreadRuntimeUpdate {
     pub reset_projection: bool,
 }
 
+static NEXT_RUNTIME_REVISION: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+static RUNTIME_EMIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn next_runtime_revision() -> i64 {
+    NEXT_RUNTIME_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn coalesce_runtime_updates(
+    first: ThreadRuntimeUpdate,
+    rest: impl IntoIterator<Item = ThreadRuntimeUpdate>,
+) -> Vec<ThreadRuntimeUpdate> {
+    use std::collections::HashMap;
+
+    let mut pending = HashMap::from([(first.run_id.clone(), first)]);
+    for mut next in rest {
+        match pending.entry(next.run_id.clone()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(next);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let current = entry.get_mut();
+                let reset_projection = current.reset_projection || next.reset_projection;
+                if next.revision > current.revision {
+                    next.reset_projection = reset_projection;
+                    *current = next;
+                } else {
+                    current.reset_projection = reset_projection;
+                }
+            }
+        }
+    }
+    let mut updates: Vec<_> = pending.into_values().collect();
+    // Different runs from the same thread can settle/start inside one batch.
+    // HashMap iteration order is undefined, so preserve the process-global
+    // revision order before the frontend reduces them into thread-level state.
+    updates.sort_unstable_by_key(|update| update.revision);
+    updates
+}
+
 /// Coalesce token-heavy run updates into a single UI notification per run
 /// roughly every 40ms. Persistence remains event-by-event and authoritative;
 /// this channel is only a low-latency projection invalidation signal.
-pub(crate) fn emit_thread_runtime_updated(update: ThreadRuntimeUpdate) {
+///
+/// `revision` is assigned here from one process-global monotonic sequence.
+/// Callers must not mix event cursors and wall-clock values into the UI ordering
+/// contract; event-log cursors remain internal to the projection reader.
+pub(crate) fn emit_thread_runtime_updated(
+    thread_id: String,
+    run_id: String,
+    status: String,
+    reset_projection: bool,
+) {
     static TX: std::sync::OnceLock<std::sync::mpsc::Sender<ThreadRuntimeUpdate>> =
         std::sync::OnceLock::new();
     let tx = TX.get_or_init(|| {
@@ -247,38 +295,25 @@ pub(crate) fn emit_thread_runtime_updated(update: ThreadRuntimeUpdate) {
         std::thread::Builder::new()
             .name("thread-runtime-updates".to_string())
             .spawn(move || {
-                use std::collections::HashMap;
                 use std::time::{Duration, Instant};
 
                 while let Ok(first) = rx.recv() {
                     let deadline = Instant::now() + Duration::from_millis(40);
-                    let mut pending = HashMap::from([(first.run_id.clone(), first)]);
+                    let mut rest = Vec::new();
                     loop {
                         let remaining = deadline.saturating_duration_since(Instant::now());
                         if remaining.is_zero() {
                             break;
                         }
                         match rx.recv_timeout(remaining) {
-                            Ok(next) => {
-                                let reset_projection = pending
-                                    .get(&next.run_id)
-                                    .is_some_and(|current| current.reset_projection)
-                                    || next.reset_projection;
-                                pending.insert(
-                                    next.run_id.clone(),
-                                    ThreadRuntimeUpdate {
-                                        reset_projection,
-                                        ..next
-                                    },
-                                );
-                            }
+                            Ok(next) => rest.push(next),
                             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
                             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
                         }
                     }
                     if let Some(handle) = APP_HANDLE.get() {
                         use tauri::Emitter;
-                        for update in pending.into_values() {
+                        for update in coalesce_runtime_updates(first, rest) {
                             let _ = handle.emit("thread-runtime-updated", update);
                         }
                     }
@@ -287,7 +322,61 @@ pub(crate) fn emit_thread_runtime_updated(update: ThreadRuntimeUpdate) {
             .expect("spawn thread runtime update emitter");
         tx
     });
-    let _ = tx.send(update);
+    // Couple revision allocation to channel insertion. Without this short lock,
+    // two producer threads could allocate revisions in one order but enqueue in
+    // the opposite order, potentially placing a reset instruction behind an
+    // update that the frontend had already accepted.
+    let _emit_guard = RUNTIME_EMIT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _ = tx.send(ThreadRuntimeUpdate {
+        thread_id,
+        run_id,
+        revision: next_runtime_revision(),
+        status,
+        reset_projection,
+    });
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadStreamingUpdate {
+    revision: i64,
+    thread_ids: Vec<String>,
+}
+
+/// Bridge the Agent's compatibility-only `is_streaming` projection into a
+/// desktop push signal. React performs one initial snapshot read and then
+/// consumes only deltas from this monitor, avoiding a permanent sidebar IPC /
+/// render timer.
+///
+/// Long term, replace this single process-level sampler with a global Agent
+/// runtime subscription once the gRPC protocol exposes one. Until then this is
+/// the only source that can see runs started by older TUI/CLI clients which do
+/// not create a GUI StoredRun or route through the Tauri collector.
+fn start_thread_streaming_monitor() {
+    tauri::async_runtime::spawn(async move {
+        let mut previous: Option<Vec<String>> = None;
+        loop {
+            let mut thread_ids = list_streaming_thread_ids().await.unwrap_or_default();
+            thread_ids.sort_unstable();
+            thread_ids.dedup();
+            if previous.as_ref() != Some(&thread_ids) {
+                previous = Some(thread_ids.clone());
+                if let Some(handle) = APP_HANDLE.get() {
+                    use tauri::Emitter;
+                    let _ = handle.emit(
+                        "thread-streaming-updated",
+                        ThreadStreamingUpdate {
+                            revision: next_runtime_revision(),
+                            thread_ids,
+                        },
+                    );
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -419,6 +508,7 @@ pub fn run() {
             // sidecar binary) this no-ops and the user runs the agent manually.
             let agent_handle = app.handle().clone();
             std::thread::spawn(move || agent_supervisor::ensure_agent_running(&agent_handle));
+            start_thread_streaming_monitor();
             // After the agent has had time to start, reanimate any runs that
             // were cancelled by convergence but whose agent sessions are still
             // streaming (the agent survived a GUI crash). Spawned off the launch
@@ -590,4 +680,40 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod runtime_update_tests {
+    use super::{coalesce_runtime_updates, ThreadRuntimeUpdate};
+
+    fn update(run_id: &str, revision: i64, status: &str, reset: bool) -> ThreadRuntimeUpdate {
+        ThreadRuntimeUpdate {
+            thread_id: "thread-1".to_string(),
+            run_id: run_id.to_string(),
+            revision,
+            status: status.to_string(),
+            reset_projection: reset,
+        }
+    }
+
+    #[test]
+    fn coalescing_preserves_reset_and_cross_run_revision_order() {
+        let updates = coalesce_runtime_updates(
+            update("run-old", 1, "running", true),
+            [
+                update("run-new", 2, "running", false),
+                update("run-old", 3, "completed", false),
+                update("run-new", 4, "completed", false),
+                update("run-new", 2, "running", true),
+            ],
+        );
+
+        assert_eq!(
+            updates,
+            vec![
+                update("run-old", 3, "completed", true),
+                update("run-new", 4, "completed", true),
+            ]
+        );
+    }
 }

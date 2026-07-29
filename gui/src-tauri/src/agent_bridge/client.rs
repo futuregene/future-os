@@ -165,6 +165,13 @@ pub fn get_state_command(session_id: String) -> RpcCommand {
     base_command("get_state", session_id)
 }
 
+pub fn get_run_state_command(session_id: String, run_id: String) -> RpcCommand {
+    RpcCommand {
+        run_id,
+        ..base_command("get_state", session_id)
+    }
+}
+
 pub fn get_available_models_command() -> RpcCommand {
     base_command("list_models", String::new())
 }

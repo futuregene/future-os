@@ -1,4 +1,3 @@
-use crate::events::EventBus;
 use crate::session::Manager;
 use crate::types::ConvertToLLM;
 use anyhow::Result;
@@ -67,8 +66,6 @@ pub struct ServerSession {
     pub created_by: String,
     /// Arbitrary metadata from the source side (JSON). Free-form.
     pub source_meta: serde_json::Value,
-    /// Shared event bus for agent lifecycle events (start, end, stop reason).
-    pub event_bus: Arc<EventBus>,
     /// Per-session SSE broadcaster.  Each subscriber (`StreamEvents` call)
     /// receives a clone of the receiver.  Private per-session so events for
     /// one session never leak to another.
@@ -142,7 +139,6 @@ impl ServerSession {
         agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
         manager: Arc<Manager>,
         cwd: &str,
-        event_bus: Arc<EventBus>,
         broadcaster: Arc<SseBroadcaster>,
         approval_gate: ApprovalGate,
         model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
@@ -194,7 +190,6 @@ impl ServerSession {
             parent_session_id: String::new(),
             created_by: String::new(),
             source_meta: serde_json::Value::Null,
-            event_bus,
             broadcaster,
             ephemeral: false,
             tokens_in: ti,
@@ -836,6 +831,18 @@ mod tests {
             .to_string()
     }
 
+    /// Unique, isolated session directory for a test session. Each call gets
+    /// its own temp dir (timestamp + random hex) so parallel tests never share
+    /// a JSONL file, and nothing is written to the real
+    /// `~/.future/agent/sessions` store (which `Manager::default_for` targets,
+    /// since `default_session_dir` ignores its cwd argument).
+    fn test_session_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "futureos-sess-test-{}",
+            crate::utils::generate_id()
+        ))
+    }
+
     #[test]
     fn new_sessions_default_to_all_permission() {
         let cwd = test_workspace();
@@ -845,9 +852,8 @@ mod tests {
                 Arc::new(EmptyProvider),
                 "mock",
             ))),
-            Arc::new(Manager::default_for(&cwd)),
+            Arc::new(Manager::new(test_session_dir())),
             &cwd,
-            Arc::new(EventBus::new()),
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
@@ -866,9 +872,8 @@ mod tests {
                 Arc::new(EmptyProvider),
                 "mock",
             ))),
-            Arc::new(Manager::default_for(&cwd)),
+            Arc::new(Manager::new(test_session_dir())),
             &cwd,
-            Arc::new(EventBus::new()),
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
@@ -886,7 +891,6 @@ mod tests {
             ))),
             Arc::new(Manager::new(session_dir)),
             &cwd,
-            Arc::new(EventBus::new()),
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
@@ -1217,9 +1221,8 @@ mod tests {
         let mut session = ServerSession::new(
             "snapshot-run".to_string(),
             shared_loop.clone(),
-            Arc::new(Manager::default_for(&cwd)),
+            Arc::new(Manager::new(test_session_dir())),
             &cwd,
-            Arc::new(EventBus::new()),
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
@@ -1247,6 +1250,68 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn in_run_follow_up_survives_terminal_rewrite() {
+        let cwd = test_workspace();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let mut session = ServerSession::new(
+            "follow-up-persistence".to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(BlockingProvider {
+                    started: started.clone(),
+                    release: release.clone(),
+                }),
+                "mock",
+            ))),
+            Arc::new(Manager::new(std::path::Path::new(&cwd).join("sessions"))),
+            &cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        );
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        session
+            .prompt("first question", &[], &[], Some("run-follow-up"), None)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        session
+            .follow_up_run("second question", Some("run-follow-up"))
+            .unwrap();
+
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while session.runtime.snapshot().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let loaded = session.session_manager.load(&session.session_id).unwrap();
+        let user_texts: Vec<String> = loaded
+            .entries
+            .iter()
+            .filter(|entry| entry.entry_type == crate::session::ENTRY_TYPE_USER)
+            .filter_map(|entry| entry.content.as_ref().map(ToString::to_string))
+            .collect();
+        assert_eq!(user_texts.len(), 2);
+        assert!(user_texts[0].contains("first question"));
+        assert!(user_texts[1].contains("second question"));
+        assert_eq!(
+            loaded.entries.last().unwrap().entry_type,
+            crate::session::ENTRY_TYPE_RUN_TERMINAL
+        );
+
+        let _ = std::fs::remove_dir_all(&session.cwd);
     }
 
     #[tokio::test]
@@ -1295,7 +1360,6 @@ mod tests {
             ))),
             Arc::new(Manager::new(std::path::Path::new(&cwd).join("sessions"))),
             &cwd,
-            Arc::new(EventBus::new()),
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
@@ -1325,6 +1389,28 @@ mod tests {
                     .as_ref()
                     .is_some_and(|content| content.to_string().contains("cancel me"))
         }));
+        let terminal = loaded
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL
+                    && entry
+                        .content
+                        .as_ref()
+                        .and_then(|content| content.get("run_id"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("run-cancel")
+            })
+            .expect("cancelled run must have a terminal marker");
+        assert_eq!(
+            terminal.content.as_ref().unwrap()["state"],
+            crate::session::RUN_STATE_CANCELLED
+        );
+        assert_eq!(
+            loaded.entries.last().map(|entry| entry.id.as_str()),
+            Some(terminal.id.as_str()),
+            "terminal marker must be the final durable journal record"
+        );
 
         let next = session
             .runtime
@@ -1338,10 +1424,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rewrite_failure_keeps_session_persistence_degraded() {
-        let mut session = make_persistent_test_session("rewrite-failure");
+    async fn healing_rewrite_preserves_run_markers() {
+        let mut session = make_persistent_test_session("rewrite-markers");
         std::fs::create_dir_all(&session.cwd).unwrap();
         session.set_auto_retry(false);
+        // Refuse the append-only commit once. The fallback rewrite must heal
+        // the snapshot without erasing the current lifecycle boundary.
+        session.persistence.fail_next_commit();
+        session
+            .prompt("heal the journal", &[], &[], Some("run-healed"), None)
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while session.runtime.snapshot().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let loaded = session.session_manager.load(&session.session_id).unwrap();
+        assert!(loaded.entries.iter().any(|entry| {
+            entry.entry_type == crate::session::ENTRY_TYPE_RUN_STARTED
+                && entry
+                    .content
+                    .as_ref()
+                    .and_then(|content| content.get("run_id"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("run-healed")
+        }));
+        let terminal = loaded.entries.last().expect("terminal record");
+        assert_eq!(terminal.entry_type, crate::session::ENTRY_TYPE_RUN_TERMINAL);
+        assert_eq!(terminal.content.as_ref().unwrap()["run_id"], "run-healed");
+
+        let _ = std::fs::remove_dir_all(&session.cwd);
+    }
+
+    #[tokio::test]
+    async fn commit_failure_keeps_session_persistence_degraded() {
+        let mut session = make_persistent_test_session("commit-failure");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        session.set_auto_retry(false);
+        // The append-only run commit fails, and so does the healing full-rewrite
+        // fallback — so the run cannot be persisted at all and the session must
+        // stay fenced in PersistenceDegraded (no new run may start).
+        session.persistence.fail_next_commit();
         session.persistence.fail_next_rewrite();
         session
             .prompt("must remain fenced", &[], &[], Some("run-degraded"), None)
@@ -1375,6 +1502,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_run_closes_a_prior_interrupted_run() {
+        let mut session = make_persistent_test_session("interrupt-close");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        session.set_auto_retry(false);
+
+        // First run completes normally (creates the file and a run_terminal).
+        session
+            .prompt("first", &[], &[], Some("run-first"), None)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while session.runtime.snapshot().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            session
+                .session_manager
+                .unterminated_run_id(&session.session_id)
+                .unwrap(),
+            None
+        );
+
+        // Simulate a crash: a later run began (run_started durable) but the
+        // agent died before committing, so there is no run_terminal.
+        session
+            .session_manager
+            .append_entries(
+                &session.session_id,
+                &[crate::session::SessionEntry::run_started("crashed-run", 99)],
+            )
+            .unwrap();
+        assert_eq!(
+            session
+                .session_manager
+                .unterminated_run_id(&session.session_id)
+                .unwrap(),
+            Some("crashed-run".to_string())
+        );
+
+        // The next run must close the interrupted run before its own user
+        // message, recovering it as interrupted_by_restart (never completed).
+        session
+            .prompt("second", &[], &[], Some("run-second"), None)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while session.runtime.snapshot().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let loaded = session.session_manager.load(&session.session_id).unwrap();
+        // The interrupted run is closed with the interrupted_by_restart state.
+        let closing_pos = loaded
+            .entries
+            .iter()
+            .position(|e| {
+                e.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL
+                    && e.content.as_ref().is_some_and(|c| {
+                        c.get("run_id").and_then(|v| v.as_str()) == Some("crashed-run")
+                            && c.get("state").and_then(|v| v.as_str())
+                                == Some(crate::session::RUN_STATE_INTERRUPTED_BY_RESTART)
+                    })
+            })
+            .expect("interrupted run must be closed as interrupted_by_restart");
+        // The closing marker precedes the second run's user message.
+        let second_user_pos = loaded
+            .entries
+            .iter()
+            .position(|e| {
+                e.entry_type == crate::session::ENTRY_TYPE_USER
+                    && e.content
+                        .as_ref()
+                        .is_some_and(|c| c.to_string().contains("second"))
+            })
+            .unwrap();
+        assert!(closing_pos < second_user_pos);
+        // And no run is left open after the second run commits.
+        assert_eq!(crate::session::find_unterminated_run(&loaded.entries), None);
+
+        session.persistence.barrier().unwrap();
+        let _ = std::fs::remove_dir_all(&session.cwd);
+    }
+
+    #[tokio::test]
     async fn initial_persistence_rejection_emits_one_terminal_and_rolls_back() {
         let cwd = test_workspace();
         std::fs::create_dir_all(&cwd).unwrap();
@@ -1389,7 +1604,6 @@ mod tests {
             ))),
             Arc::new(Manager::new(unusable_session_dir)),
             &cwd,
-            Arc::new(EventBus::new()),
             broadcaster.clone(),
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
@@ -1470,9 +1684,8 @@ mod tests {
                 Arc::new(EmptyProvider),
                 "mock",
             ))),
-            Arc::new(Manager::default_for(&cwd)),
+            Arc::new(Manager::new(test_session_dir())),
             &cwd,
-            Arc::new(EventBus::new()),
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),

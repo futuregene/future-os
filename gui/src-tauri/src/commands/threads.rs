@@ -213,8 +213,8 @@ pub async fn batch_delete_threads(
 /// Replaces the old per-thread get_state fan-out, which hydrated every
 /// polled session on the agent at startup.
 ///
-/// Agent unreachable → empty list (nothing shows as streaming); callers
-/// self-heal on the next poll tick.
+/// Agent unreachable → empty list. The process-level compatibility monitor
+/// retries, while React uses this command only for its initial snapshot.
 #[tauri::command]
 pub async fn list_streaming_thread_ids() -> Result<Vec<String>, crate::AppError> {
     let mut client = match crate::agent_bridge::connect_agent().await {

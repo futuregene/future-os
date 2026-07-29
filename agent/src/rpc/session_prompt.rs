@@ -2,8 +2,8 @@ use anyhow::Result;
 use std::sync::Arc;
 
 use super::prompt_helpers::{
-    approve_tool_path_if_present, build_user_message, prepare_session_tool_call,
-    stream_event_to_sse_data,
+    approve_tool_path_if_present, build_user_message, canonical_stream_event,
+    prepare_session_tool_call, stream_event_to_sse_data,
 };
 use super::ServerSession;
 
@@ -54,6 +54,7 @@ impl ServerSession {
             // cells instead of the fresh defaults from independent_copy().
             snapshot.last_compaction_result = shared.last_compaction_result.clone();
             snapshot.compaction_failed = shared.compaction_failed.clone();
+            snapshot.compaction_occurred = shared.compaction_occurred.clone();
             (system_prompt, shared.verbose, snapshot)
         };
         run_loop.cumulative_input_tokens = self.tokens_in.clone();
@@ -95,7 +96,19 @@ impl ServerSession {
         // sole Idle -> Starting transition, so abort -> resend cannot create a
         // second task while the cancelled task is still unwinding.
         let run_lease = self.runtime.begin(requested_run_id, client_request_id)?;
-        self.broadcaster.start_run(run_lease.run_id.clone());
+        self.broadcaster
+            .start_run(run_lease.run_id.clone(), run_lease.epoch as i64);
+        // This run starts with a clean persistence-error and compaction state so
+        // the run-end commit decision (append-only vs healing rewrite) reflects
+        // only this run. Runs are serialized per session, so no concurrent run
+        // can observe the reset.
+        self.persistence.reset_error();
+        run_loop
+            .compaction_occurred
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        run_loop
+            .stream_incomplete
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         user_message
             .metadata
             .get_or_insert_with(serde_json::Map::new)
@@ -117,7 +130,7 @@ impl ServerSession {
         // because get_session_entries reads from disk.
         // Ephemeral sessions (--no-session) skip persistence entirely.
         if !self.ephemeral {
-            if let Err(error) = self.persist_user_message() {
+            if let Err(error) = self.persist_user_message(&run_lease) {
                 self.messages.write().pop();
                 let _ = self.runtime.begin_finalizing(&run_lease);
                 let full_error = format!("Failed to persist accepted user message: {error:#}");
@@ -173,6 +186,10 @@ impl ServerSession {
         let auto_compaction = self.auto_compaction;
         let approval_gate = self.approval_gate.clone();
         let is_ephemeral = self.ephemeral;
+        // Shared with the next-run control plane (re-shared in independent_copy),
+        // so the run task can read at finalize whether compaction diverged the
+        // in-memory history from the appended JSONL.
+        let compaction_occurred = run_loop.compaction_occurred.clone();
 
         // Resolve the sandbox boundary once per run: canonicalized writable
         // roots + platform availability. Shared by the approval closure (pre-
@@ -205,20 +222,47 @@ impl ServerSession {
         };
         let save_messages = messages_arc.clone();
         let save_persistence = self.persistence.clone();
+        let persisted_run_id = run_lease.run_id.clone();
         let save_closure: crate::agent::PersistCallback =
             Arc::new(move |msg: &crate::types::AgentMessage| {
                 if is_ephemeral {
                     return;
                 }
-                save_messages.write().push(msg.clone());
-                let entry = crate::session::agent_message_to_entry(msg);
+                let mut persisted = msg.clone();
+                if persisted.role == "assistant" {
+                    persisted
+                        .metadata
+                        .get_or_insert_with(serde_json::Map::new)
+                        .insert(
+                            "run_id".to_string(),
+                            serde_json::Value::String(persisted_run_id.clone()),
+                        );
+                }
+                save_messages.write().push(persisted.clone());
+                let entry = crate::session::agent_message_to_entry(&persisted);
                 if let Err(error) = save_persistence.append(vec![entry]) {
                     tracing::error!("Failed to enqueue session entry: {error}");
                 }
             });
+        // Steering can reorder a user message ahead of the current context,
+        // while follow-ups append one inside the same canonical run. Persist
+        // both immediately for crash visibility, then heal their exact
+        // in-memory ordering with a rewrite at the terminal boundary.
+        //
+        // TODO(runtime-persistence): split steering and follow-up callbacks so
+        // append-only follow-ups can avoid the rewrite while reordered steering
+        // records an explicit journal transform.
+        let in_run_user_message_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let user_msg_cb: crate::agent::PersistCallback = {
             let b = broadcaster.clone();
+            let persistence = self.persistence.clone();
+            let rewrite_required = in_run_user_message_seen.clone();
             Arc::new(move |msg: &crate::types::AgentMessage| {
+                rewrite_required.store(true, std::sync::atomic::Ordering::SeqCst);
+                let entry = crate::session::agent_message_to_entry(msg);
+                if let Err(error) = persistence.append(vec![entry]) {
+                    tracing::error!("Failed to enqueue in-run user message: {error}");
+                }
                 b.broadcast(crate::rpc::SseEvent::new(
                     "user_message",
                     serde_json::json!({"text": msg.display_text()}),
@@ -369,11 +413,13 @@ impl ServerSession {
                                     });
                                 },
                                 move |event| {
-                                    be.broadcast(crate::rpc::SseEvent {
-                                        event_type: event.event_type.clone(),
-                                        data: stream_event_to_sse_data(&event),
-                                        ..Default::default()
-                                    });
+                                    if let Some(event) = canonical_stream_event(event) {
+                                        be.broadcast(crate::rpc::SseEvent {
+                                            event_type: event.event_type.clone(),
+                                            data: stream_event_to_sse_data(&event),
+                                            ..Default::default()
+                                        });
+                                    }
                                 },
                                 current_interrupt_rx.take(),
                             )
@@ -388,17 +434,14 @@ impl ServerSession {
                                     return Ok(current_messages);
                                 }
                                 for msg in follow_ups {
-                                    let text = msg.clone();
-                                    current_messages.push(crate::types::AgentMessage::new_user(
+                                    let follow_up = crate::types::AgentMessage::new_user(
                                         "user",
-                                        serde_json::json!([{"type": "text", "text": text}]),
-                                    ));
-                                    // Broadcast the follow-up so observing TUIs see it
-                                    // alongside the assistant's response (same as prompt()).
-                                    broadcaster.broadcast(crate::rpc::SseEvent::new(
-                                        "user_message",
-                                        serde_json::json!({"text": msg}),
-                                    ));
+                                        serde_json::json!([{"type": "text", "text": msg}]),
+                                    );
+                                    if let Some(ref on_user_message) = stream_ctx.on_user_message {
+                                        on_user_message(&follow_up);
+                                    }
+                                    current_messages.push(follow_up);
                                 }
                                 // No interrupt channel for follow-up re-runs
                                 current_interrupt_rx = None;
@@ -413,6 +456,18 @@ impl ServerSession {
             // This check fences shared messages, disk commits, and terminal
             // events. A completion from an obsolete epoch is never allowed to
             // mutate a newer run.
+            let was_cancelled = runtime.snapshot().is_some_and(|active| {
+                active.run_id == task_lease.run_id
+                    && active.epoch == task_lease.epoch
+                    && matches!(
+                        active.phase,
+                        crate::runtime::RunPhase::Cancelling
+                            | crate::runtime::RunPhase::CancellationStuck
+                    )
+            });
+            let stream_incomplete = run_loop
+                .stream_incomplete
+                .load(std::sync::atomic::Ordering::SeqCst);
             if !runtime.begin_finalizing(&task_lease) {
                 return;
             }
@@ -443,212 +498,158 @@ impl ServerSession {
             let run_duration_ms = run_start.elapsed().as_millis() as i64;
 
             // Every terminal path reaches the same durability boundary before
-            // the runtime may return to Idle. On model/tool error the shared
-            // message list contains every callback-accepted entry; rewriting it
-            // also heals an earlier bounded-queue overload when disk recovers.
-            // TODO(runtime-persistence): replace this compatibility full
-            // snapshot with append-only terminal entries; reserve atomic
-            // rewrite for compaction and repair.
+            // the runtime may return to Idle.
+            //
+            // Append-only is the fast path: the run's user/assistant/tool
+            // entries were already appended during the run, so we only add a
+            // run_terminal marker plus a refreshed session_info snapshot, then
+            // commit at a durable boundary — O(this run), not O(full history).
+            //
+            // A full rewrite is reserved for the two cases that make the
+            // in-memory history diverge from the appended JSONL: compaction
+            // replacing the message list, or a mid-run append failure. commit_run
+            // reports the latter by refusing to commit, and we then heal via a
+            // full rewrite (which also applies the compacted history).
+            let compaction_happened = compaction_occurred.load(std::sync::atomic::Ordering::SeqCst);
+            let history_rewrite_required =
+                in_run_user_message_seen.load(std::sync::atomic::Ordering::SeqCst);
+            let terminal_state = if was_cancelled {
+                crate::session::RUN_STATE_CANCELLED
+            } else if run_error.is_some() {
+                crate::session::RUN_STATE_ERROR
+            } else if stream_incomplete {
+                crate::session::RUN_STATE_INCOMPLETE
+            } else {
+                crate::session::RUN_STATE_COMPLETED
+            };
+            // Clones for the blocking commit task: run_error and task_lease are
+            // still needed after the task completes (terminal event dispatch).
+            let commit_run_id = task_lease.run_id.clone();
+            let commit_run_error = run_error.clone();
             let persistence_task = tokio::task::spawn_blocking(move || {
-                if !is_ephemeral {
-                    let msgs = messages_arc.read();
-                    let mut entries: Vec<crate::session::SessionEntry> = msgs
+                if is_ephemeral {
+                    return anyhow::Ok(());
+                }
+                use std::sync::atomic::Ordering;
+
+                // Preserve parent_session_id from the existing session on disk.
+                let parent_session_id = session_manager
+                    .load(&session_id)
+                    .map(|s| s.parent_session_id)
+                    .unwrap_or_default();
+
+                // Build the authoritative session_info snapshot that records the
+                // session's cumulative metadata at this run boundary. Auto-
+                // generate session_name from the first user message when not set
+                // explicitly (matches first_message in list_sessions).
+                let resolved_name = if session_name.is_empty() {
+                    messages_arc
+                        .read()
                         .iter()
-                        .map(crate::session::agent_message_to_entry)
-                        .collect();
+                        .find(|m| m.role == "user")
+                        .map(|m| m.display_text())
+                        .map(|s| crate::session::truncate_visible(s.trim(), 40))
+                        .unwrap_or_default()
+                } else {
+                    session_name
+                };
+                let total_cost = *cumulative_cost.lock();
+                let mut info = serde_json::json!({
+                    "cwd": session_cwd,
+                    "tokens_in": tokens_in.load(Ordering::Relaxed),
+                    "tokens_out": tokens_out.load(Ordering::Relaxed),
+                    "tokens_cache_r": tokens_cache_r.load(Ordering::Relaxed),
+                    "tokens_cache_w": tokens_cache_w.load(Ordering::Relaxed),
+                    "last_prompt_tokens": last_prompt.load(Ordering::Relaxed),
+                    "total_cost": total_cost,
+                    "session_name": resolved_name,
+                    "auto_compaction": auto_compaction,
+                    "parent_session_id": parent_session_id,
+                    "thinking_level": session_thinking,
+                    "model": session_model,
+                });
+                if !created_by.is_empty() {
+                    info["created_by"] = serde_json::Value::String(created_by);
+                }
+                if !source_meta.is_null() {
+                    info["source_meta"] = source_meta;
+                }
+                let info_entry = crate::session::SessionEntry::session_info(
+                    info,
+                    session_model.clone(),
+                    session_thinking.clone(),
+                );
+                let run_started =
+                    crate::session::SessionEntry::run_started(&commit_run_id, task_lease.epoch);
+                let terminal = crate::session::SessionEntry::run_terminal(
+                    &commit_run_id,
+                    terminal_state,
+                    run_output_tokens,
+                    run_duration_ms,
+                    commit_run_error.as_deref(),
+                );
 
-                    // The whole session is rebuilt from the in-memory message
-                    // list on every save, and agent_message_to_entry re-stamps
-                    // `now()` with zero token/duration. Without preserving them,
-                    // every reload shows all messages at the current time
-                    // ("just now") and drops earlier replies' token counts.
-                    // Messages only grow by appending, so the on-disk message
-                    // entries align by index with this prefix. Filter the old
-                    // side to message entries only (matching what the rebuild
-                    // produces) so any interleaved label/model_change entries
-                    // can't shift the alignment.
-                    {
-                        let is_message_entry = |t: &str| {
-                            matches!(
-                                t,
-                                crate::session::ENTRY_TYPE_USER
-                                    | crate::session::ENTRY_TYPE_ASSISTANT
-                                    | crate::session::ENTRY_TYPE_TOOL
-                                    | crate::session::ENTRY_TYPE_SYSTEM
-                            )
-                        };
-                        let old_msg_entries: Vec<crate::session::SessionEntry> = session_manager
-                            .load(&session_id)
-                            .map(|s| {
-                                s.entries
-                                    .into_iter()
-                                    .filter(|e| is_message_entry(&e.entry_type))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        for (new_entry, old_entry) in entries.iter_mut().zip(old_msg_entries.iter())
-                        {
-                            new_entry.timestamp = old_entry.timestamp;
-                            // Preserve run stats from old entry's content
-                            if let Some(ref old_content) = old_entry.content {
-                                if let Some(obj) =
-                                    new_entry.content.as_mut().and_then(|c| c.as_object_mut())
-                                {
-                                    if let Some(v) = old_content.get("run_tokens") {
-                                        obj.insert("run_tokens".to_string(), v.clone());
-                                    }
-                                    if let Some(v) = old_content.get("run_duration_ms") {
-                                        obj.insert("run_duration_ms".to_string(), v.clone());
-                                    }
-                                }
-                            }
-                        }
-
-                        // Attach this run's output tokens + wall-clock duration
-                        // to the final assistant entry (the reply just made). It
-                        // sits beyond the preserved prefix, so earlier replies
-                        // are untouched.
-                        if let Some(last_assistant) = entries
-                            .iter_mut()
-                            .rev()
-                            .find(|e| e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT)
-                        {
-                            // Store run stats in the last assistant's content JSON
-                            if let Some(ref mut content) = last_assistant.content {
-                                if let Some(obj) = content.as_object_mut() {
-                                    obj.insert(
-                                        "run_tokens".to_string(),
-                                        serde_json::json!(run_output_tokens),
-                                    );
-                                    obj.insert(
-                                        "run_duration_ms".to_string(),
-                                        serde_json::json!(run_duration_ms),
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    // Prepend session_info entry with metadata
-                    use std::sync::atomic::Ordering;
-                    // Preserve parent_session_id from existing session on disk
-                    let parent_session_id = session_manager
-                        .load(&session_id)
-                        .map(|s| s.parent_session_id)
-                        .unwrap_or_default();
-
-                    // Auto-generate session_name from the first user message
-                    // if not explicitly set (matches first_message in list_sessions).
-                    let session_name = if session_name.is_empty() {
-                        entries
-                            .iter()
-                            .find(|e| e.role == "user")
-                            .and_then(|e| e.content.as_ref())
-                            .map(|c| {
-                                if let Some(arr) = c.as_array() {
-                                    // Only the user's own text (first text block);
-                                    // a later text block is the agent-injected
-                                    // attachment-path list, which must not leak
-                                    // into the auto-generated session name.
-                                    arr.iter()
-                                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                        .next()
-                                        .unwrap_or("")
-                                        .to_string()
-                                } else {
-                                    c.as_str().unwrap_or("").to_string()
-                                }
-                            })
-                            .map(|s| {
-                                let trimmed = s.trim();
-                                crate::session::truncate_visible(trimmed, 40)
-                            })
-                            .unwrap_or_default()
-                    } else {
-                        session_name
-                    };
-
-                    let total_cost = cumulative_cost.lock();
-                    let mut info = serde_json::json!({
-                        "cwd": session_cwd,
-                        "tokens_in": tokens_in.load(Ordering::Relaxed),
-                        "tokens_out": tokens_out.load(Ordering::Relaxed),
-                        "tokens_cache_r": tokens_cache_r.load(Ordering::Relaxed),
-                        "tokens_cache_w": tokens_cache_w.load(Ordering::Relaxed),
-                        "last_prompt_tokens": last_prompt.load(Ordering::Relaxed),
-                        "total_cost": *total_cost,
-                        "session_name": session_name,
-                        "auto_compaction": auto_compaction,
-                        "parent_session_id": parent_session_id,
-                        "thinking_level": session_thinking.clone(),
-                        "model": session_model.clone(),
-                    });
-                    if !created_by.is_empty() {
-                        info["created_by"] = serde_json::Value::String(created_by);
-                    }
-                    if !source_meta.is_null() {
-                        info["source_meta"] = source_meta;
-                    }
-                    let info_entry = crate::session::SessionEntry::session_info(
-                        info,
-                        session_model.clone(),
-                        session_thinking.clone(),
-                    );
-                    entries.insert(0, info_entry);
-
-                    // If the first user message is a compaction marker, replace
-                    // it with a proper compaction entry so the JSONL records
-                    // the compaction point explicitly.
-                    if let Some(idx) = entries.iter().position(|e| {
-                        e.role == "user"
-                            && e.content
-                                .as_ref()
-                                .and_then(|c| c.as_array())
-                                .and_then(|arr| {
-                                    arr.first()
-                                        .and_then(|b| b.get("text"))
-                                        .and_then(|t| t.as_str())
-                                })
-                                .is_some_and(|t| t.starts_with("[Context compaction:"))
-                    }) {
-                        if let Some(marker) = entries.get(idx) {
-                            // Build a clean compaction entry — keep the summary
-                            // text but convert from message array to a simple
-                            // JSON object.
-                            let summary = marker
-                                .content
-                                .as_ref()
-                                .and_then(|c| c.as_array())
-                                .and_then(|arr| arr.first())
-                                .and_then(|b| b.get("text"))
-                                .and_then(|t| t.as_str())
-                                .unwrap_or("");
-                            let mut comp_entry = marker.clone();
-                            comp_entry.id = crate::utils::generate_id();
-                            comp_entry.entry_type =
-                                crate::session::ENTRY_TYPE_COMPACTION.to_string();
-                            comp_entry.role = "system".to_string();
-                            comp_entry.content = Some(serde_json::json!({
-                                "summary": summary,
-                                "tokens_in": tokens_in.load(Ordering::Relaxed),
-                                "tokens_out": tokens_out.load(Ordering::Relaxed),
-                            }));
-                            entries.insert(idx + 1, comp_entry);
-                            entries.remove(idx);
-                        }
-                    }
-
-                    let session = crate::session::Session::snapshot(
-                        session_id.clone(),
-                        session_cwd.clone(),
-                        session_model.clone(),
-                        session_name.clone(),
-                        parent_session_id,
-                        entries,
+                if compaction_happened || history_rewrite_required {
+                    // Compaction replaced the in-memory history, so the appended
+                    // JSONL no longer matches. In-run steering/follow-up can
+                    // likewise change message ordering. Rewrite the authoritative
+                    // snapshot and retain its lifecycle journal.
+                    let messages = messages_arc.read().clone();
+                    let session = Self::build_rewrite_snapshot(
+                        &session_manager,
+                        &session_id,
+                        &session_cwd,
+                        &session_model,
+                        &resolved_name,
+                        &parent_session_id,
+                        &messages,
+                        info_entry,
+                        run_output_tokens,
+                        run_duration_ms,
+                        tokens_in.load(Ordering::Relaxed),
+                        tokens_out.load(Ordering::Relaxed),
+                        run_started,
+                        terminal,
                     );
                     session_persistence.rewrite_run_snapshot(session)?;
+                    return anyhow::Ok(());
                 }
-                anyhow::Ok(())
+
+                // Append-only fast path: terminal marker + refreshed session_info,
+                // committed at a durable (fsync) boundary. commit_run is ordered
+                // after every mid-run append, so it refuses if any of them failed;
+                // in that case heal with a full rewrite.
+                // Keep the terminal marker last. A crash before the fsync may
+                // leave a missing/partial tail, but cannot expose a terminal
+                // marker followed by an incomplete metadata record.
+                match session_persistence.commit_run(vec![info_entry.clone(), terminal.clone()]) {
+                    Ok(()) => anyhow::Ok(()),
+                    Err(commit_error) => {
+                        tracing::warn!(
+                            run_id = %commit_run_id,
+                            "append-only run commit refused ({commit_error}); healing with full rewrite"
+                        );
+                        let messages = messages_arc.read().clone();
+                        let session = Self::build_rewrite_snapshot(
+                            &session_manager,
+                            &session_id,
+                            &session_cwd,
+                            &session_model,
+                            &resolved_name,
+                            &parent_session_id,
+                            &messages,
+                            info_entry,
+                            run_output_tokens,
+                            run_duration_ms,
+                            tokens_in.load(Ordering::Relaxed),
+                            tokens_out.load(Ordering::Relaxed),
+                            run_started,
+                            terminal,
+                        );
+                        session_persistence.rewrite_run_snapshot(session)?;
+                        anyhow::Ok(())
+                    }
+                }
             });
             let persistence_error = match persistence_task.await {
                 Ok(Ok(())) => None,
@@ -683,13 +684,16 @@ impl ServerSession {
                 None => {
                     // Carry this run's output-token total on the terminal event so
                     // the client can show the token stat the instant the run settles.
+                    let mut data = serde_json::json!({
+                        "type": "agent_end",
+                        "usage": { "output_tokens": run_output_tokens }
+                    });
+                    if stream_incomplete {
+                        data["reason"] = serde_json::Value::String("incomplete".to_string());
+                    }
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
-                        data: serde_json::json!({
-                            "type": "agent_end",
-                            "usage": { "output_tokens": run_output_tokens }
-                        })
-                        .to_string(),
+                        data: data.to_string(),
                         ..Default::default()
                     });
                 }
@@ -758,6 +762,7 @@ impl ServerSession {
             let comp_tokens = self.last_prompt_tokens.clone();
             let comp_result = r#loop.last_compaction_result.clone();
             let comp_failed = r#loop.compaction_failed.clone();
+            let comp_occurred = r#loop.compaction_occurred.clone();
             // Resolve context_window once — reuse cached registry
             // to avoid re-deserialising the model catalog.
             let context_window = self
@@ -795,6 +800,11 @@ impl ServerSession {
                 );
                 if let Some(r) = result {
                     *comp_result.lock() = Some(r);
+                    // Signal the run-end persistence path that compaction
+                    // replaced the in-memory history, so it diverges from the
+                    // appended JSONL and must be persisted via a full rewrite
+                    // rather than an append-only commit.
+                    comp_occurred.store(true, Ordering::SeqCst);
                     compacted
                 } else if needs_compact {
                     // Compaction was needed but compact() returned no result,
@@ -872,29 +882,34 @@ impl ServerSession {
     /// at its last-completed-run values — the final save at run end refreshes
     /// it. A failure rejects StartRun so memory and JSONL cannot diverge before
     /// the model begins producing side effects.
-    fn persist_user_message(&self) -> Result<()> {
+    fn persist_user_message(&self, run_lease: &crate::runtime::RunLease) -> Result<()> {
         // Use in-memory parent_session_id — avoids reading the entire session
         // file from disk just to get one field.
         let parent_session_id = self.parent_session_id.clone();
         let msgs = self.messages.read();
+        // The run_started marker is persisted together with the user message so
+        // the journal durably records that this run began. A run_started with no
+        // matching run_terminal identifies a run interrupted by crash/restart.
+        let run_started =
+            crate::session::SessionEntry::run_started(&run_lease.run_id, run_lease.epoch);
 
-        // Fast path: session file already exists → append just the new user
-        // message.  Skips a ~349 KB full rewrite to add one ~1 KB line.
+        // Fast path: an existing session atomically closes any run left open by
+        // a prior process restart and appends this run's user/start records.
+        // Refuse the new run if that durability boundary fails: allowing the new
+        // run_started through would hide the older open marker.
         if let Some(last_msg) = msgs.last() {
             let entry = crate::session::agent_message_to_entry(last_msg);
-            match self
-                .session_manager
-                .append_entries(&self.session_id, &[entry])
-            {
-                Ok(()) => return Ok(()), // appended — done
-                Err(_) => {
-                    // File doesn't exist yet (brand-new session) → fall through
-                    // to full save so the JSONL gets created with session_info.
-                }
+            if self.session_manager.find(&self.session_id).is_some() {
+                self.session_manager.append_run_start(
+                    &self.session_id,
+                    entry,
+                    run_started.clone(),
+                )?;
+                return Ok(());
             }
         }
 
-        // Slow path: full save (new session, or append failed).
+        // Slow path: full save for a brand-new session.
         let mut entries: Vec<crate::session::SessionEntry> = msgs
             .iter()
             .map(crate::session::agent_message_to_entry)
@@ -952,6 +967,9 @@ impl ServerSession {
             );
             entries.insert(0, info_entry);
         }
+        // Record the run_started marker after the user message so the brand-new
+        // session's journal also bounds this run (matches the fast path).
+        entries.push(run_started);
         let session = crate::session::Session::snapshot(
             self.session_id.clone(),
             self.cwd.clone(),
@@ -962,6 +980,196 @@ impl ServerSession {
         );
         self.session_manager.save(&session)?;
         Ok(())
+    }
+
+    /// Rebuild the complete session snapshot from the in-memory message list for
+    /// a full rewrite. This is the O(history) path, reserved for runs where
+    /// compaction replaced the message history (diverging from the appended
+    /// JSONL) or where a mid-run append failed and the file must be healed.
+    ///
+    /// `info_entry` is the authoritative session_info snapshot (prepended).
+    /// On-disk timestamps and prior-run token stats are preserved by index so a
+    /// rewrite doesn't reset every message to "just now"; this run's output
+    /// tokens and duration are attached to the final assistant entry.
+    #[allow(clippy::too_many_arguments)]
+    fn build_rewrite_snapshot(
+        session_manager: &crate::session::Manager,
+        session_id: &str,
+        session_cwd: &str,
+        session_model: &str,
+        resolved_name: &str,
+        parent_session_id: &str,
+        messages: &[crate::types::AgentMessage],
+        info_entry: crate::session::SessionEntry,
+        run_output_tokens: i64,
+        run_duration_ms: i64,
+        tokens_in: i64,
+        tokens_out: i64,
+        run_started: crate::session::SessionEntry,
+        terminal: crate::session::SessionEntry,
+    ) -> crate::session::Session {
+        use crate::session::SessionEntry;
+        let mut entries: Vec<SessionEntry> = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .collect();
+
+        // The whole session is rebuilt from the in-memory message list, and
+        // agent_message_to_entry re-stamps `now()` with zero token/duration.
+        // Without preserving them, every reload shows all messages at the
+        // current time ("just now") and drops earlier replies' token counts.
+        // Messages only grow by appending, so the on-disk message entries align
+        // by index with this prefix. Filter the old side to message entries only
+        // (matching what the rebuild produces) so interleaved label/model_change
+        // /run-marker entries can't shift the alignment.
+        let is_message_entry = |t: &str| {
+            matches!(
+                t,
+                crate::session::ENTRY_TYPE_USER
+                    | crate::session::ENTRY_TYPE_ASSISTANT
+                    | crate::session::ENTRY_TYPE_TOOL
+                    | crate::session::ENTRY_TYPE_SYSTEM
+            )
+        };
+        let old_session = session_manager.load(session_id).ok();
+        let old_msg_entries: Vec<SessionEntry> = old_session
+            .as_ref()
+            .map(|session| {
+                session
+                    .entries
+                    .iter()
+                    .filter(|e| is_message_entry(&e.entry_type))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (new_entry, old_entry) in entries.iter_mut().zip(old_msg_entries.iter()) {
+            new_entry.timestamp = old_entry.timestamp;
+            // Preserve run stats from the old entry's content.
+            if let Some(ref old_content) = old_entry.content {
+                if let Some(obj) = new_entry.content.as_mut().and_then(|c| c.as_object_mut()) {
+                    if let Some(v) = old_content.get("run_tokens") {
+                        obj.insert("run_tokens".to_string(), v.clone());
+                    }
+                    if let Some(v) = old_content.get("run_duration_ms") {
+                        obj.insert("run_duration_ms".to_string(), v.clone());
+                    }
+                }
+            }
+        }
+
+        // Attach this run's output tokens + wall-clock duration to the final
+        // assistant entry (the reply just made). It sits beyond the preserved
+        // prefix, so earlier replies are untouched.
+        if let Some(last_assistant) = entries
+            .iter_mut()
+            .rev()
+            .find(|e| e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT)
+        {
+            if let Some(ref mut content) = last_assistant.content {
+                if let Some(obj) = content.as_object_mut() {
+                    obj.insert(
+                        "run_tokens".to_string(),
+                        serde_json::json!(run_output_tokens),
+                    );
+                    obj.insert(
+                        "run_duration_ms".to_string(),
+                        serde_json::json!(run_duration_ms),
+                    );
+                }
+            }
+        }
+
+        // If the first user message is a compaction marker, replace it with a
+        // proper compaction entry so the JSONL records the compaction point.
+        if let Some(idx) = entries.iter().position(|e| {
+            e.role == "user"
+                && e.content
+                    .as_ref()
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| {
+                        arr.first()
+                            .and_then(|b| b.get("text"))
+                            .and_then(|t| t.as_str())
+                    })
+                    .is_some_and(|t| t.starts_with("[Context compaction:"))
+        }) {
+            if let Some(marker) = entries.get(idx) {
+                let summary = marker
+                    .content
+                    .as_ref()
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|b| b.get("text"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("");
+                let mut comp_entry = marker.clone();
+                comp_entry.id = crate::utils::generate_id();
+                comp_entry.entry_type = crate::session::ENTRY_TYPE_COMPACTION.to_string();
+                comp_entry.role = "system".to_string();
+                comp_entry.content = Some(serde_json::json!({
+                    "summary": summary,
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                }));
+                entries.insert(idx + 1, comp_entry);
+                entries.remove(idx);
+            }
+        }
+
+        // A rewrite is a journal compaction/repair, not permission to erase run
+        // history. Preserve existing lifecycle markers, ensure the current
+        // start marker exists, and make the current terminal marker the final
+        // durable record. Markers remain projection-invisible.
+        let current_run_id = run_started
+            .content
+            .as_ref()
+            .and_then(|content| content.get("run_id"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let mut markers: Vec<SessionEntry> = old_session
+            .map(|session| {
+                session
+                    .entries
+                    .into_iter()
+                    .filter(|entry| crate::session::is_run_marker(&entry.entry_type))
+                    .filter(|entry| {
+                        entry.entry_type != crate::session::ENTRY_TYPE_RUN_TERMINAL
+                            || entry
+                                .content
+                                .as_ref()
+                                .and_then(|content| content.get("run_id"))
+                                .and_then(serde_json::Value::as_str)
+                                != Some(current_run_id)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let has_current_start = markers.iter().any(|entry| {
+            entry.entry_type == crate::session::ENTRY_TYPE_RUN_STARTED
+                && entry
+                    .content
+                    .as_ref()
+                    .and_then(|content| content.get("run_id"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(current_run_id)
+        });
+        if !has_current_start {
+            markers.push(run_started);
+        }
+
+        entries.insert(0, info_entry);
+        entries.extend(markers);
+        entries.push(terminal);
+
+        crate::session::Session::snapshot(
+            session_id.to_string(),
+            session_cwd.to_string(),
+            session_model.to_string(),
+            resolved_name.to_string(),
+            parent_session_id.to_string(),
+            entries,
+        )
     }
 }
 

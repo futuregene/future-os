@@ -134,8 +134,8 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
 }
 
 /// The thread's single most recent run (same ordering/tiebreak as
-/// [`latest_run_infos`]). Backs the 1.5s recent-run poll during an active run,
-/// which used to transfer the thread's entire run history every tick.
+/// [`latest_run_infos`]). Used by initial loads and pushed terminal
+/// reconciliation without transferring the thread's entire run history.
 pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
@@ -153,15 +153,14 @@ pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::AppError>
     .map_err(crate::AppError::from)
 }
 
-/// The single latest run's basic info for each of `thread_ids`. Powers the
-/// thread-list run-indicator poll: one connection, one query replaces N ×
-/// [`list_runs`] fan-out, which opened N connections and decoded full row sets
-/// 6–12 times per second at idle. Threads with no runs are omitted from the
-/// result — callers treat missing as "no run yet".
+/// The single latest run's identity and status for each of `thread_ids`.
+/// Powers low-frequency thread-list reconciliation in one connection/query.
+/// Threads with no runs are omitted; callers treat missing as "no run yet".
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LatestRunInfo {
     pub thread_id: String,
+    pub run_id: String,
     pub status: String,
     pub ended_at: Option<i64>,
 }
@@ -175,8 +174,8 @@ pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, cra
         .map(|i| format!("?{}", i + 1))
         .collect();
     let sql = format!(
-        "SELECT thread_id, status, ended_at FROM (
-             SELECT thread_id, status, ended_at,
+        "SELECT thread_id, id, status, ended_at FROM (
+             SELECT thread_id, id, status, ended_at,
                     ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC, id DESC) AS rn
              FROM runs
              WHERE thread_id IN ({})
@@ -191,8 +190,9 @@ pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, cra
     let rows = stmt.query_map(params.as_slice(), |row| {
         Ok(LatestRunInfo {
             thread_id: row.get(0)?,
-            status: row.get(1)?,
-            ended_at: row.get(2)?,
+            run_id: row.get(1)?,
+            status: row.get(2)?,
+            ended_at: row.get(3)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -267,7 +267,7 @@ pub fn update_run_status_if_active(input: UpdateRunStatusInput) -> Result<bool, 
     tx.commit()?;
     if changed {
         mark_catalog_dirty();
-        emit_run_status_update(&input.run_id, &input.status, now);
+        emit_run_status_update(&input.run_id, &input.status);
     }
     Ok(changed)
 }
@@ -340,20 +340,19 @@ pub fn fail_run_if_active(
     let changed = affected > 0;
     if changed {
         mark_catalog_dirty();
-        emit_run_status_update(run_id, "failed", now);
+        emit_run_status_update(run_id, "failed");
     }
     Ok(changed)
 }
 
-fn emit_run_status_update(run_id: &str, status: &str, revision: i64) {
+fn emit_run_status_update(run_id: &str, status: &str) {
     if let Ok(Some(run)) = get_run(run_id) {
-        crate::emit_thread_runtime_updated(crate::ThreadRuntimeUpdate {
-            thread_id: run.thread_id,
-            run_id: run_id.to_string(),
-            revision,
-            status: status.to_string(),
-            reset_projection: false,
-        });
+        crate::emit_thread_runtime_updated(
+            run.thread_id,
+            run_id.to_string(),
+            status.to_string(),
+            false,
+        );
     }
 }
 

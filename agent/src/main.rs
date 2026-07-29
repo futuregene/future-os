@@ -460,8 +460,6 @@ async fn async_main(
     let mut engine = Engine::new(&base_url, &api_key, &engine_model, config, None, max_tokens)?
         .with_tools(future_agent::coding_tools());
 
-    let event_bus = Arc::new(future_agent::EventBus::new());
-
     // Always run gRPC server mode
     let (grpc_host, grpc_port) = if cli.grpc_addr.starts_with(':') {
         let port_str = &cli.grpc_addr[1..];
@@ -541,7 +539,6 @@ async fn async_main(
         welcome_context: Arc::new(parking_lot::RwLock::new(context_lines)),
         welcome_exts: vec![],
         explicit_session: false,
-        event_bus: event_bus.clone(),
         approval_gate,
         verbose: cli.verbose,
         shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),

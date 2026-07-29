@@ -3,7 +3,7 @@ import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrat
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { pollStreamingThreadIds, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
+import { listStreamingThreadIds, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
 import {
   getRecentOrCreateDefaultThread,
   initializeAppStore,
@@ -17,10 +17,51 @@ import { usePolling } from "../../../lib/usePolling";
 export interface ThreadRunInfo {
   status: StoredRun["status"];
   endedAt: number | null;
+  /** Latest StoredRun represented by this thread-level projection. */
+  runId?: string;
+  /** Process-global Tauri runtime revision; absent on reconciliation snapshots. */
+  revision?: number;
 }
 
 type ThreadRunStatuses = Record<string, ThreadRunInfo | undefined>;
 type ThreadStreamingStatuses = Record<string, boolean>;
+
+interface ThreadRuntimeUpdate {
+  threadId: string;
+  runId: string;
+  revision: number;
+  status: string;
+  resetProjection: boolean;
+}
+
+interface ThreadStreamingUpdate {
+  revision: number;
+  threadIds: string[];
+}
+
+export function reduceThreadRunStatus(
+  previous: ThreadRunStatuses,
+  update: ThreadRuntimeUpdate,
+  endedAt = Date.now(),
+): ThreadRunStatuses {
+  const current = previous[update.threadId];
+  if (current?.revision !== undefined && update.revision <= current.revision)
+    return previous;
+  const terminal = ["completed", "failed", "cancelled"].includes(update.status);
+  return {
+    ...previous,
+    [update.threadId]: {
+      runId: update.runId,
+      revision: update.revision,
+      status: terminal ? update.status as ThreadRunInfo["status"] : "running",
+      endedAt: terminal ? endedAt : null,
+    },
+  };
+}
+
+function streamingStatuses(threadIds: string[]): ThreadStreamingStatuses {
+  return Object.fromEntries(threadIds.map(threadId => [threadId, true]));
+}
 
 export interface ThreadStore {
   threads: StoredThread[];
@@ -44,8 +85,10 @@ export interface ThreadStore {
 /**
  * Owns the local thread/workspace store: bootstrap (init + stale-approval
  * cleanup + recent/default thread), the threads/workspaces lists and the
- * derived active thread/workspace, and a 1.5s poll of each active thread's
- * latest run status.
+ * derived active thread/workspace. Run status is driven primarily by the
+ * `thread-runtime-updated` push event; a low-frequency (30s) reconciliation
+ * pass backstops lost events / backend restarts. Cross-client streaming status
+ * is also pushed after one initial snapshot.
  */
 export function useThreadStore(): ThreadStore {
   const [threads, setThreads] = useState<StoredThread[]>([]);
@@ -87,9 +130,9 @@ export function useThreadStore(): ThreadStore {
     // Per-thread catch (not a bare Promise.all): one thread's failed listRuns
     // must not reject the whole batch — that would blank every thread's run
     // indicator and surface an unhandled rejection. A failed thread keeps
-    // its previous status and self-heals on the next 1.5s tick.
+    // its previous status and self-heals on the next reconciliation pass.
     const ids = nextThreads.map(t => t.id);
-    let infos: Array<{ threadId: string; status: string; endedAt: number | null }> = [];
+    let infos: Array<{ threadId: string; runId: string; status: string; endedAt: number | null }> = [];
     try {
       infos = await listLatestRunInfos(ids);
     }
@@ -105,12 +148,20 @@ export function useThreadStore(): ThreadStore {
       const next: ThreadRunStatuses = {};
       for (const thread of nextThreads) {
         const info = infoMap.get(thread.id);
+        const current = previous[thread.id];
         const value: ThreadRunInfo | undefined = info
-          ? { endedAt: info.endedAt ?? null, status: info.status as ThreadRunInfo["status"] }
-          : previous[thread.id]; // keep old if no new info
+          ? {
+              endedAt: info.endedAt ?? null,
+              runId: info.runId,
+              revision: current?.runId === info.runId ? current.revision : undefined,
+              status: info.status as ThreadRunInfo["status"],
+            }
+          : current; // keep old if no new info
         if (!changed) {
           const prev = previous[thread.id];
-          changed = prev?.status !== value?.status || prev?.endedAt !== value?.endedAt;
+          changed = prev?.status !== value?.status
+            || prev?.endedAt !== value?.endedAt
+            || prev?.runId !== value?.runId;
         }
         next[thread.id] = value;
       }
@@ -132,9 +183,8 @@ export function useThreadStore(): ThreadStore {
     const selectableThreads = nextThreads.filter(thread => thread.status === "active");
     setThreads(nextThreads);
     setWorkspaces(nextWorkspaces);
-    // Run-status fan-out is driven solely by the poll below: `setThreads` gives
-    // `activeThreads` a new reference, which re-runs the poll effect and ticks
-    // immediately. Kicking it off here too would double every fetch (B-14).
+    // Run-status reconciliation is driven solely by the low-frequency pass
+    // below. Kicking it off here too would duplicate every fetch.
     const currentActiveThreadId = activeThreadIdRef.current;
     if (nextActiveThreadId && selectableThreads.some(thread => thread.id === nextActiveThreadId)) {
       setActiveThreadId(nextActiveThreadId);
@@ -167,8 +217,8 @@ export function useThreadStore(): ThreadStore {
         }
         setThreads(nextThreads);
         setWorkspaces(nextWorkspaces);
-        // The poll (below) ticks as soon as `activeThreads` becomes non-empty,
-        // so the initial run-status fetch needs no explicit kickoff here (B-14).
+        // The reconciliation pass below ticks as soon as `activeThreads`
+        // becomes non-empty, so bootstrap needs no duplicate status fetch.
         setActiveThreadId(recentThread.id);
         setStoreError(null);
       }
@@ -198,52 +248,45 @@ export function useThreadStore(): ThreadStore {
     deps: [activeThreads, refreshThreadRunStatuses],
   });
   useEffect(() => {
-    const unlisten = listen<{
-      threadId: string;
-      runId: string;
-      revision: number;
-      status: string;
-      resetProjection: boolean;
-    }>("thread-runtime-updated", (event) => {
-      const { threadId, status } = event.payload;
-      const terminal = ["completed", "failed", "cancelled"].includes(status);
-      setThreadRunStatuses(previous => ({
-        ...previous,
-        [threadId]: terminal
-          ? { status: status as ThreadRunInfo["status"], endedAt: Date.now() }
-          : { status: "running", endedAt: null },
-      }));
+    const unlisten = listen<ThreadRuntimeUpdate>("thread-runtime-updated", (event) => {
+      // A push is newer than any reconciliation query already in flight.
+      // Invalidate that query before reducing the event so its stale snapshot
+      // cannot revert this status when it eventually resolves.
+      runStatusGenRef.current += 1;
+      setThreadRunStatuses(previous => reduceThreadRunStatus(previous, event.payload));
     });
     return () => {
       void unlisten.then(stop => stop());
     };
   }, []);
-  // Poll agent streaming status so threads that are being prompted by other
-  // clients (TUI, CLI) show a running indicator without waiting for a local
-  // StoredRun entry. ONE bulk call for all threads — the agent only scans
-  // its in-memory map, so this never hydrates sessions at startup.
-  usePolling(async () => {
-    if (activeThreads.length === 0)
-      return;
-    const streamingIds = new Set(await pollStreamingThreadIds());
-    const next: ThreadStreamingStatuses = {};
-    for (const thread of activeThreads) {
-      next[thread.id] = streamingIds.has(thread.id);
-    }
-    setThreadStreamingStatuses(prev =>
-      // Shallow-compare every key — skip the re-render when nothing streamed.
-      Object.keys(next).length === Object.keys(prev).length
-      && Object.keys(next).every(k => prev[k] === next[k])
-        ? prev
-        : next,
-    );
-  }, 1000, {
-    enabled: activeThreads.length > 0,
-    deps: [activeThreads],
-  });
+  useEffect(() => {
+    let cancelled = false;
+    let sawPush = false;
+    let lastRevision = -1;
+    const unlisten = listen<ThreadStreamingUpdate>("thread-streaming-updated", (event) => {
+      if (event.payload.revision <= lastRevision)
+        return;
+      lastRevision = event.payload.revision;
+      sawPush = true;
+      setThreadStreamingStatuses(streamingStatuses(event.payload.threadIds));
+    });
+    void unlisten.then(async () => {
+      // Register first, then read the initial snapshot. If a newer push arrives
+      // while the snapshot is in flight, discard the snapshot instead of
+      // reverting to stale cross-client status.
+      const threadIds = await listStreamingThreadIds();
+      if (!cancelled && !sawPush)
+        setThreadStreamingStatuses(streamingStatuses(threadIds));
+    });
+    return () => {
+      cancelled = true;
+      void unlisten.then(stop => stop());
+    };
+  }, []);
   useEffect(() => {
     if (activeThreads.length === 0) {
       setThreadRunStatuses({});
+      setThreadStreamingStatuses({});
     }
   }, [activeThreads.length]);
 

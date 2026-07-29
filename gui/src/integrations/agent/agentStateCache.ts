@@ -313,16 +313,15 @@ function applySettingsEvent(
   notify();
 }
 
-// ── Bulk streaming-status poll (no per-thread get_state fan-out) ────────
+// ── Bulk streaming-status snapshot (no per-thread get_state fan-out) ────
 
 /**
- * Bulk streaming-status poll: ONE Tauri command returns every streaming
+ * Bulk streaming-status snapshot: ONE Tauri command returns every streaming
  * thread id. The agent only scans its in-memory session map (no hydration,
- * no disk I/O), so polling never creates agent sessions/loops for threads
- * the user hasn't opened — unlike the old per-thread get_state fan-out,
- * which hydrated every polled session at startup.
+ * no disk I/O). The sidebar invokes this once after installing its push
+ * listener; ongoing updates arrive through `thread-streaming-updated`.
  */
-export async function pollStreamingThreadIds(): Promise<string[]> {
+export async function listStreamingThreadIds(): Promise<string[]> {
   try {
     const raw = await invokeCommand<string[]>("list_streaming_thread_ids");
     return Array.isArray(raw) ? raw : [];

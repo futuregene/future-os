@@ -211,7 +211,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         // NOTE: `new_session` is intentionally NOT matched here — it is handled
         // in the sessionless branch above (a new session has no existing session
         // to resolve). An arm here would be unreachable dead code.
-        "get_state" => match get_state_internal(state, &cmd.session_id) {
+        "get_state" => match get_state_internal(
+            state,
+            &cmd.session_id,
+            (!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()),
+        ) {
             Some(state_val) => RpcResponse::ok(id, "get_state", state_val),
             None => RpcResponse::build_fail(id, "get_state", "session not found"),
         },
@@ -916,10 +920,14 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // AppState-level singletons and the loop template.  The fresh loop is
     // minted from the template (never used for runs), so creation succeeds
     // even while every existing session is mid-stream.
-    let event_bus = state.event_bus.clone();
     let broadcaster = Arc::new(SseBroadcaster::new());
     let approval_gate = state.approval_gate.clone();
-    let session_manager = Arc::new(crate::session::Manager::default_for(&session_cwd));
+    // Reuse the AppState's session manager rather than minting a new one via
+    // `Manager::default_for`: the session store is a single flat directory
+    // (`default_session_dir` ignores its cwd argument), so both point at the
+    // same place in production — and reusing keeps tests (whose AppState uses
+    // an isolated temp dir) from writing into the real session store.
+    let session_manager = state.session_manager.clone();
     let inherit_model = state.loop_template.model.clone();
 
     let fresh_loop = state.loop_template.independent_copy();
@@ -943,7 +951,6 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         Arc::new(tokio::sync::RwLock::new(fresh_loop)),
         session_manager.clone(),
         &session_cwd,
-        event_bus,
         broadcaster,
         approval_gate,
         state.model_registry.clone(),
@@ -1055,13 +1062,36 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
     let entries: Vec<serde_json::Value> = session_manager
         .load(&session_id)
         .map(|s| {
+            // The authoritative metadata is the last session_info snapshot
+            // (the append-only commit path appends a fresh one per run). Surface
+            // it in the first session_info slot — where clients (CLI info, fork)
+            // look — and drop the stale earlier ones so callers see exactly one.
+            let authoritative_info = s
+                .entries
+                .iter()
+                .rev()
+                .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+                .and_then(|e| e.content.clone());
+            let mut emitted_session_info = false;
             s.entries
                 .iter()
                 .filter(|e| {
-                    matches!(
+                    if !matches!(
                         e.entry_type.as_str(),
                         "user" | "assistant" | "tool" | "session_info"
-                    )
+                    ) {
+                        return false;
+                    }
+                    // Keep only the first session_info slot; its content is
+                    // replaced with the authoritative (last) snapshot below, and
+                    // the stale later snapshots are dropped.
+                    if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
+                        if emitted_session_info {
+                            return false;
+                        }
+                        emitted_session_info = true;
+                    }
+                    true
                 })
                 .map(|e| {
                     let content_text = e
@@ -1135,7 +1165,10 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     // model / thinking_level struct fields so callers can
                     // read fork metadata without a second RPC.
                     if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
-                        if let Some(ref content) = e.content {
+                        // Use the authoritative (last) snapshot's content so the
+                        // single emitted session_info reflects current metadata,
+                        // not the stale values from session creation.
+                        if let Some(ref content) = authoritative_info {
                             entry["content"] = content.clone();
                         }
                     }
@@ -1167,11 +1200,10 @@ fn cmd_fork(
     }
 
     // Extract needed data from session
-    let (session_manager, event_bus, broadcaster, _cwd, current_session_id) = {
+    let (session_manager, broadcaster, _cwd, current_session_id) = {
         let sess = rlock!(session, id);
         (
             sess.session_manager.clone(),
-            sess.event_bus.clone(),
             sess.broadcaster.clone(),
             sess.cwd.clone(),
             sess.session_id.clone(),
@@ -1226,7 +1258,6 @@ fn cmd_fork(
         agent_loop,
         session_manager,
         &forked.cwd,
-        event_bus,
         broadcaster,
         state.approval_gate.clone(),
         state.model_registry.clone(),
@@ -1254,7 +1285,7 @@ fn cmd_clone(
     id: &str,
 ) -> String {
     // Extract needed data from session
-    let (session_manager, event_bus, broadcaster, _cwd, session_id) = {
+    let (session_manager, broadcaster, _cwd, session_id) = {
         let sess = rlock!(session, id);
         if sess.messages.read().is_empty() {
             return RpcResponse::build_fail(
@@ -1265,7 +1296,6 @@ fn cmd_clone(
         }
         (
             sess.session_manager.clone(),
-            sess.event_bus.clone(),
             sess.broadcaster.clone(),
             sess.cwd.clone(),
             sess.session_id.clone(),
@@ -1322,7 +1352,6 @@ fn cmd_clone(
         agent_loop,
         session_manager,
         &forked.cwd,
-        event_bus,
         broadcaster,
         state.approval_gate.clone(),
         state.model_registry.clone(),
@@ -1502,11 +1531,19 @@ mod tests {
             .to_string()
     }
 
+    /// Unique, isolated session directory for a test's AppState. Each call
+    /// gets its own temp dir (timestamp + random hex) so parallel tests never
+    /// share a `default.jsonl`, and nothing is ever written to the real
+    /// `~/.future/agent/sessions` store (which `Manager::default_for` would
+    /// target, since `default_session_dir` ignores its cwd argument).
+    fn test_session_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("futureos-cmd-sess-{}", crate::utils::generate_id()))
+    }
+
     fn make_app_state() -> AppState {
         let cwd = test_workspace();
         let model_registry = Arc::new(parking_lot::RwLock::new(crate::models::Registry::new()));
-        let session_manager = Arc::new(crate::session::Manager::default_for(&cwd));
-        let event_bus = Arc::new(crate::events::EventBus::new());
+        let session_manager = Arc::new(crate::session::Manager::new(test_session_dir()));
         let approval_gate = ApprovalGate::default();
         // One live session named "default" — sessions are equal peers now,
         // so tests address it explicitly by id.
@@ -1518,7 +1555,6 @@ mod tests {
             ))),
             session_manager.clone(),
             &cwd,
-            event_bus.clone(),
             Arc::new(SseBroadcaster::new()),
             approval_gate.clone(),
             model_registry.clone(),
@@ -1538,7 +1574,6 @@ mod tests {
             welcome_context: Arc::new(parking_lot::RwLock::new(vec![])),
             welcome_exts: vec![],
             explicit_session: false,
-            event_bus,
             approval_gate,
             verbose: false,
             shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1551,6 +1586,14 @@ mod tests {
         serde_json::from_str(&format!(
             r#"{{"id":"test_cmd","type":"{}","sessionId":"default"}}"#,
             cmd_type
+        ))
+        .unwrap()
+    }
+
+    fn make_cmd_for(cmd_type: &str, session_id: &str) -> RpcCommand {
+        serde_json::from_str(&format!(
+            r#"{{"id":"test_cmd","type":"{}","sessionId":"{}"}}"#,
+            cmd_type, session_id
         ))
         .unwrap()
     }
@@ -1584,6 +1627,150 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert!(resp["data"]["sessionId"].is_string());
+    }
+
+    #[test]
+    fn get_state_reports_interrupted_run_when_journal_unterminated() {
+        let state = make_app_state();
+        // Each make_app_state() now gets an isolated temp session dir (see
+        // test_session_dir), so this test no longer shares a file with other
+        // tests; the explicit id just names the session under test. get_state
+        // hydrates the session from disk on demand.
+        let session_id = "gi-interrupted";
+        let info = crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock", "session_name": "n"}),
+            "mock".to_string(),
+            "low".to_string(),
+        );
+        let session = crate::session::Session::snapshot(
+            session_id.to_string(),
+            state.welcome_cwd.clone(),
+            "mock".to_string(),
+            "n".to_string(),
+            String::new(),
+            vec![
+                info,
+                crate::session::SessionEntry::new_user("user", serde_json::json!("hi")),
+                crate::session::SessionEntry::run_started("run-interrupted", 3),
+            ],
+        );
+        state.session_manager.save(&session).unwrap();
+
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd_for("get_state", session_id),
+        ));
+        assert_eq!(resp["success"], true);
+        // No live run, so activeRun is null and the unterminated run is surfaced
+        // as interrupted_by_restart for the GUI's startup reconcile to consume.
+        assert!(resp["data"]["activeRun"].is_null());
+        assert_eq!(resp["data"]["interruptedRun"]["runId"], "run-interrupted");
+        assert_eq!(
+            resp["data"]["interruptedRun"]["state"],
+            crate::session::RUN_STATE_INTERRUPTED_BY_RESTART
+        );
+        let _ = state.session_manager.delete(session_id);
+    }
+
+    #[test]
+    fn get_state_omits_interrupted_run_once_terminal_present() {
+        let state = make_app_state();
+        let session_id = "gi-terminal";
+        let info = crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock", "session_name": "n"}),
+            "mock".to_string(),
+            "low".to_string(),
+        );
+        let session = crate::session::Session::snapshot(
+            session_id.to_string(),
+            state.welcome_cwd.clone(),
+            "mock".to_string(),
+            "n".to_string(),
+            String::new(),
+            vec![
+                info,
+                crate::session::SessionEntry::new_user("user", serde_json::json!("hi")),
+                crate::session::SessionEntry::run_started("run-done", 1),
+                crate::session::SessionEntry::run_terminal(
+                    "run-done",
+                    crate::session::RUN_STATE_COMPLETED,
+                    5,
+                    50,
+                    None,
+                ),
+            ],
+        );
+        state.session_manager.save(&session).unwrap();
+
+        let mut command = make_cmd_for("get_state", session_id);
+        command.run_id = "run-done".to_string();
+        let resp = parse_response(&handle_command_internal(&state, command));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["activeRun"].is_null());
+        assert!(resp["data"]["interruptedRun"].is_null());
+        assert_eq!(resp["data"]["requestedRun"]["run_id"], "run-done");
+        assert_eq!(
+            resp["data"]["requestedRun"]["state"],
+            crate::session::RUN_STATE_COMPLETED
+        );
+        let _ = state.session_manager.delete(session_id);
+    }
+
+    #[test]
+    fn get_state_preserves_markerless_legacy_history_without_reporting_interruption() {
+        // Backward compatibility: sessions written before run lifecycle markers
+        // (run_started/run_terminal) existed carry no run identity in their
+        // JSONL. They must never be misclassified as an interrupted run, and
+        // the compatibility read must not rewrite or discard their history
+        // (no run_id backfill is performed on legacy data).
+        let state = make_app_state();
+        let session_id = "gi-legacy";
+        let info = crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock", "session_name": "n"}),
+            "mock".to_string(),
+            "low".to_string(),
+        );
+        let session = crate::session::Session::snapshot(
+            session_id.to_string(),
+            state.welcome_cwd.clone(),
+            "mock".to_string(),
+            "n".to_string(),
+            String::new(),
+            vec![
+                info,
+                crate::session::SessionEntry::new_user("user", serde_json::json!("legacy turn")),
+                crate::session::SessionEntry::new_assistant(
+                    serde_json::json!("legacy reply"),
+                    vec![],
+                ),
+            ],
+        );
+        state.session_manager.save(&session).unwrap();
+
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd_for("get_state", session_id),
+        ));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["activeRun"].is_null());
+        // No run_started marker → nothing unterminated → not interrupted.
+        assert!(resp["data"]["interruptedRun"].is_null());
+        let loaded = state.session_manager.load(session_id).unwrap();
+        assert!(loaded
+            .entries
+            .iter()
+            .any(|entry| entry.content == Some(serde_json::json!("legacy turn"))));
+        assert!(loaded
+            .entries
+            .iter()
+            .any(|entry| entry.content == Some(serde_json::json!("legacy reply"))));
+        assert!(loaded.entries.iter().all(|entry| {
+            !matches!(
+                entry.entry_type.as_str(),
+                crate::session::ENTRY_TYPE_RUN_STARTED | crate::session::ENTRY_TYPE_RUN_TERMINAL
+            )
+        }));
+        let _ = state.session_manager.delete(session_id);
     }
 
     #[test]
