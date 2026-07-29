@@ -236,8 +236,7 @@ pub(crate) struct ThreadRuntimeUpdate {
     pub reset_projection: bool,
 }
 
-static NEXT_RUNTIME_REVISION: std::sync::atomic::AtomicI64 =
-    std::sync::atomic::AtomicI64::new(1);
+static NEXT_RUNTIME_REVISION: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
 static RUNTIME_EMIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn next_runtime_revision() -> i64 {
