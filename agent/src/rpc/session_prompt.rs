@@ -584,7 +584,9 @@ impl ServerSession {
                                     std::thread::sleep(std::time::Duration::from_millis(wait_ms));
                                     match session_manager.save(&session) {
                                         Ok(()) => {
-                                            tracing::info!("Session save succeeded on retry {attempts}");
+                                            tracing::info!(
+                                                "Session save succeeded on retry {attempts}"
+                                            );
                                             break;
                                         }
                                         Err(next) => last_err = next,
@@ -597,7 +599,9 @@ impl ServerSession {
                                     // answer to the caller, so the user isn't
                                     // blocked, but a later reload will be
                                     // missing this run's entries.
-                                    tracing::error!("Session save failed after 5 retries: {last_err:#}");
+                                    tracing::error!(
+                                        "Session save failed after 5 retries: {last_err:#}"
+                                    );
                                 }
                             }
                         }
@@ -879,7 +883,10 @@ impl ServerSession {
         // captures the full state.  If this fails the session is still writable
         // by the run-end path, so log and continue.
         if let Err(e) = self.session_manager.save(&session) {
-            tracing::error!("Failed to persist user message (best-effort, run-end save will retry): {}", e);
+            tracing::error!(
+                "Failed to persist user message (best-effort, run-end save will retry): {}",
+                e
+            );
         }
     }
 }
