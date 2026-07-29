@@ -388,6 +388,22 @@ message StreamRequest {
 
 message StreamEvent {
   // Event type string (see StreamRequest.event_types).
+  //
+  // Canonical vocabulary (all clients key off these):
+  //   agent_start / agent_end      run lifecycle (agent_end carries error/usage)
+  //   user_message                 a user turn (prompt / steer / follow-up)
+  //   text_chunk                   assistant text token (the projected token stream)
+  //   thinking_start / thinking_delta / thinking_end   reasoning stream
+  //   tool_start                   tool execution began  {tool_id, tool_name, tool_args}
+  //   tool_delta                   streaming tool-arg fragment {tool_id, text}
+  //   tool_end                     tool execution finished {tool_id, text, error?}
+  //   approval_request / approval_decision
+  //   usage                        token accounting
+  //   error                        run error
+  //   tool_sandboxed / persistence_error / compaction_end   sideband signals
+  //
+  // Provider-specific aliases are normalized inside the Agent and never cross
+  // this RPC boundary.
   string type = 1;
 
   // JSON-serialised event payload.  Structure depends on the event type.
@@ -412,6 +428,14 @@ message StreamEvent {
   bool projection_snapshot = 5;
   repeated ProjectedRunEvent snapshot_events = 6;
   int64 snapshot_cursor = 7;
+
+  // Canonical run identity (P1 envelope). session_id scopes the event to its
+  // conversation; epoch is the run's monotonic generation within the session
+  // (a run accepted after an abort/restart gets a higher epoch). Together with
+  // run_id + idx these let any consumer route, dedup and detect gaps without
+  // external context.
+  string session_id = 8;
+  int64 epoch = 9;
 }
 
 // A compressed semantic event contained in a projection snapshot. Its idx is
@@ -613,7 +637,9 @@ export class RunClient {
               : response.data;
           const event: AgentEvent = {
             type: response.type || "message",
+            sessionId: response.sessionId,
             runId: response.runId,
+            epoch: Number(response.epoch ?? 0),
             idx: Number(response.idx ?? 0),
             projectionSnapshot: Boolean(response.projectionSnapshot),
             snapshotCursor: Number(response.snapshotCursor ?? 0),
@@ -626,15 +652,15 @@ export class RunClient {
             const chunk = rawData?.text ?? "";
             text += chunk;
             if (onText) onText(chunk);
-          } else if (response.type === "tool_call" && verbose) {
+          } else if (response.type === "tool_start" && verbose) {
             const toolName = rawData?.tool_name || rawData?.name || "unknown";
-            const toolInput = rawData?.tool_input || rawData?.input || "";
+            const toolInput = rawData?.tool_args || rawData?.input || "";
             const inputStr =
               typeof toolInput === "string" ? toolInput : JSON.stringify(toolInput);
             process.stderr.write(
               `\x1b[2m⚙ ${toolName}${inputStr ? " " + inputStr.slice(0, 80) : ""}\x1b[0m\n`,
             );
-          } else if (response.type === "tool_result" && verbose) {
+          } else if (response.type === "tool_end" && verbose) {
             // Quiet — tool results can be large
           } else if (response.type === "agent_end") {
             done = true;

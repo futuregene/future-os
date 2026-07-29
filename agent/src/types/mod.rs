@@ -567,6 +567,11 @@ pub struct StreamEvent {
         skip_serializing_if = "String::is_empty"
     )]
     pub error_text: String,
+    /// Agent-owned semantic payload used after provider events are normalized.
+    /// Provider adapters never need to populate this; it is intentionally not
+    /// part of their JSON wire format.
+    #[serde(skip)]
+    pub payload: Option<serde_json::Value>,
     /// Tool-call array index from the streaming SSE delta chunk.  Used to route
     /// `toolcall_delta` events to the correct tool-call accumulator when the
     /// model streams multiple tool calls in parallel.

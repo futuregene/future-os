@@ -11,7 +11,12 @@ use std::path::Path;
 /// schema instead of drifting — previously the tool path silently omitted
 /// `stopReason`/`usage`/`tc_index`.
 pub(super) fn stream_event_to_sse_data(event: &crate::types::StreamEvent) -> String {
-    let mut data = serde_json::Map::new();
+    let mut data = event
+        .payload
+        .as_ref()
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
     data.insert("type".to_string(), serde_json::json!(&event.event_type));
     if !event.text.is_empty() {
         data.insert("text".to_string(), serde_json::json!(&event.text));
@@ -41,6 +46,42 @@ pub(super) fn stream_event_to_sse_data(event: &crate::types::StreamEvent) -> Str
         data.insert("tc_index".to_string(), serde_json::json!(event.tc_index));
     }
     serde_json::to_string(&data).unwrap_or_default()
+}
+
+/// Convert provider-specific stream events into the public RunEvent vocabulary.
+/// Text is projected exclusively through `text_chunk`; tool-call construction
+/// aliases are mapped to `tool_start`/`tool_delta`; provider terminal frames are
+/// internal unless they carry usage. Unknown raw event types are deliberately
+/// dropped so adding a provider cannot silently expand the RPC contract.
+pub(super) fn canonical_stream_event(
+    mut event: crate::types::StreamEvent,
+) -> Option<crate::types::StreamEvent> {
+    match event.event_type.as_str() {
+        "text" | "text_delta" | "text_start" | "text_end" | "toolcall_end" | "tool_call" => None,
+        "toolcall_start" => {
+            event.event_type = "tool_start".to_string();
+            if let Some(tool_call) = event.tool_call.as_ref() {
+                if event.tool_id.is_empty() {
+                    event.tool_id = tool_call.id.clone();
+                }
+                if event.tool_name.is_empty() {
+                    event.tool_name = tool_call.function.name.clone();
+                }
+            }
+            Some(event)
+        }
+        "toolcall_delta" => {
+            event.event_type = "tool_delta".to_string();
+            Some(event)
+        }
+        "stop" => event.usage.is_some().then(|| {
+            event.event_type = "usage".to_string();
+            event
+        }),
+        "agent_start" | "thinking_start" | "thinking_delta" | "thinking_end" | "tool_start"
+        | "tool_delta" | "tool_end" | "usage" | "error" | "compaction_end" => Some(event),
+        _ => None,
+    }
 }
 
 /// Assemble the user message the model sees, plus its stored metadata.
@@ -209,6 +250,63 @@ mod tests {
         let data = stream_event_to_sse_data(&event);
         assert!(data.contains("\"type\":\"text_delta\""));
         assert!(data.contains("\"text\":\"hello\""));
+    }
+
+    #[test]
+    fn provider_aliases_are_normalized_at_rpc_boundary() {
+        let tool = crate::types::ToolCall {
+            id: "call-1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "read".to_string(),
+                arguments: serde_json::json!({"path": "a.txt"}),
+            },
+        };
+        let start = canonical_stream_event(StreamEvent {
+            event_type: "toolcall_start".to_string(),
+            tool_call: Some(tool),
+            ..Default::default()
+        })
+        .expect("canonical tool start");
+        assert_eq!(start.event_type, "tool_start");
+        assert_eq!(start.tool_id, "call-1");
+        assert_eq!(start.tool_name, "read");
+
+        let delta = canonical_stream_event(StreamEvent {
+            event_type: "toolcall_delta".to_string(),
+            text: "{}".to_string(),
+            ..Default::default()
+        })
+        .expect("canonical tool delta");
+        assert_eq!(delta.event_type, "tool_delta");
+        assert!(canonical_stream_event(StreamEvent {
+            event_type: "text_delta".to_string(),
+            text: "duplicate".to_string(),
+            ..Default::default()
+        })
+        .is_none());
+        assert!(canonical_stream_event(StreamEvent {
+            event_type: "provider_private_event".to_string(),
+            ..Default::default()
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn semantic_payload_is_merged_into_sse_data() {
+        let event = StreamEvent {
+            event_type: "compaction_end".to_string(),
+            payload: Some(serde_json::json!({
+                "tokens_before": 42,
+                "aborted": false,
+            })),
+            ..Default::default()
+        };
+        let data: serde_json::Value =
+            serde_json::from_str(&stream_event_to_sse_data(&event)).unwrap();
+        assert_eq!(data["type"], "compaction_end");
+        assert_eq!(data["tokens_before"], 42);
+        assert_eq!(data["aborted"], false);
     }
 
     #[test]

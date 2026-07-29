@@ -284,6 +284,22 @@ pub struct StreamRequest {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StreamEvent {
     /// Event type string (see StreamRequest.event_types).
+    ///
+    /// Canonical vocabulary (all clients key off these):
+    ///    agent_start / agent_end      run lifecycle (agent_end carries error/usage)
+    ///    user_message                 a user turn (prompt / steer / follow-up)
+    ///    text_chunk                   assistant text token (the projected token stream)
+    ///    thinking_start / thinking_delta / thinking_end   reasoning stream
+    ///    tool_start                   tool execution began  {tool_id, tool_name, tool_args}
+    ///    tool_delta                   streaming tool-arg fragment {tool_id, text}
+    ///    tool_end                     tool execution finished {tool_id, text, error?}
+    ///    approval_request / approval_decision
+    ///    usage                        token accounting
+    ///    error                        run error
+    ///    tool_sandboxed / persistence_error / compaction_end   sideband signals
+    ///
+    /// Provider-specific aliases are normalized inside the Agent and never cross
+    /// this RPC boundary.
     #[prost(string, tag = "1")]
     pub r#type: ::prost::alloc::string::String,
     /// JSON-serialised event payload.  Structure depends on the event type.
@@ -312,6 +328,15 @@ pub struct StreamEvent {
     pub snapshot_events: ::prost::alloc::vec::Vec<ProjectedRunEvent>,
     #[prost(int64, tag = "7")]
     pub snapshot_cursor: i64,
+    /// Canonical run identity (P1 envelope). session_id scopes the event to its
+    /// conversation; epoch is the run's monotonic generation within the session
+    /// (a run accepted after an abort/restart gets a higher epoch). Together with
+    /// run_id + idx these let any consumer route, dedup and detect gaps without
+    /// external context.
+    #[prost(string, tag = "8")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "9")]
+    pub epoch: i64,
 }
 /// A compressed semantic event contained in a projection snapshot. Its idx is
 /// the latest source cursor folded into this event, preserving chronological

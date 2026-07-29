@@ -288,8 +288,10 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       if (!cancelled) {
         if (messagesGenRef.current !== firstGen) {
           // A concurrent writer (real-time user message) bumped gen while we
-          // were loading — our snapshot is stale.  Don't overwrite, but DO
-          // clear the loading indicator so the UI isn't stuck.
+          // were loading — our snapshot is stale and the concurrent message
+          // state is authoritative for the target thread. Commit its workspace
+          // in the same render before leaving the old message tree behind.
+          setRenderWorkspace({ workspaceId: workspaceId ?? null, workspacePath: workspacePath ?? null });
           setLoadingThread(false);
           return;
         }

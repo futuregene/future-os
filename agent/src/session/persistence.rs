@@ -269,7 +269,23 @@ fn run_worker(
                     .as_ref()
                     .is_some_and(|slot| slot.generation == generation)
                 {
-                    *worker = None;
+                    // A sender may have cloned this generation's sender and
+                    // queued a command after recv_timeout fired but before we
+                    // acquired the worker lock. Drain that handoff while the
+                    // lock excludes new senders; otherwise clearing the slot
+                    // and dropping the receiver would lose an acknowledged
+                    // append at the retirement boundary.
+                    match receiver.try_recv() {
+                        Ok(command) => {
+                            drop(worker);
+                            execute(&state, command);
+                            continue;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {
+                            *worker = None;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => {}
+                    }
                 }
                 return;
             }

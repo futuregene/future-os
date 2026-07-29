@@ -72,6 +72,53 @@ pub fn settle_interrupted_run(run_id: &str, status: &str) -> Result<(), crate::A
     )?;
     Ok(())
 }
+
+/// Apply the Agent journal's authoritative terminal state to a run recovered
+/// after GUI restart. Unknown states remain interrupted rather than being
+/// guessed as successful.
+pub fn settle_interrupted_run_from_agent(
+    run_id: &str,
+    agent_state: &str,
+    error: Option<&str>,
+) -> Result<(), crate::AppError> {
+    let Some((status, error_type, default_message)) = agent_terminal_settlement(agent_state) else {
+        return Ok(());
+    };
+    let now = now_millis();
+    let conn = connect()?;
+    conn.execute(
+        "UPDATE runs
+         SET status = ?1,
+             error_message = ?2,
+             error_type = ?3,
+             ended_at = COALESCE(ended_at, ?4),
+             updated_at = ?4
+         WHERE id = ?5
+           AND error_type = 'interrupted'",
+        params![status, error.or(default_message), error_type, now, run_id],
+    )?;
+    Ok(())
+}
+
+fn agent_terminal_settlement(
+    agent_state: &str,
+) -> Option<(&'static str, Option<&'static str>, Option<&'static str>)> {
+    Some(match agent_state {
+        "completed" => ("completed", None, None),
+        "cancelled" => ("cancelled", Some("cancelled"), Some("Run was cancelled.")),
+        "error" => (
+            "failed",
+            Some("agent_error"),
+            Some("Future Agent run failed."),
+        ),
+        "incomplete" => (
+            "failed",
+            Some("stream_interrupted"),
+            Some("Future Agent response ended before a clean terminal."),
+        ),
+        _ => return None,
+    })
+}
 use super::util::{count_workspace_files, loaded, now_millis};
 use super::{delete_thread, get_thread, get_workspace};
 
@@ -451,6 +498,28 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys = OFF;")
             .expect("disable foreign keys");
         conn
+    }
+
+    #[test]
+    fn agent_terminal_states_preserve_non_success_outcomes() {
+        assert_eq!(
+            agent_terminal_settlement("completed").map(|value| value.0),
+            Some("completed")
+        );
+        assert_eq!(
+            agent_terminal_settlement("error").map(|value| value.0),
+            Some("failed")
+        );
+        assert_eq!(
+            agent_terminal_settlement("cancelled").map(|value| value.0),
+            Some("cancelled")
+        );
+        assert_eq!(
+            agent_terminal_settlement("incomplete").map(|value| value.1),
+            Some(Some("stream_interrupted"))
+        );
+        assert!(agent_terminal_settlement("interrupted_by_restart").is_none());
+        assert!(agent_terminal_settlement("future-state").is_none());
     }
 
     fn insert_thread(conn: &Connection, id: &str, agent_session_id: Option<&str>) {

@@ -7,7 +7,6 @@ mod protocol;
 mod session;
 mod session_prompt;
 
-use crate::events::EventBus;
 use crate::models::Registry as ModelRegistry;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -36,7 +35,6 @@ pub struct AppState {
     pub welcome_context: Arc<RwLock<Vec<String>>>,
     pub welcome_exts: Vec<String>,
     pub explicit_session: bool,
-    pub event_bus: Arc<EventBus>,
     pub approval_gate: ApprovalGate,
     pub verbose: bool,
     /// When true, new prompt/steer/follow_up requests are rejected.  Existing
@@ -93,7 +91,6 @@ impl AppState {
             )),
             self.session_manager.clone(),
             &self.welcome_cwd.clone(),
-            self.event_bus.clone(),
             broadcaster,
             self.approval_gate.clone(),
             self.model_registry.clone(),
@@ -178,7 +175,11 @@ impl AppState {
     }
 }
 
-fn get_state_internal(state: &AppState, session_id: &str) -> Option<serde_json::Value> {
+fn get_state_internal(
+    state: &AppState,
+    session_id: &str,
+    requested_run_id: Option<&str>,
+) -> Option<serde_json::Value> {
     let session = state.get_session(session_id)?;
     let sess = session.read();
 
@@ -243,10 +244,10 @@ fn get_state_internal(state: &AppState, session_id: &str) -> Option<serde_json::
         0.0
     };
 
-    let parent_session_id = sess
-        .session_manager
-        .load(&session_id)
-        .map(|s| s.parent_session_id)
+    let loaded = sess.session_manager.load(&session_id).ok();
+    let parent_session_id = loaded
+        .as_ref()
+        .map(|s| s.parent_session_id.clone())
         .unwrap_or_default();
     let active_run = sess.runtime.snapshot().map(|run| {
         serde_json::json!({
@@ -256,6 +257,30 @@ fn get_state_internal(state: &AppState, session_id: &str) -> Option<serde_json::
             "lastEventIdx": sess.broadcaster.last_idx(),
         })
     });
+    // Restart recovery: when no run is live but the journal still records a run
+    // that began without committing (a run_started marker with no run_terminal),
+    // the previous run was interrupted by a crash or agent restart. Surface it
+    // explicitly so clients never mistake it for a completed run.
+    let interrupted_run = if active_run.is_none() {
+        loaded
+            .as_ref()
+            .and_then(|s| crate::session::find_unterminated_run(&s.entries))
+            .map(|run_id| {
+                serde_json::json!({
+                    "runId": run_id,
+                    "state": crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
+                })
+            })
+    } else {
+        None
+    };
+    let requested_run = requested_run_id
+        .filter(|run_id| !run_id.is_empty())
+        .and_then(|run_id| {
+            loaded
+                .as_ref()
+                .and_then(|session| crate::session::find_run_terminal(&session.entries, run_id))
+        });
 
     Some(serde_json::json!({
         "model": sess.model,
@@ -290,6 +315,8 @@ fn get_state_internal(state: &AppState, session_id: &str) -> Option<serde_json::
         "createdBy": sess.created_by.clone(),
         "sourceMeta": sess.source_meta.clone(),
         "activeRun": active_run,
+        "interruptedRun": interrupted_run,
+        "requestedRun": requested_run,
     }))
 }
 
@@ -546,7 +573,6 @@ mod tests {
             welcome_context: std::sync::Arc::new(parking_lot::RwLock::new(vec![])),
             welcome_exts: vec![],
             explicit_session: false,
-            event_bus: std::sync::Arc::new(crate::events::EventBus::new()),
             approval_gate: crate::rpc::ApprovalGate::default(),
             verbose: false,
             shutting_down: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

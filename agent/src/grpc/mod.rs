@@ -266,6 +266,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             })
                             .collect(),
                         snapshot_cursor: projection.cursor,
+                        session_id: session_id.clone(),
+                        epoch: projection.epoch,
                     });
                 }
                 initial.extend(
@@ -280,6 +282,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             projection_snapshot: false,
                             snapshot_events: Vec::new(),
                             snapshot_cursor: 0,
+                            session_id: session_id.clone(),
+                            epoch: event.epoch,
                         }),
                 );
                 (attachment.receiver, initial)
@@ -294,6 +298,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         projection_snapshot: false,
                         snapshot_events: Vec::new(),
                         snapshot_cursor: 0,
+                        session_id: session_id.clone(),
+                        epoch: 0,
                     }],
                 )
             }
@@ -336,6 +342,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     projection_snapshot: false,
                     snapshot_events: Vec::new(),
                     snapshot_cursor: 0,
+                    session_id: lag_session_id.clone(),
+                    epoch: event.epoch,
                 })),
                 Err(e) => {
                     tracing::warn!(

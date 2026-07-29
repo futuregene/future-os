@@ -95,10 +95,10 @@ export interface RpcSessionState {
   followUpMode: "all" | "one-at-a-time";
   sessionFile?: string;
   sessionId: string;
-  sessionName?: string;
+  session_name?: string;
   explicitSession: boolean;
   autoCompactionEnabled: boolean;
-  messageCount: number;
+  queryCount: number;
   pendingMessageCount: number;
   version?: string;
   cwd?: string;
@@ -115,13 +115,31 @@ export interface RpcSessionState {
   tokensCacheW?: number;
   totalCost?: number;
   activeRun?: ActiveRunState | null;
+  interruptedRun?: InterruptedRunState | null;
+  requestedRun?: RunTerminalState | null;
 }
 
 export interface ActiveRunState {
   runId: string;
   epoch: number;
-  state: "starting" | "running" | "cancelling" | "cancellation_stuck" | "finalizing";
+  state: "starting" | "running" | "cancelling" | "cancellation_stuck" | "persistence_degraded" | "finalizing";
   lastEventIdx: number;
+}
+
+/// A run that began (durable run_started marker) but never committed — recovered
+/// as interrupted after an agent crash/restart. Reported by get_state when no
+/// run is live but the session journal has an unterminated run.
+export interface InterruptedRunState {
+  runId: string;
+  state: "interrupted_by_restart";
+}
+
+export interface RunTerminalState {
+  run_id: string;
+  state: "completed" | "error" | "cancelled" | "incomplete" | "interrupted_by_restart";
+  run_tokens: number;
+  run_duration_ms: number;
+  error?: string;
 }
 
 // ============================================================================
@@ -145,12 +163,12 @@ export interface SessionSummary {
 
 export interface ModelInfo {
   id: string;
-  name: string;
+  label: string;            // display name
   provider: string;
-  reasoning: boolean;
-  image: boolean;
+  supportsImages: boolean;
+  thinkingLevel: string;    // default thinking level for this model ("off"/"high"/...)
   contextWindow: number;
-  maxTokens: number;
+  isDefault: boolean;
 }
 
 // ============================================================================
@@ -159,7 +177,9 @@ export interface ModelInfo {
 
 export interface AgentEvent {
   type: string;
+  sessionId?: string;
   runId?: string;
+  epoch?: number;
   idx?: number;
   projectionSnapshot?: boolean;
   snapshotCursor?: number;

@@ -40,12 +40,75 @@ pub const ENTRY_TYPE_RUN_TERMINAL: &str = "run_terminal";
 pub const RUN_STATE_COMPLETED: &str = "completed";
 pub const RUN_STATE_ERROR: &str = "error";
 pub const RUN_STATE_CANCELLED: &str = "cancelled";
+pub const RUN_STATE_INCOMPLETE: &str = "incomplete";
+/// Recovered terminal state for a run that has a durable `run_started` marker
+/// but no `run_terminal` — i.e. the agent crashed or restarted before the run
+/// committed. Such a run must never be presented as completed.
+pub const RUN_STATE_INTERRUPTED_BY_RESTART: &str = "interrupted_by_restart";
 
 /// True for entry types that are run lifecycle markers rather than
 /// conversation content. Forks skip these (they belong to the parent's runs)
 /// and every context/display projection filters them out.
 pub fn is_run_marker(entry_type: &str) -> bool {
     matches!(entry_type, ENTRY_TYPE_RUN_STARTED | ENTRY_TYPE_RUN_TERMINAL)
+}
+
+/// Scan a session's entries for a run that began (has a `run_started` marker)
+/// but never committed (no matching `run_terminal`). Returns the run_id of the
+/// most recent such unterminated run, if any.
+///
+/// Runs are sequential per session, so this tracks the currently-open run: set
+/// on `run_started`, cleared on the matching `run_terminal`. Anything still open
+/// at the end was interrupted — by a crash, an agent restart, or a kill — and
+/// must be recovered as `InterruptedByRestart`, never faked as completed. A
+/// session rebuilt by a full rewrite carries no markers and yields `None`.
+pub fn find_unterminated_run(entries: &[SessionEntry]) -> Option<String> {
+    let mut open: Option<String> = None;
+    for entry in entries {
+        match entry.entry_type.as_str() {
+            ENTRY_TYPE_RUN_STARTED => {
+                if let Some(run_id) = entry
+                    .content
+                    .as_ref()
+                    .and_then(|c| c.get("run_id"))
+                    .and_then(|v| v.as_str())
+                {
+                    open = Some(run_id.to_string());
+                }
+            }
+            ENTRY_TYPE_RUN_TERMINAL => {
+                if let Some(run_id) = entry
+                    .content
+                    .as_ref()
+                    .and_then(|c| c.get("run_id"))
+                    .and_then(|v| v.as_str())
+                {
+                    // A terminal marker closes its own run; only clear the open
+                    // run if it matches, so a stray terminal can't mask an older
+                    // unterminated run.
+                    if open.as_deref() == Some(run_id) {
+                        open = None;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    open
+}
+
+/// Return the durable terminal payload for `run_id`, if the journal contains
+/// one. Scans from the end so a later healing rewrite/commit wins over an older
+/// marker. The returned value is the marker's `content` object.
+pub fn find_run_terminal(entries: &[SessionEntry], run_id: &str) -> Option<serde_json::Value> {
+    entries.iter().rev().find_map(|entry| {
+        if entry.entry_type != ENTRY_TYPE_RUN_TERMINAL {
+            return None;
+        }
+        let content = entry.content.as_ref()?;
+        (content.get("run_id").and_then(|value| value.as_str()) == Some(run_id))
+            .then(|| content.clone())
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,6 +472,119 @@ impl Manager {
         self.with_session_write_lock(session_id, |path| {
             Self::append_entries_locked(path, entries, true)
         })
+    }
+
+    /// Atomically recover any previously-open run and append the accepted user
+    /// message plus the new run's start marker under the same session write
+    /// lock. This prevents a failed recovery append followed by a successful
+    /// `run_started` from hiding the older open run forever.
+    ///
+    /// This is only for an existing JSONL. Brand-new sessions are created by the
+    /// full snapshot path, which has no previous lifecycle marker to recover.
+    pub fn append_run_start(
+        &self,
+        session_id: &str,
+        user_entry: SessionEntry,
+        run_started: SessionEntry,
+    ) -> Result<()> {
+        self.with_session_write_lock(session_id, |path| {
+            let file = File::open(path).context("open session file for run recovery")?;
+            let mut open: Option<String> = None;
+            for line in BufReader::new(file).lines() {
+                let line = line.context("read session line for run recovery")?;
+                match Self::cheap_entry_type(&line) {
+                    Some(ENTRY_TYPE_RUN_STARTED) | Some(ENTRY_TYPE_RUN_TERMINAL) => {}
+                    _ => continue,
+                }
+                let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) else {
+                    continue;
+                };
+                let Some(run_id) = entry
+                    .content
+                    .as_ref()
+                    .and_then(|content| content.get("run_id"))
+                    .and_then(|value| value.as_str())
+                else {
+                    continue;
+                };
+                match entry.entry_type.as_str() {
+                    ENTRY_TYPE_RUN_STARTED => open = Some(run_id.to_string()),
+                    ENTRY_TYPE_RUN_TERMINAL if open.as_deref() == Some(run_id) => open = None,
+                    _ => {}
+                }
+            }
+
+            let mut entries = Vec::with_capacity(if open.is_some() { 3 } else { 2 });
+            if let Some(interrupted_run_id) = open {
+                entries.push(SessionEntry::run_terminal(
+                    &interrupted_run_id,
+                    RUN_STATE_INTERRUPTED_BY_RESTART,
+                    0,
+                    0,
+                    None,
+                ));
+            }
+            entries.push(user_entry);
+            entries.push(run_started);
+            Self::append_entries_locked(path, &entries, true)
+        })
+    }
+
+    /// Cheaply scan the session file for an unterminated run — a `run_started`
+    /// marker with no matching `run_terminal` — parsing only the small marker
+    /// lines so large tool/assistant lines are never deserialized. Used by the
+    /// restart-recovery path to detect a run interrupted by crash/restart
+    /// without loading (and repairing) the whole conversation. Returns
+    /// `Ok(None)` when the file is absent or has no open run.
+    pub fn unterminated_run_id(&self, session_id: &str) -> Result<Option<String>> {
+        let path = self.session_path(session_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        // Shared lock so a concurrent full rewrite's temp->final rename can't
+        // race the scan (same lock load/save use).
+        let lock_path = path.with_extension("jsonl.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(&lock_path)
+            .context("open session lock file")?;
+        let file_lock = fd_lock::RwLock::new(lock_file);
+        let _guard = file_lock.read().context("acquire session read lock")?;
+
+        let file = File::open(&path).context("open session file")?;
+        let mut open: Option<String> = None;
+        for line in BufReader::new(file).lines() {
+            let line = line.context("read session line")?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            // Only run marker lines need parsing; skip everything else via the
+            // cheap `"type"` prefix scan.
+            match Self::cheap_entry_type(&line) {
+                Some(ENTRY_TYPE_RUN_STARTED) | Some(ENTRY_TYPE_RUN_TERMINAL) => {}
+                _ => continue,
+            }
+            let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) else {
+                continue;
+            };
+            let Some(run_id) = entry
+                .content
+                .as_ref()
+                .and_then(|c| c.get("run_id"))
+                .and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            match entry.entry_type.as_str() {
+                ENTRY_TYPE_RUN_STARTED => open = Some(run_id.to_string()),
+                ENTRY_TYPE_RUN_TERMINAL if open.as_deref() == Some(run_id) => open = None,
+                _ => {}
+            }
+        }
+        Ok(open)
     }
 
     /// Run `f` while holding the session's advisory write lock (the same lock
@@ -2483,6 +2659,167 @@ mod tests {
         assert_eq!(terminal.len(), 1);
         assert_eq!(started[0].content.as_ref().unwrap()["run_id"], "run-1");
         assert_eq!(terminal[0].content.as_ref().unwrap()["state"], "completed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn find_unterminated_run_detects_missing_terminal() {
+        // No markers → nothing open.
+        assert_eq!(find_unterminated_run(&[]), None);
+        assert_eq!(
+            find_unterminated_run(&[SessionEntry::new_user("user", serde_json::json!("hi"))]),
+            None
+        );
+
+        // A started+terminal pair is closed.
+        let closed = vec![
+            SessionEntry::run_started("run-1", 1),
+            SessionEntry::run_terminal("run-1", RUN_STATE_COMPLETED, 1, 1, None),
+        ];
+        assert_eq!(find_unterminated_run(&closed), None);
+
+        // A started marker with no terminal is interrupted.
+        let open = vec![
+            SessionEntry::new_user("user", serde_json::json!("hi")),
+            SessionEntry::run_started("run-2", 1),
+        ];
+        assert_eq!(find_unterminated_run(&open), Some("run-2".to_string()));
+
+        // Multiple runs: only the last, unterminated one is reported.
+        let mixed = vec![
+            SessionEntry::run_started("run-1", 1),
+            SessionEntry::run_terminal("run-1", RUN_STATE_COMPLETED, 1, 1, None),
+            SessionEntry::run_started("run-2", 2),
+            SessionEntry::run_terminal("run-2", RUN_STATE_ERROR, 0, 1, Some("boom")),
+            SessionEntry::run_started("run-3", 3),
+        ];
+        assert_eq!(find_unterminated_run(&mixed), Some("run-3".to_string()));
+
+        // A terminal for a different run does not mask an older open run.
+        let stray = vec![
+            SessionEntry::run_started("run-a", 1),
+            SessionEntry::run_terminal("run-other", RUN_STATE_COMPLETED, 1, 1, None),
+        ];
+        assert_eq!(find_unterminated_run(&stray), Some("run-a".to_string()));
+    }
+
+    #[test]
+    fn unterminated_run_id_scans_only_markers_from_disk() {
+        let (dir, manager) = temp_manager("unterminated-scan");
+        let info = SessionEntry::session_info(
+            serde_json::json!({"cwd": "/a", "model": "m", "session_name": "n"}),
+            "m".to_string(),
+            "low".to_string(),
+        );
+        let session = Session::snapshot(
+            "s-scan".to_string(),
+            "/a".to_string(),
+            "m".to_string(),
+            "n".to_string(),
+            String::new(),
+            vec![info],
+        );
+        manager.save(&session).unwrap();
+
+        // No markers yet.
+        assert_eq!(manager.unterminated_run_id("s-scan").unwrap(), None);
+        // Absent file → None, not an error.
+        assert_eq!(manager.unterminated_run_id("does-not-exist").unwrap(), None);
+
+        // A completed run leaves nothing open.
+        manager
+            .append_entries(
+                "s-scan",
+                &[
+                    SessionEntry::new_user("user", serde_json::json!("q1")),
+                    SessionEntry::run_started("run-1", 1),
+                    SessionEntry::new_assistant(serde_json::json!("a1"), vec![]),
+                    SessionEntry::run_terminal("run-1", RUN_STATE_COMPLETED, 5, 50, None),
+                ],
+            )
+            .unwrap();
+        assert_eq!(manager.unterminated_run_id("s-scan").unwrap(), None);
+
+        // An interrupted run (started, no terminal) is detected — even with a
+        // large assistant line in between, which the cheap scan must skip.
+        let big = "x".repeat(10_000);
+        manager
+            .append_entries(
+                "s-scan",
+                &[
+                    SessionEntry::new_user("user", serde_json::json!("q2")),
+                    SessionEntry::run_started("run-2", 2),
+                    SessionEntry::new_assistant(serde_json::json!(big), vec![]),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            manager.unterminated_run_id("s-scan").unwrap(),
+            Some("run-2".to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn append_run_start_closes_previous_run_in_same_boundary() {
+        let (dir, manager) = temp_manager("atomic-run-start");
+        let session = Session::snapshot(
+            "s-atomic".to_string(),
+            "/a".to_string(),
+            "m".to_string(),
+            "n".to_string(),
+            String::new(),
+            vec![SessionEntry::session_info(
+                serde_json::json!({"cwd": "/a", "model": "m"}),
+                "m".to_string(),
+                "low".to_string(),
+            )],
+        );
+        manager.save(&session).unwrap();
+        manager
+            .append_entries(
+                "s-atomic",
+                &[
+                    SessionEntry::new_user("user", serde_json::json!("old")),
+                    SessionEntry::run_started("old-run", 1),
+                ],
+            )
+            .unwrap();
+
+        manager
+            .append_run_start(
+                "s-atomic",
+                SessionEntry::new_user("user", serde_json::json!("new")),
+                SessionEntry::run_started("new-run", 2),
+            )
+            .unwrap();
+
+        let loaded = manager.load("s-atomic").unwrap();
+        assert_eq!(
+            find_run_terminal(&loaded.entries, "old-run")
+                .and_then(|value| value.get("state").cloned()),
+            Some(serde_json::json!(RUN_STATE_INTERRUPTED_BY_RESTART))
+        );
+        assert_eq!(
+            find_unterminated_run(&loaded.entries),
+            Some("new-run".to_string())
+        );
+        let old_terminal_index = loaded
+            .entries
+            .iter()
+            .position(|entry| {
+                entry.entry_type == ENTRY_TYPE_RUN_TERMINAL
+                    && entry.content.as_ref().and_then(|value| value.get("run_id"))
+                        == Some(&serde_json::json!("old-run"))
+            })
+            .unwrap();
+        let new_user_index = loaded
+            .entries
+            .iter()
+            .position(|entry| entry.content.as_ref() == Some(&serde_json::json!("new")))
+            .unwrap();
+        assert!(old_terminal_index < new_user_index);
         let _ = std::fs::remove_dir_all(dir);
     }
 

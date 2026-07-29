@@ -146,6 +146,7 @@ const MAX_RUN_EVENTS: usize = 2_000;
 
 struct RunState {
     run_id: String,
+    epoch: i64,
     idx: i64,
     events: Vec<SseEvent>,
     projection_events: Vec<SseEvent>,
@@ -161,6 +162,7 @@ pub struct RunAttachment {
 #[derive(Debug, Clone)]
 pub struct RunProjectionSnapshot {
     pub run_id: String,
+    pub epoch: i64,
     pub cursor: i64,
     pub events: Vec<SseEvent>,
 }
@@ -185,6 +187,7 @@ impl SseBroadcaster {
             tx,
             run: std::sync::Arc::new(parking_lot::Mutex::new(RunState {
                 run_id: String::new(),
+                epoch: 0,
                 idx: 0,
                 events: Vec::new(),
                 projection_events: Vec::new(),
@@ -220,6 +223,7 @@ impl SseBroadcaster {
             .collect();
         let projection = truncated.then(|| RunProjectionSnapshot {
             run_id: run.run_id.clone(),
+            epoch: run.epoch,
             cursor: run.idx.saturating_sub(1),
             events: run.projection_events.clone(),
         });
@@ -231,11 +235,13 @@ impl SseBroadcaster {
         })
     }
 
-    /// Stamp `run_id` + monotonic `idx`, buffer the event, and broadcast — all
-    /// under one lock so stream order matches idx order (no reordering race).
+    /// Stamp `run_id` + `epoch` + monotonic `idx`, buffer the event, and
+    /// broadcast — all under one lock so stream order matches idx order (no
+    /// reordering race).
     pub fn broadcast(&self, mut event: SseEvent) {
         let mut run = self.run.lock();
         event.run_id = run.run_id.clone();
+        event.epoch = run.epoch;
         event.idx = run.idx;
         run.idx += 1;
         apply_to_projection(&mut run.projection_events, &event);
@@ -253,10 +259,13 @@ impl SseBroadcaster {
         let _ = self.tx.send(event);
     }
 
-    /// Begin a new user run: set `run_id`, reset `idx`, clear the buffer.
-    pub fn start_run(&self, run_id: String) {
+    /// Begin a new user run: set `run_id` + `epoch`, reset `idx`, clear the
+    /// buffer. `epoch` is the run's monotonic generation within the session
+    /// (from the runtime lease), stamped on every event of this run.
+    pub fn start_run(&self, run_id: String, epoch: i64) {
         let mut run = self.run.lock();
         run.run_id = run_id;
+        run.epoch = epoch;
         run.idx = 0;
         run.events.clear();
         run.projection_events.clear();
@@ -288,6 +297,7 @@ impl SseBroadcaster {
             .collect();
         let projection = truncated.then(|| RunProjectionSnapshot {
             run_id: run.run_id.clone(),
+            epoch: run.epoch,
             cursor: run.idx.saturating_sub(1),
             events: run.projection_events.clone(),
         });
@@ -303,8 +313,9 @@ impl SseBroadcaster {
 /// lifecycle, tool terminal, approval, usage, error, and terminal events keep
 /// their original ordering and cursor.
 fn apply_to_projection(projection: &mut Vec<SseEvent>, event: &SseEvent) {
-    // `text_delta` is the EventBus twin of `text_chunk`; consumers project the
-    // latter, so retaining both would duplicate assistant output.
+    // `text_delta` (raw provider-stream token) duplicates `text_chunk` (the
+    // on_text-derived token); consumers project the latter, so retaining both
+    // would duplicate assistant output.
     if event.event_type == "text_delta" {
         return;
     }
@@ -362,7 +373,10 @@ pub struct SseEvent {
     pub event_type: String,
     pub data: String,
     /// P1: stamped by `SseBroadcaster::broadcast` (callers leave default).
+    /// `run_id` + `epoch` + `idx` are the run-scoped identity; `session_id` is
+    /// added at the gRPC wire boundary (the stream is session-scoped).
     pub run_id: String,
+    pub epoch: i64,
     pub idx: i64,
 }
 
@@ -372,6 +386,7 @@ impl SseEvent {
             event_type: event_type.to_string(),
             data: serde_json::to_string(&data).unwrap_or_default(),
             run_id: String::new(),
+            epoch: 0,
             idx: 0,
         }
     }
@@ -619,7 +634,7 @@ mod tests {
     #[test]
     fn stamps_run_id_idx_and_backfills() {
         let b = SseBroadcaster::new();
-        b.start_run("run1".to_string());
+        b.start_run("run1".to_string(), 1);
         b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
         b.broadcast(SseEvent::new(
             "text_chunk",
@@ -645,7 +660,7 @@ mod tests {
         assert_eq!(all.iter().map(|e| e.idx).collect::<Vec<_>>(), vec![0, 1, 2]);
 
         // New run resets idx + clears buffer.
-        b.start_run("run2".to_string());
+        b.start_run("run2".to_string(), 1);
         b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
         let (rid2, evs2, _, _) = b.events_since("run2", -1).unwrap();
         assert_eq!(rid2, "run2");
@@ -658,7 +673,7 @@ mod tests {
     #[test]
     fn attach_has_no_snapshot_subscribe_window() {
         let b = SseBroadcaster::new();
-        b.start_run("run1".to_string());
+        b.start_run("run1".to_string(), 1);
         b.broadcast(SseEvent::new(
             "text_chunk",
             serde_json::json!({"text": "a"}),
@@ -678,7 +693,7 @@ mod tests {
     #[test]
     fn attach_reports_truncated_ring_and_rejects_other_run() {
         let b = SseBroadcaster::new();
-        b.start_run("run1".to_string());
+        b.start_run("run1".to_string(), 1);
         for idx in 0..=MAX_RUN_EVENTS {
             b.broadcast(SseEvent::new(
                 "text_chunk",
@@ -720,7 +735,7 @@ mod tests {
     #[test]
     fn projection_preserves_semantic_order_while_coalescing_deltas() {
         let b = SseBroadcaster::new();
-        b.start_run("run1".to_string());
+        b.start_run("run1".to_string(), 1);
         b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
         b.broadcast(SseEvent::new(
             "thinking_delta",
