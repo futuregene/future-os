@@ -134,12 +134,11 @@ export function useContextData({
     }
   }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, reviewBase, debouncedReviewCustomBase]);
 
-  // Poll the latest refreshContext through a ref so the interval never restarts
-  // when the callback's identity changes. refreshContext depends on
-  // activeTab/reviewBase/debouncedReviewCustomBase, so keying the poll on it
-  // would restart (immediate tick + reset) on every tab/base change — firing a
-  // second fetch on top of the parameter-driven effect below. usePolling always
-  // invokes the latest callback, so the ref keeps the tick current for free.
+  // Always invoke the latest refreshContext through this ref: it closes over
+  // activeThreadId/activeTab/reviewBase/… so its identity changes on nearly
+  // every navigation, but its callers have their own narrower triggers (the
+  // poll's fixed interval, the effects' explicit dep keys). Depending on the
+  // callback directly would refire all of them on every identity change.
   const refreshContextRef = useRef(refreshContext);
   refreshContextRef.current = refreshContext;
 
@@ -155,7 +154,7 @@ export function useContextData({
   // for at least LOADING_SPINNER_MIN_MS so it can't flash off immediately.
   useEffect(() => {
     if (activeThreadId === null) {
-      void refreshContext();
+      void refreshContextRef.current();
       return;
     }
     let cancelled = false;
@@ -173,7 +172,7 @@ export function useContextData({
       setLoading(true);
     }, LOADING_SPINNER_DELAY_MS);
 
-    void refreshContext({ ensureGit: true }).finally(() => {
+    void refreshContextRef.current({ ensureGit: true }).finally(() => {
       if (cancelled)
         return;
       clearTimeout(spinnerTimer);
@@ -200,15 +199,12 @@ export function useContextData({
       if (minTimer)
         clearTimeout(minTimer);
     };
-    // Keyed on the active thread only; refreshContext is intentionally omitted.
-    // eslint-disable-next-line react/exhaustive-deps
   }, [activeThreadId]);
 
   // Parameter-driven refresh: re-fetch for the current tab / diff base without
   // blanking already-loaded state.
   useEffect(() => {
-    void refreshContext();
-    // eslint-disable-next-line react/exhaustive-deps
+    void refreshContextRef.current();
   }, [activeTab, reviewBase, debouncedReviewCustomBase]);
 
   // Poll cadence follows activity: fast while a run is live (tool calls and
