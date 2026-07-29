@@ -13,19 +13,59 @@ impl ServerSession {
         msg: &str,
         images: &[crate::types::ImageContent],
         attachments: &[crate::types::Attachment],
-    ) -> Result<()> {
+        requested_run_id: Option<&str>,
+        client_request_id: Option<&str>,
+    ) -> Result<crate::runtime::RunLease> {
         std::fs::create_dir_all(&self.cwd)?;
-        let system_prompt;
-        let verbose = if let Ok(mut r#loop) = self.agent_loop.try_write() {
-            let sp = self.build_system_prompt(r#loop.tools.clone());
-            r#loop.system_prompt = sp.clone();
-            r#loop.config.system_prompt = sp.clone();
-            system_prompt = sp;
-            r#loop.verbose
-        } else {
-            system_prompt = String::new();
-            false
+        let (system_prompt, verbose, mut run_loop) = {
+            let mut shared = self
+                .agent_loop
+                .try_write()
+                .map_err(|_| anyhow::anyhow!("session run configuration is busy"))?;
+            // Apply session-level settings at the run boundary. Updates made
+            // after this snapshot are intentionally deferred to the next run
+            // and cannot partially affect the accepted run.
+            let thinking_budget = match self.thinking_level.as_str() {
+                "minimal" => 2_000,
+                "low" => 4_000,
+                "medium" => 8_000,
+                "high" => 16_000,
+                "xhigh" => 24_000,
+                _ => 0,
+            };
+            shared.config.thinking_budget = thinking_budget;
+            shared
+                .provider
+                .update_thinking(&self.thinking_level, thinking_budget);
+            shared.steering_queue.mode = self.steering_mode.clone();
+            shared.follow_up_queue.mode = self.follow_up_mode.clone();
+            self.swap_token_counters_into_loop(&mut shared);
+            self.wire_auto_compaction(&mut shared);
+            let system_prompt = self.build_system_prompt(shared.tools.clone());
+            shared.system_prompt = system_prompt.clone();
+            shared.config.system_prompt = system_prompt.clone();
+
+            // Freeze provider/tools/config in the same short critical section.
+            // The shared Loop remains the next-run control plane and can be
+            // updated immediately while this independent snapshot streams.
+            let mut snapshot = shared.independent_copy();
+            // Auto-compaction callbacks report through these
+            // shared per-session cells; keep the snapshot wired to the same
+            // cells instead of the fresh defaults from independent_copy().
+            snapshot.last_compaction_result = shared.last_compaction_result.clone();
+            snapshot.compaction_failed = shared.compaction_failed.clone();
+            (system_prompt, shared.verbose, snapshot)
         };
+        run_loop.cumulative_input_tokens = self.tokens_in.clone();
+        run_loop.cumulative_output_tokens = self.tokens_out.clone();
+        run_loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
+        run_loop.cumulative_cache_write_tokens = self.tokens_cache_w.clone();
+        run_loop.cumulative_cost = self.cumulative_cost.clone();
+        run_loop.last_prompt_tokens = self.last_prompt_tokens.clone();
+        run_loop.steering_queue.set_mode(&self.steering_mode);
+        run_loop.follow_up_queue.set_mode(&self.follow_up_mode);
+        self.steering_tx = run_loop.steering_queue.sender();
+        self.follow_up_tx = run_loop.follow_up_queue.sender();
 
         // Whether the active model accepts image input (catalog modalities).
         // Uses the cached registry from ServerSession to avoid ~15% CPU overhead
@@ -34,7 +74,7 @@ impl ServerSession {
             crate::models::model_accepts_images_with(&self.model_registry.read(), &self.model);
         // Images are read + (down)encoded to base64 here, on the agent, from the
         // local path the GUI sent — the base64 never crosses the wire.
-        let user_message = build_user_message(
+        let mut user_message = build_user_message(
             msg,
             images,
             attachments,
@@ -43,14 +83,26 @@ impl ServerSession {
         );
 
         // NOTE: No content-based dedup here. Idempotency for transport-level
-        // retries is enforced atomically by the RPC layer (commands.rs rejects
-        // a second "prompt" while is_streaming, under the session write lock).
+        // retries is enforced atomically by SessionRuntime::begin.
         // A text-based dedup at this point only ever fires when NOT streaming —
         // i.e. exactly the cases that must run: retrying after a failed run,
         // or deliberately repeating a message ("continue", "yes", same text
         // with different attachments).
         let user_text = user_message.text();
         let user_display_text = user_message.display_text();
+
+        // Accept the run before mutating messages or persistence. This is the
+        // sole Idle -> Starting transition, so abort -> resend cannot create a
+        // second task while the cancelled task is still unwinding.
+        let run_lease = self.runtime.begin(requested_run_id, client_request_id)?;
+        self.broadcaster.start_run(run_lease.run_id.clone());
+        user_message
+            .metadata
+            .get_or_insert_with(serde_json::Map::new)
+            .insert(
+                "run_id".to_string(),
+                serde_json::Value::String(run_lease.run_id.clone()),
+            );
         self.messages.write().push(user_message);
 
         // Log the user message so the run log shows the question alongside
@@ -59,45 +111,52 @@ impl ServerSession {
             tracing::info!("[user] {user_text}");
         }
 
-        // Broadcast the user message to all connected clients so a second TUI
-        // observing the same session sees the question alongside the answer.
-        // Use display_text (first text block only): text() also joins the
-        // agent-injected attachment manifest, which observers would render
-        // as a bogus extra bubble.
-        self.broadcaster.broadcast(crate::rpc::SseEvent::new(
-            "user_message",
-            serde_json::json!({"text": user_display_text}),
-        ));
-
         // Persist immediately so the GUI can see the user message (and any
         // tool entries from prior turns) during streaming. Without this, a
         // thread switch mid-stream loses the question until the run settles
         // because get_session_entries reads from disk.
         // Ephemeral sessions (--no-session) skip persistence entirely.
         if !self.ephemeral {
-            self.persist_user_message();
+            if let Err(error) = self.persist_user_message() {
+                self.messages.write().pop();
+                let _ = self.runtime.begin_finalizing(&run_lease);
+                let full_error = format!("Failed to persist accepted user message: {error:#}");
+                self.broadcaster.broadcast(crate::rpc::SseEvent {
+                    event_type: "error".to_string(),
+                    data: serde_json::json!({"error": &full_error}).to_string(),
+                    ..Default::default()
+                });
+                self.broadcaster.broadcast(crate::rpc::SseEvent {
+                    event_type: "agent_end".to_string(),
+                    data: serde_json::json!({
+                        "type": "agent_end",
+                        "error": &full_error,
+                    })
+                    .to_string(),
+                    ..Default::default()
+                });
+                let _ = self.runtime.finish(&run_lease);
+                return Err(error);
+            }
         }
 
-        // Set streaming flag + start a new run. P1: run_id is assigned once per
-        // user run at the is_streaming false→true edge (resets idx + event buffer);
-        // every event this run then carries the same run_id.
-        self.is_streaming
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        self.broadcaster.start_run(crate::utils::generate_id());
-
-        // Swap per-session token counters into the agent loop so updates are tracked per-session
-        self.swap_token_counters_into_loop();
-
-        // Wire auto-compaction transform (checked before each turn)
-        self.wire_auto_compaction();
+        // Broadcast only after the durability boundary succeeds. Use
+        // display_text (first text block only): text() also joins the
+        // agent-injected attachment manifest, which observers would render as
+        // a bogus extra bubble.
+        self.broadcaster.broadcast(crate::rpc::SseEvent::new(
+            "user_message",
+            serde_json::json!({"text": user_display_text}),
+        ));
 
         // Clone shared state for the background task
         let messages_arc = self.messages.clone();
         let initial_messages = messages_arc.read().clone();
-        let agent_loop = self.agent_loop.clone();
         let broadcaster = self.broadcaster.clone();
-        let is_streaming = self.is_streaming.clone();
+        let runtime = self.runtime.clone();
+        let task_lease = run_lease.clone();
         let session_manager = self.session_manager.clone();
+        let session_persistence = self.persistence.clone();
         let session_id = self.session_id.clone();
         let session_cwd = self.cwd.clone();
         let session_model = self.model.clone();
@@ -145,8 +204,7 @@ impl ServerSession {
             }))
         };
         let save_messages = messages_arc.clone();
-        let save_mgr = session_manager.clone();
-        let save_sid = session_id.clone();
+        let save_persistence = self.persistence.clone();
         let save_closure: crate::agent::PersistCallback =
             Arc::new(move |msg: &crate::types::AgentMessage| {
                 if is_ephemeral {
@@ -154,8 +212,8 @@ impl ServerSession {
                 }
                 save_messages.write().push(msg.clone());
                 let entry = crate::session::agent_message_to_entry(msg);
-                if let Err(e) = save_mgr.append_entries(&save_sid, &[entry]) {
-                    tracing::error!("Failed to append entry: {}", e);
+                if let Err(error) = save_persistence.append(vec![entry]) {
+                    tracing::error!("Failed to enqueue session entry: {error}");
                 }
             });
         let user_msg_cb: crate::agent::PersistCallback = {
@@ -171,11 +229,7 @@ impl ServerSession {
             // Use the bare model ID from the Loop — the LLM API expects just
             // the model name, not the "provider/model" display format stored
             // on ServerSession.
-            model: agent_loop
-                .try_read()
-                .ok()
-                .map(|l| l.model.clone())
-                .unwrap_or_else(|| session_model.clone()),
+            model: run_loop.model.clone(),
             system_prompt,
             on_tool_result: Some(save_closure.clone()),
             save_callback: Some(save_closure),
@@ -185,14 +239,14 @@ impl ServerSession {
 
         // Set approval/sandbox hooks on this session's Loop config (these
         // are not callbacks — they're tool-execution hooks on AgentConfig).
-        if let Ok(mut r#loop) = agent_loop.try_write() {
-            let approval_gate_hook = approval_gate.clone();
-            let approval_broadcaster = broadcaster.clone();
-            let approval_session_id = session_id.clone();
-            let approval_cwd = session_cwd.clone();
-            let approval_sandbox = sandbox.clone();
-            let permission_level = self.permission_level.clone();
-            r#loop.config.before_tool_call = Some(Arc::new(
+        let approval_gate_hook = approval_gate.clone();
+        let approval_broadcaster = broadcaster.clone();
+        let approval_session_id = session_id.clone();
+        let approval_cwd = session_cwd.clone();
+        let approval_sandbox = sandbox.clone();
+        let permission_level = self.permission_level.clone();
+        run_loop.config.before_tool_call =
+            Some(Arc::new(
                 move |tool_name, tool_id, arguments| match permission_level.as_str() {
                     "all" => {
                         approve_tool_path_if_present(&approval_cwd, tool_name, arguments);
@@ -215,34 +269,29 @@ impl ServerSession {
                     ),
                 },
             ));
-            let prepare_cwd = session_cwd.clone();
-            r#loop.config.prepare_tool_call = Some(Arc::new(move |tool_name, arguments| {
-                prepare_session_tool_call(&prepare_cwd, tool_name, arguments)
-            }));
-        }
+        let prepare_cwd = session_cwd.clone();
+        run_loop.config.prepare_tool_call = Some(Arc::new(move |tool_name, arguments| {
+            prepare_session_tool_call(&prepare_cwd, tool_name, arguments)
+        }));
 
         // agent_start is now emitted inside run_streaming_with_messages via on_event,
         // for both initial prompts and follow-up turns.
 
-        // Clear any stale interrupt flag left by a previous abort().
-        // abort() sets interrupt_flag=true on this session's own agent_loop.
-        // Without clearing it, the spawned task's first loop iteration would
-        // exit immediately without calling the LLM.
-        let shared_interrupt_flag = if let Ok(r#loop) = self.agent_loop.try_read() {
-            r#loop.clear_interrupt();
-            r#loop.interrupt_flag()
-        } else {
-            // Fallback: if we can't acquire the lock, create a fresh flag.
-            // This path is unlikely in practice because we hold no concurrent writers here.
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
-        };
+        // Clear any stale interrupt flag copied from the next-run control
+        // plane. Each run owns its snapshot after this boundary.
+        run_loop.clear_interrupt();
+        let shared_interrupt_flag = run_loop.interrupt_flag();
 
         // Create interrupt channel so steer()/abort() can stop the current stream
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::channel::<()>(1);
-        self.interrupt_tx = Some(interrupt_tx);
-        // Capture the loop's interrupt flag so abort() can set it without the
-        // agent_loop lock (which the spawned run below holds for its duration).
-        self.interrupt_flag = Some(shared_interrupt_flag.clone());
+        // Capture both cancellation paths in the run-scoped lease. Abort can
+        // now signal the task without making the session appear idle.
+        let cancellation_installed = self.runtime.install_cancellation(
+            &run_lease,
+            interrupt_tx,
+            shared_interrupt_flag.clone(),
+        );
+        debug_assert!(cancellation_installed);
 
         // Post-hoc escalation channel (SANDBOX_PLAN.md §2.6): lets run_shell
         // raise a `sandbox_escalation` approval after a sandbox denial without
@@ -279,10 +328,13 @@ impl ServerSession {
             })
         };
 
-        // Spawn background task to run agent loop
+        // Build the run future; SessionRuntime owns spawning, monitoring, and
+        // the task slot. TODO(runtime-persistence): once terminal persistence
+        // is an ordered writer command, move the remaining execution-input
+        // assembly into a dedicated RunExecution value.
         let perm = self.permission_level.clone();
         let scope_sandbox = sandbox.clone();
-        tokio::spawn(async move {
+        let run_task = async move {
             // Anchors for per-reply metadata written at the save site: wall-clock
             // start and the session-cumulative output-token count before this
             // prompt ran. The delta/elapsed are attributed to the final assistant
@@ -305,9 +357,7 @@ impl ServerSession {
                     loop {
                         let bt = broadcaster.clone();
                         let be = broadcaster.clone();
-                        let r#loop = agent_loop.read().await;
-
-                        match r#loop
+                        match run_loop
                             .run_streaming_with_messages(
                                 current_messages,
                                 &stream_ctx,
@@ -332,8 +382,7 @@ impl ServerSession {
                             Ok((_, final_messages)) => {
                                 current_messages = final_messages;
 
-                                let follow_ups = r#loop.follow_up_queue.drain();
-                                drop(r#loop);
+                                let follow_ups = run_loop.follow_up_queue.drain();
 
                                 if follow_ups.is_empty() {
                                     return Ok(current_messages);
@@ -361,259 +410,279 @@ impl ServerSession {
             )
             .await;
 
-            match result {
-                Ok(final_messages) => {
+            // This check fences shared messages, disk commits, and terminal
+            // events. A completion from an obsolete epoch is never allowed to
+            // mutate a newer run.
+            if !runtime.begin_finalizing(&task_lease) {
+                return;
+            }
+
+            let run_error = match result {
+                Ok(mut final_messages) => {
+                    if let Some(last_assistant) = final_messages
+                        .iter_mut()
+                        .rev()
+                        .find(|message| message.role == "assistant")
+                    {
+                        last_assistant
+                            .metadata
+                            .get_or_insert_with(serde_json::Map::new)
+                            .insert(
+                                "run_id".to_string(),
+                                serde_json::Value::String(task_lease.run_id.clone()),
+                            );
+                    }
                     // Update shared messages so next prompt includes the full context
                     *messages_arc.write() = final_messages;
-                    // Save session to disk
+                    None
+                }
+                Err(error) => Some(format!("{error:#}")),
+            };
+            let run_output_tokens =
+                (tokens_out.load(std::sync::atomic::Ordering::Relaxed) - out_start).max(0);
+            let run_duration_ms = run_start.elapsed().as_millis() as i64;
+
+            // Every terminal path reaches the same durability boundary before
+            // the runtime may return to Idle. On model/tool error the shared
+            // message list contains every callback-accepted entry; rewriting it
+            // also heals an earlier bounded-queue overload when disk recovers.
+            // TODO(runtime-persistence): replace this compatibility full
+            // snapshot with append-only terminal entries; reserve atomic
+            // rewrite for compaction and repair.
+            let persistence_task = tokio::task::spawn_blocking(move || {
+                if !is_ephemeral {
+                    let msgs = messages_arc.read();
+                    let mut entries: Vec<crate::session::SessionEntry> = msgs
+                        .iter()
+                        .map(crate::session::agent_message_to_entry)
+                        .collect();
+
+                    // The whole session is rebuilt from the in-memory message
+                    // list on every save, and agent_message_to_entry re-stamps
+                    // `now()` with zero token/duration. Without preserving them,
+                    // every reload shows all messages at the current time
+                    // ("just now") and drops earlier replies' token counts.
+                    // Messages only grow by appending, so the on-disk message
+                    // entries align by index with this prefix. Filter the old
+                    // side to message entries only (matching what the rebuild
+                    // produces) so any interleaved label/model_change entries
+                    // can't shift the alignment.
                     {
-                        let msgs = messages_arc.read();
-                        let mut entries: Vec<crate::session::SessionEntry> = msgs
-                            .iter()
-                            .map(crate::session::agent_message_to_entry)
-                            .collect();
-
-                        // The whole session is rebuilt from the in-memory message
-                        // list on every save, and agent_message_to_entry re-stamps
-                        // `now()` with zero token/duration. Without preserving them,
-                        // every reload shows all messages at the current time
-                        // ("just now") and drops earlier replies' token counts.
-                        // Messages only grow by appending, so the on-disk message
-                        // entries align by index with this prefix. Filter the old
-                        // side to message entries only (matching what the rebuild
-                        // produces) so any interleaved label/model_change entries
-                        // can't shift the alignment.
-                        {
-                            let is_message_entry = |t: &str| {
-                                matches!(
-                                    t,
-                                    crate::session::ENTRY_TYPE_USER
-                                        | crate::session::ENTRY_TYPE_ASSISTANT
-                                        | crate::session::ENTRY_TYPE_TOOL
-                                        | crate::session::ENTRY_TYPE_SYSTEM
-                                )
-                            };
-                            let old_msg_entries: Vec<crate::session::SessionEntry> =
-                                session_manager
-                                    .load(&session_id)
-                                    .map(|s| {
-                                        s.entries
-                                            .into_iter()
-                                            .filter(|e| is_message_entry(&e.entry_type))
-                                            .collect()
-                                    })
-                                    .unwrap_or_default();
-                            for (new_entry, old_entry) in
-                                entries.iter_mut().zip(old_msg_entries.iter())
-                            {
-                                new_entry.timestamp = old_entry.timestamp;
-                                // Preserve run stats from old entry's content
-                                if let Some(ref old_content) = old_entry.content {
-                                    if let Some(obj) =
-                                        new_entry.content.as_mut().and_then(|c| c.as_object_mut())
-                                    {
-                                        if let Some(v) = old_content.get("run_tokens") {
-                                            obj.insert("run_tokens".to_string(), v.clone());
-                                        }
-                                        if let Some(v) = old_content.get("run_duration_ms") {
-                                            obj.insert("run_duration_ms".to_string(), v.clone());
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Attach this run's output tokens + wall-clock duration
-                            // to the final assistant entry (the reply just made). It
-                            // sits beyond the preserved prefix, so earlier replies
-                            // are untouched.
-                            let run_output_tokens =
-                                (tokens_out.load(std::sync::atomic::Ordering::Relaxed) - out_start)
-                                    .max(0);
-                            let run_duration_ms = run_start.elapsed().as_millis() as i64;
-                            if let Some(last_assistant) = entries
-                                .iter_mut()
-                                .rev()
-                                .find(|e| e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT)
-                            {
-                                // Store run stats in the last assistant's content JSON
-                                if let Some(ref mut content) = last_assistant.content {
-                                    if let Some(obj) = content.as_object_mut() {
-                                        obj.insert(
-                                            "run_tokens".to_string(),
-                                            serde_json::json!(run_output_tokens),
-                                        );
-                                        obj.insert(
-                                            "run_duration_ms".to_string(),
-                                            serde_json::json!(run_duration_ms),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        // Prepend session_info entry with metadata
-                        use std::sync::atomic::Ordering;
-                        // Preserve parent_session_id from existing session on disk
-                        let parent_session_id = session_manager
-                            .load(&session_id)
-                            .map(|s| s.parent_session_id)
-                            .unwrap_or_default();
-
-                        // Auto-generate session_name from the first user message
-                        // if not explicitly set (matches first_message in list_sessions).
-                        let session_name = if session_name.is_empty() {
-                            entries
-                                .iter()
-                                .find(|e| e.role == "user")
-                                .and_then(|e| e.content.as_ref())
-                                .map(|c| {
-                                    if let Some(arr) = c.as_array() {
-                                        // Only the user's own text (first text block);
-                                        // a later text block is the agent-injected
-                                        // attachment-path list, which must not leak
-                                        // into the auto-generated session name.
-                                        arr.iter()
-                                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                            .next()
-                                            .unwrap_or("")
-                                            .to_string()
-                                    } else {
-                                        c.as_str().unwrap_or("").to_string()
-                                    }
-                                })
-                                .map(|s| {
-                                    let trimmed = s.trim();
-                                    crate::session::truncate_visible(trimmed, 40)
-                                })
-                                .unwrap_or_default()
-                        } else {
-                            session_name
+                        let is_message_entry = |t: &str| {
+                            matches!(
+                                t,
+                                crate::session::ENTRY_TYPE_USER
+                                    | crate::session::ENTRY_TYPE_ASSISTANT
+                                    | crate::session::ENTRY_TYPE_TOOL
+                                    | crate::session::ENTRY_TYPE_SYSTEM
+                            )
                         };
-
-                        let total_cost = cumulative_cost.lock();
-                        let mut info = serde_json::json!({
-                            "cwd": session_cwd,
-                            "tokens_in": tokens_in.load(Ordering::Relaxed),
-                            "tokens_out": tokens_out.load(Ordering::Relaxed),
-                            "tokens_cache_r": tokens_cache_r.load(Ordering::Relaxed),
-                            "tokens_cache_w": tokens_cache_w.load(Ordering::Relaxed),
-                            "last_prompt_tokens": last_prompt.load(Ordering::Relaxed),
-                            "total_cost": *total_cost,
-                            "session_name": session_name,
-                            "auto_compaction": auto_compaction,
-                            "parent_session_id": parent_session_id,
-                            "thinking_level": session_thinking.clone(),
-                            "model": session_model.clone(),
-                        });
-                        if !created_by.is_empty() {
-                            info["created_by"] = serde_json::Value::String(created_by);
-                        }
-                        if !source_meta.is_null() {
-                            info["source_meta"] = source_meta;
-                        }
-                        let info_entry = crate::session::SessionEntry::session_info(
-                            info,
-                            session_model.clone(),
-                            session_thinking.clone(),
-                        );
-                        entries.insert(0, info_entry);
-
-                        // If the first user message is a compaction marker, replace
-                        // it with a proper compaction entry so the JSONL records
-                        // the compaction point explicitly.
-                        if let Some(idx) = entries.iter().position(|e| {
-                            e.role == "user"
-                                && e.content
-                                    .as_ref()
-                                    .and_then(|c| c.as_array())
-                                    .and_then(|arr| {
-                                        arr.first()
-                                            .and_then(|b| b.get("text"))
-                                            .and_then(|t| t.as_str())
-                                    })
-                                    .is_some_and(|t| t.starts_with("[Context compaction:"))
-                        }) {
-                            if let Some(marker) = entries.get(idx) {
-                                // Build a clean compaction entry — keep the summary
-                                // text but convert from message array to a simple
-                                // JSON object.
-                                let summary = marker
-                                    .content
-                                    .as_ref()
-                                    .and_then(|c| c.as_array())
-                                    .and_then(|arr| arr.first())
-                                    .and_then(|b| b.get("text"))
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("");
-                                let mut comp_entry = marker.clone();
-                                comp_entry.id = crate::utils::generate_id();
-                                comp_entry.entry_type =
-                                    crate::session::ENTRY_TYPE_COMPACTION.to_string();
-                                comp_entry.role = "system".to_string();
-                                comp_entry.content = Some(serde_json::json!({
-                                    "summary": summary,
-                                    "tokens_in": tokens_in.load(Ordering::Relaxed),
-                                    "tokens_out": tokens_out.load(Ordering::Relaxed),
-                                }));
-                                entries.insert(idx + 1, comp_entry);
-                                entries.remove(idx);
+                        let old_msg_entries: Vec<crate::session::SessionEntry> = session_manager
+                            .load(&session_id)
+                            .map(|s| {
+                                s.entries
+                                    .into_iter()
+                                    .filter(|e| is_message_entry(&e.entry_type))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        for (new_entry, old_entry) in entries.iter_mut().zip(old_msg_entries.iter())
+                        {
+                            new_entry.timestamp = old_entry.timestamp;
+                            // Preserve run stats from old entry's content
+                            if let Some(ref old_content) = old_entry.content {
+                                if let Some(obj) =
+                                    new_entry.content.as_mut().and_then(|c| c.as_object_mut())
+                                {
+                                    if let Some(v) = old_content.get("run_tokens") {
+                                        obj.insert("run_tokens".to_string(), v.clone());
+                                    }
+                                    if let Some(v) = old_content.get("run_duration_ms") {
+                                        obj.insert("run_duration_ms".to_string(), v.clone());
+                                    }
+                                }
                             }
                         }
 
-                        if !is_ephemeral {
-                            let session = crate::session::Session::snapshot(
-                                session_id.clone(),
-                                session_cwd.clone(),
-                                session_model.clone(),
-                                session_name.clone(),
-                                parent_session_id,
-                                entries,
-                            );
-                            if let Err(e) = session_manager.save(&session) {
-                                // The session file is the source of truth for every
-                                // client that connects later.  If this save fails
-                                // the in-memory state is ahead of disk.  Retry a
-                                // few times with backoff; if all attempts fail,
-                                // log loudly so the operator can investigate.
-                                tracing::error!("Failed to save session (will retry): {e:#}");
-                                let mut attempts = 0u32;
-                                let mut last_err = e;
-                                while attempts < 5 {
-                                    attempts += 1;
-                                    let wait_ms = 200u64 << attempts; // 400, 800, 1600, 3200, 6400
-                                    std::thread::sleep(std::time::Duration::from_millis(wait_ms));
-                                    match session_manager.save(&session) {
-                                        Ok(()) => {
-                                            tracing::info!(
-                                                "Session save succeeded on retry {attempts}"
-                                            );
-                                            break;
-                                        }
-                                        Err(next) => last_err = next,
-                                    }
-                                }
-                                if attempts == 5 {
-                                    // All retries exhausted — the session is
-                                    // permanently out of sync with disk.  The
-                                    // prompt response still carries the full
-                                    // answer to the caller, so the user isn't
-                                    // blocked, but a later reload will be
-                                    // missing this run's entries.
-                                    tracing::error!(
-                                        "Session save failed after 5 retries: {last_err:#}"
+                        // Attach this run's output tokens + wall-clock duration
+                        // to the final assistant entry (the reply just made). It
+                        // sits beyond the preserved prefix, so earlier replies
+                        // are untouched.
+                        if let Some(last_assistant) = entries
+                            .iter_mut()
+                            .rev()
+                            .find(|e| e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT)
+                        {
+                            // Store run stats in the last assistant's content JSON
+                            if let Some(ref mut content) = last_assistant.content {
+                                if let Some(obj) = content.as_object_mut() {
+                                    obj.insert(
+                                        "run_tokens".to_string(),
+                                        serde_json::json!(run_output_tokens),
+                                    );
+                                    obj.insert(
+                                        "run_duration_ms".to_string(),
+                                        serde_json::json!(run_duration_ms),
                                     );
                                 }
                             }
                         }
                     }
+
+                    // Prepend session_info entry with metadata
+                    use std::sync::atomic::Ordering;
+                    // Preserve parent_session_id from existing session on disk
+                    let parent_session_id = session_manager
+                        .load(&session_id)
+                        .map(|s| s.parent_session_id)
+                        .unwrap_or_default();
+
+                    // Auto-generate session_name from the first user message
+                    // if not explicitly set (matches first_message in list_sessions).
+                    let session_name = if session_name.is_empty() {
+                        entries
+                            .iter()
+                            .find(|e| e.role == "user")
+                            .and_then(|e| e.content.as_ref())
+                            .map(|c| {
+                                if let Some(arr) = c.as_array() {
+                                    // Only the user's own text (first text block);
+                                    // a later text block is the agent-injected
+                                    // attachment-path list, which must not leak
+                                    // into the auto-generated session name.
+                                    arr.iter()
+                                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                        .next()
+                                        .unwrap_or("")
+                                        .to_string()
+                                } else {
+                                    c.as_str().unwrap_or("").to_string()
+                                }
+                            })
+                            .map(|s| {
+                                let trimmed = s.trim();
+                                crate::session::truncate_visible(trimmed, 40)
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        session_name
+                    };
+
+                    let total_cost = cumulative_cost.lock();
+                    let mut info = serde_json::json!({
+                        "cwd": session_cwd,
+                        "tokens_in": tokens_in.load(Ordering::Relaxed),
+                        "tokens_out": tokens_out.load(Ordering::Relaxed),
+                        "tokens_cache_r": tokens_cache_r.load(Ordering::Relaxed),
+                        "tokens_cache_w": tokens_cache_w.load(Ordering::Relaxed),
+                        "last_prompt_tokens": last_prompt.load(Ordering::Relaxed),
+                        "total_cost": *total_cost,
+                        "session_name": session_name,
+                        "auto_compaction": auto_compaction,
+                        "parent_session_id": parent_session_id,
+                        "thinking_level": session_thinking.clone(),
+                        "model": session_model.clone(),
+                    });
+                    if !created_by.is_empty() {
+                        info["created_by"] = serde_json::Value::String(created_by);
+                    }
+                    if !source_meta.is_null() {
+                        info["source_meta"] = source_meta;
+                    }
+                    let info_entry = crate::session::SessionEntry::session_info(
+                        info,
+                        session_model.clone(),
+                        session_thinking.clone(),
+                    );
+                    entries.insert(0, info_entry);
+
+                    // If the first user message is a compaction marker, replace
+                    // it with a proper compaction entry so the JSONL records
+                    // the compaction point explicitly.
+                    if let Some(idx) = entries.iter().position(|e| {
+                        e.role == "user"
+                            && e.content
+                                .as_ref()
+                                .and_then(|c| c.as_array())
+                                .and_then(|arr| {
+                                    arr.first()
+                                        .and_then(|b| b.get("text"))
+                                        .and_then(|t| t.as_str())
+                                })
+                                .is_some_and(|t| t.starts_with("[Context compaction:"))
+                    }) {
+                        if let Some(marker) = entries.get(idx) {
+                            // Build a clean compaction entry — keep the summary
+                            // text but convert from message array to a simple
+                            // JSON object.
+                            let summary = marker
+                                .content
+                                .as_ref()
+                                .and_then(|c| c.as_array())
+                                .and_then(|arr| arr.first())
+                                .and_then(|b| b.get("text"))
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("");
+                            let mut comp_entry = marker.clone();
+                            comp_entry.id = crate::utils::generate_id();
+                            comp_entry.entry_type =
+                                crate::session::ENTRY_TYPE_COMPACTION.to_string();
+                            comp_entry.role = "system".to_string();
+                            comp_entry.content = Some(serde_json::json!({
+                                "summary": summary,
+                                "tokens_in": tokens_in.load(Ordering::Relaxed),
+                                "tokens_out": tokens_out.load(Ordering::Relaxed),
+                            }));
+                            entries.insert(idx + 1, comp_entry);
+                            entries.remove(idx);
+                        }
+                    }
+
+                    let session = crate::session::Session::snapshot(
+                        session_id.clone(),
+                        session_cwd.clone(),
+                        session_model.clone(),
+                        session_name.clone(),
+                        parent_session_id,
+                        entries,
+                    );
+                    session_persistence.rewrite_run_snapshot(session)?;
+                }
+                anyhow::Ok(())
+            });
+            let persistence_error = match persistence_task.await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(format!("{error:#}")),
+                Err(error) => Some(format!("persistence task failed: {error}")),
+            };
+            if let Some(error) = persistence_error {
+                let _ = runtime.mark_persistence_degraded(&task_lease, &error);
+                tracing::error!(
+                    run_id = %task_lease.run_id,
+                    "Session persistence commit failed: {error}"
+                );
+                broadcaster.broadcast(crate::rpc::SseEvent {
+                    event_type: "persistence_error".to_string(),
+                    data: serde_json::json!({"error": &error}).to_string(),
+                    ..Default::default()
+                });
+                broadcaster.broadcast(crate::rpc::SseEvent {
+                    event_type: "agent_end".to_string(),
+                    data: serde_json::json!({
+                        "type": "agent_end",
+                        "error": format!("Session persistence failed: {error}"),
+                        "usage": { "output_tokens": run_output_tokens }
+                    })
+                    .to_string(),
+                    ..Default::default()
+                });
+                return;
+            }
+
+            match run_error {
+                None => {
                     // Carry this run's output-token total on the terminal event so
                     // the client can show the token stat the instant the run settles.
-                    // The run loop's rich usage (usage events + agent_end usage) only
-                    // reaches the internal EventBus, which is never bridged to this SSE
-                    // broadcaster — so without this the count is 0 until a reload reads
-                    // it from the session entry. Same figure persisted at line ~574.
-                    let run_output_tokens =
-                        (tokens_out.load(std::sync::atomic::Ordering::Relaxed) - out_start).max(0);
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: serde_json::json!({
@@ -623,18 +692,14 @@ impl ServerSession {
                         .to_string(),
                         ..Default::default()
                     });
-                    is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
-                Err(e) => {
-                    let full_error = format!("{:#}", e);
+                Some(full_error) => {
                     tracing::error!("Agent loop error: {}", full_error);
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "error".to_string(),
                         data: serde_json::json!({"error": &full_error}).to_string(),
                         ..Default::default()
                     });
-                    let run_output_tokens =
-                        (tokens_out.load(std::sync::atomic::Ordering::Relaxed) - out_start).max(0);
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: serde_json::json!({
@@ -645,93 +710,108 @@ impl ServerSession {
                         .to_string(),
                         ..Default::default()
                     });
-                    is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
             }
-        });
+        };
+        if let Err(error) = self.runtime.spawn(run_lease.clone(), run_task) {
+            let _ = self.runtime.begin_finalizing(&run_lease);
+            let full_error = format!("Failed to start accepted run task: {error:#}");
+            self.broadcaster.broadcast(crate::rpc::SseEvent {
+                event_type: "error".to_string(),
+                data: serde_json::json!({"error": &full_error}).to_string(),
+                ..Default::default()
+            });
+            self.broadcaster.broadcast(crate::rpc::SseEvent {
+                event_type: "agent_end".to_string(),
+                data: serde_json::json!({
+                    "type": "agent_end",
+                    "error": &full_error,
+                })
+                .to_string(),
+                ..Default::default()
+            });
+            let _ = self.runtime.finish(&run_lease);
+            return Err(error);
+        }
 
-        Ok(())
+        Ok(run_lease)
     }
     /// Build this turn's system prompt: project context (CLAUDE.md/AGENTS.md/
     /// GEMINI.md), workspace memory (FUTURE.md), discovered skills, and the
     /// write/memory guidelines. Read fresh each turn (cwd-scoped).
     /// Point the agent loop's cumulative token/cost counters at this session's
     /// shared atomics so streaming updates are tracked per-session.
-    fn swap_token_counters_into_loop(&self) {
-        if let Ok(mut r#loop) = self.agent_loop.try_write() {
-            r#loop.cumulative_input_tokens = self.tokens_in.clone();
-            r#loop.cumulative_output_tokens = self.tokens_out.clone();
-            r#loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
-            r#loop.cumulative_cache_write_tokens = self.tokens_cache_w.clone();
-            r#loop.cumulative_cost = self.cumulative_cost.clone();
-            r#loop.last_prompt_tokens = self.last_prompt_tokens.clone();
-        }
+    fn swap_token_counters_into_loop(&self, r#loop: &mut crate::agent::Loop) {
+        r#loop.cumulative_input_tokens = self.tokens_in.clone();
+        r#loop.cumulative_output_tokens = self.tokens_out.clone();
+        r#loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
+        r#loop.cumulative_cache_write_tokens = self.tokens_cache_w.clone();
+        r#loop.cumulative_cost = self.cumulative_cost.clone();
+        r#loop.last_prompt_tokens = self.last_prompt_tokens.clone();
     }
 
     /// Install the pre-turn auto-compaction transform on the agent loop (a
     /// no-op when auto-compaction is off), compacting context once usage
     /// crosses ~90% of the model's window.
-    fn wire_auto_compaction(&self) {
+    fn wire_auto_compaction(&self, r#loop: &mut crate::agent::Loop) {
         if self.auto_compaction {
-            if let Ok(mut r#loop) = self.agent_loop.try_write() {
-                let comp_tokens = self.last_prompt_tokens.clone();
-                let comp_result = r#loop.last_compaction_result.clone();
-                let comp_failed = r#loop.compaction_failed.clone();
-                // Resolve context_window once — reuse cached registry
-                // to avoid re-deserialising the model catalog.
-                let context_window = self
-                    .model_registry
-                    .read()
-                    .resolve(&self.model)
-                    .map(|m| m.context_window)
-                    .unwrap_or(1_000_000); // Modern default: 1M (was 200K — too low for 1M models)
-                r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
-                    use std::sync::atomic::Ordering;
-                    let api_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
-                    // Fall back to heuristic estimate when API doesn't report usage.
-                    let context_tokens = if api_tokens > 0 {
-                        api_tokens
-                    } else {
-                        crate::compaction::estimate_context_tokens(&msgs)
-                    };
-                    if context_tokens == 0 {
-                        return msgs; // Truly empty — nothing to compact
-                    }
-                    // Compact when context usage exceeds 90% (10% reserve, min 16K).
-                    // Keep more history: 50% of context window so the model retains
-                    // substantial conversation continuity after compaction.
-                    let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
-                    let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
-                    let needs_compact = context_tokens > context_window - reserve_tokens;
-                    let (compacted, result) = crate::compaction::compact(
-                        msgs,
-                        &crate::compaction::CompactOptions {
-                            reserve_tokens,
-                            keep_recent_tokens: keep_tokens,
-                            context_window,
-                            tokens_before: context_tokens,
-                        },
+            let comp_tokens = self.last_prompt_tokens.clone();
+            let comp_result = r#loop.last_compaction_result.clone();
+            let comp_failed = r#loop.compaction_failed.clone();
+            // Resolve context_window once — reuse cached registry
+            // to avoid re-deserialising the model catalog.
+            let context_window = self
+                .model_registry
+                .read()
+                .resolve(&self.model)
+                .map(|m| m.context_window)
+                .unwrap_or(1_000_000); // Modern default: 1M (was 200K — too low for 1M models)
+            r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
+                use std::sync::atomic::Ordering;
+                let api_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
+                // Fall back to heuristic estimate when API doesn't report usage.
+                let context_tokens = if api_tokens > 0 {
+                    api_tokens
+                } else {
+                    crate::compaction::estimate_context_tokens(&msgs)
+                };
+                if context_tokens == 0 {
+                    return msgs; // Truly empty — nothing to compact
+                }
+                // Compact when context usage exceeds 90% (10% reserve, min 16K).
+                // Keep more history: 50% of context window so the model retains
+                // substantial conversation continuity after compaction.
+                let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
+                let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
+                let needs_compact = context_tokens > context_window - reserve_tokens;
+                let (compacted, result) = crate::compaction::compact(
+                    msgs,
+                    &crate::compaction::CompactOptions {
+                        reserve_tokens,
+                        keep_recent_tokens: keep_tokens,
+                        context_window,
+                        tokens_before: context_tokens,
+                    },
+                );
+                if let Some(r) = result {
+                    *comp_result.lock() = Some(r);
+                    compacted
+                } else if needs_compact {
+                    // Compaction was needed but compact() returned no result,
+                    // meaning it found no valid cut point. Signal failure so
+                    // the run loop can report an error instead of silently
+                    // proceeding with full (overflowing) context.
+                    tracing::error!(
+                        tokens = context_tokens,
+                        window = context_window,
+                        "auto-compaction needed but failed"
                     );
-                    if let Some(r) = result {
-                        *comp_result.lock() = Some(r);
-                        compacted
-                    } else if needs_compact {
-                        // Compaction was needed but compact() returned no result,
-                        // meaning it found no valid cut point. Signal failure so
-                        // the run loop can report an error instead of silently
-                        // proceeding with full (overflowing) context.
-                        tracing::error!(
-                            tokens = context_tokens,
-                            window = context_window,
-                            "auto-compaction needed but failed"
-                        );
-                        comp_failed.store(true, Ordering::SeqCst);
-                        compacted
-                    } else {
-                        compacted
-                    }
-                }));
-            }
+                    comp_failed.store(true, Ordering::SeqCst);
+                    compacted
+                } else {
+                    compacted
+                }
+            }));
         }
     }
 
@@ -790,8 +870,9 @@ impl ServerSession {
     /// rewrite); falls back to full save for a brand-new session that has no
     /// JSONL yet.  The session_info line (token counts, model, name) stays
     /// at its last-completed-run values — the final save at run end refreshes
-    /// it.  Best-effort: a save failure is logged, not propagated.
-    fn persist_user_message(&self) {
+    /// it. A failure rejects StartRun so memory and JSONL cannot diverge before
+    /// the model begins producing side effects.
+    fn persist_user_message(&self) -> Result<()> {
         // Use in-memory parent_session_id — avoids reading the entire session
         // file from disk just to get one field.
         let parent_session_id = self.parent_session_id.clone();
@@ -805,7 +886,7 @@ impl ServerSession {
                 .session_manager
                 .append_entries(&self.session_id, &[entry])
             {
-                Ok(()) => return, // appended — done
+                Ok(()) => return Ok(()), // appended — done
                 Err(_) => {
                     // File doesn't exist yet (brand-new session) → fall through
                     // to full save so the JSONL gets created with session_info.
@@ -879,15 +960,8 @@ impl ServerSession {
             parent_session_id,
             entries,
         );
-        // Best-effort early save: the canonical run-end save (above, line ~572)
-        // captures the full state.  If this fails the session is still writable
-        // by the run-end path, so log and continue.
-        if let Err(e) = self.session_manager.save(&session) {
-            tracing::error!(
-                "Failed to persist user message (best-effort, run-end save will retry): {}",
-                e
-            );
-        }
+        self.session_manager.save(&session)?;
+        Ok(())
     }
 }
 

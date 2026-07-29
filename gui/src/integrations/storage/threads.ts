@@ -1,4 +1,4 @@
-import type { StoredMessage, StoredThread, StoredWorkspace, ThreadCleanupSummary } from "./types";
+import type { StoredThread, StoredWorkspace, ThreadCleanupSummary } from "./types";
 import { invokeCommand } from "../tauri/invoke";
 
 // ─── Workspaces ──────────────────────────────────────────────────────────
@@ -121,19 +121,6 @@ export async function batchDeleteThreads(input: { threadIds: string[]; deleteFil
 
 export async function getThreadCleanupSummary(threadId: string) {
   return invokeCommand<ThreadCleanupSummary>("get_thread_cleanup_summary", { threadId });
-}
-
-// ─── Messages ────────────────────────────────────────────────────────────
-
-export async function appendMessage(input: {
-  threadId: string;
-  runId?: string | null;
-  role: StoredMessage["role"];
-  contentType?: StoredMessage["contentType"];
-  content: string;
-  status?: StoredMessage["status"];
-}) {
-  return invokeCommand<StoredMessage>("append_message", { input });
 }
 
 /**

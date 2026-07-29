@@ -102,6 +102,21 @@ function run(id: string, patch: Partial<StoredRun> = {}): StoredRun {
 }
 
 describe("applyRunMetadata", () => {
+  it("uses canonical run ids instead of positional or timestamp alignment", () => {
+    const result = applyRunMetadata([
+      user("u1"),
+      assistant("a1", { runId: "r-old", createdAt: "2030-01-01T00:00:00.000Z" }),
+      user("u2"),
+      assistant("a2", { runId: "r-new", createdAt: "2020-01-01T00:00:00.000Z" }),
+    ], [
+      run("r-new", { status: "failed", modelId: "new-model" }),
+      run("r-old", { status: "completed", modelId: "old-model" }),
+    ]);
+
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r-old", status: "complete", modelId: "old-model" });
+    expect(result[3]).toMatchObject({ id: "a2", runId: "r-new", status: "failed", modelId: "new-model" });
+  });
+
   it("marks the most recent turn failed when its run failed", () => {
     const messages = [
       user("u1"),

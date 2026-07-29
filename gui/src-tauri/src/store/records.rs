@@ -182,17 +182,6 @@ pub struct EnsureArtifactInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppendMessageInput {
-    pub thread_id: String,
-    pub run_id: Option<String>,
-    pub role: String,
-    pub content_type: Option<String>,
-    pub content: String,
-    pub status: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CreateRunInput {
     pub thread_id: String,
     pub trigger_message_id: Option<String>,

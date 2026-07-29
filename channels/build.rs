@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-env-changed=REGENERATE_PROTO");
     // Proto regeneration is opt-in via `make generate-proto` (sets the
     // REGENERATE_PROTO env var).  Skip it on normal builds so protoc is
     // never required to compile the channel bridge.

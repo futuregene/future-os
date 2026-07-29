@@ -36,7 +36,7 @@ interface MessageBlockProps {
   workspacePath?: string | null;
 }
 
-// Memoized: the streaming poll re-renders MessageList every ~220ms and any hover
+// Memoized: pushed streaming deltas re-render MessageList frequently and any hover
 // change re-renders it too, but each row's props (message reference kept stable
 // by patchMessage, stable callbacks) are unchanged for all but the affected rows,
 // so a shallow-prop comparison skips re-rendering — and re-running their nested
@@ -78,7 +78,7 @@ function MessageBlockImpl({
   // map over it without a non-null assertion.
   const segments = !isUser && message.segments && message.segments.length > 0 ? message.segments : null;
   // While streaming, only the LAST text/thinking segment is still growing —
-  // mark it `live` so its code blocks skip re-highlighting on every 220ms
+  // mark it `live` so its code blocks skip re-highlighting on every delta
   // poll tick (O(block) per tick → O(n²) over the reply). Closed segments
   // keep full rendering. Once the run settles, `streaming` flips off and the
   // tail re-renders fully highlighted.

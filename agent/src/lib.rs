@@ -12,6 +12,7 @@ pub mod logfile;
 pub mod models;
 pub mod prompt;
 pub mod rpc;
+pub mod runtime;
 pub mod sandbox;
 pub mod session;
 pub mod skills;

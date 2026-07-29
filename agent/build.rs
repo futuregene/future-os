@@ -8,6 +8,7 @@ use std::process::Command;
 
 fn main() {
     emit_build_version();
+    println!("cargo:rerun-if-env-changed=REGENERATE_PROTO");
 
     // Proto regeneration is opt-in via `make generate-proto` (sets the
     // REGENERATE_PROTO env var).  Skip it on normal builds so protoc is

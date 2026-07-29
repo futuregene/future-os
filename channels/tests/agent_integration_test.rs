@@ -159,6 +159,7 @@ async fn test_agent_prompt_flow() {
     let stream_request = tonic::Request::new(StreamRequest {
         session_id: session_id.clone(),
         event_types: vec![],
+        ..Default::default()
     });
     let mut stream = client
         .stream_events(stream_request)
@@ -290,6 +291,7 @@ async fn test_old_session_prompt_flow() {
     let stream_request = tonic::Request::new(StreamRequest {
         session_id: session_id.clone(),
         event_types: vec![],
+        ..Default::default()
     });
     let mut stream = client
         .stream_events(stream_request)

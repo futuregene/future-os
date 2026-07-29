@@ -27,6 +27,8 @@ export interface SessionEntry {
   duration_ms?: number;
   /** Structured per-entry metadata; user entries carry attached files here. */
   meta?: {
+    /** Canonical Agent run identity (new entries; absent in legacy JSONL). */
+    run_id?: string;
     attachments?: Array<{
       path: string;
       kind?: "image" | "file" | null;
@@ -58,6 +60,8 @@ interface TurnAcc {
   /** Per-reply usage/timing carried on the final assistant entry. */
   outputTokens?: number;
   durationMs?: number;
+  /** Set only from an assistant entry finalized by the Agent. */
+  runId?: string;
   /**
    * Tool activities awaiting their result entry, in call order. A `tool` result
    * entry updates the oldest one's status (the agent executes and appends
@@ -160,6 +164,7 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
         createdAt: acc.assistantCreatedAt ?? acc.userMessage.createdAt,
         outputTokens: acc.outputTokens,
         durationMs: acc.durationMs,
+        runId: acc.runId,
       });
     }
     acc = null;
@@ -207,6 +212,8 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
         acc.outputTokens = entry.output_tokens;
       if (typeof entry.duration_ms === "number")
         acc.durationMs = entry.duration_ms;
+      if (typeof entry.meta?.run_id === "string" && entry.meta.run_id)
+        acc.runId = entry.meta.run_id;
       if (entry.thinking) {
         acc.segments.push({ id: segId(), kind: "thinking", text: entry.thinking });
       }

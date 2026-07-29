@@ -4,6 +4,7 @@ mod headless;
 mod import;
 mod models;
 mod persist;
+mod replica;
 mod review;
 mod run_control;
 mod session;
@@ -28,22 +29,17 @@ pub use self::skills::{list_installed_skills, refresh_skills, InstalledSkill};
 pub use review::retry as retry_run_review;
 
 use serde::Serialize;
-use std::{
-    collections::HashSet,
-    sync::{Mutex, OnceLock},
-};
+use std::sync::Mutex;
 
 pub use self::client::AttachmentInput;
 use self::client::{base_command, prompt_command};
+use self::replica::{ReplicaLease, AGENT_REPLICAS};
 use self::run_control::mark_run_failed_if_active;
 use self::session::{
     ensure_agent_session, is_chat_thread, set_agent_permission_level, set_agent_sandbox_policy,
     workspace_path_for_thread,
 };
-use self::stream::collect_agent_response;
 use crate::agent_proto::StreamRequest;
-
-static ACTIVE_AGENT_PROMPTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,8 +59,9 @@ pub struct AgentPromptResponse {
 }
 
 /// Fetch the agent's buffered events for a session's current run (P1c backfill).
-/// `since_idx = -1` returns the whole current run; a stale/empty `run_id` also
-/// returns the whole current run (the agent realigns). Returns the parsed `data`
+/// `since_idx = -1` returns the requested run's retained prefix. A stale or
+/// unknown `run_id` is an explicit error and never realigns to another run.
+/// Returns the parsed `data`
 /// JSON — shape `{ runId, events: [{ type, data, runId, idx }] }`. Lets a phone /
 /// web client that joined an in-flight run mid-stream reconstruct the prefix it
 /// missed, keyed by the same `runId`/`idx` the live events carry (so it dedupes).
@@ -284,22 +281,10 @@ pub async fn agent_prompt(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<AgentPromptResponse, crate::AppError> {
-    // The session guard spans the whole prompt *and* the synchronous after
-    // snapshot capture (§6.1), so the next prompt for this session can't start
-    // writing before this Run's after snapshot lands. The deferred diff
-    // materialization (C1) needs no guard — it's a read-only diff of fixed commits.
     let effective_session_id = session_id
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| thread_id.clone());
-    let _prompt_guard = match PromptSessionGuard::acquire(&effective_session_id) {
-        Ok(guard) => guard,
-        Err(error) => {
-            mark_run_failed_if_active(run_id.as_deref(), &error.to_string());
-            return Err(error);
-        }
-    };
-
     let result = agent_prompt_inner(
         message,
         attachments,
@@ -352,9 +337,6 @@ pub async fn agent_prompt(
         });
     }
 
-    // The prompt guard drops as this function returns; the next Run's
-    // before-snapshot then serializes behind the after snapshot via the
-    // Workspace lock (§12.1).
     result
 }
 
@@ -427,16 +409,6 @@ async fn agent_prompt_inner(
         }
     }
 
-    let mut event_client = connect_agent().await?;
-    let mut event_stream = event_client
-        .stream_events(StreamRequest {
-            event_types: vec![],
-            session_id: session_id.clone(),
-        })
-        .await
-        .map_err(|error| format!("Unable to subscribe to Future Agent events: {error}"))?
-        .into_inner();
-
     // Apply the prompt's model / thinking level ONLY when this call created a
     // fresh session (its generated id differs from the stored one). For an
     // existing session the agent already holds the authoritative model, and an
@@ -478,18 +450,49 @@ async fn agent_prompt_inner(
     // Save the message for auto-naming after the prompt completes.
     let user_message = message.clone();
 
-    command_client
+    let prompt_response = command_client
         .execute_command(prompt_command(
             message,
             session_id.clone(),
             attachments.unwrap_or_default(),
+            run_id.clone(),
         )?)
         .await
         .map_err(|error| format!("Unable to send prompt to Future Agent: {error}"))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the prompt.")?;
 
-    match collect_agent_response(&mut event_stream, run_id.as_deref(), &session_id).await {
+    let prompt_ack: serde_json::Value =
+        serde_json::from_str(&prompt_response.data).map_err(|error| {
+            format!("Future Agent returned an invalid prompt acknowledgement: {error}")
+        })?;
+    let canonical_run_id = prompt_ack
+        .get("run_id")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Future Agent prompt acknowledgement omitted run_id.".to_string())?
+        .to_string();
+    if let Some(requested_run_id) = run_id.as_deref() {
+        if canonical_run_id != requested_run_id {
+            return Err(format!(
+                "Future Agent adopted run id {canonical_run_id}, expected {requested_run_id}"
+            )
+            .into());
+        }
+    }
+    let replica_lease = AGENT_REPLICAS
+        .acquire(&canonical_run_id)
+        .map_err(crate::AppError::from)?;
+
+    match replica_lease
+        .collect(
+            run_id.as_deref(),
+            &canonical_run_id,
+            &session_id,
+            &thread_id,
+        )
+        .await
+    {
         Ok(response) => {
             // Auto-name the thread from the first user message if it still has
             // the default title (matching the TUI's first_message fallback).
@@ -509,34 +512,17 @@ async fn agent_prompt_inner(
             // if this is itself the result of a user abort, the extra abort is a
             // harmless no-op.
             if let Err(abort_error) = command_client
-                .execute_command(base_command("abort", session_id))
+                .execute_command(client::run_control_command(
+                    "abort",
+                    session_id,
+                    Some(canonical_run_id),
+                ))
                 .await
             {
                 eprintln!("FutureOS: failed to abort Agent after stream error: {abort_error}");
             }
             Err(error)
         }
-    }
-}
-
-struct PromptSessionGuard {
-    session_id: String,
-}
-
-impl PromptSessionGuard {
-    fn acquire(session_id: &str) -> Result<Self, crate::AppError> {
-        let active = ACTIVE_AGENT_PROMPTS.get_or_init(|| Mutex::new(HashSet::new()));
-        let mut guard = active
-            .lock()
-            .map_err(|_| "Unable to lock active Agent prompt registry.".to_string())?;
-        if !guard.insert(session_id.to_string()) {
-            return Err("Future Agent is already running for this session."
-                .to_string()
-                .into());
-        }
-        Ok(Self {
-            session_id: session_id.to_string(),
-        })
     }
 }
 
@@ -584,16 +570,6 @@ fn auto_name_thread(thread_id: &str, first_message: &str) {
     });
 }
 
-impl Drop for PromptSessionGuard {
-    fn drop(&mut self) {
-        if let Some(active) = ACTIVE_AGENT_PROMPTS.get() {
-            if let Ok(mut guard) = active.lock() {
-                guard.remove(&self.session_id);
-            }
-        }
-    }
-}
-
 // ── Crash-recovery run reanimation ───────────────────────────────────────
 
 /// Called after the agent sidecar is reachable: for every run that was
@@ -627,17 +603,40 @@ async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), S
         .await
         .map_err(|e| format!("get_state: {e}"))?
         .into_inner();
-    let is_streaming = serde_json::from_str::<serde_json::Value>(&state.data)
-        .ok()
-        .and_then(|v| v.get("isStreaming").and_then(|s| s.as_bool()))
+    let state_value = serde_json::from_str::<serde_json::Value>(&state.data).unwrap_or_default();
+    let is_streaming = state_value
+        .get("isStreaming")
+        .and_then(|s| s.as_bool())
         .unwrap_or(false);
+    let canonical_run_id = state_value
+        .get("activeRun")
+        .and_then(|run| run.get("runId"))
+        .and_then(|id| id.as_str())
+        .map(str::to_string);
 
     if is_streaming {
+        let canonical_run_id = canonical_run_id
+            .ok_or_else(|| "active Agent run omitted canonical run id".to_string())?;
         crate::store::reanimate_run(run_id).map_err(|e| format!("reanimate: {e}"))?;
         let run_id = run_id.to_string();
         let session_id = session_id.to_string();
         tokio::spawn(async move {
-            if let Err(e) = collect_reanimated_run(&session_id, &run_id).await {
+            let replica_lease = match AGENT_REPLICAS.acquire(&canonical_run_id) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    eprintln!("FutureOS skipped duplicate collector for {run_id}: {error}");
+                    return;
+                }
+            };
+            if let Err(e) = collect_stored_replica(
+                replica_lease,
+                &session_id,
+                &run_id,
+                &canonical_run_id,
+                ReplicaSettlement::Interrupted,
+            )
+            .await
+            {
                 eprintln!("FutureOS reanimated collector for {run_id} failed: {e}");
             }
         });
@@ -648,103 +647,61 @@ async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), S
     Ok(())
 }
 
-async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), String> {
-    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+#[derive(Clone, Copy)]
+enum ReplicaSettlement {
+    /// A row recovered after process restart.
+    Interrupted,
+    /// A synthetic row observing a run started by another client.
+    Active,
+}
 
-    // Backfill: fetch the agent's buffered events FIRST. Only replace the
-    // local log after the fetch succeeds with non-empty events — clearing
-    // before fetching would destroy the pre-crash history on failure.
-    let backfill_events: Vec<(String, String)> = if let Ok(backfill) =
-        get_events_since(session_id.to_string(), run_id.to_string(), -1).await
-    {
-        backfill
-            .get("events")
-            .and_then(|v| v.as_array())
-            .map(|events| {
-                events
-                    .iter()
-                    .map(|item| {
-                        let t = item
-                            .get("type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let d = item
-                            .get("data")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        (t, d)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-
-    let mut sequence = 0i64;
-    if !backfill_events.is_empty() {
-        // The backfill covers the entire turn-from-start, so the pre-crash
-        // local log (which ends at the crash point) would duplicate events.
-        // Safe to replace now that we know the agent delivered.
-        crate::store::clear_run_event_buffer(run_id);
-        crate::store::delete_run_events_file(run_id);
-        for (evt_type, evt_data) in backfill_events {
-            crate::store::append_run_event(crate::store::AppendRunEventInput {
-                run_id: run_id.to_string(),
-                event_type: evt_type,
-                payload: if evt_data.is_empty() {
-                    None
-                } else {
-                    Some(evt_data)
-                },
-                sequence,
-            })
-            .map_err(|e| format!("append_backfill: {e}"))?;
-            sequence += 1;
-        }
-    }
-
-    let mut stream = client
-        .stream_events(StreamRequest {
-            event_types: vec![],
-            session_id: session_id.to_string(),
-        })
+async fn collect_stored_replica(
+    replica_lease: ReplicaLease,
+    session_id: &str,
+    local_run_id: &str,
+    canonical_run_id: &str,
+    settlement: ReplicaSettlement,
+) -> Result<(), String> {
+    let thread_id = crate::store::get_run(local_run_id)
+        .map_err(|e| format!("get_run: {e}"))?
+        .ok_or_else(|| format!("local run {local_run_id} not found"))?
+        .thread_id;
+    let response = replica_lease
+        .collect(Some(local_run_id), canonical_run_id, session_id, &thread_id)
         .await
-        .map_err(|e| format!("stream_events: {e}"))?
-        .into_inner();
-
-    loop {
-        let event = tokio::time::timeout(std::time::Duration::from_secs(600), stream.message())
-            .await
-            .map_err(|_| "Future Agent response timed out.".to_string())?
-            .map_err(|e| format!("stream failed: {e}"))?;
-
-        let Some(event) = event else {
-            // Stream ended without agent_end — settle the run.
-            let _ = crate::store::settle_interrupted_run(run_id, "failed");
-            crate::store::clear_run_event_buffer(run_id);
-            break;
-        };
-
-        crate::store::append_run_event(crate::store::AppendRunEventInput {
-            run_id: run_id.to_string(),
-            event_type: event.r#type.clone(),
-            payload: Some(event.data.clone()),
-            sequence,
-        })
-        .map_err(|e| format!("append_event: {e}"))?;
-
-        sequence += 1;
-
-        if event.r#type == "agent_end" {
-            crate::store::settle_interrupted_run(run_id, "completed")
+        .map_err(|error| error.to_string())?;
+    let terminal = if response.complete {
+        "completed"
+    } else {
+        "failed"
+    };
+    match settlement {
+        ReplicaSettlement::Interrupted => {
+            crate::store::settle_interrupted_run(local_run_id, terminal)
                 .map_err(|e| format!("settle: {e}"))?;
-            crate::store::clear_run_event_buffer(run_id);
-            break;
+        }
+        ReplicaSettlement::Active => {
+            crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+                run_id: local_run_id.to_string(),
+                status: terminal.to_string(),
+                error_message: (!response.complete)
+                    .then(|| "Future Agent response ended before a clean terminal.".to_string()),
+                error_type: None,
+            })
+            .map_err(|e| format!("update_status: {e}"))?;
         }
     }
+    crate::emit_thread_runtime_updated(crate::ThreadRuntimeUpdate {
+        thread_id,
+        run_id: local_run_id.to_string(),
+        revision: crate::store::list_run_events(local_run_id)
+            .ok()
+            .and_then(|events| events.into_iter().map(|event| event.sequence).max())
+            .unwrap_or(-1),
+        status: terminal.to_string(),
+        reset_projection: false,
+    });
+    crate::store::clear_run_event_buffer(local_run_id);
     Ok(())
 }
 
@@ -781,19 +738,22 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
     if let Some(active) = existing_runs.iter().find(|r| is_active(&r.status)) {
         return Ok(active.id.clone());
     }
-    // Also skip if a run completed in the last 10s — the agent's is_streaming
-    // flag may not have cleared yet and the frontend poll would trigger a
-    // redundant attach.
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-    if existing_runs
-        .iter()
-        .any(|r| r.status == "completed" && r.ended_at.is_some_and(|ended| now_ms - ended < 10_000))
-    {
-        return Ok(String::new()); // empty = already handled
-    }
+    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    let state = client
+        .execute_command(get_state_command(session_id.to_string()))
+        .await
+        .map_err(|e| format!("get_state: {e}"))?
+        .into_inner();
+    let state_value =
+        serde_json::from_str::<serde_json::Value>(&state.data).map_err(|e| e.to_string())?;
+    let canonical_run_id = state_value
+        .get("activeRun")
+        .and_then(|run| run.get("runId"))
+        .and_then(|id| id.as_str())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "Agent session has no active canonical run".to_string())?
+        .to_string();
+    let replica_lease = AGENT_REPLICAS.acquire(&canonical_run_id)?;
 
     let run = crate::store::create_run(crate::store::CreateRunInput {
         thread_id: thread_id.to_string(),
@@ -806,7 +766,15 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
     let run_id = run.id.clone();
     let sid = session_id.to_string();
     tokio::spawn(async move {
-        if let Err(e) = collect_remote_stream(&sid, &run_id).await {
+        if let Err(e) = collect_stored_replica(
+            replica_lease,
+            &sid,
+            &run_id,
+            &canonical_run_id,
+            ReplicaSettlement::Active,
+        )
+        .await
+        {
             eprintln!("FutureOS remote-stream collector for {run_id} failed: {e}");
             let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
                 run_id,
@@ -818,87 +786,6 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
     });
 
     Ok(run.id)
-}
-
-async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), String> {
-    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
-
-    // Backfill: when the GUI enters mid-stream, pull past events the agent
-    // still holds in memory so upsertStreamingPreview sees a complete
-    // history instead of starting from the subscription point.
-    let mut sequence = 0i64;
-    if let Ok(backfill) = get_events_since(session_id.to_string(), run_id.to_string(), -1).await {
-        if let Some(events) = backfill.get("events").and_then(|v| v.as_array()) {
-            for item in events {
-                let evt_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let evt_data = item.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                crate::store::append_run_event(crate::store::AppendRunEventInput {
-                    run_id: run_id.to_string(),
-                    event_type: evt_type.to_string(),
-                    payload: if evt_data.is_empty() {
-                        None
-                    } else {
-                        Some(evt_data.to_string())
-                    },
-                    sequence,
-                })
-                .map_err(|e| format!("append_backfill: {e}"))?;
-                sequence += 1;
-            }
-        }
-    }
-
-    let mut stream = client
-        .stream_events(StreamRequest {
-            event_types: vec![],
-            session_id: session_id.to_string(),
-        })
-        .await
-        .map_err(|e| format!("stream_events: {e}"))?
-        .into_inner();
-
-    loop {
-        let event = tokio::time::timeout(std::time::Duration::from_secs(600), stream.message())
-            .await
-            .map_err(|_| "agent response timed out".to_string())?
-            .map_err(|e| format!("stream failed: {e}"))?;
-
-        let Some(event) = event else {
-            // Stream ended without agent_end — settle the run so it doesn't
-            // stay "running" forever.
-            let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
-                run_id: run_id.to_string(),
-                status: "failed".to_string(),
-                error_message: Some("stream ended without agent_end".to_string()),
-                error_type: None,
-            });
-            crate::store::clear_run_event_buffer(run_id);
-            break;
-        };
-
-        crate::store::append_run_event(crate::store::AppendRunEventInput {
-            run_id: run_id.to_string(),
-            event_type: event.r#type.clone(),
-            payload: Some(event.data.clone()),
-            sequence,
-        })
-        .map_err(|e| format!("append_event: {e}"))?;
-
-        sequence += 1;
-
-        if event.r#type == "agent_end" {
-            crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
-                run_id: run_id.to_string(),
-                status: "completed".to_string(),
-                error_message: None,
-                error_type: None,
-            })
-            .map_err(|e| format!("update_status: {e}"))?;
-            crate::store::clear_run_event_buffer(run_id);
-            break;
-        }
-    }
-    Ok(())
 }
 
 // ── Session observer (real-time settings-change events) ───────────────────
@@ -919,6 +806,8 @@ static OBSERVER_CANCEL: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
 /// per-token `text_chunk`/`thinking_delta`/`tool_*` stream — is dropped here,
 /// before the JSON rebuild + Tauri emit, because no frontend listener reads it.
 const OBSERVER_FORWARDED_EVENTS: &[&str] = &[
+    "agent_start",
+    "agent_end",
     "user_message",
     "model_changed",
     "thinking_level_changed",
@@ -966,6 +855,7 @@ pub fn start_observing_session(session_id: String) {
                 .stream_events(StreamRequest {
                     event_types: vec![],
                     session_id: session_id.clone(),
+                    ..Default::default()
                 })
                 .await
             {

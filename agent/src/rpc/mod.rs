@@ -248,6 +248,14 @@ fn get_state_internal(state: &AppState, session_id: &str) -> Option<serde_json::
         .load(&session_id)
         .map(|s| s.parent_session_id)
         .unwrap_or_default();
+    let active_run = sess.runtime.snapshot().map(|run| {
+        serde_json::json!({
+            "runId": run.run_id,
+            "epoch": run.epoch,
+            "state": run.phase.as_str(),
+            "lastEventIdx": sess.broadcaster.last_idx(),
+        })
+    });
 
     Some(serde_json::json!({
         "model": sess.model,
@@ -281,6 +289,7 @@ fn get_state_internal(state: &AppState, session_id: &str) -> Option<serde_json::
         "parentSessionId": if parent_session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(parent_session_id) },
         "createdBy": sess.created_by.clone(),
         "sourceMeta": sess.source_meta.clone(),
+        "activeRun": active_run,
     }))
 }
 

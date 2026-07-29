@@ -77,6 +77,10 @@ pub struct RpcCommand {
     pub run_id: String,
     #[serde(default)]
     pub since_idx: i64,
+    #[serde(default)]
+    pub requested_run_id: String,
+    #[serde(default)]
+    pub client_request_id: String,
 
     // set_sandbox_policy — populated from the typed proto sub-message by the
     // gRPC layer (not part of the JSON command surface).
@@ -144,6 +148,21 @@ struct RunState {
     run_id: String,
     idx: i64,
     events: Vec<SseEvent>,
+    projection_events: Vec<SseEvent>,
+}
+
+pub struct RunAttachment {
+    pub receiver: broadcast::Receiver<SseEvent>,
+    pub events: Vec<SseEvent>,
+    pub truncated: bool,
+    pub projection: Option<RunProjectionSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunProjectionSnapshot {
+    pub run_id: String,
+    pub cursor: i64,
+    pub events: Vec<SseEvent>,
 }
 
 /// Per-session SSE broadcaster. Also the **single stamping point** (P1): it
@@ -168,6 +187,7 @@ impl SseBroadcaster {
                 run_id: String::new(),
                 idx: 0,
                 events: Vec::new(),
+                projection_events: Vec::new(),
             })),
         }
     }
@@ -177,6 +197,40 @@ impl SseBroadcaster {
         self.tx.subscribe()
     }
 
+    pub fn last_idx(&self) -> i64 {
+        self.run.lock().idx.saturating_sub(1)
+    }
+
+    /// Atomically register a receiver and snapshot the requested run tail.
+    /// `broadcast` uses the same run lock, so no event can land in the window
+    /// between the snapshot and subscription.
+    pub fn attach(&self, run_id: &str, after_idx: i64) -> anyhow::Result<RunAttachment> {
+        let run = self.run.lock();
+        if run.run_id != run_id {
+            anyhow::bail!("run `{run_id}` is not the active run");
+        }
+        let receiver = self.tx.subscribe();
+        let min_idx = run.events.first().map(|event| event.idx).unwrap_or(run.idx);
+        let truncated = after_idx.saturating_add(1) < min_idx;
+        let events = run
+            .events
+            .iter()
+            .filter(|event| !truncated && event.idx > after_idx)
+            .cloned()
+            .collect();
+        let projection = truncated.then(|| RunProjectionSnapshot {
+            run_id: run.run_id.clone(),
+            cursor: run.idx.saturating_sub(1),
+            events: run.projection_events.clone(),
+        });
+        Ok(RunAttachment {
+            receiver,
+            events,
+            truncated,
+            projection,
+        })
+    }
+
     /// Stamp `run_id` + monotonic `idx`, buffer the event, and broadcast — all
     /// under one lock so stream order matches idx order (no reordering race).
     pub fn broadcast(&self, mut event: SseEvent) {
@@ -184,6 +238,7 @@ impl SseBroadcaster {
         event.run_id = run.run_id.clone();
         event.idx = run.idx;
         run.idx += 1;
+        apply_to_projection(&mut run.projection_events, &event);
         run.events.push(event.clone());
         if run.events.len() > MAX_RUN_EVENTS {
             let overflow = run.events.len() - MAX_RUN_EVENTS;
@@ -204,30 +259,95 @@ impl SseBroadcaster {
         run.run_id = run_id;
         run.idx = 0;
         run.events.clear();
+        run.projection_events.clear();
     }
 
     /// Current-run events with `idx > since_idx`, plus the earliest idx still in
-    /// the buffer (`min_idx`, 0 if empty). If `run_id` no longer matches (a new
-    /// run started), return the current run_id + all its buffered events. A
+    /// the buffer (`min_idx`, 0 if empty). A stale run id is an explicit error;
+    /// it must never silently return another run's events. A
     /// full backfill (`since_idx < 0`) whose result starts above `min_idx == 0`
     /// — i.e. `min_idx > 0` — means the run's prefix was dropped on overflow, so
     /// the caller can surface the gap instead of silently reconstructing a
     /// truncated message.
-    pub fn events_since(&self, run_id: &str, since_idx: i64) -> (String, Vec<SseEvent>, i64) {
+    pub fn events_since(
+        &self,
+        run_id: &str,
+        since_idx: i64,
+    ) -> anyhow::Result<(String, Vec<SseEvent>, i64, Option<RunProjectionSnapshot>)> {
         let run = self.run.lock();
+        if run.run_id != run_id {
+            anyhow::bail!("run `{run_id}` is not the active run");
+        }
         let min_idx = run.events.first().map(|e| e.idx).unwrap_or(0);
-        if run.run_id == run_id {
-            let events = run
-                .events
-                .iter()
-                .filter(|e| e.idx > since_idx)
-                .cloned()
-                .collect();
-            (run.run_id.clone(), events, min_idx)
-        } else {
-            (run.run_id.clone(), run.events.clone(), min_idx)
+        let truncated = since_idx.saturating_add(1) < min_idx;
+        let events = run
+            .events
+            .iter()
+            .filter(|event| !truncated && event.idx > since_idx)
+            .cloned()
+            .collect();
+        let projection = truncated.then(|| RunProjectionSnapshot {
+            run_id: run.run_id.clone(),
+            cursor: run.idx.saturating_sub(1),
+            events: run.projection_events.clone(),
+        });
+        Ok((run.run_id.clone(), events, min_idx, projection))
+    }
+}
+
+/// Fold a run event into the durable-in-memory semantic projection.
+///
+/// The replay ring is intentionally bounded, while the projection must retain
+/// enough information to rebuild the visible run after that ring truncates.
+/// High-frequency deltas are coalesced into their preceding semantic segment;
+/// lifecycle, tool terminal, approval, usage, error, and terminal events keep
+/// their original ordering and cursor.
+fn apply_to_projection(projection: &mut Vec<SseEvent>, event: &SseEvent) {
+    // `text_delta` is the EventBus twin of `text_chunk`; consumers project the
+    // latter, so retaining both would duplicate assistant output.
+    if event.event_type == "text_delta" {
+        return;
+    }
+
+    let coalescible = matches!(
+        event.event_type.as_str(),
+        "text_chunk" | "thinking_delta" | "toolcall_delta" | "tool_delta"
+    );
+    if coalescible {
+        if let Some(previous) = projection
+            .last_mut()
+            .filter(|previous| previous.event_type == event.event_type)
+        {
+            if let (Ok(mut previous_data), Ok(next_data)) = (
+                serde_json::from_str::<serde_json::Value>(&previous.data),
+                serde_json::from_str::<serde_json::Value>(&event.data),
+            ) {
+                let same_tool_stream =
+                    !matches!(event.event_type.as_str(), "toolcall_delta" | "tool_delta")
+                        || ["tool_id", "tc_index"]
+                            .iter()
+                            .all(|key| previous_data.get(key) == next_data.get(key));
+                if let (Some(previous_text), Some(next_text)) = (
+                    previous_data.get("text").and_then(|value| value.as_str()),
+                    next_data.get("text").and_then(|value| value.as_str()),
+                ) {
+                    if !same_tool_stream {
+                        projection.push(event.clone());
+                        return;
+                    }
+                    let combined = format!("{previous_text}{next_text}");
+                    previous_data["text"] = serde_json::Value::String(combined);
+                    previous.data = serde_json::to_string(&previous_data).unwrap_or_default();
+                    // The folded segment represents every source event through
+                    // this cursor, so live resume starts strictly after it.
+                    previous.idx = event.idx;
+                    return;
+                }
+            }
         }
     }
+
+    projection.push(event.clone());
 }
 
 impl Default for SseBroadcaster {
@@ -511,29 +631,137 @@ mod tests {
         ));
 
         // Backfill from idx 0 → the two events after idx 0 (idx 1, 2), in order.
-        let (rid, evs, min_idx) = b.events_since("run1", 0);
+        let (rid, evs, min_idx, projection) = b.events_since("run1", 0).unwrap();
         assert_eq!(rid, "run1");
         assert_eq!(evs.len(), 2);
         assert_eq!((evs[0].idx, evs[1].idx), (1, 2));
         assert_eq!(evs[0].run_id, "run1");
         // Nothing dropped yet → earliest buffered idx is still 0 (no gap).
         assert_eq!(min_idx, 0);
+        assert!(projection.is_none());
 
         // From -1 → all three (idx 0,1,2).
-        let (_, all, _) = b.events_since("run1", -1);
+        let (_, all, _, _) = b.events_since("run1", -1).unwrap();
         assert_eq!(all.iter().map(|e| e.idx).collect::<Vec<_>>(), vec![0, 1, 2]);
 
         // New run resets idx + clears buffer.
         b.start_run("run2".to_string());
         b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
-        let (rid2, evs2, _) = b.events_since("run2", -1);
+        let (rid2, evs2, _, _) = b.events_since("run2", -1).unwrap();
         assert_eq!(rid2, "run2");
         assert_eq!(evs2.len(), 1);
         assert_eq!((evs2[0].idx, evs2[0].run_id.as_str()), (0, "run2"));
 
-        // Stale run_id → returns current run + all its events (caller realigns).
-        let (rid3, evs3, _) = b.events_since("run1", 100);
-        assert_eq!(rid3, "run2");
-        assert_eq!(evs3.len(), 1);
+        assert!(b.events_since("run1", 100).is_err());
+    }
+
+    #[test]
+    fn attach_has_no_snapshot_subscribe_window() {
+        let b = SseBroadcaster::new();
+        b.start_run("run1".to_string());
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "a"}),
+        ));
+        let mut attachment = b.attach("run1", -1).unwrap();
+        assert_eq!(attachment.events.len(), 1);
+
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "b"}),
+        ));
+        let live = attachment.receiver.try_recv().unwrap();
+        assert_eq!(live.idx, 1);
+        assert!(!attachment.truncated);
+    }
+
+    #[test]
+    fn attach_reports_truncated_ring_and_rejects_other_run() {
+        let b = SseBroadcaster::new();
+        b.start_run("run1".to_string());
+        for idx in 0..=MAX_RUN_EVENTS {
+            b.broadcast(SseEvent::new(
+                "text_chunk",
+                serde_json::json!({"text": idx.to_string()}),
+            ));
+        }
+        let mut attachment = b.attach("run1", -1).unwrap();
+        assert!(attachment.truncated);
+        assert!(attachment.events.is_empty());
+        let snapshot = attachment.projection.take().unwrap();
+        assert_eq!(snapshot.run_id, "run1");
+        assert_eq!(snapshot.cursor, MAX_RUN_EVENTS as i64);
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.events[0].idx, MAX_RUN_EVENTS as i64);
+        let projected_data: serde_json::Value =
+            serde_json::from_str(&snapshot.events[0].data).unwrap();
+        assert!(projected_data["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with('0') && text.ends_with("2000")));
+
+        // Receiver registration and snapshot capture share the run lock: the
+        // first live event starts exactly after the snapshot cursor.
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "live"}),
+        ));
+        let live = attachment.receiver.try_recv().unwrap();
+        assert_eq!(live.idx, snapshot.cursor + 1);
+
+        let (_, replay, _, replay_projection) = b.events_since("run1", -1).unwrap();
+        assert!(replay.is_empty());
+        assert_eq!(
+            replay_projection.as_ref().map(|value| value.cursor),
+            Some(live.idx)
+        );
+        assert!(b.attach("run2", -1).is_err());
+    }
+
+    #[test]
+    fn projection_preserves_semantic_order_while_coalescing_deltas() {
+        let b = SseBroadcaster::new();
+        b.start_run("run1".to_string());
+        b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
+        b.broadcast(SseEvent::new(
+            "thinking_delta",
+            serde_json::json!({"text": "a"}),
+        ));
+        b.broadcast(SseEvent::new(
+            "thinking_delta",
+            serde_json::json!({"text": "b"}),
+        ));
+        b.broadcast(SseEvent::new(
+            "tool_start",
+            serde_json::json!({"tool_id": "t1", "tool_name": "read"}),
+        ));
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "hello"}),
+        ));
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": " world"}),
+        ));
+        for idx in 0..MAX_RUN_EVENTS {
+            b.broadcast(SseEvent::new(
+                "usage",
+                serde_json::json!({"usage": {"output_tokens": idx}}),
+            ));
+        }
+
+        let snapshot = b.attach("run1", -1).unwrap().projection.unwrap();
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .take(4)
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agent_start", "thinking_delta", "tool_start", "text_chunk"]
+        );
+        let thinking: serde_json::Value = serde_json::from_str(&snapshot.events[1].data).unwrap();
+        let text: serde_json::Value = serde_json::from_str(&snapshot.events[3].data).unwrap();
+        assert_eq!(thinking["text"], "ab");
+        assert_eq!(text["text"], "hello world");
     }
 }

@@ -226,6 +226,70 @@ pub(crate) fn emit_remote_activity(thread_id: &str) {
     }
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ThreadRuntimeUpdate {
+    pub thread_id: String,
+    pub run_id: String,
+    pub revision: i64,
+    pub status: String,
+    pub reset_projection: bool,
+}
+
+/// Coalesce token-heavy run updates into a single UI notification per run
+/// roughly every 40ms. Persistence remains event-by-event and authoritative;
+/// this channel is only a low-latency projection invalidation signal.
+pub(crate) fn emit_thread_runtime_updated(update: ThreadRuntimeUpdate) {
+    static TX: std::sync::OnceLock<std::sync::mpsc::Sender<ThreadRuntimeUpdate>> =
+        std::sync::OnceLock::new();
+    let tx = TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<ThreadRuntimeUpdate>();
+        std::thread::Builder::new()
+            .name("thread-runtime-updates".to_string())
+            .spawn(move || {
+                use std::collections::HashMap;
+                use std::time::{Duration, Instant};
+
+                while let Ok(first) = rx.recv() {
+                    let deadline = Instant::now() + Duration::from_millis(40);
+                    let mut pending = HashMap::from([(first.run_id.clone(), first)]);
+                    loop {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        match rx.recv_timeout(remaining) {
+                            Ok(next) => {
+                                let reset_projection = pending
+                                    .get(&next.run_id)
+                                    .is_some_and(|current| current.reset_projection)
+                                    || next.reset_projection;
+                                pending.insert(
+                                    next.run_id.clone(),
+                                    ThreadRuntimeUpdate {
+                                        reset_projection,
+                                        ..next
+                                    },
+                                );
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                        }
+                    }
+                    if let Some(handle) = APP_HANDLE.get() {
+                        use tauri::Emitter;
+                        for update in pending.into_values() {
+                            let _ = handle.emit("thread-runtime-updated", update);
+                        }
+                    }
+                }
+            })
+            .expect("spawn thread runtime update emitter");
+        tx
+    });
+    let _ = tx.send(update);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -464,8 +528,6 @@ pub fn run() {
             attach_remote_stream,
             observe_session,
             reconcile_thread_workspace,
-            list_messages,
-            append_message,
             create_run,
             get_latest_run,
             get_run,

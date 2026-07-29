@@ -1,0 +1,546 @@
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Arc, Weak,
+    },
+    time::Duration,
+};
+
+use anyhow::{anyhow, Result};
+use parking_lot::Mutex;
+
+use super::{Manager, Session, SessionEntry, ENTRY_TYPE_SESSION_INFO};
+
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const COMMAND_QUEUE_CAPACITY: usize = 256;
+
+enum PersistenceCommand {
+    Append(Vec<SessionEntry>),
+    UpdateInfo {
+        key: String,
+        value: serde_json::Value,
+        ack: mpsc::SyncSender<std::result::Result<(), String>>,
+    },
+    RewriteRun {
+        session: Session,
+        ack: mpsc::SyncSender<std::result::Result<(), String>>,
+    },
+    Barrier(mpsc::SyncSender<std::result::Result<(), String>>),
+}
+
+struct WorkerSlot {
+    generation: u64,
+    sender: mpsc::SyncSender<PersistenceCommand>,
+}
+
+struct PersistenceInner {
+    manager: Arc<Manager>,
+    session_id: String,
+    worker: Mutex<Option<WorkerSlot>>,
+    next_generation: AtomicU64,
+    last_error: Mutex<Option<String>>,
+    idle_timeout: Duration,
+    #[cfg(test)]
+    fail_next_rewrite: std::sync::atomic::AtomicBool,
+}
+
+/// Ordered, lazily-started persistence queue for one session.
+///
+/// The worker exits after an idle period and is recreated on demand, so merely
+/// hydrating historical sessions does not permanently allocate one thread per
+/// session. All run-time appends, metadata updates, barriers, and final
+/// rewrites for a live session share this ordering point.
+#[derive(Clone)]
+pub struct SessionPersistence {
+    inner: Arc<PersistenceInner>,
+}
+
+impl SessionPersistence {
+    pub fn new(manager: Arc<Manager>, session_id: String) -> Self {
+        Self::with_idle_timeout(manager, session_id, DEFAULT_IDLE_TIMEOUT)
+    }
+
+    fn with_idle_timeout(
+        manager: Arc<Manager>,
+        session_id: String,
+        idle_timeout: Duration,
+    ) -> Self {
+        Self {
+            inner: Arc::new(PersistenceInner {
+                manager,
+                session_id,
+                worker: Mutex::new(None),
+                next_generation: AtomicU64::new(0),
+                last_error: Mutex::new(None),
+                idle_timeout,
+                #[cfg(test)]
+                fail_next_rewrite: std::sync::atomic::AtomicBool::new(false),
+            }),
+        }
+    }
+
+    /// Queue an append without blocking the model/tool future on filesystem
+    /// locking or flush. The bounded queue reports overload explicitly instead
+    /// of allowing an unhealthy disk to grow process memory without limit. A
+    /// later rewrite/barrier observes accepted appends in FIFO order.
+    pub fn append(&self, entries: Vec<SessionEntry>) -> Result<()> {
+        self.try_send(PersistenceCommand::Append(entries))
+    }
+
+    /// Persist a session-info field in queue order.
+    pub fn update_info(&self, key: &str, value: serde_json::Value) -> Result<()> {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        self.send_boundary(PersistenceCommand::UpdateInfo {
+            key: key.to_string(),
+            value,
+            ack: ack_tx,
+        })?;
+        receive_ack(ack_rx)
+    }
+
+    /// Rewrite the completed in-memory run snapshot after every earlier append
+    /// or metadata update. The worker merges the latest on-disk session-info
+    /// fields so a config change made during the run cannot be overwritten by
+    /// the run-start snapshot.
+    pub fn rewrite_run_snapshot(&self, session: Session) -> Result<()> {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        self.send_boundary(PersistenceCommand::RewriteRun {
+            session,
+            ack: ack_tx,
+        })?;
+        receive_ack(ack_rx)
+    }
+
+    pub fn barrier(&self) -> Result<()> {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        self.send_boundary(PersistenceCommand::Barrier(ack_tx))?;
+        receive_ack(ack_rx)
+    }
+
+    pub fn last_error(&self) -> Option<String> {
+        self.inner.last_error.lock().clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_rewrite(&self) {
+        self.inner.fail_next_rewrite.store(true, Ordering::Release);
+    }
+
+    fn try_send(&self, mut command: PersistenceCommand) -> Result<()> {
+        for _ in 0..2 {
+            let mut worker = self.inner.worker.lock();
+            let (generation, sender) = self.ensure_worker_locked(&mut worker)?;
+            match sender.try_send(command) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::TrySendError::Full(_)) => {
+                    let error = format!(
+                        "session persistence queue is overloaded (capacity {COMMAND_QUEUE_CAPACITY})"
+                    );
+                    tracing::error!(session_id = %self.inner.session_id, "{error}");
+                    *self.inner.last_error.lock() = Some(error.clone());
+                    return Err(anyhow!(error));
+                }
+                Err(mpsc::TrySendError::Disconnected(returned)) => {
+                    command = returned;
+                    clear_worker_generation(&mut worker, generation);
+                }
+            }
+        }
+        let error = "session persistence worker is unavailable".to_string();
+        *self.inner.last_error.lock() = Some(error.clone());
+        Err(anyhow!(error))
+    }
+
+    /// Durability boundaries may wait behind already accepted appends. These
+    /// calls run from blocking RPC/finalization contexts, never a Tokio worker.
+    fn send_boundary(&self, mut command: PersistenceCommand) -> Result<()> {
+        for _ in 0..2 {
+            let mut worker = self.inner.worker.lock();
+            let (generation, sender) = self.ensure_worker_locked(&mut worker)?;
+            match sender.send(command) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    command = error.0;
+                    clear_worker_generation(&mut worker, generation);
+                }
+            }
+        }
+        Err(anyhow!("session persistence worker is unavailable"))
+    }
+
+    fn ensure_worker_locked(
+        &self,
+        worker: &mut Option<WorkerSlot>,
+    ) -> Result<(u64, mpsc::SyncSender<PersistenceCommand>)> {
+        if let Some(slot) = worker.as_ref() {
+            return Ok((slot.generation, slot.sender.clone()));
+        }
+        let generation = self
+            .inner
+            .next_generation
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        let (sender, receiver) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
+        let weak = Arc::downgrade(&self.inner);
+        let thread_sender = sender.clone();
+        let name = format!("session-writer-{}", self.inner.session_id);
+        std::thread::Builder::new()
+            .name(name)
+            .spawn(move || run_worker(weak, generation, receiver))
+            .map_err(|error| anyhow!("failed to spawn session persistence worker: {error}"))?;
+        *worker = Some(WorkerSlot {
+            generation,
+            sender: thread_sender,
+        });
+        Ok((generation, sender))
+    }
+}
+
+fn clear_worker_generation(worker: &mut Option<WorkerSlot>, generation: u64) {
+    if worker
+        .as_ref()
+        .is_some_and(|slot| slot.generation == generation)
+    {
+        *worker = None;
+    }
+}
+
+fn receive_ack(receiver: mpsc::Receiver<std::result::Result<(), String>>) -> Result<()> {
+    receiver
+        .recv()
+        .map_err(|_| anyhow!("session persistence worker stopped before acknowledgement"))?
+        .map_err(anyhow::Error::msg)
+}
+
+fn run_worker(
+    inner: Weak<PersistenceInner>,
+    generation: u64,
+    receiver: mpsc::Receiver<PersistenceCommand>,
+) {
+    loop {
+        let Some(state) = inner.upgrade() else {
+            return;
+        };
+        let command = match receiver.recv_timeout(state.idle_timeout) {
+            Ok(command) => command,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let mut worker = state.worker.lock();
+                if worker
+                    .as_ref()
+                    .is_some_and(|slot| slot.generation == generation)
+                {
+                    *worker = None;
+                }
+                return;
+            }
+        };
+        execute(&state, command);
+    }
+}
+
+fn execute(state: &PersistenceInner, command: PersistenceCommand) {
+    match command {
+        PersistenceCommand::Append(entries) => {
+            let result = state
+                .manager
+                .append_entries(&state.session_id, &entries)
+                .map_err(|error| error.to_string());
+            record_result(state, &result, false);
+        }
+        PersistenceCommand::UpdateInfo { key, value, ack } => {
+            let result = update_info(state, &key, value).map_err(|error| error.to_string());
+            // A successful metadata update does not supersede a failed history
+            // append, so keep any earlier error observable by barrier/finalize.
+            record_result(state, &result, false);
+            let _ = ack.send(result);
+        }
+        PersistenceCommand::RewriteRun { mut session, ack } => {
+            merge_latest_session_info(state, &mut session);
+            #[cfg(test)]
+            let injected_failure = state.fail_next_rewrite.swap(false, Ordering::AcqRel);
+            #[cfg(not(test))]
+            let injected_failure = false;
+            let result = if injected_failure {
+                Err("injected session rewrite failure".to_string())
+            } else {
+                save_with_retry(&state.manager, &session).map_err(|error| error.to_string())
+            };
+            // A successful full snapshot contains the complete in-memory run,
+            // so it is the one command that resolves earlier append failures.
+            record_result(state, &result, true);
+            let _ = ack.send(result);
+        }
+        PersistenceCommand::Barrier(ack) => {
+            let result = match state.last_error.lock().clone() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            };
+            let _ = ack.send(result);
+        }
+    }
+}
+
+fn record_result(
+    state: &PersistenceInner,
+    result: &std::result::Result<(), String>,
+    success_supersedes_prior: bool,
+) {
+    let mut last_error = state.last_error.lock();
+    match result {
+        Ok(()) if success_supersedes_prior => *last_error = None,
+        Ok(()) => {}
+        Err(error) => {
+            tracing::error!(
+                session_id = %state.session_id,
+                "Session persistence command failed: {error}"
+            );
+            *last_error = Some(error.clone());
+        }
+    }
+}
+
+fn update_info(state: &PersistenceInner, key: &str, value: serde_json::Value) -> Result<()> {
+    state
+        .manager
+        .update_session_info(&state.session_id, key, value)
+}
+
+fn merge_latest_session_info(state: &PersistenceInner, target: &mut Session) {
+    let Ok(latest) = state.manager.load(&state.session_id) else {
+        return;
+    };
+    let Some(latest_info) = latest
+        .entries
+        .iter()
+        .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
+        .and_then(|entry| entry.content.as_ref())
+        .and_then(serde_json::Value::as_object)
+    else {
+        return;
+    };
+    let Some(target_info) = target
+        .entries
+        .iter_mut()
+        .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
+        .and_then(|entry| entry.content.as_mut())
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    for key in [
+        "model",
+        "thinking_level",
+        "session_name",
+        "cwd",
+        "auto_compaction",
+    ] {
+        if let Some(value) = latest_info.get(key) {
+            target_info.insert(key.to_string(), value.clone());
+        }
+    }
+    target.model = target_info
+        .get("model")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&target.model)
+        .to_string();
+    target.name = target_info
+        .get("session_name")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&target.name)
+        .to_string();
+    target.cwd = target_info
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&target.cwd)
+        .to_string();
+}
+
+fn save_with_retry(manager: &Manager, session: &Session) -> Result<()> {
+    let mut last_error = match manager.save(session) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    tracing::error!("Failed to save session (will retry): {last_error:#}");
+    for attempt in 1..=5 {
+        let wait_ms = 200_u64 << attempt;
+        std::thread::sleep(Duration::from_millis(wait_ms));
+        match manager.save(session) {
+            Ok(()) => {
+                tracing::info!("Session save succeeded on retry {attempt}");
+                return Ok(());
+            }
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (std::path::PathBuf, Arc<Manager>, Session) {
+        let dir = std::env::temp_dir().join(format!(
+            "future-session-writer-{}",
+            crate::utils::generate_id()
+        ));
+        let manager = Arc::new(Manager::new(dir.clone()));
+        let info = SessionEntry::session_info(
+            serde_json::json!({
+                "cwd": "/old",
+                "model": "old-model",
+                "thinking_level": "low",
+                "session_name": "old name",
+                "auto_compaction": true,
+            }),
+            "old-model".to_string(),
+            "low".to_string(),
+        );
+        let session = Session::snapshot(
+            "session-1".to_string(),
+            "/old".to_string(),
+            "old-model".to_string(),
+            "old name".to_string(),
+            String::new(),
+            vec![
+                info,
+                SessionEntry::new_user("user", serde_json::json!("hello")),
+            ],
+        );
+        manager.save(&session).unwrap();
+        (dir, manager, session)
+    }
+
+    #[test]
+    fn update_and_run_rewrite_are_fifo_and_preserve_latest_metadata() {
+        let (_dir, manager, stale_snapshot) = fixture();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            "session-1".to_string(),
+            Duration::from_secs(1),
+        );
+        persistence
+            .append(vec![SessionEntry::new_assistant(
+                serde_json::json!("partial"),
+                vec![],
+            )])
+            .unwrap();
+        persistence
+            .update_info("model", serde_json::json!("new-model"))
+            .unwrap();
+
+        // Simulate finalization using a run-start snapshot. The writer must not
+        // let it roll the newer model selection back.
+        persistence.rewrite_run_snapshot(stale_snapshot).unwrap();
+        persistence.barrier().unwrap();
+
+        let loaded = manager.load("session-1").unwrap();
+        assert_eq!(loaded.model, "new-model");
+        let info = loaded
+            .entries
+            .iter()
+            .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .and_then(|entry| entry.content.as_ref())
+            .unwrap();
+        assert_eq!(info["model"], "new-model");
+    }
+
+    #[test]
+    fn idle_worker_retires_and_restarts_without_losing_order() {
+        let (_dir, manager, _) = fixture();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            "session-1".to_string(),
+            Duration::from_millis(20),
+        );
+        persistence
+            .append(vec![SessionEntry::new_assistant(
+                serde_json::json!("first"),
+                vec![],
+            )])
+            .unwrap();
+        persistence.barrier().unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(persistence.inner.worker.lock().is_none());
+
+        persistence
+            .append(vec![SessionEntry::new_assistant(
+                serde_json::json!("second"),
+                vec![],
+            )])
+            .unwrap();
+        persistence.barrier().unwrap();
+        let loaded = manager.load("session-1").unwrap();
+        let assistant_count = loaded
+            .entries
+            .iter()
+            .filter(|entry| entry.entry_type == super::super::ENTRY_TYPE_ASSISTANT)
+            .count();
+        assert_eq!(assistant_count, 2);
+    }
+
+    #[test]
+    fn metadata_success_does_not_hide_an_earlier_append_failure() {
+        let (dir, manager, session) = fixture();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            "session-1".to_string(),
+            Duration::from_secs(1),
+        );
+        std::fs::remove_file(manager.session_path("session-1")).unwrap();
+
+        persistence
+            .append(vec![SessionEntry::new_assistant(
+                serde_json::json!("not persisted"),
+                vec![],
+            )])
+            .unwrap();
+        assert!(persistence.barrier().is_err());
+
+        manager.save(&session).unwrap();
+        persistence
+            .update_info("session_name", serde_json::json!("renamed"))
+            .unwrap();
+        assert!(
+            persistence.barrier().is_err(),
+            "a metadata write cannot supersede a lost history append"
+        );
+
+        persistence.rewrite_run_snapshot(session).unwrap();
+        persistence.barrier().unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn idle_retirement_never_acknowledges_a_lost_command() {
+        let (dir, manager, _) = fixture();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            "session-1".to_string(),
+            Duration::from_millis(1),
+        );
+
+        for index in 0..100 {
+            std::thread::sleep(Duration::from_millis(1));
+            persistence
+                .append(vec![SessionEntry::new_assistant(
+                    serde_json::json!(format!("entry-{index}")),
+                    vec![],
+                )])
+                .unwrap();
+            persistence.barrier().unwrap();
+        }
+
+        let loaded = manager.load("session-1").unwrap();
+        let assistant_count = loaded
+            .entries
+            .iter()
+            .filter(|entry| entry.entry_type == super::super::ENTRY_TYPE_ASSISTANT)
+            .count();
+        assert_eq!(assistant_count, 100);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

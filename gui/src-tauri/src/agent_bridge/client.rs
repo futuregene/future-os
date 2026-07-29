@@ -299,6 +299,7 @@ pub(super) fn prompt_command(
     message: String,
     session_id: String,
     attachments: Vec<AttachmentInput>,
+    requested_run_id: Option<String>,
 ) -> Result<RpcCommand, crate::AppError> {
     // Only paths cross the wire; the agent reads + encodes image bytes itself.
     let attachments = attachments
@@ -313,6 +314,8 @@ pub(super) fn prompt_command(
     Ok(RpcCommand {
         message,
         attachments,
+        requested_run_id: requested_run_id.unwrap_or_default(),
+        client_request_id: command_id(),
         ..base_command("prompt", session_id)
     })
 }
@@ -356,7 +359,20 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         enabled_models: vec![],
         run_id: String::new(),
         since_idx: 0,
+        requested_run_id: String::new(),
+        client_request_id: String::new(),
         sandbox_policy: None,
+    }
+}
+
+pub(super) fn run_control_command(
+    command_type: &str,
+    session_id: String,
+    run_id: Option<String>,
+) -> RpcCommand {
+    RpcCommand {
+        run_id: run_id.unwrap_or_default(),
+        ..base_command(command_type, session_id)
     }
 }
 

@@ -356,38 +356,24 @@ async fn handle_command(
             } else {
                 DEFAULT_MESSAGE_PAGE_LIMIT
             };
-            let messages =
-                match crate::agent_bridge::get_session_messages(cmd.session_id.clone()).await {
-                    Ok(data) => messages_vec(data),
-                    Err(agent_err) => {
-                        let fallback = (|| -> Result<Vec<Value>, crate::AppError> {
-                            match crate::store::find_thread_by_agent_session(&cmd.session_id)? {
-                                Some(thread) => {
-                                    let rows = crate::store::list_messages(&thread.id)?;
-                                    Ok(serde_json::to_value(&rows)
-                                        .ok()
-                                        .and_then(|value| value.as_array().cloned())
-                                        .unwrap_or_default())
-                                }
-                                None => Ok(Vec::new()),
-                            }
-                        })();
-                        match fallback {
-                            Ok(messages) => messages,
-                            Err(e) => {
-                                reply(
-                                    client,
-                                    &msg,
-                                    false,
-                                    Value::Null,
-                                    Some(&format!("{agent_err}; store fallback also failed: {e}")),
-                                )
-                                .await;
-                                return;
-                            }
-                        }
-                    }
-                };
+            let messages = match crate::agent_bridge::get_session_messages(cmd.session_id.clone())
+                .await
+            {
+                Ok(data) => messages_vec(data),
+                Err(agent_err) => {
+                    reply(
+                            client,
+                            &msg,
+                            false,
+                            Value::Null,
+                            Some(&format!(
+                                "{agent_err}; conversation history is unavailable while the Agent is offline"
+                            )),
+                        )
+                        .await;
+                    return;
+                }
+            };
             reply(
                 client,
                 &msg,

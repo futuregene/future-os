@@ -158,6 +158,14 @@ message RpcCommand {
   int64 since_idx = 140;
   string run_id = 141;
 
+  // Optional run identity proposed by a client that has already created its
+  // local run record. The Agent validates/adopts it atomically and returns the
+  // canonical id in the prompt acknowledgement.
+  string requested_run_id = 142;
+
+  // Idempotency key for retrying StartRun independently of run identity.
+  string client_request_id = 143;
+
   // ── set_sandbox_policy ─────────────────────────────────────────────────
   // Session sandbox + approval policy (typed sub-message, not JSON-in-string).
   // Read when type == "set_sandbox_policy".
@@ -370,6 +378,12 @@ message StreamRequest {
   // Scope events to a specific session.  Required so the agent
   // knows which session's broadcaster to subscribe to.
   string session_id = 2;
+
+  // Atomic resume parameters. When atomic_attach is true, the server registers
+  // the receiver and snapshots buffered events under the journal's same lock.
+  string run_id = 3;
+  int64 after_idx = 4;
+  bool atomic_attach = 5;
 }
 
 // ── StreamEvent ─────────────────────────────────────────────────────────────
@@ -393,6 +407,22 @@ message StreamEvent {
   // at the is_streaming false→true edge); idx is monotonic within a run.
   string run_id = 3;
   int64 idx = 4;
+
+  // When true, this frame replaces the consumer's local projection through
+  // snapshot_cursor. It is returned by atomic AttachRun when the requested
+  // cursor predates the bounded replay ring.
+  bool projection_snapshot = 5;
+  repeated ProjectedRunEvent snapshot_events = 6;
+  int64 snapshot_cursor = 7;
+}
+
+// A compressed semantic event contained in a projection snapshot. Its idx is
+// the latest source cursor folded into this event, preserving chronological
+// ordering while allowing adjacent token deltas to be coalesced.
+message ProjectedRunEvent {
+  string type = 1;
+  string data = 2;
+  int64 idx = 3;
 }
 `;
 
@@ -442,6 +472,7 @@ export class GrpcClient {
   private streamCall: any = null;
   private connected = false;
   private currentSessionId: string = "";
+  private activeRunId: string | null = null;
   /// Resolved when the event stream delivers the first event (or the stream
   /// fails).  Eliminates the busy-wait poll loop in call() — callers await
   /// this instead of spinning every 100ms.
@@ -493,6 +524,7 @@ export class GrpcClient {
 
   setCurrentSessionId(sessionId: string): void {
     this.currentSessionId = sessionId;
+    this.activeRunId = null;
   }
 
   // ─── Event Streaming ─────────────────────────────────────────────────
@@ -619,12 +651,22 @@ export class GrpcClient {
         this.startHeartbeat();
       }
       try {
-        const rawData = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
+        const rawData = typeof response.data === "string"
+          ? (response.data ? JSON.parse(response.data) : {})
+          : response.data;
         const { type: _dataType, ...rest } = rawData || {};
         const event: AgentEvent = {
           type: response.type || "message",
+          runId: response.runId,
+          idx: Number(response.idx ?? 0),
+          projectionSnapshot: Boolean(response.projectionSnapshot),
+          snapshotCursor: Number(response.snapshotCursor ?? 0),
+          snapshotEvents: response.snapshotEvents ?? [],
           ...rest,
         };
+        if (event.runId && event.type === "agent_start") {
+          this.activeRunId = event.runId;
+        }
 
         for (const listener of this.eventListeners) {
           try {
@@ -632,6 +674,9 @@ export class GrpcClient {
           } catch {
             // Ignore listener errors
           }
+        }
+        if (event.runId && event.type === "agent_end" && this.activeRunId === event.runId) {
+          this.activeRunId = null;
         }
       } catch {
         // Ignore parse errors
@@ -806,7 +851,7 @@ export class GrpcClient {
       customInstructions: JSON.stringify({ createdBy: "tui" }),
     }) as any;
     if (result?.sessionId) {
-      this.currentSessionId = result.sessionId;
+      this.setCurrentSessionId(result.sessionId);
       this.connectEvents();
     }
     return result || { cancelled: false };
@@ -815,7 +860,7 @@ export class GrpcClient {
   async switchSession(sessionId: string): Promise<{ cancelled: boolean }> {
     const result = await this.call("switch_session", { sessionId }) as any;
     if (result && !result.cancelled) {
-      this.currentSessionId = sessionId;
+      this.setCurrentSessionId(sessionId);
       this.connectEvents();
     }
     return result || { cancelled: false };
@@ -824,7 +869,7 @@ export class GrpcClient {
   async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
     const result = await this.call("fork", { entryId }) as any;
     if (result?.sessionId) {
-      this.currentSessionId = result.sessionId;
+      this.setCurrentSessionId(result.sessionId);
       this.connectEvents();
     }
     return result || { text: "", cancelled: true };
@@ -833,7 +878,7 @@ export class GrpcClient {
   async clone(): Promise<{ cancelled: boolean }> {
     const result = await this.call("clone", {}) as any;
     if (result?.sessionId) {
-      this.currentSessionId = result.sessionId;
+      this.setCurrentSessionId(result.sessionId);
       this.connectEvents();
     }
     return result || { cancelled: true };
@@ -854,15 +899,19 @@ export class GrpcClient {
   // ─── Core RPC Methods ────────────────────────────────────────────────
 
   async prompt(message: string, images?: RpcCommand["images"], streamingBehavior?: "steer" | "followUp"): Promise<void> {
-    await this.call("prompt", { message, images, streamingBehavior });
+    const ack = await this.call("prompt", { message, images, streamingBehavior }) as {
+      run_id?: string;
+      runId?: string;
+    };
+    this.activeRunId = ack?.run_id || ack?.runId || this.activeRunId;
   }
 
   async followUp(message: string): Promise<void> {
-    await this.call("follow_up", { message });
+    await this.call("follow_up", { message, runId: this.activeRunId || undefined });
   }
 
   async abort(): Promise<void> {
-    await this.call("abort", {});
+    await this.call("abort", { runId: this.activeRunId || undefined });
   }
 
   async getState(): Promise<RpcSessionState> {

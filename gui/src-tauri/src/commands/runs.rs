@@ -72,7 +72,7 @@ pub async fn list_run_events(
     agent_events_fallback(&run_id, -1).await
 }
 
-/// Incremental variant of [`list_run_events`] for the 220ms live-preview poll:
+/// Incremental variant of [`list_run_events`] for pushed live-preview updates:
 /// returns only events with `sequence > since_sequence`. A run's event log
 /// grows monotonically, so the steady-state payload is a handful of events
 /// instead of the whole log crossing IPC (and being re-parsed) every tick.

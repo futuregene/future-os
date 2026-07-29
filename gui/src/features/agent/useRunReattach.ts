@@ -2,7 +2,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { AgentMessage } from "./agentThreadTypes";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
-import { upsertStreamingPreview } from "./threadRunProjection";
+import { resetRunProjection, upsertStreamingPreview } from "./threadRunProjection";
 
 interface UseRunReattachInput {
   threadId: string | null;
@@ -27,8 +27,8 @@ interface UseRunReattachInput {
 /**
  * Re-attaches a live preview to a run this view didn't start: a conversation
  * backgrounded and returned to, one picked up after a reload, or one driven by a
- * remote (phone/web) client. Polls the streaming bubble in, reloads the thread
- * when the run settles, and listens for the backend's remote-activity signal.
+ * remote (phone/web) client. Runtime deltas are pushed by Tauri in coalesced
+ * batches; the initial snapshot handles events produced before subscription.
  */
 export function useRunReattach({
   threadId,
@@ -56,15 +56,8 @@ export function useRunReattach({
   // still running, or one picked up after an app reload. While a local send owns
   // the view (`sendingRef`), that path renders the stream itself, so skip.
   //
-  // The poll UPSERTS the streaming bubble every tick (not a one-time insert) so it
-  // survives a `loadThreadMessages` array-replace that lands mid-stream — the next
-  // tick simply re-inserts it. That resilience is what makes a returned-to run
-  // reconnect instead of showing an empty bubble the reload silently dropped.
-  //
-  // Deliberately hand-rolled rather than `usePolling`: the `() => !cancelled`
-  // token handed to `upsertStreamingPreview` is the only guard that stops a
-  // stale run's in-flight async upsert from applying after a thread/run switch —
-  // exactly the race-sensitive async case `usePolling` documents it can't cover.
+  // The `() => !cancelled` token handed to `upsertStreamingPreview` stops an
+  // outgoing thread's in-flight snapshot from applying after a switch.
   useEffect(() => {
     if (!threadId || !activeRunId || sendingRef.current)
       return;
@@ -84,13 +77,40 @@ export function useRunReattach({
       });
     };
     tick();
-    const timer = window.setInterval(tick, 220);
+    const unlisten = listen<{
+      threadId: string;
+      runId: string;
+      revision: number;
+      status: string;
+      resetProjection: boolean;
+    }>("thread-runtime-updated", (event) => {
+      if (cancelled || event.payload.threadId !== threadId || event.payload.runId !== runId)
+        return;
+      if (event.payload.resetProjection)
+        resetRunProjection(runId);
+      if (["completed", "failed", "cancelled"].includes(event.payload.status)) {
+        void refreshRecentRun(threadId, workspaceId);
+        void reloadMessagesQuiet(threadId, true);
+        return;
+      }
+      tick();
+    });
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      void unlisten.then(stop => stop());
     };
-  }, [activeRunId, activeRunStartedAt, sendingRef, setMessages, threadId, messagesGenRef]);
+  }, [
+    activeRunId,
+    activeRunStartedAt,
+    messagesGenRef,
+    refreshRecentRun,
+    reloadMessagesQuiet,
+    sendingRef,
+    setMessages,
+    threadId,
+    workspaceId,
+  ]);
 
   // When a run this view was previewing (but did not itself start) settles,
   // reload the thread so the synthetic streaming bubble is replaced by the

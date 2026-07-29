@@ -60,7 +60,7 @@ interface ToolActivity {
  * poll fetches only the events it hasn't seen (`list_run_events_since`) and
  * ingests them here, so each tick costs O(new events) for parsing plus
  * O(slots) for the snapshot — instead of re-parsing and re-projecting the
- * whole log every 220ms (O(n) per tick, O(n²) over a run).
+ * whole log on every update (O(n) per update, O(n²) over a run).
  */
 export interface RunProjector {
   /** Highest event sequence ingested so far (-1 when none). */
