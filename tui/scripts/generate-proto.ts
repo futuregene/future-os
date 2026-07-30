@@ -16,6 +16,7 @@ const clientPaths = [
 ];
 
 const proto = fs.readFileSync(protoPath, "utf-8")
+  .replace(/\\/g, "\\\\")
   .replace(/`/g, "\\`")
   .replace(/\$\{/g, "\\${");
 
