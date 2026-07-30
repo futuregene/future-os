@@ -110,6 +110,7 @@
     "loggingIn": "登录中",
     "retry": "重试",
     "byok": "使用自己的 API Key",
+    "freeTrialHint": "新用户注册即送免费额度，立即体验",
     "envLabel": "环境",
     "envProduction": "正式环境",
     "envTest": "测试环境"
