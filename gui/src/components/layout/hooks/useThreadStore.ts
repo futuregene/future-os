@@ -153,7 +153,13 @@ export function useThreadStore(): ThreadStore {
           ? {
               endedAt: info.endedAt ?? null,
               runId: info.runId,
-              revision: current?.runId === info.runId ? current.revision : undefined,
+              // `revision` is a process-global monotonic watermark, independent
+              // of which run it was last stamped by — never lower it on a runId
+              // change. Otherwise a run rollover (A done, B created) drops the
+              // watermark to undefined and a delayed push for A (within the 40ms
+              // coalesce window) slips past the reducer's guard, regressing the
+              // sidebar to A's status until B's first push or the next pass.
+              revision: current?.revision,
               status: info.status as ThreadRunInfo["status"],
             }
           : current; // keep old if no new info

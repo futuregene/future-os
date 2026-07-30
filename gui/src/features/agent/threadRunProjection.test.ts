@@ -295,6 +295,35 @@ describe("applyRunMetadata", () => {
     expect(result[1]).toMatchObject({ id: "a1", runId: "r1", modelId: "m-1" });
   });
 
+  it("strips the run id from a mid-run partial stamped by the active run", () => {
+    // PR #66's save_closure stamps run_id on EVERY persisted assistant message,
+    // so a partial entry saved while the run streams now carries the active
+    // run's id. Leaving that stamp makes the live-bubble guards treat the run
+    // as settled — after a mid-run reload the streaming bubble is suppressed and
+    // the user sees a frozen "complete" partial (the core acceptance scenario:
+    // "switch to a running conversation and it keeps growing"). applyRunMetadata
+    // must strip the stamp so the entry re-enters in-flight handling.
+    const result = applyRunMetadata([
+      user("u1"),
+      assistant("a1", { content: "first answer" }),
+      user("u2"),
+      assistant("a2-partial", { content: "ABC", runId: "r2" }),
+    ], [
+      run("r2", { status: "running", createdAt: 2 }),
+      run("r1", { status: "completed", createdAt: 1, modelId: "m-1" }),
+    ]);
+    // The active run's partial loses its stamp — the streaming bubble owns it.
+    expect(result[3]?.runId).toBeUndefined();
+    // The settled run still binds its real owner exactly.
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", modelId: "m-1" });
+
+    // End-to-end: with the stamp stripped, the live bubble for the active run
+    // survives a reload instead of being suppressed by the persisted partial.
+    const base = streamingBubbleBase(result, "r2", "stream_r2", "ABCDE");
+    expect(base).not.toBeNull();
+    expect(base!.some(message => message.id === "a2-partial")).toBe(false);
+  });
+
   it("still stamps the newest turn when the active run has no persisted entry yet", () => {
     // Turns == settled runs here: the active run's first LLM call hasn't
     // completed, so its turn has no entry on disk and the newest assistant
@@ -528,6 +557,19 @@ describe("streamingBubbleBase", () => {
     const current = [user("u1"), earlier, user("u2")];
     // u2's turn has no persisted entry; u1's reply happens to contain the head.
     expect(streamingBubbleBase(current, RUN, BUBBLE, "Hello world, how")).toBeNull();
+  });
+
+  it("does not prefix-suppress an earlier turn that carries a canonical runId", () => {
+    // N9 / 5.4E: the prefix heuristic is legacy-only. A settled canonical turn
+    // (runId present) whose reply shares a head with a repeated question's live
+    // text ("continue" / "yes" / deterministic output) must NOT kill the new
+    // bubble — that prefix match was the mis-kill. The runId guard at the top
+    // already covers the settled-reload race for canonical data.
+    const earlier = assistant("a1", { runId: "r-prev", content: "Hello world, how are you today?" });
+    const current = [user("u1"), earlier, user("u2")];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "Hello world, how");
+    expect(base).not.toBeNull();
+    expect(base?.some(m => m.id === "a1")).toBe(true);
   });
 
   it("returns the list unchanged when the in-flight turn has no persisted entry", () => {

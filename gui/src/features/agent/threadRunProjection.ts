@@ -145,10 +145,18 @@ export function streamingBubbleBase(
     }
 
     const persisted = lastAssistant.content.trim();
-    // Another turn's persisted reply already covers the head of the live
-    // text (a settled-run reload raced this poll tick) — keep the persisted
-    // message and suppress the bubble.
-    if (persisted && content && persisted.includes(content.slice(0, 80))) {
+    // Prefix suppression is a legacy-only heuristic (5.4E): for canonical data
+    // every settled turn carries a runId, so the runId guard above already
+    // handles a settled-run reload racing this tick. Applying the prefix test to
+    // runId-bearing turns mis-kills repeated questions whose prior answer shares
+    // a head with the live text ("continue" / "yes" / deterministic output), so
+    // only fall back to it for legacy entries that carry no runId at all.
+    if (
+      !lastAssistant.runId
+      && persisted
+      && content
+      && persisted.includes(content.slice(0, 80))
+    ) {
       return null;
     }
   }
@@ -349,6 +357,22 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
     const run = runsById.get(message.runId);
     if (!run)
       continue;
+    if (!matchesSettledRun(run.status)) {
+      // The agent's save_callback stamps run_id on EVERY persisted assistant
+      // message, including the partial snapshots it saves mid-run. Binding one
+      // of those — or even leaving the stamp in place — makes the live-bubble
+      // guards (streamingBubbleBase's runId check, the cache merge's
+      // settledRunIds, dropInFlightSnapshot's !runId filter) treat the run as
+      // settled, so after ANY mid-run reload (thread switch, reattach, remote
+      // activity) the streaming bubble is suppressed and the user sees a frozen
+      // "complete" partial with no stop button. Strip the stamp so the entry
+      // re-enters the legacy in-flight handling below (dropped when a bubble is
+      // alive, rendered plainly otherwise). Self-heals on settle: the on-disk
+      // entry still carries meta.run_id, so the next settled reload re-binds it
+      // through the canonical path.
+      patched[index] = { ...message, runId: undefined };
+      continue;
+    }
     patched[index] = applyRunToMessage(message, run);
     boundRunIds.add(run.id);
   }
