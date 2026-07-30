@@ -44,13 +44,13 @@ jobs:
           node-version: "24"
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           packages: 'platforms;android-36 build-tools;36.0.0'
 
@@ -107,7 +107,7 @@ jobs:
           set -euo pipefail
           V="${{ needs.version.outputs.version }}"
           APK="FutureOS_${V}.apk"
-          ossutil cp -f "$APK" "oss://$OSS_BUCKET/test/android/$APK"
-          ossutil stat "oss://$OSS_BUCKET/test/android/$APK"
+          ossutil cp -f "$APK" "oss://$OSS_BUCKET/test/$V/$APK"
+          ossutil stat "oss://$OSS_BUCKET/test/$V/$APK"
           echo "==> Download URL:"
-          echo "https://dl.future-os.cn/test/android/$APK"
+          echo "https://dl.future-os.cn/test/$V/$APK"
