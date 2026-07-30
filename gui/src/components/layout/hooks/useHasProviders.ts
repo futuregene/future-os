@@ -13,6 +13,10 @@ import { useAsyncResource } from "../../../lib/useAsyncResource";
  * gate and auto-opens Settings → Providers so they can add their own key without
  * signing in.
  *
+ * The gate can also be triggered from the Settings page (Providers/Account
+ * "Connect" / "Sign in" buttons) via the `show-onboarding` event, which reuses
+ * the same login + init flow.
+ *
  * `reload()` is wired to `future-auth-changed` so the gate flips without
  * prop drilling. `useAsyncResource.reload` is silent (data stays non-null), so
  * transitions never flash the neutral frame — `initialLoading` is true only on
@@ -28,21 +32,35 @@ export function useHasProviders() {
   useEffect(() => onFutureEvent("future-auth-changed", reload), [reload]);
 
   const [byokMode, setByokMode] = useState(false);
-  // Remains true while the post-login initialization runs (models + skills +
-  // agent readiness). The gate stays up until finishInit() is called, then the
-  // provider re-check lets the normal app through.
+  // True while the post-login init runs (models + skills + agent readiness).
   const [initPending, setInitPending] = useState(false);
+  // True when the gate was explicitly requested from Settings (Providers or
+  // Account page "Connect" / "Sign in" buttons). Cleared when init finishes or
+  // BYOK / cancel is used.
+  const [forceOnboarding, setForceOnboarding] = useState(false);
 
-  // Track whether FutureOS had a key BEFORE the latest event, so we can detect a
-  // fresh sign-in (the key goes from absent → present across a reload).
+  useEffect(() => onFutureEvent("show-onboarding", () => {
+    setForceOnboarding(true);
+  }), []);
+
+  // Track whether FutureOS had a key BEFORE the latest data snapshot, so we can
+  // detect a fresh sign-in (key goes absent → present). `firstDataRef` prevents
+  // the very first data load (user already logged in from a previous session)
+  // from being misidentified as a fresh sign-in.
   const hadFutureKeyRef = useRef(false);
+  const firstDataRef = useRef(true);
   useEffect(() => {
     if (data) {
       const hasFutureKey = data.builtin.some(
         p => p.id === FUTURE_PROVIDER_ID && p.hasApiKey,
       );
-      // Fresh sign-in detected: key appeared after not being present.
-      if (hasFutureKey && !hadFutureKeyRef.current) {
+      if (firstDataRef.current) {
+        // Seed the ref from the first load so we don't false-trigger init.
+        firstDataRef.current = false;
+        hadFutureKeyRef.current = hasFutureKey;
+      }
+      else if (hasFutureKey && !hadFutureKeyRef.current) {
+        // Fresh sign-in detected across a reload.
         setInitPending(true);
       }
       hadFutureKeyRef.current = hasFutureKey;
@@ -52,10 +70,12 @@ export function useHasProviders() {
   const enableBYOK = useCallback(() => {
     setByokMode(true);
     setInitPending(false);
+    setForceOnboarding(false);
   }, []);
 
   const finishInit = useCallback(() => {
     setInitPending(false);
+    setForceOnboarding(false);
   }, []);
 
   // True when any provider has a usable key: FutureOS signed in, a builtin with
@@ -66,7 +86,6 @@ export function useHasProviders() {
   );
 
   // Whether the provider data shows at least one key (regardless of BYOK mode).
-  // Used by the Cancel button to decide whether to close the gate or reset.
   const hasAnyProvider = Boolean(
     (data?.builtin ?? []).some(p => p.hasApiKey)
     || (data?.custom ?? []).some(p => p.hasApiKey),
@@ -76,10 +95,10 @@ export function useHasProviders() {
 
   // The gate shows when:
   // - initial probe is still running
-  // - no provider is usable yet
-  // - post-login initialization is still pending (key was just added, init is
-  //   running inside OnboardingGate)
-  const showGate = initialLoading || !hasProviders || initPending;
+  // - no provider is usable yet (first-launch onboarding)
+  // - post-login initialization is still pending
+  // - explicitly requested from Settings (reconnect flow)
+  const showGate = initialLoading || !hasProviders || initPending || forceOnboarding;
 
   return { showGate, byokMode, enableBYOK, finishInit, hasAnyProvider, initialLoading };
 }
