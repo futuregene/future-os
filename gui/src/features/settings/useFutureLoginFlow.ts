@@ -8,6 +8,7 @@ export type FutureLoginPhase
   = | "idle"
     | "starting"
     | "waiting"
+    | "authorized"
     | "denied"
     | "expired"
     | "error";
@@ -123,9 +124,11 @@ export function useFutureLoginFlow(onAuthorized: () => void) {
 
       switch (result.status) {
         case "authorized":
-          // Invalidate further polls before handing off to the caller.
+          // Invalidate further polls. Move to the dedicated "authorized" phase
+          // so callers can distinguish success from cancel (which returns to
+          // "idle").
           attemptRef.current += 1;
-          setPhase("idle");
+          setPhase("authorized");
           setStart(null);
           onAuthorized();
           break;
