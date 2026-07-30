@@ -79,9 +79,10 @@ export function useHasProviders() {
   }, []);
 
   // Cancel the reconnect flow without entering BYOK mode. Clears the
-  // force-onboarding flag and any pending init so the gate either closes (if
-  // providers exist) or returns to its initial state (if not).
+  // force-onboarding flag, any pending init, and the BYOK bypass so the gate
+  // returns to its initial state when no actual provider exists.
   const cancelLogin = useCallback(() => {
+    setByokMode(false);
     setInitPending(false);
     setForceOnboarding(false);
   }, []);
