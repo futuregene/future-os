@@ -109,7 +109,7 @@ export function OnboardingGate({ onEnableBYOK }: OnboardingGateProps) {
 
       <div className="flex flex-col items-center gap-3">
         <Button
-          className="min-w-32"
+          className="min-w-40"
           disabled={busy}
           leftIcon={busy ? <Loader2 className="size-4 animate-spin" /> : undefined}
           onClick={() => void begin()}
@@ -117,9 +117,12 @@ export function OnboardingGate({ onEnableBYOK }: OnboardingGateProps) {
         >
           {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
         </Button>
+        <p className="text-xs text-ink-muted">{t("gate.freeTrialHint")}</p>
+        <div className="my-1 h-px w-48 bg-line" />
         <Button
           onClick={onEnableBYOK}
-          variant="ghost"
+          size="sm"
+          variant="secondary"
         >
           {t("gate.byok")}
         </Button>

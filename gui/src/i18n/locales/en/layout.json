@@ -110,6 +110,7 @@
     "loggingIn": "Signing in",
     "retry": "Retry",
     "byok": "Use your own API key",
+    "freeTrialHint": "New users get free credits — sign up and try it now",
     "envLabel": "Environment",
     "envProduction": "Production",
     "envTest": "Test"
