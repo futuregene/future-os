@@ -61,10 +61,12 @@ interface SelectMenuItemProps {
   onSelect: () => void;
   children: ReactNode;
   className?: string;
+  /** Optional native tooltip shown on hover (e.g. a model's description). */
+  title?: string;
 }
 
 /** A menu row with a trailing check mark when `selected`. */
-export function SelectMenuItem({ selected, onSelect, children, className }: SelectMenuItemProps) {
+export function SelectMenuItem({ selected, onSelect, children, className, title }: SelectMenuItemProps) {
   return (
     <button
       className={cn(
@@ -72,6 +74,7 @@ export function SelectMenuItem({ selected, onSelect, children, className }: Sele
         className,
       )}
       onClick={onSelect}
+      title={title}
       type="button"
     >
       {children}
