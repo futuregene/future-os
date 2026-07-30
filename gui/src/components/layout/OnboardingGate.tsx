@@ -1,10 +1,12 @@
 import type { Language } from "../../i18n";
 import { Loader2 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFutureLoginFlow } from "../../features/settings/useFutureLoginFlow";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
+import { loadAgentModelOptions } from "../../integrations/agent/agentClient";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
+import { bootstrapBuiltinSkills } from "../../integrations/skills/skillsClient";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { useAsyncResource } from "../../lib/useAsyncResource";
@@ -18,6 +20,15 @@ const ENVIRONMENTS: { id: EnvironmentId; labelKey: string }[] = [
   { id: "test", labelKey: "gate.envTest" },
 ];
 
+const INIT_STEPS = ["initModels", "initSkills", "initAgent"] as const;
+
+const MIN_INIT_DURATION_MS = 500;
+
+export interface OnboardingGateProps {
+  onEnableBYOK: () => void;
+  onInitComplete: () => void;
+}
+
 /**
  * Onboarding gate shown on first launch when no provider is configured yet. It
  * guides the user toward two paths:
@@ -26,17 +37,14 @@ const ENVIRONMENTS: { id: EnvironmentId; labelKey: string }[] = [
  * 2. Bring their own API key (secondary, subdued button) — opens Settings →
  *    Providers to add a custom provider.
  *
+ * After a FutureOS login succeeds, the gate stays up and runs initialization:
+ * load models, bootstrap built-in skills, and wait for the agent. A progress bar
+ * tracks the steps. The gate dismisses only after init completes (min 500ms).
+ *
  * The language switcher lives in the top-right corner and is always visible.
  * Dev/test builds additionally show an environment switcher next to it.
- *
- * The gate clears automatically when any provider gains a key (via the
- * `future-auth-changed` event). The BYOK path clears it immediately.
  */
-export interface OnboardingGateProps {
-  onEnableBYOK: () => void;
-}
-
-export function OnboardingGate({ onEnableBYOK }: OnboardingGateProps) {
+export function OnboardingGate({ onEnableBYOK, onInitComplete }: OnboardingGateProps) {
   const { t } = useTranslation("layout");
   const { phase, message, begin } = useFutureLoginFlow(() => {});
   const busy = phase === "starting" || phase === "waiting";
@@ -46,6 +54,74 @@ export function OnboardingGate({ onEnableBYOK }: OnboardingGateProps) {
 
   const env = useAsyncResource(getFutureEnvironment, [], null);
   const [switching, setSwitching] = useState(false);
+
+  // Post-login initialization
+  const [initializing, setInitializing] = useState(false);
+  const [initStep, setInitStep] = useState(0); // 0-index into INIT_STEPS
+  const [initDone, setInitDone] = useState(false);
+  const startRef = useRef(0);
+
+  const runInit = useCallback(async () => {
+    setInitializing(true);
+    startRef.current = Date.now();
+    const markStep = (index: number) => setInitStep(index);
+
+    // Step 0: Load models
+    markStep(0);
+    try {
+      await loadAgentModelOptions();
+    }
+    catch {
+      // Keep going — the agent poll will retry later.
+    }
+
+    // Step 1: Bootstrap built-in skills (FutureOS login only)
+    markStep(1);
+    try {
+      await bootstrapBuiltinSkills();
+    }
+    catch {
+      // Non-fatal — the launch-time bootstrap may handle it later.
+    }
+
+    // Step 2: Wait for the agent to be reachable (already spawned by
+    // ensure_agent_running in the poll_future_login backend command).
+    markStep(2);
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      try {
+        await loadAgentModelOptions();
+        break; // agent responded — alive
+      }
+      catch {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+    }
+
+    // Enforce minimum duration to prevent flash
+    const elapsed = Date.now() - startRef.current;
+    if (elapsed < MIN_INIT_DURATION_MS) {
+      await new Promise(resolve => setTimeout(resolve, MIN_INIT_DURATION_MS - elapsed));
+    }
+
+    setInitDone(true);
+    onInitComplete();
+  }, [onInitComplete]);
+
+  // When the login flow reaches "authorized" (the state machine fires
+  // onAuthorized which bumps attemptRef and drops back to idle), watch for
+  // auth-changed to trigger init. The login flow's onAuthorized callback fires
+  // synchronously inside the poll, but we detect it by watching the phase
+  // transition: phase was "waiting", then became "idle" without error/failure.
+  const prevPhaseRef = useRef(phase);
+  useEffect(() => {
+    const prev = prevPhaseRef.current;
+    prevPhaseRef.current = phase;
+    // Transitioned from waiting → idle without error = login succeeded
+    if (prev === "waiting" && phase === "idle" && !initializing) {
+      void runInit();
+    }
+  }, [phase, initializing, runInit]);
 
   const activeId = env.data?.environment;
   const envValue: EnvironmentId | "" = activeId === "test" || activeId === "production" ? activeId : "";
@@ -61,6 +137,9 @@ export function OnboardingGate({ onEnableBYOK }: OnboardingGateProps) {
       setSwitching(false);
     }
   }
+
+  const progress = initDone ? INIT_STEPS.length : initStep;
+  const progressPct = Math.round((progress / INIT_STEPS.length) * 100);
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-6 bg-canvas px-6 text-center">
@@ -107,26 +186,44 @@ export function OnboardingGate({ onEnableBYOK }: OnboardingGateProps) {
         ? <p className="max-w-md text-sm text-danger">{message ?? t("settings:futureLogin.failed")}</p>
         : null}
 
-      <div className="flex flex-col items-center gap-3">
-        <Button
-          className="min-w-40"
-          disabled={busy}
-          leftIcon={busy ? <Loader2 className="size-4 animate-spin" /> : undefined}
-          onClick={() => void begin()}
-          variant="primary"
-        >
-          {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
-        </Button>
-        <p className="text-xs text-ink-muted">{t("gate.freeTrialHint")}</p>
-        <div className="my-3 h-px w-48 bg-line" />
-        <Button
-          onClick={onEnableBYOK}
-          size="sm"
-          variant="secondary"
-        >
-          {t("gate.byok")}
-        </Button>
-      </div>
+      {initializing
+        ? (
+            <div className="flex w-64 flex-col items-center gap-3">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-subtle">
+                <div
+                  className="h-full rounded-full bg-accent transition-all duration-500 ease-out"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <p className="text-xs text-ink-muted">
+                {initDone
+                  ? t("gate.initDone")
+                  : `${t("gate.xofy", { current: initStep + 1, total: INIT_STEPS.length })} ${t(`gate.${INIT_STEPS[initStep]}`)}`}
+              </p>
+            </div>
+          )
+        : (
+            <div className="flex flex-col items-center gap-3">
+              <Button
+                className="min-w-40"
+                disabled={busy}
+                leftIcon={busy ? <Loader2 className="size-4 animate-spin" /> : undefined}
+                onClick={() => void begin()}
+                variant="primary"
+              >
+                {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
+              </Button>
+              <p className="text-xs text-ink-muted">{t("gate.freeTrialHint")}</p>
+              <div className="my-3 h-px w-48 bg-line" />
+              <Button
+                onClick={onEnableBYOK}
+                size="sm"
+                variant="secondary"
+              >
+                {t("gate.byok")}
+              </Button>
+            </div>
+          )}
     </div>
   );
 }

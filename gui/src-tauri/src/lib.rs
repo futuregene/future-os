@@ -651,6 +651,7 @@ pub fn run() {
             install_skill,
             uninstall_skill,
             refresh_skills,
+            bootstrap_builtin_skills,
             remote_start,
             remote_stop,
             remote_status,

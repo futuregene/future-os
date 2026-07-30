@@ -111,6 +111,11 @@
     "retry": "重试",
     "byok": "使用自己的 API Key",
     "freeTrialHint": "新用户注册即送免费额度，立即体验",
+    "xofy": "{{current}} / {{total}}",
+    "initModels": "加载模型...",
+    "initSkills": "安装内置技能...",
+    "initAgent": "等待 Agent 就绪...",
+    "initDone": "初始化完成",
     "envLabel": "环境",
     "envProduction": "正式环境",
     "envTest": "测试环境"

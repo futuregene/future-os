@@ -111,6 +111,11 @@
     "retry": "Retry",
     "byok": "Use your own API key",
     "freeTrialHint": "New users get free credits — sign up and try it now",
+    "xofy": "{{current}} / {{total}}",
+    "initModels": "Loading models...",
+    "initSkills": "Installing skills...",
+    "initAgent": "Waiting for agent...",
+    "initDone": "Ready",
     "envLabel": "Environment",
     "envProduction": "Production",
     "envTest": "Test"
