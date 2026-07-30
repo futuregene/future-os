@@ -134,7 +134,7 @@ pub async fn fetch_balance() -> Result<FutureBalance, AppError> {
         .map_err(|error| AppError::Message(format!("Failed to parse account balance: {error}")))?;
 
     Ok(FutureBalance {
-        credits: (raw.balance_credits as f64 / CREDIT_UNIT * 1000.0).round() / 1000.0,
+        credits: ((raw.balance_credits as f64 / CREDIT_UNIT) * 1000.0).trunc() / 1000.0,
     })
 }
 

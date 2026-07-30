@@ -10,7 +10,9 @@ import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
 import { installAgentEventListener } from "../../integrations/agent/agentStateCache";
+import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
+import { openExternalUrl } from "../../integrations/storage/files";
 import {
   createWorkspace,
   pinThread,
@@ -156,6 +158,10 @@ export function AppShell() {
   const showRemote = Boolean(build.data && !build.data.isRelease);
   const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(showRemote);
   const futureBalance = useFutureBalance();
+
+  const handleRecharge = () => {
+    getFutureEnvironment().then(env => openExternalUrl(`${env.platformUrl}/platform/#recharge`)).catch(() => {});
+  };
 
   // When the agent becomes available (startup, restart, or recovery after
   // a disconnect), re-trigger the skills scan.  The agent has a 5 s rate
@@ -390,6 +396,7 @@ export function AppShell() {
     onToggleExpanded: handleToggleLeftPanel,
     remoteIndicator,
     futureBalance,
+    onRecharge: handleRecharge,
   };
 
   // Onboarding gate: show during the initial probe, when no provider is

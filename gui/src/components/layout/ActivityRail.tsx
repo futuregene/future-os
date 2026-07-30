@@ -7,7 +7,6 @@ import {
   Blocks,
   ChevronDown,
   ChevronRight,
-  Coins,
   Folder,
   MessageSquare,
   PanelLeft,
@@ -64,6 +63,8 @@ interface ActivityRailProps {
   remoteIndicator?: RemoteIndicator;
   /** FutureOS credit balance (null when signed out). */
   futureBalance?: number | null;
+  /** Opens the recharge page in the system browser. */
+  onRecharge?: () => void;
 }
 
 // Data / Skill entries are temporarily hidden from the navigation:
@@ -105,6 +106,7 @@ export function ActivityRail({
   onToggleExpanded,
   remoteIndicator,
   futureBalance,
+  onRecharge,
 }: ActivityRailProps) {
   const { t } = useTranslation("layout");
   // Shared overlay scrollbar for the conversation list, matching the chat view.
@@ -657,13 +659,14 @@ export function ActivityRail({
         </div>
         {expanded && futureBalance != null
           ? (
-              <div
-                className="shrink-0 px-2 text-xs text-ink-muted"
+              <button
+                className="shrink-0 rounded px-2 text-xs text-ink-muted hover:text-ink transition-colors"
+                onClick={onRecharge}
                 title={t("activityRail.balance")}
+                type="button"
               >
-                <Coins className="mr-1 inline size-3.5 align-text-bottom text-amber-500" />
-                {futureBalance.toFixed(3)}
-              </div>
+                {`${t("activityRail.balance")} ${Math.trunc(futureBalance)}`}
+              </button>
             )
           : null}
       </div>

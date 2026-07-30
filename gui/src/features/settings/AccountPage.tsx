@@ -1,6 +1,7 @@
 import type { FutureEnvironment, FutureProfile, ProvidersView } from "../../integrations/agent/providers";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useFutureBalance } from "../../components/layout/hooks/useFutureBalance";
 import { Button } from "../../components/ui/Button";
 import { getFutureEnvironment, getFutureProfile, listAgentProviders, logoutFutureProvider, peekFutureProfile } from "../../integrations/agent/providers";
 import { openExternalUrl } from "../../integrations/storage/files";
@@ -43,6 +44,14 @@ export function AccountPage() {
     peekFutureProfile(),
   );
   const signedInLabel = profile.data?.email ?? t("account.loggedIn");
+  const balance = useFutureBalance();
+  const platformUrl = environment.data?.platformUrl;
+
+  async function handleRecharge() {
+    if (!platformUrl)
+      return;
+    await openExternalUrl(`${platformUrl}/platform/#recharge`);
+  }
 
   async function handleLogout() {
     // logoutFutureProvider clears the profile cache internally.
@@ -113,6 +122,23 @@ export function AccountPage() {
                     </div>
                   )}
           </SettingsRow>
+          {loggedIn
+            ? (
+                <SettingsRow
+                  title={t("account.balance")}
+                  description={balance != null ? `${Math.trunc(balance)} ${t("account.credits")}` : "—"}
+                >
+                  <Button
+                    disabled={!platformUrl}
+                    onClick={() => void handleRecharge()}
+                    size="sm"
+                    variant="primary"
+                  >
+                    {t("account.recharge")}
+                  </Button>
+                </SettingsRow>
+              )
+            : null}
         </SettingsList>
       </SettingsSection>
     </div>

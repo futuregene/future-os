@@ -77,7 +77,10 @@
     "logout": "Sign out",
     "confirmLogout": "Sign out?",
     "logoutConfirm": "Sign out",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "balance": "Balance",
+    "credits": "credits",
+    "recharge": "Recharge"
   },
   "models": {
     "searchPlaceholder": "Search models…",
