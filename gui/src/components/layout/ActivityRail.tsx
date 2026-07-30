@@ -683,9 +683,14 @@ export function ActivityRail({
 }
 
 /**
- * Signed-in account trigger (avatar initial + email prefix) that opens a popover
- * with Settings / Balance (+Recharge) / Check-for-updates (+Upgrade) entries.
- * Replaces the plain Settings button at the bottom of the rail once logged in.
+ * Signed-in account chip (avatar initial + email prefix) that opens a flat
+ * popover with Settings / Balance (+Recharge). An Upgrade button sits to the
+ * right of the avatar when a new app version is available (opening the Settings
+ * update tab). Replaces the plain Settings button at the bottom of the rail.
+ *
+ * The chip is a flex row of two sibling buttons — the trigger (avatar + name)
+ * and the upgrade action — because nesting a `<button>` inside the trigger
+ * `<button>` is invalid HTML.
  */
 function AccountMenuButton({
   balance,
@@ -711,46 +716,49 @@ function AccountMenuButton({
   const close = () => setOpen(false);
 
   return (
-    <div className="relative" ref={layerRef}>
+    <div className="relative flex items-center gap-2" ref={layerRef}>
       <button
-        className="flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-surface-subtle"
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-surface-subtle"
         onClick={() => setOpen(value => !value)}
         type="button"
       >
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-semibold text-white">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-semibold uppercase leading-none text-white">
           {initial}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{prefix}</span>
       </button>
+      {hasUpdate
+        ? (
+            <button
+              className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover"
+              onClick={() => {
+                onOpenUpdate?.();
+                close();
+              }}
+              type="button"
+            >
+              {t("userMenu.upgrade")}
+            </button>
+          )
+        : null}
       {open
         ? (
-            <MenuPanel className="absolute bottom-full left-0 right-0 z-40 mb-2 space-y-2 p-2">
+            <MenuPanel className="absolute bottom-full left-0 right-0 z-40 mb-2 overflow-hidden border-0 p-0">
               <MenuRow
+                label={t("activityRail.settings")}
                 onClick={() => {
                   onOpenSettings();
                   close();
                 }}
-              >
-                <span>{t("activityRail.settings")}</span>
-              </MenuRow>
+              />
               <MenuRow
+                action={<ActionBadge>{t("userMenu.recharge")}</ActionBadge>}
+                label={t("userMenu.balance", { credits: balance != null ? Math.trunc(balance) : "—" })}
                 onClick={() => {
                   onRecharge?.();
                   close();
                 }}
-              >
-                <span>{t("userMenu.balance", { credits: balance != null ? Math.trunc(balance) : "—" })}</span>
-                <ActionBadge>{t("userMenu.recharge")}</ActionBadge>
-              </MenuRow>
-              <MenuRow
-                onClick={() => {
-                  onOpenUpdate?.();
-                  close();
-                }}
-              >
-                <span>{t("userMenu.checkUpdate")}</span>
-                {hasUpdate ? <ActionBadge>{t("userMenu.upgrade")}</ActionBadge> : null}
-              </MenuRow>
+              />
             </MenuPanel>
           )
         : null}
@@ -758,15 +766,16 @@ function AccountMenuButton({
   );
 }
 
-/** A bordered row inside the account popover; the whole row is clickable. */
-function MenuRow({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+/** A borderless row inside the account popover; the whole row is clickable. */
+function MenuRow({ action, label, onClick }: { action?: ReactNode; label: string; onClick: () => void }) {
   return (
     <button
-      className="flex w-full items-center justify-between gap-2 rounded-md border border-line-soft bg-surface px-3 py-2.5 text-left text-sm text-ink transition-colors hover:bg-surface-subtle"
+      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-ink transition-colors hover:bg-surface-subtle"
       onClick={onClick}
       type="button"
     >
-      {children}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {action ?? null}
     </button>
   );
 }
