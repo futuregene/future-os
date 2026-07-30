@@ -32,6 +32,12 @@ export interface OnboardingGateProps {
   hasAnyProvider: boolean;
   /** Whether the app's live model catalog is non-empty (from useAgentConnection). */
   modelsReady: boolean;
+  /**
+   * Whether `useHasProviders` detected a fresh FutureOS key (the gate's parent
+   * already knows login just succeeded). Used as a backup trigger for init so
+   * the gate never misses the login signal.
+   */
+  initPending: boolean;
   /** When true, auto-start the login flow on mount (reconnect from Settings). */
   autoLogin?: boolean;
 }
@@ -55,7 +61,7 @@ export interface OnboardingGateProps {
  * The language switcher lives in the top-right corner and is always visible.
  * Dev/test builds additionally show an environment switcher next to it.
  */
-export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, hasAnyProvider, modelsReady, autoLogin }: OnboardingGateProps) {
+export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, hasAnyProvider, modelsReady, initPending, autoLogin }: OnboardingGateProps) {
   const { t } = useTranslation("layout");
   const { phase, message, begin, cancel } = useFutureLoginFlow(() => {});
   const busy = phase === "starting" || phase === "waiting" || phase === "authorized";
@@ -152,12 +158,16 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
   }, []);
 
   // Login succeeded: the state machine moved to the dedicated "authorized"
-  // phase (distinct from "idle" which is the initial / post-cancel state).
+  // phase.  Also fires when `initPending` is raised — a backup signal from the
+  // parent hook when it detects a fresh FutureOS key (covers any edge case where
+  // the phase transition is missed, e.g. a rapid unmount/remount).
+  const initTriggeredRef = useRef(false);
   useEffect(() => {
-    if (phase === "authorized" && !initializing) {
+    if ((phase === "authorized" || initPending) && !initializing && !initTriggeredRef.current) {
+      initTriggeredRef.current = true;
       void runInit();
     }
-  }, [phase, initializing, runInit]);
+  }, [phase, initPending, initializing, runInit]);
 
   // Close the gate only once init is done AND the app's live catalog agrees
   // models are present (when we confirmed them). If the platform was

@@ -109,5 +109,5 @@ export function useHasProviders() {
   // - explicitly requested from Settings (reconnect flow)
   const showGate = initialLoading || !hasProviders || initPending || forceOnboarding;
 
-  return { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initialLoading };
+  return { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending, initialLoading };
 }
