@@ -399,7 +399,7 @@ export function AppShell() {
     );
   }
   if (showGate)
-    return <OnboardingGate autoLogin={forceOnboarding} hasAnyProvider={hasAnyProvider} onEnableBYOK={enableBYOK} onInitComplete={finishInit} onCancelLogin={cancelLogin} />;
+    return <OnboardingGate autoLogin={forceOnboarding} hasAnyProvider={hasAnyProvider} modelsReady={modelOptions.length > 0} onEnableBYOK={enableBYOK} onInitComplete={finishInit} onCancelLogin={cancelLogin} />;
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden bg-canvas text-ink">

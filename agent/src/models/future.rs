@@ -444,6 +444,38 @@ pub(super) fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec
     Vec::new()
 }
 
+/// Synchronously fetch the Future provider's models from the platform and
+/// write them to both the on-disk and in-memory caches. Returns `true` when the
+/// caches were populated, `false` when there is no Future key or the platform
+/// could not be reached.
+///
+/// This is the dedicated post-login initialization path. Unlike
+/// [`get_future_models_with_cache`] — which never blocks and returns an empty
+/// list on a cold cache, leaving the just-rebuilt registry model-less until a
+/// later refresh — this call blocks (up to the fetch timeout) so the caller can
+/// rebuild the registry against a *warm* cache and serve a complete model list
+/// immediately. It does not touch the shared registry itself; the caller
+/// (`sync_future_models` RPC) rebuilds it afterwards.
+pub(super) fn sync_future_models_cache() -> bool {
+    let auth_store = crate::AuthStore::load();
+    let Some(future_key) = auth_store.get("future") else {
+        return false;
+    };
+    let base_url = resolve_future_base_url();
+
+    let Some(models) = fetch_future_models(&future_key, &base_url) else {
+        return false;
+    };
+
+    let cache = FutureModelsCache {
+        fetched_at: now_secs(),
+        models,
+    };
+    save_future_models_cache_inner(&cache);
+    *FUTURE_MODELS_MEMORY_CACHE.write() = Some(cache);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
