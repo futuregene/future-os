@@ -121,6 +121,29 @@ pub(super) fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
     }
 }
 
+/// CAS a run to `completed` — the success twin of [`mark_run_failed_if_active`].
+///
+/// The frontend pipeline also writes `completed` once its `agent_prompt` invoke
+/// resolves, but that write is only reachable while the webview processes IPC:
+/// a hidden/occluded window suspends the webview (macOS), and the invoke
+/// response may never be applied. This backend write is the authoritative
+/// settle — the row alone gates the sidebar spinner and the composer lock, so
+/// the run must not depend on a possibly-suspended frontend to reach terminal.
+/// Compare-and-set: a concurrent user abort (`cancelled`) wins and survives.
+pub(super) fn mark_run_completed_if_active(run_id: Option<&str>) {
+    let Some(run_id) = run_id else {
+        return;
+    };
+    if let Err(update_error) = store::update_run_status_if_active(store::UpdateRunStatusInput {
+        run_id: run_id.to_string(),
+        status: "completed".to_string(),
+        error_message: None,
+        error_type: None,
+    }) {
+        eprintln!("FutureOS run completion status update failed: {update_error}");
+    }
+}
+
 /// Poll the Agent's `get_state.isStreaming` until it reports idle (or a short
 /// timeout / the agent disappears). Best-effort confirmation that the Agent has
 /// stopped writing files before the after snapshot (§6.2).

@@ -4,14 +4,15 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { getFutureEnvironment, getFutureProfile, listAgentProviders, logoutFutureProvider, peekFutureProfile } from "../../integrations/agent/providers";
 import { openExternalUrl } from "../../integrations/storage/files";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
-import { FutureLoginDialog } from "./FutureLoginDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 
 /**
  * Account page. Login state is FutureGene provider login — the same signal the
- * Providers page uses (`future` builtin's `hasApiKey`). Signed out: only a login
- * button. Signed in: open the account page (platform URL follows the current
+ * Providers page uses (`future` builtin's `hasApiKey`). Signed out: a login
+ * button that shows the onboarding gate (same guided flow as first launch).
+ * Signed in: open the account page (platform URL follows the current
  * environment) plus sign out.
  */
 export function AccountPage() {
@@ -27,7 +28,6 @@ export function AccountPage() {
     [],
     null,
   );
-  const [loginOpen, setLoginOpen] = useState(false);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
 
   const loggedIn = Boolean(providers?.builtin.find(provider => provider.id === "future")?.hasApiKey);
@@ -72,7 +72,11 @@ export function AccountPage() {
           >
             {!loggedIn
               ? (
-                  <Button onClick={() => setLoginOpen(true)} size="sm" variant="primary">
+                  <Button
+                    onClick={() => emitFutureEvent("show-onboarding", undefined)}
+                    size="sm"
+                    variant="primary"
+                  >
                     {t("account.login")}
                   </Button>
                 )
@@ -111,17 +115,6 @@ export function AccountPage() {
           </SettingsRow>
         </SettingsList>
       </SettingsSection>
-
-      <FutureLoginDialog
-        onAuthorized={() => {
-          // pollFutureLogin already cleared the profile cache on "authorized",
-          // so the reload below refetches fresh once `loggedIn` flips true.
-          setLoginOpen(false);
-          reload();
-        }}
-        onClose={() => setLoginOpen(false)}
-        open={loginOpen}
-      />
     </div>
   );
 }
