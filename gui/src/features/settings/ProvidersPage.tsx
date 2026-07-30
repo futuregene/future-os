@@ -1,5 +1,4 @@
 import type { BuiltinProvider, CustomProvider, ProvidersView } from "../../integrations/agent/providers";
-import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
@@ -13,11 +12,11 @@ import {
   upsertCustomProvider,
 } from "../../integrations/agent/providers";
 import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { BuiltinProviderKeyDialog } from "./BuiltinProviderKeyDialog";
 import { CustomProviderDialog } from "./CustomProviderDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
-import { useFutureLoginFlow } from "./useFutureLoginFlow";
 
 const DEFAULT_BUILTIN_PROVIDER_IDS = [
   "future",
@@ -41,7 +40,7 @@ export function ProvidersPage({
   onProvidersChanged?: () => void;
 } = {}) {
   const { t } = useTranslation("settings");
-  const { data: loadedProviders, loading, error, reload } = useAsyncResource<ProvidersView | null>(
+  const { data: loadedProviders, loading, error } = useAsyncResource<ProvidersView | null>(
     listAgentProviders,
     [],
     null,
@@ -58,16 +57,6 @@ export function ProvidersPage({
   const [hint, setHint] = useState<string | null>(null);
   // Feedback for delete/logout, which are `void`-called from confirm rows.
   const [actionError, setActionError] = useState<string | null>(null);
-
-  // Direct login flow for the FutureGene provider — opens the browser on
-  // begin(), polls for authorization, then reloads providers + hints.
-  const { phase, message, begin } = useFutureLoginFlow(() => {
-    reload();
-    setHint(t("providers.connected"));
-    onProvidersChanged?.();
-  });
-  const loginBusy = phase === "starting" || phase === "waiting";
-  const loginFailed = phase === "denied" || phase === "expired" || phase === "error";
 
   useEffect(() => {
     if (loadedProviders)
@@ -179,21 +168,16 @@ export function ProvidersPage({
                                     </Button>
                                   )
                                 : (
-                                    <div className="flex flex-col items-end gap-1">
-                                      <Button
-                                        disabled={loginBusy}
-                                        leftIcon={loginBusy ? <Loader2 className="size-3.5 animate-spin" /> : undefined}
-                                        onClick={() => {
-                                          setHint(null);
-                                          void begin();
-                                        }}
-                                        size="sm"
-                                        variant="secondary"
-                                      >
-                                        {loginBusy ? t("futureLogin.waiting") : loginFailed ? t("futureLogin.retry") : t("providers.connect")}
-                                      </Button>
-                                      {loginFailed ? <p className="text-xs text-danger">{message ?? t("futureLogin.failed")}</p> : null}
-                                    </div>
+                                    <Button
+                                      onClick={() => {
+                                        setHint(null);
+                                        emitFutureEvent("show-onboarding", undefined);
+                                      }}
+                                      size="sm"
+                                      variant="secondary"
+                                    >
+                                      {t("providers.connect")}
+                                    </Button>
                                   )}
                             </>
                           )}
