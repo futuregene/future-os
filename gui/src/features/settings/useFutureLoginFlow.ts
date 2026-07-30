@@ -125,6 +125,8 @@ export function useFutureLoginFlow(onAuthorized: () => void) {
         case "authorized":
           // Invalidate further polls before handing off to the caller.
           attemptRef.current += 1;
+          setPhase("idle");
+          setStart(null);
           onAuthorized();
           break;
         case "pending":
