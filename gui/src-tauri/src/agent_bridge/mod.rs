@@ -272,6 +272,42 @@ pub async fn reload_agent_credentials() -> Result<(), crate::AppError> {
     Ok(())
 }
 
+/// Result of [`sync_future_models`]: whether the platform fetch populated the
+/// agent's model cache, and the total model count in the rebuilt registry.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncFutureModelsResult {
+    pub synced: bool,
+    pub model_count: usize,
+}
+
+/// Post-login initialization: ask the agent to synchronously fetch the Future
+/// provider's models (warming its cache) and rebuild its model registry, so the
+/// next [`list_agent_models`] returns a complete list. Blocks on the platform
+/// fetch inside the agent — only called once from the onboarding init flow.
+/// Best-effort like [`reload_agent_credentials`]: an unavailable agent yields a
+/// zeroed result rather than an error.
+pub async fn sync_future_models() -> Result<SyncFutureModelsResult, crate::AppError> {
+    let mut client = match connect_agent().await {
+        Ok(client) => client,
+        Err(crate::AppError::AgentUnavailable(_)) => {
+            return Ok(SyncFutureModelsResult {
+                model_count: 0,
+                synced: false,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let response = client
+        .execute_command(base_command("sync_future_models", String::new()))
+        .await
+        .map_err(|status| map_rpc_error("Unable to sync Future Agent models", status))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the model sync.")?;
+    serde_json::from_str::<SyncFutureModelsResult>(&response.data)
+        .map_err(|error| format!("Future Agent returned invalid sync result: {error}").into())
+}
+
 pub async fn agent_prompt(
     message: String,
     attachments: Option<Vec<AttachmentInput>>,
