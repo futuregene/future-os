@@ -155,9 +155,16 @@ export function ChatScreen() {
     );
   };
 
+  // Lift the composer so the floating *card* clears the keyboard, not the dock:
+  // the dock's bottom edge includes composerArea's paddingBottom (spacing.md) of
+  // empty space below the card, so lifting the dock flush to the keyboard top
+  // still hides the card's bottom border + rounded corners + shadow by that
+  // padding (exactly the clipping seen with Gboard). Re-add the padding, plus a
+  // little shadow clearance, so the whole card floats above the IME.
+  const KEYBOARD_CLEARANCE = spacing.md + spacing.sm;
   const keyboardLift =
     Platform.OS === "android" && keyboardHeight > 0
-      ? Math.max(0, keyboardHeight - insets.bottom)
+      ? Math.max(0, keyboardHeight - insets.bottom + KEYBOARD_CLEARANCE)
       : 0;
 
   return (
