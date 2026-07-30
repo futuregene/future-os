@@ -69,6 +69,22 @@ export async function loadAgentModelOptions() {
   return normalizeAgentModelOptions(await invokeCommand<AgentModelOption[]>("list_agent_models"));
 }
 
+/** Result of the post-login Future model sync (agent warms its cache + registry). */
+export interface SyncFutureModelsResult {
+  synced: boolean;
+  modelCount: number;
+}
+
+/**
+ * Post-login init: synchronously fetch the Future provider's models inside the
+ * agent (warming its cache and rebuilding its registry) so the model list is
+ * complete before the onboarding gate closes. Blocks on the platform fetch —
+ * only call from the onboarding init flow.
+ */
+export async function syncFutureModels() {
+  return invokeCommand<SyncFutureModelsResult>("sync_future_models");
+}
+
 function normalizeAgentModelOptions(models: AgentModelOption[]) {
   const seen = new Set<string>();
   return models

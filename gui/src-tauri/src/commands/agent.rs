@@ -7,6 +7,14 @@ pub async fn list_agent_models() -> Result<Vec<agent_bridge::AgentModelOption>, 
     agent_bridge::list_agent_models().await
 }
 
+/// Post-login init: synchronously fetch the Future provider's models in the
+/// agent (warming its cache + rebuilding its registry) so the model list is
+/// complete before the onboarding gate closes. See [`agent_bridge::sync_future_models`].
+#[tauri::command]
+pub async fn sync_future_models() -> Result<agent_bridge::SyncFutureModelsResult, crate::AppError> {
+    agent_bridge::sync_future_models().await
+}
+
 #[tauri::command]
 pub async fn agent_prompt(
     message: String,

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod builtin;
 mod future;
-use future::{derive_thinking_compat, get_future_models_with_cache, resolve_future_base_url};
+use future::{derive_thinking_compat, get_future_models_with_cache, resolve_future_base_url, sync_future_models_cache as sync_future_models_cache_inner};
 use std::collections::HashMap;
 
 /// Model represents a single model in the catalog.
@@ -165,6 +165,14 @@ pub fn get_default_model_with(registry: &Registry) -> Option<String> {
             .find(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
             .map(|m| format!("{}/{}", m.provider, m.id))
     })
+}
+
+/// Synchronously pull the Future provider's models from the platform and warm
+/// the on-disk + in-memory caches. Used by the post-login `sync_future_models`
+/// RPC so a subsequent registry rebuild sees a complete model list. Returns
+/// `true` when the caches were populated. See [`future::sync_future_models_cache`].
+pub fn sync_future_models_cache() -> bool {
+    sync_future_models_cache_inner()
 }
 
 /// LoadUserModels reads a models.json file.

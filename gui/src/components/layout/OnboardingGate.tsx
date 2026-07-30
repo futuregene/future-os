@@ -4,11 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFutureLoginFlow } from "../../features/settings/useFutureLoginFlow";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
-import { loadAgentModelOptions } from "../../integrations/agent/agentClient";
+import { loadAgentModelOptions, syncFutureModels } from "../../integrations/agent/agentClient";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { bootstrapBuiltinSkills } from "../../integrations/skills/skillsClient";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { Button } from "../ui/Button";
 import { Select } from "../ui/Select";
@@ -20,7 +21,7 @@ const ENVIRONMENTS: { id: EnvironmentId; labelKey: string }[] = [
   { id: "test", labelKey: "gate.envTest" },
 ];
 
-const INIT_STEPS = ["initModels", "initSkills", "initAgent"] as const;
+const INIT_STEPS = ["initAgent", "initModels", "initSkills"] as const;
 
 const MIN_INIT_DURATION_MS = 500;
 
@@ -29,6 +30,8 @@ export interface OnboardingGateProps {
   onInitComplete: () => void;
   onCancelLogin: () => void;
   hasAnyProvider: boolean;
+  /** Whether the app's live model catalog is non-empty (from useAgentConnection). */
+  modelsReady: boolean;
   /** When true, auto-start the login flow on mount (reconnect from Settings). */
   autoLogin?: boolean;
 }
@@ -52,7 +55,7 @@ export interface OnboardingGateProps {
  * The language switcher lives in the top-right corner and is always visible.
  * Dev/test builds additionally show an environment switcher next to it.
  */
-export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, hasAnyProvider, autoLogin }: OnboardingGateProps) {
+export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, hasAnyProvider, modelsReady, autoLogin }: OnboardingGateProps) {
   const { t } = useTranslation("layout");
   const { phase, message, begin, cancel } = useFutureLoginFlow(() => {});
   const busy = phase === "starting" || phase === "waiting" || phase === "authorized";
@@ -67,24 +70,71 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
   const [initializing, setInitializing] = useState(false);
   const [initStep, setInitStep] = useState(0);
   const [initDone, setInitDone] = useState(false);
+  // Whether runInit actually observed a non-empty model list. When true we wait
+  // for the app's live catalog (`modelsReady`) to catch up before closing the
+  // gate, so the composer never flashes the "no models configured" banner.
+  const [modelsConfirmed, setModelsConfirmed] = useState(false);
   const startRef = useRef(0);
 
   const runInit = useCallback(async () => {
     setInitializing(true);
     startRef.current = Date.now();
     const markStep = (index: number) => setInitStep(index);
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-    // Step 0: Load models
+    // Step 0 — wait for the agent to be reachable. list_agent_models throws
+    // while the sidecar is still starting; an empty (but successful) response
+    // means the agent is up but its registry is not yet populated.
     markStep(0);
+    {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        try {
+          await loadAgentModelOptions();
+          break;
+        }
+        catch {
+          await sleep(1200);
+        }
+      }
+    }
+
+    // Step 1 — synchronously pull the Future catalog into the agent (warming
+    // its cache + rebuilding its registry), then confirm the model list is
+    // non-empty. This is the "models read successfully" guarantee: the gate
+    // will not close (when models load) until the composer would have models.
+    markStep(1);
     try {
-      await loadAgentModelOptions();
+      await syncFutureModels();
     }
     catch {
-      // Keep going — the agent poll will retry later.
+      // Agent may still be settling; the confirmation loop below retries.
     }
+    {
+      let confirmed = false;
+      const deadline = Date.now() + 12_000;
+      while (Date.now() < deadline) {
+        try {
+          const models = await loadAgentModelOptions();
+          if (models.length > 0) {
+            confirmed = true;
+            break;
+          }
+        }
+        catch {
+          // Agent unreachable again — keep waiting.
+        }
+        await sleep(1000);
+      }
+      setModelsConfirmed(confirmed);
+    }
+    // Nudge the app's live model hook to refresh now, so its state matches the
+    // warm registry before the gate closes.
+    emitFutureEvent("future-models-synced", undefined);
 
-    // Step 1: Bootstrap built-in skills (FutureOS login only)
-    markStep(1);
+    // Step 2 — install built-in skills (FutureOS login only). Independent of the
+    // model catalog; runs last so a slow CLI sidecar never delays model readiness.
+    markStep(2);
     try {
       await bootstrapBuiltinSkills();
     }
@@ -92,28 +142,14 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
       // Non-fatal.
     }
 
-    // Step 2: Wait for the agent to be reachable.
-    markStep(2);
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      try {
-        await loadAgentModelOptions();
-        break;
-      }
-      catch {
-        await new Promise(resolve => setTimeout(resolve, 1500));
-      }
-    }
-
     // Enforce minimum duration to prevent flash
     const elapsed = Date.now() - startRef.current;
     if (elapsed < MIN_INIT_DURATION_MS) {
-      await new Promise(resolve => setTimeout(resolve, MIN_INIT_DURATION_MS - elapsed));
+      await sleep(MIN_INIT_DURATION_MS - elapsed);
     }
 
     setInitDone(true);
-    onInitComplete();
-  }, [onInitComplete]);
+  }, []);
 
   // Login succeeded: the state machine moved to the dedicated "authorized"
   // phase (distinct from "idle" which is the initial / post-cancel state).
@@ -122,6 +158,16 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
       void runInit();
     }
   }, [phase, initializing, runInit]);
+
+  // Close the gate only once init is done AND the app's live catalog agrees
+  // models are present (when we confirmed them). If the platform was
+  // unreachable and no models ever loaded, close anyway — degraded, but we
+  // can't wait forever.
+  useEffect(() => {
+    if (initDone && (modelsConfirmed ? modelsReady : true)) {
+      onInitComplete();
+    }
+  }, [initDone, modelsConfirmed, modelsReady, onInitComplete]);
 
   // Auto-start the login flow when the gate is opened from Settings (reconnect).
   const autoLoginFiredRef = useRef(false);

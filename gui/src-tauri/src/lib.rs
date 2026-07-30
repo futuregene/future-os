@@ -639,6 +639,7 @@ pub fn run() {
             resolve_markdown_references,
             search_workspace_files,
             list_agent_models,
+            sync_future_models,
             agent_prompt,
             list_installed_skills,
             list_available_skills,
