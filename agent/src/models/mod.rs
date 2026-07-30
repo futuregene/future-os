@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod builtin;
 mod future;
-use future::{derive_thinking_compat, get_future_models_with_cache, resolve_future_base_url, sync_future_models_cache as sync_future_models_cache_inner};
+use future::{
+    derive_thinking_compat, get_future_models_with_cache, resolve_future_base_url,
+    sync_future_models_cache as sync_future_models_cache_inner,
+};
 use std::collections::HashMap;
 
 /// Model represents a single model in the catalog.
