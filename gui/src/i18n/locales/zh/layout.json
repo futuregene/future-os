@@ -109,6 +109,7 @@
     "login": "登录 / 注册",
     "loggingIn": "登录中",
     "retry": "重试",
+    "byok": "使用自己的 API Key",
     "envLabel": "环境",
     "envProduction": "正式环境",
     "envTest": "测试环境"
