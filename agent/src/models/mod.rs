@@ -156,17 +156,35 @@ pub fn get_default_model() -> Option<String> {
 /// re-deserialising the model catalog on every GUI poll.
 pub fn get_default_model_with(registry: &Registry) -> Option<String> {
     let auth = crate::AuthStore::load();
+    let all = registry.all_models();
+
+    // A user-chosen global default (set by the onboarding model-picker) wins over
+    // every heuristic below. Read fresh from disk so a `set_default_model` change
+    // is picked up on the next resolution without restarting the agent. The stored
+    // value may be a full `provider/id` or a bare id; accept either, but only when
+    // the model still exists in the catalog and is credential-reachable — a stale
+    // or now-unconfigured choice must not poison new sessions.
+    if let Ok(settings) = crate::config::load_settings(&std::path::PathBuf::from(settings_path())) {
+        let chosen = settings.default_model.trim();
+        if !chosen.is_empty() {
+            let matches = |m: &Model| {
+                let credentialed = !m.api_key.is_empty() || auth.get(&m.provider).is_some();
+                credentialed && (format!("{}/{}", m.provider, m.id) == chosen || m.id == chosen)
+            };
+            if let Some(m) = all.iter().find(|m| matches(m)) {
+                return Some(format!("{}/{}", m.provider, m.id));
+            }
+        }
+    }
+
     // Prefer future/deepseek-v4-pro when the future provider is configured,
     // otherwise fall back to the first model with credentials.
     let preferred = if auth.get("future").is_some()
-        || registry
-            .all_models()
+        || all
             .iter()
             .any(|m| m.provider == "future" && !m.api_key.is_empty())
     {
-        registry
-            .all_models()
-            .into_iter()
+        all.into_iter()
             .find(|m| m.provider == "future" && m.id == "deepseek-v4-pro")
             .map(|m| format!("{}/{}", m.provider, m.id))
     } else {

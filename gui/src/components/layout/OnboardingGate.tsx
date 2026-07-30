@@ -1,14 +1,16 @@
 import type { Language } from "../../i18n";
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import { Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFutureLoginFlow } from "../../features/settings/useFutureLoginFlow";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
-import { loadAgentModelOptions, syncFutureModels } from "../../integrations/agent/agentClient";
+import { loadAgentModelOptions, modelKey, rememberLastUsedModel, syncFutureModels } from "../../integrations/agent/agentClient";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { bootstrapBuiltinSkills } from "../../integrations/skills/skillsClient";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
+import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { Button } from "../ui/Button";
@@ -80,10 +82,32 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
   // for the app's live catalog (`modelsReady`) to catch up before closing the
   // gate, so the composer never flashes the "no models configured" banner.
   const [modelsConfirmed, setModelsConfirmed] = useState(false);
+  // The catalog snapshot captured during init's confirmation loop. Drives the
+  // post-init "choose default model" step without a second fetch.
+  const [loadedModels, setLoadedModels] = useState<AgentModelOption[]>([]);
+  // True while the post-init model picker is shown (>=2 recommended models).
+  const [selecting, setSelecting] = useState(false);
+  // The card the user has highlighted in the picker (defaults to the first).
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   const startRef = useRef(0);
+  // Reset in `runInit` so the finalize gate is re-entrant across init cycles.
+  const finalizeHandledRef = useRef(false);
+
+  // Recommended models, in catalog order, capped at 3 — the picker's candidates.
+  const recommendedModels = useMemo(
+    () => loadedModels.filter(model => model.recommended).slice(0, 3),
+    [loadedModels],
+  );
 
   const runInit = useCallback(async () => {
     setInitializing(true);
+    // Reset any post-init state from a prior cycle so the finalize effect is
+    // re-entrant across mount-less re-inits (edge case).
+    setSelecting(false);
+    setSelectedModelId(null);
+    setStarting(false);
+    finalizeHandledRef.current = false;
     startRef.current = Date.now();
     const markStep = (index: number) => setInitStep(index);
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -124,6 +148,7 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
           const models = await loadAgentModelOptions();
           if (models.length > 0) {
             confirmed = true;
+            setLoadedModels(models);
             break;
           }
         }
@@ -157,6 +182,38 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
     setInitDone(true);
   }, []);
 
+  // Persist a chosen default model (global settings.json) + seed the composer's
+  // last-used pick + nudge the live catalog to refresh, then close the gate.
+  // Any failure is swallowed: onboarding must never get stuck on a write error.
+  const applyDefaultAndFinish = useCallback(async (model: AgentModelOption | null) => {
+    try {
+      if (model) {
+        try {
+          await invokeCommand("set_default_model", { modelId: modelKey(model) });
+        }
+        catch {
+          // Degrade: keep going so the user still enters the app.
+        }
+        rememberLastUsedModel(modelKey(model));
+      }
+      // Refresh the live catalog so its `isDefault` reflects the new default and
+      // the composer reconciliation picks the chosen model on first render.
+      emitFutureEvent("future-models-synced", undefined);
+    }
+    finally {
+      onInitComplete();
+    }
+  }, [onInitComplete]);
+
+  // User confirmed a pick on the model picker.
+  async function handleStart() {
+    if (starting)
+      return;
+    const model = recommendedModels.find(m => modelKey(m) === selectedModelId) ?? recommendedModels[0] ?? null;
+    setStarting(true);
+    await applyDefaultAndFinish(model);
+  }
+
   // Login succeeded: the state machine moved to the dedicated "authorized"
   // phase.  Also fires when `initPending` is raised — a backup signal from the
   // parent hook when it detects a fresh FutureOS key (covers any edge case where
@@ -169,15 +226,23 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
     }
   }, [phase, initPending, initializing, runInit]);
 
-  // Close the gate only once init is done AND the app's live catalog agrees
-  // models are present (when we confirmed them). If the platform was
-  // unreachable and no models ever loaded, close anyway — degraded, but we
-  // can't wait forever.
+  // Once init is done (and the live catalog agrees when we confirmed models),
+  // either show the model picker (>=2 recommended) or auto-apply a single
+  // recommended default and close. With 0/1 recommended there is no choice to
+  // make, so the gate closes exactly as before (1 → its model becomes default).
   useEffect(() => {
-    if (initDone && (modelsConfirmed ? modelsReady : true)) {
-      onInitComplete();
+    if (!(initDone && (modelsConfirmed ? modelsReady : true)))
+      return;
+    if (finalizeHandledRef.current)
+      return;
+    finalizeHandledRef.current = true;
+    if (recommendedModels.length >= 2) {
+      setSelectedModelId(modelKey(recommendedModels[0]!));
+      setSelecting(true);
+      return;
     }
-  }, [initDone, modelsConfirmed, modelsReady, onInitComplete]);
+    void applyDefaultAndFinish(recommendedModels[0] ?? null);
+  }, [initDone, modelsConfirmed, modelsReady, recommendedModels, applyDefaultAndFinish]);
 
   // Auto-start the login flow when the gate is opened from Settings (reconnect).
   const autoLoginFiredRef = useRef(false);
@@ -261,68 +326,110 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
       </div>
 
       <div className="space-y-3">
-        <h1 className="text-3xl font-semibold tracking-normal text-ink">{t("gate.title")}</h1>
-        <p className="mx-auto max-w-md text-sm text-ink-muted">{t("gate.subtitle")}</p>
+        <h1 className="text-3xl font-semibold tracking-normal text-ink">
+          {selecting ? t("gate.chooseModelTitle") : t("gate.title")}
+        </h1>
+        <p className="mx-auto max-w-md text-sm text-ink-muted">
+          {selecting ? t("gate.chooseModelHint") : t("gate.subtitle")}
+        </p>
       </div>
 
       {failed
         ? <p className="max-w-md text-sm text-danger">{message ?? t("settings:futureLogin.failed")}</p>
         : null}
 
-      {initializing
+      {selecting
         ? (
-            <div className="flex h-[150px] w-64 flex-col items-center justify-center gap-3">
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-subtle">
-                <div
-                  className="h-full rounded-full bg-accent transition-all duration-500 ease-out"
-                  style={{ width: `${progressPct}%` }}
-                />
+            <div className="flex flex-col items-center gap-6">
+              <div className="flex flex-wrap items-stretch justify-center gap-4">
+                {recommendedModels.map((model) => {
+                  const key = modelKey(model);
+                  const active = selectedModelId === key;
+                  return (
+                    <button
+                      className={cn(
+                        "flex h-32 w-56 flex-col items-start justify-between rounded-lg border p-4 text-left transition-colors",
+                        active
+                          ? "border-accent bg-accent-soft"
+                          : "border-line bg-surface hover:border-ink-muted",
+                      )}
+                      key={key}
+                      onClick={() => setSelectedModelId(key)}
+                      type="button"
+                    >
+                      <span className="text-lg font-semibold text-ink">{model.label}</span>
+                      {model.description
+                        ? <span className="line-clamp-2 text-xs text-ink-muted">{model.description}</span>
+                        : null}
+                    </button>
+                  );
+                })}
               </div>
-              <p className="text-xs text-ink-muted">
-                {initDone
-                  ? t("gate.initDone")
-                  : `${t("gate.xofy", { current: initStep + 1, total: INIT_STEPS.length })} ${t(`gate.${INIT_STEPS[initStep]}`)}`}
-              </p>
-            </div>
-          )
-        : (
-            <div className="flex h-[150px] flex-col items-center justify-center gap-3">
               <Button
                 className="min-w-40"
-                disabled={busy}
-                leftIcon={busy ? <Loader2 className="size-4 animate-spin" /> : undefined}
-                onClick={() => void begin()}
+                disabled={starting || selectedModelId == null}
+                leftIcon={starting ? <Loader2 className="size-4 animate-spin" /> : undefined}
+                onClick={() => void handleStart()}
                 variant="primary"
               >
-                {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
+                {t("gate.start")}
               </Button>
-              {/* Hint + divider are always rendered so the layout height stays
+            </div>
+          )
+        : initializing
+          ? (
+              <div className="flex h-[150px] w-64 flex-col items-center justify-center gap-3">
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-subtle">
+                  <div
+                    className="h-full rounded-full bg-accent transition-all duration-500 ease-out"
+                    style={{ width: `${progressPct}%` }}
+                  />
+                </div>
+                <p className="text-xs text-ink-muted">
+                  {initDone
+                    ? t("gate.initDone")
+                    : `${t("gate.xofy", { current: initStep + 1, total: INIT_STEPS.length })} ${t(`gate.${INIT_STEPS[initStep]}`)}`}
+                </p>
+              </div>
+            )
+          : (
+              <div className="flex h-[150px] flex-col items-center justify-center gap-3">
+                <Button
+                  className="min-w-40"
+                  disabled={busy}
+                  leftIcon={busy ? <Loader2 className="size-4 animate-spin" /> : undefined}
+                  onClick={() => void begin()}
+                  variant="primary"
+                >
+                  {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
+                </Button>
+                {/* Hint + divider are always rendered so the layout height stays
                   identical between the idle and busy states (no vertical jitter
                   when the BYOK button swaps to Cancel). `invisible` reserves the
                   space without painting it while a login is in flight. */}
-              <p className={busy ? "invisible text-xs text-ink-muted" : "text-xs text-ink-muted"}>{t("gate.freeTrialHint")}</p>
-              <div className={busy ? "invisible my-3 h-px w-48 bg-line" : "my-3 h-px w-48 bg-line"} />
-              {busy
-                ? (
-                    <Button
-                      onClick={handleCancel}
-                      size="sm"
-                      variant="secondary"
-                    >
-                      {t("gate.cancel")}
-                    </Button>
-                  )
-                : (
-                    <Button
-                      onClick={handleBYOK}
-                      size="sm"
-                      variant="secondary"
-                    >
-                      {t("gate.byok")}
-                    </Button>
-                  )}
-            </div>
-          )}
+                <p className={busy ? "invisible text-xs text-ink-muted" : "text-xs text-ink-muted"}>{t("gate.freeTrialHint")}</p>
+                <div className={busy ? "invisible my-3 h-px w-48 bg-line" : "my-3 h-px w-48 bg-line"} />
+                {busy
+                  ? (
+                      <Button
+                        onClick={handleCancel}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        {t("gate.cancel")}
+                      </Button>
+                    )
+                  : (
+                      <Button
+                        onClick={handleBYOK}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        {t("gate.byok")}
+                      </Button>
+                    )}
+              </div>
+            )}
     </div>
   );
 }

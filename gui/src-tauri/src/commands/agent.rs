@@ -15,6 +15,13 @@ pub async fn sync_future_models() -> Result<agent_bridge::SyncFutureModelsResult
     agent_bridge::sync_future_models().await
 }
 
+/// Persist the onboarding model-picker's choice as the agent's global default
+/// model (settings.json `defaultModel`). Sessionless.
+#[tauri::command]
+pub async fn set_default_model(model_id: String) -> Result<(), crate::AppError> {
+    agent_bridge::set_default_model(model_id).await
+}
+
 #[tauri::command]
 pub async fn agent_prompt(
     message: String,

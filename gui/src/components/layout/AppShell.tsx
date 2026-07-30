@@ -9,6 +9,7 @@ import { NewConversation } from "../../features/agent/NewConversation";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
+import { modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
 import { installAgentEventListener } from "../../integrations/agent/agentStateCache";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
@@ -20,7 +21,7 @@ import {
 } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
-import { emitFutureEvent } from "../../lib/futureEvents";
+import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
@@ -149,6 +150,21 @@ export function AppShell() {
     setSelectedModelId,
     refreshAgentModels,
   } = useAgentConnection(appSettings.hiddenModels);
+
+  // When the onboarding gate finalizes a model choice it writes the pick to the
+  // composer's last-used slot and emits `future-models-synced`. Apply that pick
+  // to the live selection explicitly so the first composer after the gate closes
+  // shows the chosen model — not whatever `resolveInitialModelId` would default
+  // to. Harmless on the init-phase emit (the last-used slot is empty/old then, so
+  // the guard no-ops and normal reconciliation owns the value).
+  useEffect(
+    () => onFutureEvent("future-models-synced", () => {
+      const lastUsed = readLastUsedModel();
+      if (lastUsed && modelOption(lastUsed, visibleModelOptions))
+        setSelectedModelId(lastUsed);
+    }),
+    [visibleModelOptions, setSelectedModelId],
+  );
 
   // Remote control is dev-only: poll its status (for the sidebar indicator dot)
   // only on non-release builds, and never while build info is still loading.

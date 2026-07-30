@@ -13,6 +13,8 @@ export interface AgentModelOption {
   isDefault?: boolean;
   /** Curated positioning blurb from the Future platform catalog; absent elsewhere. */
   description?: string | null;
+  /** Future-platform recommendation flag (drives the onboarding model picker). */
+  recommended?: boolean;
 }
 
 /** Attachment wire shape accepted by the agent_prompt Tauri command. */

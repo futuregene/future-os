@@ -60,6 +60,58 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         );
     }
 
+    // Persist the onboarding model-picker's choice as the global default model
+    // (settings.json `defaultModel`). Sessionless: it's a process-wide setting,
+    // not tied to any one session. Rebuild the registry afterwards so the next
+    // `list_models` reflects the new `isDefault` immediately. The value is
+    // validated to exist in the catalog (the picker only offers credential-
+    // reachable models, so no credential re-check here — `get_default_model_with`
+    // re-validates reachability at resolution time anyway).
+    if cmd_type == "set_default_model" {
+        let model_id = cmd.model_id.trim().to_string();
+        if model_id.is_empty() {
+            return RpcResponse::build_fail(id, "set_default_model", "model_id is empty");
+        }
+        let exists = state
+            .model_registry
+            .read()
+            .all_models()
+            .iter()
+            .any(|m| format!("{}/{}", m.provider, m.id) == model_id || m.id == model_id);
+        if !exists {
+            return RpcResponse::build_fail(
+                id,
+                "set_default_model",
+                &format!("model `{model_id}` is not in the catalog"),
+            );
+        }
+        let settings_path = std::path::PathBuf::from(crate::models::settings_path());
+        let mut settings = match crate::config::load_settings(&settings_path) {
+            Ok(s) => s,
+            Err(e) => {
+                return RpcResponse::build_fail(
+                    id,
+                    "set_default_model",
+                    &format!("failed to load settings: {e}"),
+                );
+            }
+        };
+        settings.default_model = model_id.clone();
+        if let Err(e) = settings.save(&settings_path) {
+            return RpcResponse::build_fail(
+                id,
+                "set_default_model",
+                &format!("failed to save settings: {e}"),
+            );
+        }
+        *state.model_registry.write() = crate::models::Registry::new();
+        return RpcResponse::ok(
+            id,
+            "set_default_model",
+            serde_json::json!({ "defaultModel": model_id }),
+        );
+    }
+
     // ── Sessionless commands: dispatched WITHOUT resolving a target session.
     // Sessions are equal peers; these commands either operate on the whole
     // system (shutdown, lists), create sessions (new/switch/delete), or read
@@ -715,6 +767,7 @@ fn list_models_response(id: &str, registry: &crate::models::Registry) -> String 
                 "contextWindow": model.context_window,
                 "isDefault": id == effective_default,
                 "description": model.description,
+                "recommended": model.recommended,
             })
         })
         .collect();

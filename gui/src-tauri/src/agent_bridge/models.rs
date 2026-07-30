@@ -22,6 +22,9 @@ pub struct AgentModelOption {
     /// "经济实用版，日常编程和对话任务够用且实惠"). Absent for built-in / user models.
     #[serde(default)]
     description: Option<String>,
+    /// Future-platform recommendation flag (drives the onboarding model picker).
+    #[serde(default)]
+    recommended: bool,
 }
 
 #[derive(Debug, Deserialize)]

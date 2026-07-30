@@ -120,7 +120,10 @@
     "initDone": "初始化完成",
     "envLabel": "环境",
     "envProduction": "正式环境",
-    "envTest": "测试环境"
+    "envTest": "测试环境",
+    "chooseModelTitle": "选择你的AI大模型",
+    "chooseModelHint": "你可以在对话过程中随时切换",
+    "start": "开始"
   },
   "userMenu": {
     "balance": "账户余额：{{credits}}",

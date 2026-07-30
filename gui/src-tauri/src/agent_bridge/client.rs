@@ -236,6 +236,15 @@ pub fn set_model_command(model_id: String, session_id: String) -> RpcCommand {
     }
 }
 
+/// Sessionless: persist the onboarding model-picker's choice as the agent's
+/// global default model (settings.json `defaultModel`). No session id.
+pub fn set_default_model_command(model_id: String) -> RpcCommand {
+    RpcCommand {
+        model_id,
+        ..base_command("set_default_model", String::new())
+    }
+}
+
 pub fn set_cwd_command(cwd: String, session_id: String) -> RpcCommand {
     RpcCommand {
         cwd,
