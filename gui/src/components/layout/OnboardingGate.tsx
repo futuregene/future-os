@@ -27,7 +27,10 @@ const MIN_INIT_DURATION_MS = 500;
 export interface OnboardingGateProps {
   onEnableBYOK: () => void;
   onInitComplete: () => void;
+  onCancelLogin: () => void;
   hasAnyProvider: boolean;
+  /** When true, auto-start the login flow on mount (reconnect from Settings). */
+  autoLogin?: boolean;
 }
 
 /**
@@ -49,7 +52,7 @@ export interface OnboardingGateProps {
  * The language switcher lives in the top-right corner and is always visible.
  * Dev/test builds additionally show an environment switcher next to it.
  */
-export function OnboardingGate({ onEnableBYOK, onInitComplete, hasAnyProvider }: OnboardingGateProps) {
+export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, hasAnyProvider, autoLogin }: OnboardingGateProps) {
   const { t } = useTranslation("layout");
   const { phase, message, begin, cancel } = useFutureLoginFlow(() => {});
   const busy = phase === "starting" || phase === "waiting";
@@ -122,12 +125,26 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, hasAnyProvider }:
     }
   }, [phase, initializing, runInit]);
 
+  // Auto-start the login flow when the gate is opened from Settings (reconnect).
+  const autoLoginFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoLogin && !autoLoginFiredRef.current) {
+      autoLoginFiredRef.current = true;
+      void begin();
+    }
+  }, [autoLogin, begin]);
+
   function handleCancel() {
     cancel();
-    // If a provider key already exists (e.g. user was logged in before), close
-    // the gate. Otherwise stay on the gate with the login button reset.
-    if (hasAnyProvider)
+    if (hasAnyProvider) {
+      // Providers exist — close the gate, go back to the app.
       onEnableBYOK();
+    }
+    else {
+      // No providers — clear the reconnect flag so the gate returns to its
+      // initial state (login + BYOK buttons).
+      onCancelLogin();
+    }
   }
 
   function handleBYOK() {
