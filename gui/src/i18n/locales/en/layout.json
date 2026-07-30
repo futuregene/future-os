@@ -121,5 +121,11 @@
     "envLabel": "Environment",
     "envProduction": "Production",
     "envTest": "Test"
+  },
+  "userMenu": {
+    "balance": "Balance: {{credits}}",
+    "recharge": "Recharge",
+    "checkUpdate": "Check for updates",
+    "upgrade": "Upgrade"
   }
 }

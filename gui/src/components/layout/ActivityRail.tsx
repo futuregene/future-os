@@ -23,12 +23,14 @@ import { useTranslation } from "react-i18next";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { isMacOS } from "../../lib/platform";
+import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useIsFullscreen } from "../../lib/useIsFullscreen";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { Button } from "../ui/Button";
 import { FloatingScrollbar } from "../ui/FloatingScrollbar";
 import { IconButton } from "../ui/IconButton";
+import { MenuPanel } from "../ui/MenuPanel";
 import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ThreadListItem } from "./ThreadListItem";
 
@@ -63,8 +65,12 @@ interface ActivityRailProps {
   remoteIndicator?: RemoteIndicator;
   /** FutureOS credit balance (null when signed out). */
   futureBalance?: number | null;
+  /** Signed-in FutureOS email (null when signed out). Drives the account menu. */
+  userEmail?: string | null;
   /** Opens the recharge page in the system browser. */
   onRecharge?: () => void;
+  /** Opens the Settings dialog on the "Check for updates" tab. */
+  onOpenUpdate?: () => void;
 }
 
 // Data / Skill entries are temporarily hidden from the navigation:
@@ -106,7 +112,9 @@ export function ActivityRail({
   onToggleExpanded,
   remoteIndicator,
   futureBalance,
+  userEmail,
   onRecharge,
+  onOpenUpdate,
 }: ActivityRailProps) {
   const { t } = useTranslation("layout");
   // Shared overlay scrollbar for the conversation list, matching the chat view.
@@ -624,54 +632,151 @@ export function ActivityRail({
               </>
             )}
       </div>
-      <div className={cn("border-t border-line-soft/40", expanded ? "w-full flex items-center" : "")}>
-        <div className="min-w-0 flex-1 p-2">
-          {expanded
-            ? (
-                <button
-                  className={cn(
-                    "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
-                    active === settingsItem.id && "border-accent bg-accent-soft text-accent",
-                  )}
-                  onClick={() => onChange(settingsItem.id)}
-                  type="button"
-                >
-                  <span className="relative inline-flex shrink-0">
+      <div className="border-t border-line-soft/40 p-2">
+        {expanded
+          ? (
+              userEmail
+                ? (
+                    <AccountMenuButton
+                      balance={futureBalance ?? null}
+                      email={userEmail}
+                      hasUpdate={hasUpdate}
+                      onOpenSettings={() => onChange(settingsItem.id)}
+                      onOpenUpdate={onOpenUpdate}
+                      onRecharge={onRecharge}
+                    />
+                  )
+                : (
+                    <button
+                      className={cn(
+                        "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
+                        active === settingsItem.id && "border-accent bg-accent-soft text-accent",
+                      )}
+                      onClick={() => onChange(settingsItem.id)}
+                      type="button"
+                    >
+                      <span className="relative inline-flex shrink-0">
+                        <Settings className="size-4" />
+                        {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
+                      </span>
+                      <span className="truncate">{t("activityRail.settings")}</span>
+                    </button>
+                  )
+            )
+          : (
+              <IconButton
+                icon={(
+                  <span className="relative inline-flex">
                     <Settings className="size-4" />
                     {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
                   </span>
-                  <span className="truncate">{t("activityRail.settings")}</span>
-                </button>
-              )
-            : (
-                <IconButton
-                  icon={(
-                    <span className="relative inline-flex">
-                      <Settings className="size-4" />
-                      {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
-                    </span>
-                  )}
-                  label={t("activityRail.settings")}
-                  active={active === settingsItem.id}
-                  onClick={() => onChange(settingsItem.id)}
-                />
-              )}
-        </div>
-        {expanded && futureBalance != null
-          ? (
-              <button
-                className="shrink-0 rounded px-2 text-xs text-ink-muted hover:text-ink transition-colors"
-                onClick={onRecharge}
-                title={t("activityRail.balance")}
-                type="button"
-              >
-                {`${t("activityRail.balance")} ${Math.trunc(futureBalance)}`}
-              </button>
-            )
-          : null}
+                )}
+                label={t("activityRail.settings")}
+                active={active === settingsItem.id}
+                onClick={() => onChange(settingsItem.id)}
+              />
+            )}
       </div>
       {!floating ? <div className="pointer-events-none absolute inset-y-0 right-0 z-30 w-6 shadow-sidebar-divider" /> : null}
     </nav>
+  );
+}
+
+/**
+ * Signed-in account trigger (avatar initial + email prefix) that opens a popover
+ * with Settings / Balance (+Recharge) / Check-for-updates (+Upgrade) entries.
+ * Replaces the plain Settings button at the bottom of the rail once logged in.
+ */
+function AccountMenuButton({
+  balance,
+  email,
+  hasUpdate,
+  onOpenSettings,
+  onOpenUpdate,
+  onRecharge,
+}: {
+  balance: number | null;
+  email: string;
+  hasUpdate?: boolean;
+  onOpenSettings: () => void;
+  onOpenUpdate?: () => void;
+  onRecharge?: () => void;
+}) {
+  const { t } = useTranslation("layout");
+  const [open, setOpen] = useState(false);
+  const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => setOpen(false) });
+
+  const prefix = email.split("@")[0] || email;
+  const initial = (prefix[0] ?? "?").toUpperCase();
+  const close = () => setOpen(false);
+
+  return (
+    <div className="relative" ref={layerRef}>
+      <button
+        className="flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-surface-subtle"
+        onClick={() => setOpen(value => !value)}
+        type="button"
+      >
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-semibold text-white">
+          {initial}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{prefix}</span>
+      </button>
+      {open
+        ? (
+            <MenuPanel className="absolute bottom-full left-0 right-0 z-40 mb-2 space-y-2 p-2">
+              <MenuRow
+                onClick={() => {
+                  onOpenSettings();
+                  close();
+                }}
+              >
+                <span>{t("activityRail.settings")}</span>
+              </MenuRow>
+              <MenuRow
+                onClick={() => {
+                  onRecharge?.();
+                  close();
+                }}
+              >
+                <span>{t("userMenu.balance", { credits: balance != null ? Math.trunc(balance) : "—" })}</span>
+                <ActionBadge>{t("userMenu.recharge")}</ActionBadge>
+              </MenuRow>
+              <MenuRow
+                onClick={() => {
+                  onOpenUpdate?.();
+                  close();
+                }}
+              >
+                <span>{t("userMenu.checkUpdate")}</span>
+                {hasUpdate ? <ActionBadge>{t("userMenu.upgrade")}</ActionBadge> : null}
+              </MenuRow>
+            </MenuPanel>
+          )
+        : null}
+    </div>
+  );
+}
+
+/** A bordered row inside the account popover; the whole row is clickable. */
+function MenuRow({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <button
+      className="flex w-full items-center justify-between gap-2 rounded-md border border-line-soft bg-surface px-3 py-2.5 text-left text-sm text-ink transition-colors hover:bg-surface-subtle"
+      onClick={onClick}
+      type="button"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Solid accent pill used as the right-hand action label (Recharge / Upgrade). */
+function ActionBadge({ children }: { children: ReactNode }) {
+  return (
+    <span className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white">
+      {children}
+    </span>
   );
 }
 

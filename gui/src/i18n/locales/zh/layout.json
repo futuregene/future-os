@@ -121,5 +121,11 @@
     "envLabel": "环境",
     "envProduction": "正式环境",
     "envTest": "测试环境"
+  },
+  "userMenu": {
+    "balance": "账户余额：{{credits}}",
+    "recharge": "充值",
+    "checkUpdate": "检查更新",
+    "upgrade": "升级"
   }
 }
