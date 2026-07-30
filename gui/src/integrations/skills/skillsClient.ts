@@ -45,3 +45,8 @@ export function uninstallSkill(id: string): Promise<boolean> {
 export function refreshSkills(): Promise<void> {
   return invokeCommand<void>("refresh_skills");
 }
+
+/** Force-run the built-in skill bootstrap (installs platform skills via CLI). */
+export function bootstrapBuiltinSkills(): Promise<void> {
+  return invokeCommand<void>("bootstrap_builtin_skills");
+}

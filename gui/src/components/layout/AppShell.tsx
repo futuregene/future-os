@@ -75,7 +75,7 @@ export function AppShell() {
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
   // Drives the onboarding gate below. Kept with the other top-level hooks so
   // the early returns further down stay after every hook call (rules of hooks).
-  const { hasProviders, byokMode, enableBYOK, initialLoading } = useHasProviders();
+  const { showGate, byokMode, enableBYOK, finishInit, initialLoading } = useHasProviders();
 
   const centerRef = useRef<HTMLElement>(null);
   const {
@@ -389,10 +389,8 @@ export function AppShell() {
     remoteIndicator,
   };
 
-  // Forced login: until the FutureOS account is confirmed, block the whole app
-  // with the login gate. `initialLoading` covers only the first probe so a
-  // signed-in user never sees the gate flash; reloads on auth change are silent
-  // (data stays non-null), so sign-in / sign-out never flash this neutral frame.
+  // Onboarding gate: show during the initial probe, when no provider is
+  // usable yet, or during post-login initialization (models + skills + agent).
   if (initialLoading) {
     return (
       <div className="flex h-full items-center justify-center bg-canvas">
@@ -400,10 +398,8 @@ export function AppShell() {
       </div>
     );
   }
-  // Show the onboarding gate when no provider is usable yet. The gate guides
-  // users toward signing in to FutureOS or adding their own API key (BYOK).
-  if (!hasProviders)
-    return <OnboardingGate onEnableBYOK={enableBYOK} />;
+  if (showGate)
+    return <OnboardingGate onEnableBYOK={enableBYOK} onInitComplete={finishInit} />;
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden bg-canvas text-ink">

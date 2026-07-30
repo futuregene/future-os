@@ -11,6 +11,10 @@
 //! Fully silent: all output goes to logs, every failure is swallowed, no window
 //! is shown. The marker is set only after a successful run, so a first launch
 //! that's offline simply retries on the next launch.
+//!
+//! `ensure_builtin_skills` is the one-shot path (gated by the bootstrap marker).
+//! `run_builtin_skills` is the force path — it installs regardless of the marker
+//! (used by the post-login onboarding flow).
 
 use tauri::AppHandle;
 use tauri_plugin_shell::process::CommandEvent;
@@ -34,6 +38,17 @@ pub fn ensure_builtin_skills(app: &AppHandle) {
         }
     }
 
+    run_bootstrap(app);
+}
+
+/// Force-run the skill bootstrap regardless of the one-shot marker. Used by the
+/// post-login onboarding flow to install built-in skills immediately after a
+/// FutureOS sign-in. Idempotent — the CLI itself skips already-installed skills.
+pub fn run_builtin_skills(app: &AppHandle) {
+    run_bootstrap(app);
+}
+
+fn run_bootstrap(app: &AppHandle) {
     let command = match app.shell().sidecar("future") {
         Ok(command) => command.args(INIT_ARGS),
         Err(error) => {

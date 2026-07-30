@@ -6,7 +6,7 @@
 //! before this command returns and no follow-up prompt can race the stale
 //! cache.
 
-use crate::{agent_bridge, skills};
+use crate::{agent_bridge, skills, skills_bootstrap};
 
 /// Manually tell the agent to drop its skills cache and re-discover.
 /// Use when entering the Skills page or on app startup so the
@@ -43,4 +43,13 @@ pub async fn uninstall_skill(id: String) -> Result<bool, crate::AppError> {
         agent_bridge::refresh_skills().await;
     }
     Ok(removed)
+}
+
+/// Force-run the built-in skill bootstrap (installs platform built-in skills
+/// via the bundled `future` CLI). Idempotent — the CLI skips already-installed
+/// skills. Used by the post-login onboarding flow; runs on a background thread
+/// since it blocks on the CLI child process.
+#[tauri::command]
+pub async fn bootstrap_builtin_skills(app: tauri::AppHandle) {
+    std::thread::spawn(move || skills_bootstrap::run_builtin_skills(&app));
 }
