@@ -729,7 +729,7 @@ function AccountMenuButton({
         role="button"
         tabIndex={0}
       >
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-sm font-semibold uppercase leading-none text-white">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent-soft text-sm font-semibold uppercase leading-none text-accent">
           {initial}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{prefix}</span>
