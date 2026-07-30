@@ -120,7 +120,10 @@
     "initDone": "Ready",
     "envLabel": "Environment",
     "envProduction": "Production",
-    "envTest": "Test"
+    "envTest": "Test",
+    "chooseModelTitle": "Choose your AI model",
+    "chooseModelHint": "You can switch models anytime during the conversation",
+    "start": "Get started"
   },
   "userMenu": {
     "balance": "Balance: {{credits}}",

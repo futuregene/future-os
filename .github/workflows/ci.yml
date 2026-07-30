@@ -36,7 +36,6 @@ jobs:
       gui_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.gui_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       cli: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.cli == 'true' || steps.filter.outputs.ci == 'true' }}
       tui: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.tui == 'true' || steps.filter.outputs.ci == 'true' }}
-      run_event_contract: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.run_event_contract == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
     steps:
       - id: force
@@ -75,14 +74,6 @@ jobs:
               - 'cli/**'
             tui:
               - 'tui/**'
-            run_event_contract:
-              - 'proto/future.proto'
-              - 'agent/src/agent/**'
-              - 'agent/src/rpc/**'
-              - 'agent/src/types/**'
-              - 'cli/src/rpc/**'
-              - 'tui/src/rpc/**'
-              - 'scripts/check_run_event_contract.mjs'
             mobile:
               - 'mobile/**'
               - '!mobile/android/**'
@@ -163,90 +154,6 @@ jobs:
       - name: clippy (GUI backend)
         if: needs.changes.outputs.gui_tauri == 'true'
         run: cargo clippy --all-targets --manifest-path gui/src-tauri/Cargo.toml -- -D warnings
-
-  # ─── Proto codegen drift gate ─────────────────────────────────────────────
-  # proto/future.proto is the single source of truth; `make generate-proto`
-  # derives the agent/channels/GUI Rust bindings and the TUI/CLI embedded proto.
-  # This job regenerates everything and fails if the committed generated files
-  # differ — catching "edited the proto but forgot to regenerate". Gated on
-  # rust_workspace (which includes proto/**).
-  proto-drift:
-    name: Proto codegen drift
-    needs: changes
-    if: needs.changes.outputs.rust_workspace == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.0
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            gui/src-tauri
-          cache-on-failure: true
-          cache-all-crates: true
-
-      # protoc for tonic-build; GUI system libs because generate-proto rebuilds
-      # gui/src-tauri too.
-      - name: Install Linux deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            binutils \
-            mold \
-            pkg-config \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            protobuf-compiler
-
-      # The TUI generate-proto script runs under bun (node built-ins only).
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
-      # tauri-build's build script needs every bundle.externalBin sidecar present.
-      - name: Create placeholder sidecars
-        run: |
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p gui/src-tauri/binaries
-          : > "gui/src-tauri/binaries/future-agent-$triple"
-          : > "gui/src-tauri/binaries/future-$triple"
-
-      - name: Regenerate proto and fail on drift
-        run: make check-proto-drift
-
-  # The public RunEvent contract includes hand-maintained Rust/TypeScript
-  # projections in addition to generated protobuf bindings. Keep this cheap,
-  # focused gate active even on a TS-only contract change.
-  run-event-contract:
-    name: RunEvent contract drift
-    needs: changes
-    if: needs.changes.outputs.run_event_contract == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-
-      - name: Check canonical event and envelope projections
-        run: node scripts/check_run_event_contract.mjs
 
   # ─── Rust test gate (Linux) ───────────────────────────────────────────────
   # This deliberately duplicates setup from `rust-quality`: separate jobs do

@@ -16,8 +16,8 @@ pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     connect_agent, delete_session_command, get_available_models_command, get_run_state_command,
     get_session_entries_command, get_state_command, list_streaming_sessions_command, map_rpc_error,
-    set_cwd_command, set_model_command, set_session_name_command, set_thinking_level_command,
-    RpcResponseExt,
+    set_cwd_command, set_default_model_command, set_model_command, set_session_name_command,
+    set_thinking_level_command, RpcResponseExt,
 };
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub(crate) use self::import::import_missing_sessions;
@@ -177,6 +177,19 @@ pub async fn set_session_model(
         .map_err(|status| format!("set_model failed: {status}"))?
         .into_inner()
         .ok_or_rpc_error("set_model returned an error")?;
+    Ok(())
+}
+
+/// Persist the onboarding model-picker's choice as the agent's global default
+/// model (sessionless `set_default_model` RPC → settings.json `defaultModel`).
+pub async fn set_default_model(model_id: String) -> Result<(), crate::AppError> {
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(set_default_model_command(model_id))
+        .await
+        .map_err(|status| format!("set_default_model failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("set_default_model returned an error")?;
     Ok(())
 }
 

@@ -92,6 +92,13 @@ pub struct Settings {
         skip_serializing_if = "String::is_empty"
     )]
     pub default_permission_level: String,
+    /// User-chosen global default model (`provider/id`), set by the onboarding
+    /// model-picker via the `set_default_model` RPC. Empty (the default) means
+    /// "no explicit choice" — `models::get_default_model_with` then falls back to
+    /// its built-in resolution. Read fresh from disk on each resolution so a
+    /// change takes effect without restarting the agent.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default_model: String,
 }
 
 // ─── Defaults ──────────────────────────────────────────────────────────────
@@ -183,6 +190,7 @@ impl Default for Settings {
             retry: default_retry(),
             max_turns: 0,
             default_permission_level: default_permission_level(),
+            default_model: String::new(),
         }
     }
 }

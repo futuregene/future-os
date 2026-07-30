@@ -647,6 +647,7 @@ pub fn run() {
             search_workspace_files,
             list_agent_models,
             sync_future_models,
+            set_default_model,
             agent_prompt,
             list_installed_skills,
             list_available_skills,
