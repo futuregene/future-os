@@ -78,6 +78,14 @@ export function useHasProviders() {
     setForceOnboarding(false);
   }, []);
 
+  // Cancel the reconnect flow without entering BYOK mode. Clears the
+  // force-onboarding flag and any pending init so the gate either closes (if
+  // providers exist) or returns to its initial state (if not).
+  const cancelLogin = useCallback(() => {
+    setInitPending(false);
+    setForceOnboarding(false);
+  }, []);
+
   // True when any provider has a usable key: FutureOS signed in, a builtin with
   // a key, or any custom provider. Also true when the user chose BYOK.
   const hasProviders = byokMode || Boolean(
@@ -100,5 +108,5 @@ export function useHasProviders() {
   // - explicitly requested from Settings (reconnect flow)
   const showGate = initialLoading || !hasProviders || initPending || forceOnboarding;
 
-  return { showGate, byokMode, enableBYOK, finishInit, hasAnyProvider, initialLoading };
+  return { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initialLoading };
 }
