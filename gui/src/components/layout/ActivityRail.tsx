@@ -717,20 +717,27 @@ function AccountMenuButton({
 
   return (
     <div className="relative flex items-center gap-2" ref={layerRef}>
-      <button
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-surface-subtle"
+      <div
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         onClick={() => setOpen(value => !value)}
-        type="button"
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen(value => !value);
+          }
+        }}
+        role="button"
+        tabIndex={0}
       >
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-semibold uppercase leading-none text-white">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-sm font-semibold uppercase leading-none text-white">
           {initial}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{prefix}</span>
-      </button>
+      </div>
       {hasUpdate
         ? (
             <button
-              className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover"
+              className="shrink-0 rounded-md bg-accent px-2 py-0.5 text-[11px] font-medium leading-none text-white transition-colors hover:bg-accent-hover"
               onClick={() => {
                 onOpenUpdate?.();
                 close();
@@ -783,7 +790,7 @@ function MenuRow({ action, label, onClick }: { action?: ReactNode; label: string
 /** Solid accent pill used as the right-hand action label (Recharge / Upgrade). */
 function ActionBadge({ children }: { children: ReactNode }) {
   return (
-    <span className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white">
+    <span className="shrink-0 rounded-md bg-accent px-2 py-0.5 text-[11px] font-medium leading-none text-white">
       {children}
     </span>
   );
