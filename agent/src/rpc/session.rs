@@ -628,6 +628,22 @@ impl ServerSession {
         })
     }
 
+    /// Operational lifecycle/event metrics for this live session. These values
+    /// are intentionally monotonic for the lifetime of the session runtime
+    /// (except `activeRunGauge`, which is a point-in-time gauge) and are exposed
+    /// through `get_runtime_metrics` for diagnostics and acceptance tests.
+    pub fn get_runtime_metrics(&self) -> serde_json::Value {
+        serde_json::json!({
+            "sessionId": self.session_id(),
+            "activeRunGauge": self.runtime.active_task_count(),
+            "staleEpochDrops": self.runtime.stale_epoch_drop_count(),
+            "persistenceDegraded": self.runtime.persistence_degraded_count(),
+            "broadcastLag": self.broadcaster.lag_count(),
+            "ringTruncations": self.broadcaster.truncation_count(),
+            "activeRunId": self.runtime.snapshot().map(|run| run.run_id),
+        })
+    }
+
     pub fn list_sessions(&self) -> Result<Vec<serde_json::Value>> {
         // Lightweight summaries: scans each JSONL without deserializing
         // large tool/assistant payloads, so listing stays fast even with

@@ -212,9 +212,16 @@ impl SessionRuntime {
             .is_some_and(|active| active.lease == *lease)
     }
 
-    #[cfg(test)]
     pub(crate) fn active_task_count(&self) -> usize {
         self.control.active_task_count()
+    }
+
+    pub(crate) fn stale_epoch_drop_count(&self) -> u64 {
+        self.control.stale_epoch_drop_count()
+    }
+
+    pub(crate) fn persistence_degraded_count(&self) -> u64 {
+        self.control.persistence_degraded_count()
     }
 }
 

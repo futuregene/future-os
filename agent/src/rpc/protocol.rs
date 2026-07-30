@@ -174,6 +174,16 @@ pub struct RunProjectionSnapshot {
 pub struct SseBroadcaster {
     tx: broadcast::Sender<SseEvent>,
     run: std::sync::Arc<parking_lot::Mutex<RunState>>,
+    /// Number of times a consumer's cursor predates the replay ring (ring
+    /// truncation / idx gap), forcing a resync via the projection snapshot.
+    /// Observability metric for the "ring truncation must be explicitly
+    /// visible" acceptance criterion; expected to stay 0 in healthy runs.
+    truncation_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Number of times a live subscriber fell behind the broadcast channel
+    /// (tokio `RecvError::Lagged`) and the gRPC stream was terminated for cursor
+    /// resume. Observability metric for the "broadcast lag" criterion; a spike
+    /// means a client couldn't keep up with the event rate.
+    lag_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl SseBroadcaster {
@@ -192,6 +202,8 @@ impl SseBroadcaster {
                 events: Vec::new(),
                 projection_events: Vec::new(),
             })),
+            truncation_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            lag_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -202,6 +214,33 @@ impl SseBroadcaster {
 
     pub fn last_idx(&self) -> i64 {
         self.run.lock().idx.saturating_sub(1)
+    }
+
+    pub fn current_run_id(&self) -> String {
+        self.run.lock().run_id.clone()
+    }
+
+    /// Count of ring-truncation resyncs: times a consumer's cursor fell behind
+    /// the replay ring and had to recover via the projection snapshot.
+    /// Observability metric; expected to stay 0 in healthy runs (a non-zero
+    /// value means a client lagged far enough to lose the incremental tail).
+    pub fn truncation_count(&self) -> u64 {
+        self.truncation_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Record that a live subscriber lagged behind the broadcast channel (the
+    /// gRPC layer calls this when it observes `RecvError::Lagged`).
+    pub fn record_lag(&self) -> u64 {
+        self.lag_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
+
+    /// Count of live-subscriber lag events (see `record_lag`). Observability
+    /// metric; expected to stay 0 unless a client can't keep up with the rate.
+    pub fn lag_count(&self) -> u64 {
+        self.lag_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Atomically register a receiver and snapshot the requested run tail.
@@ -215,6 +254,19 @@ impl SseBroadcaster {
         let receiver = self.tx.subscribe();
         let min_idx = run.events.first().map(|event| event.idx).unwrap_or(run.idx);
         let truncated = after_idx.saturating_add(1) < min_idx;
+        if truncated {
+            let count = self
+                .truncation_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            tracing::warn!(
+                run_id,
+                requested_after_idx = after_idx,
+                min_available_idx = min_idx,
+                truncation_count = count,
+                "run replay ring truncated; returning projection snapshot"
+            );
+        }
         let events = run
             .events
             .iter()
@@ -289,6 +341,19 @@ impl SseBroadcaster {
         }
         let min_idx = run.events.first().map(|e| e.idx).unwrap_or(0);
         let truncated = since_idx.saturating_add(1) < min_idx;
+        if truncated {
+            let count = self
+                .truncation_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            tracing::warn!(
+                run_id,
+                requested_after_idx = since_idx,
+                min_available_idx = min_idx,
+                truncation_count = count,
+                "run event query crossed replay-ring boundary; returning projection snapshot"
+            );
+        }
         let events = run
             .events
             .iter()
@@ -730,6 +795,98 @@ mod tests {
             Some(live.idx)
         );
         assert!(b.attach("run2", -1).is_err());
+    }
+
+    #[test]
+    fn truncation_counter_tracks_ring_overflow_resyncs() {
+        let b = SseBroadcaster::new();
+        b.start_run("run1".to_string(), 1);
+        assert_eq!(b.truncation_count(), 0);
+
+        // Within the ring: a full backfill is NOT a truncation.
+        for idx in 0..10 {
+            b.broadcast(SseEvent::new(
+                "text_chunk",
+                serde_json::json!({"text": idx.to_string()}),
+            ));
+        }
+        let _ = b.events_since("run1", -1).unwrap();
+        assert_eq!(
+            b.truncation_count(),
+            0,
+            "in-ring backfill is not a truncation"
+        );
+
+        // Overflow the ring; now a backfill whose cursor predates the ring is a
+        // truncation, and each such resync is counted (attach + events_since).
+        for idx in 0..=MAX_RUN_EVENTS {
+            b.broadcast(SseEvent::new(
+                "text_chunk",
+                serde_json::json!({"text": idx.to_string()}),
+            ));
+        }
+        let attachment = b.attach("run1", -1).unwrap();
+        assert!(attachment.truncated);
+        assert_eq!(b.truncation_count(), 1);
+        let _ = b.events_since("run1", -1).unwrap();
+        assert_eq!(
+            b.truncation_count(),
+            2,
+            "events_since truncation is counted too"
+        );
+    }
+
+    #[test]
+    fn lag_counter_is_observable_and_starts_at_zero() {
+        let b = SseBroadcaster::new();
+        assert_eq!(b.lag_count(), 0);
+        b.record_lag();
+        b.record_lag();
+        assert_eq!(b.lag_count(), 2);
+        // The counter is shared across clones (the gRPC layer holds a clone).
+        let clone = b.clone();
+        clone.record_lag();
+        assert_eq!(b.lag_count(), 3);
+    }
+
+    #[test]
+    fn concurrent_broadcasts_to_one_broadcaster_yield_contiguous_idx() {
+        use std::sync::Arc;
+        use std::thread;
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 250; // 8 * 250 = 2000 == MAX_RUN_EVENTS (no overflow)
+        let b = Arc::new(SseBroadcaster::new());
+        b.start_run("run1".to_string(), 1);
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let b = b.clone();
+                thread::spawn(move || {
+                    for n in 0..PER_THREAD {
+                        b.broadcast(SseEvent::new("text_chunk", serde_json::json!({"text": n})));
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        // The single stamping lock serializes concurrent broadcasts: every event
+        // got a unique, contiguous idx (no gaps, no duplicates) under contention.
+        let total = (THREADS * PER_THREAD) as i64;
+        assert_eq!(b.last_idx(), total - 1);
+        assert_eq!(b.truncation_count(), 0);
+        let (run_id, events, min_idx, projection) =
+            b.events_since("run1", total - 1 - 100).unwrap();
+        assert_eq!(run_id, "run1");
+        assert_eq!(min_idx, 0);
+        assert!(projection.is_none());
+        let expected_start = total - 100; // first idx > (total - 1 - 100)
+        assert_eq!(events.len(), 100);
+        for (i, event) in events.iter().enumerate() {
+            assert_eq!(event.idx, expected_start + i as i64, "contiguous, no gaps");
+            assert_eq!(event.run_id, "run1");
+            assert_eq!(event.epoch, 1);
+        }
     }
 
     #[test]
