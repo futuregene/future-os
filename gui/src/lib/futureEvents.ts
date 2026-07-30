@@ -42,6 +42,12 @@ export interface FutureEventMap {
   "show-onboarding": void;
   /** Emitted when a conversation finishes (agent_end stream event). */
   "agent_end": void;
+  /**
+   * The onboarding init flow finished syncing the Future model catalog into the
+   * agent — `useAgentConnection` should refresh immediately so the composer has
+   * models the instant the gate closes (no "no models configured" banner flash).
+   */
+  "future-models-synced": void;
 }
 
 type FutureEventName = keyof FutureEventMap;

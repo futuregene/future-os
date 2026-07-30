@@ -43,6 +43,23 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         return RpcResponse::ok(id, "reload_auth", serde_json::json!({}));
     }
 
+    // Dedicated post-login initialization: synchronously fetch the Future
+    // provider's models (warming the cache), then rebuild the registry against
+    // that warm cache so the very next `list_models` returns a complete list.
+    // Unlike `reload_auth`, this blocks on the network fetch — it is only ever
+    // called once by the GUI's onboarding init flow, never on a hot path.
+    if cmd_type == "sync_future_models" {
+        let synced = crate::models::sync_future_models_cache();
+        *state.model_registry.write() = crate::models::Registry::new();
+        state.reload_all_credentials();
+        let model_count = state.model_registry.read().all_models().len();
+        return RpcResponse::ok(
+            id,
+            "sync_future_models",
+            serde_json::json!({ "synced": synced, "modelCount": model_count }),
+        );
+    }
+
     // ── Sessionless commands: dispatched WITHOUT resolving a target session.
     // Sessions are equal peers; these commands either operate on the whole
     // system (shutdown, lists), create sessions (new/switch/delete), or read

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadAgentModelOptions, modelKey, modelOption, resolveInitialModelId } from "../../../integrations/agent/agentClient";
 import { listAgentProviders } from "../../../integrations/agent/providers";
 import { errorMessage } from "../../../lib/errors";
+import { onFutureEvent } from "../../../lib/futureEvents";
 import { usePolling } from "../../../lib/usePolling";
 
 export interface AgentConnectionState {
@@ -131,6 +132,14 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
   }, []);
 
   usePolling(refreshAgentModels, 10000, { deps: [refreshAgentModels] });
+
+  // The onboarding init flow warms the agent's model cache + registry; refresh
+  // immediately so the composer reflects the new models the instant the gate
+  // closes (otherwise we'd wait up to the next 10s poll tick).
+  useEffect(
+    () => onFutureEvent("future-models-synced", () => void refreshAgentModels()),
+    [refreshAgentModels],
+  );
 
   const visibleModelOptions = useMemo(
     () => modelOptions.filter(model => !hiddenModels.includes(modelKey(model))),

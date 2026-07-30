@@ -78,7 +78,7 @@ export function AppShell() {
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
   // Drives the onboarding gate below. Kept with the other top-level hooks so
   // the early returns further down stay after every hook call (rules of hooks).
-  const { showGate, byokMode, enableBYOK, finishInit, hasAnyProvider, initialLoading } = useHasProviders();
+  const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending, initialLoading } = useHasProviders();
 
   const centerRef = useRef<HTMLElement>(null);
   const {
@@ -416,7 +416,7 @@ export function AppShell() {
     );
   }
   if (showGate)
-    return <OnboardingGate hasAnyProvider={hasAnyProvider} onEnableBYOK={enableBYOK} onInitComplete={finishInit} />;
+    return <OnboardingGate autoLogin={forceOnboarding} hasAnyProvider={hasAnyProvider} initPending={initPending} modelsReady={modelOptions.length > 0} onEnableBYOK={enableBYOK} onInitComplete={finishInit} onCancelLogin={cancelLogin} />;
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden bg-canvas text-ink">
