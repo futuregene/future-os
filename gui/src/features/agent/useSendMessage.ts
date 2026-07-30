@@ -100,5 +100,16 @@ export function useSendMessage({
     };
   }, [sendingRef, threadId]);
 
-  return handleSend;
+  // Invalidate any in-flight send this view started and release the lock.
+  // Invoked by the settle watchdog once the persisted run row shows the send's
+  // run is already terminal: the pipeline's invoke may never resolve (its
+  // response lost to a suspended webview), so its own `finally` would never
+  // run — leaving the composer locked and the streaming bubble frozen. The
+  // bumped generation keeps a late-resolving pipeline from writing to the view.
+  const abandonSend = useCallback(() => {
+    sendGenerationRef.current += 1;
+    sendingRef.current = false;
+  }, [sendingRef]);
+
+  return { handleSend, abandonSend };
 }

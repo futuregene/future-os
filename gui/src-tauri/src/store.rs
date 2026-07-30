@@ -32,9 +32,9 @@ pub use artifacts::{
 };
 pub use cleanup::{
     cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
-    list_interrupted_runs, reanimate_run, reconcile_orphan_chat_workspaces,
-    reconcile_orphan_images, reconcile_orphan_review_repos, settle_interrupted_run,
-    settle_interrupted_run_from_agent,
+    list_active_runs, list_interrupted_runs, reanimate_run, reconcile_orphan_chat_workspaces,
+    reconcile_orphan_images, reconcile_orphan_review_repos, settle_interrupted_run_from_agent,
+    ActiveRun,
 };
 pub use db::{
     app_images_root, chat_workspace_path, future_dir, get_approval_request, get_run,

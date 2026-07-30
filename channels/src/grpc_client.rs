@@ -4,7 +4,9 @@
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 // Generated proto code (from future.proto) — checked into src/generated/
 mod proto {
@@ -24,6 +26,10 @@ pub enum AgentEvent {
     AgentStart,
     AgentEnd {
         error: Option<String>,
+        /// Canonical terminal state (`completed` / `cancelled` / `error` /
+        /// `incomplete`); lets a bridge tell a cancellation apart from a clean
+        /// completion without parsing free-text error strings.
+        state: Option<String>,
     },
     ToolStart {
         tool_id: String,
@@ -56,6 +62,58 @@ pub enum AgentEvent {
 pub struct AgentClient {
     inner: FutureAgentClient<tonic::transport::Channel>,
     active_runs: Arc<Mutex<HashMap<String, String>>>,
+}
+
+/// Canonical run stream with projection snapshots flattened back into their
+/// constituent events. Callers can keep one event-processing path regardless
+/// of whether the Agent replayed the bounded ring or returned a compressed
+/// projection after the cursor fell behind it.
+pub struct AgentEventStream {
+    inner: tonic::Streaming<proto::StreamEvent>,
+    pending: VecDeque<proto::StreamEvent>,
+}
+
+impl AgentEventStream {
+    pub async fn message(&mut self) -> Result<Option<proto::StreamEvent>> {
+        loop {
+            if let Some(event) = self.pending.pop_front() {
+                return Ok(Some(event));
+            }
+            let Some(event) = self
+                .inner
+                .message()
+                .await
+                .map_err(|error| anyhow!("Agent event stream failed: {error}"))?
+            else {
+                return Ok(None);
+            };
+            if !event.projection_snapshot {
+                return Ok(Some(event));
+            }
+            self.pending = expand_projection_snapshot(event);
+        }
+    }
+}
+
+fn expand_projection_snapshot(event: proto::StreamEvent) -> VecDeque<proto::StreamEvent> {
+    let run_id = event.run_id;
+    let session_id = event.session_id;
+    let epoch = event.epoch;
+    event
+        .snapshot_events
+        .into_iter()
+        .map(|projected| proto::StreamEvent {
+            r#type: projected.r#type,
+            data: projected.data,
+            run_id: run_id.clone(),
+            idx: projected.idx,
+            projection_snapshot: false,
+            snapshot_events: Vec::new(),
+            snapshot_cursor: 0,
+            session_id: session_id.clone(),
+            epoch,
+        })
+        .collect()
 }
 
 impl AgentClient {
@@ -192,6 +250,45 @@ impl AgentClient {
         )
         .await?;
         Ok(())
+    }
+
+    /// Poll `get_state` until the session has no active run, so a prompt issued
+    /// right after [`abort`](Self::abort) isn't rejected by the Agent's run
+    /// state machine (the old `is_streaming` flag flipped to idle on abort; the
+    /// new state machine keeps the session busy through Cancelling/Finalizing).
+    /// Returns as soon as the run clears. Transient `get_state` errors are
+    /// retried within the same deadline; a stuck state or timeout is returned as
+    /// an explicit error so callers do not immediately issue a prompt that the
+    /// Agent will reject as busy.
+    pub async fn wait_until_idle(&mut self, session_id: &str, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        let mut delay = Duration::from_millis(100);
+        loop {
+            let wait_error = match self.call("get_state", session_id, Default::default()).await {
+                Ok(resp) => {
+                    match resp.get("activeRun").and_then(|v| v.as_object()) {
+                        None => return Ok(()),
+                        Some(active) => {
+                            let state = active.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                            if state == "cancellation_stuck" || state == "persistence_degraded" {
+                                return Err(anyhow!(
+                                    "session {session_id} cannot accept a new prompt while run state is {state}"
+                                ));
+                            }
+                        }
+                    }
+                    None
+                }
+                Err(error) => Some(error),
+            };
+            if Instant::now() >= deadline {
+                return Err(wait_error.unwrap_or_else(|| {
+                    anyhow!("timed out waiting for session {session_id} to become idle")
+                }));
+            }
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_millis(500));
+        }
     }
 
     /// Get session state.
@@ -350,35 +447,53 @@ impl AgentClient {
         Ok(())
     }
 
-    /// Stream events from the agent for a specific session.
-    pub async fn stream_events(
+    /// Atomically attach to one canonical run from its beginning.
+    ///
+    /// The Agent registers the live receiver and snapshots the replay tail under
+    /// one lock, closing the prompt-ack -> subscribe loss window. If the bounded
+    /// ring has already rolled over, [`AgentEventStream`] transparently expands
+    /// the returned projection snapshot.
+    pub async fn stream_run_events(
         &mut self,
         session_id: &str,
-    ) -> Result<tonic::Streaming<proto::StreamEvent>> {
+        run_id: &str,
+    ) -> Result<AgentEventStream> {
         let request = tonic::Request::new(StreamRequest {
             session_id: session_id.to_string(),
+            run_id: run_id.to_string(),
             event_types: vec![],
-            ..Default::default()
+            after_idx: -1,
+            atomic_attach: true,
         });
-        let stream = self
+        let inner = self
             .inner
             .stream_events(request)
             .await
-            .map_err(|e| anyhow!("Failed to subscribe to events: {}", e))?
+            .map_err(|e| anyhow!("Failed to attach to run {run_id}: {e}"))?
             .into_inner();
-        Ok(stream)
+        Ok(AgentEventStream {
+            inner,
+            pending: VecDeque::new(),
+        })
     }
 
-    /// Parse a StreamEvent into an AgentEvent.
-    pub fn parse_event(event: proto::StreamEvent) -> Option<AgentEvent> {
-        match event.r#type.as_str() {
+    /// Parse a StreamEvent into an AgentEvent, paired with the event's canonical
+    /// `run_id` so callers can drop events that belong to a different run on the
+    /// same session (another client, or a stale tail after a supersede) instead
+    /// of letting a foreign `agent_end` finalize their reply.
+    pub fn parse_event(event: proto::StreamEvent) -> Option<(String, AgentEvent)> {
+        let parsed: Option<AgentEvent> = match event.r#type.as_str() {
             "ping" => Some(AgentEvent::Ping),
             "agent_start" => Some(AgentEvent::AgentStart),
             "agent_end" => {
-                let error = serde_json::from_str::<Value>(&event.data)
-                    .ok()
+                let data = serde_json::from_str::<Value>(&event.data).ok();
+                let error = data
+                    .as_ref()
                     .and_then(|d| d["error"].as_str().map(|s| s.to_string()));
-                Some(AgentEvent::AgentEnd { error })
+                let state = data
+                    .as_ref()
+                    .and_then(|d| d["state"].as_str().map(|s| s.to_string()));
+                Some(AgentEvent::AgentEnd { error, state })
             }
             "text_chunk" => {
                 let text = serde_json::from_str::<Value>(&event.data)
@@ -442,7 +557,8 @@ impl AgentClient {
                 Some(AgentEvent::Error(msg))
             }
             _ => None,
-        }
+        };
+        parsed.map(|ev| (event.run_id.clone(), ev))
     }
 }
 
@@ -505,31 +621,88 @@ mod tests {
         }
     }
 
+    /// `parse_event` also yields the event's run_id; the unit tests below only
+    /// care about the decoded variant, so strip the id here.
+    fn parsed(event: proto::StreamEvent) -> Option<AgentEvent> {
+        AgentClient::parse_event(event).map(|(_, ev)| ev)
+    }
+
     // ─── parse_event: basic events ───────────────────────────────────────────
+
+    #[test]
+    fn parse_event_carries_run_id() {
+        let event = make_event("text_chunk", r#"{"text":"hi"}"#);
+        let (run_id, ev) = AgentClient::parse_event(event).expect("parsed");
+        assert_eq!(run_id, "run_1");
+        assert!(matches!(ev, AgentEvent::TextChunk(t) if t == "hi"));
+    }
+
+    #[test]
+    fn projection_snapshot_expands_in_order_with_canonical_envelope() {
+        let snapshot = proto::StreamEvent {
+            r#type: "run_snapshot".to_string(),
+            run_id: "run_snapshot_1".to_string(),
+            projection_snapshot: true,
+            snapshot_events: vec![
+                proto::ProjectedRunEvent {
+                    r#type: "text_chunk".to_string(),
+                    data: r#"{"text":"hello"}"#.to_string(),
+                    idx: 4,
+                },
+                proto::ProjectedRunEvent {
+                    r#type: "agent_end".to_string(),
+                    data: r#"{"state":"completed"}"#.to_string(),
+                    idx: 5,
+                },
+            ],
+            session_id: "session_1".to_string(),
+            epoch: 7,
+            ..Default::default()
+        };
+
+        let expanded: Vec<_> = expand_projection_snapshot(snapshot).into_iter().collect();
+        assert_eq!(expanded.len(), 2);
+        assert_eq!(expanded[0].r#type, "text_chunk");
+        assert_eq!(expanded[0].idx, 4);
+        assert_eq!(expanded[1].r#type, "agent_end");
+        assert_eq!(expanded[1].idx, 5);
+        assert!(expanded.iter().all(|event| {
+            event.run_id == "run_snapshot_1"
+                && event.session_id == "session_1"
+                && event.epoch == 7
+                && !event.projection_snapshot
+        }));
+    }
+
+    #[test]
+    fn parse_agent_end_state() {
+        let event = make_event("agent_end", r#"{"state":"cancelled"}"#);
+        match parsed(event) {
+            Some(AgentEvent::AgentEnd { state, error }) => {
+                assert_eq!(state.as_deref(), Some("cancelled"));
+                assert!(error.is_none());
+            }
+            other => panic!("expected AgentEnd, got {:?}", other),
+        }
+    }
 
     #[test]
     fn parse_ping() {
         let event = make_event("ping", "{}");
-        assert!(matches!(
-            AgentClient::parse_event(event),
-            Some(AgentEvent::Ping)
-        ));
+        assert!(matches!(parsed(event), Some(AgentEvent::Ping)));
     }
 
     #[test]
     fn parse_agent_start() {
         let event = make_event("agent_start", "{}");
-        assert!(matches!(
-            AgentClient::parse_event(event),
-            Some(AgentEvent::AgentStart)
-        ));
+        assert!(matches!(parsed(event), Some(AgentEvent::AgentStart)));
     }
 
     #[test]
     fn parse_agent_end_no_error() {
         let event = make_event("agent_end", "{}");
-        match AgentClient::parse_event(event) {
-            Some(AgentEvent::AgentEnd { error }) => assert!(error.is_none()),
+        match parsed(event) {
+            Some(AgentEvent::AgentEnd { error, .. }) => assert!(error.is_none()),
             other => panic!("expected AgentEnd, got {:?}", other),
         }
     }
@@ -537,8 +710,8 @@ mod tests {
     #[test]
     fn parse_agent_end_with_error() {
         let event = make_event("agent_end", r#"{"error":"rate limited"}"#);
-        match AgentClient::parse_event(event) {
-            Some(AgentEvent::AgentEnd { error }) => {
+        match parsed(event) {
+            Some(AgentEvent::AgentEnd { error, .. }) => {
                 assert_eq!(error.as_deref(), Some("rate limited"))
             }
             other => panic!("expected AgentEnd, got {:?}", other),
@@ -550,7 +723,7 @@ mod tests {
     #[test]
     fn parse_text_chunk() {
         let event = make_event("text_chunk", r#"{"text":"Hello world"}"#);
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::TextChunk(text)) => assert_eq!(text, "Hello world"),
             other => panic!("expected TextChunk, got {:?}", other),
         }
@@ -559,7 +732,7 @@ mod tests {
     #[test]
     fn parse_text_chunk_empty_data() {
         let event = make_event("text_chunk", "{}");
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::TextChunk(text)) => assert_eq!(text, ""),
             other => panic!("expected TextChunk, got {:?}", other),
         }
@@ -568,16 +741,13 @@ mod tests {
     #[test]
     fn parse_thinking_start() {
         let event = make_event("thinking_start", "{}");
-        assert!(matches!(
-            AgentClient::parse_event(event),
-            Some(AgentEvent::ThinkingStart)
-        ));
+        assert!(matches!(parsed(event), Some(AgentEvent::ThinkingStart)));
     }
 
     #[test]
     fn parse_thinking_delta() {
         let event = make_event("thinking_delta", r#"{"text":"Let me think"}"#);
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::ThinkingDelta(text)) => assert_eq!(text, "Let me think"),
             other => panic!("expected ThinkingDelta, got {:?}", other),
         }
@@ -586,10 +756,7 @@ mod tests {
     #[test]
     fn parse_thinking_end() {
         let event = make_event("thinking_end", "{}");
-        assert!(matches!(
-            AgentClient::parse_event(event),
-            Some(AgentEvent::ThinkingEnd)
-        ));
+        assert!(matches!(parsed(event), Some(AgentEvent::ThinkingEnd)));
     }
 
     // ─── parse_event: tool events ────────────────────────────────────────────
@@ -600,7 +767,7 @@ mod tests {
             "tool_start",
             r#"{"tool_id":"call_1","tool_name":"shell","tool_args":"{\"command\":\"ls\"}"}"#,
         );
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::ToolStart {
                 tool_id,
                 tool_name,
@@ -618,7 +785,7 @@ mod tests {
     #[test]
     fn parse_tool_start_missing_args() {
         let event = make_event("tool_start", r#"{"tool_id":"call_1","tool_name":"read"}"#);
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::ToolStart { tool_args, .. }) => assert!(tool_args.is_none()),
             other => panic!("expected ToolStart, got {:?}", other),
         }
@@ -627,7 +794,7 @@ mod tests {
     #[test]
     fn parse_tool_start_invalid_json() {
         let event = make_event("tool_start", "not json");
-        assert!(AgentClient::parse_event(event).is_none());
+        assert!(parsed(event).is_none());
     }
 
     #[test]
@@ -636,7 +803,7 @@ mod tests {
             "tool_delta",
             r#"{"tool_id":"call_1","text":"partial output"}"#,
         );
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::ToolDelta { tool_id, text }) => {
                 assert_eq!(tool_id, "call_1");
                 assert_eq!(text, "partial output");
@@ -648,7 +815,7 @@ mod tests {
     #[test]
     fn parse_tool_end() {
         let event = make_event("tool_end", r#"{"tool_id":"call_1","text":"file1.txt"}"#);
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::ToolEnd { tool_id, text }) => {
                 assert_eq!(tool_id, "call_1");
                 assert_eq!(text.as_deref(), Some("file1.txt"));
@@ -660,7 +827,7 @@ mod tests {
     #[test]
     fn parse_tool_end_no_text() {
         let event = make_event("tool_end", r#"{"tool_id":"call_1"}"#);
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::ToolEnd { text, .. }) => assert!(text.is_none()),
             other => panic!("expected ToolEnd, got {:?}", other),
         }
@@ -683,7 +850,7 @@ mod tests {
                 "requested_action": {"command": "rm -rf /"}
             }"#,
         );
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::ApprovalRequest {
                 approval_request_id,
                 tool_name,
@@ -705,7 +872,7 @@ mod tests {
     #[test]
     fn parse_error_event() {
         let event = make_event("error", r#"{"error":"something went wrong"}"#);
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::Error(msg)) => assert_eq!(msg, "something went wrong"),
             other => panic!("expected Error, got {:?}", other),
         }
@@ -714,7 +881,7 @@ mod tests {
     #[test]
     fn parse_error_event_invalid_json() {
         let event = make_event("error", "not json");
-        match AgentClient::parse_event(event) {
+        match parsed(event) {
             Some(AgentEvent::Error(msg)) => assert_eq!(msg, "unknown error"),
             other => panic!("expected Error, got {:?}", other),
         }
@@ -725,13 +892,13 @@ mod tests {
     #[test]
     fn parse_unknown_event_returns_none() {
         let event = make_event("custom_event", "{}");
-        assert!(AgentClient::parse_event(event).is_none());
+        assert!(parsed(event).is_none());
     }
 
     #[test]
     fn parse_empty_type_returns_none() {
         let event = make_event("", "{}");
-        assert!(AgentClient::parse_event(event).is_none());
+        assert!(parsed(event).is_none());
     }
 
     // ─── SessionState construction ───────────────────────────────────────────

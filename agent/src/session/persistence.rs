@@ -326,7 +326,7 @@ fn execute(state: &PersistenceInner, command: PersistenceCommand) {
             record_result(state, &result, true);
             let _ = ack.send(result);
         }
-        PersistenceCommand::CommitRun { entries, ack } => {
+        PersistenceCommand::CommitRun { mut entries, ack } => {
             // A prior append failure means the on-disk run is incomplete and a
             // terminal marker cannot heal it. Refuse to commit so the caller
             // falls back to a full rewrite (which does heal). Otherwise append
@@ -342,6 +342,21 @@ fn execute(state: &PersistenceInner, command: PersistenceCommand) {
                     "refusing to commit run: an earlier append failed ({error})"
                 )),
                 None => {
+                    // The run's session_info was built from values frozen at run
+                    // start; fold in any mid-run metadata change (rename / model
+                    // / thinking / cwd / auto-compaction) that an update_info
+                    // already persisted, so the commit's stale snapshot cannot
+                    // revert it on disk. The rewrite path does the same merge.
+                    if let Some(latest_info) = latest_session_info_content(state) {
+                        if let Some(target_info) = entries
+                            .iter_mut()
+                            .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
+                            .and_then(|entry| entry.content.as_mut())
+                            .and_then(serde_json::Value::as_object_mut)
+                        {
+                            merge_session_info_keys(target_info, &latest_info);
+                        }
+                    }
                     #[cfg(test)]
                     let injected_failure = state.fail_next_commit.swap(false, Ordering::AcqRel);
                     #[cfg(not(test))]
@@ -395,21 +410,51 @@ fn update_info(state: &PersistenceInner, key: &str, value: serde_json::Value) ->
         .update_session_info(&state.session_id, key, value)
 }
 
-fn merge_latest_session_info(state: &PersistenceInner, target: &mut Session) {
-    let Ok(latest) = state.manager.load(&state.session_id) else {
-        return;
-    };
-    // The authoritative on-disk metadata is the LAST session_info (the
-    // append-only commit path and update_session_info append a fresh snapshot
-    // per change), so merge from the last one — not the stale first snapshot.
-    let Some(latest_info) = latest
+/// Session-info keys that a mid-run `update_info` (rename / model / thinking /
+/// cwd / auto-compaction) may change out-of-band. The append-only run commit
+/// builds its `session_info` from values frozen at run *start*, so these keys
+/// must be re-merged from the authoritative (last) on-disk snapshot or a mid-run
+/// change is silently reverted on disk by the commit's stale snapshot.
+const SESSION_INFO_MERGE_KEYS: &[&str] = &[
+    "model",
+    "thinking_level",
+    "session_name",
+    "cwd",
+    "auto_compaction",
+];
+
+/// The authoritative (last) `session_info` content currently on disk, if any.
+/// Single-writer FIFO ordering guarantees any mid-run `update_info` append that
+/// preceded this command is already persisted, so this sees the freshest values.
+fn latest_session_info_content(
+    state: &PersistenceInner,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let latest = state.manager.load(&state.session_id).ok()?;
+    latest
         .entries
         .iter()
         .rev()
         .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
         .and_then(|entry| entry.content.as_ref())
         .and_then(serde_json::Value::as_object)
-    else {
+        .cloned()
+}
+
+/// Copy the merge keys from `latest` over `target`, leaving every other field
+/// (e.g. token counters, which the run commit refreshes) untouched.
+fn merge_session_info_keys(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    latest: &serde_json::Map<String, serde_json::Value>,
+) {
+    for key in SESSION_INFO_MERGE_KEYS {
+        if let Some(value) = latest.get(*key) {
+            target.insert((*key).to_string(), value.clone());
+        }
+    }
+}
+
+fn merge_latest_session_info(state: &PersistenceInner, target: &mut Session) {
+    let Some(latest_info) = latest_session_info_content(state) else {
         return;
     };
     let Some(target_info) = target
@@ -421,17 +466,7 @@ fn merge_latest_session_info(state: &PersistenceInner, target: &mut Session) {
     else {
         return;
     };
-    for key in [
-        "model",
-        "thinking_level",
-        "session_name",
-        "cwd",
-        "auto_compaction",
-    ] {
-        if let Some(value) = latest_info.get(key) {
-            target_info.insert(key.to_string(), value.clone());
-        }
-    }
+    merge_session_info_keys(target_info, &latest_info);
     target.model = target_info
         .get("model")
         .and_then(|value| value.as_str())
@@ -706,6 +741,68 @@ mod tests {
             .entries
             .iter()
             .any(|e| e.entry_type == super::super::ENTRY_TYPE_RUN_TERMINAL));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn commit_run_preserves_mid_run_metadata_over_stale_snapshot() {
+        let (dir, manager, _) = fixture();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            "session-1".to_string(),
+            Duration::from_secs(1),
+        );
+        // Mid-run the user changes model + name; update_info persists the new
+        // values ahead of the run commit (single-writer FIFO ordering).
+        persistence
+            .update_info("model", serde_json::json!("mid-run-model"))
+            .unwrap();
+        persistence
+            .update_info("session_name", serde_json::json!("Renamed Mid-Run"))
+            .unwrap();
+
+        // The run commit carries a session_info frozen at run START (stale model
+        // + name) alongside fresh token fields, plus the terminal marker.
+        let stale_info = SessionEntry::session_info(
+            serde_json::json!({
+                "cwd": "/old",
+                "model": "old-model",
+                "thinking_level": "low",
+                "session_name": "old name",
+                "auto_compaction": true,
+                "tokens_in": 999,
+                "tokens_out": 888,
+            }),
+            "old-model".to_string(),
+            "low".to_string(),
+        );
+        let terminal =
+            SessionEntry::run_terminal("run-merge", super::super::RUN_STATE_COMPLETED, 7, 50, None);
+        persistence.commit_run(vec![stale_info, terminal]).unwrap();
+
+        let loaded = manager.load("session-1").unwrap();
+        // The authoritative (last) session_info must carry the mid-run values,
+        // not the stale run-start snapshot — while keeping the commit's own
+        // token fields (the merge only touches the metadata keys).
+        let last_info = loaded
+            .entries
+            .iter()
+            .rev()
+            .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .and_then(|e| e.content.as_ref())
+            .expect("a session_info entry");
+        assert_eq!(last_info["model"], "mid-run-model");
+        assert_eq!(last_info["session_name"], "Renamed Mid-Run");
+        assert_eq!(
+            last_info["tokens_out"], 888,
+            "token fields from the commit must survive the merge"
+        );
+        // The terminal marker remains the final durable record.
+        assert_eq!(
+            loaded.entries.last().unwrap().entry_type,
+            super::super::ENTRY_TYPE_RUN_TERMINAL
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -34,7 +34,7 @@ use std::sync::Mutex;
 pub use self::client::AttachmentInput;
 use self::client::{base_command, prompt_command};
 use self::replica::{ReplicaLease, AGENT_REPLICAS};
-use self::run_control::mark_run_failed_if_active;
+use self::run_control::{mark_run_completed_if_active, mark_run_failed_if_active};
 use self::session::{
     ensure_agent_session, is_chat_thread, set_agent_permission_level, set_agent_sandbox_policy,
     workspace_path_for_thread,
@@ -332,9 +332,26 @@ pub async fn agent_prompt(
     )
     .await;
 
-    // Project the failure status immediately so the Run row is correct on return.
-    if let Err(error) = &result {
-        mark_run_failed_if_active(run_id.as_deref(), &error.to_string());
+    // Settle the run row HERE, in the backend, not only in the frontend
+    // pipeline: the pipeline's status write depends on this invoke response
+    // reaching a webview that the OS may have suspended (hidden/occluded
+    // window), after which the row would stay `running` forever — the sidebar
+    // spinner and the composer's "already running" guard both read this row.
+    // Every writer is compare-and-set, so a concurrent user abort (`cancelled`)
+    // always wins and is preserved; the frontend's later write becomes a no-op
+    // echo. Settling before `capture_after` also means a slow/hung git snapshot
+    // can no longer wedge the run's visible state.
+    match &result {
+        Ok(response) if response.complete => {
+            mark_run_completed_if_active(run_id.as_deref());
+        }
+        Ok(_) => {
+            mark_run_failed_if_active(
+                run_id.as_deref(),
+                "Future Agent response ended before a clean terminal.",
+            );
+        }
+        Err(error) => mark_run_failed_if_active(run_id.as_deref(), &error.to_string()),
     }
 
     if let Some(run_id) = run_id.clone() {
@@ -540,7 +557,24 @@ async fn agent_prompt_inner(
                 session_recreated: ensured.recreated,
             })
         }
-        Err(error) => {
+        Err(stream::CollectError::RunGone(reason)) => {
+            // The Agent accepted the prompt (ack) but no longer has the run by
+            // attach time — a restart or rollover in the ack→attach window. The
+            // run is gone, so an abort would be a no-op; reconcile the local row
+            // from the journal instead and surface an error (we have no streamed
+            // content to show). local == canonical for a GUI-originated prompt.
+            if let Err(reconcile_error) =
+                reconcile_run_gone(&canonical_run_id, &canonical_run_id, &session_id, &reason).await
+            {
+                return Err(format!(
+                    "Future Agent run ended before the stream attached: {reason}; \
+                     terminal reconciliation failed: {reconcile_error}"
+                )
+                .into());
+            }
+            Err(format!("Future Agent run ended before the stream attached: {reason}").into())
+        }
+        Err(stream::CollectError::App(error)) => {
             // The prompt was already accepted, so the Agent keeps running
             // server-side with no consumer once we drop the stream — and there is
             // no resume path. Tell it to stop so we don't orphan the run (and so
@@ -694,27 +728,42 @@ async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), S
     if is_streaming && active_run_id.as_deref() == Some(run_id) {
         // canonical == local: the Agent adopted this run's requested_run_id.
         let canonical_run_id = run_id.to_string();
-        crate::store::reanimate_run(run_id).map_err(|e| format!("reanimate: {e}"))?;
+        // CAS: only reanimate while still in the interrupted state. If the user
+        // already aborted (or another path settled it) between listing and now,
+        // the guard matches zero rows and we must NOT spawn a collector that
+        // would race that terminal state.
+        let reanimated =
+            crate::store::reanimate_run(run_id).map_err(|e| format!("reanimate: {e}"))?;
+        if !reanimated {
+            eprintln!(
+                "FutureOS startup reconcile: run {run_id} no longer interrupted; skipping collector"
+            );
+            return Ok(());
+        }
         let run_id = run_id.to_string();
         let session_id = session_id.to_string();
         tokio::spawn(async move {
             let replica_lease = match AGENT_REPLICAS.acquire(&canonical_run_id) {
                 Ok(lease) => lease,
                 Err(error) => {
+                    // Another collector already owns this run — leave the state
+                    // to it; do not fail the run out from under the live owner.
                     eprintln!("FutureOS skipped duplicate collector for {run_id}: {error}");
                     return;
                 }
             };
-            if let Err(e) = collect_stored_replica(
-                replica_lease,
-                &session_id,
-                &run_id,
-                &canonical_run_id,
-                ReplicaSettlement::Interrupted,
-            )
-            .await
+            if let Err(e) =
+                collect_stored_replica(replica_lease, &session_id, &run_id, &canonical_run_id).await
             {
                 eprintln!("FutureOS reanimated collector for {run_id} failed: {e}");
+                // No collector will settle this reanimated run now. CAS it to
+                // failed so the composer can't strand on a permanent "running";
+                // a concurrent user abort (cancelled) wins the CAS and survives.
+                let _ = crate::store::fail_run_if_active(
+                    &run_id,
+                    &format!("Reanimated stream could not be collected: {e}"),
+                    "stream_interrupted",
+                );
             }
         });
     } else if interrupted_run_id.as_deref() == Some(run_id) {
@@ -738,58 +787,386 @@ async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), S
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum ReplicaSettlement {
-    /// A row recovered after process restart.
-    Interrupted,
-    /// A synthetic row observing a run started by another client.
-    Active,
-}
-
 async fn collect_stored_replica(
     replica_lease: ReplicaLease,
     session_id: &str,
     local_run_id: &str,
     canonical_run_id: &str,
-    settlement: ReplicaSettlement,
 ) -> Result<(), String> {
     let thread_id = crate::store::get_run(local_run_id)
         .map_err(|e| format!("get_run: {e}"))?
         .ok_or_else(|| format!("local run {local_run_id} not found"))?
         .thread_id;
-    let response = replica_lease
+    let response = match replica_lease
         .collect(Some(local_run_id), canonical_run_id, session_id, &thread_id)
         .await
-        .map_err(|error| error.to_string())?;
-    let terminal = if response.complete {
+    {
+        Ok(response) => response,
+        Err(stream::CollectError::RunGone(reason)) => {
+            // The Agent no longer has this run (rollover / restart / settled and
+            // dropped the ring). A RunGone is NOT a transient failure, so retrying
+            // or blindly marking the run failed would be wrong — mirror the
+            // durable terminal state from the Agent's journal instead.
+            return reconcile_run_gone(local_run_id, canonical_run_id, session_id, &reason).await;
+        }
+        Err(stream::CollectError::App(error)) => return Err(error.to_string()),
+    };
+    let status = if response.complete {
         "completed"
     } else {
         "failed"
     };
-    match settlement {
-        ReplicaSettlement::Interrupted => {
-            crate::store::settle_interrupted_run(local_run_id, terminal)
-                .map_err(|e| format!("settle: {e}"))?;
-        }
-        ReplicaSettlement::Active => {
-            crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
-                run_id: local_run_id.to_string(),
-                status: terminal.to_string(),
-                error_message: (!response.complete)
-                    .then(|| "Future Agent response ended before a clean terminal.".to_string()),
-                error_type: None,
-            })
-            .map_err(|e| format!("update_status: {e}"))?;
-        }
-    }
-    crate::emit_thread_runtime_updated(
-        thread_id,
-        local_run_id.to_string(),
-        terminal.to_string(),
-        false,
-    );
+    let (error_message, error_type) = if response.complete {
+        (None, None)
+    } else {
+        (
+            Some("Future Agent response ended before a clean terminal.".to_string()),
+            Some("stream_interrupted".to_string()),
+        )
+    };
+    // Compare-and-set: a concurrent user abort (cancelled) wins the guard and is
+    // preserved, so a late completion from a reanimated/observed run can never
+    // overwrite it. update_run_status_if_active also pushes the status change.
+    crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+        run_id: local_run_id.to_string(),
+        status: status.to_string(),
+        error_message,
+        error_type,
+    })
+    .map_err(|e| format!("update_status: {e}"))?;
     crate::store::clear_run_event_buffer(local_run_id);
     Ok(())
+}
+
+/// The Agent returned RunGone (`failed_precondition` / `not_found`) for
+/// `canonical_run_id` on attach: it no longer recognizes the run. Settle the
+/// local `local_run_id` row from the Agent's authoritative journal instead of
+/// leaving it stranded as `running` or guessing `failed`.
+///
+/// The Agent is reachable (RunGone is a response, not a connect failure), so
+/// `get_state` answers with `activeRun` / `interruptedRun` / `requestedRun`:
+/// - still active (attach raced a `start_run`): leave running, let the live path
+///   converge — do not mark failed;
+/// - a durable terminal marker (`requestedRun`): mirror its exact state;
+/// - confirmed interrupted-by-restart: settle cancelled/interrupted;
+/// - no marker at all: the run is truly gone, settle failed so the UI frees up.
+///
+/// Every write goes through the compare-and-set writers, so a concurrent user
+/// abort (cancelled) always wins.
+async fn reconcile_run_gone(
+    local_run_id: &str,
+    canonical_run_id: &str,
+    session_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let mut client = connect_agent()
+        .await
+        .map_err(|e| format!("reconcile connect: {e}"))?;
+    let state = client
+        .execute_command(get_run_state_command(
+            session_id.to_string(),
+            canonical_run_id.to_string(),
+        ))
+        .await
+        .map_err(|e| format!("reconcile get_state: {e}"))?
+        .into_inner();
+    let state_value = if state.success {
+        serde_json::from_str::<serde_json::Value>(&state.data).unwrap_or_default()
+    } else {
+        serde_json::Value::Null
+    };
+
+    let active = state_value
+        .get("activeRun")
+        .and_then(|run| run.get("runId"))
+        .and_then(|id| id.as_str());
+    if active == Some(canonical_run_id) {
+        eprintln!(
+            "FutureOS run {local_run_id} still active on Agent after RunGone ({reason}); leaving running"
+        );
+        return Ok(());
+    }
+
+    if let Some(terminal) = state_value
+        .get("requestedRun")
+        .filter(|value| value.is_object())
+    {
+        let agent_state = terminal
+            .get("state")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let error = terminal.get("error").and_then(|value| value.as_str());
+        settle_from_agent_terminal(local_run_id, agent_state, error)
+            .map_err(|error| format!("reconcile terminal status: {error}"))?;
+        return Ok(());
+    }
+
+    let interrupted = state_value
+        .get("interruptedRun")
+        .and_then(|run| run.get("runId"))
+        .and_then(|id| id.as_str());
+    if interrupted == Some(canonical_run_id) {
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: local_run_id.to_string(),
+            status: "cancelled".to_string(),
+            error_message: Some("Interrupted because Future Agent restarted.".to_string()),
+            error_type: Some("interrupted".to_string()),
+        })
+        .map_err(|error| format!("reconcile interrupted status: {error}"))?;
+        return Ok(());
+    }
+
+    // No marker at all — the run is genuinely gone. Settle failed (CAS) so the
+    // composer can't strand on a permanent "running".
+    crate::store::fail_run_if_active(
+        local_run_id,
+        &format!("Future Agent run no longer active: {reason}"),
+        "stream_interrupted",
+    )
+    .map_err(|error| format!("reconcile missing run: {error}"))?;
+    Ok(())
+}
+
+/// CAS-mirror the Agent journal's durable terminal marker onto a local run row.
+/// Shared by attach-time RunGone reconciliation and the runtime watchdog.
+/// Unknown states fall back to a generic failure — a row is never asserted
+/// `completed` without positive evidence.
+fn settle_from_agent_terminal(
+    local_run_id: &str,
+    agent_state: &str,
+    error: Option<&str>,
+) -> Result<(), crate::AppError> {
+    let (status, error_type, default_message) = match agent_state {
+        "completed" => ("completed", None, None),
+        "cancelled" => ("cancelled", Some("cancelled"), Some("Run was cancelled.")),
+        "error" => (
+            "failed",
+            Some("agent_error"),
+            Some("Future Agent run failed."),
+        ),
+        _ => (
+            "failed",
+            Some("stream_interrupted"),
+            Some("Future Agent response ended before a clean terminal."),
+        ),
+    };
+    crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+        run_id: local_run_id.to_string(),
+        status: status.to_string(),
+        error_message: error
+            .map(str::to_string)
+            .or_else(|| default_message.map(str::to_string)),
+        error_type: error_type.map(str::to_string),
+    })
+    .map(|_| ())
+}
+
+// ── Live run watchdog ─────────────────────────────────────────────────────
+
+/// Seconds between watchdog passes.
+const WATCHDOG_INTERVAL_SECS: u64 = 30;
+/// A run younger than this is never inspected: the row is created before the
+/// Agent acknowledges the prompt (and before the replica lease is acquired),
+/// so a young row can legitimately have no Agent marker and no collector yet.
+/// Must comfortably exceed the slowest prompt setup (session ensure, model
+/// setup, the `capture_before` git fork), or the watchdog could fail a run
+/// whose prompt is still being prepared.
+const WATCHDOG_GRACE_SECS: u64 = 45;
+/// A row the Agent has no marker for at all is only settled as orphaned once
+/// it is this old. Below the threshold it is skipped — same startup-window
+/// hazard as the grace period, just for rows that survived several passes.
+const WATCHDOG_ORPHAN_SECS: u64 = 600;
+
+/// What the watchdog should do with a non-terminal run, given the Agent's
+/// authoritative view of it. Pure (no IO) — [`reconcile_active_run_once`]
+/// applies it.
+#[derive(Debug, PartialEq)]
+enum ActiveRunAction {
+    /// The Agent is still executing this exact run. Reattach a collector if no
+    /// live collector owns the replica lease (a failed acquire means healthy).
+    Attach,
+    /// The Agent's journal has a durable terminal marker for this run: mirror
+    /// its exact state onto the row.
+    SettleTerminal {
+        agent_state: String,
+        error: Option<String>,
+    },
+    /// The Agent confirms this run began but never committed (restart).
+    SettleInterrupted,
+    /// The Agent has no marker at all and the row is past the orphan age.
+    SettleOrphaned,
+    /// Healthy, or not enough evidence yet — leave the row untouched.
+    Skip,
+}
+
+/// Decide the watchdog action for one non-terminal run from the Agent's
+/// `get_run_state` payload. Mirrors the marker precedence of
+/// [`reconcile_run_gone`]: live active run first, then the durable terminal
+/// marker, then the interrupted-by-restart marker, then age-based orphaning.
+fn plan_active_run_reconciliation(
+    state: &serde_json::Value,
+    canonical_run_id: &str,
+    age_secs: u64,
+) -> ActiveRunAction {
+    let is_streaming = state
+        .get("isStreaming")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let active_run_id = state
+        .get("activeRun")
+        .and_then(|run| run.get("runId"))
+        .and_then(|id| id.as_str());
+    if is_streaming && active_run_id == Some(canonical_run_id) {
+        return ActiveRunAction::Attach;
+    }
+    if let Some(terminal) = state.get("requestedRun").filter(|value| value.is_object()) {
+        return ActiveRunAction::SettleTerminal {
+            agent_state: terminal
+                .get("state")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string(),
+            error: terminal
+                .get("error")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+        };
+    }
+    let interrupted_run_id = state
+        .get("interruptedRun")
+        .and_then(|run| run.get("runId"))
+        .and_then(|id| id.as_str());
+    if interrupted_run_id == Some(canonical_run_id) {
+        return ActiveRunAction::SettleInterrupted;
+    }
+    if age_secs >= WATCHDOG_ORPHAN_SECS {
+        return ActiveRunAction::SettleOrphaned;
+    }
+    ActiveRunAction::Skip
+}
+
+/// Reconcile one non-terminal run row against the Agent's authoritative state.
+async fn reconcile_active_run_once(
+    run: &crate::store::ActiveRun,
+    canonical_run_id: &str,
+    age_secs: u64,
+) -> Result<(), String> {
+    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    // Query by the canonical id (not the local row id): remote-attached runs
+    // carry a synthetic local id the Agent never saw, while its durable
+    // journal marker is keyed by the canonical id it adopted. For GUI runs
+    // the two are identical.
+    let state = client
+        .execute_command(get_run_state_command(
+            run.session_id.clone(),
+            canonical_run_id.to_string(),
+        ))
+        .await
+        .map_err(|e| format!("get_run_state: {e}"))?
+        .into_inner();
+    if !state.success {
+        // The Agent cannot resolve this session — leave the row as is; startup
+        // convergence settles genuinely dead rows on the next launch.
+        return Ok(());
+    }
+    let state_value = serde_json::from_str::<serde_json::Value>(&state.data).unwrap_or_default();
+    match plan_active_run_reconciliation(&state_value, canonical_run_id, age_secs) {
+        ActiveRunAction::Skip => Ok(()),
+        ActiveRunAction::Attach => match AGENT_REPLICAS.acquire(canonical_run_id) {
+            // A healthy in-flight collector holds the lease — nothing to do.
+            Err(_) => Ok(()),
+            Ok(lease) => {
+                let run_id = run.run_id.clone();
+                let session_id = run.session_id.clone();
+                let canonical = canonical_run_id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        collect_stored_replica(lease, &session_id, &run_id, &canonical).await
+                    {
+                        eprintln!("FutureOS watchdog collector for {run_id} failed: {e}");
+                        let _ = crate::store::fail_run_if_active(
+                            &run_id,
+                            &format!("Watchdog stream could not be collected: {e}"),
+                            "stream_interrupted",
+                        );
+                    }
+                });
+                Ok(())
+            }
+        },
+        ActiveRunAction::SettleTerminal { agent_state, error } => {
+            settle_from_agent_terminal(&run.run_id, &agent_state, error.as_deref())
+                .map_err(|e| format!("settle terminal: {e}"))
+        }
+        ActiveRunAction::SettleInterrupted => {
+            crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+                run_id: run.run_id.clone(),
+                status: "cancelled".to_string(),
+                error_message: Some("Interrupted because Future Agent restarted.".to_string()),
+                error_type: Some("interrupted".to_string()),
+            })
+            .map(|_| ())
+            .map_err(|e| format!("settle interrupted: {e}"))
+        }
+        ActiveRunAction::SettleOrphaned => crate::store::fail_run_if_active(
+            &run.run_id,
+            "Future Agent run is no longer active on the agent.",
+            "stream_interrupted",
+        )
+        .map(|_| ())
+        .map_err(|e| format!("settle orphaned: {e}")),
+    }
+}
+
+/// Launch the runtime watchdog for active runs: a periodic pass reconciling
+/// every non-terminal run row against the Agent's authoritative state. The
+/// backstop for rows whose owning pipeline/collector never settled them:
+///
+/// - The webview was suspended (hidden/occluded window) and never applied the
+///   `agent_prompt` invoke response, so the frontend's status write never ran
+///   — the backend settles these rows itself now, but this pass repairs rows
+///   created by older builds and any future settlement gap.
+/// - A collector task died or wedged while the run was still streaming
+///   Agent-side: the replica lease probe finds no owner and reattaches one,
+///   resuming live projection from the last persisted cursor.
+/// - The Agent lost the run (restart/rollover) without the GUI noticing: the
+///   durable journal marker (or its absence) settles the row.
+///
+/// All writes go through the compare-and-set writers, so a healthy collector,
+/// a concurrent user abort, and the normal pipeline are never clobbered. The
+/// pass self-gates on Agent reachability; Agent downtime is left for startup
+/// convergence on the next launch.
+pub fn spawn_active_run_watchdog() {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(WATCHDOG_INTERVAL_SECS)).await;
+            if connect_agent().await.is_err() {
+                continue;
+            }
+            let Ok(active_runs) = crate::store::list_active_runs() else {
+                continue;
+            };
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            for run in active_runs {
+                let age_secs = now_ms.saturating_sub(run.created_at).max(0) as u64 / 1000;
+                if age_secs < WATCHDOG_GRACE_SECS {
+                    continue;
+                }
+                let canonical = AGENT_REPLICAS
+                    .canonical_for_local(&run.run_id)
+                    .unwrap_or_else(|| run.run_id.clone());
+                if let Err(error) = reconcile_active_run_once(&run, &canonical, age_secs).await {
+                    eprintln!(
+                        "FutureOS run watchdog could not reconcile {}: {error}",
+                        run.run_id
+                    );
+                }
+            }
+        }
+    });
 }
 
 // ── Remote-stream attach (cross-client streaming) ─────────────────────────
@@ -853,21 +1230,15 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
     let run_id = run.id.clone();
     let sid = session_id.to_string();
     tokio::spawn(async move {
-        if let Err(e) = collect_stored_replica(
-            replica_lease,
-            &sid,
-            &run_id,
-            &canonical_run_id,
-            ReplicaSettlement::Active,
-        )
-        .await
+        if let Err(e) =
+            collect_stored_replica(replica_lease, &sid, &run_id, &canonical_run_id).await
         {
             eprintln!("FutureOS remote-stream collector for {run_id} failed: {e}");
             let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
                 run_id,
                 status: "failed".to_string(),
                 error_message: Some(e),
-                error_type: None,
+                error_type: Some("stream_interrupted".to_string()),
             });
         }
     });
@@ -1051,4 +1422,92 @@ pub fn reconcile_thread_workspace(session_id: &str, new_cwd: &str) -> Result<(),
         .map_err(|e| format!("move_thread: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::{plan_active_run_reconciliation, ActiveRunAction, WATCHDOG_ORPHAN_SECS};
+
+    fn state(json: &str) -> serde_json::Value {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn attaches_when_agent_still_running_this_run() {
+        let action = plan_active_run_reconciliation(
+            &state(r#"{"isStreaming": true, "activeRun": {"runId": "run-1"}}"#),
+            "run-1",
+            120,
+        );
+        assert_eq!(action, ActiveRunAction::Attach);
+    }
+
+    #[test]
+    fn does_not_attach_for_a_different_active_run() {
+        let action = plan_active_run_reconciliation(
+            &state(r#"{"isStreaming": true, "activeRun": {"runId": "run-2"}}"#),
+            "run-1",
+            120,
+        );
+        assert_eq!(action, ActiveRunAction::Skip);
+    }
+
+    #[test]
+    fn mirrors_durable_completed_marker() {
+        let action = plan_active_run_reconciliation(
+            &state(r#"{"requestedRun": {"state": "completed"}}"#),
+            "run-1",
+            120,
+        );
+        assert_eq!(
+            action,
+            ActiveRunAction::SettleTerminal {
+                agent_state: "completed".to_string(),
+                error: None,
+            }
+        );
+    }
+
+    #[test]
+    fn mirrors_error_marker_with_its_message() {
+        let action = plan_active_run_reconciliation(
+            &state(r#"{"requestedRun": {"state": "error", "error": "boom"}}"#),
+            "run-1",
+            120,
+        );
+        assert_eq!(
+            action,
+            ActiveRunAction::SettleTerminal {
+                agent_state: "error".to_string(),
+                error: Some("boom".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn settles_interrupted_by_restart() {
+        let action = plan_active_run_reconciliation(
+            &state(r#"{"interruptedRun": {"runId": "run-1"}}"#),
+            "run-1",
+            120,
+        );
+        assert_eq!(action, ActiveRunAction::SettleInterrupted);
+    }
+
+    #[test]
+    fn skips_young_runs_without_markers() {
+        let action =
+            plan_active_run_reconciliation(&state(r#"{"isStreaming": false}"#), "run-1", 60);
+        assert_eq!(action, ActiveRunAction::Skip);
+    }
+
+    #[test]
+    fn orphans_old_runs_without_markers() {
+        let action = plan_active_run_reconciliation(
+            &state(r#"{"isStreaming": false}"#),
+            "run-1",
+            WATCHDOG_ORPHAN_SECS,
+        );
+        assert_eq!(action, ActiveRunAction::SettleOrphaned);
+    }
 }

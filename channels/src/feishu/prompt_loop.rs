@@ -11,7 +11,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -29,51 +29,61 @@ pub(super) async fn run_prompt_loop(
     gen_counter: &AtomicU64,
     ack_reaction_id: Option<String>,
 ) -> Result<()> {
-    // Hold the per-chat lock only for abort+prompt, not during streaming.
-    // This lets a new message interrupt an ongoing stream.
-    let my_gen = {
+    // Hold the per-chat lock through abort + idle wait + prompt + atomic attach,
+    // but not while consuming the stream. This closes the attach race while
+    // still letting a newer message interrupt an ongoing response.
+    let (expected_run_id, my_gen, mut stream) = {
         let _guard = prompt_lock.lock().await;
 
         // Abort current generation, then send the new prompt
-        {
-            let mut client = agent.write().await;
-            let _ = client.abort(session_id).await;
-            let mut prompt_text = text.to_string();
-            for img in images {
-                match &img.data {
-                    ImageData::Base64(_) => {
-                        if let Some(ref fp) = img.file_path {
-                            prompt_text.push_str(&format!("\n[File saved: {}]", fp));
-                        } else {
-                            prompt_text.push_str("\n[Image attached]");
-                        }
+        // Clone the cheap tonic client and release the process-global lock
+        // before waiting. The per-chat mutex above still serializes this
+        // session, while unrelated chats can continue issuing commands.
+        let mut client = agent.read().await.clone();
+        let _ = client.abort(session_id).await;
+        // The new Agent run state machine keeps the session busy while the
+        // aborted run unwinds (Cancelling/Finalizing), so wait for it to go
+        // idle before prompting — otherwise the prompt is rejected and the
+        // user sees a spurious error card.
+        client
+            .wait_until_idle(session_id, Duration::from_secs(8))
+            .await?;
+        let mut prompt_text = text.to_string();
+        for img in images {
+            match &img.data {
+                ImageData::Base64(_) => {
+                    if let Some(ref fp) = img.file_path {
+                        prompt_text.push_str(&format!("\n[File saved: {}]", fp));
+                    } else {
+                        prompt_text.push_str("\n[Image attached]");
                     }
-                    ImageData::Url(_) => prompt_text.push_str("\n[Image URL attached]"),
                 }
+                ImageData::Url(_) => prompt_text.push_str("\n[Image URL attached]"),
             }
-            info!(
-                "[SEND] session={} text=\"{}\"",
-                session_id,
-                if prompt_text.len() > 300 {
-                    format!("{}...", truncate_at_char(&prompt_text, 300))
-                } else {
-                    prompt_text.clone()
-                }
-            );
-            client
-                .prompt(session_id, &prompt_text, images.to_vec())
-                .await?;
         }
+        info!(
+            "[SEND] session={} text=\"{}\"",
+            session_id,
+            if prompt_text.len() > 300 {
+                format!("{}...", truncate_at_char(&prompt_text, 300))
+            } else {
+                prompt_text.clone()
+            }
+        );
+        let expected_run_id = client
+            .prompt(session_id, &prompt_text, images.to_vec())
+            .await?;
+        // Attach before releasing the per-chat lock, so a newer message cannot
+        // roll this run over between its acknowledgement and stream ownership.
+        let stream = client
+            .stream_run_events(session_id, &expected_run_id)
+            .await?;
 
         // Bump generation — we're now the latest active stream
-        gen_counter.fetch_add(1, Ordering::SeqCst) + 1
+        let my_gen = gen_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        (expected_run_id, my_gen, stream)
     };
     // Lock released here — streaming happens concurrently with other prompts
-
-    let mut stream = {
-        let mut client = agent.write().await;
-        client.stream_events(session_id).await?
-    };
 
     let mut stream_text = String::new();
     let mut last_was_content = false;
@@ -108,7 +118,14 @@ pub(super) async fn run_prompt_loop(
     while let Some(event) = stream.message().await? {
         check_superseded!();
 
-        let parsed = AgentClient::parse_event(event);
+        let parsed = match AgentClient::parse_event(event) {
+            // Only consume events for the run we prompted. A different run on the
+            // same session (another client, or a stale tail after supersede) is
+            // dropped so its agent_end can't finalize this card early.
+            Some((rid, ev)) if rid.is_empty() || rid == expected_run_id => Some(ev),
+            Some(_) => continue,
+            None => None,
+        };
 
         match parsed {
             Some(AgentEvent::AgentStart) | Some(AgentEvent::Ping) => {}
@@ -360,7 +377,7 @@ pub(super) async fn run_prompt_loop(
                     }
                 }
             }
-            Some(AgentEvent::AgentEnd { error }) => {
+            Some(AgentEvent::AgentEnd { error, state }) => {
                 check_superseded!();
                 // Flush any pending text before finalizing
                 if needs_flush {
@@ -377,10 +394,12 @@ pub(super) async fn run_prompt_loop(
                 }
                 let _ = feishu.react_to_message(feishu_msg_id, "DONE").await;
 
+                let was_cancelled = state.as_deref() == Some("cancelled");
                 if let Some(err) = error {
-                    // "interrupted" is expected when a newer message aborts this
-                    // stream — don't show an error card, just let the new stream win.
-                    if err.contains("interrupted") || err.contains("Interrupted") {
+                    // "interrupted"/cancelled is expected when a newer message
+                    // aborts this stream — don't show an error card, just let the
+                    // new stream win.
+                    if was_cancelled || err.contains("interrupted") || err.contains("Interrupted") {
                         info!("[REPLY] interrupted by newer message, stopping silently");
                     } else {
                         info!("[REPLY] error=\"{}\"", err);

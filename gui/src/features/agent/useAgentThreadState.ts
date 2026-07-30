@@ -1,7 +1,8 @@
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
 import { useCallback, useEffect, useRef } from "react";
-import { abortRun } from "../../integrations/storage/threadStore";
+import { abortRun, getLatestRun } from "../../integrations/storage/threadStore";
+import { usePolling } from "../../lib/usePolling";
 import { matchesSettledRun } from "./agentMessageFormatters";
 import { useRunReattach } from "./useRunReattach";
 import { useSendMessage } from "./useSendMessage";
@@ -72,7 +73,7 @@ export function useAgentThreadState({
   // the resume effect the way the `recentRun` object identity would.
   const activeRunStartedAt = activeRunId ? (recentRun?.startedAt ?? recentRun?.createdAt ?? null) : null;
 
-  const handleSend = useSendMessage({
+  const { handleSend, abandonSend } = useSendMessage({
     thread,
     threadId,
     modelId,
@@ -96,6 +97,60 @@ export function useAgentThreadState({
     reloadMessagesQuiet,
     messagesGenRef,
   });
+
+  // ── Settle watchdog ────────────────────────────────────────────────────
+  // While a local send owns the view, its pipeline is the only path that
+  // finalizes the run. If that pipeline's invoke never resolves (window
+  // hidden → macOS suspends the webview and the response is never applied),
+  // the pipeline hangs forever: the composer locked on `sendingRef`, the
+  // bubble frozen mid-stream. The backend settles the run row itself the
+  // instant the stream ends, so the row is the truth: once it is terminal,
+  // abandon the hung send (release the lock, disconnect the late pipeline
+  // from this view) and force-reload the persisted reply. Runs periodically
+  // and immediately when the window becomes visible/focused again, so a run
+  // that finished while hidden unsticks the moment the user returns.
+  const threadIdRef = useRef(threadId);
+  threadIdRef.current = threadId;
+  const reconcileHungSend = useCallback(async () => {
+    const targetThreadId = threadIdRef.current;
+    if (!targetThreadId || !sendingRef.current)
+      return;
+    const latest = await getLatestRun(targetThreadId).catch(() => null);
+    // Re-check ownership after the await: a thread switch may have handed
+    // `sendingRef` to a new send, which a stale result must not abandon.
+    if (
+      !latest
+      || latest.threadId !== targetThreadId
+      || threadIdRef.current !== targetThreadId
+      || !sendingRef.current
+      || !matchesSettledRun(latest.status)
+    ) {
+      return;
+    }
+    abandonSend();
+    setRecentRun(latest);
+    void reloadMessagesQuiet(targetThreadId, true);
+  }, [abandonSend, reloadMessagesQuiet, sendingRef, setRecentRun]);
+
+  usePolling(() => {
+    void reconcileHungSend();
+  }, 15_000, {
+    enabled: Boolean(threadId),
+    deps: [reconcileHungSend],
+  });
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible")
+        void reconcileHungSend();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [reconcileHungSend]);
 
   // Interrupt the in-flight run for this thread. Best-effort: the backend stops
   // the agent and marks the run `cancelled`; the in-flight send then settles the

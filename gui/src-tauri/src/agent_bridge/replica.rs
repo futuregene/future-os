@@ -87,7 +87,7 @@ impl ReplicaLease {
         canonical_run_id: &str,
         session_id: &str,
         thread_id: &str,
-    ) -> Result<super::stream::AgentResponse, crate::AppError> {
+    ) -> Result<super::stream::AgentResponse, super::stream::CollectError> {
         if self.canonical_run_id != canonical_run_id {
             return Err(format!(
                 "replica lease owns {}, cannot collect {canonical_run_id}",

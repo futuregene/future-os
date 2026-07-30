@@ -4,12 +4,54 @@
 //! agent signals `agent_end`.
 
 use tokio::time::{sleep, timeout, Duration};
+use tonic::Code;
 
 use super::{connect_agent, persist::persist_run_event};
 use crate::agent_proto::StreamRequest;
 
 const AGENT_EVENT_STREAM_TIMEOUT_SECS: u64 = 600;
 const STREAM_RECONNECT_ATTEMPTS: u32 = 6;
+
+/// Outcome of collecting one canonical Agent run. `RunGone` is distinct from a
+/// transient/`App` failure: the Agent explicitly does not recognize the run
+/// (it rolled over, restarted, or already settled and dropped the ring), so the
+/// caller must reconcile the local row from the Agent's journal (`get_state`)
+/// instead of retrying the attach or marking the run failed.
+pub(super) enum CollectError {
+    App(crate::AppError),
+    RunGone(String),
+}
+
+impl From<crate::AppError> for CollectError {
+    fn from(error: crate::AppError) -> Self {
+        CollectError::App(error)
+    }
+}
+
+impl From<String> for CollectError {
+    fn from(error: String) -> Self {
+        CollectError::App(error.into())
+    }
+}
+
+impl From<CollectError> for crate::AppError {
+    fn from(error: CollectError) -> Self {
+        match error {
+            CollectError::App(error) => error,
+            CollectError::RunGone(reason) => {
+                crate::AppError::from(format!("Future Agent run no longer active: {reason}"))
+            }
+        }
+    }
+}
+
+/// Why an `atomic_attach` failed. Only `FailedPrecondition` / `NotFound` mean the
+/// run is gone; everything else (connect failure, unknown code) is a transient
+/// the reconnect loop should retry.
+enum AttachFailure {
+    Transient(String),
+    RunGone(String),
+}
 
 /// Persist a run event on a blocking thread, so the synchronous SQLite write
 /// (and the occasional `git` fork on write/artifact events) doesn't stall the
@@ -89,7 +131,7 @@ pub(super) async fn collect_agent_response(
     canonical_run_id: &str,
     session_id: &str,
     thread_id: &str,
-) -> Result<AgentResponse, crate::AppError> {
+) -> Result<AgentResponse, CollectError> {
     let mut content = String::new();
     let mut waiting_for_approval = false;
     let cursor_run_id = local_run_id.map(str::to_string);
@@ -106,7 +148,9 @@ pub(super) async fn collect_agent_response(
 
     let clean_end = 'attach: loop {
         let attach_result = async {
-            let mut client = connect_agent().await?;
+            let mut client = connect_agent()
+                .await
+                .map_err(|error| AttachFailure::Transient(error.to_string()))?;
             client
                 .stream_events(StreamRequest {
                     event_types: vec![],
@@ -117,18 +161,22 @@ pub(super) async fn collect_agent_response(
                 })
                 .await
                 .map(|response| response.into_inner())
-                .map_err(|error| {
-                    crate::AppError::from(format!(
-                        "Unable to attach to Future Agent run {canonical_run_id}: {error}"
-                    ))
+                .map_err(|status| match status.code() {
+                    // The Agent no longer has this run (rolled over, restarted,
+                    // or settled and dropped the ring). Not retryable: the run is
+                    // gone, so the caller must reconcile from the journal.
+                    Code::FailedPrecondition | Code::NotFound => {
+                        AttachFailure::RunGone(status.to_string())
+                    }
+                    _ => AttachFailure::Transient(status.to_string()),
                 })
         }
         .await;
 
         let mut stream = match attach_result {
             Ok(stream) => stream,
-            Err(error) => {
-                let stream_error = error.to_string();
+            Err(AttachFailure::RunGone(reason)) => return Err(CollectError::RunGone(reason)),
+            Err(AttachFailure::Transient(stream_error)) => {
                 reconnect_attempt += 1;
                 if reconnect_attempt > STREAM_RECONNECT_ATTEMPTS {
                     return Err(format!(

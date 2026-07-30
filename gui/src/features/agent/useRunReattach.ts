@@ -95,9 +95,26 @@ export function useRunReattach({
       }
       tick();
     });
+    // A terminal push can be lost (coalesce drop, backend restart). Without a
+    // driver the live bubble would then freeze forever and the composer keep
+    // showing "stop". This low-frequency pass re-reads the run row; if it has
+    // actually settled, activeRunId flips to null and the settle effect above
+    // force-reloads the persisted message. Harmless while still running.
+    const selfHeal = setInterval(() => {
+      if (cancelled || sendingRef.current)
+        return;
+      void refreshRecentRun(threadId, workspaceId);
+    }, 30_000);
+    // Close the registration race: a push that lands between the initial tick's
+    // read and `listen` resolving would otherwise be missed until the next push.
+    void unlisten.then(() => {
+      if (!cancelled)
+        tick();
+    });
 
     return () => {
       cancelled = true;
+      clearInterval(selfHeal);
       void unlisten.then(stop => stop());
     };
   }, [

@@ -17,6 +17,15 @@ pub struct InterruptedRun {
     pub session_id: String,
 }
 
+/// A run that is still non-terminal, with the session the agent knows it by.
+/// Consumed by the runtime watchdog (`agent_bridge::spawn_active_run_watchdog`),
+/// which reconciles rows whose owning pipeline/collector never finalized them.
+pub struct ActiveRun {
+    pub run_id: String,
+    pub session_id: String,
+    pub created_at: i64,
+}
+
 /// Returns runs that were interrupted by a previous process crash and
 /// need re-examination against the agent's actual state.
 pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
@@ -40,37 +49,55 @@ pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
         .map_err(crate::AppError::from)
 }
 
-/// Reset a run back to "running", clearing interrupted/error markers.
-pub fn reanimate_run(run_id: &str) -> Result<(), crate::AppError> {
+/// Every run that has not reached a terminal state (`running` /
+/// `waiting_approval`), ordered oldest first. The runtime watchdog uses this to
+/// find rows whose owning pipeline or collector never settled them and
+/// reconcile each against the agent's authoritative state. `session_id`
+/// resolution mirrors [`list_interrupted_runs`].
+pub fn list_active_runs() -> Result<Vec<ActiveRun>, crate::AppError> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.id, r.created_at,
+                COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id) AS session_id
+         FROM runs r
+         JOIN threads t ON t.id = r.thread_id
+         WHERE r.status NOT IN ({TERMINAL_RUN_STATUSES_SQL})
+         ORDER BY r.created_at"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ActiveRun {
+            run_id: row.get(0)?,
+            created_at: row.get(1)?,
+            session_id: row.get(2)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::AppError::from)
+}
+
+/// Reset a run back to "running", clearing interrupted/error markers — but only
+/// when it is still in the interrupted state startup convergence created
+/// (`status='cancelled' AND error_type='interrupted'`). Returns whether a row
+/// changed. The guard is a compare-and-set so a run the user already aborted or
+/// that another path settled (a terminal state that is NOT the interrupted
+/// marker) is left untouched and the caller skips spawning a collector for it.
+/// This honors the "no unguarded status writer" rule (see gui/CLAUDE.md #11).
+pub fn reanimate_run(run_id: &str) -> Result<bool, crate::AppError> {
     let now = now_millis();
     let conn = connect()?;
-    conn.execute(
+    let affected = conn.execute(
         "UPDATE runs
          SET status = 'running',
              error_message = NULL,
              error_type = NULL,
              ended_at = NULL,
              updated_at = ?1
-         WHERE id = ?2",
+         WHERE id = ?2
+           AND status = 'cancelled'
+           AND error_type = 'interrupted'",
         params![now, run_id],
     )?;
-    Ok(())
-}
-
-/// The agent confirmed this run completed normally — mark it as such.
-pub fn settle_interrupted_run(run_id: &str, status: &str) -> Result<(), crate::AppError> {
-    let now = now_millis();
-    let conn = connect()?;
-    conn.execute(
-        "UPDATE runs
-         SET status = ?1,
-             error_message = NULL,
-             error_type = NULL,
-             updated_at = ?2
-         WHERE id = ?3",
-        params![status, now, run_id],
-    )?;
-    Ok(())
+    Ok(affected > 0)
 }
 
 /// Apply the Agent journal's authoritative terminal state to a run recovered
@@ -787,5 +814,109 @@ mod tests {
 
         std::fs::remove_dir_all(&root).ok();
         assert_eq!(names, vec!["dead_ws".to_string(), "ghost_ws".to_string()]);
+    }
+
+    #[test]
+    fn reanimate_is_guarded_and_late_settle_cannot_overwrite_an_abort() {
+        let _home = HomeGuard::new("reanimate-cas-guard");
+        crate::store::initialize_app_store().expect("initialize store");
+        let workspace = crate::store::create_workspace(CreateWorkspaceInput {
+            name: Some("test".to_string()),
+            path: PathBuf::from(std::env::var("HOME").expect("test home"))
+                .join("workspace")
+                .display()
+                .to_string(),
+            description: None,
+            create_directory: Some(true),
+        })
+        .expect("create workspace");
+        let thread = crate::store::create_thread(CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: Some("test".to_string()),
+            workspace_id: Some(workspace.id),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("create thread");
+
+        // Startup-convergence shape: cancelled + error_type='interrupted'.
+        let interrupted = crate::store::create_run(CreateRunInput {
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::store::update_run_status_if_active(UpdateRunStatusInput {
+            run_id: interrupted.id.clone(),
+            status: "cancelled".to_string(),
+            error_message: Some("Interrupted because FutureOS restarted.".to_string()),
+            error_type: Some("interrupted".to_string()),
+        })
+        .expect("mark interrupted");
+
+        // User-abort shape: cancelled + error_type='abort_requested'.
+        let aborted = crate::store::create_run(CreateRunInput {
+            thread_id: thread.id,
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::store::update_run_status_if_active(UpdateRunStatusInput {
+            run_id: aborted.id.clone(),
+            status: "cancelled".to_string(),
+            error_message: Some("Cancelled because the run was terminated.".to_string()),
+            error_type: Some("abort_requested".to_string()),
+        })
+        .expect("mark aborted");
+
+        // reanimate flips the interrupted run back to running...
+        assert!(
+            reanimate_run(&interrupted.id).expect("reanimate interrupted"),
+            "interrupted run must be reanimated"
+        );
+        assert_eq!(
+            crate::store::get_run(&interrupted.id)
+                .expect("get")
+                .expect("row")
+                .status,
+            "running"
+        );
+        // ...but the CAS guard leaves an already-aborted run untouched.
+        assert!(
+            !reanimate_run(&aborted.id).expect("reanimate aborted"),
+            "an aborted run must NOT be reanimated"
+        );
+        let aborted_row = crate::store::get_run(&aborted.id)
+            .expect("get")
+            .expect("row");
+        assert_eq!(aborted_row.status, "cancelled");
+        assert_eq!(aborted_row.error_type.as_deref(), Some("abort_requested"));
+
+        // The H2 regression: a reanimated run that the user then aborts must keep
+        // its cancelled state when a late completion tries to settle it. The
+        // compare-and-set writer refuses to touch the terminal row.
+        crate::store::update_run_status_if_active(UpdateRunStatusInput {
+            run_id: interrupted.id.clone(),
+            status: "cancelled".to_string(),
+            error_message: Some("Cancelled because the run was terminated.".to_string()),
+            error_type: Some("abort_requested".to_string()),
+        })
+        .expect("user abort");
+        let changed = crate::store::update_run_status_if_active(UpdateRunStatusInput {
+            run_id: interrupted.id.clone(),
+            status: "completed".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("late settle");
+        assert!(!changed, "late completion must not overwrite the abort");
+        let final_row = crate::store::get_run(&interrupted.id)
+            .expect("get")
+            .expect("row");
+        assert_eq!(final_row.status, "cancelled");
+        assert_eq!(final_row.error_type.as_deref(), Some("abort_requested"));
     }
 }
