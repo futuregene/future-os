@@ -716,9 +716,9 @@ function AccountMenuButton({
   const close = () => setOpen(false);
 
   return (
-    <div className="relative flex items-center gap-2" ref={layerRef}>
+    <div className="relative" ref={layerRef}>
       <div
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        className="flex w-full cursor-pointer items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         onClick={() => setOpen(value => !value)}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -733,24 +733,26 @@ function AccountMenuButton({
           {initial}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{prefix}</span>
+        {hasUpdate
+          ? (
+              <button
+                className="ml-auto shrink-0 rounded bg-accent px-1.5 py-0.5 text-[11px] font-medium leading-none text-white transition-colors hover:bg-accent-hover"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenUpdate?.();
+                  close();
+                }}
+                onKeyDown={event => event.stopPropagation()}
+                type="button"
+              >
+                {t("userMenu.upgrade")}
+              </button>
+            )
+          : null}
       </div>
-      {hasUpdate
-        ? (
-            <button
-              className="shrink-0 rounded-md bg-accent px-2 py-0.5 text-[11px] font-medium leading-none text-white transition-colors hover:bg-accent-hover"
-              onClick={() => {
-                onOpenUpdate?.();
-                close();
-              }}
-              type="button"
-            >
-              {t("userMenu.upgrade")}
-            </button>
-          )
-        : null}
       {open
         ? (
-            <MenuPanel className="absolute bottom-full left-0 right-0 z-40 mb-2 overflow-hidden border-0 p-0">
+            <MenuPanel className="absolute bottom-full left-0 right-0 z-40 mb-2 overflow-hidden p-0">
               <MenuRow
                 label={t("activityRail.settings")}
                 onClick={() => {
@@ -790,7 +792,7 @@ function MenuRow({ action, label, onClick }: { action?: ReactNode; label: string
 /** Solid accent pill used as the right-hand action label (Recharge / Upgrade). */
 function ActionBadge({ children }: { children: ReactNode }) {
   return (
-    <span className="shrink-0 rounded-md bg-accent px-2 py-0.5 text-[11px] font-medium leading-none text-white">
+    <span className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[11px] font-medium leading-none text-white">
       {children}
     </span>
   );
