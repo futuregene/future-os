@@ -92,19 +92,46 @@ impl RunControl {
     ) -> Result<RunLease> {
         let mut state = self.state.lock();
         let client_request_id = client_request_id.unwrap_or_default();
-        if !client_request_id.is_empty()
-            && (state
-                .active
-                .as_ref()
-                .is_some_and(|active| active.client_request_id == client_request_id)
-                || state
-                    .recent_requests
-                    .iter()
-                    .any(|(request_id, _)| request_id == client_request_id))
-        {
+        // Idempotency: reject a client request id we already accepted. A
+        // cancellation-stuck run never completed, so it must NOT count as
+        // already-accepted — a transport retry of the same id has to go through
+        // (the stuck lease is released as a dead lease just below).
+        let already_accepted = !client_request_id.is_empty()
+            && (state.active.as_ref().is_some_and(|active| {
+                active.client_request_id == client_request_id
+                    && active.phase != RunPhase::CancellationStuck
+            }) || state
+                .recent_requests
+                .iter()
+                .any(|(request_id, _)| request_id == client_request_id));
+        if already_accepted {
             bail!("client request `{client_request_id}` was already accepted");
         }
-        if let Some(active) = &state.active {
+        // Self-heal a cancellation-stuck predecessor. `SessionRuntime::begin` holds
+        // the task lock and only reaches here when the task slot is empty — which
+        // means the stuck run's completion monitor has already returned, so there
+        // is no live writer to race. A stuck run never finalizes on its own, so
+        // without this the session would stay locked until the agent restarts.
+        // `PersistenceDegraded` is intentionally NOT released (fail-closed: a
+        // failed persistence commit needs operator eyes, not silent recovery).
+        let stuck_dead = state
+            .active
+            .as_ref()
+            .filter(|active| active.phase == RunPhase::CancellationStuck)
+            .map(|active| (active.lease.run_id.clone(), active.lease.epoch));
+        if let Some((dead_run_id, dead_epoch)) = stuck_dead {
+            state.active.take();
+            self.is_streaming.store(false, Ordering::Release);
+            self.active_tasks.fetch_sub(1, Ordering::Relaxed);
+            tracing::warn!(
+                run_id = %dead_run_id,
+                run_epoch = dead_epoch,
+                "self-heal: releasing cancellation-stuck dead lease on new begin"
+            );
+            // Do NOT push the dead client_request_id into `recent_requests`: a
+            // stuck run did not complete, so a retry of the same request id must
+            // be allowed through (the idempotency check above already exempts it).
+        } else if let Some(active) = &state.active {
             bail!(
                 "agent run {} is {}; wait for it to finish before starting another run",
                 active.lease.run_id,
@@ -164,6 +191,15 @@ impl RunControl {
         self.abort_expected(None).ok().flatten()
     }
 
+    /// Request cancellation without making the session idle. Only the matching
+    /// run task may later transition through finalizing and release the session.
+    ///
+    /// If the run is already finalizing or terminal (`CancellationStuck` /
+    /// `PersistenceDegraded`) the cancellation point has passed, so this returns
+    /// `Ok(None)` (a no-op "nothing to cancel") without touching the phase or
+    /// arming the stuck-detection timer — clobbering `Finalizing` back to
+    /// `Cancelling` there is exactly what produces a spurious
+    /// `cancellation_stuck` on the error path.
     pub fn abort_expected(&self, expected_run_id: Option<&str>) -> Result<Option<RunSnapshot>> {
         let (snapshot, tx, flag) = {
             let mut state = self.state.lock();
@@ -174,6 +210,20 @@ impl RunControl {
                 return Ok(None);
             };
             validate_run_id(&active.lease.run_id, expected_run_id)?;
+            // A run that is already finalizing or terminal is past the point where
+            // cancellation can reach it; the loop is unwinding and will release the
+            // session itself. Aborting here would clobber `Finalizing` back to
+            // `Cancelling` and arm a pointless 30s timer — and that clobber is what
+            // turns a clean error-path finalize into a spurious
+            // `cancellation_stuck` (see the completion monitor). Treat it as no-op.
+            if !abortable(active.phase) {
+                tracing::debug!(
+                    run_id = %active.lease.run_id,
+                    phase = active.phase.as_str(),
+                    "abort ignored: run is finalizing or terminal"
+                );
+                return Ok(None);
+            }
             active.phase = RunPhase::Cancelling;
             (
                 RunSnapshot {
@@ -427,6 +477,18 @@ fn accepts_control(phase: RunPhase) -> bool {
     matches!(phase, RunPhase::Starting | RunPhase::Running)
 }
 
+/// Whether an `abort` can still meaningfully request cancellation. A run that is
+/// already finalizing or terminal (`CancellationStuck` / `PersistenceDegraded`) is
+/// past the cancellation point — aborting it would only clobber its phase and arm
+/// a useless timer — so `abort_expected` treats those as a no-op. `Cancelling` is
+/// included so a repeated abort stays idempotent while the loop drains.
+fn abortable(phase: RunPhase) -> bool {
+    matches!(
+        phase,
+        RunPhase::Starting | RunPhase::Running | RunPhase::Cancelling
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,5 +672,118 @@ mod tests {
             .is_err());
         assert!(steering_rx.try_recv().is_err());
         assert!(follow_up_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn abort_is_noop_once_finalizing() {
+        let streaming = Arc::new(AtomicBool::new(true));
+        let control = RunControl::new(streaming.clone());
+        let lease = control.begin(Some("run-1"), Some("req-1")).unwrap();
+        assert!(control.begin_finalizing(&lease));
+
+        // Aborting a finalizing run must not clobber the phase back to Cancelling
+        // and must report no active snapshot to cancel.
+        assert!(control.abort_expected(Some("run-1")).unwrap().is_none());
+        assert_eq!(control.snapshot().unwrap().phase, RunPhase::Finalizing);
+
+        // The run still finalizes and releases normally.
+        assert!(control.finish(&lease));
+        assert!(control.snapshot().is_none());
+        assert!(!streaming.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn abort_is_noop_on_stuck_and_degraded() {
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let lease = control.begin(Some("run-1"), None).unwrap();
+        control.mark_stuck(&lease, "test");
+        assert_eq!(
+            control.snapshot().unwrap().phase,
+            RunPhase::CancellationStuck
+        );
+
+        assert!(control.abort_expected(Some("run-1")).unwrap().is_none());
+        assert_eq!(
+            control.snapshot().unwrap().phase,
+            RunPhase::CancellationStuck,
+            "abort must not move a stuck run back to Cancelling"
+        );
+
+        // Degraded likewise: abort is a no-op, phase unchanged.
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let lease = control.begin(Some("run-2"), None).unwrap();
+        assert!(control.begin_finalizing(&lease));
+        control.mark_persistence_degraded(&lease, "disk full");
+        assert!(control.abort_expected(Some("run-2")).unwrap().is_none());
+        assert_eq!(
+            control.snapshot().unwrap().phase,
+            RunPhase::PersistenceDegraded
+        );
+    }
+
+    #[test]
+    fn abort_stays_idempotent_while_cancelling() {
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let _lease = control.begin(Some("run-1"), None).unwrap();
+        assert!(control.abort_expected(Some("run-1")).unwrap().is_some());
+        assert_eq!(control.snapshot().unwrap().phase, RunPhase::Cancelling);
+        // A second abort while still cancelling stays actionable (idempotent),
+        // not a no-op — Cancelling is abortable.
+        assert!(control.abort_expected(Some("run-1")).unwrap().is_some());
+        assert_eq!(control.snapshot().unwrap().phase, RunPhase::Cancelling);
+    }
+
+    #[test]
+    fn begin_releases_cancellation_stuck_dead_lease() {
+        let streaming = Arc::new(AtomicBool::new(false));
+        let control = RunControl::new(streaming.clone());
+        let first = control.begin(Some("run-a"), Some("req-a")).unwrap();
+        control.mark_stuck(&first, "test");
+        assert_eq!(control.active_task_count(), 1);
+        assert!(streaming.load(Ordering::Acquire));
+
+        // A new begin self-heals: the dead stuck lease is released and the new run
+        // starts, with invariants reset (no task-count or streaming leak).
+        let second = control.begin(Some("run-b"), Some("req-b")).unwrap();
+        assert_eq!(second.run_id, "run-b");
+        assert_eq!(control.active_task_count(), 1);
+        assert!(streaming.load(Ordering::Acquire));
+        assert_eq!(control.snapshot().unwrap().phase, RunPhase::Starting);
+
+        assert!(control.begin_finalizing(&second));
+        assert!(control.finish(&second));
+        assert_eq!(control.active_task_count(), 0);
+        assert!(!streaming.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn begin_allows_same_request_id_after_stuck() {
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let first = control.begin(Some("run-a"), Some("req-retry")).unwrap();
+        control.mark_stuck(&first, "test");
+
+        // The stuck run never completed, so retrying with the same client request
+        // id must be accepted (not rejected as "already accepted").
+        let second = control.begin(Some("run-a2"), Some("req-retry")).unwrap();
+        assert_eq!(second.run_id, "run-a2");
+    }
+
+    #[test]
+    fn begin_does_not_release_persistence_degraded() {
+        let streaming = Arc::new(AtomicBool::new(false));
+        let control = RunControl::new(streaming.clone());
+        let lease = control.begin(Some("run-a"), Some("req-a")).unwrap();
+        assert!(control.begin_finalizing(&lease));
+        control.mark_persistence_degraded(&lease, "disk full");
+
+        // Fail-closed: a degraded run is NOT self-healed; the session stays locked
+        // for operator intervention.
+        assert!(control.begin(Some("run-b"), Some("req-b")).is_err());
+        assert_eq!(
+            control.snapshot().unwrap().phase,
+            RunPhase::PersistenceDegraded
+        );
+        assert_eq!(control.active_task_count(), 1);
+        assert_eq!(control.persistence_degraded_count(), 1);
     }
 }

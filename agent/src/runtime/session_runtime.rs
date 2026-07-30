@@ -328,4 +328,92 @@ mod tests {
         );
         assert!(runtime.begin(Some("run-must-not-start"), None).is_err());
     }
+
+    #[tokio::test]
+    async fn begin_self_heals_after_task_exit_without_finalizing() {
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        let lease = runtime.begin(Some("run-orphan"), None).unwrap();
+        // Task exits without finalizing → completion monitor marks
+        // cancellation_stuck and clears the task slot (reproduces path B / the
+        // post-stuck state of path A).
+        runtime.spawn(lease.clone(), async {}).unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if runtime
+                    .snapshot()
+                    .is_some_and(|r| r.phase == super::super::RunPhase::CancellationStuck)
+                    && !runtime.owns_task(&lease)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        // Self-heal: a fresh begin releases the dead stuck lease (the slot is
+        // empty, so no live writer can race) and starts the new run.
+        let next = runtime.begin(Some("run-next"), None).unwrap();
+        assert_eq!(next.run_id, "run-next");
+        assert_eq!(runtime.active_task_count(), 1);
+        assert_eq!(
+            runtime.snapshot().unwrap().phase,
+            super::super::RunPhase::Starting
+        );
+
+        // The new run completes normally and fully releases the session.
+        let nr = runtime.clone();
+        let nl = next.clone();
+        runtime
+            .spawn(next.clone(), async move {
+                assert!(nr.begin_finalizing(&nl));
+            })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.owns_task(&next) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(runtime.snapshot().is_none());
+        assert_eq!(runtime.active_task_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn begin_does_not_self_heal_while_task_still_alive() {
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        let lease = runtime.begin(Some("run-wedged"), None).unwrap();
+        let hold = Arc::new(Notify::new());
+        let task_hold = hold.clone();
+        runtime
+            .spawn(lease.clone(), async move {
+                task_hold.notified().await;
+            })
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        // Simulate the 30s cancellation-timeout firing while the task is still
+        // wedged: phase becomes CancellationStuck but the task slot is occupied.
+        assert!(runtime.mark_stuck(&lease, "simulated cancellation timeout"));
+
+        // begin must refuse via the task-slot guard (a live writer exists) and
+        // must NOT self-heal — self-heal only applies once the task has exited.
+        let err = runtime.begin(Some("run-intruder"), None).unwrap_err();
+        assert!(
+            err.to_string().contains("has not exited"),
+            "expected task-slot guard, got: {err}"
+        );
+
+        hold.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.owns_task(&lease) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 }

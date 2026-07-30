@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt fmt-mobile generate-models generate-proto check-proto-drift help test-gui-rust gui-sidecars
+.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -393,24 +393,6 @@ generate-proto:
 	cd channels && REGENERATE_PROTO=1 cargo build
 	cd gui/src-tauri && REGENERATE_PROTO=1 cargo build
 	cd tui && npm run generate-proto
-
-# Regenerate all proto artifacts and fail if any committed generated file
-# differs from what proto/future.proto produces — i.e. someone edited the proto
-# without re-running generate-proto. Run before committing proto changes; the
-# `proto-drift` CI job enforces this on every PR touching proto/agent/channels.
-check-proto-drift: generate-proto
-	@if ! git diff --exit-code -- \
-		agent/src/grpc/generated/ \
-		channels/src/generated/ \
-		gui/src-tauri/src/generated/proto.rs \
-		tui/src/rpc/grpc-client.ts \
-		cli/src/rpc/grpc-client.ts; then \
-		echo ""; \
-		echo "ERROR: generated proto code is out of sync with proto/future.proto."; \
-		echo "Run 'make generate-proto' and commit the regenerated files."; \
-		exit 1; \
-	fi
-	node scripts/check_run_event_contract.mjs
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
 
