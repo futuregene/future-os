@@ -55,7 +55,7 @@ export interface OnboardingGateProps {
 export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, hasAnyProvider, autoLogin }: OnboardingGateProps) {
   const { t } = useTranslation("layout");
   const { phase, message, begin, cancel } = useFutureLoginFlow(() => {});
-  const busy = phase === "starting" || phase === "waiting";
+  const busy = phase === "starting" || phase === "waiting" || phase === "authorized";
   const failed = phase === "denied" || phase === "expired" || phase === "error";
   const build = useBuildInfo();
   const isDev = build.data != null && !build.data.isRelease;
@@ -68,9 +68,6 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
   const [initStep, setInitStep] = useState(0);
   const [initDone, setInitDone] = useState(false);
   const startRef = useRef(0);
-  // Tracks whether the login was cancelled by the user (vs. succeeded). The
-  // phase transition effect uses this to avoid running init after a cancel.
-  const cancelledRef = useRef(false);
 
   const runInit = useCallback(async () => {
     setInitializing(true);
@@ -92,7 +89,7 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
       await bootstrapBuiltinSkills();
     }
     catch {
-      // Non-fatal — the launch-time bootstrap may handle it later.
+      // Non-fatal.
     }
 
     // Step 2: Wait for the agent to be reachable.
@@ -118,14 +115,10 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
     onInitComplete();
   }, [onInitComplete]);
 
-  // Detect login success: phase transitioned from "waiting" to "idle" without
-  // being cancelled. A cancel() also produces waiting → idle, so we guard with
-  // cancelledRef to avoid running init on a user-initiated cancel.
-  const prevPhaseRef = useRef(phase);
+  // Login succeeded: the state machine moved to the dedicated "authorized"
+  // phase (distinct from "idle" which is the initial / post-cancel state).
   useEffect(() => {
-    const prev = prevPhaseRef.current;
-    prevPhaseRef.current = phase;
-    if (prev === "waiting" && phase === "idle" && !initializing && !cancelledRef.current) {
+    if (phase === "authorized" && !initializing) {
       void runInit();
     }
   }, [phase, initializing, runInit]);
@@ -135,13 +128,11 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
   useEffect(() => {
     if (autoLogin && !autoLoginFiredRef.current) {
       autoLoginFiredRef.current = true;
-      cancelledRef.current = false;
       void begin();
     }
   }, [autoLogin, begin]);
 
   function handleCancel() {
-    cancelledRef.current = true;
     cancel();
     if (hasAnyProvider) {
       // Providers exist — close the gate, go back to the app.
@@ -155,7 +146,6 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
   }
 
   function handleBYOK() {
-    cancelledRef.current = true;
     cancel();
     onEnableBYOK();
   }
@@ -245,10 +235,7 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
                 className="min-w-40"
                 disabled={busy}
                 leftIcon={busy ? <Loader2 className="size-4 animate-spin" /> : undefined}
-                onClick={() => {
-                  cancelledRef.current = false;
-                  void begin();
-                }}
+                onClick={() => void begin()}
                 variant="primary"
               >
                 {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
