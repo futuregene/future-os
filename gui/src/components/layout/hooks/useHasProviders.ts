@@ -57,7 +57,6 @@ export function useHasProviders() {
       if (firstDataRef.current) {
         // Seed the ref from the first load so we don't false-trigger init.
         firstDataRef.current = false;
-        hadFutureKeyRef.current = hasFutureKey;
       }
       else if (hasFutureKey && !hadFutureKeyRef.current) {
         // Fresh sign-in detected across a reload.
