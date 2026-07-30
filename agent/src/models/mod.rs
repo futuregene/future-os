@@ -45,6 +45,15 @@ pub struct Model {
     /// If true, the model is hidden from model lists but still callable.
     #[serde(default)]
     pub hide: bool,
+    /// Human-readable description from the Future platform catalog
+    /// (e.g. "经济实用版，日常编程和对话任务够用且实惠"). Built-in / user models
+    /// leave this as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Whether the Future platform flags this model as recommended. Defaults to
+    /// `false` for built-in / user models and for catalog entries that omit it.
+    #[serde(default)]
+    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -97,6 +106,8 @@ pub fn builtin_models() -> Vec<Model> {
             thinking_level_map: serde_json::from_str(&m.tlm_json).unwrap_or_default(),
             headers: serde_json::from_str(&m.headers_json).unwrap_or_default(),
             hide: m.hide,
+            description: None,
+            recommended: false,
         })
         .collect()
 }

@@ -18,6 +18,10 @@ pub struct AgentModelOption {
     context_window: Option<i32>,
     #[serde(default)]
     is_default: bool,
+    /// Curated positioning blurb from the Future platform catalog (e.g.
+    /// "经济实用版，日常编程和对话任务够用且实惠"). Absent for built-in / user models.
+    #[serde(default)]
+    description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

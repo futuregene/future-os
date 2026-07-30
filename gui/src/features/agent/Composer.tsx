@@ -629,6 +629,7 @@ export function Composer({
                   onModelChange?.(modelKey(model));
                   setModelMenuOpen(false);
                 }}
+                title={model.description?.trim() || undefined}
               >
                 <span className="min-w-0 flex-1 space-y-0.5">
                   <span className="block truncate font-medium leading-tight text-ink">{model.label}</span>

@@ -149,6 +149,8 @@ struct FutureModelEntry {
     knowledge_cutoff: Option<String>,
     #[allow(dead_code)]
     provider: Option<String>,
+    description: Option<String>,
+    recommended: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -376,6 +378,8 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         thinking_level_map,
         headers: HashMap::new(),
         hide: false,
+        description: entry.description,
+        recommended: entry.recommended.unwrap_or(false),
     }
 }
 
@@ -650,6 +654,8 @@ mod tests {
             ]),
             knowledge_cutoff: None,
             provider: None,
+            description: None,
+            recommended: None,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert!(model.reasoning);
@@ -667,6 +673,8 @@ mod tests {
             supported_parameters: Some(vec!["temperature".to_string()]),
             knowledge_cutoff: None,
             provider: None,
+            description: None,
+            recommended: None,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert!(!model.reasoning);
@@ -687,6 +695,8 @@ mod tests {
             supported_parameters: None,
             knowledge_cutoff: None,
             provider: None,
+            description: None,
+            recommended: None,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert!(model.input.iter().any(|i| i == "image"));
@@ -713,6 +723,8 @@ mod tests {
             supported_parameters: None,
             knowledge_cutoff: None,
             provider: None,
+            description: None,
+            recommended: None,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert_eq!(model.cost.input, 1000.0); // 0.001 * 1M / 1

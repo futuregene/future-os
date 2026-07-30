@@ -590,6 +590,7 @@ pub fn run() {
             poll_future_login,
             logout_future_provider,
             get_future_profile,
+            get_future_balance,
             clear_finished_runs,
             list_threads,
             list_workspaces,

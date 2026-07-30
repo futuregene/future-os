@@ -357,9 +357,8 @@ function InstalledTab({
         : null}
       {skills.map((skill) => {
         const cat = catalogueByName.get(skill.id);
-        const name = useChinese
-          ? cat?.nameZh || skill.nameZh || skill.name
-          : cat?.name || skill.name;
+        const zh = useChinese && (cat?.nameZh || skill.nameZh);
+        const name = zh ? `${cat?.name || skill.name}（${zh}）` : (cat?.name || skill.name);
         const description = useChinese
           ? cat?.descriptionZh || skill.descriptionZh || skill.description
           : cat?.description || skill.description;
@@ -461,7 +460,8 @@ function AllTab({
       {skills.map((skill) => {
         const isInstalled = installedIds.has(skill.id);
         const canInstall = Boolean(skill.latestVersion);
-        const name = useChineseCatalogueText ? skill.nameZh || skill.name : skill.name;
+        const zh = useChineseCatalogueText && skill.nameZh;
+        const name = zh ? `${skill.name}（${zh}）` : skill.name;
         const description = useChineseCatalogueText ? skill.descriptionZh || skill.description : skill.description;
         const installedVersion = installedById.get(skill.id)?.version ?? null;
         const canUpgrade = isUpgradeAvailable(installedVersion, skill.latestVersion);

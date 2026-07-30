@@ -11,6 +11,8 @@ export interface AgentModelOption {
   thinkingLevel?: ThinkingLevel | string | null;
   contextWindow?: number | null;
   isDefault?: boolean;
+  /** Curated positioning blurb from the Future platform catalog; absent elsewhere. */
+  description?: string | null;
 }
 
 /** Attachment wire shape accepted by the agent_prompt Tauri command. */

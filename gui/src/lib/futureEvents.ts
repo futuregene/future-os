@@ -40,6 +40,8 @@ export interface FutureEventMap {
   "future-auth-changed": void;
   /** Show the onboarding gate (e.g. when the user clicks "Connect" in Settings). */
   "show-onboarding": void;
+  /** Emitted when a conversation finishes (agent_end stream event). */
+  "agent_end": void;
   /**
    * The onboarding init flow finished syncing the Future model catalog into the
    * agent — `useAgentConnection` should refresh immediately so the composer has

@@ -1,7 +1,7 @@
 //! FutureGene device-code login Tauri commands (see gui/ER.md §6.9).
 
 use crate::agent_providers::{self, ProvidersView};
-use crate::future_login::{self, FutureLoginPoll, FutureLoginStart, FutureProfile};
+use crate::future_login::{self, FutureBalance, FutureLoginPoll, FutureLoginStart, FutureProfile};
 use crate::{agent_supervisor, auth_store};
 
 #[tauri::command]
@@ -58,4 +58,9 @@ pub async fn logout_future_provider() -> Result<ProvidersView, crate::AppError> 
 #[tauri::command]
 pub async fn get_future_profile() -> Result<FutureProfile, crate::AppError> {
     future_login::fetch_profile().await
+}
+
+#[tauri::command]
+pub async fn get_future_balance() -> Result<FutureBalance, crate::AppError> {
+    future_login::fetch_balance().await
 }
