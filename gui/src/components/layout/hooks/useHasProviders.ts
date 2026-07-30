@@ -57,7 +57,6 @@ export function useHasProviders() {
       if (firstDataRef.current) {
         // Seed the ref from the first load so we don't false-trigger init.
         firstDataRef.current = false;
-        hadFutureKeyRef.current = hasFutureKey;
       }
       else if (hasFutureKey && !hadFutureKeyRef.current) {
         // Fresh sign-in detected across a reload.
@@ -74,6 +73,15 @@ export function useHasProviders() {
   }, []);
 
   const finishInit = useCallback(() => {
+    setInitPending(false);
+    setForceOnboarding(false);
+  }, []);
+
+  // Cancel the reconnect flow without entering BYOK mode. Clears the
+  // force-onboarding flag, any pending init, and the BYOK bypass so the gate
+  // returns to its initial state when no actual provider exists.
+  const cancelLogin = useCallback(() => {
+    setByokMode(false);
     setInitPending(false);
     setForceOnboarding(false);
   }, []);
@@ -100,5 +108,5 @@ export function useHasProviders() {
   // - explicitly requested from Settings (reconnect flow)
   const showGate = initialLoading || !hasProviders || initPending || forceOnboarding;
 
-  return { showGate, byokMode, enableBYOK, finishInit, hasAnyProvider, initialLoading };
+  return { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending, initialLoading };
 }
