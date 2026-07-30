@@ -671,6 +671,7 @@ impl ServerSession {
                     event_type: "agent_end".to_string(),
                     data: serde_json::json!({
                         "type": "agent_end",
+                        "state": crate::session::RUN_STATE_ERROR,
                         "error": format!("Session persistence failed: {error}"),
                         "usage": { "output_tokens": run_output_tokens }
                     })
@@ -682,10 +683,13 @@ impl ServerSession {
 
             match run_error {
                 None => {
-                    // Carry this run's output-token total on the terminal event so
-                    // the client can show the token stat the instant the run settles.
+                    // Carry this run's output-token total and terminal state on
+                    // the event so clients (notably the IM channel bridges) can
+                    // show the token stat and distinguish a cancellation from a
+                    // clean completion the instant the run settles.
                     let mut data = serde_json::json!({
                         "type": "agent_end",
+                        "state": terminal_state,
                         "usage": { "output_tokens": run_output_tokens }
                     });
                     if stream_incomplete {
@@ -708,6 +712,7 @@ impl ServerSession {
                         event_type: "agent_end".to_string(),
                         data: serde_json::json!({
                             "type": "agent_end",
+                            "state": terminal_state,
                             "error": &full_error,
                             "usage": { "output_tokens": run_output_tokens }
                         })

@@ -324,9 +324,15 @@ async fn run_prompt_loop(
     gen_counter: &AtomicU64,
     webhook: Option<String>,
 ) -> Result<()> {
-    let my_gen = {
+    let (expected_run_id, my_gen, mut stream) = {
         let mut client = agent.write().await;
         let _ = client.abort(session_id).await;
+        // Wait for the aborted run to finish unwinding before prompting; the new
+        // Agent state machine keeps the session busy through Cancelling/
+        // Finalizing, so an immediate prompt would be rejected.
+        client
+            .wait_until_idle(session_id, std::time::Duration::from_secs(8))
+            .await?;
         info!(
             "[DING SEND] session={} text=\"{}\"",
             session_id,
@@ -336,12 +342,12 @@ async fn run_prompt_loop(
                 text.to_string()
             }
         );
-        client.prompt(session_id, text, vec![]).await?;
-        gen_counter.fetch_add(1, Ordering::SeqCst) + 1
-    };
-    let mut stream = {
-        let mut client = agent.write().await;
-        client.stream_events(session_id).await?
+        let expected_run_id = client.prompt(session_id, text, vec![]).await?;
+        let stream = client
+            .stream_run_events(session_id, &expected_run_id)
+            .await?;
+        let my_gen = gen_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        (expected_run_id, my_gen, stream)
     };
     let mut stream_text = String::new();
 
@@ -356,7 +362,13 @@ async fn run_prompt_loop(
 
     while let Some(event) = stream.message().await? {
         check_superseded!();
-        let parsed = AgentClient::parse_event(event);
+        let parsed = match AgentClient::parse_event(event) {
+            // Only consume events for the run we prompted; drop a different run's
+            // events so a foreign agent_end can't finalize this reply.
+            Some((rid, ev)) if rid.is_empty() || rid == expected_run_id => Some(ev),
+            Some(_) => continue,
+            None => None,
+        };
         match parsed {
             Some(AgentEvent::AgentStart) | Some(AgentEvent::Ping) => {}
             Some(AgentEvent::ThinkingStart) => {
@@ -381,10 +393,14 @@ async fn run_prompt_loop(
                 }
                 stream_text.push_str("\n```\n");
             }
-            Some(AgentEvent::AgentEnd { error }) => {
+            Some(AgentEvent::AgentEnd { error, state }) => {
                 check_superseded!();
+                let was_cancelled = state.as_deref() == Some("cancelled");
                 if let Some(err) = error {
-                    if !err.contains("interrupted") && !err.contains("Interrupted") {
+                    if !was_cancelled
+                        && !err.contains("interrupted")
+                        && !err.contains("Interrupted")
+                    {
                         if let Some(ref wh) = webhook {
                             dingtalk
                                 .reply_webhook_markdown(wh, "Error", &format!("**Error:** {}", err))

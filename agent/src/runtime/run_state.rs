@@ -204,6 +204,12 @@ impl RunControl {
     /// Validate the canonical run and enqueue steering while holding the same
     /// short control lock. This prevents a late command from being accepted
     /// after its run finalized and then leaking into the next run's queue.
+    ///
+    /// Steering is only accepted while the run can still drain its queue
+    /// (`Starting` / `Running`). Once it is cancelling or finalizing the loop is
+    /// unwinding and will never read the queue again, so enqueueing would silently
+    /// drop the message — reject it instead and let the caller retry as a fresh
+    /// prompt after the run releases.
     pub fn steer(
         &self,
         expected_run_id: Option<&str>,
@@ -216,6 +222,13 @@ impl RunControl {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("there is no active run to steer"))?;
         validate_run_id(&active.lease.run_id, expected_run_id)?;
+        if !accepts_control(active.phase) {
+            bail!(
+                "run {} is {}; steering is accepted only while starting or running",
+                active.lease.run_id,
+                active.phase.as_str()
+            );
+        }
         steering_tx
             .try_send(message)
             .map_err(|error| anyhow::anyhow!("unable to enqueue steering message: {error}"))?;
@@ -227,7 +240,8 @@ impl RunControl {
 
     /// Returns false only for the legacy "follow up while idle" behavior, which
     /// asks ServerSession to start a fresh prompt. A run-scoped request can
-    /// never silently turn into a new run.
+    /// never silently turn into a new run, and is rejected (rather than silently
+    /// dropped) when the active run can no longer drain its queue.
     pub fn follow_up(
         &self,
         expected_run_id: Option<&str>,
@@ -242,6 +256,13 @@ impl RunControl {
             return Ok(false);
         };
         validate_run_id(&active.lease.run_id, expected_run_id)?;
+        if !accepts_control(active.phase) {
+            bail!(
+                "run {} is {}; follow-up is accepted only while starting or running",
+                active.lease.run_id,
+                active.phase.as_str()
+            );
+        }
         follow_up_tx
             .try_send(message)
             .map_err(|error| anyhow::anyhow!("unable to enqueue follow-up message: {error}"))?;
@@ -399,6 +420,13 @@ fn validate_run_id(active_run_id: &str, expected_run_id: Option<&str>) -> Result
     Ok(())
 }
 
+/// Whether a run-scoped control command (steer / follow-up) can still reach the
+/// run loop's queues. Only `Starting` and `Running` drain them; once cancelling
+/// or finalizing the loop is unwinding and an enqueue would be silently lost.
+fn accepts_control(phase: RunPhase) -> bool {
+    matches!(phase, RunPhase::Starting | RunPhase::Running)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,5 +573,42 @@ mod tests {
         assert!(!control
             .follow_up(None, &follow_up_tx, "legacy idle prompt".to_string())
             .unwrap());
+    }
+
+    #[test]
+    fn steer_and_follow_up_rejected_once_run_is_cancelling_or_finalizing() {
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let lease = control.begin(Some("run-1"), None).unwrap();
+        let (steering_tx, mut steering_rx) = mpsc::channel(4);
+        let (follow_up_tx, mut follow_up_rx) = mpsc::channel(4);
+
+        // Accepted while the loop can still drain its queues.
+        assert!(control
+            .steer(Some("run-1"), &steering_tx, "ok".to_string())
+            .is_ok());
+        assert_eq!(steering_rx.try_recv().unwrap(), "ok");
+
+        // Cancelling: the loop is unwinding, so enqueueing would silently drop
+        // the message — reject instead and never touch the queues.
+        control.abort();
+        assert!(control
+            .steer(Some("run-1"), &steering_tx, "lost".to_string())
+            .is_err());
+        assert!(control
+            .follow_up(Some("run-1"), &follow_up_tx, "lost".to_string())
+            .is_err());
+        assert!(steering_rx.try_recv().is_err());
+        assert!(follow_up_rx.try_recv().is_err());
+
+        // Finalizing: same — reject and keep the queues empty.
+        assert!(control.begin_finalizing(&lease));
+        assert!(control
+            .steer(Some("run-1"), &steering_tx, "lost".to_string())
+            .is_err());
+        assert!(control
+            .follow_up(Some("run-1"), &follow_up_tx, "lost".to_string())
+            .is_err());
+        assert!(steering_rx.try_recv().is_err());
+        assert!(follow_up_rx.try_recv().is_err());
     }
 }
