@@ -109,6 +109,7 @@
     "login": "Sign in / Sign up",
     "loggingIn": "Signing in",
     "retry": "Retry",
+    "byok": "Use your own API key",
     "envLabel": "Environment",
     "envProduction": "Production",
     "envTest": "Test"
