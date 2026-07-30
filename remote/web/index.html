@@ -69,8 +69,35 @@
   /* 对话区 */
   #chat { display:none; flex:1; flex-direction:column; min-height:0; }
   #log { flex:1; overflow:auto; -webkit-overflow-scrolling:touch; display:flex; flex-direction:column; gap:8px; padding:12px; }
-  .bubble { max-width:88%; border:1px solid #262a33; border-radius:12px; padding:9px 12px; background:#141821; white-space:pre-wrap; word-break:break-word; align-self:flex-start; }
-  .bubble.user { background:#1b2436; border-color:#2c3b57; align-self:flex-end; }
+  /* white-space:normal so block-level markdown controls line breaks (the user
+     bubble keeps pre-wrap below to preserve the sender's raw newlines). */
+  .bubble { max-width:88%; border:1px solid #262a33; border-radius:12px; padding:9px 12px; background:#141821; white-space:normal; word-break:break-word; align-self:flex-start; }
+  .bubble.user { background:#1b2436; border-color:#2c3b57; align-self:flex-end; white-space:pre-wrap; }
+  .md-root > :first-child { margin-top:0; }
+  .md-root > :last-child { margin-bottom:0; }
+
+  /* ── Markdown 渲染（结构对齐 GUI 桌面端，配色用本页暗色板） ─────── */
+  .md-p { margin:6px 0; }
+  .md-h1, .md-h2, .md-h3 { margin:10px 0 6px; color:#f2f4f8; font-weight:700; line-height:1.3; }
+  .md-h1 { font-size:17px; } .md-h2 { font-size:16px; } .md-h3 { font-size:15px; }
+  .md-ul, .md-ol { margin:6px 0; padding-left:20px; }
+  .md-li { margin:2px 0; }
+  .md-task { margin-left:-20px; list-style:none; }
+  .md-task input { margin-right:6px; vertical-align:middle; }
+  .md-quote { margin:6px 0; padding-left:10px; border-left:2px solid #2b6cff; color:#9aa4b2; }
+  .md-quote .md-p, .md-quote .md-ul, .md-quote .md-ol { margin:3px 0; }
+  .md-code { padding:1px 5px; border-radius:4px; background:#1b2030; font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
+  .md-pre { margin:8px 0; padding:10px; overflow:auto; border:1px solid #262a33; border-radius:8px; background:#0f1115; }
+  .md-pre code { padding:0; background:none; white-space:pre; font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
+  .md-hr { margin:10px 0; border:0; border-top:1px solid #262a33; }
+  .md-del { color:#9aa4b2; text-decoration:line-through; }
+  .md-strong { font-weight:700; } .md-em { font-style:italic; }
+  .md-a { color:#5b9bff; text-decoration:underline; word-break:break-all; }
+  .md-table-wrap { margin:8px 0; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .md-table { width:100%; overflow:hidden; border:1px solid #262a33; border-collapse:collapse; border-radius:8px; font-size:13px; }
+  .md-table th, .md-table td { padding:6px 10px; border:1px solid #262a33; text-align:left; vertical-align:top; word-break:break-word; }
+  .md-table th { color:#f2f4f8; font-weight:600; background:#1b2030; }
+  .md-table tbody tr:nth-child(even) { background:#141a24; }
   .role { font-size:11px; color:#9aa4b2; margin-bottom:3px; }
   .think { color:#8b93a1; font-style:italic; font-size:13px; }
   .chip { display:inline-block; font-size:12px; padding:2px 8px; margin:2px 4px 2px 0; border-radius:999px; background:#2a2f3a; }
@@ -920,11 +947,133 @@ async function abort() {
   catch (e) { line("中断失败: " + e.message, "err"); }
 }
 
+// ── Markdown → HTML ─────────────────────────────────────────────────────
+// 自写渲染器，结构对齐 GUI 桌面端（remark-gfm 能力子集：标题/段落/列表/任务列表/
+// 引用/代码/分割线/GFM 表格/行内 bold·italic·strike·code·link）。安全模型：所有
+// 模型/用户文本在入 DOM 前经 escapeHtml 转义，注入的标签均为代码常量，链接 href 走
+// 协议白名单——本页 localStorage 存设备 NKey seed，绝不能 innerHTML 未转义内容。
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+const escapeAttr = escapeHtml;
+function isSafeUrl(url) { const u = url.trim(); return /^https?:\/\//i.test(u) || /^mailto:/i.test(u); }
+
+const MD_CELL_PIPE = "§PIPE§";
+const MD_TABLE_SEP = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/;
+function mdSplitCells(line) {
+  let s = line.trim().replace(/\\\|/g, MD_CELL_PIPE);
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|")) s = s.slice(0, -1);
+  return s.split("|").map((c) => c.split(MD_CELL_PIPE).join("|").trim());
+}
+function mdParseAligns(sep, n) {
+  const cells = mdSplitCells(sep); const out = [];
+  for (let i = 0; i < n; i += 1) {
+    const c = (cells[i] || "").trim();
+    out.push(/^:-+:$/.test(c) ? "center" : /^:-+$/.test(c) ? "left" : /^-+:$/.test(c) ? "right" : "left");
+  }
+  return out;
+}
+function mdNormalize(cells, n) {
+  if (cells.length >= n) return cells.slice(0, n);
+  return cells.concat(Array.from({ length: n - cells.length }, () => ""));
+}
+function mdIsTableSep(s) { return s.includes("|") && MD_TABLE_SEP.test(s); }
+
+const MD_INLINE = /(`[^`]+`|\*\*[^*]+\*\*|~~[^~]+~~|\[[^\]]*\]\([^)\s]*\)|\*[^*]+\*)/g;
+function inlineToHtml(text) {
+  const parts = String(text).split(MD_INLINE); let html = "";
+  for (const part of parts) {
+    if (!part) continue;
+    if (/^`[^`]+`$/.test(part)) { html += `<code class="md-code">${escapeHtml(part.slice(1, -1))}</code>`; continue; }
+    if (/^\*\*[^*]+\*\*$/.test(part)) { html += `<strong class="md-strong">${inlineToHtml(part.slice(2, -2))}</strong>`; continue; }
+    if (/^~~[^~]+~~$/.test(part)) { html += `<del class="md-del">${inlineToHtml(part.slice(2, -2))}</del>`; continue; }
+    if (/^\*[^*]+\*$/.test(part)) { html += `<em class="md-em">${inlineToHtml(part.slice(1, -1))}</em>`; continue; }
+    const link = part.match(/^\[([^\]]*)\]\(([^)\s]*)\)$/);
+    if (link) {
+      if (isSafeUrl(link[2] || "")) {
+        html += `<a class="md-a" href="${escapeAttr(link[2] || "")}" target="_blank" rel="noopener noreferrer">${inlineToHtml(link[1] || "")}</a>`;
+      } else { html += escapeHtml(part); }
+      continue;
+    }
+    html += escapeHtml(part);
+  }
+  return html;
+}
+
+function mdIsBlockStart(line, after) {
+  if (/^\s*```/.test(line)) return true;
+  if (/^\s{0,3}([-*_])\1\1+\s*$/.test(line)) return true;
+  if (/^\s{0,3}#{1,6}\s+/.test(line)) return true;
+  if (/^\s*>/.test(line)) return true;
+  if (/^\s*([-*+]|\d+\.)\s+/.test(line)) return true;
+  if (line.includes("|") && after !== undefined && mdIsTableSep(after)) return true;
+  return false;
+}
+
+function mdTableHtml(lines, i) {
+  const headers = mdSplitCells(lines[i]); const n = headers.length;
+  const aligns = mdParseAligns(lines[i + 1] || "", n); i += 2;
+  const rows = [];
+  while (i < lines.length && lines[i].trim() && lines[i].includes("|")) { rows.push(mdNormalize(mdSplitCells(lines[i]), n)); i += 1; }
+  const ths = mdNormalize(headers, n).map((h, c) => `<th style="text-align:${aligns[c] || "left"}">${inlineToHtml(h)}</th>`).join("");
+  const trs = rows.map((r) => `<tr>${r.map((cell, c) => `<td style="text-align:${aligns[c] || "left"}">${inlineToHtml(cell)}</td>`).join("")}</tr>`).join("");
+  return { html: `<div class="md-table-wrap"><table class="md-table"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`, i };
+}
+
+function mdListHtml(lines, i) {
+  const ordered = /^\s*\d+\./.test(lines[i]); const items = [];
+  while (i < lines.length) {
+    const m = lines[i].match(/^\s*([-*+]|\d+\.)\s+(.*)$/);
+    if (!m || (/^\d+\./.test(m[1] || "") !== ordered)) break;
+    const content = m[2] || ""; const task = !ordered && content.match(/^\[([ xX])\]\s+([\s\S]*)$/);
+    if (task) {
+      const checked = (task[1] || "").toLowerCase() === "x" ? " checked" : "";
+      items.push(`<li class="md-li md-task"><input type="checkbox" disabled${checked}>${inlineToHtml(task[2] || "")}</li>`);
+    } else { items.push(`<li class="md-li">${inlineToHtml(content)}</li>`); }
+    i += 1;
+  }
+  const html = ordered ? `<ol class="md-ol">${items.join("")}</ol>` : `<ul class="md-ul">${items.join("")}</ul>`;
+  return { html, i };
+}
+
+function mdToHtml(text) {
+  const lines = String(text).replace(/\r\n/g, "\n").split("\n");
+  const out = []; let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i += 1; continue; }
+    if (/^\s*```/.test(line)) {
+      const code = []; i += 1;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) { code.push(lines[i]); i += 1; }
+      if (i < lines.length) i += 1;
+      out.push(`<pre class="md-pre"><code>${escapeHtml(code.join("\n"))}</code></pre>`); continue;
+    }
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+)$/);
+    if (heading) { const lv = Math.min(heading[1].length, 3); out.push(`<h${lv} class="md-h${lv}">${inlineToHtml(heading[2] || "")}</h${lv}>`); i += 1; continue; }
+    if (/^\s{0,3}([-*_])\1\1+\s*$/.test(line)) { out.push(`<hr class="md-hr">`); i += 1; continue; }
+    if (/^\s*>/.test(line)) {
+      const inner = [];
+      while (i < lines.length) { const q = lines[i].match(/^\s*>\s?(.*)$/); if (!q) break; inner.push(q[1] || ""); i += 1; }
+      out.push(`<blockquote class="md-quote">${mdToHtml(inner.join("\n"))}</blockquote>`); continue;
+    }
+    if (line.includes("|") && mdIsTableSep(lines[i + 1] || "")) { const t = mdTableHtml(lines, i); out.push(t.html); i = t.i; continue; }
+    if (/^\s*([-*+]|\d+\.)\s+/.test(line)) { const l = mdListHtml(lines, i); out.push(l.html); i = l.i; continue; }
+    const para = [line]; i += 1;
+    while (i < lines.length && lines[i].trim() && !mdIsBlockStart(lines[i], lines[i + 1])) { para.push(lines[i]); i += 1; }
+    out.push(`<p class="md-p">${inlineToHtml(para.join("\n"))}</p>`);
+  }
+  return out.join("");
+}
+
 function assistantBubble() {
   if (!bubble) {
     bubble = document.createElement("div"); bubble.className = "bubble";
     bubble.innerHTML = `<div class="role">assistant</div>`;
-    const span = document.createElement("span"); bubble.appendChild(span); bubble._span = span;
+    const root = document.createElement("div"); root.className = "md-root";
+    bubble.appendChild(root); bubble._root = root; bubble._raw = "";
     log(bubble);
   }
   return bubble;
@@ -939,7 +1088,8 @@ function renderUser(text) {
 function renderAssistantStatic(text) {
   const b = document.createElement("div"); b.className = "bubble";
   b.innerHTML = `<div class="role">assistant</div>`;
-  const span = document.createElement("span"); span.textContent = text; b.appendChild(span);
+  const root = document.createElement("div"); root.className = "md-root"; root.innerHTML = mdToHtml(text);
+  b.appendChild(root);
   log(b);
 }
 
@@ -964,7 +1114,7 @@ function onEvent(ev, subject) {
     case "ping": break;
     case "agent_start": updateStreamingState(true); if (verbose) line("▶ agent_start"); break;
     // 助手文本：始终显示（这是主内容）。
-    case "text_chunk": { const b = assistantBubble(); b._span.textContent += (data.text || ""); break; }
+    case "text_chunk": { const b = assistantBubble(); b._raw += (data.text || ""); b._root.innerHTML = mdToHtml(b._raw); break; }
     case "thinking_start": break;
     case "thinking_delta": {
       if (!verbose) break;

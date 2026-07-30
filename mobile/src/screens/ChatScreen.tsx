@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   BackHandler,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -16,7 +17,7 @@ import {
   TouchableWithoutFeedback,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard, TimelineCard } from "../components/TimelineCard";
 import { useRemote } from "../remote/RemoteContext";
@@ -33,6 +34,7 @@ export function ChatScreen() {
   const { t } = useTranslation();
   const remote = useRemote();
   const { closeConversation } = remote;
+  const insets = useSafeAreaInsets();
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const [message, setMessage] = useState("");
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
@@ -42,6 +44,11 @@ export function ChatScreen() {
   // tracks it so the last message always lands just above the composer (no
   // gap, no hidden content) regardless of docked approvals or input height.
   const [composerHeight, setComposerHeight] = useState(0);
+  // Android edge-to-edge: the built-in KeyboardAvoidingView is a no-op here
+  // (behavior is undefined on Android) and RN's KAV mis-measures the keyboard
+  // under edge-to-edge, so we lift the floating composer + list padding by the
+  // measured keyboard height ourselves. iOS keeps relying on KAV padding.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const contentHeightRef = useRef(0);
   const layoutHeightRef = useRef(0);
   const title = remote.draft ? t("chat.new") : remote.selectedTitle || t("sessions.unnamed");
@@ -95,6 +102,23 @@ export function ChatScreen() {
     return () => subscription.remove();
   }, [closeConversation]);
 
+  // Keyboard compensation is Android-only: iOS already adapts via KAV padding,
+  // and stacking both would double-shift the composer. We subtract the bottom
+  // safe-area inset because SafeAreaView's bottom edge already lifts the content
+  // above the nav bar — without the subtraction the composer would float a
+  // nav-bar-height gap above the keyboard.
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const showSub = Keyboard.addListener("keyboardDidShow", event =>
+      setKeyboardHeight(event.endCoordinates.height),
+    );
+    const hideSub = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
   useEffect(() => {
     const timer = setTimeout(
       () => setShowOffline(!remote.desktopOnline),
@@ -117,8 +141,7 @@ export function ChatScreen() {
   // The bottom-most scroll offset: full content height minus the viewport,
   // never negative. Recomputed from measured sizes so it stays correct as the
   // composer (bottom padding) and content grow.
-  const maxScrollOffset = () =>
-    Math.max(0, contentHeightRef.current - layoutHeightRef.current);
+  const maxScrollOffset = () => Math.max(0, contentHeightRef.current - layoutHeightRef.current);
 
   // scrollToEnd is unreliable on Android for the first layout of a large
   // history (it can no-op or use a stale content size, leaving a gap). An
@@ -131,6 +154,11 @@ export function ChatScreen() {
       listRef.current?.scrollToOffset({ animated: true, offset: maxScrollOffset() }),
     );
   };
+
+  const keyboardLift =
+    Platform.OS === "android" && keyboardHeight > 0
+      ? Math.max(0, keyboardHeight - insets.bottom)
+      : 0;
 
   return (
     <SafeAreaView edges={["top", "bottom"]} style={styles.safe}>
@@ -159,7 +187,7 @@ export function ChatScreen() {
           <FlatList
             contentContainerStyle={[
               styles.timeline,
-              { paddingBottom: composerHeight + spacing.lg },
+              { paddingBottom: composerHeight + spacing.lg + keyboardLift },
               timelineItems.length === 0 && styles.emptyTimeline,
             ]}
             data={transcriptItems}
@@ -201,7 +229,7 @@ export function ChatScreen() {
 
           <View
             onLayout={event => setComposerHeight(event.nativeEvent.layout.height)}
-            style={styles.composerDock}
+            style={[styles.composerDock, keyboardLift > 0 ? { bottom: keyboardLift } : null]}
           >
             <View pointerEvents="none" style={styles.composerFade}>
               <Svg height="100%" width="100%">
