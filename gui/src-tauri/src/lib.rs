@@ -509,6 +509,12 @@ pub fn run() {
             let agent_handle = app.handle().clone();
             std::thread::spawn(move || agent_supervisor::ensure_agent_running(&agent_handle));
             start_thread_streaming_monitor();
+            // Periodically reconcile non-terminal run rows against the Agent's
+            // authoritative state (mirrors terminal markers, reattaches lost
+            // collectors, settles orphans). Guards against rows whose owning
+            // pipeline never settled them — e.g. a suspended webview that never
+            // applied the invoke response. Self-gates on Agent reachability.
+            agent_bridge::spawn_active_run_watchdog();
             // After the agent has had time to start, reanimate any runs that
             // were cancelled by convergence but whose agent sessions are still
             // streaming (the agent survived a GUI crash). Spawned off the launch

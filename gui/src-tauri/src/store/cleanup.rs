@@ -17,6 +17,15 @@ pub struct InterruptedRun {
     pub session_id: String,
 }
 
+/// A run that is still non-terminal, with the session the agent knows it by.
+/// Consumed by the runtime watchdog (`agent_bridge::spawn_active_run_watchdog`),
+/// which reconciles rows whose owning pipeline/collector never finalized them.
+pub struct ActiveRun {
+    pub run_id: String,
+    pub session_id: String,
+    pub created_at: i64,
+}
+
 /// Returns runs that were interrupted by a previous process crash and
 /// need re-examination against the agent's actual state.
 pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
@@ -33,6 +42,32 @@ pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
         Ok(InterruptedRun {
             run_id: row.get(0)?,
             thread_id: row.get(1)?,
+            session_id: row.get(2)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::AppError::from)
+}
+
+/// Every run that has not reached a terminal state (`running` /
+/// `waiting_approval`), ordered oldest first. The runtime watchdog uses this to
+/// find rows whose owning pipeline or collector never settled them and
+/// reconcile each against the agent's authoritative state. `session_id`
+/// resolution mirrors [`list_interrupted_runs`].
+pub fn list_active_runs() -> Result<Vec<ActiveRun>, crate::AppError> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.id, r.created_at,
+                COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id) AS session_id
+         FROM runs r
+         JOIN threads t ON t.id = r.thread_id
+         WHERE r.status NOT IN ({TERMINAL_RUN_STATUSES_SQL})
+         ORDER BY r.created_at"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ActiveRun {
+            run_id: row.get(0)?,
+            created_at: row.get(1)?,
             session_id: row.get(2)?,
         })
     })?;
