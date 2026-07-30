@@ -85,6 +85,59 @@ pub struct FutureProfile {
     pub created_at: Option<String>,
 }
 
+/// Credit balance, as returned by `{platform}/client/v1/account/balance`.
+/// Deserialized from the platform's snake_case payload; serialized to camelCase
+/// for the frontend. Mirrors the CLI's `future account balance`.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct FutureBalance {
+    /// Credits as a human-readable number (already divided by the internal unit,
+    /// `balance_credits / 10_000_000_000`).
+    pub credits: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BalanceResponse {
+    balance_credits: i64,
+}
+
+/// The internal unit: 1 credit = 10_000_000_000 internal units. Mirrors the CLI.
+const CREDIT_UNIT: f64 = 10_000_000_000.0;
+
+/// Fetch the signed-in account credit balance
+/// (`GET {platform}/client/v1/account/balance`, Bearer the stored `future` key)
+/// — mirrors the CLI's `future account balance`. Errors when signed out or on a
+/// failed request.
+pub async fn fetch_balance() -> Result<FutureBalance, AppError> {
+    let key = future_api_key()?;
+    let platform = crate::future_platform::current_platform_url();
+    let response = client()?
+        .get(format!("{platform}/client/v1/account/balance"))
+        .bearer_auth(&key)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|error| AppError::Message(format!("Failed to fetch account balance: {error}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let message =
+            error_message_from_body(response.json::<Value>().await.ok()).unwrap_or_else(|| {
+                format!("Account balance request failed (HTTP {})", status.as_u16())
+            });
+        return Err(AppError::Message(message));
+    }
+
+    let raw = response
+        .json::<BalanceResponse>()
+        .await
+        .map_err(|error| AppError::Message(format!("Failed to parse account balance: {error}")))?;
+
+    Ok(FutureBalance {
+        credits: (raw.balance_credits as f64 / CREDIT_UNIT * 1000.0).round() / 1000.0,
+    })
+}
+
 fn client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)

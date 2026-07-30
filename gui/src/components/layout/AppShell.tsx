@@ -28,6 +28,7 @@ import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useApprovals } from "./hooks/useApprovals";
 import { useAppSettings } from "./hooks/useAppSettings";
 import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
+import { useFutureBalance } from "./hooks/useFutureBalance";
 import { useHasProviders } from "./hooks/useHasProviders";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
@@ -154,6 +155,7 @@ export function AppShell() {
   const build = useBuildInfo();
   const showRemote = Boolean(build.data && !build.data.isRelease);
   const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(showRemote);
+  const futureBalance = useFutureBalance();
 
   // When the agent becomes available (startup, restart, or recovery after
   // a disconnect), re-trigger the skills scan.  The agent has a 5 s rate
@@ -387,6 +389,7 @@ export function AppShell() {
     onTogglePinThread: handleTogglePinThread,
     onToggleExpanded: handleToggleLeftPanel,
     remoteIndicator,
+    futureBalance,
   };
 
   // Onboarding gate: show during the initial probe, when no provider is

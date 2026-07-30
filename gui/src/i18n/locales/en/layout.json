@@ -14,6 +14,7 @@
     "workspace": "Workspace",
     "chat": "Chat",
     "pinSidebar": "Pin sidebar",
+    "balance": "Account balance",
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
     "newWorkspace": "New workspace",

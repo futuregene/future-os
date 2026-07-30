@@ -75,6 +75,7 @@ export async function updateBuiltinProviderKey(input: {
   // Setting the FutureOS key by hand (Providers page) changes the account too.
   if (input.id === FUTURE_PROVIDER_ID) {
     clearFutureProfileCache();
+    clearFutureBalanceCache();
     emitFutureEvent("future-auth-changed", undefined);
   }
   return view;
@@ -146,6 +147,37 @@ export interface FutureProfile {
   emailVerified: boolean;
   createdAt: string | null;
 }
+
+export interface FutureBalance {
+  credits: number;
+}
+
+// ── Balance cache ────────────────────────────────────────────────────────
+
+let balanceCache: FutureBalance | null = null;
+
+/**
+ * Fetch the signed-in account credit balance, served from the session cache
+ *  after the first call. Pass `force` to bypass the cache. Rejects when
+ *  signed out or on error.
+ */
+export async function getFutureBalance(force = false): Promise<FutureBalance> {
+  if (force || !balanceCache)
+    balanceCache = await invokeCommand<FutureBalance>("get_future_balance");
+  return balanceCache;
+}
+
+/** The cached balance if one was fetched, else null (sync read). */
+export function peekFutureBalance(): FutureBalance | null {
+  return balanceCache;
+}
+
+/** Drop the cached balance so the next fetch refetches (call on logout). */
+export function clearFutureBalanceCache(): void {
+  balanceCache = null;
+}
+
+// ── Profile cache ────────────────────────────────────────────────────────
 
 // The profile rarely changes (only on logout/login), so cache it in-memory for
 // the app session: reopening the account page reuses this instead of refetching

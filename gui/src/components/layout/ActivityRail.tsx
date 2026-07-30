@@ -7,6 +7,7 @@ import {
   Blocks,
   ChevronDown,
   ChevronRight,
+  Coins,
   Folder,
   MessageSquare,
   PanelLeft,
@@ -61,6 +62,8 @@ interface ActivityRailProps {
   onToggleExpanded: () => void;
   /** Remote bridge connection state for the nav indicator dot (dev-only). */
   remoteIndicator?: RemoteIndicator;
+  /** FutureOS credit balance (null when signed out). */
+  futureBalance?: number | null;
 }
 
 // Data / Skill entries are temporarily hidden from the navigation:
@@ -101,6 +104,7 @@ export function ActivityRail({
   onTogglePinThread,
   onToggleExpanded,
   remoteIndicator,
+  futureBalance,
 }: ActivityRailProps) {
   const { t } = useTranslation("layout");
   // Shared overlay scrollbar for the conversation list, matching the chat view.
@@ -618,37 +622,50 @@ export function ActivityRail({
               </>
             )}
       </div>
-      <div className={cn("border-t border-line-soft/40 p-2", expanded ? "w-full" : "")}>
-        {expanded
-          ? (
-              <button
-                className={cn(
-                  "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
-                  active === settingsItem.id && "border-accent bg-accent-soft text-accent",
-                )}
-                onClick={() => onChange(settingsItem.id)}
-                type="button"
-              >
-                <span className="relative inline-flex shrink-0">
-                  <Settings className="size-4" />
-                  {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
-                </span>
-                <span className="truncate">{t("activityRail.settings")}</span>
-              </button>
-            )
-          : (
-              <IconButton
-                icon={(
-                  <span className="relative inline-flex">
+      <div className={cn("border-t border-line-soft/40", expanded ? "w-full flex items-center" : "")}>
+        <div className="min-w-0 flex-1 p-2">
+          {expanded
+            ? (
+                <button
+                  className={cn(
+                    "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
+                    active === settingsItem.id && "border-accent bg-accent-soft text-accent",
+                  )}
+                  onClick={() => onChange(settingsItem.id)}
+                  type="button"
+                >
+                  <span className="relative inline-flex shrink-0">
                     <Settings className="size-4" />
                     {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
                   </span>
-                )}
-                label={t("activityRail.settings")}
-                active={active === settingsItem.id}
-                onClick={() => onChange(settingsItem.id)}
-              />
-            )}
+                  <span className="truncate">{t("activityRail.settings")}</span>
+                </button>
+              )
+            : (
+                <IconButton
+                  icon={(
+                    <span className="relative inline-flex">
+                      <Settings className="size-4" />
+                      {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
+                    </span>
+                  )}
+                  label={t("activityRail.settings")}
+                  active={active === settingsItem.id}
+                  onClick={() => onChange(settingsItem.id)}
+                />
+              )}
+        </div>
+        {expanded && futureBalance != null
+          ? (
+              <div
+                className="shrink-0 px-2 text-xs text-ink-muted"
+                title={t("activityRail.balance")}
+              >
+                <Coins className="mr-1 inline size-3.5 align-text-bottom text-amber-500" />
+                {futureBalance.toFixed(3)}
+              </div>
+            )
+          : null}
       </div>
       {!floating ? <div className="pointer-events-none absolute inset-y-0 right-0 z-30 w-6 shadow-sidebar-divider" /> : null}
     </nav>
