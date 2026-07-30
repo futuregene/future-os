@@ -1,18 +1,19 @@
 import type { FutureEnvironment, FutureProfile, ProvidersView } from "../../integrations/agent/providers";
+import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { getFutureEnvironment, getFutureProfile, listAgentProviders, logoutFutureProvider, peekFutureProfile } from "../../integrations/agent/providers";
 import { openExternalUrl } from "../../integrations/storage/files";
 import { useAsyncResource } from "../../lib/useAsyncResource";
-import { FutureLoginDialog } from "./FutureLoginDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
+import { useFutureLoginFlow } from "./useFutureLoginFlow";
 
 /**
  * Account page. Login state is FutureGene provider login — the same signal the
  * Providers page uses (`future` builtin's `hasApiKey`). Signed out: only a login
- * button. Signed in: open the account page (platform URL follows the current
- * environment) plus sign out.
+ * button that opens the browser for device-code authorization. Signed in: open
+ * the account page (platform URL follows the current environment) plus sign out.
  */
 export function AccountPage() {
   const { t } = useTranslation("settings");
@@ -27,8 +28,12 @@ export function AccountPage() {
     [],
     null,
   );
-  const [loginOpen, setLoginOpen] = useState(false);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
+
+  // Direct login flow — opens the browser on begin(), polls for authorization.
+  const { phase, message, begin } = useFutureLoginFlow(reload);
+  const busy = phase === "starting" || phase === "waiting";
+  const failed = phase === "denied" || phase === "expired" || phase === "error";
 
   const loggedIn = Boolean(providers?.builtin.find(provider => provider.id === "future")?.hasApiKey);
 
@@ -72,9 +77,18 @@ export function AccountPage() {
           >
             {!loggedIn
               ? (
-                  <Button onClick={() => setLoginOpen(true)} size="sm" variant="primary">
-                    {t("account.login")}
-                  </Button>
+                  <div className="flex flex-col items-end gap-1">
+                    <Button
+                      disabled={busy}
+                      leftIcon={busy ? <Loader2 className="size-3.5 animate-spin" /> : undefined}
+                      onClick={() => void begin()}
+                      size="sm"
+                      variant="primary"
+                    >
+                      {busy ? t("futureLogin.waiting") : failed ? t("futureLogin.retry") : t("account.login")}
+                    </Button>
+                    {failed ? <p className="text-xs text-danger">{message ?? t("futureLogin.failed")}</p> : null}
+                  </div>
                 )
               : confirmingLogout
                 ? (
@@ -111,17 +125,6 @@ export function AccountPage() {
           </SettingsRow>
         </SettingsList>
       </SettingsSection>
-
-      <FutureLoginDialog
-        onAuthorized={() => {
-          // pollFutureLogin already cleared the profile cache on "authorized",
-          // so the reload below refetches fresh once `loggedIn` flips true.
-          setLoginOpen(false);
-          reload();
-        }}
-        onClose={() => setLoginOpen(false)}
-        open={loginOpen}
-      />
     </div>
   );
 }
