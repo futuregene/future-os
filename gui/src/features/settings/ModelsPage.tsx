@@ -103,22 +103,35 @@ export function ModelsPage({
             )}
           >
             <SettingsList>
-              {models.map(model => (
-                <SettingsRow
-                  key={modelKey(model)}
-                  title={model.label}
-                  // Subtitle: raw model id (dropped when it equals the label so it
-                  // isn't shown twice) followed by the input modality, e.g.
-                  // "Text" or "Text Image".
-                  description={modelSubtitle(model)}
-                >
-                  <Switch
-                    checked={!hidden.has(modelKey(model))}
-                    label={model.label}
-                    onChange={visible => setVisibility(model, visible)}
-                  />
-                </SettingsRow>
-              ))}
+              {models.map((model) => {
+                // Curated platform blurb; trimmed so whitespace-only counts as empty.
+                const description = model.description?.trim() || null;
+                return (
+                  <SettingsRow
+                    key={modelKey(model)}
+                    title={model.label}
+                    // Muted sub-text: the curated platform description (clamped to
+                    // three lines, omitted entirely when empty) stacked above the
+                    // input modality, e.g. "Text" or "Text Image". A one-line
+                    // description yields a three-line row; with no description the
+                    // row collapses to the two-line title + modality layout.
+                    description={(
+                      <>
+                        {description
+                          ? <div className="line-clamp-3 break-words">{description}</div>
+                          : null}
+                        <div>{modelSubtitle(model)}</div>
+                      </>
+                    )}
+                  >
+                    <Switch
+                      checked={!hidden.has(modelKey(model))}
+                      label={model.label}
+                      onChange={visible => setVisibility(model, visible)}
+                    />
+                  </SettingsRow>
+                );
+              })}
             </SettingsList>
           </SettingsSection>
         );

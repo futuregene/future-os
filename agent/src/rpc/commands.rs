@@ -697,6 +697,7 @@ fn list_models_response(id: &str, registry: &crate::models::Registry) -> String 
                 "thinkingLevel": thinking_level.to_string(),
                 "contextWindow": model.context_window,
                 "isDefault": id == effective_default,
+                "description": model.description,
             })
         })
         .collect();
