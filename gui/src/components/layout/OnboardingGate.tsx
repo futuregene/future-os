@@ -118,7 +118,7 @@ export function OnboardingGate({ onEnableBYOK }: OnboardingGateProps) {
           {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
         </Button>
         <p className="text-xs text-ink-muted">{t("gate.freeTrialHint")}</p>
-        <div className="my-1 h-px w-48 bg-line" />
+        <div className="my-3 h-px w-48 bg-line" />
         <Button
           onClick={onEnableBYOK}
           size="sm"
