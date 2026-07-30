@@ -10,7 +10,9 @@ import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
 import { installAgentEventListener } from "../../integrations/agent/agentStateCache";
+import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
+import { openExternalUrl } from "../../integrations/storage/files";
 import {
   createWorkspace,
   pinThread,
@@ -28,6 +30,7 @@ import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useApprovals } from "./hooks/useApprovals";
 import { useAppSettings } from "./hooks/useAppSettings";
 import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
+import { useFutureAccount } from "./hooks/useFutureAccount";
 import { useHasProviders } from "./hooks/useHasProviders";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
@@ -154,6 +157,16 @@ export function AppShell() {
   const build = useBuildInfo();
   const showRemote = Boolean(build.data && !build.data.isRelease);
   const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(showRemote);
+  const { balance: futureBalance, email: futureEmail } = useFutureAccount();
+
+  const handleRecharge = () => {
+    getFutureEnvironment().then(env => openExternalUrl(`${env.platformUrl}/platform/#recharge`)).catch(() => {});
+  };
+
+  const handleOpenUpdate = () => {
+    setSettingsTab("update");
+    setSettingsOpen(true);
+  };
 
   // When the agent becomes available (startup, restart, or recovery after
   // a disconnect), re-trigger the skills scan.  The agent has a 5 s rate
@@ -387,6 +400,10 @@ export function AppShell() {
     onTogglePinThread: handleTogglePinThread,
     onToggleExpanded: handleToggleLeftPanel,
     remoteIndicator,
+    futureBalance,
+    userEmail: futureEmail,
+    onRecharge: handleRecharge,
+    onOpenUpdate: handleOpenUpdate,
   };
 
   // Onboarding gate: show during the initial probe, when no provider is

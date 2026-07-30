@@ -14,6 +14,7 @@
     "workspace": "工作区",
     "chat": "对话",
     "pinSidebar": "固定侧边栏",
+    "balance": "账户余额",
     "collapseSidebar": "收起侧边栏",
     "expandSidebar": "展开侧边栏",
     "newWorkspace": "新建工作区",
@@ -120,5 +121,10 @@
     "envLabel": "环境",
     "envProduction": "正式环境",
     "envTest": "测试环境"
+  },
+  "userMenu": {
+    "balance": "账户余额：{{credits}}",
+    "recharge": "充值",
+    "upgrade": "升级"
   }
 }

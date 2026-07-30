@@ -1,8 +1,9 @@
-import type { FutureEnvironment, FutureProfile, ProvidersView } from "../../integrations/agent/providers";
+import type { FutureEnvironment, ProvidersView } from "../../integrations/agent/providers";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useFutureAccount } from "../../components/layout/hooks/useFutureAccount";
 import { Button } from "../../components/ui/Button";
-import { getFutureEnvironment, getFutureProfile, listAgentProviders, logoutFutureProvider, peekFutureProfile } from "../../integrations/agent/providers";
+import { getFutureEnvironment, listAgentProviders, logoutFutureProvider } from "../../integrations/agent/providers";
 import { openExternalUrl } from "../../integrations/storage/files";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
@@ -32,17 +33,18 @@ export function AccountPage() {
 
   const loggedIn = Boolean(providers?.builtin.find(provider => provider.id === "future")?.hasApiKey);
 
-  // Show the signed-in email (like `future account profile`) instead of a bare
-  // "signed in" label. Seeded synchronously from the session cache so reopening
-  // this page doesn't flash — the fetch only really runs the first time (or
-  // after a logout clears the cache). Falls back to the generic label until it
-  // resolves, or if the request fails.
-  const profile = useAsyncResource<FutureProfile | null>(
-    () => (loggedIn ? getFutureProfile() : Promise.resolve(null)),
-    [loggedIn],
-    peekFutureProfile(),
-  );
-  const signedInLabel = profile.data?.email ?? t("account.loggedIn");
+  // Email + balance come from the shared account hook (seeded from cache so
+  // reopening this page doesn't flash). Falls back to the generic label until
+  // the email resolves or when signed out.
+  const { balance, email: accountEmail } = useFutureAccount();
+  const signedInLabel = accountEmail ?? t("account.loggedIn");
+  const platformUrl = environment.data?.platformUrl;
+
+  async function handleRecharge() {
+    if (!platformUrl)
+      return;
+    await openExternalUrl(`${platformUrl}/platform/#recharge`);
+  }
 
   async function handleLogout() {
     // logoutFutureProvider clears the profile cache internally.
@@ -113,6 +115,23 @@ export function AccountPage() {
                     </div>
                   )}
           </SettingsRow>
+          {loggedIn
+            ? (
+                <SettingsRow
+                  title={t("account.balance")}
+                  description={balance != null ? `${Math.trunc(balance)} ${t("account.credits")}` : "—"}
+                >
+                  <Button
+                    disabled={!platformUrl}
+                    onClick={() => void handleRecharge()}
+                    size="sm"
+                    variant="primary"
+                  >
+                    {t("account.recharge")}
+                  </Button>
+                </SettingsRow>
+              )
+            : null}
         </SettingsList>
       </SettingsSection>
     </div>

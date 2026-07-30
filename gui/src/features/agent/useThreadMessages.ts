@@ -5,6 +5,7 @@ import i18n from "../../i18n";
 import { getLatestRun, getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun } from "./agentMessageFormatters";
 import { entriesToMessages } from "./entryProjection";
@@ -381,6 +382,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
         return;
       if (detail.eventType === "agent_end") {
         attachedRef.current = false;
+        emitFutureEvent("agent_end", undefined);
         return;
       }
       if (detail.eventType === "agent_start") {
