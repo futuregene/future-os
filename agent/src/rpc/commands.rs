@@ -395,6 +395,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let stats = rlock!(session, id).get_session_stats();
             RpcResponse::ok(id, "get_session_stats", stats)
         }
+        "get_runtime_metrics" => {
+            let metrics = rlock!(session, id).get_runtime_metrics();
+            RpcResponse::ok(id, "get_runtime_metrics", metrics)
+        }
         "fork" => cmd_fork(state, &session, &cmd, id),
         "get_session_entries" => {
             // Must not fall back to a different session when the requested id
@@ -2000,6 +2004,32 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert!(resp["data"]["sessionId"].is_string());
+    }
+
+    #[test]
+    fn get_runtime_metrics_exposes_five_observability_values() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        let (runtime, broadcaster) = {
+            let session = session.read();
+            (session.runtime.clone(), session.broadcaster.clone())
+        };
+        let lease = runtime.begin(Some("run-metrics"), None).unwrap();
+        broadcaster.record_lag();
+
+        let cmd = make_cmd("get_runtime_metrics");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["sessionId"].is_string());
+        assert_eq!(resp["data"]["activeRunGauge"], 1);
+        assert_eq!(resp["data"]["activeRunId"], "run-metrics");
+        assert_eq!(resp["data"]["broadcastLag"], 1);
+        for field in ["staleEpochDrops", "persistenceDegraded", "ringTruncations"] {
+            assert_eq!(resp["data"][field], 0, "unexpected {field}");
+        }
+
+        assert!(runtime.begin_finalizing(&lease));
+        assert!(runtime.finish(&lease));
     }
 
     #[test]

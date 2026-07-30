@@ -13,6 +13,7 @@ use crate::rpc::{handle_command_internal, AppState};
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
@@ -51,6 +52,44 @@ pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
 #[derive(Clone)]
 struct FutureAgentService {
     state: AppState,
+}
+
+#[allow(clippy::result_large_err)] // tonic stream items require `tonic::Status` directly.
+fn map_broadcast_event(
+    result: Result<crate::rpc::SseEvent, BroadcastStreamRecvError>,
+    broadcaster: &crate::rpc::SseBroadcaster,
+    session_id: &str,
+) -> Result<proto::StreamEvent, tonic::Status> {
+    match result {
+        Ok(event) => Ok(proto::StreamEvent {
+            r#type: event.event_type,
+            data: event.data,
+            run_id: event.run_id,
+            idx: event.idx,
+            projection_snapshot: false,
+            snapshot_events: Vec::new(),
+            snapshot_cursor: 0,
+            session_id: session_id.to_string(),
+            epoch: event.epoch,
+        }),
+        Err(error) => {
+            // Non-atomic observers can remain subscribed across multiple runs,
+            // so resolve the canonical run at the moment lag is observed rather
+            // than freezing the run that happened to be active at subscribe.
+            let run_id = broadcaster.current_run_id();
+            let count = broadcaster.record_lag();
+            tracing::warn!(
+                session_id,
+                run_id = %run_id,
+                lag_count = count,
+                error = %error,
+                "SSE stream lagged; terminating for cursor resume"
+            );
+            Err(tonic::Status::data_loss(format!(
+                "event stream gap for session {session_id}, run {run_id}; reconnect with atomic attach"
+            )))
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -234,7 +273,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 "session {session_id} not found"
             )));
         };
-        let (rx, mut initial_events) = {
+        let (rx, mut initial_events, lag_broadcaster) = {
             let sess = session.read();
             if self.state.verbose {
                 tracing::debug!(
@@ -286,7 +325,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             epoch: event.epoch,
                         }),
                 );
-                (attachment.receiver, initial)
+                (attachment.receiver, initial, sess.broadcaster.clone())
             } else {
                 (
                     sess.broadcaster.subscribe(),
@@ -301,6 +340,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         session_id: session_id.clone(),
                         epoch: 0,
                     }],
+                    sess.broadcaster.clone(),
                 )
             }
         };
@@ -325,37 +365,49 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 }
                 match r {
                     Ok(event) => event_types.contains(&event.event_type),
-                    // Never terminate the stream on lag — the receiver can
-                    // continue after a lag, but a tonic error ends the gRPC
-                    // stream and the client must reconnect, missing every
-                    // event in between (including critical settings-change
-                    // events like model_changed).
+                    // Lag must bypass event-type filtering so the mapper below
+                    // can terminate the gRPC stream explicitly. The client then
+                    // reconnects with atomic attach and recovers from its cursor.
                     Err(_) => true,
                 }
             })
-            .filter_map(move |r| match r {
-                Ok(event) => Some(Ok(proto::StreamEvent {
-                    r#type: event.event_type,
-                    data: event.data,
-                    run_id: event.run_id,
-                    idx: event.idx,
-                    projection_snapshot: false,
-                    snapshot_events: Vec::new(),
-                    snapshot_cursor: 0,
-                    session_id: lag_session_id.clone(),
-                    epoch: event.epoch,
-                })),
-                Err(e) => {
-                    tracing::warn!(
-                        "SSE stream lagged (session={lag_session_id}): {e} — terminating for cursor resume"
-                    );
-                    Some(Err(tonic::Status::data_loss(format!(
-                        "event stream gap for session {lag_session_id}; reconnect with atomic attach"
-                    ))))
-                }
-            });
+            .map(move |result| map_broadcast_event(result, &lag_broadcaster, &lag_session_id));
         let stream = snapshot.chain(events);
 
         Ok(tonic::Response::new(Box::pin(stream)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rpc::{SseBroadcaster, SseEvent};
+
+    #[tokio::test]
+    async fn broadcast_overflow_records_lag_through_grpc_mapper() {
+        let broadcaster = SseBroadcaster::new();
+        broadcaster.start_run("run-lag".to_string(), 7);
+        let receiver = broadcaster.subscribe();
+
+        // The production broadcast channel holds 256 events. Keeping this
+        // receiver idle while publishing more than that deterministically
+        // produces BroadcastStreamRecvError::Lagged on its first read.
+        for idx in 0..300 {
+            broadcaster.broadcast(SseEvent::new(
+                "text_chunk",
+                serde_json::json!({"text": idx.to_string()}),
+            ));
+        }
+        let result = BroadcastStream::new(receiver)
+            .next()
+            .await
+            .expect("lagged stream yields an item");
+        assert!(matches!(&result, Err(BroadcastStreamRecvError::Lagged(_))));
+
+        let status = map_broadcast_event(result, &broadcaster, "session-lag").unwrap_err();
+        assert_eq!(status.code(), tonic::Code::DataLoss);
+        assert!(status.message().contains("session-lag"));
+        assert!(status.message().contains("run-lag"));
+        assert_eq!(broadcaster.lag_count(), 1);
     }
 }

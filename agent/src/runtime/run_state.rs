@@ -68,6 +68,10 @@ pub struct RunControl {
     is_streaming: Arc<AtomicBool>,
     active_tasks: AtomicUsize,
     stale_epoch_drops: AtomicU64,
+    /// Count of runs that entered PersistenceDegraded (a run terminal could not
+    /// be committed). Observability metric for the "persistence degraded"
+    /// acceptance criterion; expected to stay 0 on healthy storage.
+    persistence_degraded: AtomicU64,
 }
 
 impl RunControl {
@@ -77,6 +81,7 @@ impl RunControl {
             is_streaming,
             active_tasks: AtomicUsize::new(0),
             stale_epoch_drops: AtomicU64::new(0),
+            persistence_degraded: AtomicU64::new(0),
         }
     }
 
@@ -284,7 +289,11 @@ impl RunControl {
         if active.lease != *lease {
             return false;
         }
+        if active.phase == RunPhase::PersistenceDegraded {
+            return true;
+        }
         active.phase = RunPhase::PersistenceDegraded;
+        self.persistence_degraded.fetch_add(1, Ordering::Relaxed);
         tracing::error!(
             run_id = %lease.run_id,
             run_epoch = lease.epoch,
@@ -353,14 +362,16 @@ impl RunControl {
             })
     }
 
-    #[cfg(test)]
     pub fn active_task_count(&self) -> usize {
         self.active_tasks.load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
     pub fn stale_epoch_drop_count(&self) -> u64 {
         self.stale_epoch_drops.load(Ordering::Relaxed)
+    }
+
+    pub fn persistence_degraded_count(&self) -> u64 {
+        self.persistence_degraded.load(Ordering::Relaxed)
     }
 
     fn stale(&self, lease: &RunLease, operation: &'static str) -> bool {
@@ -450,6 +461,14 @@ mod tests {
         assert!(streaming.load(Ordering::Acquire));
         assert!(control.begin(Some("run-b"), Some("request-b")).is_err());
         assert_eq!(control.active_task_count(), 1);
+        // The degraded transition is counted for observability.
+        assert_eq!(control.persistence_degraded_count(), 1);
+        assert!(control.mark_persistence_degraded(&lease, "same failure reported twice"));
+        assert_eq!(
+            control.persistence_degraded_count(),
+            1,
+            "one run entering degraded state is counted once"
+        );
     }
 
     #[test]
