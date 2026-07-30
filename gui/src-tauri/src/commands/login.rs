@@ -25,6 +25,13 @@ pub async fn poll_future_login(
     // Safe to call unconditionally: if an agent is already reachable it attaches
     // instead of spawning a duplicate.
     if result.status == "authorized" {
+        // Bring the app window to the front so the user sees the result.
+        use tauri::Manager;
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
         let handle = app.clone();
         std::thread::spawn(move || agent_supervisor::ensure_agent_running(&handle));
         // The new key is on disk, but a session the agent established while

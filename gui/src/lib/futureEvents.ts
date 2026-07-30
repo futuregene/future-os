@@ -38,6 +38,8 @@ export interface FutureEventMap {
    * app-wide login gate reloads so the forced-login overlay appears / clears.
    */
   "future-auth-changed": void;
+  /** Show the onboarding gate (e.g. when the user clicks "Connect" in Settings). */
+  "show-onboarding": void;
 }
 
 type FutureEventName = keyof FutureEventMap;

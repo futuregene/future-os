@@ -497,18 +497,18 @@ pub fn run() {
             if let Err(error) = future_platform::apply_channel_environment_default() {
                 eprintln!("FutureOS environment policy failed: {error}");
             }
-            // First-launch built-in skill install, off the launch path. Runs
-            // after the environment pin above so the bundled CLI resolves the
-            // same platform URL. Fully silent — a one-shot marker gates it and
-            // every failure is logged, never surfaced.
-            let skills_handle = app.handle().clone();
-            std::thread::spawn(move || skills_bootstrap::ensure_builtin_skills(&skills_handle));
             // Start the bundled agent off the launch path — it does a blocking
             // TCP probe and we don't want to delay the window. In dev (no
             // sidecar binary) this no-ops and the user runs the agent manually.
             let agent_handle = app.handle().clone();
             std::thread::spawn(move || agent_supervisor::ensure_agent_running(&agent_handle));
             start_thread_streaming_monitor();
+            // Periodically reconcile non-terminal run rows against the Agent's
+            // authoritative state (mirrors terminal markers, reattaches lost
+            // collectors, settles orphans). Guards against rows whose owning
+            // pipeline never settled them — e.g. a suspended webview that never
+            // applied the invoke response. Self-gates on Agent reachability.
+            agent_bridge::spawn_active_run_watchdog();
             // After the agent has had time to start, reanimate any runs that
             // were cancelled by convergence but whose agent sessions are still
             // streaming (the agent survived a GUI crash). Spawned off the launch
@@ -651,6 +651,7 @@ pub fn run() {
             install_skill,
             uninstall_skill,
             refresh_skills,
+            bootstrap_builtin_skills,
             remote_start,
             remote_stop,
             remote_status,

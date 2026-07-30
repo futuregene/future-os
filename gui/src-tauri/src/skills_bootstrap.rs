@@ -1,16 +1,10 @@
-//! First-launch built-in skill bootstrap.
+//! Built-in skill bootstrap.
 //!
-//! On the very first GUI launch (tracked by a one-shot marker in the app
-//! settings store, *not* by the presence of `~/.future` — that directory is
-//! shared with the TUI/CLI/agent and may already exist), silently install the
-//! platform's built-in skills and initialize local commands by shelling out to
-//! the bundled `future` CLI sidecar (`future init`). The CLI is idempotent
-//! (skips already-installed skills) and needs no login (the
-//! catalogue/download endpoints are unauthenticated).
-//!
-//! Fully silent: all output goes to logs, every failure is swallowed, no window
-//! is shown. The marker is set only after a successful run, so a first launch
-//! that's offline simply retries on the next launch.
+//! `run_builtin_skills` installs the platform's built-in skills by shelling out
+//! to the bundled `future` CLI sidecar (`future init`). The CLI is idempotent
+//! (skips already-installed skills) and needs no login (the catalogue/download
+//! endpoints are unauthenticated). Used by the post-login onboarding flow; runs
+//! on a background thread since it blocks on the CLI child process.
 
 use tauri::AppHandle;
 use tauri_plugin_shell::process::CommandEvent;
@@ -18,22 +12,9 @@ use tauri_plugin_shell::ShellExt;
 
 const INIT_ARGS: [&str; 1] = ["init"];
 
-/// Ensure built-in skills are installed once. Safe to call off the launch path;
-/// blocks on the CLI child, so run it on a background thread. No-op when already
-/// bootstrapped, and in dev (no bundled `future` sidecar) it logs and skips.
-///
-/// Must run *after* [`crate::future_platform::apply_channel_environment_default`]
-/// so the CLI resolves the same platform URL the GUI pinned into `auth.json`.
-pub fn ensure_builtin_skills(app: &AppHandle) {
-    match crate::store::is_builtin_skills_bootstrapped() {
-        Ok(true) => return,
-        Ok(false) => {}
-        Err(error) => {
-            eprintln!("FutureOS: skill bootstrap check failed: {error}");
-            return;
-        }
-    }
-
+/// Force-run the skill bootstrap. Idempotent — the CLI itself skips
+/// already-installed skills. Used by the post-login onboarding flow.
+pub fn run_builtin_skills(app: &AppHandle) {
     let command = match app.shell().sidecar("future") {
         Ok(command) => command.args(INIT_ARGS),
         Err(error) => {
@@ -52,10 +33,7 @@ pub fn ensure_builtin_skills(app: &AppHandle) {
         }
     };
 
-    // Drain output to logs and wait for exit. Exit code 0 means the CLI reached
-    // the catalogue, attempted installs, and completed platform initialization
-    // (per-skill failures don't fail the process) — only then do we consider
-    // the bootstrap done.
+    // Drain output to logs and wait for exit.
     let mut exit_code: Option<i32> = None;
     while let Some(event) = rx.blocking_recv() {
         match event {
@@ -72,12 +50,8 @@ pub fn ensure_builtin_skills(app: &AppHandle) {
         }
     }
 
-    if exit_code == Some(0) {
-        if let Err(error) = crate::store::mark_builtin_skills_bootstrapped() {
-            eprintln!("FutureOS: failed to record skill bootstrap: {error}");
-        }
-    } else {
-        eprintln!("FutureOS: skill bootstrap did not complete (exit {exit_code:?}); will retry next launch");
+    if exit_code != Some(0) {
+        eprintln!("FutureOS: skill bootstrap did not complete (exit {exit_code:?})");
     }
 }
 

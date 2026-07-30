@@ -20,8 +20,7 @@ mod workspaces;
 use db::*;
 
 pub use app_settings::{
-    get_app_settings, is_builtin_skills_bootstrapped, mark_builtin_skills_bootstrapped,
-    update_app_settings, AppSettings, UpdateAppSettingsInput,
+    get_app_settings, update_app_settings, AppSettings, UpdateAppSettingsInput,
 };
 pub use approvals::{
     decide_approval_request, ensure_approval_request, list_approval_requests,
@@ -33,8 +32,9 @@ pub use artifacts::{
 };
 pub use cleanup::{
     cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
-    list_interrupted_runs, reanimate_run, reconcile_orphan_chat_workspaces,
+    list_active_runs, list_interrupted_runs, reanimate_run, reconcile_orphan_chat_workspaces,
     reconcile_orphan_images, reconcile_orphan_review_repos, settle_interrupted_run_from_agent,
+    ActiveRun,
 };
 pub use db::{
     app_images_root, chat_workspace_path, future_dir, get_approval_request, get_run,

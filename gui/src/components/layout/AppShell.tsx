@@ -24,12 +24,11 @@ import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
-import { ForceLoginGate } from "./ForceLoginGate";
 import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useApprovals } from "./hooks/useApprovals";
 import { useAppSettings } from "./hooks/useAppSettings";
 import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
-import { useFutureSignedIn } from "./hooks/useFutureSignedIn";
+import { useHasProviders } from "./hooks/useHasProviders";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
 import { useRemoteStatus } from "./hooks/useRemoteStatus";
@@ -39,6 +38,7 @@ import { useThreadStore } from "./hooks/useThreadStore";
 import { useUnreadThreads } from "./hooks/useUnreadThreads";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
+import { OnboardingGate } from "./OnboardingGate";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
 export type { AgentConnectionState } from "./hooks/useAgentConnection";
@@ -73,9 +73,9 @@ export function AppShell() {
   const { appSettings, changeSettings } = useAppSettings();
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
-  // Drives the forced-login gate below. Kept with the other top-level hooks so
+  // Drives the onboarding gate below. Kept with the other top-level hooks so
   // the early returns further down stay after every hook call (rules of hooks).
-  const { signedIn, initialLoading } = useFutureSignedIn();
+  const { showGate, byokMode, enableBYOK, finishInit, hasAnyProvider, initialLoading } = useHasProviders();
 
   const centerRef = useRef<HTMLElement>(null);
   const {
@@ -163,6 +163,15 @@ export function AppShell() {
       void refreshSkills();
     }
   }, [agentConnection.status]);
+
+  // BYOK (bring your own key): the user chose to skip FutureOS sign-in and add
+  // their own provider. Open Settings → Providers so they can configure it.
+  useEffect(() => {
+    if (byokMode) {
+      setSettingsTab("providers");
+      setSettingsOpen(true);
+    }
+  }, [byokMode]);
 
   const {
     selectedThinkingLevel,
@@ -380,10 +389,8 @@ export function AppShell() {
     remoteIndicator,
   };
 
-  // Forced login: until the FutureOS account is confirmed, block the whole app
-  // with the login gate. `initialLoading` covers only the first probe so a
-  // signed-in user never sees the gate flash; reloads on auth change are silent
-  // (data stays non-null), so sign-in / sign-out never flash this neutral frame.
+  // Onboarding gate: show during the initial probe, when no provider is
+  // usable yet, or during post-login initialization (models + skills + agent).
   if (initialLoading) {
     return (
       <div className="flex h-full items-center justify-center bg-canvas">
@@ -391,8 +398,8 @@ export function AppShell() {
       </div>
     );
   }
-  if (!signedIn)
-    return <ForceLoginGate />;
+  if (showGate)
+    return <OnboardingGate hasAnyProvider={hasAnyProvider} onEnableBYOK={enableBYOK} onInitComplete={finishInit} />;
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden bg-canvas text-ink">

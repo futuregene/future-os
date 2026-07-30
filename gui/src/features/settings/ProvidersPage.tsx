@@ -12,10 +12,10 @@ import {
   upsertCustomProvider,
 } from "../../integrations/agent/providers";
 import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { BuiltinProviderKeyDialog } from "./BuiltinProviderKeyDialog";
 import { CustomProviderDialog } from "./CustomProviderDialog";
-import { FutureLoginDialog } from "./FutureLoginDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 
 const DEFAULT_BUILTIN_PROVIDER_IDS = [
@@ -40,7 +40,7 @@ export function ProvidersPage({
   onProvidersChanged?: () => void;
 } = {}) {
   const { t } = useTranslation("settings");
-  const { data: loadedProviders, loading, error, reload } = useAsyncResource<ProvidersView | null>(
+  const { data: loadedProviders, loading, error } = useAsyncResource<ProvidersView | null>(
     listAgentProviders,
     [],
     null,
@@ -52,7 +52,6 @@ export function ProvidersPage({
   const [editing, setEditing] = useState<CustomProvider | null>(null);
   const [editingBuiltinKey, setEditingBuiltinKey] = useState<BuiltinProvider | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
-  const [loginOpen, setLoginOpen] = useState(false);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const [showMoreBuiltin, setShowMoreBuiltin] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
@@ -110,13 +109,6 @@ export function ProvidersPage({
         ? t("providers.keyCleared", { provider: provider.name })
         : t("providers.keySaved", { provider: provider.name }),
     );
-    onProvidersChanged?.();
-  }
-
-  function handleAuthorized() {
-    setLoginOpen(false);
-    reload();
-    setHint(t("providers.connected"));
     onProvidersChanged?.();
   }
 
@@ -179,7 +171,7 @@ export function ProvidersPage({
                                     <Button
                                       onClick={() => {
                                         setHint(null);
-                                        setLoginOpen(true);
+                                        emitFutureEvent("show-onboarding", undefined);
                                       }}
                                       size="sm"
                                       variant="secondary"
@@ -304,12 +296,6 @@ export function ProvidersPage({
           onProvidersChanged?.();
         }}
         open={dialogOpen}
-      />
-
-      <FutureLoginDialog
-        onAuthorized={() => void handleAuthorized()}
-        onClose={() => setLoginOpen(false)}
-        open={loginOpen}
       />
 
       <BuiltinProviderKeyDialog

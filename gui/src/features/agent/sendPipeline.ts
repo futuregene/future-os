@@ -164,12 +164,14 @@ export async function runSendPipeline(
     // by persistImageAttachments (which deletes the temp copy).
 
     const currentRun = await loadCurrentRun(run.id);
+    // A terminal row while this send still awaits the agent means someone else
+    // finalized the run mid-flight: a user abort, or — the backend now settles
+    // the row itself the instant the stream ends — its own CAS landing before
+    // this invoke response. `settledElsewhere` gates only the (then-redundant)
+    // status writes; the view finalization below runs regardless, so the
+    // bubble always leaves "streaming" even when the backend beat us to it.
+    let settledElsewhere = false;
     if (currentRun && matchesSettledRun(currentRun.status)) {
-      // The run settled while we awaited the agent. For a user abort
-      // (`cancelled`) the agent stopped mid-reply: keep the partial text so it
-      // survives a reload instead of vanishing, and finalize the streaming
-      // bubble in place. Other settled statuses were finalized by whoever set
-      // them — just release the lock (via `finally`).
       if (currentRun.status === "cancelled") {
         const partial = reply.content.trim();
         if (partial) {
@@ -212,8 +214,13 @@ export async function runSendPipeline(
           });
           onThreadActivity();
         }
+        return;
       }
-      return;
+      // Settled by another path (the backend's own CAS beat this response) —
+      // skip the redundant status write below (the CAS no-ops on a terminal
+      // row anyway), but fall through to the shared finalization so the
+      // bubble still renders the final content.
+      settledElsewhere = true;
     }
     // The stream closed before the agent signalled a clean end: the text is a
     // truncated prefix, not a finished answer. Persist it (so the partial isn't
@@ -221,7 +228,9 @@ export async function runSendPipeline(
     // presenting a cut-off reply as complete.
     if (!reply.complete) {
       const interruptedMessage = i18n.t("agent:thread.responseInterrupted");
-      await updateRunStatusSafe(run.id, "failed", interruptedMessage);
+      if (!settledElsewhere) {
+        await updateRunStatusSafe(run.id, "failed", interruptedMessage);
+      }
       if (isCurrentSend()) {
         await refreshRecentRun(thread.id, thread.workspaceId);
       }
@@ -248,7 +257,9 @@ export async function runSendPipeline(
       }
       return;
     }
-    await updateRunStatusSafe(run.id, "completed");
+    if (!settledElsewhere) {
+      await updateRunStatusSafe(run.id, "completed");
+    }
     if (isCurrentSend()) {
       await refreshRecentRun(thread.id, thread.workspaceId);
     }
