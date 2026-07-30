@@ -110,6 +110,7 @@
     "loggingIn": "Signing in",
     "retry": "Retry",
     "byok": "Use your own API key",
+    "cancel": "Cancel",
     "freeTrialHint": "New users get free credits — sign up and try it now",
     "xofy": "{{current}} / {{total}}",
     "initModels": "Loading models...",

@@ -51,6 +51,7 @@ export function useHasProviders() {
 
   const enableBYOK = useCallback(() => {
     setByokMode(true);
+    setInitPending(false);
   }, []);
 
   const finishInit = useCallback(() => {
@@ -63,6 +64,14 @@ export function useHasProviders() {
     (data?.builtin ?? []).some(p => p.hasApiKey)
     || (data?.custom ?? []).some(p => p.hasApiKey),
   );
+
+  // Whether the provider data shows at least one key (regardless of BYOK mode).
+  // Used by the Cancel button to decide whether to close the gate or reset.
+  const hasAnyProvider = Boolean(
+    (data?.builtin ?? []).some(p => p.hasApiKey)
+    || (data?.custom ?? []).some(p => p.hasApiKey),
+  );
+
   const initialLoading = loading && data === null;
 
   // The gate shows when:
@@ -72,5 +81,5 @@ export function useHasProviders() {
   //   running inside OnboardingGate)
   const showGate = initialLoading || !hasProviders || initPending;
 
-  return { showGate, byokMode, enableBYOK, finishInit, initialLoading };
+  return { showGate, byokMode, enableBYOK, finishInit, hasAnyProvider, initialLoading };
 }

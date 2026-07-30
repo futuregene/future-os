@@ -27,6 +27,7 @@ const MIN_INIT_DURATION_MS = 500;
 export interface OnboardingGateProps {
   onEnableBYOK: () => void;
   onInitComplete: () => void;
+  hasAnyProvider: boolean;
 }
 
 /**
@@ -41,12 +42,16 @@ export interface OnboardingGateProps {
  * load models, bootstrap built-in skills, and wait for the agent. A progress bar
  * tracks the steps. The gate dismisses only after init completes (min 500ms).
  *
+ * While a login flow is in progress (browser open, polling), the BYOK button is
+ * replaced by a Cancel button. Cancel stops the login and either closes the gate
+ * (if a provider key already exists) or resets to the initial state.
+ *
  * The language switcher lives in the top-right corner and is always visible.
  * Dev/test builds additionally show an environment switcher next to it.
  */
-export function OnboardingGate({ onEnableBYOK, onInitComplete }: OnboardingGateProps) {
+export function OnboardingGate({ onEnableBYOK, onInitComplete, hasAnyProvider }: OnboardingGateProps) {
   const { t } = useTranslation("layout");
-  const { phase, message, begin } = useFutureLoginFlow(() => {});
+  const { phase, message, begin, cancel } = useFutureLoginFlow(() => {});
   const busy = phase === "starting" || phase === "waiting";
   const failed = phase === "denied" || phase === "expired" || phase === "error";
   const build = useBuildInfo();
@@ -57,7 +62,7 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete }: OnboardingGateP
 
   // Post-login initialization
   const [initializing, setInitializing] = useState(false);
-  const [initStep, setInitStep] = useState(0); // 0-index into INIT_STEPS
+  const [initStep, setInitStep] = useState(0);
   const [initDone, setInitDone] = useState(false);
   const startRef = useRef(0);
 
@@ -84,14 +89,13 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete }: OnboardingGateP
       // Non-fatal — the launch-time bootstrap may handle it later.
     }
 
-    // Step 2: Wait for the agent to be reachable (already spawned by
-    // ensure_agent_running in the poll_future_login backend command).
+    // Step 2: Wait for the agent to be reachable.
     markStep(2);
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
       try {
         await loadAgentModelOptions();
-        break; // agent responded — alive
+        break;
       }
       catch {
         await new Promise(resolve => setTimeout(resolve, 1500));
@@ -108,20 +112,28 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete }: OnboardingGateP
     onInitComplete();
   }, [onInitComplete]);
 
-  // When the login flow reaches "authorized" (the state machine fires
-  // onAuthorized which bumps attemptRef and drops back to idle), watch for
-  // auth-changed to trigger init. The login flow's onAuthorized callback fires
-  // synchronously inside the poll, but we detect it by watching the phase
-  // transition: phase was "waiting", then became "idle" without error/failure.
+  // Detect login success: phase transitioned from "waiting" to "idle".
   const prevPhaseRef = useRef(phase);
   useEffect(() => {
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
-    // Transitioned from waiting → idle without error = login succeeded
     if (prev === "waiting" && phase === "idle" && !initializing) {
       void runInit();
     }
   }, [phase, initializing, runInit]);
+
+  function handleCancel() {
+    cancel();
+    // If a provider key already exists (e.g. user was logged in before), close
+    // the gate. Otherwise stay on the gate with the login button reset.
+    if (hasAnyProvider)
+      onEnableBYOK();
+  }
+
+  function handleBYOK() {
+    cancel();
+    onEnableBYOK();
+  }
 
   const activeId = env.data?.environment;
   const envValue: EnvironmentId | "" = activeId === "test" || activeId === "production" ? activeId : "";
@@ -203,7 +215,7 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete }: OnboardingGateP
             </div>
           )
         : (
-            <div className="flex flex-col items-center gap-3">
+            <div className="flex min-h-[120px] flex-col items-center justify-center gap-3">
               <Button
                 className="min-w-40"
                 disabled={busy}
@@ -213,15 +225,29 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete }: OnboardingGateP
               >
                 {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
               </Button>
-              <p className="text-xs text-ink-muted">{t("gate.freeTrialHint")}</p>
-              <div className="my-3 h-px w-48 bg-line" />
-              <Button
-                onClick={onEnableBYOK}
-                size="sm"
-                variant="secondary"
-              >
-                {t("gate.byok")}
-              </Button>
+              {busy
+                ? (
+                    <Button
+                      onClick={handleCancel}
+                      size="sm"
+                      variant="secondary"
+                    >
+                      {t("gate.cancel")}
+                    </Button>
+                  )
+                : (
+                    <>
+                      <p className="text-xs text-ink-muted">{t("gate.freeTrialHint")}</p>
+                      <div className="my-3 h-px w-48 bg-line" />
+                      <Button
+                        onClick={handleBYOK}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        {t("gate.byok")}
+                      </Button>
+                    </>
+                  )}
             </div>
           )}
     </div>
