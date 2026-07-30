@@ -215,7 +215,7 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
 
       {initializing
         ? (
-            <div className="flex w-64 flex-col items-center gap-3">
+            <div className="flex h-[150px] w-64 flex-col items-center justify-center gap-3">
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-subtle">
                 <div
                   className="h-full rounded-full bg-accent transition-all duration-500 ease-out"
@@ -230,7 +230,7 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
             </div>
           )
         : (
-            <div className="flex min-h-[120px] flex-col items-center justify-center gap-3">
+            <div className="flex h-[150px] flex-col items-center justify-center gap-3">
               <Button
                 className="min-w-40"
                 disabled={busy}
@@ -240,6 +240,12 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
               >
                 {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
               </Button>
+              {/* Hint + divider are always rendered so the layout height stays
+                  identical between the idle and busy states (no vertical jitter
+                  when the BYOK button swaps to Cancel). `invisible` reserves the
+                  space without painting it while a login is in flight. */}
+              <p className={busy ? "invisible text-xs text-ink-muted" : "text-xs text-ink-muted"}>{t("gate.freeTrialHint")}</p>
+              <div className={busy ? "invisible my-3 h-px w-48 bg-line" : "my-3 h-px w-48 bg-line"} />
               {busy
                 ? (
                     <Button
@@ -251,17 +257,13 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
                     </Button>
                   )
                 : (
-                    <>
-                      <p className="text-xs text-ink-muted">{t("gate.freeTrialHint")}</p>
-                      <div className="my-3 h-px w-48 bg-line" />
-                      <Button
-                        onClick={handleBYOK}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        {t("gate.byok")}
-                      </Button>
-                    </>
+                    <Button
+                      onClick={handleBYOK}
+                      size="sm"
+                      variant="secondary"
+                    >
+                      {t("gate.byok")}
+                    </Button>
                   )}
             </div>
           )}
