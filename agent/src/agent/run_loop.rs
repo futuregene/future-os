@@ -37,9 +37,16 @@ impl Loop {
             DEFAULT_MAX_TURNS.max(0) as usize // 0 = unlimited
         };
 
-        // Emit agent_start
+        // Emit agent_start. Carry the run's wall-clock start so clients that
+        // attach late (or replay a buffered event) can anchor their live elapsed
+        // timer to the real run start instead of the event's arrival time.
+        let started_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or_default();
         on_event(StreamEvent {
             event_type: "agent_start".to_string(),
+            payload: Some(serde_json::json!({ "started_at_ms": started_at_ms })),
             ..Default::default()
         });
 

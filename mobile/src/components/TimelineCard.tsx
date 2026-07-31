@@ -24,8 +24,12 @@ interface TimelineCardProps {
   item: TimelineItem;
 }
 
+// Same shape as the desktop footer (gui/src/lib/date.ts formatDuration): "5s"
+// under a minute, "1m 25s" above — so phone and desktop read identically.
 function formatDuration(durationMs: number): string {
-  return `${Math.max(1, Math.round(durationMs / 1_000))}s`;
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1_000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
 function RunIndicator({ startedAt }: { startedAt: number }) {
@@ -260,6 +264,18 @@ export function TimelineCard({ item }: TimelineCardProps) {
 
   if (item.kind === "message") {
     if (item.role === "assistant") {
+      // Single "time · N tokens" line, joined like the desktop MessageMeta
+      // footer (which renders `parts.join(" · ")`).
+      const footerStats = [
+        item.durationMs != null ? formatDuration(item.durationMs) : null,
+        item.outputTokens != null && item.outputTokens > 0
+          ? t("chat.tokens", {
+              formattedCount: new Intl.NumberFormat(i18n.language).format(item.outputTokens),
+            })
+          : null,
+      ]
+        .filter((part): part is string => !!part)
+        .join(" · ");
       return (
         <View style={styles.assistantMessage}>
           {item.text.trim().length > 0 && <MarkdownText text={item.text} />}
@@ -279,16 +295,7 @@ export function TimelineCard({ item }: TimelineCardProps) {
               >
                 <Copy color={colors.inkMuted} size={15} />
               </Pressable>
-              {item.durationMs != null && (
-                <Text style={styles.messageDuration}>{formatDuration(item.durationMs)}</Text>
-              )}
-              {item.outputTokens != null && item.outputTokens > 0 && (
-                <Text style={styles.messageDuration}>
-                  {t("chat.tokens", {
-                    formattedCount: new Intl.NumberFormat(i18n.language).format(item.outputTokens),
-                  })}
-                </Text>
-              )}
+              {footerStats.length > 0 && <Text style={styles.messageDuration}>{footerStats}</Text>}
             </View>
           )}
         </View>
