@@ -132,6 +132,14 @@ export type TimelineItem =
       role: "user" | "assistant";
       text: string;
       runId?: string;
+      // Live "in-flight" flag for assistant replies, mirroring the desktop GUI's
+      // per-message `status === "streaming"`. While true the footer shows the
+      // generating indicator instead of the copy button. Driven by agent_start /
+      // text_chunk (set) and agent_end (cleared), so it survives a resync that
+      // rebuilds the timeline from history (which carries no run indicator).
+      streaming?: boolean;
+      // Epoch-ms anchor for the live elapsed timer; also the base for durationMs.
+      startedAt?: number;
       durationMs?: number;
       attachments?: HistoryAttachment[];
     }
@@ -140,12 +148,6 @@ export type TimelineItem =
       kind: "thinking";
       text: string;
       complete: boolean;
-      runId?: string;
-    }
-  | {
-      id: string;
-      kind: "run";
-      startedAt: number;
       runId?: string;
     }
   | {

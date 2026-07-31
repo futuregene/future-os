@@ -212,18 +212,15 @@ export async function upsertStreamingPreview(
         return [...base, bubble];
       }
 
-      return base.map((message, index) =>
-        index === existingIndex
-          ? {
-              ...message,
-              activityItems: projection.activityItems,
-              segments: projection.segments,
-              content: content || message.content,
-              thinkingActive: projection.thinkingActive,
-              outputTokens: projection.outputTokens,
-            }
-          : message,
-      );
+      const updated: AgentMessage = {
+        ...base[existingIndex]!,
+        activityItems: projection.activityItems,
+        segments: projection.segments,
+        content: content || base[existingIndex]!.content,
+        thinkingActive: projection.thinkingActive,
+        outputTokens: projection.outputTokens,
+      };
+      return [...base.filter((_, i) => i !== existingIndex), updated];
     });
   }
   catch {
@@ -250,24 +247,20 @@ export async function updatePendingMessageFromRunEvents(
     if (!projection.content.trim() && projection.activityItems.length === 0 && projection.segments.length === 0)
       return;
 
-    setMessages(current =>
-      current.map(message =>
-        message.id === pendingId
-          ? {
-              ...message,
-              activityItems: projection.activityItems,
-              // Live content is derived from the same events as segments, so the
-              // two stay consistent — safe to render segments inline immediately.
-              segments: projection.segments,
-              content: projection.content.trim() ? projection.content : message.content,
-              thinkingActive: projection.thinkingActive,
-              // Tokens accumulate as each LLM call reports usage (lands at the
-              // end of each call); shown as the real count, no estimate.
-              outputTokens: projection.outputTokens,
-            }
-          : message,
-      ),
-    );
+    setMessages((current) => {
+      const existingIndex = current.findIndex(m => m.id === pendingId);
+      if (existingIndex === -1)
+        return current;
+      const updated: AgentMessage = {
+        ...current[existingIndex]!,
+        activityItems: projection.activityItems,
+        segments: projection.segments,
+        content: projection.content.trim() ? projection.content : current[existingIndex]!.content,
+        thinkingActive: projection.thinkingActive,
+        outputTokens: projection.outputTokens,
+      };
+      return [...current.filter((_, i) => i !== existingIndex), updated];
+    });
   }
   catch {
     // Streaming preview is best-effort. The final assistant message still

@@ -100,12 +100,28 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
   switch (event.type) {
     case "agent_start": {
       streaming = true;
-      const id = `run:${runId ?? event.idx ?? items.length}`;
+      // The generating state lives on the assistant message itself (not a
+      // separate timeline item), so it renders in the message footer — same
+      // slot the copy button occupies once the run settles — and survives a
+      // history resync, which carries no run indicator.
+      const id = `assistant:${runId ?? event.idx ?? items.length}`;
+      const startedAt = Date.now();
       items = upsertItem(
         items,
         id,
-        () => ({ id, kind: "run", startedAt: Date.now(), runId }),
-        item => item,
+        () => ({
+          id,
+          kind: "message",
+          role: "assistant",
+          text: "",
+          runId,
+          streaming: true,
+          startedAt,
+        }),
+        item =>
+          item.kind === "message"
+            ? { ...item, streaming: true, startedAt: item.startedAt ?? startedAt }
+            : item,
       );
       break;
     }
@@ -115,8 +131,24 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       items = upsertItem(
         items,
         id,
-        () => ({ id, kind: "message", role: "assistant", text: chunk, runId }),
-        item => (item.kind === "message" ? { ...item, text: item.text + chunk } : item),
+        () => ({
+          id,
+          kind: "message",
+          role: "assistant",
+          text: chunk,
+          runId,
+          streaming: true,
+          startedAt: Date.now(),
+        }),
+        item =>
+          item.kind === "message"
+            ? {
+                ...item,
+                text: item.text + chunk,
+                streaming: true,
+                startedAt: item.startedAt ?? Date.now(),
+              }
+            : item,
       );
       break;
     }
@@ -190,16 +222,21 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       break;
     case "agent_end": {
       streaming = false;
-      const runItem = items.find(item => item.kind === "run" && item.runId === runId);
-      const durationMs =
-        runItem && runItem.kind === "run" ? Date.now() - runItem.startedAt : undefined;
-      items = items
-        .filter(item => item.kind !== "run" || item.runId !== runId)
-        .map(item =>
-          item.kind === "message" && item.role === "assistant" && item.runId === runId && durationMs
-            ? { ...item, durationMs }
-            : item,
-        );
+      const endedAt = Date.now();
+      // Settle the in-flight assistant message: clear the streaming flag and
+      // stamp the wall-clock duration (from the message's own startedAt, set at
+      // agent_start / first chunk). No run item to remove — the generating
+      // indicator is derived from `streaming`, so clearing it swaps the footer
+      // to the copy button on the next render.
+      items = items.map(item =>
+        item.kind === "message" && item.role === "assistant" && item.runId === runId
+          ? {
+              ...item,
+              streaming: false,
+              durationMs: item.startedAt ? endedAt - item.startedAt : undefined,
+            }
+          : item,
+      );
       break;
     }
     default:

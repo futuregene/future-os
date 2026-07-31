@@ -121,31 +121,39 @@ describe("stream event reducer", () => {
     expect(ended.streaming).toBe(false);
   });
 
-  test("shows a run while streaming and attaches its duration to the response", () => {
+  test("marks the assistant streaming while running and settles it with a duration on end", () => {
     const started = applyStreamEvent(emptyTimeline(), {
       type: "agent_start",
       data: "{}",
       runId: "run-1",
       idx: 0,
     });
-    const run = started.items.find(item => item.kind === "run");
-    if (!run || run.kind !== "run") throw new Error("run indicator was not created");
-    run.startedAt = Date.now() - 3_000;
+    const placeholder = started.items.find(
+      item => item.kind === "message" && item.role === "assistant",
+    );
+    if (!placeholder || placeholder.kind !== "message")
+      throw new Error("streaming assistant placeholder was not created");
+    expect(placeholder.streaming).toBe(true);
+    expect(typeof placeholder.startedAt).toBe("number");
+
     const text = applyStreamEvent(started, {
       type: "text_chunk",
       data: JSON.stringify({ text: "done" }),
       runId: "run-1",
       idx: 1,
     });
+    const streaming = text.items.find(item => item.kind === "message" && item.role === "assistant");
+    expect(streaming && streaming.kind === "message" && streaming.streaming).toBe(true);
+
     const ended = applyStreamEvent(text, {
       type: "agent_end",
       data: "{}",
       runId: "run-1",
       idx: 2,
     });
-    expect(ended.items.some(item => item.kind === "run")).toBe(false);
-    expect(ended.items.find(item => item.kind === "message")).toMatchObject({
-      durationMs: expect.any(Number),
-    });
+    const settled = ended.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!settled || settled.kind !== "message") throw new Error("assistant message missing");
+    expect(settled.streaming).toBe(false);
+    expect(settled.durationMs).toEqual(expect.any(Number));
   });
 });

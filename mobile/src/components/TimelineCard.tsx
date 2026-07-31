@@ -261,8 +261,13 @@ export function TimelineCard({ item }: TimelineCardProps) {
     if (item.role === "assistant") {
       return (
         <View style={styles.assistantMessage}>
-          <MarkdownText text={item.text} />
-          {item.durationMs != null && (
+          {item.text.trim().length > 0 && <MarkdownText text={item.text} />}
+          {item.streaming && item.startedAt != null ? (
+            // In-flight: the generating indicator occupies the same footer slot
+            // the copy button uses once settled (desktop parity), so a streaming
+            // reply never shows a copy button.
+            <RunIndicator startedAt={item.startedAt} />
+          ) : item.durationMs != null && item.text.trim().length > 0 ? (
             <View style={styles.messageFooter}>
               <Text style={styles.messageDuration}>{formatDuration(item.durationMs)}</Text>
               <Pressable
@@ -276,7 +281,7 @@ export function TimelineCard({ item }: TimelineCardProps) {
                 <Text style={styles.copyLabel}>Copy</Text>
               </Pressable>
             </View>
-          )}
+          ) : null}
         </View>
       );
     }
@@ -299,8 +304,6 @@ export function TimelineCard({ item }: TimelineCardProps) {
       </View>
     );
   }
-
-  if (item.kind === "run") return <RunIndicator startedAt={item.startedAt} />;
 
   if (item.kind === "thinking") {
     return (
