@@ -57,7 +57,7 @@ enum AttachFailure {
 /// (and the occasional `git` fork on write/artifact events) doesn't stall the
 /// async event loop. Awaited to preserve event order; errors are logged inside
 /// `persist_run_event`.
-async fn persist_run_event_off_thread(
+pub(super) async fn persist_run_event_off_thread(
     thread_id: &str,
     run_id: Option<&str>,
     event_type: String,
@@ -82,7 +82,7 @@ async fn persist_run_event_off_thread(
     .await;
 }
 
-async fn replace_projection_off_thread(
+pub(super) async fn replace_projection_off_thread(
     thread_id: &str,
     local_run_id: Option<&str>,
     events: Vec<(String, String, i64)>,
@@ -293,15 +293,9 @@ pub(super) async fn collect_agent_response(
                 event.idx,
             )
             .await;
-            // Remote tap (Step B/P1): queue the event for mirroring to mobile/web
-            // (no-op when no remote connection; never blocks this loop).
-            crate::remote::publish_event(
-                session_id,
-                &event.r#type,
-                &event.data,
-                &event.run_id,
-                event.idx,
-            );
+            // Remote mirroring is owned by the session observer (sole NATS
+            // publisher — its atomic-attach replay keeps the mirrored sequence
+            // gap-free, which two independent publishers could not guarantee).
             match fold_response_event(
                 &event.r#type,
                 &event.data,
@@ -388,7 +382,7 @@ fn fold_response_event(
 /// Returns true when an `agent_end` event's data marks the turn as incomplete —
 /// i.e. the LLM stream was truncated before a genuine finish. Such a reply is a
 /// prefix and must not be persisted as a clean completion.
-fn agent_end_incomplete(data: &str) -> bool {
+pub(super) fn agent_end_incomplete(data: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(data)
         .ok()
         .and_then(|value| {

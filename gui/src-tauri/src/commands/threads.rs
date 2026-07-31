@@ -383,13 +383,14 @@ pub async fn attach_remote_stream(thread_id: String) -> Result<serde_json::Value
     Ok(serde_json::json!({ "runId": run_id }))
 }
 
-/// Start observing a session's settings changes in the background.  The agent
-/// broadcasts model_changed, thinking_level_changed, etc. via StreamEvents;
-/// this command subscribes to those events and forwards them to the frontend.
-/// Call on every thread switch — old observation is automatically cancelled.
+/// Ensure the session observer is live for this session. Observers are
+/// long-lived per-session tasks (settings fan-out, event projection for runs
+/// no pipeline owns, NATS mirroring) — this call is now an idempotent hint
+/// (LRU touch), no longer a single-slot re-subscription. Safe to call on
+/// every thread switch.
 #[tauri::command]
 pub fn observe_session(session_id: String) {
-    crate::agent_bridge::start_observing_session(session_id);
+    crate::agent_bridge::ensure_observer(&session_id);
 }
 
 /// Move a thread to the workspace matching a new cwd (e.g. after TUI /cwd).

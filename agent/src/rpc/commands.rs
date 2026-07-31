@@ -1753,6 +1753,37 @@ mod tests {
     }
 
     #[test]
+    fn get_state_reports_pending_approvals_for_owning_session() {
+        let state = make_app_state();
+        state
+            .approval_gate
+            .insert_pending_for_test("approval_req1", "default");
+        state
+            .approval_gate
+            .insert_pending_for_test("approval_req2", "other-session");
+
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("get_state")));
+        assert_eq!(resp["success"], true);
+        // Only the session's own pending requests surface — never another
+        // session's (ownership rule, same as approval decisions).
+        let pending = resp["data"]["pendingApprovals"].as_array().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["approval_request_id"], "approval_req1");
+        assert_eq!(pending[0]["session_id"], "default");
+    }
+
+    #[test]
+    fn get_state_pending_approvals_empty_when_none() {
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("get_state")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(
+            resp["data"]["pendingApprovals"].as_array().unwrap().len(),
+            0
+        );
+    }
+
+    #[test]
     fn get_state_reports_interrupted_run_when_journal_unterminated() {
         let state = make_app_state();
         // Each make_app_state() now gets an isolated temp session dir (see

@@ -37,16 +37,44 @@ const markdownProcessor = unified()
   .use(remarkParse)
   .use(remarkGfm);
 
+// Cross-instance parse cache: `useMemo([content])` in MarkdownContent only
+// survives within one mounted component, so a thread switch re-parses every
+// message's markdown from scratch. Caching by content string here makes a
+// re-mount of a previously-rendered message (thread switch, lazy-window
+// materialization) a map lookup instead of a unified parse. The returned
+// document is rendered read-only (MarkdownContent maps `nodes`; consumers
+// never mutate it), so sharing it across instances is safe. LRU-bounded so a
+// long-lived app doesn't hoard every reply ever parsed.
+const parseCache = new Map<string, FutureMarkdownDocument>();
+// Tuned up after the lazy-mount window was reverted: with the full list
+// re-rendered on every thread switch, a larger cache covers more distinct
+// messages (long conversations, forks, retried replies) before eviction.
+const PARSE_CACHE_MAX = 512;
+
 interface ParseContext {
   definitions: Map<string, Definition>;
 }
 
 export function parseFutureMarkdown(raw: string): FutureMarkdownDocument {
+  const cached = parseCache.get(raw);
+  if (cached) {
+    // LRU touch.
+    parseCache.delete(raw);
+    parseCache.set(raw, cached);
+    return cached;
+  }
   const tree = parseMdast(raw);
   const context = createParseContext(tree);
   const nodes = tree.children.flatMap(node => blockToFutureNode(node, context));
   const references = collectReferences(nodes);
-  return { nodes, raw, references };
+  const document = { nodes, raw, references };
+  if (parseCache.size >= PARSE_CACHE_MAX) {
+    const oldest = parseCache.keys().next().value;
+    if (oldest !== undefined)
+      parseCache.delete(oldest);
+  }
+  parseCache.set(raw, document);
+  return document;
 }
 
 function parseMdast(raw: string): Root {

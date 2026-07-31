@@ -3,6 +3,7 @@ mod client;
 mod headless;
 mod import;
 mod models;
+mod observer;
 mod persist;
 mod replica;
 mod review;
@@ -11,7 +12,7 @@ mod session;
 mod skills;
 mod stream;
 
-pub use self::approval::{decide_approval, inject_session_rule};
+pub use self::approval::{decide_approval, inject_session_rule, reconcile_pending_approvals};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     connect_agent, delete_session_command, get_available_models_command, get_run_state_command,
@@ -22,6 +23,7 @@ pub use self::client::{
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub(crate) use self::import::import_missing_sessions;
 pub use self::models::{list_agent_models, AgentModelOption};
+pub use self::observer::{ensure_observer, seed_observers_from_store, spawn_session_discovery};
 pub use self::run_control::abort_run;
 pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
 pub use self::session::fork_agent_session;
@@ -29,17 +31,15 @@ pub use self::skills::{list_installed_skills, refresh_skills, InstalledSkill};
 pub use review::retry as retry_run_review;
 
 use serde::Serialize;
-use std::sync::Mutex;
 
 pub use self::client::AttachmentInput;
 use self::client::{base_command, prompt_command};
-use self::replica::{ReplicaLease, AGENT_REPLICAS};
+use self::replica::AGENT_REPLICAS;
 use self::run_control::{mark_run_completed_if_active, mark_run_failed_if_active};
 use self::session::{
     ensure_agent_session, is_chat_thread, set_agent_permission_level, set_agent_sandbox_policy,
     workspace_path_for_thread,
 };
-use crate::agent_proto::StreamRequest;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -516,6 +516,12 @@ async fn agent_prompt_inner(
     // Save the message for auto-naming after the prompt completes.
     let user_message = message.clone();
 
+    // Subscribe BEFORE the prompt reaches the agent: the session observer is
+    // the sole NATS publisher and the fallback event projector, so it must
+    // exist before the run starts (its atomic-attach replay covers the small
+    // subscribe window, but registering first keeps that window minimal).
+    observer::ensure_observer(&session_id);
+
     let prompt_response = command_client
         .execute_command(prompt_command(
             message,
@@ -740,45 +746,22 @@ async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), S
 
     if is_streaming && active_run_id.as_deref() == Some(run_id) {
         // canonical == local: the Agent adopted this run's requested_run_id.
-        let canonical_run_id = run_id.to_string();
         // CAS: only reanimate while still in the interrupted state. If the user
         // already aborted (or another path settled it) between listing and now,
-        // the guard matches zero rows and we must NOT spawn a collector that
-        // would race that terminal state.
+        // the guard matches zero rows and we must NOT reattach against a run
+        // whose terminal state would race the projection.
         let reanimated =
             crate::store::reanimate_run(run_id).map_err(|e| format!("reanimate: {e}"))?;
         if !reanimated {
             eprintln!(
-                "FutureOS startup reconcile: run {run_id} no longer interrupted; skipping collector"
+                "FutureOS startup reconcile: run {run_id} no longer interrupted; skipping reattach"
             );
             return Ok(());
         }
-        let run_id = run_id.to_string();
-        let session_id = session_id.to_string();
-        tokio::spawn(async move {
-            let replica_lease = match AGENT_REPLICAS.acquire(&canonical_run_id) {
-                Ok(lease) => lease,
-                Err(error) => {
-                    // Another collector already owns this run — leave the state
-                    // to it; do not fail the run out from under the live owner.
-                    eprintln!("FutureOS skipped duplicate collector for {run_id}: {error}");
-                    return;
-                }
-            };
-            if let Err(e) =
-                collect_stored_replica(replica_lease, &session_id, &run_id, &canonical_run_id).await
-            {
-                eprintln!("FutureOS reanimated collector for {run_id} failed: {e}");
-                // No collector will settle this reanimated run now. CAS it to
-                // failed so the composer can't strand on a permanent "running";
-                // a concurrent user abort (cancelled) wins the CAS and survives.
-                let _ = crate::store::fail_run_if_active(
-                    &run_id,
-                    &format!("Reanimated stream could not be collected: {e}"),
-                    "stream_interrupted",
-                );
-            }
-        });
+        // The session observer takes over from the local cursor: it projects
+        // the remaining events (this run has no pipeline owner), mirrors them
+        // to NATS, and settles the row at agent_end.
+        observer::ensure_observer(session_id);
     } else if interrupted_run_id.as_deref() == Some(run_id) {
         // The Agent confirms this run began but never committed (interrupted by
         // the restart). The synchronous phase already cancelled it with
@@ -797,57 +780,6 @@ async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), S
             "FutureOS startup reconcile: no durable terminal for run {run_id}; leaving interrupted"
         );
     }
-    Ok(())
-}
-
-async fn collect_stored_replica(
-    replica_lease: ReplicaLease,
-    session_id: &str,
-    local_run_id: &str,
-    canonical_run_id: &str,
-) -> Result<(), String> {
-    let thread_id = crate::store::get_run(local_run_id)
-        .map_err(|e| format!("get_run: {e}"))?
-        .ok_or_else(|| format!("local run {local_run_id} not found"))?
-        .thread_id;
-    let response = match replica_lease
-        .collect(Some(local_run_id), canonical_run_id, session_id, &thread_id)
-        .await
-    {
-        Ok(response) => response,
-        Err(stream::CollectError::RunGone(reason)) => {
-            // The Agent no longer has this run (rollover / restart / settled and
-            // dropped the ring). A RunGone is NOT a transient failure, so retrying
-            // or blindly marking the run failed would be wrong — mirror the
-            // durable terminal state from the Agent's journal instead.
-            return reconcile_run_gone(local_run_id, canonical_run_id, session_id, &reason).await;
-        }
-        Err(stream::CollectError::App(error)) => return Err(error.to_string()),
-    };
-    let status = if response.complete {
-        "completed"
-    } else {
-        "failed"
-    };
-    let (error_message, error_type) = if response.complete {
-        (None, None)
-    } else {
-        (
-            Some("Future Agent response ended before a clean terminal.".to_string()),
-            Some("stream_interrupted".to_string()),
-        )
-    };
-    // Compare-and-set: a concurrent user abort (cancelled) wins the guard and is
-    // preserved, so a late completion from a reanimated/observed run can never
-    // overwrite it. update_run_status_if_active also pushes the status change.
-    crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
-        run_id: local_run_id.to_string(),
-        status: status.to_string(),
-        error_message,
-        error_type,
-    })
-    .map_err(|e| format!("update_status: {e}"))?;
-    crate::store::clear_run_event_buffer(local_run_id);
     Ok(())
 }
 
@@ -1085,28 +1017,15 @@ async fn reconcile_active_run_once(
     let state_value = serde_json::from_str::<serde_json::Value>(&state.data).unwrap_or_default();
     match plan_active_run_reconciliation(&state_value, canonical_run_id, age_secs) {
         ActiveRunAction::Skip => Ok(()),
-        ActiveRunAction::Attach => match AGENT_REPLICAS.acquire(canonical_run_id) {
-            // A healthy in-flight collector holds the lease — nothing to do.
-            Err(_) => Ok(()),
-            Ok(lease) => {
-                let run_id = run.run_id.clone();
-                let session_id = run.session_id.clone();
-                let canonical = canonical_run_id.to_string();
-                tokio::spawn(async move {
-                    if let Err(e) =
-                        collect_stored_replica(lease, &session_id, &run_id, &canonical).await
-                    {
-                        eprintln!("FutureOS watchdog collector for {run_id} failed: {e}");
-                        let _ = crate::store::fail_run_if_active(
-                            &run_id,
-                            &format!("Watchdog stream could not be collected: {e}"),
-                            "stream_interrupted",
-                        );
-                    }
-                });
-                Ok(())
-            }
-        },
+        ActiveRunAction::Attach => {
+            // The Agent is still streaming this run but no pipeline collector
+            // owns it (a crashed collector, a run started by another client,
+            // or one reanimated out from under a dead lease). The session
+            // observer projects it from its local cursor — idempotent, and
+            // never races a pipeline collector (single-writer rule).
+            observer::ensure_observer(&run.session_id);
+            Ok(())
+        }
         ActiveRunAction::SettleTerminal { agent_state, error } => {
             settle_from_agent_terminal(&run.run_id, &agent_state, error.as_deref())
                 .map_err(|e| format!("settle terminal: {e}"))
@@ -1178,6 +1097,10 @@ pub fn spawn_active_run_watchdog() {
                     );
                 }
             }
+            // Approvals outlive their collectors (the Agent stays parked while
+            // the GUI restarts), so reconcile them against the Agent's pending
+            // set on every tick — not just at startup.
+            approval::reconcile_pending_approvals().await;
         }
     });
 }
@@ -1185,9 +1108,10 @@ pub fn spawn_active_run_watchdog() {
 // ── Remote-stream attach (cross-client streaming) ─────────────────────────
 
 /// Called when the GUI opens a thread whose agent session is being driven by
-/// another client (TUI, CLI, phone).  Creates a synthetic run and subscribes
-/// to the agent's event stream in the background so the existing reattach
-/// machinery picks up live previews and message updates automatically.
+/// another client (TUI, CLI, phone). Ensures the session observer is live (it
+/// projects the run's events, mirrors them to NATS, and settles the run),
+/// then returns the local run row for the agent's active run so the existing
+/// reattach machinery picks up live previews immediately.
 pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
     let thread = crate::store::get_thread(thread_id)
         .map_err(|e| format!("get_thread: {e}"))?
@@ -1200,19 +1124,13 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .ok_or_else(|| "Thread has no agent session".to_string())?;
 
     // Don't create a duplicate run if one is already active or waiting on an
-    // approval decision.  A run parked at "waiting_approval" is still
-    // consuming the agent's event stream; attaching a second synthetic run
-    // would spawn a second collector writing duplicate events and misalign
-    // run-to-turn pairing in applyRunMetadata.
-    //
-    // The frontend polls get_state for is_streaming and the run settlement
-    // races with that poll — a just-settled run can look like "no active
-    // run" for a tick, causing a duplicate creation.
+    // approval decision — the observer is already projecting it.
     fn is_active(status: &str) -> bool {
         status == "running" || status == "waiting_approval"
     }
     let existing_runs = crate::store::list_runs(thread_id).unwrap_or_default();
     if let Some(active) = existing_runs.iter().find(|r| is_active(&r.status)) {
+        observer::ensure_observer(session_id);
         return Ok(active.id.clone());
     }
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
@@ -1230,151 +1148,13 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .filter(|id| !id.is_empty())
         .ok_or_else(|| "Agent session has no active canonical run".to_string())?
         .to_string();
-    let replica_lease = AGENT_REPLICAS.acquire(&canonical_run_id)?;
 
-    let run = crate::store::create_run(crate::store::CreateRunInput {
-        thread_id: thread_id.to_string(),
-        trigger_message_id: None,
-        model_provider: None,
-        model_id: None,
-    })
-    .map_err(|e| format!("create_run: {e}"))?;
-
-    let run_id = run.id.clone();
-    let sid = session_id.to_string();
-    tokio::spawn(async move {
-        if let Err(e) =
-            collect_stored_replica(replica_lease, &sid, &run_id, &canonical_run_id).await
-        {
-            eprintln!("FutureOS remote-stream collector for {run_id} failed: {e}");
-            let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
-                run_id,
-                status: "failed".to_string(),
-                error_message: Some(e),
-                error_type: Some("stream_interrupted".to_string()),
-            });
-        }
-    });
-
-    Ok(run.id)
-}
-
-// ── Session observer (real-time settings-change events) ───────────────────
-
-use tauri::Emitter;
-use tokio::sync::oneshot;
-
-/// Handle to the currently-running session observation task.  When a new
-/// observation starts, the old one is cancelled via this channel.
-static OBSERVER_CANCEL: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
-
-/// Start observing a session's settings changes in the background.  Subscribes
-/// to the agent's StreamEvents and forwards settings-change events to the
-/// Event types the session observer forwards to the webview. Whitelist, kept
-/// in sync with the frontend consumers: `user_message` (zero-latency user
-/// bubble in useThreadMessages) plus the settings-change set applied by
-/// agentStateCache (`applySettingsEvent`). Everything else — in particular the
-/// per-token `text_chunk`/`thinking_delta`/`tool_*` stream — is dropped here,
-/// before the JSON rebuild + Tauri emit, because no frontend listener reads it.
-const OBSERVER_FORWARDED_EVENTS: &[&str] = &[
-    "agent_start",
-    "agent_end",
-    "user_message",
-    "model_changed",
-    "thinking_level_changed",
-    "permission_level_changed",
-    "session_name_changed",
-    "cwd_changed",
-    "config_reloaded",
-];
-
-/// frontend via Tauri `agent-event` events so the UI reflects model /
-/// thinking / name / cwd changes in near real-time (< 1s).
-///
-/// Cancels any previous observation for this window.  Safe to call on every
-/// thread switch — only one observation runs at a time.
-pub fn start_observing_session(session_id: String) {
-    // Cancel the previous observation.
-    if let Ok(mut guard) = OBSERVER_CANCEL.lock() {
-        if let Some(tx) = guard.take() {
-            let _ = tx.send(());
-        }
-    }
-
-    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
-    if let Ok(mut guard) = OBSERVER_CANCEL.lock() {
-        *guard = Some(cancel_tx);
-    }
-
-    tauri::async_runtime::spawn(async move {
-        let app_handle = match crate::APP_HANDLE.get() {
-            Some(h) => h.clone(),
-            None => return,
-        };
-
-        // Reconnect loop: if the agent restarts, re-subscribe.
-        loop {
-            let mut client = match connect_agent().await {
-                Ok(c) => c,
-                Err(_) => {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    continue;
-                }
-            };
-
-            let mut stream = match client
-                .stream_events(StreamRequest {
-                    event_types: vec![],
-                    session_id: session_id.clone(),
-                    ..Default::default()
-                })
-                .await
-            {
-                Ok(s) => s.into_inner(),
-                Err(_) => {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    continue;
-                }
-            };
-
-            // Process events until cancelled or stream ends.
-            loop {
-                tokio::select! {
-                    _ = &mut cancel_rx => {
-                        return;
-                    }
-                    result = stream.message() => {
-                        let event = match result {
-                            Ok(Some(e)) => e,
-                            _ => break, // stream ended or error — reconnect
-                        };
-
-                        // Forward only the events the frontend actually
-                        // consumes (see OBSERVER_FORWARDED_EVENTS). Per-token
-                        // content events (text_chunk, thinking_delta, tool_*)
-                        // used to be JSON-rebuilt and emitted across IPC on
-                        // every token only to be discarded by the single
-                        // listener — the frontend renders content from the
-                        // persisted run-event log instead.
-                        if !OBSERVER_FORWARDED_EVENTS.contains(&event.r#type.as_str()) {
-                            continue;
-                        }
-                        if let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&event.data) {
-                            if let serde_json::Value::Object(ref mut map) = payload {
-                                map.insert("sessionId".to_string(),
-                                    serde_json::Value::String(session_id.clone()));
-                                map.insert("_eventType".to_string(),
-                                    serde_json::Value::String(event.r#type.clone()));
-                            }
-                            let _ = app_handle.emit("agent-event", &payload);
-                        }
-                    }
-                }
-            }
-            // Stream ended — reconnect after a short delay.
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-    });
+    observer::ensure_observer(session_id);
+    // Get-or-create the local row NOW (id == canonical run id) so the frontend
+    // gets a concrete run id back instead of waiting for the observer's first
+    // event. The observer reuses this row via the same binding path.
+    observer::ensure_run_binding(session_id, &canonical_run_id, thread_id)
+        .ok_or_else(|| "Unable to create local run for the agent's active run".to_string())
 }
 
 /// When the agent session's cwd changes (via TUI /cwd or another client),

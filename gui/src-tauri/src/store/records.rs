@@ -183,6 +183,11 @@ pub struct EnsureArtifactInput {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateRunInput {
+    /// Explicit row id. Normally generated; observers pass the agent's
+    /// canonical run id so crash recovery (`activeRun.runId` matching) finds
+    /// the local row after a restart.
+    #[serde(default)]
+    pub id: Option<String>,
     pub thread_id: String,
     pub trigger_message_id: Option<String>,
     pub model_provider: Option<String>,

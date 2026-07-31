@@ -193,23 +193,7 @@ export async function upsertStreamingPreview(
       const existingIndex = base.findIndex(message => message.id === bubbleId);
 
       if (existingIndex === -1) {
-        const bubble: AgentMessage = {
-          id: bubbleId,
-          role: "assistant",
-          authorKey: "author.researchCopilot",
-          content,
-          status: "streaming",
-          createdAt: new Date().toISOString(),
-          activityItems: projection.activityItems,
-          segments: projection.segments,
-          thinkingActive: projection.thinkingActive,
-          outputTokens: projection.outputTokens,
-          // Feed MessageMeta's live elapsed timer so a re-attached run keeps
-          // ticking instead of dropping its duration stat on switch-back.
-          runStartedAt: runStartedAt ?? undefined,
-          runId,
-        };
-        return [...base, bubble];
+        return [...base, streamingBubble(projection, runId, runStartedAt)];
       }
 
       const updated: AgentMessage = {
@@ -227,6 +211,57 @@ export async function upsertStreamingPreview(
     // Live preview is best-effort; the final assistant message still lands when
     // the run settles and the thread reloads.
   }
+}
+
+/**
+ * Build a synthetic streaming bubble for an in-flight run WITHOUT touching
+ * React state — the thread-load path folds it into the history array it
+ * returns, so switching to an active conversation paints history + live
+ * bubble in one render instead of history-then-bubble a frame apart (the
+ * observer already holds both; the lag was purely two sequential
+ * setMessages). Skips a projection with nothing renderable yet (no events
+ * persisted) — the run is still in flight, so a later reattach tick adds
+ * the bubble when content lands.
+ */
+export async function buildStreamingPreview(
+  runId: string,
+  runStartedAt: number | null = null,
+): Promise<AgentMessage | null> {
+  const projection = await projectRunForLivePreview(runId, () => true);
+  if (!projection)
+    return null;
+  if (
+    !projection.content.trim()
+    && projection.activityItems.length === 0
+    && projection.segments.length === 0
+  ) {
+    return null;
+  }
+  return streamingBubble(projection, runId, runStartedAt);
+}
+
+/** The synthetic live bubble for an in-flight run (shared by both writers). */
+function streamingBubble(
+  projection: AssistantRunProjection,
+  runId: string,
+  runStartedAt: number | null,
+): AgentMessage {
+  return {
+    id: `stream_${runId}`,
+    role: "assistant",
+    authorKey: "author.researchCopilot",
+    content: projection.content.trim(),
+    status: "streaming",
+    createdAt: new Date().toISOString(),
+    activityItems: projection.activityItems,
+    segments: projection.segments,
+    thinkingActive: projection.thinkingActive,
+    outputTokens: projection.outputTokens,
+    // Feed MessageMeta's live elapsed timer so a re-attached run keeps
+    // ticking instead of dropping its duration stat on switch-back.
+    runStartedAt: runStartedAt ?? undefined,
+    runId,
+  };
 }
 
 export async function updatePendingMessageFromRunEvents(

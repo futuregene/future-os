@@ -503,6 +503,15 @@ pub fn run() {
             let agent_handle = app.handle().clone();
             std::thread::spawn(move || agent_supervisor::ensure_agent_running(&agent_handle));
             start_thread_streaming_monitor();
+            // Per-session observers: the always-on tap into every agent
+            // session's event stream (settings fan-out, projection of runs no
+            // pipeline collector owns, NATS mirroring). Attach/retry happens
+            // inside each observer task, so a down agent never blocks startup.
+            agent_bridge::seed_observers_from_store();
+            // Discovery: conversations created by other clients (TUI/CLI) get
+            // a thread stub + an observer — streaming ones within ~1s, idle
+            // ones on the 60s import pass.
+            agent_bridge::spawn_session_discovery();
             // Periodically reconcile non-terminal run rows against the Agent's
             // authoritative state (mirrors terminal markers, reattaches lost
             // collectors, settles orphans). Guards against rows whose owning
@@ -524,6 +533,10 @@ pub fn run() {
                     // Give the agent a few seconds to come up; then test.
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     agent_bridge::reconcile_interrupted_runs().await;
+                    // Pending approvals survive startup convergence (the Agent
+                    // may be parked on one); settle them against the Agent's
+                    // authoritative pending set once runs are reanimated.
+                    agent_bridge::reconcile_pending_approvals().await;
                 });
             });
             // Shadow-review maintenance (consistency check + crash recovery) runs
@@ -633,6 +646,7 @@ pub fn run() {
             list_tool_calls_bulk,
             list_tool_outputs,
             list_approval_requests,
+            list_pending_approval_requests,
             decide_approval_request,
             save_approval_rule,
             get_git_review,

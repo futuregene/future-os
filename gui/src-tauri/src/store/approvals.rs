@@ -115,6 +115,22 @@ pub fn list_approval_requests(
         .map_err(crate::AppError::from)
 }
 
+/// Every still-pending approval across all threads. Used by the sidebar badge
+/// (which counts approvals outside the open thread) and by startup/watchdog
+/// reconciliation against the Agent's authoritative pending set.
+pub fn list_pending_approval_requests() -> Result<Vec<ApprovalRequestRecord>, crate::AppError> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {APPROVAL_REQUEST_COLUMNS}
+             FROM approval_requests
+             WHERE status = 'pending'
+             ORDER BY created_at DESC"
+    ))?;
+    let rows = stmt.query_map([], approval_request_from_row)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::AppError::from)
+}
+
 pub fn decide_approval_request(
     input: DecideApprovalRequestInput,
 ) -> Result<ApprovalRequestRecord, crate::AppError> {

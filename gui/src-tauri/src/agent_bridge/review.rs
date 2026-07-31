@@ -319,6 +319,7 @@ mod tests {
         })
         .unwrap();
         let run = store::create_run(CreateRunInput {
+            id: None,
             thread_id: thread.id.clone(),
             trigger_message_id: None,
             model_provider: None,
@@ -391,6 +392,7 @@ mod tests {
         // (12 total) and prune.
         for _ in 0..11 {
             let extra = store::create_run(CreateRunInput {
+                id: None,
                 thread_id: thread.id.clone(),
                 trigger_message_id: None,
                 model_provider: None,

@@ -91,6 +91,11 @@ export async function listApprovalRequests(threadId: string) {
   return invokeCommand<StoredApprovalRequest[]>("list_approval_requests", { threadId });
 }
 
+/** Pending approvals across all threads — the sidebar approval badge source. */
+export async function listPendingApprovalRequests() {
+  return invokeCommand<StoredApprovalRequest[]>("list_pending_approval_requests");
+}
+
 export async function decideApprovalRequest(input: {
   approvalRequestId: string;
   status: "approved" | "rejected" | "cancelled";

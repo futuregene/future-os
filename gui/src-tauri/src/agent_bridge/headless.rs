@@ -36,6 +36,7 @@ pub fn prepare_prompt_persisted(
         .unwrap_or_else(|| thread.id.clone());
 
     let run = store::create_run(store::CreateRunInput {
+        id: None,
         thread_id: thread.id.clone(),
         trigger_message_id: None,
         model_provider: None,

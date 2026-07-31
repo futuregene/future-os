@@ -334,6 +334,7 @@ pub async fn fork_agent_session(
     let mut run_ids: Vec<String> = Vec::with_capacity(run_count);
     for _ in 0..run_count {
         let run = store::create_run(store::CreateRunInput {
+            id: None,
             thread_id: new_thread.id.clone(),
             trigger_message_id: None,
             model_provider: provider.clone(),
