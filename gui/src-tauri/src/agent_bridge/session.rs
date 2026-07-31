@@ -298,10 +298,6 @@ pub async fn fork_agent_session(
 
     // ── create workspace + thread ──────────────────────────────────────
 
-    // Let create_thread handle workspace creation — for chat threads it
-    // always creates a fresh workspace keyed by the new thread id.
-    // create_thread ignores the passed workspace_id for chat mode, so
-    // any workspace we pre-created would be orphaned.
     let new_thread = store::create_thread(store::CreateThreadInput {
         mode: thread.mode.clone(),
         title: Some(session_name),
