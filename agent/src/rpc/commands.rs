@@ -767,6 +767,7 @@ fn list_models_response(id: &str, registry: &crate::models::Registry) -> String 
                 "contextWindow": model.context_window,
                 "isDefault": id == effective_default,
                 "description": model.description,
+                "descriptionEn": model.description_en,
                 "recommended": model.recommended,
             })
         })

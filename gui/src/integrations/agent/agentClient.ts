@@ -11,8 +11,10 @@ export interface AgentModelOption {
   thinkingLevel?: ThinkingLevel | string | null;
   contextWindow?: number | null;
   isDefault?: boolean;
-  /** Curated positioning blurb from the Future platform catalog; absent elsewhere. */
+  /** Curated positioning blurb (Chinese) from the Future platform catalog; absent elsewhere. */
   description?: string | null;
+  /** English counterpart of `description`; shown when the UI language is not Chinese. */
+  descriptionEn?: string | null;
   /** Future-platform recommendation flag (drives the onboarding model picker). */
   recommended?: boolean;
 }
@@ -111,6 +113,26 @@ function normalizeAgentModelOptions(models: AgentModelOption[]) {
  */
 export function modelKey(model: Pick<AgentModelOption, "id" | "provider">) {
   return model.provider ? `${model.provider}/${model.id}` : model.id;
+}
+
+/**
+ * Pick the catalog blurb that matches the UI language. The Future platform
+ * supplies a Chinese `description` and an English `descriptionEn`; return the
+ * variant matching `language` (everything except "en" is treated as Chinese,
+ * mirroring the `i18n.language !== "en"` convention used elsewhere), falling
+ * back to the other variant when the preferred one is missing so a model row is
+ * never left blank. Trimmed; `null` when neither variant is present.
+ *
+ * Pure on purpose: callers pass `i18n.language` in rather than this helper
+ * importing i18n, so it stays testable and side-effect free.
+ */
+export function localizedModelDescription(
+  model: Pick<AgentModelOption, "description" | "descriptionEn">,
+  language: string | undefined,
+): string | null {
+  const preferred = language === "en" ? model.descriptionEn : model.description;
+  const fallback = language === "en" ? model.description : model.descriptionEn;
+  return preferred?.trim() || fallback?.trim() || null;
 }
 
 /** Built-in Future provider id (display name "Future"). */

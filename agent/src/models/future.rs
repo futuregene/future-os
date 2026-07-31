@@ -150,6 +150,7 @@ struct FutureModelEntry {
     #[allow(dead_code)]
     provider: Option<String>,
     description: Option<String>,
+    description_en: Option<String>,
     recommended: Option<bool>,
 }
 
@@ -379,6 +380,7 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         headers: HashMap::new(),
         hide: false,
         description: entry.description,
+        description_en: entry.description_en,
         recommended: entry.recommended.unwrap_or(false),
     }
 }
@@ -655,6 +657,7 @@ mod tests {
             knowledge_cutoff: None,
             provider: None,
             description: None,
+            description_en: None,
             recommended: None,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
@@ -674,6 +677,7 @@ mod tests {
             knowledge_cutoff: None,
             provider: None,
             description: None,
+            description_en: None,
             recommended: None,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
@@ -696,6 +700,7 @@ mod tests {
             knowledge_cutoff: None,
             provider: None,
             description: None,
+            description_en: None,
             recommended: None,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
@@ -724,6 +729,7 @@ mod tests {
             knowledge_cutoff: None,
             provider: None,
             description: None,
+            description_en: None,
             recommended: None,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");

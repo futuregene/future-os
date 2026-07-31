@@ -22,6 +22,11 @@ pub struct AgentModelOption {
     /// "经济实用版，日常编程和对话任务够用且实惠"). Absent for built-in / user models.
     #[serde(default)]
     description: Option<String>,
+    /// English counterpart of `description` (e.g. "Budget-friendly edition, solid
+    /// for daily coding and chat"); the GUI shows it when the UI language is not
+    /// Chinese. Absent for built-in / user models.
+    #[serde(default)]
+    description_en: Option<String>,
     /// Future-platform recommendation flag (drives the onboarding model picker).
     #[serde(default)]
     recommended: bool,

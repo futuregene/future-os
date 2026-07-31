@@ -9,7 +9,7 @@ import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
-import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
+import { localizedModelDescription, modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { listAvailableSkills, listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { deleteTempAttachment, savePastedImage } from "../../integrations/storage/threadStore";
@@ -629,7 +629,7 @@ export function Composer({
                   onModelChange?.(modelKey(model));
                   setModelMenuOpen(false);
                 }}
-                title={model.description?.trim() || undefined}
+                title={localizedModelDescription(model, i18n.language) ?? undefined}
               >
                 <span className="min-w-0 flex-1 space-y-0.5">
                   <span className="block truncate font-medium leading-tight text-ink">{model.label}</span>

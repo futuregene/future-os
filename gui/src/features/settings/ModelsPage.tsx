@@ -2,7 +2,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TextInput } from "../../components/ui/TextInput";
-import { modelKey } from "../../integrations/agent/agentClient";
+import { localizedModelDescription, modelKey } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
@@ -15,7 +15,7 @@ export function ModelsPage({
   modelOptions: AgentModelOption[];
   onChangeHidden: (next: string[]) => void;
 }) {
-  const { t } = useTranslation("settings");
+  const { t, i18n } = useTranslation("settings");
   const [query, setQuery] = useState("");
   const providerNames = useProviderNames();
   const hidden = useMemo(() => new Set(hiddenModels), [hiddenModels]);
@@ -104,8 +104,9 @@ export function ModelsPage({
           >
             <SettingsList>
               {models.map((model) => {
-                // Curated platform blurb; trimmed so whitespace-only counts as empty.
-                const description = model.description?.trim() || null;
+                // Curated platform blurb in the active UI language; trimmed so
+                // whitespace-only counts as empty (handled by the helper).
+                const description = localizedModelDescription(model, i18n.language);
                 return (
                   <SettingsRow
                     key={modelKey(model)}
