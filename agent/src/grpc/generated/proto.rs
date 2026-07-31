@@ -286,7 +286,9 @@ pub struct StreamEvent {
     /// Event type string (see StreamRequest.event_types).
     ///
     /// Canonical vocabulary (all clients key off these):
-    ///    agent_start / agent_end      run lifecycle (agent_end carries error/usage)
+    ///    agent_start / agent_end      run lifecycle (agent_start carries the run's
+    ///                                 started_at_ms; agent_end carries error/usage/
+    ///                                 duration_ms — the authoritative run totals)
     ///    user_message                 a user turn (prompt / steer / follow-up)
     ///    text_chunk                   assistant text token (the projected token stream)
     ///    thinking_start / thinking_delta / thinking_end   reasoning stream
@@ -310,7 +312,9 @@ pub struct StreamEvent {
     ///    tool_end:      {"tool_id": "...", "text": "output..."}
     ///    tool_delta:    {"tool_id": "...", "text": "partial args..."}
     ///    approval_request: {"approval_request_id": "...", "tool_name": "shell", ...}
-    ///    agent_end:     {"error": "..."}  (error present only on failure)
+    ///    agent_start:   {"started_at_ms": 1750000000000}
+    ///    agent_end:     {"error": "...", "usage": {"output_tokens": N}, "duration_ms": N}
+    ///                   (error present only on failure)
     #[prost(string, tag = "2")]
     pub data: ::prost::alloc::string::String,
     /// P1: client-side ordering/dedup. run_id is unique per user run (assigned once

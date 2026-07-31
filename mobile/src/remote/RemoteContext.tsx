@@ -794,24 +794,76 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           await refreshSessions();
         }
         if (wasDraft && nextSessionId) {
-          const current = await backfill(nextSessionId, optimisticTimeline);
-          setTimeline(current);
+          // Catch up on the run's first events: while the draft had no session
+          // id, handleEvent dropped them at the session filter. Merge the
+          // fetched prefix into the LATEST timeline under the sync lock —
+          // rebasing onto the stale pre-prompt snapshot would wipe live events
+          // that already landed (the streaming placeholder vanished, then was
+          // recreated by the next event with a receipt-time anchor, visibly
+          // restarting the footer timer mid-run).
+          syncLockRef.current = true;
+          try {
+            const catchup = await client.request<EventsData>(
+              { type: "get_events_since", sessionId: nextSessionId, sinceIdx: -1 },
+              nextSessionId,
+            );
+            const events = catchup.data.events ?? [];
+            // Apply-all (seenEvents dedups) rather than cursor verdicts: events
+            // predating the cursor's first sighting of this run are still
+            // missing and must land, not be skipped as "dup".
+            setTimeline(prev => {
+              let next = events.reduce((state, ev) => applyStreamEvent(state, ev), prev);
+              if (catchup.data.truncated) {
+                next = {
+                  ...next,
+                  items: [
+                    ...next.items,
+                    {
+                      id: `truncated:${Date.now()}`,
+                      kind: "notice",
+                      tone: "warning",
+                      text: "truncated",
+                    },
+                  ],
+                };
+              }
+              return next;
+            });
+            for (const ev of events) {
+              if (ev.runId && ev.idx != null) advanceCursor(cursorRef.current, ev.runId, ev.idx);
+            }
+            // Fold live events buffered while the catch-up was in flight.
+            const pending = pendingRef.current;
+            pendingRef.current = [];
+            if (pending.length > 0) {
+              setTimeline(prev => {
+                let state = prev;
+                for (const { event } of pending) {
+                  const verdict = nextEvent(cursorRef.current, event.runId, event.idx);
+                  if (verdict.kind === "dup") continue;
+                  if (verdict.kind === "gap") {
+                    // A live event leapfrogged the catch-up — heal wholesale
+                    // (recover re-syncs history, backfill, cursor, pending).
+                    void recoverRef.current();
+                    return state;
+                  }
+                  state = applyStreamEvent(state, event);
+                }
+                return state;
+              });
+            }
+          } catch {
+            // Desktop without get_events_since (or a dropped connection): the
+            // live stream and the next gap check carry on regardless.
+          } finally {
+            syncLockRef.current = false;
+          }
         }
       } finally {
         setBusy(false);
       }
     },
-    [
-      backfill,
-      busy,
-      draft,
-      draftMode,
-      draftWorkspaceId,
-      modelId,
-      refreshSessions,
-      thinkingLevel,
-      timeline,
-    ],
+    [busy, draft, draftMode, draftWorkspaceId, modelId, refreshSessions, thinkingLevel, timeline],
   );
 
   const abort = useCallback(async () => {

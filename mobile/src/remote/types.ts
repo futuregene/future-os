@@ -142,7 +142,10 @@ export type TimelineItem =
       // text_chunk (set) and agent_end (cleared), so it survives a resync that
       // rebuilds the timeline from history (which carries no run indicator).
       streaming?: boolean;
-      // Epoch-ms anchor for the live elapsed timer; also the base for durationMs.
+      // Epoch-ms run-start anchor for the live elapsed timer. Comes from the
+      // agent's `started_at_ms` when the event carries it (replay-safe), else
+      // the local receipt time. Settled replies show the agent_end duration_ms
+      // instead — receipt-time durations understate late-joined runs.
       startedAt?: number;
       durationMs?: number;
       /** Output tokens for the reply (real provider usage). */

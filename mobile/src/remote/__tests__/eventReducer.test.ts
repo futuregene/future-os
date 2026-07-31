@@ -156,4 +156,139 @@ describe("stream event reducer", () => {
     expect(settled.streaming).toBe(false);
     expect(settled.durationMs).toEqual(expect.any(Number));
   });
+
+  test("anchors the live timer to the agent_start started_at_ms, not the receipt time", () => {
+    const runStart = 1_750_000_000_000; // fixed epoch-ms, far from Date.now()
+    const state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: JSON.stringify({ started_at_ms: runStart }),
+      runId: "run-1",
+      idx: 0,
+    });
+    const placeholder = state.items.find(
+      item => item.kind === "message" && item.role === "assistant",
+    );
+    if (!placeholder || placeholder.kind !== "message")
+      throw new Error("streaming assistant placeholder was not created");
+    expect(placeholder.startedAt).toBe(runStart);
+  });
+
+  test("creates the streaming assistant host on thinking_delta when agent_start was missed", () => {
+    // Late join mid-think: the run's event-ring tail starts with thinking
+    // deltas, so the generating indicator still needs a host bubble.
+    const thinking = applyStreamEvent(emptyTimeline(), {
+      type: "thinking_delta",
+      data: JSON.stringify({ text: "reasoning…" }),
+      runId: "run-1",
+      idx: 7,
+    });
+    const host = thinking.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!host || host.kind !== "message") throw new Error("assistant host bubble missing");
+    expect(host.streaming).toBe(true);
+    expect(host.text).toBe("");
+    // Chronological order: reasoning first, the answer bubble below it.
+    expect(thinking.items.map(item => item.kind)).toEqual(["thinking", "message"]);
+
+    // The reply text merges into that same bubble — no duplicate assistant row.
+    const text = applyStreamEvent(thinking, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "answer" }),
+      runId: "run-1",
+      idx: 8,
+    });
+    const assistants = text.items.filter(
+      item => item.kind === "message" && item.role === "assistant",
+    );
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({ text: "answer", streaming: true });
+    expect(text.items.map(item => item.kind)).toEqual(["thinking", "message"]);
+  });
+
+  test("keeps thinking and tool rows above the answer bubble in event order", () => {
+    // From-start flow: the placeholder exists from agent_start, so secondary
+    // items must insert *before* it while it is still empty — otherwise the
+    // answer would render above its own reasoning (desktop renders inline,
+    // chronologically).
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "thinking_delta",
+      data: JSON.stringify({ text: "reasoning…" }),
+      runId: "run-1",
+      idx: 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "read" }),
+      runId: "run-1",
+      idx: 2,
+    });
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "answer" }),
+      runId: "run-1",
+      idx: 3,
+    });
+    expect(state.items.map(item => item.kind)).toEqual(["thinking", "tool", "message"]);
+    const answer = state.items[2];
+    if (!answer || answer.kind !== "message") throw new Error("assistant message missing");
+    expect(answer).toMatchObject({ text: "answer", streaming: true });
+  });
+
+  test("settle prefers the authoritative agent_end totals over partial late-join stats", () => {
+    // Regression: a client that joined seconds before the end used to stamp a
+    // receipt-clock duration and keep only the tail's accumulated usage.
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "tail of the reply" }),
+      runId: "run-1",
+      idx: 1998,
+    });
+    state = applyStreamEvent(state, {
+      type: "usage",
+      data: JSON.stringify({ usage: { completion_tokens: 273 } }),
+      runId: "run-1",
+      idx: 1999,
+    });
+    state = applyStreamEvent(state, {
+      type: "agent_end",
+      data: JSON.stringify({ duration_ms: 85_000, usage: { output_tokens: 2965 } }),
+      runId: "run-1",
+      idx: 2000,
+    });
+    const settled = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!settled || settled.kind !== "message") throw new Error("assistant message missing");
+    expect(settled.streaming).toBe(false);
+    expect(settled.durationMs).toBe(85_000);
+    expect(settled.outputTokens).toBe(2965);
+  });
+
+  test("settle falls back to receipt-clock duration and accumulated usage on older agents", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "usage",
+      data: JSON.stringify({ usage: { completion_tokens: 42 } }),
+      runId: "run-1",
+      idx: 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "agent_end",
+      data: "{}",
+      runId: "run-1",
+      idx: 2,
+    });
+    const settled = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!settled || settled.kind !== "message") throw new Error("assistant message missing");
+    expect(settled.durationMs).toEqual(expect.any(Number));
+    expect(settled.outputTokens).toBe(42);
+  });
 });

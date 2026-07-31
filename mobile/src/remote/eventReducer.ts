@@ -94,6 +94,20 @@ function usageOutputTokens(data: Record<string, unknown>): number {
   return 0;
 }
 
+/** Epoch-ms run start carried on `agent_start` — the authoritative anchor, valid
+ * even when the event is replayed to a late-joining client. */
+function runStartedAtMs(data: Record<string, unknown>): number | undefined {
+  const value = data.started_at_ms;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** Run wall-clock duration carried on `agent_end` (same value the desktop reads
+ * back from the persisted journal). */
+function runDurationMs(data: Record<string, unknown>): number | undefined {
+  const value = data.duration_ms;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 function upsertItem(
   items: TimelineItem[],
   id: string,
@@ -103,6 +117,54 @@ function upsertItem(
   const index = items.findIndex(item => item.id === id);
   if (index < 0) return [...items, create()];
   return items.map((item, itemIndex) => (itemIndex === index ? update(item) : item));
+}
+
+/**
+ * Append the run's streaming assistant placeholder when it doesn't exist yet.
+ * The desktop keeps a streaming assistant bubble from send through run end;
+ * mobile only creates one on agent_start/text_chunk — so a late-joining client
+ * whose event-ring tail starts with thinking/usage events (agent_start already
+ * rolled out of the agent's resume ring) would otherwise show no generating
+ * indicator at all while the desktop does.
+ */
+function ensureAssistantItem(
+  items: TimelineItem[],
+  id: string,
+  runId: string | undefined,
+  startedAt: number,
+): TimelineItem[] {
+  if (items.some(item => item.id === id)) return items;
+  return [
+    ...items,
+    { id, kind: "message", role: "assistant", text: "", runId, streaming: true, startedAt },
+  ];
+}
+
+/**
+ * Upsert a secondary item (thinking / tool) while keeping the run's assistant
+ * placeholder last as long as it is still empty. The placeholder hosts the live
+ * indicator and, eventually, the reply text — and chronologically the reasoning
+ * and tool work precedes the answer, the order the desktop renders inline.
+ * Without this the placeholder, created first by agent_start, would sit *above*
+ * the thinking/tool cards and the answer text would appear over its own
+ * reasoning. Once the placeholder holds text, new secondary items append (the
+ * phone merges a run's text into one bubble, so true interleave isn't modeled).
+ */
+function upsertBeforeEmptyPlaceholder(
+  items: TimelineItem[],
+  placeholderId: string,
+  id: string,
+  create: () => TimelineItem,
+  update: (item: TimelineItem) => TimelineItem,
+): TimelineItem[] {
+  const index = items.findIndex(item => item.id === id);
+  if (index >= 0) return items.map((item, i) => (i === index ? update(item) : item));
+  const placeholderIndex = items.findIndex(
+    item => item.id === placeholderId && item.kind === "message" && item.text.trim().length === 0,
+  );
+  const item = create();
+  if (placeholderIndex < 0) return [...items, item];
+  return [...items.slice(0, placeholderIndex), item, ...items.slice(placeholderIndex)];
 }
 
 export function applyStreamEvent(state: TimelineState, event: StreamEvent): TimelineState {
@@ -125,7 +187,11 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       // slot the copy button occupies once the run settles — and survives a
       // history resync, which carries no run indicator.
       const id = `assistant:${runId ?? event.idx ?? items.length}`;
-      const startedAt = Date.now();
+      // Anchor the live timer to the run's real start (carried on the event),
+      // not the local receipt time — a replayed agent_start would otherwise
+      // restart the clock and understate the run's duration on settle.
+      const eventStartedAt = runStartedAtMs(data);
+      const startedAt = eventStartedAt ?? Date.now();
       items = upsertItem(
         items,
         id,
@@ -140,7 +206,7 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
         }),
         item =>
           item.kind === "message"
-            ? { ...item, streaming: true, startedAt: item.startedAt ?? startedAt }
+            ? { ...item, streaming: true, startedAt: eventStartedAt ?? item.startedAt ?? startedAt }
             : item,
       );
       break;
@@ -173,14 +239,22 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       break;
     }
     case "thinking_delta": {
-      const id = `thinking:${runId ?? event.idx ?? items.length}`;
+      // A long reasoning prefix floods the agent's resume ring, so a client
+      // joining mid-think may never see this run's agent_start. Host the
+      // generating indicator on the assistant message anyway — the desktop
+      // shows a streaming bubble for the whole run, reasoning included.
+      const idKey = runId ?? event.idx ?? items.length;
+      const assistantId = `assistant:${idKey}`;
+      const id = `thinking:${idKey}`;
       const chunk = textValue(data.text);
-      items = upsertItem(
+      items = upsertBeforeEmptyPlaceholder(
         items,
+        assistantId,
         id,
         () => ({ id, kind: "thinking", text: chunk, complete: false, runId }),
         item => (item.kind === "thinking" ? { ...item, text: item.text + chunk } : item),
       );
+      items = ensureAssistantItem(items, assistantId, runId, Date.now());
       break;
     }
     case "thinking_end": {
@@ -193,8 +267,11 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
     case "tool_start": {
       const toolId = textValue(data.tool_id) || `tool-${event.idx ?? items.length}`;
       const id = `tool:${toolId}`;
-      items = upsertItem(
+      const assistantId = `assistant:${runId ?? event.idx ?? items.length}`;
+      // Same ordering rule as thinking: tool rows precede the answer bubble.
+      items = upsertBeforeEmptyPlaceholder(
         items,
+        assistantId,
         id,
         () => ({
           id,
@@ -206,6 +283,7 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
         }),
         item => item,
       );
+      items = ensureAssistantItem(items, assistantId, runId, Date.now());
       break;
     }
     case "tool_end": {
@@ -216,13 +294,15 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       break;
     }
     case "usage": {
-      // Per-call usage lands at the end of each LLM call, after its text chunks
-      // created the assistant item, so accumulate onto that item. A call with no
-      // visible text (tool-only) has no assistant item here — its tokens are
-      // still captured by the agent_end total below.
+      // Per-call usage lands at the end of each LLM call. Accumulate onto the
+      // run's assistant message (creating the placeholder when a late join put
+      // a usage event first) so the live footer tracks the running total —
+      // mirroring the desktop, which sums every call's usage unconditionally.
+      // On settle the agent_end total replaces whatever accumulated here.
       const delta = usageOutputTokens(data);
       if (delta > 0) {
         const id = `assistant:${runId ?? event.idx ?? items.length}`;
+        items = ensureAssistantItem(items, id, runId, Date.now());
         items = items.map(item =>
           item.id === id && item.kind === "message"
             ? { ...item, outputTokens: (item.outputTokens ?? 0) + delta }
@@ -260,20 +340,22 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       streaming = false;
       const endedAt = Date.now();
       const endTokens = usageOutputTokens(data);
-      // Settle the in-flight assistant message: clear the streaming flag,
-      // stamp the wall-clock duration, and capture token stats.
+      const endDurationMs = runDurationMs(data);
+      // Settle the in-flight assistant message: clear the streaming flag and
+      // stamp the run's wall-clock duration and output tokens. Both prefer the
+      // authoritative totals carried on agent_end — a client that joined late
+      // only saw the tail of the run's event ring, so its receipt-clock
+      // duration and accumulated usage understate the run. (Desktop parity:
+      // its settled footer reads these same run totals from the journal.)
       items = items.map(item => {
         if (item.kind !== "message" || item.role !== "assistant" || item.runId !== runId)
           return item;
         const next: TimelineItem = {
           ...item,
           streaming: false,
-          durationMs: item.startedAt ? endedAt - item.startedAt : undefined,
+          durationMs: endDurationMs ?? (item.startedAt ? endedAt - item.startedAt : undefined),
         };
-        // Per-call `usage` events are authoritative when they arrived; fall back
-        // to the agent_end total only when nothing accumulated (matches desktop).
-        if (next.kind === "message" && !next.outputTokens && endTokens > 0)
-          next.outputTokens = endTokens;
+        if (next.kind === "message" && endTokens > 0) next.outputTokens = endTokens;
         return next;
       });
       break;

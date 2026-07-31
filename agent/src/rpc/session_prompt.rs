@@ -673,7 +673,8 @@ impl ServerSession {
                         "type": "agent_end",
                         "state": crate::session::RUN_STATE_ERROR,
                         "error": format!("Session persistence failed: {error}"),
-                        "usage": { "output_tokens": run_output_tokens }
+                        "usage": { "output_tokens": run_output_tokens },
+                        "duration_ms": run_duration_ms
                     })
                     .to_string(),
                     ..Default::default()
@@ -683,14 +684,18 @@ impl ServerSession {
 
             match run_error {
                 None => {
-                    // Carry this run's output-token total and terminal state on
-                    // the event so clients (notably the IM channel bridges) can
-                    // show the token stat and distinguish a cancellation from a
-                    // clean completion the instant the run settles.
+                    // Carry this run's output-token total, wall-clock duration,
+                    // and terminal state on the event so clients (notably the IM
+                    // channel bridges and remote mobile/web clients) can show the
+                    // stats and distinguish a cancellation from a clean completion
+                    // the instant the run settles — without depending on having
+                    // seen every streamed event (a late-joining client may only
+                    // have the tail of the run's event ring).
                     let mut data = serde_json::json!({
                         "type": "agent_end",
                         "state": terminal_state,
-                        "usage": { "output_tokens": run_output_tokens }
+                        "usage": { "output_tokens": run_output_tokens },
+                        "duration_ms": run_duration_ms
                     });
                     if stream_incomplete {
                         data["reason"] = serde_json::Value::String("incomplete".to_string());
@@ -714,7 +719,8 @@ impl ServerSession {
                             "type": "agent_end",
                             "state": terminal_state,
                             "error": &full_error,
-                            "usage": { "output_tokens": run_output_tokens }
+                            "usage": { "output_tokens": run_output_tokens },
+                            "duration_ms": run_duration_ms
                         })
                         .to_string(),
                         ..Default::default()
