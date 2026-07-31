@@ -3,8 +3,8 @@ import { useSyncExternalStore } from "react";
 
 // ── Real-time agent state updates via Tauri events ──────────────────────
 
-import { invokeCommand } from "../tauri/invoke";
 import { emitFutureEvent } from "../../lib/futureEvents";
+import { invokeCommand } from "../tauri/invoke";
 
 /** Agent-side session state, fetched via get_state RPC. */
 export interface AgentSessionState {
