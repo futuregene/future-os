@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 
 // ── Real-time agent state updates via Tauri events ──────────────────────
 
+import i18n from "../../i18n";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { invokeCommand } from "../tauri/invoke";
 
@@ -265,7 +266,7 @@ function applySettingsEvent(
       window.dispatchEvent(new CustomEvent("future:cwd-changed"));
     }).catch((error: unknown) => {
       emitFutureEvent("toast", {
-        message: `Workspace directory is no longer accessible: ${String(error)}`,
+        message: i18n.t("agent:thread.workspaceAccessError", { message: String(error) }),
         tone: "error",
       });
     });
