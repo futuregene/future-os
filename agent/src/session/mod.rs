@@ -843,46 +843,103 @@ impl Manager {
         true
     }
 
-    /// If the last assistant entry has dangling tool_calls (no matching tool
-    /// entries after it), the session was saved mid-turn — typically a crash
-    /// between persisting the assistant response and executing its tools.
-    /// Append placeholder tool-result entries so the conversation stays API-valid.
+    /// Find every assistant entry with tool_calls that lacks matching tool
+    /// responses in the entries that follow it (up to the next non-tool entry
+    /// or run-marker boundary).  An orphaned assistant can appear anywhere in
+    /// the journal — not just at the end — when a crash happens mid-turn and a
+    /// later restart appends run markers + new user messages ahead of it.
+    /// Insert placeholder tool-result entries immediately after each orphaned
+    /// assistant so the conversation stays API-valid.
     fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) -> bool {
+        use std::collections::HashSet;
         if entries.is_empty() {
             return false;
         }
-        let last_idx = entries.len() - 1;
-        if entries[last_idx].entry_type != ENTRY_TYPE_ASSISTANT
-            || entries[last_idx].tool_calls.is_empty()
-        {
+
+        // True for entry types that end a tool-response window: after one of
+        // these, any pending tool_call_ids are orphaned and need placeholders.
+        fn ends_tool_window(entry_type: &str) -> bool {
+            matches!(
+                entry_type,
+                "user" | "system" | "assistant" | ENTRY_TYPE_RUN_STARTED | ENTRY_TYPE_RUN_TERMINAL
+            )
+        }
+
+        // Collect (insertion_index, Vec<placeholder_entries>) pairs.
+        // Process later so earlier insertions don't invalidate indices.
+        let now = chrono::Local::now();
+        let mut repairs: Vec<(usize, Vec<SessionEntry>)> = Vec::new();
+        let mut i = 0;
+        while i < entries.len() {
+            let entry = &entries[i];
+            if entry.entry_type != ENTRY_TYPE_ASSISTANT || entry.tool_calls.is_empty() {
+                i += 1;
+                continue;
+            }
+            let pending: HashSet<String> =
+                entry.tool_calls.iter().map(|tc| tc.id.clone()).collect();
+
+            // Walk forward to find which tool_call_ids already have responses.
+            let mut matched: HashSet<String> = HashSet::new();
+            let mut j = i + 1;
+            while j < entries.len() {
+                let next = &entries[j];
+                if next.entry_type == ENTRY_TYPE_TOOL && pending.contains(&next.tool_call_id) {
+                    matched.insert(next.tool_call_id.clone());
+                }
+                if ends_tool_window(&next.entry_type) {
+                    break;
+                }
+                j += 1;
+            }
+
+            let missing: Vec<_> = pending.difference(&matched).cloned().collect();
+            if !missing.is_empty() {
+                let placeholders: Vec<SessionEntry> = entry
+                    .tool_calls
+                    .iter()
+                    .filter(|tc| missing.contains(&tc.id))
+                    .map(|tc| {
+                        let placeholder = format!(
+                            "{} {} was not executed before the session \
+                             was interrupted]",
+                            Self::TOOL_LOST_PLACEHOLDER_PREFIX,
+                            tc.function.name,
+                        );
+                        SessionEntry {
+                            id: crate::utils::generate_id(),
+                            entry_type: ENTRY_TYPE_TOOL.to_string(),
+                            role: "tool".to_string(),
+                            content: Some(serde_json::Value::String(placeholder)),
+                            tool_calls: vec![],
+                            timestamp: now,
+                            tool_call_id: tc.id.clone(),
+                            name: tc.function.name.clone(),
+                            tool_args: String::new(),
+                            thinking: String::new(),
+                            meta: None,
+                        }
+                    })
+                    .collect();
+                // Insert right after the assistant (i + 1).
+                repairs.push((i + 1, placeholders));
+                // Skip past what we already scanned.
+                i = j;
+                continue;
+            }
+            i += 1;
+        }
+
+        if repairs.is_empty() {
             return false;
         }
-        // Clone what we need before mutating the vec.
-        let tool_calls: Vec<_> = entries[last_idx]
-            .tool_calls
-            .iter()
-            .map(|tc| (tc.id.clone(), tc.function.name.clone()))
-            .collect();
-        let _parent_id = entries[last_idx].id.clone();
-        let now = chrono::Local::now();
-        for (tc_id, tc_name) in &tool_calls {
-            let placeholder = format!(
-                "{} {tc_name} was not executed before the session was interrupted]",
-                Self::TOOL_LOST_PLACEHOLDER_PREFIX,
-            );
-            entries.push(SessionEntry {
-                id: crate::utils::generate_id(),
-                entry_type: ENTRY_TYPE_TOOL.to_string(),
-                role: "tool".to_string(),
-                content: Some(serde_json::Value::String(placeholder)),
-                tool_calls: vec![],
-                timestamp: now,
-                tool_call_id: tc_id.clone(),
-                name: tc_name.clone(),
-                tool_args: String::new(),
-                thinking: String::new(),
-                meta: None,
-            });
+
+        // Apply insertions in reverse index order to keep positions valid.
+        repairs.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
+        for (idx, placeholders) in repairs {
+            for placeholder in placeholders.into_iter().rev() {
+                entries.insert(idx, placeholder);
+            }
         }
         true
     }
@@ -3068,6 +3125,158 @@ mod tests {
             .push(SessionEntry::new_user("user", serde_json::json!("hello")));
         let forked = fork_session(&parent, &parent.entries[0].id);
         assert!(forked.name.contains("fork"));
+    }
+
+    /// Regression: after a crash between assistant(tool_calls) persist and tool
+    /// execution, a subsequent restart appends run markers + a new user message
+    /// ahead of the orphaned tool_calls.  `repair_dangling_tool_calls` must find
+    /// the orphaned assistant even when it is NOT the last entry, and insert
+    /// placeholder tool responses so the conversation stays API-valid.
+    #[test]
+    fn repair_dangling_tool_calls_finds_orphan_after_restart() {
+        let (dir, manager) = temp_manager("repair-orphan-restart");
+        let session = Session::snapshot(
+            "s-repair".to_string(),
+            "/tmp".to_string(),
+            "m".to_string(),
+            "n".to_string(),
+            String::new(),
+            vec![SessionEntry::session_info(
+                serde_json::json!({"cwd": "/tmp", "model": "m"}),
+                "m".to_string(),
+                "low".to_string(),
+            )],
+        );
+        manager.save(&session).unwrap();
+
+        // --- Simulate a crash mid-run ---
+        // The assistant message with tool_calls was persisted, but the tool
+        // results were NOT — the process died between save_callback and
+        // on_tool_result.
+        let tc = ToolCall {
+            id: "tc1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "read".to_string(),
+                arguments: serde_json::json!({"path": "/etc/hosts"}),
+            },
+        };
+        manager
+            .append_entries(
+                "s-repair",
+                &[
+                    SessionEntry::new_user("user", serde_json::json!("old question")),
+                    SessionEntry::run_started("old-run", 1),
+                    SessionEntry::new_assistant(serde_json::json!("let me read that"), vec![tc]),
+                ],
+            )
+            .unwrap();
+
+        // --- Simulate restart: new prompt arrives ---
+        // append_run_start closes old-run (appends run_terminal: interrupted)
+        // and appends the new user + run_started entries.  The orphaned
+        // assistant(tool_calls) is now buried in the middle, NOT at the end.
+        manager
+            .append_run_start(
+                "s-repair",
+                SessionEntry::new_user("user", serde_json::json!("new question")),
+                SessionEntry::run_started("new-run", 2),
+            )
+            .unwrap();
+
+        // --- Load: repair_dangling_tool_calls should fire ---
+        let loaded = manager.load("s-repair").unwrap();
+
+        // The repair must have inserted a placeholder tool result for tc1.
+        let tool_entries: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .collect();
+        assert!(
+            !tool_entries.is_empty(),
+            "repair_dangling_tool_calls should insert placeholder tool entries"
+        );
+        let placeholder = &tool_entries[0];
+        assert_eq!(placeholder.tool_call_id, "tc1");
+        assert!(
+            placeholder
+                .content
+                .as_ref()
+                .and_then(|c| c.as_str())
+                .is_some_and(|s| s.starts_with(Manager::TOOL_LOST_PLACEHOLDER_PREFIX)),
+            "placeholder content should start with '{}', got: {:?}",
+            Manager::TOOL_LOST_PLACEHOLDER_PREFIX,
+            placeholder.content
+        );
+
+        // The placeholder must appear IMMEDIATELY after the orphaned
+        // assistant, before the run_terminal marker — otherwise the API
+        // would see a user/tool ordering violation.
+        let assistant_idx = loaded
+            .entries
+            .iter()
+            .position(|e| e.entry_type == ENTRY_TYPE_ASSISTANT && !e.tool_calls.is_empty())
+            .unwrap();
+        let tool_idx = loaded
+            .entries
+            .iter()
+            .position(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .unwrap();
+        assert_eq!(
+            tool_idx,
+            assistant_idx + 1,
+            "placeholder tool entry must immediately follow the orphaned assistant"
+        );
+
+        // --- Verify entries_to_agent_messages is API-valid ---
+        // After repair, every assistant with tool_calls must have matching
+        // tool entries.  We verify by converting to AgentMessage and checking
+        // that each assistant's tool_call_ids all have tool responses.
+        let msgs = entries_to_agent_messages(&loaded.entries, false);
+        let mut pending: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for msg in &msgs {
+            match msg.role.as_str() {
+                "assistant" => {
+                    // An assistant with tool_calls must not appear while
+                    // there are still pending tool_call_ids.
+                    assert!(
+                        pending.is_empty(),
+                        "pending tool_call_ids ({:?}) before new assistant",
+                        pending
+                    );
+                    for tc in &msg.tool_calls {
+                        pending.insert(tc.id.clone());
+                    }
+                }
+                "tool" => {
+                    let removed = pending.remove(&msg.tool_call_id);
+                    assert!(
+                        removed,
+                        "tool entry with tool_call_id={} has no matching \
+                         assistant tool_call",
+                        msg.tool_call_id
+                    );
+                }
+                _ => {
+                    // A user/system message between tool_calls and their
+                    // responses is an API violation.
+                    assert!(
+                        pending.is_empty(),
+                        "pending tool_call_ids ({:?}) before non-tool message role={}",
+                        pending,
+                        msg.role
+                    );
+                }
+            }
+        }
+        assert!(
+            pending.is_empty(),
+            "unresolved tool_call_ids after message walk: {:?}",
+            pending
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
