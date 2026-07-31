@@ -360,7 +360,8 @@ mod util_tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
         // Repair is best-effort: it works when the test runs as the owner.
         let result = ensure_workspace_accessible(dir.path(), true);
-        let _ = std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ =
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         if result.is_ok() {
             let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
             assert_ne!(mode & 0o700, 0, "owner bits should have been restored");
@@ -374,7 +375,8 @@ mod util_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
         let result = ensure_workspace_accessible(dir.path(), false);
-        let _ = std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ =
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         // auto_repair=false must surface the write failure, not repair.
         assert!(result.is_err());
     }
@@ -391,11 +393,19 @@ mod util_tests {
     #[test]
     fn is_future_managed_dir_detects_future_root() {
         let home = dirs::home_dir().unwrap();
-        assert!(is_future_managed_dir(&home.join(".future").join("workspaces").join("chat").join("x")));
+        assert!(is_future_managed_dir(
+            &home
+                .join(".future")
+                .join("workspaces")
+                .join("chat")
+                .join("x")
+        ));
         assert!(is_future_managed_dir(&home.join(".future/agent/workspace")));
         // A sibling dir like ~/.futureworks or a user project is NOT managed.
         assert!(!is_future_managed_dir(&home.join(".futureworks")));
-        assert!(!is_future_managed_dir(Path::new("/home/user/projects/my-app")));
+        assert!(!is_future_managed_dir(Path::new(
+            "/home/user/projects/my-app"
+        )));
     }
 
     #[test]

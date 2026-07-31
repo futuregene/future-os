@@ -17,7 +17,10 @@ impl ServerSession {
         client_request_id: Option<&str>,
     ) -> Result<crate::runtime::RunLease> {
         let cwd_path = std::path::Path::new(&self.cwd);
-        crate::utils::ensure_workspace_accessible(cwd_path, crate::utils::is_future_managed_dir(cwd_path))?;
+        crate::utils::ensure_workspace_accessible(
+            cwd_path,
+            crate::utils::is_future_managed_dir(cwd_path),
+        )?;
         let (system_prompt, verbose, mut run_loop) = {
             let mut shared = self
                 .agent_loop
