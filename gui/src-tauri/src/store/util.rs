@@ -5,9 +5,11 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use rand::RngCore;
 
 /// Prefix each column in a `", "`-separated `*_COLUMNS` constant with a table
 /// alias, e.g. `qualify_columns("r", "id, status")` → `"r.id, r.status"`. Used
@@ -54,13 +56,13 @@ pub(super) fn workspace_name_from_path(path: &Path) -> String {
 }
 
 pub fn create_id(prefix: &str) -> String {
-    static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let counter = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}_{nanos}_{counter}")
+    let now = chrono::Local::now();
+    let ts = now.format("%Y%m%d-%H%M%S").to_string();
+    let mut rng = rand::thread_rng();
+    let mut buf = [0u8; 3];
+    rng.fill_bytes(&mut buf);
+    let hex: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
+    format!("{prefix}-{ts}-{hex}")
 }
 
 pub(super) fn now_millis() -> i64 {

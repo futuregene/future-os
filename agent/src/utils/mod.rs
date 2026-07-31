@@ -180,6 +180,86 @@ pub fn is_tty() -> bool {
     std::io::stdin().is_terminal()
 }
 
+/// True when `path` lives under the FutureOS-managed data root
+/// (`~/.future/`). These directories (chat temp workspaces, the agent's
+/// default workspace) are owned by FutureOS, so the agent may auto-create and
+/// repair them. A user-chosen workspace directory never qualifies — it must
+/// not be silently recreated or chmod'ed.
+pub fn is_future_managed_dir(path: &Path) -> bool {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    path.starts_with(home.join(".future"))
+}
+
+/// Ensure a workspace directory exists and is writable. Creates the directory
+/// (and parents) if missing. When the directory exists but is not writable and
+/// `auto_repair` is true, attempts a permission repair on Unix (grant owner
+/// read/write/execute) before retrying once. `auto_repair` should only be true
+/// for FutureOS-managed directories (see [`is_future_managed_dir`]); a user
+/// workspace that is missing or blocked returns an error so the caller can
+/// surface it instead of silently rebuilding the user's project dir. Returns an
+/// error when the path is not a directory or a write test still fails.
+pub fn ensure_workspace_accessible(path: &Path, auto_repair: bool) -> Result<(), std::io::Error> {
+    // A plain file at the workspace path is never recoverable — reject it
+    // before create_dir_all (which would fail with AlreadyExists anyway).
+    if path.exists() && !path.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            format!("workspace path is not a directory: {}", path.display()),
+        ));
+    }
+    // FutureOS-managed dirs are auto-created when missing; a user workspace
+    // that vanished is an error the caller surfaces (never silently rebuilt).
+    if path.exists() {
+        // Verify writability with a test file.
+        let test = path.join(".future_write_test");
+        return match std::fs::write(&test, b"") {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&test);
+                Ok(())
+            }
+            // Directory exists but the process can't write it. For FutureOS-
+            // managed dirs, repair owner permissions and retry once (e.g. a
+            // workspace chmod'ed read-only by a previous session). A user
+            // workspace is left untouched — the caller surfaces the error.
+            Err(_error) if auto_repair => {
+                repair_dir_permissions(path)?;
+                std::fs::write(&test, b"")?;
+                let _ = std::fs::remove_file(&test);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        };
+    }
+    if auto_repair {
+        std::fs::create_dir_all(path)?;
+        let test = path.join(".future_write_test");
+        std::fs::write(&test, b"")?;
+        let _ = std::fs::remove_file(&test);
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("workspace path does not exist: {}", path.display()),
+        ))
+    }
+}
+
+/// Grant the owner read/write/execute on `dir` (Unix only; a no-op elsewhere).
+fn repair_dir_permissions(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let current = std::fs::metadata(dir)?.permissions();
+        let mode = current.mode();
+        // Add owner rwx — never strip any existing bits.
+        let repaired = mode | 0o700;
+        if repaired != mode {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(repaired))?;
+        }
+    }
+    Ok(())
+}
+
 /// ANSI color codes (matching Go constants)
 pub mod ansi {
     pub const RESET: &str = "\x1b[0m";
@@ -245,6 +325,85 @@ mod util_tests {
         assert_ne!(id1, id2);
         assert!(id1.contains('-'));
         assert!(id1.len() > 12);
+    }
+
+    #[test]
+    fn ensure_workspace_accessible_creates_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nested").join("workspace");
+        ensure_workspace_accessible(&missing, true).unwrap();
+        assert!(missing.is_dir());
+    }
+
+    #[test]
+    fn ensure_workspace_accessible_does_not_create_without_repair() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nested").join("workspace");
+        let err = ensure_workspace_accessible(&missing, false).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(!missing.exists(), "user workspace must not be auto-created");
+    }
+
+    #[test]
+    fn ensure_workspace_accessible_accepts_writable_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(ensure_workspace_accessible(dir.path(), true).is_ok());
+        assert!(ensure_workspace_accessible(dir.path(), false).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_workspace_accessible_repairs_readonly_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // chmod 000 — directory still exists but the test file write must fail.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Repair is best-effort: it works when the test runs as the owner.
+        let result = ensure_workspace_accessible(dir.path(), true);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        if result.is_ok() {
+            let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
+            assert_ne!(mode & 0o700, 0, "owner bits should have been restored");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_workspace_accessible_does_not_repair_without_flag() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = ensure_workspace_accessible(dir.path(), false);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // auto_repair=false must surface the write failure, not repair.
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ensure_workspace_accessible_rejects_plain_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        let err = ensure_workspace_accessible(&file, false).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+    }
+
+    #[test]
+    fn is_future_managed_dir_detects_future_root() {
+        let home = dirs::home_dir().unwrap();
+        assert!(is_future_managed_dir(
+            &home
+                .join(".future")
+                .join("workspaces")
+                .join("chat")
+                .join("x")
+        ));
+        assert!(is_future_managed_dir(&home.join(".future/agent/workspace")));
+        // A sibling dir like ~/.futureworks or a user project is NOT managed.
+        assert!(!is_future_managed_dir(&home.join(".futureworks")));
+        assert!(!is_future_managed_dir(Path::new(
+            "/home/user/projects/my-app"
+        )));
     }
 
     #[test]

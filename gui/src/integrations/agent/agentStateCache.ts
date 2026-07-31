@@ -3,6 +3,8 @@ import { useSyncExternalStore } from "react";
 
 // ── Real-time agent state updates via Tauri events ──────────────────────
 
+import i18n from "../../i18n";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { invokeCommand } from "../tauri/invoke";
 
 /** Agent-side session state, fetched via get_state RPC. */
@@ -262,7 +264,12 @@ function applySettingsEvent(
       cwd: p.cwd,
     }).then(() => {
       window.dispatchEvent(new CustomEvent("future:cwd-changed"));
-    }).catch(() => {});
+    }).catch((error: unknown) => {
+      emitFutureEvent("toast", {
+        message: i18n.t("agent:thread.workspaceAccessError", { message: String(error) }),
+        tone: "error",
+      });
+    });
   }
 
   for (const [threadId, entry] of cache) {

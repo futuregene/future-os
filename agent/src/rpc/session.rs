@@ -1225,6 +1225,7 @@ mod tests {
     #[tokio::test]
     async fn active_run_uses_snapshot_and_leaves_next_run_config_writable() {
         let cwd = test_workspace();
+        std::fs::create_dir_all(&cwd).unwrap();
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let shared_loop = Arc::new(tokio::sync::RwLock::new(Loop::new(
