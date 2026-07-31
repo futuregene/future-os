@@ -15,8 +15,8 @@ pub fn list_approval_requests(
 /// Pending approvals across ALL threads — the sidebar badge source, so an
 /// approval raised in a background conversation is visible without opening it.
 #[tauri::command]
-pub fn list_pending_approval_requests(
-) -> Result<Vec<store::ApprovalRequestRecord>, crate::AppError> {
+pub fn list_pending_approval_requests() -> Result<Vec<store::ApprovalRequestRecord>, crate::AppError>
+{
     store::list_pending_approval_requests()
 }
 

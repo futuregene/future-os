@@ -21,9 +21,9 @@ pub use self::client::{
     set_thinking_level_command, RpcResponseExt,
 };
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
-pub use self::observer::{ensure_observer, seed_observers_from_store, spawn_session_discovery};
 pub(crate) use self::import::import_missing_sessions;
 pub use self::models::{list_agent_models, AgentModelOption};
+pub use self::observer::{ensure_observer, seed_observers_from_store, spawn_session_discovery};
 pub use self::run_control::abort_run;
 pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
 pub use self::session::fork_agent_session;

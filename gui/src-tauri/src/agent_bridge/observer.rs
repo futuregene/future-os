@@ -214,7 +214,12 @@ async fn discover_streaming_sessions() {
         .and_then(|value| value.get("sessionIds")?.as_array().cloned())
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|value| value.as_str().filter(|id| !id.is_empty()).map(str::to_string))
+        .filter_map(|value| {
+            value
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        })
         .collect();
     for session_id in session_ids {
         let known = crate::store::find_thread_by_agent_session(&session_id)
@@ -260,7 +265,9 @@ fn evict_idle_if_over_cap(guard: &mut HashMap<String, ObserverHandle>) {
             Some(session_id) => {
                 if let Some(handle) = guard.remove(&session_id) {
                     let _ = handle.cancel.send(());
-                    eprintln!("FutureOS observer for {session_id} evicted (LRU cap {OBSERVER_MAX})");
+                    eprintln!(
+                        "FutureOS observer for {session_id} evicted (LRU cap {OBSERVER_MAX})"
+                    );
                 }
             }
             None => {
@@ -295,10 +302,15 @@ pub(super) fn ensure_run_binding(
 ) -> Option<String> {
     {
         let shared = OBSERVERS.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(local) = shared
-            .get(session_id)
-            .and_then(|handle| handle.shared.run_bindings.lock().ok()?.get(canonical_run_id).cloned())
-        {
+        if let Some(local) = shared.get(session_id).and_then(|handle| {
+            handle
+                .shared
+                .run_bindings
+                .lock()
+                .ok()?
+                .get(canonical_run_id)
+                .cloned()
+        }) {
             return Some(local);
         }
     }
@@ -572,7 +584,13 @@ async fn handle_event(
             let events: Vec<(String, String, i64)> = event
                 .snapshot_events
                 .iter()
-                .map(|projected| (projected.r#type.clone(), projected.data.clone(), projected.idx))
+                .map(|projected| {
+                    (
+                        projected.r#type.clone(),
+                        projected.data.clone(),
+                        projected.idx,
+                    )
+                })
                 .collect();
             stream::replace_projection_off_thread(&thread_id, Some(&local_run_id), events).await;
             if let Some(agent_end_data) = terminal_agent_end {
@@ -760,7 +778,10 @@ mod tests {
             "an observer tracking an active run is never evicted"
         );
         assert!(!map.contains_key("sess-0"), "oldest idle evicted first");
-        assert!(!map.contains_key("sess-1"), "second-oldest idle evicted next");
+        assert!(
+            !map.contains_key("sess-1"),
+            "second-oldest idle evicted next"
+        );
         assert_eq!(map.len(), OBSERVER_MAX - 1, "evicted down below the cap");
     }
 
@@ -781,7 +802,10 @@ mod tests {
     #[test]
     fn sleep_requires_quiet_and_no_active_run() {
         let fresh = ObserverShared::new();
-        assert!(!fresh.should_sleep(), "just-registered observers stay awake");
+        assert!(
+            !fresh.should_sleep(),
+            "just-registered observers stay awake"
+        );
 
         let quiet_active = ObserverShared {
             last_activity_ms: AtomicI64::new(0),
