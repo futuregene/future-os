@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 use std::path::PathBuf;
 
 use crate::{
@@ -259,4 +259,97 @@ fn session_info_session_name_never_empty() {
         })
         .unwrap_or_default();
     assert!(fallback.is_empty()); // no user = empty, not crash
+}
+
+// ── Run/turn identity reconciliation ─────────────────────────────────────
+
+fn stamped_message(role: &str, run_id: Option<&str>, turn_id: Option<&str>) -> AgentMessage {
+    let metadata = if run_id.is_some() || turn_id.is_some() {
+        let mut map = serde_json::Map::new();
+        if let Some(id) = run_id {
+            map.insert(
+                "run_id".to_string(),
+                serde_json::Value::String(id.to_string()),
+            );
+        }
+        if let Some(id) = turn_id {
+            map.insert(
+                "turn_id".to_string(),
+                serde_json::Value::String(id.to_string()),
+            );
+        }
+        Some(map)
+    } else {
+        None
+    };
+    AgentMessage {
+        role: role.to_string(),
+        content: vec![crate::types::ContentBlock::text("x")],
+        metadata,
+        ..Default::default()
+    }
+}
+
+fn meta_str(message: &AgentMessage, key: &str) -> Option<String> {
+    message
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(key))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+#[test]
+fn reconcile_run_identity_stamps_run_messages_and_spares_prior_turns() {
+    let mut messages = vec![
+        stamped_message("user", None, None), // legacy prior turn
+        stamped_message("assistant", Some("run-old"), None), // prior run's reply
+        stamped_message("user", Some("run-new"), Some("turn-1")), // this run's opener
+        stamped_message("assistant", None, None),
+        stamped_message("tool", None, None),
+        stamped_message("user", Some("run-new"), Some("turn-2")), // follow-up
+        stamped_message("assistant", None, None),
+    ];
+
+    reconcile_run_identity(&mut messages, "run-new");
+
+    // Prior turns are never touched.
+    assert!(messages[0].metadata.is_none());
+    assert_eq!(meta_str(&messages[1], "run_id").as_deref(), Some("run-old"));
+    assert_eq!(meta_str(&messages[1], "turn_id"), None);
+    // This run: every entry carries run_id; turn membership follows the user
+    // messages, and a follow-up keeps the turn it was journaled with.
+    assert_eq!(meta_str(&messages[2], "turn_id").as_deref(), Some("turn-1"));
+    assert_eq!(meta_str(&messages[3], "run_id").as_deref(), Some("run-new"));
+    assert_eq!(meta_str(&messages[3], "turn_id").as_deref(), Some("turn-1"));
+    assert_eq!(meta_str(&messages[4], "turn_id").as_deref(), Some("turn-1"));
+    assert_eq!(meta_str(&messages[5], "turn_id").as_deref(), Some("turn-2"));
+    assert_eq!(meta_str(&messages[6], "turn_id").as_deref(), Some("turn-2"));
+}
+
+#[test]
+fn reconcile_run_identity_mints_turns_and_falls_back_to_last_assistant() {
+    let mut messages = vec![
+        stamped_message("user", Some("run-x"), None),
+        stamped_message("assistant", None, None),
+    ];
+    reconcile_run_identity(&mut messages, "run-x");
+    let minted = meta_str(&messages[0], "turn_id").expect("turn minted for the opener");
+    assert!(minted.starts_with("turn_"));
+    assert_eq!(
+        meta_str(&messages[1], "turn_id").as_deref(),
+        Some(minted.as_str()),
+        "the reply joins the opener's minted turn"
+    );
+
+    // No stamped opener (a compaction rewrite dropped it): the sweep leaves
+    // the unidentified prefix alone, but the run's final assistant reply is
+    // still attributable.
+    let mut messages = vec![
+        stamped_message("user", None, None),
+        stamped_message("assistant", None, None),
+    ];
+    reconcile_run_identity(&mut messages, "run-y");
+    assert_eq!(meta_str(&messages[0], "run_id"), None);
+    assert_eq!(meta_str(&messages[1], "run_id").as_deref(), Some("run-y"));
 }

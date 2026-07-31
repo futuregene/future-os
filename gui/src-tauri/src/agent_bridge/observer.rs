@@ -11,12 +11,16 @@
 //!    restart), the observer creates the local run row (id == the agent's
 //!    canonical run id, so the existing crash-reconcile machinery matches it)
 //!    and projects events into the run-event log. Runs owned by a pipeline
-//!    collector are persisted by that collector — `append_run_event` does not
-//!    dedupe, so exactly one writer per run, enforced via the replica lease
-//!    registry.
+//!    collector are persisted by that collector — exactly one writer per run:
+//!    the pipeline registers its lease before the prompt ever reaches the
+//!    agent, and `append_run_event`'s sequence guard absorbs any residual
+//!    replay overlap.
 //! 2. **NATS mirroring** — the sole publisher for the remote bridge. The
 //!    collector deliberately does not publish; the observer's atomic-attach
-//!    replay guarantees the mirrored sequence has no holes.
+//!    replay guarantees the mirrored sequence has no holes. Events are
+//!    validated against the run cursor BEFORE any fan-out (persistence,
+//!    webview forward, mirror publish), so the mirrored sequence stays
+//!    in-order and duplicate-free across re-attaches.
 //! 3. **Frontend invalidation** — `thread-runtime-updated` for persisted runs,
 //!    plus whitelisted settings events (`agent-event`) for every session, so
 //!    model/thinking/title changes land in the sidebar cache live.
@@ -344,11 +348,14 @@ fn bind_run(session_id: &str, canonical_run_id: &str, local_run_id: &str) {
 // ── Observer task ──────────────────────────────────────────────────────────
 
 /// Task-local stream bookkeeping: per-run event cursors (idx dedup + gap
-/// detection) and the session's currently-active run, if any.
+/// detection), the session's currently-active run (if any), and the most
+/// recently settled run — the broadcaster keeps stamping its identity onto
+/// between-runs settings events until the next run starts.
 #[derive(Default)]
 struct ObserverState {
     cursors: HashMap<String, i64>,
     active_run: Option<String>,
+    last_settled_run: Option<String>,
 }
 
 fn spawn_observer(session_id: String, shared: Arc<ObserverShared>, cancel: oneshot::Receiver<()>) {
@@ -384,7 +391,14 @@ async fn run_observer(
         // run starting in the probe→subscribe gap is caught by gap detection.
         let active_run = probe_active_run(&mut client, session_id).await;
         let mut stream = if let Some(run_id) = active_run {
-            let cursor = attach_cursor(session_id, &run_id).await;
+            // Resume from the in-memory cursor on re-attach: events at or
+            // below it were already persisted and mirrored, so replaying them
+            // would only duplicate the NATS mirror. The persisted-store cursor
+            // is the resume point for a fresh attach (startup, first sight).
+            let cursor = match state.cursors.get(&run_id) {
+                Some(&cursor) => cursor,
+                None => attach_cursor(session_id, &run_id).await,
+            };
             state.cursors.insert(run_id.clone(), cursor);
             match client
                 .stream_events(StreamRequest {
@@ -549,6 +563,12 @@ async fn attach_cursor(session_id: &str, canonical_run_id: &str) -> i64 {
 
 /// Process one event. Returns false when the run's idx sequence broke — the
 /// caller re-attaches, and the replay/projection snapshot heals the gap.
+///
+/// Ordering rule: an event is validated against its run cursor BEFORE any
+/// fan-out (persistence, webview forward, NATS mirror). The observer is the
+/// sole NATS publisher, so nothing unvalidated may be mirrored — otherwise a
+/// gap-triggered re-attach would re-publish replayed events and remote
+/// clients would see the run out of order and duplicated.
 async fn handle_event(
     session_id: &str,
     shared: &Arc<ObserverShared>,
@@ -558,18 +578,19 @@ async fn handle_event(
     let event_type = event.r#type.as_str();
     let run_id = event.run_id.as_str();
 
-    // Settings fan-out for every observed session (sidebar cache, open thread).
-    if FORWARDED_EVENTS.contains(&event_type) {
-        forward_settings_event(session_id, event_type, &event.data);
-    }
-    // Sole NATS publisher (no-op when no remote is connected).
-    crate::remote::publish_event(session_id, event_type, &event.data, run_id, event.idx);
-
+    // Session-level event (no run scope): no cursor to validate against —
+    // forward and mirror directly.
     if run_id.is_empty() {
-        return true; // session-level event — no run bookkeeping
+        if FORWARDED_EVENTS.contains(&event_type) {
+            forward_settings_event(session_id, event_type, &event.data);
+        }
+        crate::remote::publish_event(session_id, event_type, &event.data, run_id, event.idx);
+        return true;
     }
 
-    // Projection snapshots replace the run's local replica wholesale.
+    // Projection snapshots replace the run's local replica wholesale. The
+    // snapshot IS the healing mechanism, so it bypasses the continuity check:
+    // its cursor is the new position, locally and on the mirror.
     if event.projection_snapshot {
         state
             .cursors
@@ -606,18 +627,56 @@ async fn handle_event(
                 note_run_settled(shared, state, run_id);
             }
         }
+        // Mirror the snapshot AFTER the local replace has landed — a remote
+        // client healing from this signal reads back the store we just wrote.
+        // Folded events cannot be applied incrementally, so this goes out as a
+        // wholesale-replacement signal, not as individual events.
+        crate::remote::publish_snapshot(
+            session_id,
+            run_id,
+            event.snapshot_cursor,
+            &event.snapshot_events,
+        );
         return true;
     }
 
-    // idx bookkeeping per run. Replay overlap is skipped; a break in the
-    // sequence (missed head on first sight, or a mid-run hole) forces a
-    // re-attach so persistence and the NATS mirror stay gap-free.
-    let last = state.cursors.get(run_id).copied().unwrap_or(-1);
-    if event.idx <= last {
-        return true;
-    }
-    if event.idx != last.saturating_add(1) {
-        return false;
+    // Run-scoped event: validate ordering first. Replays (idx <= cursor) and
+    // gaps (idx skips ahead) are settled here — neither may reach the stores,
+    // the webview, or the mirror.
+    match state.cursors.get(run_id).copied() {
+        Some(last) => {
+            if event.idx <= last {
+                return true; // replay overlap — already persisted and mirrored
+            }
+            if event.idx != last.saturating_add(1) {
+                return false; // mid-run hole — re-attach for replay/snapshot healing
+            }
+        }
+        None => {
+            if event.idx != 0 {
+                if state.last_settled_run.as_deref() == Some(run_id) {
+                    // The broadcaster keeps the settled run's identity until
+                    // the next `start_run`, so between-runs settings changes
+                    // (model, thinking level, …) arrive stamped with it at the
+                    // idx the run ended on. They are session fan-out, not run
+                    // content: forward and mirror without cursor bookkeeping —
+                    // treating them as gaps would force a pointless re-attach
+                    // on every settings change.
+                    if FORWARDED_EVENTS.contains(&event_type) {
+                        forward_settings_event(session_id, event_type, &event.data);
+                    }
+                    crate::remote::publish_event(
+                        session_id,
+                        event_type,
+                        &event.data,
+                        run_id,
+                        event.idx,
+                    );
+                    return true;
+                }
+                return false; // missed head on first sight — re-attach for replay
+            }
+        }
     }
     state.cursors.insert(run_id.to_string(), event.idx);
     note_run_active(shared, state, run_id);
@@ -627,41 +686,45 @@ async fn handle_event(
     let is_terminal = matches!(event_type, "agent_end" | "error");
 
     // Pipeline-owned runs are persisted by their collector; the observer only
-    // mirrors/forwards those. Everything else is ours to project.
-    let Some((thread_id, local_run_id)) = observer_run(session_id, shared, run_id).await else {
-        if is_terminal {
-            note_run_settled(shared, state, run_id);
-        }
-        return true;
-    };
-    stream::persist_run_event_off_thread(
-        &thread_id,
-        Some(&local_run_id),
-        event_type.to_string(),
-        event.data.clone(),
-        event.idx,
-    )
-    .await;
+    // mirrors/forwards those. Everything else is ours to project — persisted
+    // BEFORE fan-out, so the mirror never announces what the store lacks.
+    if let Some((thread_id, local_run_id)) = observer_run(session_id, shared, run_id).await {
+        stream::persist_run_event_off_thread(
+            &thread_id,
+            Some(&local_run_id),
+            event_type.to_string(),
+            event.data.clone(),
+            event.idx,
+        )
+        .await;
 
-    match event_type {
-        "agent_end" => {
-            if stream::agent_end_incomplete(&event.data) {
-                mark_run_failed_if_active(
-                    Some(&local_run_id),
-                    "Future Agent response ended before a clean terminal.",
-                );
-            } else {
-                mark_run_completed_if_active(Some(&local_run_id));
+        match event_type {
+            "agent_end" => {
+                if stream::agent_end_incomplete(&event.data) {
+                    mark_run_failed_if_active(
+                        Some(&local_run_id),
+                        "Future Agent response ended before a clean terminal.",
+                    );
+                } else {
+                    mark_run_completed_if_active(Some(&local_run_id));
+                }
+                crate::store::clear_run_event_buffer(&local_run_id);
+                note_run_settled(shared, state, run_id);
             }
-            crate::store::clear_run_event_buffer(&local_run_id);
-            note_run_settled(shared, state, run_id);
+            "error" => {
+                mark_run_failed_if_active(Some(&local_run_id), "Future Agent reported an error.");
+                note_run_settled(shared, state, run_id);
+            }
+            _ => {}
         }
-        "error" => {
-            mark_run_failed_if_active(Some(&local_run_id), "Future Agent reported an error.");
-            note_run_settled(shared, state, run_id);
-        }
-        _ => {}
+    } else if is_terminal {
+        note_run_settled(shared, state, run_id);
     }
+
+    if FORWARDED_EVENTS.contains(&event_type) {
+        forward_settings_event(session_id, event_type, &event.data);
+    }
+    crate::remote::publish_event(session_id, event_type, &event.data, run_id, event.idx);
     true
 }
 
@@ -676,6 +739,7 @@ fn note_run_settled(shared: &Arc<ObserverShared>, state: &mut ObserverState, run
         shared.has_active_run.store(false, Ordering::Relaxed);
     }
     state.cursors.remove(run_id);
+    state.last_settled_run = Some(run_id.to_string());
     if let Ok(mut bindings) = shared.run_bindings.lock() {
         bindings.remove(run_id);
     }
@@ -826,5 +890,142 @@ mod tests {
             quiet_idle.should_sleep(),
             "long-quiet + no active run → sleep"
         );
+    }
+
+    // ── Ordering: validation before fan-out ─────────────────────────────
+
+    fn stream_event(event_type: &str, run_id: &str, idx: i64) -> crate::agent_proto::StreamEvent {
+        crate::agent_proto::StreamEvent {
+            r#type: event_type.to_string(),
+            data: "{}".to_string(),
+            run_id: run_id.to_string(),
+            idx,
+            projection_snapshot: false,
+            snapshot_events: vec![],
+            snapshot_cursor: 0,
+            session_id: "sess-order".to_string(),
+            epoch: 1,
+        }
+    }
+
+    /// Lease the run so `observer_run` short-circuits as pipeline-owned and
+    /// `handle_event` never touches the store. Fan-out ends at no-op sinks
+    /// (no APP_HANDLE, no remote pairing) — what these tests assert is the
+    /// cursor bookkeeping that gates it.
+    fn lease_run(run_id: &str) -> super::super::replica::ReplicaLease {
+        super::super::replica::AGENT_REPLICAS
+            .acquire(run_id)
+            .expect("lease")
+    }
+
+    #[tokio::test]
+    async fn gap_event_is_rejected_without_advancing_the_cursor() {
+        let _lease = lease_run("run-gap");
+        let shared = Arc::new(ObserverShared::new());
+        let mut state = ObserverState::default();
+
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                stream_event("text_chunk", "run-gap", 0)
+            )
+            .await,
+            "in-order first event accepted"
+        );
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                stream_event("text_chunk", "run-gap", 0)
+            )
+            .await,
+            "replay overlap is a no-op, not a gap"
+        );
+        assert!(
+            !handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                stream_event("text_chunk", "run-gap", 2)
+            )
+            .await,
+            "idx skipping ahead breaks the stream for re-attach"
+        );
+        assert_eq!(
+            state.cursors.get("run-gap"),
+            Some(&0),
+            "a rejected gap event must not advance the cursor — the re-attach replay covers it"
+        );
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                stream_event("text_chunk", "run-gap", 1)
+            )
+            .await,
+            "the replayed continuation validates against the untouched cursor"
+        );
+        assert_eq!(state.cursors.get("run-gap"), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn missed_head_on_first_sight_forces_reattach() {
+        let shared = Arc::new(ObserverShared::new());
+        let mut state = ObserverState::default();
+
+        assert!(
+            !handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                stream_event("text_chunk", "run-late", 3)
+            )
+            .await,
+            "a run first seen above idx 0 means the head was missed — re-attach"
+        );
+        assert!(
+            state.cursors.get("run-late").is_none(),
+            "no cursor bookkeeping before the replay heals the head"
+        );
+    }
+
+    #[tokio::test]
+    async fn settled_run_stragglers_fan_out_without_bookkeeping() {
+        let _lease = lease_run("run-fresh");
+        let shared = Arc::new(ObserverShared::new());
+        let mut state = ObserverState {
+            last_settled_run: Some("run-settled".to_string()),
+            ..ObserverState::default()
+        };
+        // Between-runs settings events keep the settled run's stamped identity;
+        // they must forward/mirror without cursor bookkeeping or a re-attach.
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                stream_event("model_changed", "run-settled", 47)
+            )
+            .await
+        );
+        assert!(
+            state.cursors.get("run-settled").is_none(),
+            "a straggler must not open cursor bookkeeping for the settled run"
+        );
+        // A genuinely new run still starts at idx 0.
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                stream_event("agent_start", "run-fresh", 0)
+            )
+            .await
+        );
+        assert_eq!(state.cursors.get("run-fresh"), Some(&0));
     }
 }

@@ -251,6 +251,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         pendingRef.current.push({ event, sessionId });
         return;
       }
+      if (event.type === "run_snapshot") {
+        // The host replaced this run's replica with a folded projection (its
+        // event ring overflowed). Folded events cannot be applied
+        // incrementally — a coalesced chunk's text spans idx values already
+        // applied — so heal wholesale: recover resyncs history + live tail,
+        // rebuilds the cursor, and folds buffered events.
+        void recoverRef.current();
+        return;
+      }
       const verdict = nextEvent(cursorRef.current, event.runId, event.idx);
       if (verdict.kind === "dup") return;
       if (verdict.kind === "gap") {

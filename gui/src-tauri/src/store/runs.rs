@@ -593,6 +593,25 @@ fn read_run_events(run_id: &str) -> Vec<RunEventRecord> {
 }
 
 pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, crate::AppError> {
+    // Re-delivery guard: a run's events arrive in strictly increasing sequence
+    // from its single writer, so a sequence at/below the buffered high-water
+    // mark is a replay overlap or a cross-writer race duplicate — return the
+    // already-stored record instead of appending a second copy. (The
+    // projection-snapshot replace path clears the buffer first, so it
+    // re-appends from an empty slate and is unaffected.)
+    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
+        if let Some(events) = buf.get(&input.run_id) {
+            if let Some(last) = events.last() {
+                if input.sequence <= last.sequence {
+                    if let Some(existing) =
+                        events.iter().find(|event| event.sequence == input.sequence)
+                    {
+                        return Ok(existing.clone());
+                    }
+                }
+            }
+        }
+    }
     let id = create_id("event");
     let now = now_millis();
     let record = RunEventRecord {
@@ -1300,5 +1319,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(approval_status, "cancelled");
+    }
+
+    #[test]
+    fn append_run_event_dedups_replayed_sequences() {
+        let run_id = format!("test_dedup_{}", std::process::id());
+        let input = |sequence: i64| AppendRunEventInput {
+            run_id: run_id.clone(),
+            event_type: "text_chunk".to_string(),
+            payload: Some(format!(r#"{{"text":"s{sequence}"}}"#)),
+            sequence,
+        };
+
+        let first = append_run_event(input(0)).expect("first append");
+        let replay = append_run_event(input(0)).expect("replay tolerated");
+        assert_eq!(
+            first.id, replay.id,
+            "a replayed sequence returns the already-stored record"
+        );
+        append_run_event(input(1)).expect("advancing append");
+        append_run_event(input(1)).expect("second replay tolerated");
+
+        let events = list_run_events(&run_id).expect("list events");
+        assert_eq!(
+            events.len(),
+            2,
+            "replayed sequences must not duplicate the log"
+        );
+        assert_eq!(events[0].sequence, 0);
+        assert_eq!(events[1].sequence, 1);
+        clear_run_event_buffer(&run_id);
     }
 }
