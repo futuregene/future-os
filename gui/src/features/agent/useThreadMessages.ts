@@ -2,14 +2,14 @@ import type { StoredRun } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
-import { getLatestRun, getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
+import { getLatestRun, getRun, getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun } from "./agentMessageFormatters";
 import { entriesToMessages } from "./entryProjection";
-import { applyRunMetadata, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
+import { applyRunMetadata, buildStreamingPreview, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
   threadId: string | null;
@@ -111,6 +111,15 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   // user-message event that lands during an in-flight load isn't clobbered.
   const messagesGenRef = useRef<number>(0);
 
+  // The thread's in-flight run, mirrored alongside `recentRun` so the load
+  // path can fold the live streaming bubble into the history array it returns
+  // (one setMessages — no history-then-bubble frame gap on switch). Updated
+  // by refreshRecentRun; reset on every thread switch.
+  const activeRunRef = useRef<{ runId: string | null; startedAt: number | null }>({
+    runId: null,
+    startedAt: null,
+  });
+
   // In-memory cache of recently loaded threads. Switching back to a cached
   // thread restores messages instantly and then refreshes in the background.
   const cacheRef = useRef(new Map<string, ThreadCacheEntry>());
@@ -157,6 +166,13 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       if (generation !== recentRunGenRef.current) {
         return;
       }
+      // Mirror the in-flight run for the load path (see activeRunRef).
+      if (latestRun && targetThreadId === activeThreadIdRef.current) {
+        activeRunRef.current = {
+          runId: matchesSettledRun(latestRun.status) ? null : latestRun.id,
+          startedAt: latestRun.startedAt ?? latestRun.createdAt ?? null,
+        };
+      }
       if (targetThreadId === activeThreadIdRef.current) {
         setRecentRun(latestRun);
       }
@@ -180,7 +196,9 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   // no further ticks will repair a discarded write.
   const reloadMessagesQuiet = useCallback(async (targetThreadId: string, force = false) => {
     const gen = force ? undefined : messagesGenRef.current;
-    const result = await loadFromAgent(targetThreadId);
+    // Thread switch to an active conversation needs the live bubble folded in
+    // now — read it from the state we already hold.
+    const result = await loadFromAgent(targetThreadId, undefined, activeRunRef.current.runId, activeRunRef.current.startedAt);
     if (result.status !== "loaded" || targetThreadId !== activeThreadIdRef.current)
       return;
     // If another writer bumped the generation counter while we were in-flight
@@ -199,7 +217,12 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   // (get_session_entries) — the only message store (the SQLite messages table
   // was removed). Empty and failed loads stay distinct so a transient Agent
   // error never masquerades as an empty conversation and clears valid cache.
-  async function loadFromAgent(tid: string, wid?: string | null): Promise<AgentLoadResult> {
+  async function loadFromAgent(
+    tid: string,
+    wid?: string | null,
+    activeRunId?: string | null,
+    activeRunStartedAt?: number | null,
+  ): Promise<AgentLoadResult> {
     try {
       const result = await getSessionEntries(tid);
       const entryCount = result?.entries?.length ?? 0;
@@ -221,8 +244,25 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       // rebuild its failure bubble from the run record so the error survives a
       // thread switch instead of silently disappearing.
       const withFailures = recoverFailedRuns(recovered, runs);
+      // An in-flight run for this thread is folded into the SAME array here:
+      // history and live bubble land in one setMessages, so switching to an
+      // active conversation paints both in a single frame instead of history
+      // then bubble. Verified against the run row so a settle that raced the
+      // reload never resurrects a bubble for a finished run.
+      const liveBubble = activeRunId
+        ? await getRun(activeRunId)
+            .then(run =>
+              run && !matchesSettledRun(run.status)
+                ? buildStreamingPreview(activeRunId, activeRunStartedAt ?? null)
+                : null,
+            )
+            .catch(() => null)
+        : null;
+      const finalMessages = liveBubble
+        ? [...withFailures, liveBubble]
+        : withFailures;
       await refreshRecentRun(tid, wid).catch(() => {});
-      return { status: "loaded", messages: withFailures, entryCount };
+      return { status: "loaded", messages: finalMessages, entryCount };
     }
     catch (error) {
       return { status: "failed", error: errorMessage(error) };
@@ -239,6 +279,11 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
         setLoadingThread(false);
         return;
       }
+      // The thread is changing: never carry the previous thread's in-flight
+      // run into this one's load (the pre-warm below only refreshes when the
+      // mirror is empty, so a stale run must be cleared here or it would be
+      // folded into the wrong conversation's history).
+      activeRunRef.current = { runId: null, startedAt: null };
 
       // Check cache first — restore instantly if available, then refresh.
       const cached = cacheGet(threadId);
@@ -251,19 +296,35 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
         // Use a functional updater that preserves any live streaming bubble
         // (stream_<runId>) that was inserted by useRunReattach while the async
         // load was in flight — a plain setMessages(restored) would clobber it.
-        const result = await loadFromAgent(threadId, workspaceId);
+        // Pre-warm the in-flight-run mirror so the load below folds the live
+        // streaming bubble into the returned history (one render — no
+        // history-then-bubble frame gap when the active thread is running).
+        if (!activeRunRef.current.runId) {
+          await refreshRecentRun(threadId, workspaceId).catch(() => {});
+        }
+        const result = await loadFromAgent(
+          threadId,
+          workspaceId,
+          activeRunRef.current.runId,
+          activeRunRef.current.startedAt,
+        );
         if (!cancelled && threadId === activeThreadIdRef.current && result.status !== "failed") {
-          // Entry count unchanged — no new user messages or assistant replies
-          // landed since we cached.  Skip the projection+merge; the live
-          // streaming bubble (if any) is already rendering via useRunReattach.
-          if (result.entryCount === cached.entryCount)
+          // Entry count unchanged and no in-flight run — nothing new since we
+          // cached; skip the projection+merge entirely (the old fast path).
+          // With an in-flight run we MUST fall through: the fresh projection
+          // below folds the live streaming bubble, landing history + bubble in
+          // one render instead of the reattach tick's history-then-bubble.
+          if (result.entryCount === cached.entryCount && !activeRunRef.current.runId)
             return;
           const restored = result.status === "loaded" ? result.messages : [];
           setMessages((current) => {
-            // Preserve streaming bubbles whose run hasn't settled yet.
+            // Preserve streaming bubbles whose run hasn't settled yet — but
+            // never one already folded into `restored` by the load (dedup).
             const settledRunIds = new Set(restored.filter(m => m.runId).map(m => m.runId));
             const keepBubbles = current.filter(
-              m => m.id.startsWith("stream_") && !settledRunIds.has(m.runId),
+              m => m.id.startsWith("stream_")
+                && !settledRunIds.has(m.runId)
+                && !restored.some(r => r.id === m.id),
             );
             // When a streaming bubble is alive, the agent's save_callback may
             // have persisted a mid-run partial snapshot of the same turn (an
@@ -286,7 +347,16 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       // Snapshot gen so a real-time user message that arrives during the
       // first load doesn't get overwritten by the freshly-projected array.
       const firstGen = messagesGenRef.current;
-      const result = await loadFromAgent(threadId, workspaceId);
+      // Pre-warm the in-flight-run mirror (see the cache-hit branch).
+      if (!activeRunRef.current.runId) {
+        await refreshRecentRun(threadId, workspaceId).catch(() => {});
+      }
+      const result = await loadFromAgent(
+        threadId,
+        workspaceId,
+        activeRunRef.current.runId,
+        activeRunRef.current.startedAt,
+      );
       if (!cancelled) {
         if (messagesGenRef.current !== firstGen) {
           // A concurrent writer (real-time user message) bumped gen while we
