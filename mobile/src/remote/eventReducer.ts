@@ -120,12 +120,28 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
   switch (event.type) {
     case "agent_start": {
       streaming = true;
-      const id = `run:${runId ?? event.idx ?? items.length}`;
+      // The generating state lives on the assistant message itself (not a
+      // separate timeline item), so it renders in the message footer — same
+      // slot the copy button occupies once the run settles — and survives a
+      // history resync, which carries no run indicator.
+      const id = `assistant:${runId ?? event.idx ?? items.length}`;
+      const startedAt = Date.now();
       items = upsertItem(
         items,
         id,
-        () => ({ id, kind: "run", startedAt: Date.now(), runId }),
-        item => item,
+        () => ({
+          id,
+          kind: "message",
+          role: "assistant",
+          text: "",
+          runId,
+          streaming: true,
+          startedAt,
+        }),
+        item =>
+          item.kind === "message"
+            ? { ...item, streaming: true, startedAt: item.startedAt ?? startedAt }
+            : item,
       );
       break;
     }
@@ -135,8 +151,24 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       items = upsertItem(
         items,
         id,
-        () => ({ id, kind: "message", role: "assistant", text: chunk, runId }),
-        item => (item.kind === "message" ? { ...item, text: item.text + chunk } : item),
+        () => ({
+          id,
+          kind: "message",
+          role: "assistant",
+          text: chunk,
+          runId,
+          streaming: true,
+          startedAt: Date.now(),
+        }),
+        item =>
+          item.kind === "message"
+            ? {
+                ...item,
+                text: item.text + chunk,
+                streaming: true,
+                startedAt: item.startedAt ?? Date.now(),
+              }
+            : item,
       );
       break;
     }
@@ -226,22 +258,24 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       break;
     case "agent_end": {
       streaming = false;
-      const runItem = items.find(item => item.kind === "run" && item.runId === runId);
-      const durationMs =
-        runItem && runItem.kind === "run" ? Date.now() - runItem.startedAt : undefined;
+      const endedAt = Date.now();
       const endTokens = usageOutputTokens(data);
-      items = items
-        .filter(item => item.kind !== "run" || item.runId !== runId)
-        .map((item) => {
-          if (item.kind !== "message" || item.role !== "assistant" || item.runId !== runId)
-            return item;
-          const next = { ...item };
-          if (durationMs) next.durationMs = durationMs;
-          // Per-call `usage` events are authoritative when they arrived; fall back
-          // to the agent_end total only when nothing accumulated (matches desktop).
-          if (!next.outputTokens && endTokens > 0) next.outputTokens = endTokens;
-          return next;
-        });
+      // Settle the in-flight assistant message: clear the streaming flag,
+      // stamp the wall-clock duration, and capture token stats.
+      items = items.map(item => {
+        if (item.kind !== "message" || item.role !== "assistant" || item.runId !== runId)
+          return item;
+        const next: TimelineItem = {
+          ...item,
+          streaming: false,
+          durationMs: item.startedAt ? endedAt - item.startedAt : undefined,
+        };
+        // Per-call `usage` events are authoritative when they arrived; fall back
+        // to the agent_end total only when nothing accumulated (matches desktop).
+        if (next.kind === "message" && !next.outputTokens && endTokens > 0)
+          next.outputTokens = endTokens;
+        return next;
+      });
       break;
     }
     default:

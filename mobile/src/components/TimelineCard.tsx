@@ -262,26 +262,35 @@ export function TimelineCard({ item }: TimelineCardProps) {
     if (item.role === "assistant") {
       return (
         <View style={styles.assistantMessage}>
-          <MarkdownText text={item.text} />
-          <View style={styles.messageFooter}>
-            <Pressable
-              accessibilityLabel={t("chat.copyResponse")}
-              accessibilityRole="button"
-              hitSlop={8}
-              onPress={() => Clipboard.setStringAsync(item.text)}
-              style={styles.copyButton}
-            >
-              <Copy color={colors.inkMuted} size={15} />
-            </Pressable>
-            {item.durationMs != null && (
-              <Text style={styles.messageDuration}>{formatDuration(item.durationMs)}</Text>
-            )}
-            {item.outputTokens != null && item.outputTokens > 0 && (
-              <Text style={styles.messageDuration}>
-                {t("chat.tokens", { formattedCount: new Intl.NumberFormat(i18n.language).format(item.outputTokens) })}
-              </Text>
-            )}
-          </View>
+          {item.text.trim().length > 0 && <MarkdownText text={item.text} />}
+          {item.streaming && item.startedAt != null ? (
+            // In-flight: the generating indicator occupies the same footer slot
+            // the copy button uses once settled (desktop parity), so a streaming
+            // reply never shows a copy button.
+            <RunIndicator startedAt={item.startedAt} />
+          ) : (
+            <View style={styles.messageFooter}>
+              <Pressable
+                accessibilityLabel={t("chat.copyResponse")}
+                accessibilityRole="button"
+                hitSlop={8}
+                onPress={() => Clipboard.setStringAsync(item.text)}
+                style={styles.copyButton}
+              >
+                <Copy color={colors.inkMuted} size={15} />
+              </Pressable>
+              {item.durationMs != null && (
+                <Text style={styles.messageDuration}>{formatDuration(item.durationMs)}</Text>
+              )}
+              {item.outputTokens != null && item.outputTokens > 0 && (
+                <Text style={styles.messageDuration}>
+                  {t("chat.tokens", {
+                    formattedCount: new Intl.NumberFormat(i18n.language).format(item.outputTokens),
+                  })}
+                </Text>
+              )}
+            </View>
+          )}
         </View>
       );
     }
@@ -304,8 +313,6 @@ export function TimelineCard({ item }: TimelineCardProps) {
       </View>
     );
   }
-
-  if (item.kind === "run") return <RunIndicator startedAt={item.startedAt} />;
 
   if (item.kind === "thinking") {
     return (
