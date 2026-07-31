@@ -156,6 +156,16 @@ function normalizeLanguage(language: string | undefined): BundledLanguage | null
   return languageMap[normalized] ?? null;
 }
 
+// Cross-instance highlight cache: `CodeBlock` memoizes its own tokenization,
+// but a thread switch unmounts every block and re-tokenizes from scratch.
+// Caching by (language, code) makes a re-mount of a previously-rendered block
+// a map lookup instead of a full Shiki tokenize. Results are plain
+// read-only token arrays, so sharing is safe. LRU-bounded; huge blocks are
+// skipped (tokenizing them once is cheaper than pinning the cache).
+const highlightCache = new Map<string, HighlightResult>();
+const HIGHLIGHT_CACHE_MAX = 400;
+const HIGHLIGHT_CACHE_MAX_CODE_LENGTH = 100_000;
+
 export function useCodeHighlighter() {
   // `version` bumps when the highlighter becomes ready or a grammar loads.
   // useSyncExternalStore re-reads the snapshot immediately after subscribing, so
@@ -181,6 +191,15 @@ export function useCodeHighlighter() {
       const normalizedLang = normalizeLanguage(language);
       if (!normalizedLang) {
         return null;
+      }
+
+      const cacheKey = `${normalizedLang}\u0000${code}`;
+      const cached = highlightCache.get(cacheKey);
+      if (cached) {
+        // LRU touch.
+        highlightCache.delete(cacheKey);
+        highlightCache.set(cacheKey, cached);
+        return cached;
       }
 
       try {
@@ -209,7 +228,16 @@ export function useCodeHighlighter() {
           })),
         }));
 
-        return { lines, bgColor, fgColor };
+        const result: HighlightResult = { lines, bgColor, fgColor };
+        if (code.length <= HIGHLIGHT_CACHE_MAX_CODE_LENGTH) {
+          if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
+            const oldest = highlightCache.keys().next().value;
+            if (oldest !== undefined)
+              highlightCache.delete(oldest);
+          }
+          highlightCache.set(cacheKey, result);
+        }
+        return result;
       }
       catch {
         return null;

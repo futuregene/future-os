@@ -503,9 +503,15 @@ pub async fn import_missing_sessions() -> Result<(), crate::AppError> {
     let mut total_runs = 0usize;
     for handle in handles {
         match handle.await {
+            // `import_one` returns the created run count: 0 for an already-known
+            // session (title-heal only), >= 1 for a genuinely new import. Only
+            // count the latter, so the summary log fires when something actually
+            // landed — steady-state runs (all sessions known) stay silent.
             Ok(Ok(runs)) => {
-                imported += 1;
                 total_runs += runs;
+                if runs > 0 {
+                    imported += 1;
+                }
             }
             Ok(Err(error)) => {
                 eprintln!("FutureOS: session import error: {error}");
