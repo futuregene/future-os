@@ -988,7 +988,7 @@ mod tests {
             "a run first seen above idx 0 means the head was missed — re-attach"
         );
         assert!(
-            state.cursors.get("run-late").is_none(),
+            !state.cursors.contains_key("run-late"),
             "no cursor bookkeeping before the replay heals the head"
         );
     }
@@ -1013,7 +1013,7 @@ mod tests {
             .await
         );
         assert!(
-            state.cursors.get("run-settled").is_none(),
+            !state.cursors.contains_key("run-settled"),
             "a straggler must not open cursor bookkeeping for the settled run"
         );
         // A genuinely new run still starts at idx 0.
