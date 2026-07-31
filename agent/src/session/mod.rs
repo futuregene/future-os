@@ -935,7 +935,7 @@ impl Manager {
         }
 
         // Apply insertions in reverse index order to keep positions valid.
-        repairs.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        repairs.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
         for (idx, placeholders) in repairs {
             for placeholder in placeholders.into_iter().rev() {
                 entries.insert(idx, placeholder);
