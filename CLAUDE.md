@@ -6,6 +6,27 @@ Rust (agent, channel) + TypeScript (TUI, CLI) + Tauri/React GUI + React Native M
 
 After `make install`, five independent binaries are available: `future-agent`, `future-channel`, `future-tui`, `future-gui`, `future`. Start components directly (e.g. `future-agent`) rather than through the CLI.
 
+## Development workflow
+
+Development happens in an isolated git worktree (this repo uses `.claude/worktrees/<name>` on a `claude/*` branch), never in the local main branch. The local main branch (e.g. `dev`) is used by the user for local integration testing and may contain their own unrelated changes — do not treat it as a development branch.
+
+- All code changes, including fmt / clippy / lint fixes, are made and committed in the worktree branch.
+- To let the user test locally, merge the worktree branch into the local main branch (`dev`) — never edit code directly on `dev` and then merge it back into the worktree.
+- Do not merge the local main branch (`dev`) into the worktree; if `dev` has user changes you need, ask the user rather than merging local main in.
+
+### Before opening a PR
+
+Run the full pre-PR pass in the worktree, then verify on the CI toolchain (the repo pins `rust-toolchain.toml`; use the same clippy flags CI uses):
+
+1. `git fetch origin main` then merge `origin/main` into the worktree branch (resolving any conflicts here).
+2. `cargo fmt --check` (workspace + `gui/src-tauri`) — apply `cargo fmt` if needed.
+3. `cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings` — CI fails on warnings, and `--all-targets` is required to lint test code (a bare `--lib` misses it).
+4. GUI: `tsc --noEmit`, `eslint "src/**/*.{ts,tsx}"`, `vitest run`; plus `cargo fmt --check` / `cargo clippy` under `gui/src-tauri`.
+5. Run the test suites: `cargo test` for agent, `cargo test --lib` for `gui/src-tauri`.
+6. Commit any fmt/clippy fixes, push, then create the PR.
+
+Do not skip steps or use narrower flags than CI — a green local check on a smaller scope does not guarantee CI passes.
+
 ## Build/Run/Test
 
 Prefer `make` targets from repo root. For more control, use cargo/npm directly.
