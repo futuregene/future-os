@@ -33,6 +33,7 @@ import { FloatingScrollbar } from "../ui/FloatingScrollbar";
 import { IconButton } from "../ui/IconButton";
 import { MenuPanel } from "../ui/MenuPanel";
 import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
+import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { ThreadListItem } from "./ThreadListItem";
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "remote" | "settings";
@@ -118,6 +119,9 @@ export function ActivityRail({
   onOpenUpdate,
 }: ActivityRailProps) {
   const { t } = useTranslation("layout");
+  // Pending approvals across all threads — badged on rail items so a background
+  // conversation's approval is visible without opening it.
+  const pendingApprovalCounts = usePendingApprovalCounts();
   // Shared overlay scrollbar for the conversation list, matching the chat view.
   const listScrollbar = useFloatingScrollbar();
   // The Remote (phone) feature is still under development — show its nav entry
@@ -343,6 +347,7 @@ export function ActivityRail({
                                 archived={thread.status === "archived"}
                                 key={thread.id}
                                 menuOpen={openThreadMenuId === thread.id}
+                                pendingApprovalCount={pendingApprovalCounts.get(thread.id)}
                                 runStatus={threadRunStatuses[thread.id]}
                                 selected={selectedThreadIds.has(thread.id)}
                                 selectionMode={threadSelectionMode(thread)}
@@ -446,6 +451,7 @@ export function ActivityRail({
                                         archived={thread.status === "archived"}
                                         key={thread.id}
                                         menuOpen={openThreadMenuId === thread.id}
+                                        pendingApprovalCount={pendingApprovalCounts.get(thread.id)}
                                         runStatus={threadRunStatuses[thread.id]}
                                         selected={selectedThreadIds.has(thread.id)}
                                         selectionMode={threadSelectionMode(thread)}
@@ -508,6 +514,7 @@ export function ActivityRail({
                           archived={thread.status === "archived"}
                           key={thread.id}
                           menuOpen={openThreadMenuId === thread.id}
+                          pendingApprovalCount={pendingApprovalCounts.get(thread.id)}
                           runStatus={threadRunStatuses[thread.id]}
                           isStreaming={threadStreamingStatuses[thread.id]}
                           selected={selectedThreadIds.has(thread.id)}

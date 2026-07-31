@@ -76,7 +76,10 @@ sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {
 // TOOL_OUTPUT_COLUMNS & tool_output_from_row removed — table dropped
 
 pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
-    let id = create_id("run");
+    let id = input
+        .id
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| create_id("run"));
     let now = now_millis();
     let conn = connect()?;
     conn.execute(
@@ -199,58 +202,28 @@ pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, cra
         .map_err(crate::AppError::from)
 }
 
-/// Which runs' still-open children (pending approvals, running tool calls) a
-/// cancel-cascade settles. The two scopes differ only in how a child's owning
-/// run is matched — everything else about the cascade is identical, which is why
-/// [`cancel_children_of_runs`] is shared between the single-run and startup paths.
-pub(super) enum CancelScope<'a> {
-    /// One run: match children whose `run_id` equals this id.
-    Run(&'a str),
-    /// Startup convergence: match children whose run is already terminal — plus
-    /// run-less orphan approvals (`run_id IS NULL`), which can never settle
-    /// themselves once their collector is gone.
-    TerminalRuns,
-}
-
-/// Cancel the still-open approvals and running tool calls belonging to `scope`,
-/// stamping the cancelled approvals with `note`. Shared by the `cancelled` path
-/// of [`update_run_status_if_active`] (single run) and cleanup's startup
-/// convergence (every terminal run). The run-membership predicate is either a
-/// bound parameter (single run) or a splice of the constant terminal-status list
-/// — no caller value is ever string-interpolated.
+/// Cancel the still-open approvals of a single run, stamping them with `note`.
+/// Called from [`update_run_status_if_active`] when a run transitions to
+/// `cancelled`, so a pending approval never outlives its owning run on the
+/// single-run (user abort) path. Startup convergence deliberately does NOT use
+/// this — pending approvals survive a GUI restart and are reconciled against
+/// the Agent's `get_state.pendingApprovals` instead (the Agent may still be
+/// parked on exactly that request).
 pub(super) fn cancel_children_of_runs(
     tx: &rusqlite::Transaction<'_>,
-    scope: CancelScope<'_>,
+    run_id: &str,
     note: &str,
     now: i64,
 ) -> rusqlite::Result<()> {
-    let terminal_membership =
-        format!("run_id IN (SELECT id FROM runs WHERE status IN ({TERMINAL_RUN_STATUSES_SQL}))");
-    // `?1` = now, `?2` (approvals only) = note, `?3`/`?2` (single run only) = run id.
-    let (approval_where, _tool_where) = match scope {
-        CancelScope::Run(_) => ("run_id = ?3".to_string(), "run_id = ?2".to_string()),
-        CancelScope::TerminalRuns => (
-            format!("(run_id IS NULL OR {terminal_membership})"),
-            terminal_membership.clone(),
-        ),
-    };
-    let approval_sql = format!(
+    tx.execute(
         "UPDATE approval_requests
              SET status = 'cancelled',
                  decision_note = COALESCE(decision_note, ?2),
                  decided_at = COALESCE(decided_at, ?1),
                  updated_at = ?1
-             WHERE status = 'pending' AND {approval_where}"
-    );
-    // tool_calls table dropped — only cancel approvals.
-    match scope {
-        CancelScope::Run(run_id) => {
-            tx.execute(&approval_sql, params![now, note, run_id])?;
-        }
-        CancelScope::TerminalRuns => {
-            tx.execute(&approval_sql, params![now, note])?;
-        }
-    }
+             WHERE status = 'pending' AND run_id = ?3",
+        params![now, note, run_id],
+    )?;
     Ok(())
 }
 
@@ -305,7 +278,7 @@ fn update_run_status_if_active_tx(
     if affected > 0 && input.status == "cancelled" {
         cancel_children_of_runs(
             tx,
-            CancelScope::Run(&input.run_id),
+            &input.run_id,
             "Cancelled because the run was terminated.",
             now,
         )?;

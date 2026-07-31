@@ -8,7 +8,8 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use super::client::{
-    connect_agent, get_session_entries_command, list_sessions_command, set_session_name_command,
+    connect_agent, get_session_entries_command, get_state_command, list_sessions_command,
+    set_session_name_command,
 };
 use crate::store;
 
@@ -175,6 +176,7 @@ fn create_historical_run(
 ) -> Result<store::RunRecord, crate::AppError> {
     let (provider, model_id) = super::session::split_model(model);
     let run = store::create_run(store::CreateRunInput {
+        id: None,
         thread_id: thread_id.to_string(),
         trigger_message_id: None,
         model_provider: provider,
@@ -418,6 +420,60 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     }
 
     Ok(run_count)
+}
+
+/// Runtime discovery import for a session that is streaming RIGHT NOW
+/// (created by another client — TUI/CLI/another machine). Creates only the
+/// thread stub: the session observer mints run rows live as events arrive, so
+/// minting synthetic historical runs here (as `import_one` does) would
+/// duplicate the live run. Title/model heal on the next full
+/// `import_missing_sessions` pass, which has richer summaries.
+pub(crate) async fn import_streaming_session(session_id: &str) -> Result<(), crate::AppError> {
+    if store::find_thread_by_agent_session(session_id)?.is_some() {
+        return Ok(());
+    }
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(get_state_command(session_id.to_string()))
+        .await
+        .map_err(|e| format!("get_state: {e}"))?
+        .into_inner();
+    if !response.success {
+        return Err(format!("agent rejected get_state: {}", response.error).into());
+    }
+    let state: serde_json::Value =
+        serde_json::from_str(&response.data).map_err(|e| format!("get_state parse: {e}"))?;
+    let summary = AgentSessionSummary {
+        id: session_id.to_string(),
+        name: state
+            .get("session_name")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        cwd: state
+            .get("cwd")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        model: state
+            .get("model")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        first_message: None,
+        parent_session_id: String::new(),
+        is_streaming: true,
+    };
+    let title = session_title(&summary);
+    let (mode, workspace_id, workspace_path, workspace_name) = thread_mode(&summary, &title);
+    store::create_thread(store::CreateThreadInput {
+        mode,
+        title: Some(title),
+        workspace_id,
+        workspace_path,
+        workspace_name,
+        agent_session_id: Some(session_id.to_string()),
+    })?;
+    Ok(())
 }
 
 /// Discover agent sessions not yet in the GUI DB and import them. Runs in the

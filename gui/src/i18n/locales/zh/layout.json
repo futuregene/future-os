@@ -31,6 +31,7 @@
     "noChats": "暂无对话",
     "archived": "已归档",
     "running": "运行中",
+    "pendingApproval": "{{count}} 项审批待处理",
     "completed": "已完成",
     "failed": "失败",
     "cancelled": "已取消",

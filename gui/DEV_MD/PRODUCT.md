@@ -130,7 +130,7 @@ GUI 负责展示审批请求、把决策回传给 Agent，并在“本工作区�
 - 审批不超时，始终等待用户明确允许或拒绝；Agent / GUI 不应因为固定 HTTP、SSE idle 或事件收集 timeout 结束正在等待审批的 run。
 - 支持键盘快捷操作：`Esc` 拒绝（若“本工作区允许”的编辑框打开则先关闭），`Cmd/Ctrl + Enter` 允许一次。
 - requested action 预览应 JSON pretty print、自动换行、高度随内容自适应，但最大不超过窗口高度的三分之一，超过后内部滚动。
-- Agent 或 GUI 重启后，遗留的 pending approval 必须自动转为 `cancelled`，不能继续显示为可点击的有效审批。
+- GUI 重启后，遗留的 pending approval **不**无条件取消：启动收敛保留它们，由 Agent 可达后的对账（`reconcile_pending_approvals`，启动一次 + watchdog 每轮）按 Agent 的权威 pending 集合裁决——Agent 仍在等待的保留卡片（run 复活并回到 `waiting_approval`），Agent 已不持有的（在他处已决、已 abort、或 Agent 自身重启丢失）才转为 `cancelled`。这保证 GUI 崩溃期间 Agent 挂起的审批能在重启后继续展示并决策。
 - 如果用户点击一个后端已不存在的旧 pending approval，GUI 应把本地状态转为 `cancelled`，不能向用户暴露 “not pending” 之类内部错误。
 
 ### 4.7 Review

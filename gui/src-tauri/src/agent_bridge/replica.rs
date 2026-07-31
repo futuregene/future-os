@@ -1,12 +1,22 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{LazyLock, Mutex},
+    time::{Duration, Instant},
 };
+
+/// How long a released run still counts as "owned" for observer purposes.
+/// The collector persists `agent_end` BEFORE its lease drops, but a session
+/// observer on an independent subscription may see that same event a few
+/// milliseconds later — without this grace window it would treat the run as
+/// unowned and persist a duplicate terminal event.
+const RECENTLY_RELEASED_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct ReplicaRegistry {
     active_runs: HashSet<String>,
     local_to_canonical: HashMap<String, String>,
+    /// canonical run id → when its lease was released (pruned on read).
+    released: HashMap<String, Instant>,
 }
 
 /// Process-local owner registry for canonical Agent runs.
@@ -50,6 +60,23 @@ impl AgentReplicaManager {
             .local_to_canonical
             .get(local_run_id)
             .cloned()
+    }
+
+    /// Whether a prompt-pipeline collector currently owns this canonical run
+    /// or released it within the grace window. Session observers consult this
+    /// before projecting a run: exactly one writer per run (the pipeline
+    /// collector wins; the observer takes over runs nobody else owns).
+    pub(super) fn is_owned_or_recently_released(&self, run_id: &str) -> bool {
+        let Ok(mut registry) = self.registry.lock() else {
+            return false;
+        };
+        if registry.active_runs.contains(run_id) {
+            return true;
+        }
+        registry
+            .released
+            .retain(|_, at| at.elapsed() < RECENTLY_RELEASED_WINDOW);
+        registry.released.contains_key(run_id)
     }
 }
 
@@ -114,6 +141,9 @@ impl Drop for ReplicaLease {
     fn drop(&mut self) {
         if let Ok(mut registry) = self.manager.registry.lock() {
             registry.active_runs.remove(&self.canonical_run_id);
+            registry
+                .released
+                .insert(self.canonical_run_id.clone(), Instant::now());
             if let Some(local_run_id) = self.local_run_id.as_deref() {
                 registry.local_to_canonical.remove(local_run_id);
             }
@@ -153,6 +183,21 @@ mod tests {
         );
         drop(lease);
         assert!(manager.canonical_for_local("sqlite-run").is_none());
+    }
+
+    #[test]
+    fn recently_released_run_still_counts_as_owned() {
+        let manager = Box::leak(Box::new(AgentReplicaManager {
+            registry: Mutex::new(ReplicaRegistry::default()),
+        }));
+        {
+            let _lease = manager.acquire("run-a").unwrap();
+            assert!(manager.is_owned_or_recently_released("run-a"));
+        }
+        // Lease dropped — the grace window keeps the run "owned" so an observer
+        // seeing the terminal events a moment later doesn't double-persist.
+        assert!(manager.is_owned_or_recently_released("run-a"));
+        assert!(!manager.is_owned_or_recently_released("run-b"));
     }
 
     #[tokio::test]

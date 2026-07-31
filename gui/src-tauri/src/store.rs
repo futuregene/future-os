@@ -24,7 +24,7 @@ pub use app_settings::{
 };
 pub use approvals::{
     decide_approval_request, ensure_approval_request, list_approval_requests,
-    list_review_file_changes, ApprovalRequestRecord,
+    list_pending_approval_requests, list_review_file_changes, ApprovalRequestRecord,
 };
 pub use artifacts::{
     artifact_type_from_path, create_artifact, delete_artifact, ensure_artifact,

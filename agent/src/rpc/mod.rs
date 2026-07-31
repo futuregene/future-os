@@ -281,6 +281,11 @@ fn get_state_internal(
                 .as_ref()
                 .and_then(|session| crate::session::find_run_terminal(&session.entries, run_id))
         });
+    // Approvals this session is parked on, with the full card payload. A client
+    // that (re)connects after a crash uses this to rebuild approval UI it
+    // missed — the in-memory pending map is the live source, the broadcast
+    // event is only a notification.
+    let pending_approvals = state.approval_gate.pending_for_session(&session_id);
 
     Some(serde_json::json!({
         "model": sess.model,
@@ -317,6 +322,7 @@ fn get_state_internal(
         "activeRun": active_run,
         "interruptedRun": interrupted_run,
         "requestedRun": requested_run,
+        "pendingApprovals": pending_approvals,
     }))
 }
 

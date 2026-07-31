@@ -1,6 +1,6 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import { MoreHorizontal } from "lucide-react";
+import { CircleAlert, MoreHorizontal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { cn } from "../../lib/cn";
@@ -17,6 +17,7 @@ export function ThreadListItem({
   compact,
   isStreaming,
   menuOpen,
+  pendingApprovalCount,
   runStatus,
   selected,
   selectionMode,
@@ -36,6 +37,12 @@ export function ThreadListItem({
   /** Whether the agent reports this session is streaming (e.g. TUI-initiated). */
   isStreaming?: boolean;
   menuOpen: boolean;
+  /**
+   * Pending approvals in this thread; badged on the rail item when the
+   * thread is NOT the open one (the open thread shows the card above the
+   * composer instead).
+   */
+  pendingApprovalCount?: number;
   runStatus?: ThreadRunInfo;
   selected?: boolean;
   selectionMode?: boolean;
@@ -138,6 +145,17 @@ export function ThreadListItem({
           )
         : (
             <>
+              {!active && pendingApprovalCount && pendingApprovalCount > 0
+                ? (
+                    <span
+                      aria-label={t("activityRail.pendingApproval", { count: pendingApprovalCount })}
+                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
+                      title={t("activityRail.pendingApproval", { count: pendingApprovalCount })}
+                    >
+                      <CircleAlert className="size-3.5" />
+                    </span>
+                  )
+                : null}
               <span className="pointer-events-none flex shrink-0">
                 <ThreadRunIndicator status={effectiveRunStatus} unread={unread} />
               </span>

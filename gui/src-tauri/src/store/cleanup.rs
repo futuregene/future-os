@@ -6,7 +6,6 @@ use rusqlite::{params, Connection};
 use super::db::connect;
 use super::records::ThreadCleanupSummary;
 use super::review_snapshots::delete_run_review_in;
-use super::runs::{cancel_children_of_runs, CancelScope};
 use super::status::TERMINAL_RUN_STATUSES_SQL;
 
 /// A run that was cancelled by startup convergence after a GUI crash.
@@ -389,11 +388,17 @@ pub fn get_thread_cleanup_summary(
 /// no event will ever settle it. Left alone, such a run strands the UI
 /// in a permanent "generating" state (composer disabled, polling spinning).
 ///
-/// This cancels all of them in one transaction and cascades the cancellation to
-/// their still-open approvals and running tool calls, so a run and its children
-/// never end up in mismatched states. The previous, narrower version cancelled
-/// only runs that owned a pending approval; that logic is subsumed here. Returns
-/// the number of runs cancelled.
+/// This cancels all of them in one transaction so a run never ends up in a
+/// mismatched state. The previous version also cascaded the cancellation to
+/// still-open approvals; that was a data-loss bug: the Agent may still be
+/// parked on exactly that approval (the GUI crashed, not the Agent), and
+/// cancelling the local row left no card for the user to decide while the
+/// Agent waited forever. Pending approvals now survive startup and are
+/// reconciled against the Agent's authoritative `get_state.pendingApprovals`
+/// by `agent_bridge::approval::reconcile_pending_approvals` once the Agent is
+/// reachable — still-parked requests keep their card (and reanimate the run),
+/// requests the Agent no longer holds are cancelled then. Returns the number
+/// of runs cancelled.
 ///
 /// Called only from the backend's setup (`lib.rs`), once per process — it is
 /// deliberately NOT a Tauri command: a webview reload re-runs the frontend
@@ -408,10 +413,11 @@ pub fn cancel_stale_approval_requests() -> Result<usize, crate::AppError> {
     Ok(cancelled_runs)
 }
 
-/// Cancel every non-terminal run and cascade to its still-open approvals and
-/// running tool calls. Returns the number of runs cancelled. Factored out of
-/// [`cancel_stale_approval_requests`] so it can be exercised against an
-/// in-memory connection.
+/// Cancel every non-terminal run. Returns the number of runs cancelled.
+/// Factored out of [`cancel_stale_approval_requests`] so it can be exercised
+/// against an in-memory connection. Pending approvals are deliberately NOT
+/// cascaded here — see the caller's docs; the Agent-side reconcile decides
+/// their fate.
 fn converge_orphan_runs_tx(tx: &rusqlite::Transaction<'_>, now: i64) -> rusqlite::Result<usize> {
     let cancelled_runs = tx.execute(
         &format!(
@@ -424,14 +430,6 @@ fn converge_orphan_runs_tx(tx: &rusqlite::Transaction<'_>, now: i64) -> rusqlite
          WHERE status NOT IN ({TERMINAL_RUN_STATUSES_SQL})"
         ),
         params![now],
-    )?;
-    // Cascade: any pending approval or running tool call now belongs to a
-    // terminal run and must be settled too (shared with the single-run path).
-    cancel_children_of_runs(
-        tx,
-        CancelScope::TerminalRuns,
-        "Cancelled because FutureOS restarted.",
-        now,
     )?;
     Ok(cancelled_runs)
 }
@@ -633,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn converge_orphan_runs_cancels_non_terminal_and_cascades() {
+    fn converge_orphan_runs_cancels_non_terminal_but_keeps_approvals() {
         let mut conn = test_conn();
         insert_thread(&conn, "T", None);
         // Non-terminal orphans: a plain running run, plus one waiting on approval.
@@ -660,7 +658,10 @@ mod tests {
         // Terminal runs preserved.
         assert_eq!(run_status(&conn, "run_done"), "completed");
         assert_eq!(run_status(&conn, "run_cancelled"), "cancelled");
-        // Cascades fired.
+        // Pending approvals deliberately survive convergence: the Agent may
+        // still be parked on this exact request (a GUI crash, not an Agent
+        // crash). `reconcile_pending_approvals` settles it against the Agent's
+        // authoritative pending set once the Agent is reachable.
         let ap_status: String = conn
             .query_row(
                 "SELECT status FROM approval_requests WHERE id = 'ap'",
@@ -668,9 +669,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ap_status, "cancelled");
-        // (tool_calls cascade dropped — the table no longer exists; converge
-        // only cancels the run + its pending approvals now.)
+        assert_eq!(ap_status, "pending");
     }
 
     #[test]
@@ -697,6 +696,7 @@ mod tests {
         })
         .expect("create thread");
         let run = crate::store::create_run(CreateRunInput {
+            id: None,
             thread_id: thread.id.clone(),
             trigger_message_id: None,
             model_provider: None,
@@ -842,6 +842,7 @@ mod tests {
 
         // Startup-convergence shape: cancelled + error_type='interrupted'.
         let interrupted = crate::store::create_run(CreateRunInput {
+            id: None,
             thread_id: thread.id.clone(),
             trigger_message_id: None,
             model_provider: None,
@@ -858,6 +859,7 @@ mod tests {
 
         // User-abort shape: cancelled + error_type='abort_requested'.
         let aborted = crate::store::create_run(CreateRunInput {
+            id: None,
             thread_id: thread.id,
             trigger_message_id: None,
             model_provider: None,

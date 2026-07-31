@@ -30,6 +30,10 @@ pub enum ApprovalDecisionStatus {
 
 struct PendingApproval {
     session_id: String,
+    /// The exact `approval_request` event payload, kept so get_state can
+    /// re-serve the card to a client that missed the broadcast (e.g. a GUI
+    /// restart while the run is parked on this decision).
+    payload: serde_json::Value,
     tx: mpsc::Sender<ApprovalDecision>,
 }
 
@@ -246,33 +250,32 @@ impl ApprovalGate {
     ) -> AskOutcome {
         let request_id = format!("approval_{}", crate::utils::generate_entry_id());
         let (tx, rx) = mpsc::channel::<ApprovalDecision>();
+        let payload = serde_json::json!({
+            "type": "approval_request",
+            "approval_request_id": request_id,
+            "session_id": session_id,
+            "tool_id": tool_id,
+            "tool_name": tool_name,
+            "kind": shape.kind,
+            "risk_level": shape.risk_level,
+            "title": shape.title,
+            "summary": shape.summary,
+            "requested_action": requested_action,
+            "action": shape.action,
+            "sandbox_boundary": shape.sandbox_boundary,
+            "save_suggestion": shape.save_suggestion,
+            "reviewer": "user",
+        });
         self.pending.lock().insert(
             request_id.clone(),
             PendingApproval {
                 session_id: session_id.to_string(),
+                payload: payload.clone(),
                 tx,
             },
         );
 
-        broadcaster.broadcast(SseEvent::new(
-            "approval_request",
-            serde_json::json!({
-                "type": "approval_request",
-                "approval_request_id": request_id,
-                "session_id": session_id,
-                "tool_id": tool_id,
-                "tool_name": tool_name,
-                "kind": shape.kind,
-                "risk_level": shape.risk_level,
-                "title": shape.title,
-                "summary": shape.summary,
-                "requested_action": requested_action,
-                "action": shape.action,
-                "sandbox_boundary": shape.sandbox_boundary,
-                "save_suggestion": shape.save_suggestion,
-                "reviewer": "user",
-            }),
-        ));
+        broadcaster.broadcast(SseEvent::new("approval_request", payload));
 
         let decision = tokio::task::block_in_place(|| rx.recv());
         let (status, note, outcome) = match decision {
@@ -336,6 +339,42 @@ impl ApprovalGate {
             .remove(request_id)
             .ok_or_else(|| format!("approval request `{request_id}` is not pending"))?;
         pending.tx.send(decision).map_err(|error| error.to_string())
+    }
+
+    /// Payloads of the approval requests still awaiting a decision for one
+    /// session. Served via get_state so a (re)connecting client can rebuild
+    /// approval cards it missed — the pending map is process-wide, so filter
+    /// by session here (same ownership rule as `decide`).
+    pub fn pending_for_session(&self, session_id: &str) -> Vec<serde_json::Value> {
+        self.pending
+            .lock()
+            .values()
+            .filter(|pending| pending.session_id == session_id)
+            .map(|pending| pending.payload.clone())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_pending_for_test(
+        &self,
+        request_id: &str,
+        session_id: &str,
+    ) -> mpsc::Receiver<ApprovalDecision> {
+        let (tx, rx) = mpsc::channel();
+        self.pending.lock().insert(
+            request_id.to_string(),
+            PendingApproval {
+                session_id: session_id.to_string(),
+                payload: serde_json::json!({
+                    "type": "approval_request",
+                    "approval_request_id": request_id,
+                    "session_id": session_id,
+                    "tool_name": "shell",
+                }),
+                tx,
+            },
+        );
+        rx
     }
 
     pub fn cancel_session(&self, session_id: &str, note: &str) -> usize {
@@ -1091,6 +1130,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             "req1".to_string(),
             PendingApproval {
                 session_id: "sessA".to_string(),
+                payload: serde_json::json!({"approval_request_id": "req1"}),
                 tx,
             },
         );
@@ -1269,6 +1309,33 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             status: ApprovalDecisionStatus::Rejected,
         };
         assert!(gate.decide("nope", "sessA", decision).is_err());
+    }
+
+    #[test]
+    fn pending_for_session_returns_only_owning_sessions_payloads() {
+        let gate = ApprovalGate::default();
+        let _rx_a1 = gate.insert_pending_for_test("req-a1", "sessA");
+        let _rx_a2 = gate.insert_pending_for_test("req-a2", "sessA");
+        let _rx_b1 = gate.insert_pending_for_test("req-b1", "sessB");
+
+        let mut ids = gate
+            .pending_for_session("sessA")
+            .iter()
+            .filter_map(|p| p["approval_request_id"].as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        ids.sort();
+        assert_eq!(ids, vec!["req-a1", "req-a2"]);
+        assert_eq!(gate.pending_for_session("sessB").len(), 1);
+        assert!(gate.pending_for_session("sessC").is_empty());
+
+        // A decided (removed) request no longer shows up as pending.
+        let decision = ApprovalDecision {
+            approved: true,
+            note: String::new(),
+            status: ApprovalDecisionStatus::Approved,
+        };
+        assert!(gate.decide("req-a1", "sessA", decision).is_ok());
+        assert_eq!(gate.pending_for_session("sessA").len(), 1);
     }
 
     #[test]
