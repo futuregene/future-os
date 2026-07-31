@@ -221,7 +221,7 @@ pub fn ensure_workspace_accessible(path: &Path, auto_repair: bool) -> Result<(),
             // managed dirs, repair owner permissions and retry once (e.g. a
             // workspace chmod'ed read-only by a previous session). A user
             // workspace is left untouched — the caller surfaces the error.
-            Err(error) if auto_repair => {
+            Err(_error) if auto_repair => {
                 repair_dir_permissions(path)?;
                 std::fs::write(&test, b"")?;
                 let _ = std::fs::remove_file(&test);
