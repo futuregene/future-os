@@ -139,15 +139,6 @@ pub(super) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate
     Ok(workspace.path)
 }
 
-/// Returns `true` when the thread is a chat-mode thread (not workspace-bound).
-pub(super) fn is_chat_thread(thread_id: &str) -> bool {
-    store::get_thread(thread_id)
-        .ok()
-        .flatten()
-        .map(|t| t.mode == "chat")
-        .unwrap_or(true)
-}
-
 /// Fork a session at the given user message. Returns the new GUI thread id.
 ///
 /// Creates a dedicated chat workspace named after the forked session id, copies

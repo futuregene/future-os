@@ -37,8 +37,7 @@ pub use cleanup::{
     ActiveRun,
 };
 pub use db::{
-    app_images_root, chat_workspace_path, future_dir, get_approval_request, get_run,
-    thread_images_dir,
+    app_images_root, future_dir, get_approval_request, get_run, thread_images_dir,
 };
 pub use markdown_refs::resolve_markdown_references;
 pub use records::*;

@@ -280,9 +280,9 @@ fn live_thread_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
     rows.collect()
 }
 
-/// Live chat workspace directory names: both thread ids (legacy) and agent
-/// session ids (current).  Directories under `~/.future/workspaces/chat/` are
-/// now named after the session id, but older ones may still use the thread id.
+/// Live chat workspace directory names: every non-deleted thread id.
+/// Directories under `~/.future/workspaces/chat/` are named after the thread
+/// id (never the agent session id), so a live thread's dir is always kept.
 fn live_chat_workspace_dir_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
     let mut stmt = conn.prepare("SELECT id FROM threads WHERE status != 'deleted'")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;

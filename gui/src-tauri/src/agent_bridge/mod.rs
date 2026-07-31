@@ -17,7 +17,7 @@ pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     connect_agent, delete_session_command, get_available_models_command, get_run_state_command,
     get_session_entries_command, get_state_command, list_streaming_sessions_command, map_rpc_error,
-    set_cwd_command, set_default_model_command, set_model_command, set_session_name_command,
+    set_default_model_command, set_model_command, set_session_name_command,
     set_thinking_level_command, RpcResponseExt,
 };
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
@@ -37,7 +37,7 @@ use self::client::{base_command, prompt_command};
 use self::replica::AGENT_REPLICAS;
 use self::run_control::{mark_run_completed_if_active, mark_run_failed_if_active};
 use self::session::{
-    ensure_agent_session, is_chat_thread, set_agent_permission_level, set_agent_sandbox_policy,
+    ensure_agent_session, set_agent_permission_level, set_agent_sandbox_policy,
     workspace_path_for_thread,
 };
 
