@@ -398,6 +398,25 @@ describe("recoverFailedRuns", () => {
     expect(result.map(m => m.id)).toEqual(["u1", "a1", "u2", "failed_r2", "u3", "a3"]);
   });
 
+  it("appends a failure bubble when the FIRST run of the session failed (no assistant entry at all)", () => {
+    // The "prompt acknowledgement omitted run_id" case: the run failed before
+    // the agent saved anything — the user's message is the only turn inside the
+    // run's window, so the trust guard must not require an assistant turn.
+    const result = recoverFailedRuns([
+      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+    ], [
+      run("r1", { status: "failed", errorMessage: "Future Agent prompt acknowledgement omitted run_id.", ...r1Window }),
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result[1]).toMatchObject({
+      id: "failed_r1",
+      role: "assistant",
+      runId: "r1",
+      status: "failed",
+    });
+    expect(result[1]!.content.trim()).not.toBe("");
+  });
+
   it("leaves messages unchanged when the failed run already owns a projected turn", () => {
     const messages = [
       user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
