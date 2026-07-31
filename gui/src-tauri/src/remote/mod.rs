@@ -452,6 +452,33 @@ pub fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &st
     }
 }
 
+/// Mirror a run's projection snapshot as a wholesale-replacement signal. The
+/// snapshot's folded events cannot be applied incrementally — a coalesced
+/// chunk's payload spans idx values the client already applied — so this goes
+/// out as a single `run_snapshot` event and the client heals by resyncing
+/// rather than folding. The folded events ride along in `data` for consumers
+/// that can apply a snapshot directly.
+pub fn publish_snapshot(
+    session_id: &str,
+    run_id: &str,
+    snapshot_cursor: i64,
+    snapshot_events: &[crate::agent_proto::ProjectedRunEvent],
+) {
+    let events: Vec<serde_json::Value> = snapshot_events
+        .iter()
+        .map(|event| {
+            json!({
+                "type": event.r#type,
+                "data": serde_json::from_str::<serde_json::Value>(&event.data)
+                    .unwrap_or(serde_json::Value::Null),
+                "idx": event.idx,
+            })
+        })
+        .collect();
+    let data = json!({ "snapshotEvents": events, "snapshotCursor": snapshot_cursor }).to_string();
+    publish_event(session_id, "run_snapshot", &data, run_id, snapshot_cursor);
+}
+
 /// Return `data` unchanged when it fits the payload budget, else a well-formed
 /// JSON placeholder that keeps the event renderable and tells the client where
 /// the full content lives (the persisted run history via `get_messages`). The

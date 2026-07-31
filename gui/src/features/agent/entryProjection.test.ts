@@ -208,4 +208,50 @@ describe("entriesToMessages", () => {
     // The compaction text must not appear as a user bubble.
     expect(messages.some(message => message.role === "user" && message.content.startsWith("[Context compaction:"))).toBe(false);
   });
+
+  it("groups reordered entries by turn_id when the journal carries turn identity", () => {
+    // A steered follow-up is journaled ahead of the turn it interrupted (the
+    // terminal rewrite heals order): positionally, assistant "first answer"
+    // would land in the follow-up's turn. Turn ids re-attribute it correctly.
+    const entries: SessionEntry[] = [
+      { id: "u1", role: "user", content: "first question", meta: { run_id: "run-1", turn_id: "turn-1" } },
+      { id: "u2", role: "user", content: "steered follow-up", meta: { run_id: "run-1", turn_id: "turn-2" } },
+      { id: "a1", role: "assistant", content: "first answer", meta: { run_id: "run-1", turn_id: "turn-1" } },
+      { id: "a2", role: "assistant", content: "follow-up answer", meta: { run_id: "run-1", turn_id: "turn-2" } },
+    ];
+
+    const messages = entriesToMessages(entries);
+
+    expect(messages.map(m => [m.role, m.content])).toEqual([
+      ["user", "first question"],
+      ["assistant", "first answer"],
+      ["user", "steered follow-up"],
+      ["assistant", "follow-up answer"],
+    ]);
+    expect(messages[0]?.turnId).toBe("turn-1");
+    expect(messages[1]?.turnId).toBe("turn-1");
+    expect(messages[2]?.turnId).toBe("turn-2");
+    expect(messages[3]?.turnId).toBe("turn-2");
+    // Run identity still only marks the settled assistant bubbles.
+    expect(messages[0]?.runId).toBeUndefined();
+    expect(messages[1]?.runId).toBe("run-1");
+  });
+
+  it("keeps positional grouping for legacy journals without turn ids", () => {
+    const entries: SessionEntry[] = [
+      { id: "u1", role: "user", content: "first question" },
+      { id: "u2", role: "user", content: "follow-up" },
+      { id: "a1", role: "assistant", content: "answer" },
+    ];
+
+    const messages = entriesToMessages(entries);
+
+    // Positional: the assistant follows the most recent user message.
+    expect(messages.map(m => [m.role, m.content])).toEqual([
+      ["user", "first question"],
+      ["user", "follow-up"],
+      ["assistant", "answer"],
+    ]);
+    expect(messages.every(m => m.turnId == null)).toBe(true);
+  });
 });

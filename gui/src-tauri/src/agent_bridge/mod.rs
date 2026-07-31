@@ -500,10 +500,20 @@ async fn agent_prompt_inner(
     // Save the message for auto-naming after the prompt completes.
     let user_message = message.clone();
 
-    // Subscribe BEFORE the prompt reaches the agent: the session observer is
+    // Resolve the run identity and register single-writer ownership BEFORE the
+    // prompt reaches the agent. The session observer subscribes first (it is
     // the sole NATS publisher and the fallback event projector, so it must
-    // exist before the run starts (its atomic-attach replay covers the small
-    // subscribe window, but registering first keeps that window minimal).
+    // exist before the run starts); with the lease already held it recognizes
+    // this run as pipeline-owned from its very first event — closing the ack
+    // window where an early event (e.g. `user_message`) could otherwise be
+    // persisted by both the observer and this collector.
+    let run_id = match run_id.filter(|id| !id.trim().is_empty()) {
+        Some(id) => id,
+        None => crate::store::create_id("run"),
+    };
+    let replica_lease = AGENT_REPLICAS
+        .acquire(&run_id)
+        .map_err(crate::AppError::from)?;
     observer::ensure_observer(&session_id);
 
     let prompt_response = command_client
@@ -511,7 +521,7 @@ async fn agent_prompt_inner(
             message,
             session_id.clone(),
             attachments.unwrap_or_default(),
-            run_id.clone(),
+            Some(run_id.clone()),
         )?)
         .await
         .map_err(|error| format!("Unable to send prompt to Future Agent: {error}"))?
@@ -528,25 +538,14 @@ async fn agent_prompt_inner(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Future Agent prompt acknowledgement omitted run_id.".to_string())?
         .to_string();
-    if let Some(requested_run_id) = run_id.as_deref() {
-        if canonical_run_id != requested_run_id {
-            return Err(format!(
-                "Future Agent adopted run id {canonical_run_id}, expected {requested_run_id}"
-            )
-            .into());
-        }
+    if canonical_run_id != run_id {
+        return Err(
+            format!("Future Agent adopted run id {canonical_run_id}, expected {run_id}").into(),
+        );
     }
-    let replica_lease = AGENT_REPLICAS
-        .acquire(&canonical_run_id)
-        .map_err(crate::AppError::from)?;
 
     match replica_lease
-        .collect(
-            run_id.as_deref(),
-            &canonical_run_id,
-            &session_id,
-            &thread_id,
-        )
+        .collect(Some(&run_id), &canonical_run_id, &session_id, &thread_id)
         .await
     {
         Ok(response) => {

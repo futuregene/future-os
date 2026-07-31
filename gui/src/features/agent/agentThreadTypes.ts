@@ -47,6 +47,8 @@ export interface MessageAttachment {
 export interface AgentMessage {
   id: string;
   runId?: string | null;
+  /** Conversation-turn identity from the agent journal (`meta.turn_id`). */
+  turnId?: string | null;
   role: MessageRole;
   /**
    * i18n key (in the `agent` namespace) for the author, e.g. `author.you`. It is

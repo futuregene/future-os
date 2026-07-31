@@ -113,13 +113,26 @@ impl ServerSession {
         run_loop
             .stream_incomplete
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        user_message
-            .metadata
-            .get_or_insert_with(serde_json::Map::new)
-            .insert(
+        // Stamp run + turn identity on the message itself, not just the
+        // journal entry: the terminal history rewrite regenerates entries from
+        // the in-memory messages, so identity injected only at the entry layer
+        // would be lost there. Every user message opens a turn; assistant and
+        // tool entries inherit the current one (see save_closure/user_msg_cb).
+        let initial_turn_id = format!("turn_{}", crate::utils::generate_entry_id());
+        let current_turn_id = Arc::new(std::sync::Mutex::new(initial_turn_id.clone()));
+        {
+            let metadata = user_message
+                .metadata
+                .get_or_insert_with(serde_json::Map::new);
+            metadata.insert(
                 "run_id".to_string(),
                 serde_json::Value::String(run_lease.run_id.clone()),
             );
+            metadata.insert(
+                "turn_id".to_string(),
+                serde_json::Value::String(initial_turn_id),
+            );
+        }
         self.messages.write().push(user_message);
 
         // Log the user message so the run log shows the question alongside
@@ -227,20 +240,44 @@ impl ServerSession {
         let save_messages = messages_arc.clone();
         let save_persistence = self.persistence.clone();
         let persisted_run_id = run_lease.run_id.clone();
+        let save_turn_id = current_turn_id.clone();
         let save_closure: crate::agent::PersistCallback =
             Arc::new(move |msg: &crate::types::AgentMessage| {
                 if is_ephemeral {
                     return;
                 }
                 let mut persisted = msg.clone();
-                if persisted.role == "assistant" {
-                    persisted
-                        .metadata
-                        .get_or_insert_with(serde_json::Map::new)
-                        .insert(
-                            "run_id".to_string(),
-                            serde_json::Value::String(persisted_run_id.clone()),
-                        );
+                // Every entry of this run carries its run identity — not just
+                // assistant entries — so a message's home run never has to be
+                // re-derived from journal position. Assistant/tool entries join
+                // the turn the last user message opened; a user message
+                // reaching this path (the interrupt-save loop) opens a fresh
+                // turn, mirroring user_msg_cb. Existing ids win — a re-saved
+                // message must keep the identity it was first journaled with.
+                let metadata = persisted.metadata.get_or_insert_with(serde_json::Map::new);
+                metadata
+                    .entry("run_id".to_string())
+                    .or_insert_with(|| serde_json::Value::String(persisted_run_id.clone()));
+                if persisted.role == "user" {
+                    let turn_id = metadata
+                        .get("turn_id")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            let fresh = format!("turn_{}", crate::utils::generate_entry_id());
+                            metadata.insert(
+                                "turn_id".to_string(),
+                                serde_json::Value::String(fresh.clone()),
+                            );
+                            fresh
+                        });
+                    if let Ok(mut current) = save_turn_id.lock() {
+                        *current = turn_id;
+                    }
+                } else if let Ok(current) = save_turn_id.lock() {
+                    metadata
+                        .entry("turn_id".to_string())
+                        .or_insert_with(|| serde_json::Value::String(current.clone()));
                 }
                 save_messages.write().push(persisted.clone());
                 let entry = crate::session::agent_message_to_entry(&persisted);
@@ -261,9 +298,37 @@ impl ServerSession {
             let b = broadcaster.clone();
             let persistence = self.persistence.clone();
             let rewrite_required = in_run_user_message_seen.clone();
+            let user_msg_run_id = run_lease.run_id.clone();
+            let user_msg_turn = current_turn_id.clone();
             Arc::new(move |msg: &crate::types::AgentMessage| {
                 rewrite_required.store(true, std::sync::atomic::Ordering::SeqCst);
-                let entry = crate::session::agent_message_to_entry(msg);
+                // An in-run user message (follow-up/steer) opens a new turn.
+                // Adopt a pre-stamped turn id when the construction site set
+                // one, so the journal entry and the in-memory history copy
+                // share the same identity.
+                let mut persisted = msg.clone();
+                let turn_id = {
+                    let metadata = persisted.metadata.get_or_insert_with(serde_json::Map::new);
+                    metadata
+                        .entry("run_id".to_string())
+                        .or_insert_with(|| serde_json::Value::String(user_msg_run_id.clone()));
+                    metadata
+                        .get("turn_id")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            let fresh = format!("turn_{}", crate::utils::generate_entry_id());
+                            metadata.insert(
+                                "turn_id".to_string(),
+                                serde_json::Value::String(fresh.clone()),
+                            );
+                            fresh
+                        })
+                };
+                if let Ok(mut current) = user_msg_turn.lock() {
+                    *current = turn_id;
+                }
+                let entry = crate::session::agent_message_to_entry(&persisted);
                 if let Err(error) = persistence.append(vec![entry]) {
                     tracing::error!("Failed to enqueue in-run user message: {error}");
                 }
@@ -438,10 +503,29 @@ impl ServerSession {
                                     return Ok(current_messages);
                                 }
                                 for msg in follow_ups {
-                                    let follow_up = crate::types::AgentMessage::new_user(
+                                    let mut follow_up = crate::types::AgentMessage::new_user(
                                         "user",
                                         serde_json::json!([{"type": "text", "text": msg}]),
                                     );
+                                    // Stamp identity before the callback fires
+                                    // so the journal entry and the in-memory
+                                    // history copy carry the same ids.
+                                    {
+                                        let metadata = follow_up
+                                            .metadata
+                                            .get_or_insert_with(serde_json::Map::new);
+                                        metadata.insert(
+                                            "run_id".to_string(),
+                                            serde_json::Value::String(task_lease.run_id.clone()),
+                                        );
+                                        metadata.insert(
+                                            "turn_id".to_string(),
+                                            serde_json::Value::String(format!(
+                                                "turn_{}",
+                                                crate::utils::generate_entry_id()
+                                            )),
+                                        );
+                                    }
                                     if let Some(ref on_user_message) = stream_ctx.on_user_message {
                                         on_user_message(&follow_up);
                                     }
@@ -478,19 +562,7 @@ impl ServerSession {
 
             let run_error = match result {
                 Ok(mut final_messages) => {
-                    if let Some(last_assistant) = final_messages
-                        .iter_mut()
-                        .rev()
-                        .find(|message| message.role == "assistant")
-                    {
-                        last_assistant
-                            .metadata
-                            .get_or_insert_with(serde_json::Map::new)
-                            .insert(
-                                "run_id".to_string(),
-                                serde_json::Value::String(task_lease.run_id.clone()),
-                            );
-                    }
+                    reconcile_run_identity(&mut final_messages, &task_lease.run_id);
                     // Update shared messages so next prompt includes the full context
                     *messages_arc.write() = final_messages;
                     None
@@ -1185,6 +1257,72 @@ impl ServerSession {
             parent_session_id.to_string(),
             entries,
         )
+    }
+}
+
+/// Reconcile run/turn identity across a run's final in-memory history before
+/// it replaces the shared session messages (and before any terminal rewrite
+/// regenerates journal entries from it). The run loop builds its own
+/// un-stamped message copies (assistant/tool results, steering-drained user
+/// messages), while the journal entries persisted mid-run were stamped at
+/// save time — without this pass the rewrite would diverge from them.
+///
+/// The sweep covers only this run's messages: it starts at the run's opening
+/// user message, which was stamped before the run began, and never touches
+/// earlier turns — their entries carry their own runs' identities (or, for
+/// legacy journals, none at all, and they must stay that way). Existing ids
+/// win: a message first journaled with a turn id keeps it.
+fn reconcile_run_identity(messages: &mut [crate::types::AgentMessage], run_id: &str) {
+    let start = messages
+        .iter()
+        .position(|message| {
+            message.role == "user"
+                && message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("run_id"))
+                    .and_then(|value| value.as_str())
+                    == Some(run_id)
+        })
+        .unwrap_or(messages.len());
+    let mut current_turn: Option<String> = None;
+    for message in &mut messages[start..] {
+        let metadata = message.metadata.get_or_insert_with(serde_json::Map::new);
+        metadata
+            .entry("run_id".to_string())
+            .or_insert_with(|| serde_json::Value::String(run_id.to_string()));
+        if message.role == "user" {
+            let turn_id = metadata
+                .get("turn_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    let fresh = format!("turn_{}", crate::utils::generate_entry_id());
+                    metadata.insert(
+                        "turn_id".to_string(),
+                        serde_json::Value::String(fresh.clone()),
+                    );
+                    fresh
+                });
+            current_turn = Some(turn_id);
+        } else if let Some(turn_id) = &current_turn {
+            metadata
+                .entry("turn_id".to_string())
+                .or_insert_with(|| serde_json::Value::String(turn_id.clone()));
+        }
+    }
+    // The run's final assistant reply is always attributable to it, even when
+    // a compaction rewrite cost the opening user message its stamp.
+    if let Some(last_assistant) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| message.role == "assistant")
+    {
+        last_assistant
+            .metadata
+            .get_or_insert_with(serde_json::Map::new)
+            .entry("run_id".to_string())
+            .or_insert_with(|| serde_json::Value::String(run_id.to_string()));
     }
 }
 
