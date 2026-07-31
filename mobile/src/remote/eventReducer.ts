@@ -57,6 +57,8 @@ export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
       role: entry.role,
       text,
       ...(attachments.length > 0 ? { attachments } : {}),
+      ...(typeof entry.duration_ms === "number" ? { durationMs: entry.duration_ms } : {}),
+      ...(typeof entry.output_tokens === "number" ? { outputTokens: entry.output_tokens } : {}),
     });
   });
   return { ...emptyTimeline(), items };
@@ -72,6 +74,24 @@ function eventData(event: StreamEvent): Record<string, unknown> {
 
 function textValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
+// Output (completion) tokens from a usage-bearing event — mirrors the desktop
+// `usageOutputTokens` (gui agentActivity): the streamed `usage` event nests the
+// raw usage under a `usage` key, the `agent_end` total carries it the same way,
+// and the field name is `completion_tokens` or `output_tokens` depending on the
+// emitter. Returns 0 when absent so callers can guard with `> 0`.
+function usageOutputTokens(data: Record<string, unknown>): number {
+  const usage = isRecord(data.usage) ? data.usage : data;
+  for (const key of ["completion_tokens", "output_tokens"]) {
+    const value = usage[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return 0;
 }
 
 function upsertItem(
@@ -163,6 +183,22 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       );
       break;
     }
+    case "usage": {
+      // Per-call usage lands at the end of each LLM call, after its text chunks
+      // created the assistant item, so accumulate onto that item. A call with no
+      // visible text (tool-only) has no assistant item here — its tokens are
+      // still captured by the agent_end total below.
+      const delta = usageOutputTokens(data);
+      if (delta > 0) {
+        const id = `assistant:${runId ?? event.idx ?? items.length}`;
+        items = items.map(item =>
+          item.id === id && item.kind === "message"
+            ? { ...item, outputTokens: (item.outputTokens ?? 0) + delta }
+            : item,
+        );
+      }
+      break;
+    }
     case "approval_request": {
       const payload = data as unknown as ApprovalPayload;
       if (payload.approval_request_id) {
@@ -193,13 +229,19 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       const runItem = items.find(item => item.kind === "run" && item.runId === runId);
       const durationMs =
         runItem && runItem.kind === "run" ? Date.now() - runItem.startedAt : undefined;
+      const endTokens = usageOutputTokens(data);
       items = items
         .filter(item => item.kind !== "run" || item.runId !== runId)
-        .map(item =>
-          item.kind === "message" && item.role === "assistant" && item.runId === runId && durationMs
-            ? { ...item, durationMs }
-            : item,
-        );
+        .map((item) => {
+          if (item.kind !== "message" || item.role !== "assistant" || item.runId !== runId)
+            return item;
+          const next = { ...item };
+          if (durationMs) next.durationMs = durationMs;
+          // Per-call `usage` events are authoritative when they arrived; fall back
+          // to the agent_end total only when nothing accumulated (matches desktop).
+          if (!next.outputTokens && endTokens > 0) next.outputTokens = endTokens;
+          return next;
+        });
       break;
     }
     default:

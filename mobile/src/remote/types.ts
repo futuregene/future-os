@@ -105,6 +105,10 @@ export interface HistoryEntry {
   role: string;
   content?: string | null;
   meta?: { attachments?: HistoryAttachment[] | null } | null;
+  /** Output tokens for the reply — only the final assistant entry of a run. */
+  output_tokens?: number;
+  /** Reply wall-clock duration in ms — paired with `output_tokens`. */
+  duration_ms?: number;
 }
 
 export interface StreamEvent {
@@ -133,6 +137,8 @@ export type TimelineItem =
       text: string;
       runId?: string;
       durationMs?: number;
+      /** Output tokens for the reply (real provider usage). */
+      outputTokens?: number;
       attachments?: HistoryAttachment[];
     }
   | {

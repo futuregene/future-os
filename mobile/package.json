@@ -6,6 +6,7 @@
     "expo": "~57.0.8",
     "expo-build-properties": "~57.0.7",
     "expo-camera": "~57.0.3",
+    "expo-clipboard": "^57.0.1",
     "expo-device": "~57.0.1",
     "expo-localization": "~57.0.1",
     "expo-secure-store": "~57.0.1",
