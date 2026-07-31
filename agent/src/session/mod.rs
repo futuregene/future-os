@@ -861,9 +861,7 @@ impl Manager {
         fn ends_tool_window(entry_type: &str) -> bool {
             matches!(
                 entry_type,
-                "user" | "system" | "assistant"
-                    | ENTRY_TYPE_RUN_STARTED
-                    | ENTRY_TYPE_RUN_TERMINAL
+                "user" | "system" | "assistant" | ENTRY_TYPE_RUN_STARTED | ENTRY_TYPE_RUN_TERMINAL
             )
         }
 
@@ -878,20 +876,15 @@ impl Manager {
                 i += 1;
                 continue;
             }
-            let pending: HashSet<String> = entry
-                .tool_calls
-                .iter()
-                .map(|tc| tc.id.clone())
-                .collect();
+            let pending: HashSet<String> =
+                entry.tool_calls.iter().map(|tc| tc.id.clone()).collect();
 
             // Walk forward to find which tool_call_ids already have responses.
             let mut matched: HashSet<String> = HashSet::new();
             let mut j = i + 1;
             while j < entries.len() {
                 let next = &entries[j];
-                if next.entry_type == ENTRY_TYPE_TOOL
-                    && pending.contains(&next.tool_call_id)
-                {
+                if next.entry_type == ENTRY_TYPE_TOOL && pending.contains(&next.tool_call_id) {
                     matched.insert(next.tool_call_id.clone());
                 }
                 if ends_tool_window(&next.entry_type) {
@@ -3174,10 +3167,7 @@ mod tests {
                 &[
                     SessionEntry::new_user("user", serde_json::json!("old question")),
                     SessionEntry::run_started("old-run", 1),
-                    SessionEntry::new_assistant(
-                        serde_json::json!("let me read that"),
-                        vec![tc],
-                    ),
+                    SessionEntry::new_assistant(serde_json::json!("let me read that"), vec![tc]),
                 ],
             )
             .unwrap();
@@ -3226,9 +3216,7 @@ mod tests {
         let assistant_idx = loaded
             .entries
             .iter()
-            .position(|e| {
-                e.entry_type == ENTRY_TYPE_ASSISTANT && !e.tool_calls.is_empty()
-            })
+            .position(|e| e.entry_type == ENTRY_TYPE_ASSISTANT && !e.tool_calls.is_empty())
             .unwrap();
         let tool_idx = loaded
             .entries
@@ -3246,8 +3234,7 @@ mod tests {
         // tool entries.  We verify by converting to AgentMessage and checking
         // that each assistant's tool_call_ids all have tool responses.
         let msgs = entries_to_agent_messages(&loaded.entries, false);
-        let mut pending: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut pending: std::collections::HashSet<String> = std::collections::HashSet::new();
         for msg in &msgs {
             match msg.role.as_str() {
                 "assistant" => {
