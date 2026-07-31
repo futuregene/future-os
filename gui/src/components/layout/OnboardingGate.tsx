@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFutureLoginFlow } from "../../features/settings/useFutureLoginFlow";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
-import { loadAgentModelOptions, modelKey, rememberLastUsedModel, syncFutureModels } from "../../integrations/agent/agentClient";
+import { loadAgentModelOptions, localizedModelDescription, modelKey, rememberLastUsedModel, syncFutureModels } from "../../integrations/agent/agentClient";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { bootstrapBuiltinSkills } from "../../integrations/skills/skillsClient";
 import { invokeCommand } from "../../integrations/tauri/invoke";
@@ -64,7 +64,7 @@ export interface OnboardingGateProps {
  * Dev/test builds additionally show an environment switcher next to it.
  */
 export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, hasAnyProvider, modelsReady, initPending, autoLogin }: OnboardingGateProps) {
-  const { t } = useTranslation("layout");
+  const { t, i18n } = useTranslation("layout");
   const { phase, message, begin, cancel } = useFutureLoginFlow(() => {});
   const busy = phase === "starting" || phase === "waiting" || phase === "authorized";
   const failed = phase === "denied" || phase === "expired" || phase === "error";
@@ -345,6 +345,7 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
                 {recommendedModels.map((model) => {
                   const key = modelKey(model);
                   const active = selectedModelId === key;
+                  const description = localizedModelDescription(model, i18n.language);
                   return (
                     <button
                       className={cn(
@@ -358,8 +359,8 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
                       type="button"
                     >
                       <span className="text-lg font-semibold text-ink">{model.label}</span>
-                      {model.description
-                        ? <span className="line-clamp-2 text-xs text-ink-muted">{model.description}</span>
+                      {description
+                        ? <span className="line-clamp-2 text-xs text-ink-muted">{description}</span>
                         : null}
                     </button>
                   );

@@ -50,6 +50,12 @@ pub struct Model {
     /// leave this as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// English counterpart of `description` from the Future platform catalog
+    /// (e.g. "Budget-friendly edition, solid for daily coding and chat"). The GUI
+    /// shows this when the UI language is not Chinese. Built-in / user models
+    /// leave this as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description_en: Option<String>,
     /// Whether the Future platform flags this model as recommended. Defaults to
     /// `false` for built-in / user models and for catalog entries that omit it.
     #[serde(default)]
@@ -107,6 +113,7 @@ pub fn builtin_models() -> Vec<Model> {
             headers: serde_json::from_str(&m.headers_json).unwrap_or_default(),
             hide: m.hide,
             description: None,
+            description_en: None,
             recommended: false,
         })
         .collect()

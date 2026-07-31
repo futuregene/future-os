@@ -16,6 +16,7 @@ import {
   Sparkles,
   SquarePen,
   Trash2,
+  Wallet,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -754,6 +755,7 @@ function AccountMenuButton({
         ? (
             <MenuPanel className="absolute bottom-full left-0 right-0 z-40 mb-2 overflow-hidden p-0">
               <MenuRow
+                icon={Settings}
                 label={t("activityRail.settings")}
                 onClick={() => {
                   onOpenSettings();
@@ -762,6 +764,7 @@ function AccountMenuButton({
               />
               <MenuRow
                 action={<ActionBadge>{t("userMenu.recharge")}</ActionBadge>}
+                icon={Wallet}
                 label={t("userMenu.balance", { credits: balance != null ? Math.trunc(balance) : "—" })}
                 onClick={() => {
                   onRecharge?.();
@@ -776,13 +779,14 @@ function AccountMenuButton({
 }
 
 /** A borderless row inside the account popover; the whole row is clickable. */
-function MenuRow({ action, label, onClick }: { action?: ReactNode; label: string; onClick: () => void }) {
+function MenuRow({ action, icon: Icon, label, onClick }: { action?: ReactNode; icon?: LucideIcon; label: string; onClick: () => void }) {
   return (
     <button
       className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-ink transition-colors hover:bg-surface-subtle"
       onClick={onClick}
       type="button"
     >
+      {Icon ? <Icon className="size-4 shrink-0 text-ink-soft" /> : null}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {action ?? null}
     </button>
