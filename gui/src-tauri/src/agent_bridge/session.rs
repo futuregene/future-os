@@ -139,15 +139,6 @@ pub(super) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate
     Ok(workspace.path)
 }
 
-/// Returns `true` when the thread is a chat-mode thread (not workspace-bound).
-pub(super) fn is_chat_thread(thread_id: &str) -> bool {
-    store::get_thread(thread_id)
-        .ok()
-        .flatten()
-        .map(|t| t.mode == "chat")
-        .unwrap_or(true)
-}
-
 /// Fork a session at the given user message. Returns the new GUI thread id.
 ///
 /// Creates a dedicated chat workspace named after the forked session id, copies
@@ -298,10 +289,6 @@ pub async fn fork_agent_session(
 
     // ── create workspace + thread ──────────────────────────────────────
 
-    // Let create_thread handle workspace creation — for chat threads it
-    // always creates a fresh workspace keyed by the new thread id.
-    // create_thread ignores the passed workspace_id for chat mode, so
-    // any workspace we pre-created would be orphaned.
     let new_thread = store::create_thread(store::CreateThreadInput {
         mode: thread.mode.clone(),
         title: Some(session_name),

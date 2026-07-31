@@ -36,10 +36,7 @@ pub use cleanup::{
     reconcile_orphan_images, reconcile_orphan_review_repos, settle_interrupted_run_from_agent,
     ActiveRun,
 };
-pub use db::{
-    app_images_root, chat_workspace_path, future_dir, get_approval_request, get_run,
-    thread_images_dir,
-};
+pub use db::{app_images_root, future_dir, get_approval_request, get_run, thread_images_dir};
 pub use markdown_refs::resolve_markdown_references;
 pub use records::*;
 pub use review_snapshots::{

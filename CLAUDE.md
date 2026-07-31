@@ -2,231 +2,76 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Rust (agent, channel) + TypeScript (TUI, CLI) + Tauri/React GUI + React Native Mobile. The Rust agent is the backend; the TS TUI provides the terminal interface. The TS CLI (`future`) handles auth, one-shot prompts (`run`), MCP tool calls, skills management, environment diagnostics (`doctor`), and account management. The GUI module (`gui/`) is a desktop app that connects to the agent over gRPC via its Tauri backend. The Android-first mobile app lives in `mobile/` and connects to the desktop remote bridge after scanning its pairing QR code. The channel binary bridges external messaging platforms (Feishu, DingTalk) to the agent via gRPC. The remote-control bridge is embedded in the GUI Tauri backend (`gui/src-tauri/src/remote/`) and relays desktop↔mobile/web over NATS; `remote/web/` is the verification web client it serves (design: `gui/DEV_MD/remote-control-*.md`).
+FutureOS: Rust agent (gRPC backend) + TypeScript TUI/CLI + Tauri/React GUI + React Native Mobile. For architecture, module breakdown, build/install, and configuration, read `README.md` (Architecture / Configuration sections) and the code directly.
 
-After `make install`, five independent binaries are available: `future-agent`, `future-channel`, `future-tui`, `future-gui`, `future`. Start components directly (e.g. `future-agent`) rather than through the CLI.
+## Development workflow
 
-## Build/Run/Test
+Development happens in an isolated git worktree (this repo uses `.claude/worktrees/<name>` on a `claude/*` branch), never in the local main branch. The local main branch (e.g. `dev`) is used by the user for local integration testing and may contain their own unrelated changes — do not treat it as a development branch.
 
-Prefer `make` targets from repo root. For more control, use cargo/npm directly.
+- All code changes, including fmt / clippy / lint fixes, are made and committed in the worktree branch.
+- To let the user test locally, merge the worktree branch into the local main branch (`dev`) — never edit code directly on `dev` and then merge it back into the worktree.
+- Do not merge the local main branch (`dev`) into the worktree; if `dev` has user changes you need, ask the user rather than merging local main in.
+
+### Before opening a PR
+
+Run the full pre-PR pass in the worktree, then verify on the CI toolchain (the repo pins `rust-toolchain.toml`; use the same clippy flags CI uses):
+
+1. `git fetch origin main` then merge `origin/main` into the worktree branch (resolving any conflicts here).
+2. `cargo fmt --check` (workspace + `gui/src-tauri`) — apply `cargo fmt` if needed.
+3. `cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings` — CI fails on warnings, and `--all-targets` is required to lint test code (a bare `--lib` misses it).
+4. GUI: `tsc --noEmit`, `eslint "src/**/*.{ts,tsx}"`, `vitest run`; plus `cargo fmt --check` / `cargo clippy` under `gui/src-tauri`.
+5. Run the test suites: `cargo test` for agent, `cargo test --lib` for `gui/src-tauri`.
+6. Commit any fmt/clippy fixes, push, then create the PR.
+
+Do not skip steps or use narrower flags than CI — a green local check on a smaller scope does not guarantee CI passes.
+
+During normal development you don't need to run this full suite every time — iterate on targeted checks (`cargo check`, a single test, `tsc`) to save time. The full pass is only mandatory right before a PR; without it the PR cannot merge.
+
+### GUI Tauri sidecar binaries in a worktree
+
+`gui/src-tauri/tauri.conf.json` declares `externalBin: ["binaries/future-agent", "binaries/future"]`, and `tauri-build`'s build script **aborts** with `resource path ... doesn't exist` if those files are missing. They are build artifacts — present in the main worktree but absent from a fresh worktree, so `cargo check`/`clippy`/`test` under `gui/src-tauri` fails for environmental reasons, not your code.
+
+CI solves this by creating **empty placeholder sidecars** (`.github/workflows/ci.yml`):
 
 ```bash
-# ─── Make targets (from repo root) ──────────────────────────────────────────
-make build              # Build agent, TUI, CLI, and GUI frontend
-make build-agent        # Build Rust agent only
-make build-tui          # Build TypeScript TUI only
-make build-cli          # Build TypeScript CLI only
-make build-gui          # Build React GUI frontend
-make build-channels      # Build channel bridge
-make build-mobile-android # Generate/build/install Android locally
-make test               # Run all tests (Rust crates + cli/tui/gui via bun/vitest)
-make lint               # Lint Rust + TypeScript + GUI
-make lint-agent         # cargo fmt --check && cargo clippy
-make lint-tui           # TUI: npx tsc --noEmit
-make lint-cli           # CLI: npx tsc --noEmit
-make lint-gui           # GUI: ESLint
-make stylelint-gui      # GUI: Stylelint
-make check-gui          # GUI lint/style/build + Tauri cargo check
-make check-mobile       # Mobile typecheck/lint/format-check/test
-make fmt                # Format Rust code with cargo fmt
-make run-agent          # Build and run Rust agent
-make run-tui            # Run TUI in dev mode (auto-installs npm deps)
-make run-cli            # Run CLI in dev mode (auto-installs npm deps)
-make run-gui            # Run Tauri GUI in dev mode (auto-installs npm deps)
-make run-mobile-android # Run Android app on a selected device
-make package-gui        # Build GUI desktop bundle via Tauri
-make run-channels        # Build and run channel bridge
-make profile-agent       # CPU profile: build + 90s bench → flamegraph SVG in profile-results/
-make profile-quick       # CPU profile: run N secs (PROFILE_SECS=30)
-make profile-heap        # Heap profile via dhat (feature dhat-heap) → dhat JSON in profile-results/
-make generate-models    # Fetch model data from APIs, regenerate models_generated.rs
-make generate-proto     # Compile proto/future.proto → Rust gRPC code
-make clean              # Remove target/, dist/, node_modules/
-make help               # Show all targets
-
-# ─── Direct commands ────────────────────────────────────────────────────────
-cd agent && cargo run                  # Start gRPC server on 127.0.0.1:50051
-cd agent && cargo test                 # Run all Rust tests
-cd agent && cargo test <test_name>     # Run a single test
-cd channels && cargo run                # Start channel bridge (connects to agent gRPC)
-cd channels && cargo build              # Build channel bridge (debug)
-cd channels && cargo build --release    # Build channel bridge (optimized)
-cd tui && npm run dev                  # Run TUI in dev mode (connects to agent)
-cd cli && npm run dev -- <command>     # Run CLI in dev mode (e.g., `npm run dev -- auth login`)
-cd gui && npm run tauri:dev            # Run desktop GUI (connects to agent via FUTURE_AGENT_GRPC_ADDR)
-cd mobile && npm run android:device     # Generate, build, and run Android locally
-
-# Proto codegen — regenerated by build.rs on every cargo build
-# Agent proto: proto/future.proto → agent/src/grpc/generated/proto.rs
-# Channel proto: channels/proto/feishu_ws.proto (pbbp2 frames) + proto/future.proto (gRPC client)
+triple=$(rustc -Vv | sed -n 's/^host: //p')
+mkdir -p gui/src-tauri/binaries
+: > "gui/src-tauri/binaries/future-agent-$triple"
+: > "gui/src-tauri/binaries/future-$triple"
 ```
 
-The Rust binary (`future-agent`) is the backend, always running as a gRPC server at `127.0.0.1:50051`. The TS TUI, GUI Tauri backend, and channel bridge all connect to it via gRPC. The Rust binary itself has only one CLI flag: `--grpc-addr`.
+The placeholders are empty files and are gitignored — they only satisfy the build script's existence check. Do the same in a worktree before running GUI Rust checks.
 
-The TypeScript CLI (`future`) is a separate management tool — see the CLI section below.
+## Design principles
 
-## Config
+- **Don't add features, refactors, or abstractions beyond what the task requires.** A bug fix doesn't need surrounding cleanup; a one-shot operation doesn't need a helper. Don't design for hypothetical future requirements. Three similar lines beat a premature abstraction.
+- **Cross-platform from the start.** Code must work on Windows, macOS, and Linux, on both x86-64 and arm64. Don't assume POSIX: paths can use `\` separators and `.exe` suffixes, filesystems are case-insensitive on some platforms, and shell runs differ (PowerShell on Windows). Never hard-code `/`, `~`, or shell-specific syntax when a platform-neutral form exists.
+- **Prefer editing existing files** to creating new ones. Reuse existing functions/utilities rather than duplicating logic.
+- **Security**: don't introduce OWASP top-10 vulnerabilities (command injection, XSS, SQL injection). If you notice insecure code you wrote, fix it immediately.
+- **Executing actions with care**: for destructive/hard-to-reverse/shared-state actions (deleting files, force-push, sending messages, modifying CI), confirm with the user first. Match scope to what was requested.
 
-Agent config is under `~/.future/agent/`:
-- `settings.json` — model defaults, steering/followUp modes, compaction, thinking level
-- `models.json` — user model overrides/provider configs (merged over built-in catalog)
-- `auth.json` — API keys by provider, plus a default key
-- `sessions/` — JSONL conversation persistence
+## Conventions and gotchas
 
-Model config reads purely from these files. No model-related CLI flags or env vars.
+### Build / run
 
-The TUI persists client-side settings to `~/.future/tui/settings.json` (default model, thinking level, scoped model list). Most configuration flows through the agent via gRPC.
+- Prefer `make` targets from repo root (`make build`, `make test`, `make lint`, ...). `make help` lists them all. For more control, use cargo/npm directly. See `README.md` Quick Start for the common flows.
+- The Rust binary `future-agent` is the backend, always a gRPC server at `127.0.0.1:50051`. The TUI, GUI Tauri backend, and channel bridge all connect to it via gRPC. Start components directly (e.g. `future-agent`) rather than through the CLI.
+- Proto codegen is regenerated by `build.rs` on every cargo build: `proto/future.proto` → `agent/src/grpc/generated/proto.rs`; channel proto → `channels/src/generated/proto.rs`.
 
-Channel config is under `~/.future/channels/`:
-- `config.json` — agent gRPC address, per-channel settings (feishu with `enabled`, app credentials, policies)
+### Config
 
-On first run, `config.json` is created with defaults if it doesn't exist.
-
-## Architecture
-
-```
-                         ┌──────────────────────────┐
-                         │   Rust Agent Backend     │
-                         │   (agent/ — gRPC server) │
-                         └──────────┬───────────────┘
-                                    │ gRPC (tonic)
-                  ┌─────────────────┼─────────────────┐
-                  │                 │                  │
-           TypeScript TUI     Channel bridge       TypeScript CLI
-           (tui/ via gRPC)   (channels/)            (cli/ future)
-                              Feishu ←→ WS+REST     auth, service mgmt,
-                              DingTalk ←→ Stream    MCP tools, skills,
-                              Mode WebSocket         launches TUI
-```
-
-### Rust backend (`agent/src/`)
-
-Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from settings.json, API key from auth.json → model built-in, then starts gRPC server.
-
-| Module | Role |
-|--------|------|
-| `agent/mod.rs` | Agentic loop: call LLM → stream events → execute tools → repeat. Supports interrupt/abort, steering/followUp queues, parallel tool execution, auto-retry with exponential backoff |
-| `engine/mod.rs` | `Engine` struct: wires provider, tools, session, and agent loop together |
-| `llm/mod.rs` | OpenAI-compatible streaming HTTP client (reqwest + SSE parsing). Supports thinking/reasoning content extraction, tool call accumulation from streaming chunks |
-| `grpc/mod.rs` | gRPC server using tonic. Implements `FutureAgent` service: `ExecuteCommand` (unary), `StreamEvents` (server-side streaming) |
-| `rpc/mod.rs` | Command handler dispatch (25+ commands) and `ServerSession` state management. SSE event broadcasting via tokio broadcast channel (capacity: 256; resume ring: 2000) |
-| `session/mod.rs` | Conversation persistence as JSONL files in `~/.future/agent/sessions/<encoded-cwd>/`. Tree-structured entries with ParentID for forks. `Manager` handles save/load/list |
-| `types/mod.rs` | Core types: `Message`, `StreamEvent`, `AgentTool`, `ToolDef`, `AgentConfig`, `LLMProvider` trait, `ContentBlock` (polymorphic text/image/tool_result) |
-| `sandbox/mod.rs` | OS-level sandbox for tool execution: `ResolvedSandbox` (tier: off/manual/seatbelt), `EscalationRequest`/`EscalationRequester` for post-hoc approval of out-of-sandbox operations. macOS Seatbelt via `seatbelt.rs`, cross-platform path rules via `rules.rs` |
-| `rpc/approval.rs` | Approval system: file-path access requests, sandbox boundary checks, escalation flow. Approval rules stored in `${WS}/.future/approval_rule.json` and `~/.future/approval_rule.json` |
-| `tools/mod.rs` | 4 tools: shell, read, write, edit. Each tool runs within `ToolExecutionScope` (workspace boundary, sandbox tier, interrupt flag). `coding_tools()` and `all_tools()` both return the same 4 tools |
-| `compaction/mod.rs` | Context compaction: estimates tokens (chars/4 heuristic), finds safe cut points, summarizes file ops |
-| `models/mod.rs` | Model registry: generated built-in catalog (`generated/`, 906 models) + user `models.json` overrides, resolution, fuzzy matching. Default model from settings.json |
-| `config/mod.rs` | Settings struct (7 fields: steering_mode, follow_up_mode, compaction, retry, max_turns, default_permission_level). Loads from `~/.future/agent/settings.json` (global) and `.future/agent/settings.json` (project), deep-merged |
-| `auth/mod.rs` | Reads API credentials from `~/.future/agent/auth.json` or `~/.future/agent-app/auth.json`, keyed by provider |
-| `skills/mod.rs` | Discovers skills from the global dirs `~/.future/agent/skills/` and `~/.agents/skills/` (project/cwd-relative dirs are not supported) — parses YAML frontmatter from SKILL.md. Discovery is cached process-wide with a 60s TTL |
-| `prompt/mod.rs` | Builds system prompt in 6 sections: Identity (tools + guidelines) → Skills → Project Context (AGENTS.md > CLAUDE.md > GEMINI.md) → Workspace Memory (FUTURE.md) → Append prompt → Environment (date/cwd/platform). All sections deterministic for prompt cache hits |
-| `events/mod.rs` | `EventBus` with pub/sub for bridging agent streaming events to frontends (thinking, tool calls, usage stats) |
-| `utils/mod.rs` | Session ID generation, cwd path encoding (base32), image MIME type detection |
-
-Provider model: `LLMProvider` trait (`stream_chat`). Uses OpenAI-compatible HTTP+SSE. Thinking/reasoning extraction via compat format parameters (deepseek, openrouter, zai, qwen).
-
-The remote-control bridge is embedded in the GUI Tauri backend (`gui/src-tauri/src/remote/`), not a separate crate: it subscribes to `p.{pairId}.cmd.>` → routes commands through the GUI persistence/agent path → publishes responses, and mirrors agent events to NATS `p.{pairId}.evt.{session}`. `remote/web/` holds the verification web client it serves over a local HTTP server. See `gui/DEV_MD/remote-control-*.md`. (The former standalone `remote/` Rust crate was removed — it was an auth-less L0 skeleton superseded by the embedded bridge.)
+Agent config lives under `~/.future/agent/` (`settings.json`, `models.json`, `auth.json`, `sessions/`). Model config reads purely from these files — no model-related CLI flags or env vars. Channel config is under `~/.future/channels/config.json`, auto-created with defaults on first run. The TUI persists client-side settings to `~/.future/tui/settings.json`.
 
 API key resolution order: `auth.json` (by model ID) → `auth.json` (by provider) → model built-in key → `auth.json` default key.
 
-Session files are JSONL, tree-structured (each entry has ID + optional ParentID). Entry types: session_info, user, assistant, tool, compaction, model_change, thinking_level_change, branch_summary, label, custom.
-
-### gRPC API (`proto/future.proto`)
-
-The `FutureAgent` service has two RPCs:
-- `ExecuteCommand(RpcCommand) → RpcResponse` — unary, 30+ command types
-- `StreamEvents(StreamRequest) → stream StreamEvent` — server-side streaming for SSE events
-
-Commands include: prompt, steer, followUp, abort, new_session, switch_session, set_model, set_thinking_level, compact, fork, clone, export_html, cycle_model, cycle_thinking_level, list_sessions, delete_session, get_available_models, set_enabled_models, shell, abort_shell, and more.
-
-### TUI architecture (`tui/src/`)
-
-Follows a `Component`/`Container`/`Focusable` pattern with overlay stack:
-
-**Core framework** (`tui.ts`): `Component` interface (render/input/invalidation), `Container` class (addChild/removeChild, cascading invalidation), `OverlayHandle`, `InputListener` pipeline, `NodeTerminal` for raw-mode stdin with Kitty CSI-u, bracketed paste. Mouse tracking disabled — native text selection works, scroll via keyboard.
-
-**Rendering** (`app.ts`): Dual-phase scheduling (nextTick + setTimeout at ~60fps), differential rendering (changed-line ranges → minimal ANSI updates), overlay compositing, Kitty image lifecycle management.
-
-**Key systems**: `keys.ts` (Kitty CSI-u/xterm/legacy parsing), `keybindings.ts` (KeybindingManager with context filtering), `theme.ts` (256-color + style composers), `utils.ts` (Intl.Segmenter-based visibleWidth, ANSI-aware word wrap, CJK/emoji grapheme width).
-
-**14 components**: AutocompleteManager, Box, ChatArea, Container, Editor, Footer, Image, Input, Loader, MarkdownRenderer, ScopedModelsSelector, SelectList, Spacer, Text.
-
-**RPC** (`rpc/`): gRPC client (`grpc-client.ts`) connecting to the Rust backend. 30+ methods: session management (newSession, switchSession, clone, fork, listSessions, deleteSession, setSessionName), prompting (prompt, steer, followUp, abort), model control (setModel, cycleModel, getAvailableModels, setEnabledModels, setThinkingLevel, cycleThinkingLevel), session operations (compact, getState, getMessages, getForkMessages, getLastAssistantText, getSessionStats, exportHtml), and tool control (shell, abortShell, setSteeringMode, setFollowUpMode, setAutoCompaction, setAutoRetry, abortRetry).
-
-### TypeScript CLI (`cli/src/`)
-
-Entry point: `index.ts` — subcommand dispatcher. The CLI is installed via `make install` as `future`.
-
-| Command group | Subcommands | Role |
-|---------------|-------------|------|
-| `auth` | `login`, `status`, `logout`, `credential` | Device-flow OAuth against Future API. Saves API key to `~/.future/agent/auth.json`. `credential` outputs the API key for scripting |
-| `run` | `[options] [@files...] [message...]` | One-shot agent prompt. Supports `--model`, `--thinking`, `--fork`, `--session`, `--tools`, `--cwd`, `--mode json`, `--verbose` |
-| `skills` | `list`, `install`, `uninstall`, `install-builtin`, `update` | Manage skills in `~/.future/agent/skills/`. `install` with no name = install all builtins. `update` upgrades installed skills to latest |
-| `tools` | `list`, `call` | MCP client — lists and calls tools from a remote MCP server |
-| `doctor` | (no args) | Environment diagnostic: login, components, config, sessions, skills, providers |
-| `account` | `profile`, `balance`, `recharge` | Future platform account management |
-
-Key files:
-- `commands/auth.ts` — device code flow, API key persistence
-- `commands/run.ts` — one-shot prompt execution via gRPC RunClient
-- `commands/skills.ts` — skill discovery, install, update (reads YAML frontmatter)
-- `commands/doctor.ts` — environment diagnostic (components, config, sessions, skills)
-- `commands/tools.ts` — MCP JSON-RPC client
-- `commands/account.ts` — platform account management
-- `rpc/grpc-client.ts` — minimal gRPC client using @grpc/grpc-js with embedded proto
-
 ### GUI (`gui/`)
 
-Tauri 2 + React + TypeScript desktop app. See `gui/CLAUDE.md` for detailed development guide. Architecture docs under `gui/DEV_MD/`: PRODUCT.md (product semantics), ER.md (data model), COLOR.md (design tokens), plus planning docs for approvals, sandbox, attachments, memory, and remote control.
+See `gui/CLAUDE.md` for the GUI development guide. The GUI owns `~/.future/app/` (SQLite `app.db`, images, review repos) and per-thread chat workspaces under `~/.future/workspaces/chat/`.
 
-Key backend modules (`gui/src-tauri/src/`):
-- `agent_providers/` — Provider configuration UI: built-in catalog + custom providers. Tests reference dynamic catalog providers (not hardcoded names). Split into `catalog.rs`, `validate.rs`, `write.rs`, `tests.rs`
-- `agent_bridge/` — gRPC client for GUI→agent communication (session management, import)
-- `store/` — SQLite persistence (threads, runs, approvals, settings)
-- `auth_store.rs` — API key persistence in `~/.future/agent/auth.json`
+### Channels (`channels/`)
 
-### Channel bridge (`channels/src/`)
-
-Entry point: `main.rs` — loads `config.json`, starts enabled channels as tokio tasks. Design is extensible: each channel implements its own `run()` method.
-
-| Module | Role |
-|--------|------|
-| `config.rs` | Unified config: `ChannelConfig` (agent + per-channel sections). Auto-creates default config on first run. Supports optional channel keys for future platforms |
-| `grpc_client.rs` | Shared gRPC client wrapping `FutureAgentClient`. Maps streaming proto events to `AgentEvent` enum (TextChunk, ThinkingStart/Delta/End, ToolStart/Delta/End, AgentStart/End) |
-| `feishu/mod.rs` | `FeishuChannel::run()` — creates WS client and Bridge, enters reconnect loop |
-| `feishu/feishu_ws.rs` | WebSocket long-connection client. Bootstrap flow: POST `/callback/ws/endpoint` → get WS URL → connect with pbbp2 protobuf frame protocol. Heartbeat with configurable intervals, reconnection on timeout |
-| `feishu/feishu_rest.rs` | REST API client: tenant token (cached), send/reply messages, upload images/files, download resources, CardKit CRUD (create card, update element, update card, streaming mode settings). CardKit settings API returns empty body — uses raw HTTP status check instead of `.json()` |
-| `feishu/bridge.rs` | Core orchestration: Feishu event → policy check → slash command or gRPC prompt → CardKit streaming response. Handles image/file download and base64 conversion for agent input. Streams agent events into a chronological markdown accumulator with 250ms throttle on CardKit element updates |
-| `feishu/card.rs` | Card builders for Message API and CardKit schema 2.0 formats (`to_cardkit_format()`). Card types: thinking indicator, streaming, complete (with `config.summary` for message list preview), error, tool, status, help |
-| `feishu/config.rs` | Feishu-specific config (app_id, app_secret, domain, policies). `api_base()` returns URL with `/open-apis`; `api_domain()` returns bare domain for WS bootstrap |
-| `feishu/policy.rs` | Permission engine: DM allowlist/disabled/open, group allowlist/disabled/open with per-chat overrides, require-mention enforcement |
-| `feishu/session_store.rs` | Maps (chat_id, thread_id) → agent session_id, persisted as JSON |
-
-**Feishu API base URLs:** `api_base()` = `https://open.feishu.cn/open-apis` (REST), `api_domain()` = `https://open.feishu.cn` (WS bootstrap). Do NOT append `/open-apis` again — `api_base()` already includes it.
-
-**CardKit streaming lifecycle:** Create card (`POST /cardkit/v1/cards`) → stream element updates (`PUT .../elements/{id}/content`) at 250ms throttle → finalize: FIRST `set_card_streaming_mode(false)`, THEN `update_cardkit_card` with complete card. Order matters — settings must come first to clear the "[生成中...]" status.
-
-**CardKit gotchas:** `update_multi` must stay `true` (cannot change to `false`, returns 300302). Settings API returns empty body on success (use HTTP status, not `.json()`). `config.summary.content` sets the message list preview text (first 120 chars of plain-text answer).
-
-**WebSocket:** Uses pbbp2 protobuf binary frames. Events filtered by `create_time` — messages older than 60s are skipped (stale reconnect replays). Message dedup via in-memory `HashSet` of processed message IDs.
-
-### DingTalk channel (`channels/src/dingtalk/`)
-
-Connects via Stream Mode (same as official `dingtalk-stream` Python SDK). No OAuth2 token needed — credentials go directly in the `open_connection` POST body.
-
-| Module | Role |
-|--------|------|
-| `mod.rs` | `DingtalkChannel::run()` — reconnect loop with exponential backoff |
-| `config.rs` | DingTalk-specific config (client_id, client_secret, domain defaults to `api.dingtalk.com`) |
-| `dingtalk_ws.rs` | Stream Mode WebSocket client. Opens connection via `POST /v1.0/gateway/connections/open`, connects WS with `?ticket=`, sends ACK responses matching SDK protocol, uses WebSocket-level ping for keepalive |
-| `dingtalk_rest.rs` | REST API client for sending replies. Access token auto-managed. Two reply modes: `reply_webhook()` (POST to sessionWebhook) and `reply_webhook_markdown()` (markdown format) |
-| `bridge.rs` | Core orchestration: DingTalk event → agent gRPC prompt → markdown response via sessionWebhook. Accumulates thinking as blockquote (`> 💭`) separated by `---` from main content |
-| `card.rs` | AI Card module: `create_ai_card()` / `stream_ai_card()` / `close_ai_card()` matching OpenClaw connector's card.ts API (template `02fcf2f4-...`). Currently standalone — not wired into bridge yet |
-
-**Stream Mode protocol (critical):**
-- Subscribe to `{"type": "CALLBACK", "topic": "/v1.0/im/bot/messages/get"}` — this is where bot messages arrive. Do NOT subscribe to `{"type": "EVENT", "topic": "*"}` — it prevents CALLBACK delivery.
-- ACK format: `{"code":200, "headers":{"messageId":"...","contentType":"application/json"}, "message":"", "data":"..."}`
-- The `data` field in CALLBACK frames is a JSON string (not an object). Parse it first, then extract text from `text.content`.
-- Reply by POSTing markdown to the `sessionWebhook` URL from the event (NOT the REST API).
-- Webhook replies create NEW messages each time — no in-place editing. For true streaming, AI Cards are needed (like Feishu CardKit).
+- **Feishu API base URLs:** `api_base()` = `https://open.feishu.cn/open-apis` (REST), `api_domain()` = `https://open.feishu.cn` (WS bootstrap). Do NOT append `/open-apis` again.
+- **CardKit streaming lifecycle:** Create card → stream element updates at 250ms throttle → finalize: FIRST `set_card_streaming_mode(false)`, THEN `update_cardkit_card` with complete card. Order matters (settings first clears the "[生成中...]" status).
+- **CardKit gotchas:** `update_multi` must stay `true` (cannot change to `false`, returns 300302). Settings API returns empty body on success (use HTTP status, not `.json()`).
+- **WebSocket:** pbbp2 protobuf binary frames. Events filtered by `create_time` — messages older than 60s are skipped (stale reconnect replays). Dedup via in-memory `HashSet` of processed message IDs.
+- **DingTalk Stream Mode:** Subscribe to `{"type": "CALLBACK", "topic": "/v1.0/im/bot/messages/get"}` — NOT `{"type": "EVENT", "topic": "*"}` (prevents CALLBACK delivery). ACK format `{"code":200, "headers":{"messageId":"...","contentType":"application/json"}, "message":"", "data":"..."}`. The `data` field in CALLBACK frames is a JSON string (parse it first). Reply by POSTing markdown to the `sessionWebhook` URL from the event. Webhook replies create NEW messages each time — no in-place editing.

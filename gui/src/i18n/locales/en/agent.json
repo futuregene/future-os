@@ -39,7 +39,8 @@
     "messagesLoadFailed": "Couldn't load this conversation. Please try again — if it keeps happening, restart FutureOS.",
     "alreadyRunning": "A response is already in progress for this conversation.",
     "sessionRecreated": "The previous background record of this conversation was lost, so a fresh one was started. The history above is kept, but the assistant can no longer see it.",
-    "responseInterrupted": "The response was interrupted before it finished."
+    "responseInterrupted": "The response was interrupted before it finished.",
+    "workspaceAccessError": "The workspace directory is not accessible ({{message}}). Please check its path and permissions, then try again."
   },
   "failure": {
     "connect": "Couldn't connect to the FutureOS background service.\n\nPlease quit FutureOS completely, reopen it, and try again.",
