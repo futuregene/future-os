@@ -196,8 +196,10 @@ pub async fn reconcile_pending_approvals() {
         // persisted. The approval's thread is derived from its run, so only
         // heal when the parked run has a local row (sessions without local
         // runs are covered by session import, not this path).
-        let local_ids: std::collections::HashSet<&str> =
-            approvals.iter().map(|approval| approval.id.as_str()).collect();
+        let local_ids: std::collections::HashSet<&str> = approvals
+            .iter()
+            .map(|approval| approval.id.as_str())
+            .collect();
         let active_run_id = state
             .get("activeRun")
             .and_then(|run| run.get("runId"))
@@ -226,9 +228,7 @@ fn heal_pending_approval_from_agent(active_run_id: Option<&str>, payload: &serde
     let Ok(Some(_run)) = store::get_run(run_id) else {
         return;
     };
-    let Some(approval_request_id) = payload["approval_request_id"]
-        .as_str()
-        .map(str::to_string)
+    let Some(approval_request_id) = payload["approval_request_id"].as_str().map(str::to_string)
     else {
         return;
     };
