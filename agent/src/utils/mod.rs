@@ -360,8 +360,7 @@ mod util_tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
         // Repair is best-effort: it works when the test runs as the owner.
         let result = ensure_workspace_accessible(dir.path(), true);
-        let _ =
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         if result.is_ok() {
             let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
             assert_ne!(mode & 0o700, 0, "owner bits should have been restored");
@@ -375,8 +374,7 @@ mod util_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
         let result = ensure_workspace_accessible(dir.path(), false);
-        let _ =
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         // auto_repair=false must surface the write failure, not repair.
         assert!(result.is_err());
     }
