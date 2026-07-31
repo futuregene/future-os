@@ -511,6 +511,23 @@ function runMatchesAnyTurn(run: StoredRun, messages: AgentMessage[]): boolean {
 }
 
 /**
+ * Whether the run's window covers a projected user turn. A session whose FIRST
+ * run failed has no assistant entry at all — the only message inside the run's
+ * window is the user's — so window trust must not require an assistant turn.
+ */
+function runMatchesUserTurn(run: StoredRun, messages: AgentMessage[]): boolean {
+  const window = runWindow(run);
+  if (!window)
+    return false;
+  return messages.some((message) => {
+    if (message.role !== "user")
+      return false;
+    const at = Date.parse(message.createdAt);
+    return Number.isFinite(at) && at >= window.start && at <= window.end;
+  });
+}
+
+/**
  * A settled run that produced NO assistant turn in the session JSONL — e.g. the
  * very first LLM call failed (insufficient credit, auth) or the run died before
  * any entry was saved. Positional newest-first pairing would stamp such a run
@@ -597,7 +614,10 @@ export function recoverFailedRuns(messages: AgentMessage[], runs: StoredRun[]): 
   // backfilled by the agent), every run would look like an orphan, and bubbles
   // would be spliced to the wrong end of history. Skip recovery there — it
   // degrades to main's behavior instead of inventing misplaced bubbles.
-  if (!runs.some(run => runMatchesAnyTurn(run, messages)))
+  // A user turn counts as trust evidence too: a session whose FIRST run failed
+  // (the "prompt acknowledgement omitted run_id" case) has no assistant entry
+  // at all — the user's message is the only turn inside the run's window.
+  if (!runs.some(run => runMatchesAnyTurn(run, messages) || runMatchesUserTurn(run, messages)))
     return messages;
   const orphans = runs.filter(run =>
     run.status === "failed"
