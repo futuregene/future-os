@@ -111,12 +111,7 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     let workspace = if mode == "chat" {
-        // Use the agent session ID when it's known (fork, import) so the
-        // workspace path matches the agent's session dir; otherwise fall
-        // back to the thread ID (new chat threads get the session ID on
-        // the first prompt via update_chat_workspace_path).
-        let ws_key = agent_session_id.as_deref().unwrap_or(&thread_id);
-        get_or_create_chat_workspace_in(&tx, ws_key, Some(title.clone()))?
+        get_or_create_chat_workspace_in(&tx, &thread_id, Some(title.clone()))?
     } else if let Some(workspace_id) = input.workspace_id {
         loaded(get_workspace_in(&tx, &workspace_id)?, "Workspace")?
     } else {
@@ -436,25 +431,9 @@ pub(crate) fn delete_thread_inner(
     // directory deletion fails the DB row is already gone, which is the safer
     // failure mode (side-effect-last).
     if delete_files && thread.mode == "chat" {
-        // The workspace path for chat threads is the chat-workspace dir named
-        // after either the agent session id or the thread id.
-        let dir_key = thread
-            .agent_session_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .unwrap_or(thread_id);
-        let dir = super::db::chat_workspace_path(dir_key)?;
+        let dir = super::db::chat_workspace_path(thread_id)?;
         if dir.exists() {
             let _ = std::fs::remove_dir_all(&dir);
-        }
-        // Also remove the legacy directory named after the thread id if it
-        // differs from the session id (migration edge case).
-        if dir_key != thread_id {
-            let legacy_dir = super::db::chat_workspace_path(thread_id)?;
-            if legacy_dir.exists() {
-                let _ = std::fs::remove_dir_all(&legacy_dir);
-            }
         }
     }
 

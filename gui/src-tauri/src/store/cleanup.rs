@@ -284,13 +284,7 @@ fn live_thread_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
 /// session ids (current).  Directories under `~/.future/workspaces/chat/` are
 /// now named after the session id, but older ones may still use the thread id.
 fn live_chat_workspace_dir_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT id FROM threads WHERE status != 'deleted'
-         UNION
-         SELECT agent_session_id FROM threads
-         WHERE agent_session_id IS NOT NULL AND agent_session_id != ''
-           AND status != 'deleted'",
-    )?;
+    let mut stmt = conn.prepare("SELECT id FROM threads WHERE status != 'deleted'")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     rows.collect()
 }

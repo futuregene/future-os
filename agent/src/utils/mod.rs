@@ -180,6 +180,25 @@ pub fn is_tty() -> bool {
     std::io::stdin().is_terminal()
 }
 
+/// Ensure a workspace directory exists, is readable, and is writable.
+/// Creates the directory (and parents) if missing. Returns an error when
+/// the path exists but is not a directory, or when it can't be written to.
+pub fn ensure_workspace_accessible(path: &Path) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(path)?;
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            format!("workspace path is not a directory: {}", path.display()),
+        ));
+    }
+    // Verify writability with a test file.
+    let test = path.join(".future_write_test");
+    std::fs::write(&test, b"")?;
+    std::fs::remove_file(&test)?;
+    Ok(())
+}
+
 /// ANSI color codes (matching Go constants)
 pub mod ansi {
     pub const RESET: &str = "\x1b[0m";

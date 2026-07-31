@@ -4,6 +4,7 @@ import { useSyncExternalStore } from "react";
 // ── Real-time agent state updates via Tauri events ──────────────────────
 
 import { invokeCommand } from "../tauri/invoke";
+import { emitFutureEvent } from "../../lib/futureEvents";
 
 /** Agent-side session state, fetched via get_state RPC. */
 export interface AgentSessionState {
@@ -262,7 +263,12 @@ function applySettingsEvent(
       cwd: p.cwd,
     }).then(() => {
       window.dispatchEvent(new CustomEvent("future:cwd-changed"));
-    }).catch(() => {});
+    }).catch((error: unknown) => {
+      emitFutureEvent("toast", {
+        message: `Workspace directory is no longer accessible: ${String(error)}`,
+        tone: "error",
+      });
+    });
   }
 
   for (const [threadId, entry] of cache) {
