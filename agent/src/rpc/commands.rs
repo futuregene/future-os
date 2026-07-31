@@ -1148,6 +1148,38 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                 .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
                 .and_then(|e| e.content.clone());
             let mut emitted_session_info = false;
+            // Per-run output tokens + wall-clock duration live only in the
+            // `run_terminal` marker's content JSON (the assistant entry's content
+            // is a block array, so it can't carry them). Bind each marker to the
+            // assistant entry that precedes it — the run's final reply — so the
+            // GUI/mobile footer ("time · N tokens") survives a reload. Positional
+            // binding (not run_id) because the on-disk assistant entry's meta may
+            // lack run_id on the append-only fast path. Clearing the pointer after
+            // a marker keeps a terminal of a reply-less run (cancel/error before
+            // any assistant entry) from overwriting the previous run's stats.
+            let mut last_assistant_id: Option<String> = None;
+            let mut run_stats: std::collections::HashMap<String, (i64, i64)> =
+                std::collections::HashMap::new();
+            for marker in &s.entries {
+                if marker.entry_type == crate::session::ENTRY_TYPE_ASSISTANT {
+                    last_assistant_id = Some(marker.id.clone());
+                } else if marker.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL {
+                    if let (Some(aid), Some(content)) =
+                        (last_assistant_id.as_deref(), marker.content.as_ref())
+                    {
+                        let tokens = content
+                            .get("run_tokens")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let duration = content
+                            .get("run_duration_ms")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        run_stats.insert(aid.to_string(), (tokens, duration));
+                    }
+                    last_assistant_id = None;
+                }
+            }
             s.entries
                 .iter()
                 .filter(|e| {
@@ -1230,6 +1262,21 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     if !e.tool_calls.is_empty() {
                         entry["tool_calls"] =
                             serde_json::to_value(&e.tool_calls).unwrap_or(serde_json::Value::Null);
+                    }
+                    // Surface this reply's output tokens + duration on the final
+                    // assistant entry of each run (bound from the run_terminal
+                    // marker above) so the footer can show "time · N tokens" after
+                    // a reload — entriesToMessages / the mobile reducer read these
+                    // top-level fields.
+                    if e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT {
+                        if let Some((tokens, duration)) = run_stats.get(&e.id) {
+                            if *tokens > 0 {
+                                entry["output_tokens"] = serde_json::json!(*tokens);
+                            }
+                            if *duration > 0 {
+                                entry["duration_ms"] = serde_json::json!(*duration);
+                            }
+                        }
                     }
                     // Per-reply metadata for the GUI's message footer
                     // ("time · N tokens"); set on the final assistant

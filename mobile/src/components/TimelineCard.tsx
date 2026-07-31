@@ -13,7 +13,8 @@ import {
 } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Clipboard, Pressable, StyleSheet, Text, View } from "react-native";
+import * as Clipboard from "expo-clipboard";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { MarkdownText } from "./MarkdownText";
 import type { ApprovalPayload, HistoryAttachment, TimelineItem } from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
@@ -254,7 +255,7 @@ function AttachmentChip({ attachment }: { attachment: HistoryAttachment }) {
 }
 
 export function TimelineCard({ item }: TimelineCardProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
   if (item.kind === "message") {
@@ -262,21 +263,25 @@ export function TimelineCard({ item }: TimelineCardProps) {
       return (
         <View style={styles.assistantMessage}>
           <MarkdownText text={item.text} />
-          {item.durationMs != null && (
-            <View style={styles.messageFooter}>
+          <View style={styles.messageFooter}>
+            <Pressable
+              accessibilityLabel={t("chat.copyResponse")}
+              accessibilityRole="button"
+              hitSlop={8}
+              onPress={() => Clipboard.setStringAsync(item.text)}
+              style={styles.copyButton}
+            >
+              <Copy color={colors.inkMuted} size={15} />
+            </Pressable>
+            {item.durationMs != null && (
               <Text style={styles.messageDuration}>{formatDuration(item.durationMs)}</Text>
-              <Pressable
-                accessibilityLabel="Copy response"
-                accessibilityRole="button"
-                hitSlop={8}
-                onPress={() => Clipboard.setString(item.text)}
-                style={styles.copyButton}
-              >
-                <Copy color={colors.inkMuted} size={16} />
-                <Text style={styles.copyLabel}>Copy</Text>
-              </Pressable>
-            </View>
-          )}
+            )}
+            {item.outputTokens != null && item.outputTokens > 0 && (
+              <Text style={styles.messageDuration}>
+                {t("chat.tokens", { formattedCount: new Intl.NumberFormat(i18n.language).format(item.outputTokens) })}
+              </Text>
+            )}
+          </View>
         </View>
       );
     }
@@ -388,10 +393,8 @@ const styles = StyleSheet.create({
   copyButton: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.xs,
     paddingVertical: spacing.xs,
   },
-  copyLabel: { color: colors.inkMuted, fontSize: 12, fontWeight: "600" },
   runIndicator: {
     flexDirection: "row",
     alignItems: "center",
