@@ -173,16 +173,64 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             };
             let mut sess = wlock!(session, id);
+            let busy_policy = match crate::runtime::BusyPolicy::parse(&cmd.busy_policy) {
+                Ok(policy) => policy,
+                Err(error) => {
+                    return RpcResponse::build_fail_code(
+                        id,
+                        "prompt",
+                        "invalid_busy_policy",
+                        &error,
+                        serde_json::json!({
+                            "provided": cmd.busy_policy,
+                            "valid": crate::runtime::BusyPolicy::VALID_VALUES,
+                        }),
+                    );
+                }
+            };
             if let Some(lease) = sess.runtime.request_lease(&cmd.client_request_id) {
                 return RpcResponse::ok(
                     id,
                     "prompt",
-                    serde_json::json!({
-                        "run_id": lease.run_id,
-                        "run_epoch": lease.epoch,
-                        "accepted_state": "existing",
-                    }),
+                    serde_json::to_value(crate::runtime::RunAck::existing(
+                        lease.run_id,
+                        lease.epoch,
+                    ))
+                    .unwrap_or_default(),
                 );
+            }
+            if let Some(active) = sess.runtime.snapshot() {
+                return match busy_policy {
+                    crate::runtime::BusyPolicy::RejectIfBusy => RpcResponse::build_fail_code(
+                        id,
+                        "prompt",
+                        "busy",
+                        &format!(
+                            "session already has active run `{}` in state `{}`",
+                            active.run_id,
+                            active.phase.as_str()
+                        ),
+                        serde_json::json!({
+                            "active_run_id": active.run_id,
+                            "active_epoch": active.epoch,
+                            "active_state": active.phase.as_str(),
+                        }),
+                    ),
+                    policy => RpcResponse::build_fail_code(
+                        id,
+                        "prompt",
+                        "busy_policy_unavailable",
+                        &format!(
+                            "busy policy `{}` requires the durable session scheduler",
+                            policy.as_str()
+                        ),
+                        serde_json::json!({
+                            "busy_policy": policy.as_str(),
+                            "active_run_id": active.run_id,
+                            "active_epoch": active.epoch,
+                        }),
+                    ),
+                };
             }
             match sess.prompt(
                 &cmd.message,
@@ -194,11 +242,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 Ok(lease) => RpcResponse::ok(
                     id,
                     "prompt",
-                    serde_json::json!({
-                        "run_id": lease.run_id,
-                        "run_epoch": lease.epoch,
-                        "accepted_state": "running",
-                    }),
+                    serde_json::to_value(crate::runtime::RunAck::running(
+                        lease.run_id,
+                        lease.epoch,
+                    ))
+                    .unwrap_or_default(),
                 ),
                 Err(e) => RpcResponse::build_fail(id, "prompt", &e.to_string()),
             }
@@ -1732,6 +1780,44 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
         assert!(resp["error"].as_str().unwrap().contains("unknown command"));
+    }
+
+    #[test]
+    fn prompt_rejects_unknown_busy_policy_with_stable_code() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "hello".to_string();
+        cmd.busy_policy = "steer".to_string();
+
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "invalid_busy_policy");
+        assert_eq!(resp["error_data"]["provided"], "steer");
+    }
+
+    #[test]
+    fn prompt_fails_closed_until_enqueue_scheduler_exists() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        let active = session
+            .read()
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+        assert_eq!(active.run_id, "run-active");
+
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "queued later".to_string();
+        cmd.busy_policy = "enqueue_if_busy".to_string();
+        cmd.client_request_id = "request-next".to_string();
+
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "busy_policy_unavailable");
+        assert_eq!(resp["error_data"]["busy_policy"], "enqueue_if_busy");
+        assert_eq!(resp["error_data"]["active_run_id"], "run-active");
     }
 
     #[test]

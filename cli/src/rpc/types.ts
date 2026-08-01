@@ -50,6 +50,7 @@ export interface RpcCommand {
   sinceIdx?: number;
   requestedRunId?: string;
   clientRequestId?: string;
+  busyPolicy?: "reject_if_busy" | "enqueue_if_busy" | "supersede_session";
 }
 
 // ============================================================================
@@ -80,6 +81,8 @@ export interface RpcResponse {
   success: boolean;
   data?: unknown;
   error?: string;
+  errorCode?: string;
+  errorData?: unknown;
 }
 
 // ============================================================================

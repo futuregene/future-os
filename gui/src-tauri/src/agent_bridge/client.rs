@@ -377,6 +377,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         since_idx: 0,
         requested_run_id: String::new(),
         client_request_id: String::new(),
+        busy_policy: String::new(),
         sandbox_policy: None,
     }
 }

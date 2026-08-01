@@ -81,6 +81,8 @@ pub struct RpcCommand {
     pub requested_run_id: String,
     #[serde(default)]
     pub client_request_id: String,
+    #[serde(default)]
+    pub busy_policy: String,
 
     // set_sandbox_policy — populated from the typed proto sub-message by the
     // gRPC layer (not part of the JSON command surface).
@@ -104,6 +106,10 @@ pub struct RpcResponse {
     pub data: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_data: Option<serde_json::Value>,
 }
 
 impl RpcResponse {
@@ -115,6 +121,8 @@ impl RpcResponse {
             success: true,
             data: Some(data.into()),
             error: None,
+            error_code: None,
+            error_data: None,
         };
         serde_json::to_string(&resp).unwrap_or_default()
     }
@@ -127,6 +135,28 @@ impl RpcResponse {
             success: false,
             data: None,
             error: Some(err.to_string()),
+            error_code: None,
+            error_data: None,
+        };
+        serde_json::to_string(&resp).unwrap_or_default()
+    }
+
+    pub fn build_fail_code(
+        id: &str,
+        command: &str,
+        code: &str,
+        err: &str,
+        details: impl Into<serde_json::Value>,
+    ) -> String {
+        let resp = Self {
+            resp_type: "response".to_string(),
+            id: id.to_string(),
+            command: command.to_string(),
+            success: false,
+            data: None,
+            error: Some(err.to_string()),
+            error_code: Some(code.to_string()),
+            error_data: Some(details.into()),
         };
         serde_json::to_string(&resp).unwrap_or_default()
     }
@@ -488,6 +518,20 @@ mod tests {
         assert_eq!(cmd.cmd_type, "prompt");
         assert_eq!(cmd.message, "hello");
         assert_eq!(cmd.streaming_behavior, "realtime");
+        assert!(cmd.busy_policy.is_empty());
+    }
+
+    #[test]
+    fn rpc_command_prompt_busy_policy_uses_camel_case_wire_name() {
+        let json = r#"{
+            "id": "cmd2b",
+            "type": "prompt",
+            "sessionId": "s1",
+            "message": "hello",
+            "busyPolicy": "enqueue_if_busy"
+        }"#;
+        let cmd: RpcCommand = serde_json::from_str(json).unwrap();
+        assert_eq!(cmd.busy_policy, "enqueue_if_busy");
     }
 
     #[test]
@@ -649,6 +693,24 @@ mod tests {
         assert_eq!(parsed["success"], false);
         assert_eq!(parsed["error"], "session not found");
         assert!(parsed.get("data").is_none());
+        assert!(parsed.get("error_code").is_none());
+        assert!(parsed.get("error_data").is_none());
+    }
+
+    #[test]
+    fn rpc_response_structured_failure_keeps_human_message() {
+        let json_str = RpcResponse::build_fail_code(
+            "id2b",
+            "prompt",
+            "busy",
+            "session already has an active run",
+            serde_json::json!({"active_run_id": "run-a"}),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["success"], false);
+        assert_eq!(parsed["error"], "session already has an active run");
+        assert_eq!(parsed["error_code"], "busy");
+        assert_eq!(parsed["error_data"]["active_run_id"], "run-a");
     }
 
     #[test]

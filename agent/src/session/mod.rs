@@ -455,6 +455,29 @@ impl Manager {
         self.dir.join(format!("{}.jsonl", id))
     }
 
+    /// Durable scheduler journal for a session.
+    ///
+    /// Production session directories are `<data>/sessions`; keep run data in
+    /// the sibling `<data>/run-events` tree. Custom/test managers remain fully
+    /// contained below their configured directory.
+    fn run_data_root(&self) -> PathBuf {
+        let run_events_dir =
+            if self.dir.file_name().and_then(|name| name.to_str()) == Some("sessions") {
+                self.dir.parent().unwrap_or(&self.dir).join("run-events")
+            } else {
+                self.dir.join(".run-events")
+            };
+        run_events_dir
+    }
+
+    pub fn run_data_path(&self, id: &str) -> PathBuf {
+        self.run_data_root().join(id)
+    }
+
+    pub fn run_queue_path(&self, id: &str) -> PathBuf {
+        self.run_data_path(id).join("queue.jsonl")
+    }
+
     /// Append one or more entries to the session JSONL without rewriting
     /// the file.  Each entry is written as a single `write_all` syscall
     /// (JSON + newline pre-assembled) so a crash mid-write at most loses
@@ -1396,7 +1419,25 @@ impl Manager {
         // Also remove the lock file if present — no session means no lock.
         let lock_path = path.with_extension("jsonl.lock");
         let _ = fs::remove_file(&lock_path);
-        fs::remove_file(path).map_err(|e| anyhow!("failed to delete session: {}", e))
+        fs::remove_file(path).map_err(|e| anyhow!("failed to delete session: {}", e))?;
+
+        // The session transcript is the deletion commit point. Once it is
+        // gone, reclaim every Agent-owned derivative for that session: queue
+        // journal, event journal/checkpoints, and attachment blobs all live
+        // below this directory. A missing directory is the normal legacy case.
+        let run_data_path = self.run_data_path(id);
+        match fs::remove_dir_all(&run_data_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(anyhow!(
+                    "session deleted but failed to reclaim run data at {}: {}",
+                    run_data_path.display(),
+                    error
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2892,10 +2933,16 @@ mod tests {
         let manager = Manager::new(dir.clone());
         let session = Session::new("/tmp/test", "model", "");
         manager.save(&session).unwrap();
+        let run_data_path = manager.run_data_path(&session.id);
+        std::fs::create_dir_all(run_data_path.join("blobs")).unwrap();
+        std::fs::write(manager.run_queue_path(&session.id), b"queue\n").unwrap();
+        std::fs::write(run_data_path.join("blobs").join("attachment"), b"blob").unwrap();
         assert!(manager.find(&session.id).is_some());
+        assert!(run_data_path.exists());
 
         manager.delete(&session.id).unwrap();
         assert!(manager.find(&session.id).is_none());
+        assert!(!run_data_path.exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

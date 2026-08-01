@@ -164,6 +164,11 @@ message RpcCommand {
   // Idempotency key for retrying StartRun independently of run identity.
   string client_request_id = 143;
 
+  // Atomic behavior when the session already has an active run:
+  // "reject_if_busy" (default), "enqueue_if_busy", or "supersede_session".
+  // Empty is interpreted as "reject_if_busy" for backward compatibility.
+  string busy_policy = 144;
+
   // ── set_sandbox_policy ─────────────────────────────────────────────────
   // Session sandbox + approval policy (typed sub-message, not JSON-in-string).
   // Read when type == "set_sandbox_policy".
@@ -254,6 +259,13 @@ message RpcResponse {
 
   // Error message when success is false.
   string error = 6;
+
+  // Stable machine-readable error code. Additive: legacy handlers may leave it
+  // empty and legacy clients may ignore it.
+  string error_code = 7;
+
+  // Optional JSON-serialised structured error details.
+  string error_data = 8;
 }
 
 // =============================================================================

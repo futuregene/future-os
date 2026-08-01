@@ -85,6 +85,11 @@ pub struct RpcCommand {
     /// Idempotency key for retrying StartRun independently of run identity.
     #[prost(string, tag = "143")]
     pub client_request_id: ::prost::alloc::string::String,
+    /// Atomic behavior when the session already has an active run:
+    /// "reject_if_busy" (default), "enqueue_if_busy", or "supersede_session".
+    /// Empty is interpreted as "reject_if_busy" for backward compatibility.
+    #[prost(string, tag = "144")]
+    pub busy_policy: ::prost::alloc::string::String,
     /// ── set_sandbox_policy ─────────────────────────────────────────────────
     /// Session sandbox + approval policy (typed sub-message, not JSON-in-string).
     /// Read when type == "set_sandbox_policy".
@@ -169,6 +174,13 @@ pub struct RpcResponse {
     /// Error message when success is false.
     #[prost(string, tag = "6")]
     pub error: ::prost::alloc::string::String,
+    /// Stable machine-readable error code. Additive: legacy handlers may leave it
+    /// empty and legacy clients may ignore it.
+    #[prost(string, tag = "7")]
+    pub error_code: ::prost::alloc::string::String,
+    /// Optional JSON-serialised structured error details.
+    #[prost(string, tag = "8")]
+    pub error_data: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SessionState {
