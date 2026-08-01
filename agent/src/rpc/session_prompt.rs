@@ -57,6 +57,9 @@ impl ServerSession {
         client_request_id: &str,
         busy_policy: crate::runtime::BusyPolicy,
     ) -> Result<crate::runtime::RunAck> {
+        if self.deleting {
+            return Err(crate::runtime::RunQueueError::Deleting.into());
+        }
         if busy_policy == crate::runtime::BusyPolicy::RejectIfBusy
             && self.runtime.snapshot().is_some()
             && self.scheduler.active().is_none()

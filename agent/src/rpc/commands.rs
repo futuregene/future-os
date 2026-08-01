@@ -239,6 +239,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                                 "busy_policy_unavailable",
                                 serde_json::json!({"busy_policy": busy_policy.as_str()}),
                             ),
+                            crate::runtime::RunQueueError::Deleting => (
+                                "deleting",
+                                serde_json::json!({"session_id": cmd.session_id}),
+                            ),
                             _ => ("scheduler_error", serde_json::json!({})),
                         };
                         RpcResponse::build_fail_code(
@@ -1011,12 +1015,48 @@ fn cmd_delete_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
             "No session selected to delete. Choose a session first.",
         );
     }
+    let live = state.sessions.read().get(&cmd.session_id).cloned();
+    if let Some(session) = live {
+        let (active, cancelled_count) = {
+            let mut session = session.write();
+            session.deleting = true;
+            let cancelled = session
+                .cancel_all_queued_runs(crate::runtime::QueuedCancellationReason::SessionDeleted);
+            let active = session.runtime.snapshot();
+            if let Some(active) = &active {
+                let _ = session.runtime.request_abort(Some(&active.run_id));
+            }
+            (active, cancelled.len())
+        };
+        if let Some(active) = active {
+            return RpcResponse::build_fail_code(
+                id,
+                "delete_session",
+                "deleting",
+                "session deletion is waiting for the active run to stop; retry delete_session",
+                serde_json::json!({
+                    "session_id": cmd.session_id,
+                    "active_run_id": active.run_id,
+                    "queued_cancelled": cancelled_count,
+                    "retryable": true,
+                }),
+            );
+        }
+    }
+
+    // The in-memory session is fenced before disk removal. Keep it in the map
+    // if deletion fails so a retry cannot accidentally rehydrate/accept work
+    // against partially deleted state.
     if let Err(e) = state.session_manager.delete(&cmd.session_id) {
-        return RpcResponse::build_fail(id, "delete_session", &e.to_string());
+        return RpcResponse::build_fail_code(
+            id,
+            "delete_session",
+            "delete_failed",
+            &e.to_string(),
+            serde_json::json!({"session_id": cmd.session_id, "retryable": true}),
+        );
     }
-    if let Some(mut sessions) = state.sessions.try_write() {
-        sessions.remove(&cmd.session_id);
-    }
+    state.sessions.write().remove(&cmd.session_id);
     RpcResponse::ok(id, "delete_session", serde_json::json!({"deleted": true}))
 }
 
@@ -1955,6 +1995,61 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["run-2"]
         );
+    }
+
+    #[test]
+    fn delete_session_fences_admission_and_reclaims_queued_snapshots() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+
+        let mut queued = make_cmd("prompt");
+        queued.message = "must be reclaimed".to_string();
+        queued.busy_policy = "enqueue_if_busy".to_string();
+        queued.requested_run_id = "run-queued".to_string();
+        queued.client_request_id = "request-queued".to_string();
+        assert_eq!(
+            parse_response(&handle_command_internal(&state, queued))["success"],
+            true
+        );
+        assert!(session
+            .read()
+            .scheduled_setting_summary("run-queued")
+            .is_some());
+
+        let deleting = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
+        assert_eq!(deleting["success"], false);
+        assert_eq!(deleting["error_code"], "deleting");
+        assert_eq!(deleting["error_data"]["queued_cancelled"], 1);
+        assert!(session.read().deleting);
+        assert!(session.read().scheduler.queued().is_empty());
+        assert!(session
+            .read()
+            .scheduled_setting_summary("run-queued")
+            .is_none());
+
+        let mut rejected = make_cmd("prompt");
+        rejected.message = "too late".to_string();
+        rejected.client_request_id = "request-too-late".to_string();
+        let rejected = parse_response(&handle_command_internal(&state, rejected));
+        assert_eq!(rejected["success"], false);
+        assert_eq!(rejected["error_code"], "deleting");
+    }
+
+    #[test]
+    fn delete_idle_session_removes_the_live_runtime() {
+        let state = make_app_state();
+        assert!(state.sessions.read().contains_key("default"));
+
+        let response = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
+
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["deleted"], true);
+        assert!(!state.sessions.read().contains_key("default"));
     }
 
     #[test]

@@ -62,6 +62,9 @@ pub struct ServerSession {
     /// process restarts; `agent_instance_id` lets clients reconcile that loss.
     pub scheduler: Arc<crate::runtime::InMemoryRunQueue>,
     pub(super) scheduled_snapshots: HashMap<String, super::session_prompt::AcceptedRunSnapshot>,
+    /// Admission fence set before queued/active cleanup begins. A deleting
+    /// session stays addressable for retry, but can never accept new work.
+    pub deleting: bool,
     scheduler_wake_rx: Arc<
         parking_lot::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::runtime::RunLease>>>,
     >,
@@ -198,6 +201,7 @@ impl ServerSession {
             runtime,
             scheduler,
             scheduled_snapshots: HashMap::new(),
+            deleting: false,
             scheduler_wake_rx: Arc::new(parking_lot::Mutex::new(Some(scheduler_wake_rx))),
             session_name: String::new(),
             parent_session_id: String::new(),
@@ -290,6 +294,17 @@ impl ServerSession {
         let cancelled = self.scheduler.cancel_queued(run_id, reason)?;
         self.scheduled_snapshots.remove(run_id);
         Ok(cancelled)
+    }
+
+    pub fn cancel_all_queued_runs(
+        &mut self,
+        reason: crate::runtime::QueuedCancellationReason,
+    ) -> Vec<crate::runtime::ScheduledRunRequest> {
+        let cancelled = self.scheduler.cancel_all_queued(reason);
+        for request in &cancelled {
+            self.scheduled_snapshots.remove(&request.run_id);
+        }
+        cancelled
     }
 
     pub fn session_name(&self) -> String {

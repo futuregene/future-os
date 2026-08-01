@@ -14,7 +14,8 @@
 | Phase 1a | 进行中 | 已完成 RunRequest/RunAck、结构化错误、内存 scheduler、`reject_if_busy/enqueue_if_busy`、自动 dequeue、`cancel_queued_run`、Follow-up RPC 适配、TUI 提交链迁移、`agent_instance_id`、run sequence 持久衔接，以及 provider/model/tools/cwd/权限等设置的接受时内存快照；仍需删除 run 内 steer/follow-up continuation 与旧 mode 字段 |
 | Phase 1b | 未开始 | persistence health 增强、附件内容快照、全局内存配额、原子 supersede 和 Channel 迁移 |
 | Phase 2 | 未开始 | TUI run registry、queued UI、Turn consumer 收敛和兼容 RPC 最终删除 |
-| Phase 3–7 | 未开始 | EventJournal、GUI Agent-first、删除状态机、Observer/NATS、GUI/Remote Follow-up |
+| Phase 3 | 进行中 | 已完成删除 admission fence、queued run/执行快照回收、active abort-and-retry 和 transcript/run-data 幂等删除；仍需 writer/observer close barrier、epoch fence 与 GUI tombstone/outbox |
+| Phase 4–7 | 未开始 | EventJournal、GUI Agent-first、Observer/NATS、GUI/Remote Follow-up |
 
 当前保护边界：`enqueue_if_busy` 已在 Agent 执行链开放；`supersede_session` 仍返回 `busy_policy_unavailable`，直到 Phase 1b 的 active interrupt + queued replacement 原子语义完成。
 

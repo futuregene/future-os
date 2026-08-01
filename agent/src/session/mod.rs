@@ -1443,7 +1443,11 @@ impl Manager {
         // Also remove the lock file if present — no session means no lock.
         let lock_path = path.with_extension("jsonl.lock");
         let _ = fs::remove_file(&lock_path);
-        fs::remove_file(path).map_err(|e| anyhow!("failed to delete session: {}", e))?;
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(anyhow!("failed to delete session: {}", error)),
+        }
 
         // The session transcript is the deletion commit point. Once it is
         // gone, reclaim every Agent-owned event derivative below this

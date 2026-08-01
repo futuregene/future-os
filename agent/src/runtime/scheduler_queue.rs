@@ -35,6 +35,8 @@ pub enum QueuedCancellationReason {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RunQueueError {
+    #[error("session is being deleted")]
+    Deleting,
     #[error("client_request_id must not be empty")]
     MissingClientRequestId,
     #[error("client_request_id `{0}` was already used with a different request")]
