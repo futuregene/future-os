@@ -61,6 +61,9 @@ pub struct ServerSession {
     /// Process-local queued-run state. It deliberately resets when the Agent
     /// process restarts; `agent_instance_id` lets clients reconcile that loss.
     pub scheduler: Arc<crate::runtime::InMemoryRunQueue>,
+    scheduler_wake_rx: Arc<
+        parking_lot::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::runtime::RunLease>>>,
+    >,
     /// ID of the session this one was forked from, if any.
     pub parent_session_id: String,
     /// Human-readable label (set via `/name`).  Empty until named.
@@ -172,6 +175,8 @@ impl ServerSession {
         };
         let is_streaming = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let runtime = Arc::new(crate::runtime::SessionRuntime::new(is_streaming.clone()));
+        let (scheduler_wake_tx, scheduler_wake_rx) = tokio::sync::mpsc::unbounded_channel();
+        runtime.set_completion_sender(scheduler_wake_tx);
         let scheduler = Arc::new(crate::runtime::InMemoryRunQueue::new(&session_id, 1));
         let persistence =
             crate::session::SessionPersistence::new(manager.clone(), session_id.clone());
@@ -191,6 +196,7 @@ impl ServerSession {
             is_streaming,
             runtime,
             scheduler,
+            scheduler_wake_rx: Arc::new(parking_lot::Mutex::new(Some(scheduler_wake_rx))),
             session_name: String::new(),
             parent_session_id: String::new(),
             created_by: String::new(),
@@ -215,6 +221,62 @@ impl ServerSession {
 
     pub fn session_id(&self) -> String {
         self.session_id.clone()
+    }
+
+    /// Start the process-local scheduler worker once this session has been
+    /// placed behind its final Arc/RwLock owner.
+    pub fn ensure_scheduler_worker(session: &Arc<parking_lot::RwLock<Self>>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let receiver_cell = session.read().scheduler_wake_rx.clone();
+        let Some(mut receiver) = receiver_cell.lock().take() else {
+            return;
+        };
+        let session = Arc::downgrade(session);
+        handle.spawn(async move {
+            while let Some(finished) = receiver.recv().await {
+                let Some(session) = session.upgrade() else {
+                    return;
+                };
+                let mut session = session.write();
+                session.on_scheduled_run_finished(&finished);
+            }
+        });
+    }
+
+    fn on_scheduled_run_finished(&mut self, finished: &crate::runtime::RunLease) {
+        if self.scheduler.active().is_some() {
+            if let Err(error) = self.scheduler.finish_active(&finished.run_id) {
+                tracing::error!(
+                    run_id = %finished.run_id,
+                    "scheduler could not release completed run: {error}"
+                );
+            }
+        }
+        while let Some(next) = self.scheduler.queued().into_iter().next() {
+            match self.start_next_scheduled() {
+                Ok(_) => return,
+                Err(error) => {
+                    if self
+                        .scheduler
+                        .active()
+                        .is_some_and(|(active, _)| active.run_id == next.run_id)
+                    {
+                        let _ = self.scheduler.finish_active(&next.run_id);
+                    } else {
+                        let _ = self.scheduler.cancel_queued(
+                            &next.run_id,
+                            crate::runtime::QueuedCancellationReason::Cancelled,
+                        );
+                    }
+                    tracing::error!(
+                        run_id = %next.run_id,
+                        "queued run failed before task start: {error}"
+                    );
+                }
+            }
+        }
     }
 
     pub fn session_name(&self) -> String {
@@ -1273,6 +1335,97 @@ mod tests {
         release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while session.runtime.snapshot().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn in_memory_scheduler_starts_next_run_after_matching_task_exits() {
+        let cwd = test_workspace();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let session = Arc::new(parking_lot::RwLock::new(ServerSession::new(
+            "scheduled-runs".to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(BlockingProvider {
+                    started: started.clone(),
+                    release: release.clone(),
+                }),
+                "mock",
+            ))),
+            Arc::new(Manager::new(test_session_dir())),
+            &cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        )));
+        session.write().set_ephemeral(true);
+        ServerSession::ensure_scheduler_worker(&session);
+
+        let first = session
+            .write()
+            .enqueue_prompt(
+                "first",
+                &[],
+                &[],
+                Some("run-first"),
+                "request-first",
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+            )
+            .unwrap();
+        assert_eq!(
+            first.accepted_state,
+            crate::runtime::RunAcceptedState::Running
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+
+        let second = session
+            .write()
+            .enqueue_prompt(
+                "second",
+                &[],
+                &[],
+                Some("run-second"),
+                "request-second",
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+            )
+            .unwrap();
+        assert_eq!(
+            second.accepted_state,
+            crate::runtime::RunAcceptedState::Queued
+        );
+        assert_eq!(second.queue_position, Some(1));
+
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        assert_eq!(
+            session.read().runtime.snapshot().unwrap().run_id,
+            "run-second"
+        );
+        assert_eq!(
+            session.read().scheduler.active().unwrap().0.run_id,
+            "run-second"
+        );
+
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let session = session.read();
+                if session.runtime.snapshot().is_none()
+                    && session.scheduler.active().is_none()
+                    && session.scheduler.queued().is_empty()
+                {
+                    break;
+                }
+                drop(session);
                 tokio::task::yield_now().await;
             }
         })

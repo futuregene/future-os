@@ -25,6 +25,7 @@ struct RuntimeTask {
 pub struct SessionRuntime {
     control: RunControl,
     task: Mutex<Option<RuntimeTask>>,
+    completion_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<RunLease>>>,
 }
 
 impl SessionRuntime {
@@ -32,7 +33,12 @@ impl SessionRuntime {
         Self {
             control: RunControl::new(is_streaming),
             task: Mutex::new(None),
+            completion_tx: Mutex::new(None),
         }
+    }
+
+    pub fn set_completion_sender(&self, sender: tokio::sync::mpsc::UnboundedSender<RunLease>) {
+        *self.completion_tx.lock() = Some(sender);
     }
 
     pub fn begin(
@@ -52,6 +58,27 @@ impl SessionRuntime {
             );
         }
         self.control.begin(requested_run_id, client_request_id)
+    }
+
+    pub fn begin_scheduled(
+        &self,
+        requested_run_id: &str,
+        client_request_id: &str,
+        run_sequence: u64,
+    ) -> Result<RunLease> {
+        let task = self.task.lock();
+        if let Some(active) = task.as_ref() {
+            bail!(
+                "runtime task {} at epoch {} has not exited",
+                active.lease.run_id,
+                active.lease.epoch
+            );
+        }
+        self.control.begin_with_sequence(
+            Some(requested_run_id),
+            Some(client_request_id),
+            Some(run_sequence),
+        )
     }
 
     pub fn request_lease(&self, client_request_id: &str) -> Option<RunLease> {
@@ -99,6 +126,7 @@ impl SessionRuntime {
             let lease = RunLease {
                 run_id: snapshot.run_id,
                 epoch: snapshot.epoch,
+                run_sequence: None,
             };
             handle.spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -118,6 +146,10 @@ impl SessionRuntime {
 
     pub fn snapshot(&self) -> Option<RunSnapshot> {
         self.control.snapshot()
+    }
+
+    pub fn has_owned_task(&self) -> bool {
+        self.task.lock().is_some()
     }
 
     pub fn begin_finalizing(&self, lease: &RunLease) -> bool {
@@ -171,6 +203,7 @@ impl SessionRuntime {
             if !slot.as_ref().is_some_and(|active| active.lease == lease) {
                 return;
             }
+            let mut completed = false;
             match outcome {
                 Err(error) => {
                     let _ = runtime.mark_stuck(&lease, &error.to_string());
@@ -181,7 +214,7 @@ impl SessionRuntime {
                             && active.epoch == lease.epoch
                             && active.phase == super::RunPhase::Finalizing =>
                     {
-                        let _ = runtime.control.finish(&lease);
+                        completed = runtime.control.finish(&lease);
                     }
                     Some(active)
                         if active.run_id == lease.run_id
@@ -200,6 +233,12 @@ impl SessionRuntime {
                 },
             }
             *slot = None;
+            drop(slot);
+            if completed {
+                if let Some(sender) = runtime.completion_tx.lock().as_ref() {
+                    let _ = sender.send(lease);
+                }
+            }
         });
         Ok(())
     }

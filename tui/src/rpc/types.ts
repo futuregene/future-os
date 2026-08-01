@@ -13,7 +13,6 @@ export interface RpcCommand {
   // prompting
   message?: string;
   images?: ImageContent[];
-  streamingBehavior?: "steer" | "followUp";
   // new_session
   parentSession?: string;
   cwd?: string;
@@ -49,14 +48,11 @@ export interface RpcCommand {
 // Specific command creators (for type safety at call sites)
 // ============================================================================
 
-export function promptCmd(message: string, images?: ImageContent[], streamingBehavior?: "steer" | "followUp"): RpcCommand {
-  return { type: "prompt", message, images, streamingBehavior };
+export function promptCmd(message: string, images?: ImageContent[], busyPolicy: RpcCommand["busyPolicy"] = "reject_if_busy"): RpcCommand {
+  return { type: "prompt", message, images, busyPolicy };
 }
 export function steerCmd(message: string): RpcCommand {
   return { type: "steer", message };
-}
-export function followUpCmd(message: string): RpcCommand {
-  return { type: "follow_up", message };
 }
 
 // ============================================================================
@@ -90,11 +86,20 @@ export interface RpcResponse {
   errorData?: unknown;
 }
 
+export interface RunAck {
+  run_id: string;
+  run_epoch: number;
+  accepted_state: "existing" | "running" | "queued";
+  run_sequence?: number;
+  queue_position?: number;
+}
+
 // ============================================================================
 // RPC State
 // ============================================================================
 
 export interface RpcSessionState {
+  agentInstanceId?: string;
   model?: string;
   thinkingLevel: ThinkingLevel;
   isStreaming: boolean;
@@ -126,13 +131,26 @@ export interface RpcSessionState {
   tokensCacheW?: number;
   totalCost?: number;
   activeRun?: ActiveRunState | null;
+  queuedRuns?: QueuedRunState[];
+  queuedCount?: number;
   interruptedRun?: InterruptedRunState | null;
   requestedRun?: RunTerminalState | null;
+}
+
+export interface QueuedRunState {
+  runId: string;
+  runSequence: number;
+  clientRequestId: string;
+  state: "queued";
+  queuePosition: number;
+  acceptedAt: string;
+  displayText: string;
 }
 
 export interface ActiveRunState {
   runId: string;
   epoch: number;
+  runSequence?: number;
   state: "starting" | "running" | "cancelling" | "cancellation_stuck" | "persistence_degraded" | "finalizing";
   lastEventIdx: number;
 }

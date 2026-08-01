@@ -75,7 +75,10 @@ impl AppState {
         {
             let sessions = self.sessions.read();
             if let Some(sess) = sessions.get(session_id) {
-                return Some(sess.clone());
+                let sess = sess.clone();
+                drop(sessions);
+                ServerSession::ensure_scheduler_worker(&sess);
+                return Some(sess);
             }
         }
         self.session_manager.find(session_id)?;
@@ -121,10 +124,15 @@ impl AppState {
         {
             let mut sessions = self.sessions.write();
             if let Some(sess) = sessions.get(session_id) {
-                return Some(sess.clone());
+                let sess = sess.clone();
+                drop(sessions);
+                ServerSession::ensure_scheduler_worker(&sess);
+                return Some(sess);
             }
             let sess_arc = Arc::new(RwLock::new(new_sess));
             sessions.insert(session_id.to_string(), sess_arc.clone());
+            drop(sessions);
+            ServerSession::ensure_scheduler_worker(&sess_arc);
             Some(sess_arc)
         }
     }
@@ -135,9 +143,9 @@ impl AppState {
     pub fn create_session(&self, mut session: ServerSession) -> String {
         let id = session.session_id.clone();
         session.broadcaster = Arc::new(SseBroadcaster::new());
-        self.sessions
-            .write()
-            .insert(id.clone(), Arc::new(RwLock::new(session)));
+        let session = Arc::new(RwLock::new(session));
+        self.sessions.write().insert(id.clone(), session.clone());
+        ServerSession::ensure_scheduler_worker(&session);
         id
     }
 
@@ -257,6 +265,7 @@ fn get_state_internal(
         serde_json::json!({
             "runId": run.run_id,
             "epoch": run.epoch,
+            "runSequence": run.run_sequence,
             "state": run.phase.as_str(),
             "lastEventIdx": sess.broadcaster.last_idx(),
         })

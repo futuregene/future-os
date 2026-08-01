@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::prompt_helpers::{
@@ -7,7 +8,102 @@ use super::prompt_helpers::{
 };
 use super::ServerSession;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ScheduledPromptPayload {
+    message: String,
+    images: Vec<crate::types::ImageContent>,
+    attachments: Vec<crate::types::Attachment>,
+}
+
 impl ServerSession {
+    pub fn enqueue_prompt(
+        &mut self,
+        msg: &str,
+        images: &[crate::types::ImageContent],
+        attachments: &[crate::types::Attachment],
+        requested_run_id: Option<&str>,
+        client_request_id: &str,
+        busy_policy: crate::runtime::BusyPolicy,
+    ) -> Result<crate::runtime::RunAck> {
+        if busy_policy == crate::runtime::BusyPolicy::RejectIfBusy
+            && self.runtime.snapshot().is_some()
+            && self.scheduler.active().is_none()
+        {
+            return Err(crate::runtime::RunQueueError::Busy.into());
+        }
+        let payload = serde_json::to_value(ScheduledPromptPayload {
+            message: msg.to_string(),
+            images: images.to_vec(),
+            attachments: attachments.to_vec(),
+        })?;
+        let ack =
+            self.scheduler
+                .accept(client_request_id, requested_run_id, busy_policy, payload)?;
+        if ack.accepted_state == crate::runtime::RunAcceptedState::Existing {
+            return Ok(ack);
+        }
+        if self.runtime.snapshot().is_none() {
+            return match self.start_next_scheduled() {
+                Ok(running) => Ok(running),
+                Err(_error)
+                    if self.runtime.has_owned_task()
+                        && self
+                            .scheduler
+                            .queued()
+                            .iter()
+                            .any(|queued| queued.run_id == ack.run_id) =>
+                {
+                    // The previous future has finalized its control lease but
+                    // its completion monitor still owns the task slot. Its
+                    // queued completion wake will start this request; returning
+                    // the accepted queued ACK avoids "error then executes".
+                    Ok(ack)
+                }
+                Err(error) => {
+                    if self
+                        .scheduler
+                        .active()
+                        .is_some_and(|(active, _)| active.run_id == ack.run_id)
+                    {
+                        let _ = self.scheduler.finish_active(&ack.run_id);
+                    } else {
+                        let _ = self.scheduler.cancel_queued(
+                            &ack.run_id,
+                            crate::runtime::QueuedCancellationReason::Cancelled,
+                        );
+                    }
+                    Err(error)
+                }
+            };
+        }
+        Ok(ack)
+    }
+
+    pub(super) fn start_next_scheduled(&mut self) -> Result<crate::runtime::RunAck> {
+        let request = self
+            .scheduler
+            .queued()
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("there is no queued run to start"))?;
+        let payload: ScheduledPromptPayload = serde_json::from_value(request.payload.clone())?;
+        let lease = self.prompt_internal(
+            &payload.message,
+            &payload.images,
+            &payload.attachments,
+            Some(&request.run_id),
+            Some(&request.client_request_id),
+            Some(&request),
+        )?;
+        Ok(crate::runtime::RunAck {
+            run_id: lease.run_id,
+            run_epoch: lease.epoch,
+            accepted_state: crate::runtime::RunAcceptedState::Running,
+            run_sequence: lease.run_sequence,
+            queue_position: None,
+        })
+    }
+
     pub fn prompt(
         &mut self,
         msg: &str,
@@ -15,6 +111,25 @@ impl ServerSession {
         attachments: &[crate::types::Attachment],
         requested_run_id: Option<&str>,
         client_request_id: Option<&str>,
+    ) -> Result<crate::runtime::RunLease> {
+        self.prompt_internal(
+            msg,
+            images,
+            attachments,
+            requested_run_id,
+            client_request_id,
+            None,
+        )
+    }
+
+    fn prompt_internal(
+        &mut self,
+        msg: &str,
+        images: &[crate::types::ImageContent],
+        attachments: &[crate::types::Attachment],
+        requested_run_id: Option<&str>,
+        client_request_id: Option<&str>,
+        scheduled: Option<&crate::runtime::ScheduledRunRequest>,
     ) -> Result<crate::runtime::RunLease> {
         let cwd_path = std::path::Path::new(&self.cwd);
         crate::utils::ensure_workspace_accessible(
@@ -99,7 +214,34 @@ impl ServerSession {
         // Accept the run before mutating messages or persistence. This is the
         // sole Idle -> Starting transition, so abort -> resend cannot create a
         // second task while the cancelled task is still unwinding.
-        let run_lease = self.runtime.begin(requested_run_id, client_request_id)?;
+        let run_lease = if let Some(request) = scheduled {
+            self.runtime.begin_scheduled(
+                &request.run_id,
+                &request.client_request_id,
+                request.run_sequence,
+            )?
+        } else {
+            self.runtime.begin(requested_run_id, client_request_id)?
+        };
+        if let Some(request) = scheduled {
+            match self.scheduler.start_next(run_lease.epoch) {
+                Ok((started, _)) if started.run_id == request.run_id => {}
+                Ok((started, _)) => {
+                    let _ = self.runtime.begin_finalizing(&run_lease);
+                    let _ = self.runtime.finish(&run_lease);
+                    return Err(anyhow::anyhow!(
+                        "scheduler FIFO mismatch: expected {}, started {}",
+                        request.run_id,
+                        started.run_id
+                    ));
+                }
+                Err(error) => {
+                    let _ = self.runtime.begin_finalizing(&run_lease);
+                    let _ = self.runtime.finish(&run_lease);
+                    return Err(error.into());
+                }
+            }
+        }
         self.broadcaster
             .start_run(run_lease.run_id.clone(), run_lease.epoch as i64);
         // This run starts with a clean persistence-error and compaction state so
@@ -118,7 +260,10 @@ impl ServerSession {
         // the in-memory messages, so identity injected only at the entry layer
         // would be lost there. Every user message opens a turn; assistant and
         // tool entries inherit the current one (see save_closure/user_msg_cb).
-        let initial_turn_id = format!("turn_{}", crate::utils::generate_entry_id());
+        // New architecture makes product turn identity a deterministic alias
+        // of run identity. Legacy multi-turn transcripts remain readable, but
+        // every newly started run has exactly one canonical turn.
+        let initial_turn_id = run_lease.run_id.clone();
         let current_turn_id = Arc::new(std::sync::Mutex::new(initial_turn_id.clone()));
         {
             let metadata = user_message
@@ -166,6 +311,9 @@ impl ServerSession {
                     ..Default::default()
                 });
                 let _ = self.runtime.finish(&run_lease);
+                if scheduled.is_some() {
+                    let _ = self.scheduler.finish_active(&run_lease.run_id);
+                }
                 return Err(error);
             }
         }
@@ -655,8 +803,11 @@ impl ServerSession {
                     session_model.clone(),
                     session_thinking.clone(),
                 );
-                let run_started =
-                    crate::session::SessionEntry::run_started(&commit_run_id, task_lease.epoch);
+                let run_started = crate::session::SessionEntry::run_started_with_sequence(
+                    &commit_run_id,
+                    task_lease.epoch,
+                    task_lease.run_sequence,
+                );
                 let terminal = crate::session::SessionEntry::run_terminal(
                     &commit_run_id,
                     terminal_state,
@@ -822,6 +973,9 @@ impl ServerSession {
                 ..Default::default()
             });
             let _ = self.runtime.finish(&run_lease);
+            if scheduled.is_some() {
+                let _ = self.scheduler.finish_active(&run_lease.run_id);
+            }
             return Err(error);
         }
 
@@ -977,8 +1131,11 @@ impl ServerSession {
         // The run_started marker is persisted together with the user message so
         // the journal durably records that this run began. A run_started with no
         // matching run_terminal identifies a run interrupted by crash/restart.
-        let run_started =
-            crate::session::SessionEntry::run_started(&run_lease.run_id, run_lease.epoch);
+        let run_started = crate::session::SessionEntry::run_started_with_sequence(
+            &run_lease.run_id,
+            run_lease.epoch,
+            run_lease.run_sequence,
+        );
 
         // Fast path: an existing session atomically closes any run left open by
         // a prior process restart and appends this run's user/start records.

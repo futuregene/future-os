@@ -1471,11 +1471,16 @@ export class App extends Container {
     });
 
     if (this.state.streaming) {
-      // Already streaming — queue as follow-up, processed after current turn finishes
+      // Every submission is its own run. The Agent owns the FIFO and returns
+      // the canonical queued run identity.
       try {
-        await this.client.followUp(value);
-      } catch {
-        // Ignore followUp errors; if agent is unreachable prompt would also fail
+        await this.client.prompt(value, undefined, "enqueue_if_busy");
+      } catch (err: any) {
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: `Failed to queue prompt: ${err?.message || String(err)}`,
+        });
       }
       this.requestRender();
       return;

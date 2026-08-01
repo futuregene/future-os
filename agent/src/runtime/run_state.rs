@@ -35,12 +35,14 @@ impl RunPhase {
 pub struct RunLease {
     pub run_id: String,
     pub epoch: u64,
+    pub run_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunSnapshot {
     pub run_id: String,
     pub epoch: u64,
+    pub run_sequence: Option<u64>,
     pub phase: RunPhase,
 }
 
@@ -89,6 +91,15 @@ impl RunControl {
         &self,
         requested_run_id: Option<&str>,
         client_request_id: Option<&str>,
+    ) -> Result<RunLease> {
+        self.begin_with_sequence(requested_run_id, client_request_id, None)
+    }
+
+    pub fn begin_with_sequence(
+        &self,
+        requested_run_id: Option<&str>,
+        client_request_id: Option<&str>,
+        run_sequence: Option<u64>,
     ) -> Result<RunLease> {
         let mut state = self.state.lock();
         let client_request_id = client_request_id.unwrap_or_default();
@@ -146,6 +157,7 @@ impl RunControl {
                 .map(ToOwned::to_owned)
                 .unwrap_or_else(crate::utils::generate_id),
             epoch: state.epoch,
+            run_sequence,
         };
         state.active = Some(ActiveRun {
             lease: lease.clone(),
@@ -229,6 +241,7 @@ impl RunControl {
                 RunSnapshot {
                     run_id: active.lease.run_id.clone(),
                     epoch: active.lease.epoch,
+                    run_sequence: active.lease.run_sequence,
                     phase: active.phase,
                 },
                 active.interrupt_tx.clone(),
@@ -410,6 +423,7 @@ impl RunControl {
         self.state.lock().active.as_ref().map(|active| RunSnapshot {
             run_id: active.lease.run_id.clone(),
             epoch: active.lease.epoch,
+            run_sequence: active.lease.run_sequence,
             phase: active.phase,
         })
     }

@@ -940,16 +940,23 @@ export class GrpcClient {
 
   // ─── Core RPC Methods ────────────────────────────────────────────────
 
-  async prompt(message: string, images?: RpcCommand["images"], streamingBehavior?: "steer" | "followUp"): Promise<void> {
-    const ack = await this.call("prompt", { message, images, streamingBehavior }) as {
-      run_id?: string;
-      runId?: string;
-    };
-    this.activeRunId = ack?.run_id || ack?.runId || this.activeRunId;
-  }
-
-  async followUp(message: string): Promise<void> {
-    await this.call("follow_up", { message, runId: this.activeRunId || undefined });
+  async prompt(
+    message: string,
+    images?: RpcCommand["images"],
+    busyPolicy: RpcCommand["busyPolicy"] = "reject_if_busy",
+  ): Promise<import("./types.js").RunAck> {
+    const requestId = crypto.randomUUID();
+    const ack = await this.call("prompt", {
+      message,
+      images,
+      busyPolicy,
+      requestedRunId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
+      clientRequestId: `request_${requestId.replaceAll("-", "")}`,
+    }) as import("./types.js").RunAck;
+    if (ack.accepted_state === "running") {
+      this.activeRunId = ack.run_id;
+    }
+    return ack;
   }
 
   async abort(): Promise<void> {

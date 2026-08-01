@@ -188,67 +188,70 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     );
                 }
             };
-            if let Some(lease) = sess.runtime.request_lease(&cmd.client_request_id) {
-                return RpcResponse::ok(
-                    id,
-                    "prompt",
-                    serde_json::to_value(crate::runtime::RunAck::existing(
-                        lease.run_id,
-                        lease.epoch,
-                    ))
-                    .unwrap_or_default(),
-                );
-            }
-            if let Some(active) = sess.runtime.snapshot() {
-                return match busy_policy {
-                    crate::runtime::BusyPolicy::RejectIfBusy => RpcResponse::build_fail_code(
-                        id,
-                        "prompt",
-                        "busy",
-                        &format!(
-                            "session already has active run `{}` in state `{}`",
-                            active.run_id,
-                            active.phase.as_str()
-                        ),
-                        serde_json::json!({
-                            "active_run_id": active.run_id,
-                            "active_epoch": active.epoch,
-                            "active_state": active.phase.as_str(),
-                        }),
-                    ),
-                    policy => RpcResponse::build_fail_code(
-                        id,
-                        "prompt",
-                        "busy_policy_unavailable",
-                        &format!(
-                            "busy policy `{}` requires the in-memory session scheduler",
-                            policy.as_str()
-                        ),
-                        serde_json::json!({
-                            "busy_policy": policy.as_str(),
-                            "active_run_id": active.run_id,
-                            "active_epoch": active.epoch,
-                        }),
-                    ),
-                };
-            }
-            match sess.prompt(
+            let client_request_id = if cmd.client_request_id.is_empty() {
+                format!("request_{}", uuid::Uuid::new_v4().simple())
+            } else {
+                cmd.client_request_id.clone()
+            };
+            match sess.enqueue_prompt(
                 &cmd.message,
                 &cmd.images,
                 &cmd.attachments,
-                Some(&cmd.requested_run_id),
-                Some(&cmd.client_request_id),
+                (!cmd.requested_run_id.is_empty()).then_some(cmd.requested_run_id.as_str()),
+                &client_request_id,
+                busy_policy,
             ) {
-                Ok(lease) => RpcResponse::ok(
-                    id,
-                    "prompt",
-                    serde_json::to_value(crate::runtime::RunAck::running(
-                        lease.run_id,
-                        lease.epoch,
-                    ))
-                    .unwrap_or_default(),
-                ),
-                Err(e) => RpcResponse::build_fail(id, "prompt", &e.to_string()),
+                Ok(ack) => {
+                    RpcResponse::ok(id, "prompt", serde_json::to_value(ack).unwrap_or_default())
+                }
+                Err(error) => {
+                    if let Some(queue_error) = error.downcast_ref::<crate::runtime::RunQueueError>()
+                    {
+                        let (code, details) = match queue_error {
+                            crate::runtime::RunQueueError::Busy => (
+                                "busy",
+                                sess.runtime.snapshot().map_or_else(
+                                    || serde_json::json!({}),
+                                    |active| {
+                                        serde_json::json!({
+                                            "active_run_id": active.run_id,
+                                            "active_epoch": active.epoch,
+                                            "active_state": active.phase.as_str(),
+                                        })
+                                    },
+                                ),
+                            ),
+                            crate::runtime::RunQueueError::DuplicateRequestConflict(_) => (
+                                "duplicate_request_conflict",
+                                serde_json::json!({"client_request_id": client_request_id}),
+                            ),
+                            crate::runtime::RunQueueError::QueueFull { limit } => {
+                                ("queue_full", serde_json::json!({"limit": limit}))
+                            }
+                            crate::runtime::RunQueueError::RequestTooLarge { actual, limit }
+                            | crate::runtime::RunQueueError::QueueBytesExceeded { actual, limit } => {
+                                (
+                                    "attachment_too_large",
+                                    serde_json::json!({"actual_bytes": actual, "limit_bytes": limit}),
+                                )
+                            }
+                            crate::runtime::RunQueueError::SupersedeRequiresSessionOperation => (
+                                "busy_policy_unavailable",
+                                serde_json::json!({"busy_policy": busy_policy.as_str()}),
+                            ),
+                            _ => ("scheduler_error", serde_json::json!({})),
+                        };
+                        RpcResponse::build_fail_code(
+                            id,
+                            "prompt",
+                            code,
+                            &queue_error.to_string(),
+                            details,
+                        )
+                    } else {
+                        RpcResponse::build_fail(id, "prompt", &error.to_string())
+                    }
+                }
             }
         }
         "steer" => match wlock!(session, id).steer_run(
@@ -258,6 +261,39 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             Ok(()) => RpcResponse::ok(id, "steer", serde_json::json!({})),
             Err(e) => RpcResponse::build_fail(id, "steer", &e.to_string()),
         },
+        "cancel_queued_run" => {
+            if cmd.run_id.is_empty() {
+                return RpcResponse::build_fail_code(
+                    id,
+                    "cancel_queued_run",
+                    "run_not_queued",
+                    "run_id is required",
+                    serde_json::json!({}),
+                );
+            }
+            match rlock!(session, id).scheduler.cancel_queued(
+                &cmd.run_id,
+                crate::runtime::QueuedCancellationReason::Cancelled,
+            ) {
+                Ok(cancelled) => RpcResponse::ok(
+                    id,
+                    "cancel_queued_run",
+                    serde_json::json!({
+                        "run_id": cancelled.run_id,
+                        "run_sequence": cancelled.run_sequence,
+                        "state": "cancelled",
+                        "reason": "cancelled",
+                    }),
+                ),
+                Err(error) => RpcResponse::build_fail_code(
+                    id,
+                    "cancel_queued_run",
+                    "run_not_queued",
+                    &error.to_string(),
+                    serde_json::json!({"run_id": cmd.run_id}),
+                ),
+            }
+        }
         "follow_up" => {
             if state
                 .shutting_down
@@ -269,12 +305,40 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "agent is shutting down; no new prompts accepted",
                 );
             }
-            match wlock!(session, id).follow_up_run(
+            let mut sess = wlock!(session, id);
+            if !cmd.run_id.is_empty()
+                && !sess
+                    .runtime
+                    .snapshot()
+                    .is_some_and(|active| active.run_id == cmd.run_id)
+            {
+                return RpcResponse::build_fail_code(
+                    id,
+                    "follow_up",
+                    "stale_run",
+                    &format!("run `{}` is no longer active", cmd.run_id),
+                    serde_json::json!({"run_id": cmd.run_id}),
+                );
+            }
+            let client_request_id = if cmd.client_request_id.is_empty() {
+                format!("request_{}", uuid::Uuid::new_v4().simple())
+            } else {
+                cmd.client_request_id.clone()
+            };
+            match sess.enqueue_prompt(
                 &cmd.message,
-                (!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()),
+                &[],
+                &[],
+                (!cmd.requested_run_id.is_empty()).then_some(cmd.requested_run_id.as_str()),
+                &client_request_id,
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
             ) {
-                Ok(()) => RpcResponse::ok(id, "follow_up", serde_json::json!({})),
-                Err(e) => RpcResponse::build_fail(id, "follow_up", &e.to_string()),
+                Ok(ack) => RpcResponse::ok(
+                    id,
+                    "follow_up",
+                    serde_json::to_value(ack).unwrap_or_default(),
+                ),
+                Err(error) => RpcResponse::build_fail(id, "follow_up", &error.to_string()),
             }
         }
         "abort" => {
@@ -1799,7 +1863,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_fails_closed_until_enqueue_scheduler_exists() {
+    fn prompt_enqueue_if_busy_returns_canonical_queued_ack() {
         let state = make_app_state();
         let session = state.get_session("default").unwrap();
         let active = session
@@ -1816,10 +1880,80 @@ mod tests {
 
         let resp = parse_response(&handle_command_internal(&state, cmd));
 
-        assert_eq!(resp["success"], false);
-        assert_eq!(resp["error_code"], "busy_policy_unavailable");
-        assert_eq!(resp["error_data"]["busy_policy"], "enqueue_if_busy");
-        assert_eq!(resp["error_data"]["active_run_id"], "run-active");
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["accepted_state"], "queued");
+        assert_eq!(resp["data"]["queue_position"], 1);
+        assert_eq!(
+            session.read().scheduler.queued()[0].client_request_id,
+            "request-next"
+        );
+    }
+
+    #[test]
+    fn follow_up_compatibility_adapter_creates_a_distinct_queued_run() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+
+        let mut cmd = make_cmd("follow_up");
+        cmd.message = "next question".to_string();
+        cmd.run_id = "run-active".to_string();
+        cmd.requested_run_id = "run-follow-up".to_string();
+        cmd.client_request_id = "request-follow-up".to_string();
+
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["run_id"], "run-follow-up");
+        assert_eq!(resp["data"]["accepted_state"], "queued");
+        assert_eq!(resp["data"]["queue_position"], 1);
+        assert_eq!(session.read().scheduler.queued().len(), 1);
+        assert_eq!(
+            session.read().scheduler.queued()[0].client_request_id,
+            "request-follow-up"
+        );
+    }
+
+    #[test]
+    fn cancel_queued_run_removes_only_the_requested_run() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+        for number in 1..=2 {
+            let mut prompt = make_cmd("prompt");
+            prompt.message = format!("queued {number}");
+            prompt.busy_policy = "enqueue_if_busy".to_string();
+            prompt.client_request_id = format!("request-{number}");
+            prompt.requested_run_id = format!("run-{number}");
+            assert_eq!(
+                parse_response(&handle_command_internal(&state, prompt))["success"],
+                true
+            );
+        }
+
+        let mut cancel = make_cmd("cancel_queued_run");
+        cancel.run_id = "run-1".to_string();
+        let response = parse_response(&handle_command_internal(&state, cancel));
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["state"], "cancelled");
+        assert_eq!(
+            session
+                .read()
+                .scheduler
+                .queued()
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-2"]
+        );
     }
 
     #[test]
