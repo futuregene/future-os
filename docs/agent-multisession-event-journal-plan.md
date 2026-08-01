@@ -202,7 +202,7 @@ memory scheduler: accept B
 transcript: user A → assistant A → user B → assistant B
 ```
 
-`get_session_state` 必须返回 `agent_instance_id`、active run、queued run 摘要和最近 terminal ACK。GUI/TUI 重连到同一 `agent_instance_id` 时可恢复队列展示；发现实例 ID 变化时，把本地尚未启动的 queued 项标记为 `lost_on_agent_restart`，不得假装仍在排队或自动重提。
+`get_agent_info/get_session_state` 必须返回同一个 `agent_instance_id`；session state 另返回 active run、queued run 摘要和最近 terminal ACK。Queued 摘要至少包含 `run_id/run_sequence/client_request_id/queue_position/accepted_at/display_text` 和安全的附件元数据，不能返回大块附件内容。GUI/TUI 重连到同一 `agent_instance_id` 时可恢复队列展示；发现实例 ID 变化时，把本地尚未启动的 queued 项标记为 `lost_on_agent_restart`，不得假装仍在排队或自动重提。
 
 ### 4.2 Run 状态机
 

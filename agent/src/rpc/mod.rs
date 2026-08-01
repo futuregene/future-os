@@ -267,6 +267,11 @@ fn get_state_internal(
         .into_iter()
         .enumerate()
         .map(|(index, run)| {
+            let display_text = run
+                .payload
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
             serde_json::json!({
                 "runId": run.run_id,
                 "runSequence": run.run_sequence,
@@ -274,6 +279,7 @@ fn get_state_internal(
                 "state": "queued",
                 "queuePosition": index + 1,
                 "acceptedAt": run.accepted_at,
+                "displayText": display_text,
             })
         })
         .collect::<Vec<_>>();

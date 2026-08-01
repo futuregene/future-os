@@ -25,7 +25,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let cmd_type = &cmd.cmd_type;
 
     if cmd_type == "get_agent_info" {
-        return get_agent_info_response(id);
+        return get_agent_info_response(state, id);
     }
     if cmd_type == "list_models" {
         return list_models_response(id, &state.model_registry.read());
@@ -757,7 +757,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     }
 }
 
-fn get_agent_info_response(id: &str) -> String {
+fn get_agent_info_response(state: &AppState, id: &str) -> String {
     let skills_count =
         crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs()).len();
     RpcResponse::ok(
@@ -765,6 +765,7 @@ fn get_agent_info_response(id: &str) -> String {
         "get_agent_info",
         serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
+            "agentInstanceId": state.agent_instance_id,
             "skillsCount": skills_count,
         }),
     )
@@ -1828,6 +1829,7 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert!(resp["data"]["version"].is_string());
+        assert_eq!(resp["data"]["agentInstanceId"], "agent-test-instance");
     }
 
     #[test]
@@ -1852,6 +1854,7 @@ mod tests {
         assert_eq!(resp["data"]["agentInstanceId"], "agent-test-instance");
         assert_eq!(resp["data"]["queuedCount"], 1);
         assert_eq!(resp["data"]["queuedRuns"][0]["runId"], "queued-run");
+        assert_eq!(resp["data"]["queuedRuns"][0]["displayText"], "later");
     }
 
     #[test]
