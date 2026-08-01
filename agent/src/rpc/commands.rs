@@ -258,13 +258,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 }
             }
         }
-        "steer" => match wlock!(session, id).steer_run(
-            &cmd.message,
-            (!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()),
-        ) {
-            Ok(()) => RpcResponse::ok(id, "steer", serde_json::json!({})),
-            Err(e) => RpcResponse::build_fail(id, "steer", &e.to_string()),
-        },
+        "steer" => RpcResponse::build_fail_code(
+            id,
+            "steer",
+            "unsupported",
+            "steer was removed; submit a new run or abort the active run",
+            serde_json::json!({"replacement": ["prompt", "abort"]}),
+        ),
         "cancel_queued_run" => {
             if cmd.run_id.is_empty() {
                 return RpcResponse::build_fail_code(
@@ -489,26 +489,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             ));
             RpcResponse::ok(id, "set_thinking_level", serde_json::json!({}))
         }
-        "set_steering_mode" => {
-            let mode = cmd.mode.clone();
-            wlock!(session, id).set_steering_mode(&mode);
-            let sess = rlock!(session, id);
-            sess.broadcaster.broadcast(SseEvent::new(
-                "steering_mode_changed",
-                serde_json::json!({"mode": mode}),
-            ));
-            RpcResponse::ok(id, "set_steering_mode", serde_json::json!({}))
-        }
-        "set_follow_up_mode" => {
-            let mode = cmd.mode.clone();
-            wlock!(session, id).set_follow_up_mode(&mode);
-            let sess = rlock!(session, id);
-            sess.broadcaster.broadcast(SseEvent::new(
-                "follow_up_mode_changed",
-                serde_json::json!({"mode": mode}),
-            ));
-            RpcResponse::ok(id, "set_follow_up_mode", serde_json::json!({}))
-        }
+        "set_steering_mode" | "set_follow_up_mode" => RpcResponse::build_fail_code(
+            id,
+            cmd_type,
+            "unsupported",
+            "run-internal message modes were removed; queued runs are always FIFO",
+            serde_json::json!({}),
+        ),
         "compact" => {
             let result = wlock!(session, id).compact(&cmd.custom_instructions);
             match result {
@@ -1204,8 +1191,6 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // session" — with sessions as equal peers, every new session gets them).
     let settings_path = std::path::PathBuf::from(crate::models::settings_path());
     if let Ok(settings) = crate::config::load_settings(&settings_path) {
-        new_sess.set_steering_mode(&settings.steering_mode);
-        new_sess.set_follow_up_mode(&settings.follow_up_mode);
         if !settings.default_permission_level.is_empty() {
             new_sess.set_permission_level(&settings.default_permission_level);
         }
@@ -2401,6 +2386,18 @@ mod tests {
     }
 
     #[test]
+    fn legacy_run_internal_modes_are_explicitly_unsupported() {
+        let state = make_app_state();
+        for command_type in ["set_steering_mode", "set_follow_up_mode"] {
+            let mut cmd = make_cmd(command_type);
+            cmd.mode = "all".to_string();
+            let response = parse_response(&handle_command_internal(&state, cmd));
+            assert_eq!(response["success"], false, "{command_type}");
+            assert_eq!(response["error_code"], "unsupported", "{command_type}");
+        }
+    }
+
+    #[test]
     fn set_auto_compaction_works() {
         let state = make_app_state();
         let mut cmd = make_cmd("set_auto_compaction");
@@ -2446,7 +2443,7 @@ mod tests {
             .begin(Some("run-current"), None)
             .unwrap();
 
-        for command_type in ["steer", "follow_up", "abort"] {
+        for command_type in ["follow_up", "abort"] {
             let mut cmd = make_cmd(command_type);
             cmd.run_id = "run-old".to_string();
             cmd.message = "late control".to_string();
@@ -2460,6 +2457,17 @@ mod tests {
                 crate::runtime::RunPhase::Starting
             );
         }
+
+        let mut steer = make_cmd("steer");
+        steer.run_id = "run-current".to_string();
+        steer.message = "late control".to_string();
+        let response = parse_response(&handle_command_internal(&state, steer));
+        assert_eq!(response["success"], false);
+        assert_eq!(response["error_code"], "unsupported");
+        assert_eq!(
+            session.read().runtime.snapshot().unwrap().phase,
+            crate::runtime::RunPhase::Starting
+        );
 
         let mut abort = make_cmd("abort");
         abort.run_id = "run-current".to_string();

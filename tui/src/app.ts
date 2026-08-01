@@ -613,8 +613,6 @@ export class App extends Container {
         break;
       }
       case "tools_changed":
-      case "steering_mode_changed":
-      case "follow_up_mode_changed":
       case "sandbox_policy_changed":
       case "ephemeral_changed": {
         // Reflected in /status; refresh to keep accurate.

@@ -104,15 +104,12 @@ export interface RpcSessionState {
   thinkingLevel: ThinkingLevel;
   isStreaming: boolean;
   isCompacting: boolean;
-  steeringMode: "all" | "one-at-a-time";
-  followUpMode: "all" | "one-at-a-time";
   sessionFile?: string;
   sessionId: string;
   session_name?: string;
   explicitSession: boolean;
   autoCompactionEnabled: boolean;
   queryCount: number;
-  pendingMessageCount: number;
   // Welcome info
   version?: string;
   cwd?: string;
