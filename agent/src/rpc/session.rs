@@ -58,6 +58,9 @@ pub struct ServerSession {
     /// Short-lock authoritative lifecycle and task owner. This prevents abort
     /// from making a session reusable before the matching task actually exits.
     pub runtime: Arc<crate::runtime::SessionRuntime>,
+    /// Process-local queued-run state. It deliberately resets when the Agent
+    /// process restarts; `agent_instance_id` lets clients reconcile that loss.
+    pub scheduler: Arc<crate::runtime::InMemoryRunQueue>,
     /// ID of the session this one was forked from, if any.
     pub parent_session_id: String,
     /// Human-readable label (set via `/name`).  Empty until named.
@@ -169,6 +172,7 @@ impl ServerSession {
         };
         let is_streaming = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let runtime = Arc::new(crate::runtime::SessionRuntime::new(is_streaming.clone()));
+        let scheduler = Arc::new(crate::runtime::InMemoryRunQueue::new(&session_id, 1));
         let persistence =
             crate::session::SessionPersistence::new(manager.clone(), session_id.clone());
         Self {
@@ -186,6 +190,7 @@ impl ServerSession {
             cwd: cwd.to_string(),
             is_streaming,
             runtime,
+            scheduler,
             session_name: String::new(),
             parent_session_id: String::new(),
             created_by: String::new(),
@@ -641,6 +646,8 @@ impl ServerSession {
             "broadcastLag": self.broadcaster.lag_count(),
             "ringTruncations": self.broadcaster.truncation_count(),
             "activeRunId": self.runtime.snapshot().map(|run| run.run_id),
+            "queuedRuns": self.scheduler.queued().len(),
+            "queuedBytes": self.scheduler.queued_bytes(),
         })
     }
 
@@ -730,6 +737,10 @@ impl ServerSession {
             }
             *self.messages.write() = msgs;
             self.session_id = id.to_string();
+            self.scheduler = Arc::new(crate::runtime::InMemoryRunQueue::new(
+                id,
+                crate::session::next_run_sequence(&session.entries),
+            ));
         }
         Ok(())
     }

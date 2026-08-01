@@ -31,8 +31,9 @@ Run
 5. **Agent 是 transcript 和 run event 的共同真源。** 最终对话写入 session transcript JSONL；高频事件写入 Agent 管理的 per-run event JSONL，不把 token delta 混入 transcript。
 6. **GUI SQLite 只保存派生数据。** GUI observer、React 当前页面和 NATS 都消费 Agent canonical event，不拥有主流程。
 7. **Session 内一次只运行一个 active run，不同 Session 可并行。** Observer 默认上限保持 128；queued run 使用独立的可配置上限，不能与 observer 配额混为一谈。
-8. **删除 Session 必须回收全部 queued/active runtime、transcript、event journal、writer、lock/temp 文件。** GUI 离线删除使用 tombstone/outbox。
-9. **不改变默认 sidecar 策略。** 外部管理 Agent 的部署形式继续提供 GUI 退出后 Agent 自主运行能力；本方案不要求 bundled sidecar 跨 GUI 生命周期常驻。
+8. **Queued run 只存在于 Agent 进程内存。** GUI/TUI 重启不丢队列；Agent 进程重启会丢失尚未启动的 queued run，这是明确接受的产品边界，客户端通过 `agent_instance_id` 对账并显示已丢失，不静默重提。
+9. **删除 Session 必须回收全部 queued/active runtime、transcript、event journal、writer、lock/temp 文件。** GUI 离线删除使用 tombstone/outbox。
+10. **不改变默认 sidecar 策略。** 外部管理 Agent 的部署形式继续提供 GUI 退出后 Agent 自主运行能力；本方案不要求 bundled sidecar 跨 GUI 生命周期常驻。
 
 ## 2. 术语和身份模型
 
@@ -83,7 +84,7 @@ Run
 - `idx`：单个 run 内所有 canonical event 从 0 开始单调递增，只能由 Agent 的单一 stamping point 分配。
 - `session_idx`：model/name/cwd/config 等 session-scoped event 的单调序号，不借用已结束 run。
 - `event_id`：跨 gRPC/NATS/SQLite 投影去重身份；run event 可由 `(session_id, run_id, epoch, idx)` 确定性生成。
-- 跨 run 顺序使用 session scheduler 持久化的 `run_sequence`，不能比较两个 run 各自的 `idx`。
+- 跨 run 顺序使用 session scheduler 分配的 `run_sequence`，不能比较两个 run 各自的 `idx`。Queued run 的 sequence 只在内存中；run 真正启动时将 sequence 写入 transcript/event journal。Agent 重启后从已启动 run 的最大值继续，允许因丢失 queued run 留下空洞，但不能复用已有值。
 
 ### 2.5 Canonical event envelope
 
@@ -137,7 +138,7 @@ Session-scoped event：
 | CLI | `future run` 为单次普通 prompt | 保持；如遇 busy 返回明确错误，除非显式选择 enqueue |
 | GUI/Remote | streaming 时禁止二次提交，无 Follow-up 入口 | GUI 将来可开放 queued submit；Remote 策略可独立开放 |
 | 飞书/钉钉 Channel | 新消息会 abort 当前 run、等待 idle 后再 prompt，并用 generation 丢弃旧 stream | 先保留 supersede 产品语义，但改为 Agent 原子操作和独立新 run |
-| 请求幂等 | active + 最近 64 个 request ID 的进程内窗口，同 key 返回拒绝而非原 ACK | 改为 session-scoped durable request→RunAck 映射 |
+| 请求幂等 | active + 最近 64 个 request ID 的进程内窗口，同 key 返回拒绝而非原 ACK | 改为 session scheduler 内的 request→RunAck 映射；同一 Agent 生命周期返回原 ACK，重启后不保证 |
 | Run fencing | `run_id + epoch` 防旧 task finalize 新 run | 保留 |
 | Run 内排序 | broadcaster 在内存锁内生成 `idx`，ring 约 2,000 条 | stamping 移到 durable Agent event writer |
 | Event 真源 | Agent 只有内存 ring；GUI 写 per-run JSONL | 新 run 的 per-run JSONL 移到 Agent；旧 GUI 文件只读兼容并按 retention 回收 |
@@ -185,21 +186,23 @@ enqueue_prompt(
 接受过程必须在同一个 session scheduler 临界区内完成：
 
 1. 校验 session 不是 deleting/shutting down。
-2. 以 `(session_id, client_request_id)` 做幂等检查；相同 request digest 的重试返回同一个 `run_id`，相同 key 但 payload 不同则返回 `duplicate_request_conflict`。该映射与 RunRequest 一起 durable，Agent 重启后仍然有效，并至少保留到 session 删除；压缩 journal 时必须把映射带入 checkpoint/manifest。
+2. 以 `(session_id, client_request_id)` 做进程内幂等检查；相同 request digest 的重试返回同一个 `run_id`，相同 key 但 payload 不同则返回 `duplicate_request_conflict`。Active/queued 请求的映射不能逐出；terminal ACK 使用有界 LRU。Agent 重启后该保证失效，客户端不得据此推断跨重启 exactly-once。
 3. 生成 `run_id + run_sequence`。
 4. 快照本次 run 的 model、thinking、approval、cwd 和相关执行设置；快照必须带 `settings_schema_version`。
-5. 把完整 `RunRequest`、`run_accepted` 和 queued/running 状态持久化到 queue/control journal。
-6. 空闲则占用 active lease 并启动；忙碌则放入 durable FIFO。只有 run 真正开始时，才按对话顺序把 user entry 追加到 transcript。
-7. 持久化成功后才返回 ACK。
+5. 把完整 `RunRequest`、幂等 ACK 和 queued/running 状态写入该 session scheduler 的有界内存状态；附件内容也必须在接受边界完成内存快照，不能继续引用调用方临时文件。
+6. 空闲则占用 active lease 并启动；忙碌则放入内存 FIFO。只有 run 真正开始时，才按对话顺序把 user entry、`run_sequence` 和 `run_started` 追加到 transcript/event journal。
+7. 内存状态提交成功后返回 ACK。该 ACK 表示“当前 Agent 实例已接受”，不表示 queued run 已落盘。
 
 `after_run_id` 只作为调用方看到的前驱校验和诊断信息，不让新 run 归属于旧 run。旧 run 已结束但 session 未删除时，提交仍可成为下一个 run；是否接受由 busy policy 明确决定，不能静默丢弃。
 
 Queued run 的输入不能在接受时直接插入 transcript。否则 A 尚在生成时接受 B 会形成 `user A → user B → assistant A` 的错误顺序，并重新引入 terminal rewrite。Canonical 顺序应为：
 
 ```text
-queue journal: accept B
+memory scheduler: accept B
 transcript: user A → assistant A → user B → assistant B
 ```
+
+`get_session_state` 必须返回 `agent_instance_id`、active run、queued run 摘要和最近 terminal ACK。GUI/TUI 重连到同一 `agent_instance_id` 时可恢复队列展示；发现实例 ID 变化时，把本地尚未启动的 queued 项标记为 `lost_on_agent_restart`，不得假装仍在排队或自动重提。
 
 ### 4.2 Run 状态机
 
@@ -222,7 +225,7 @@ Terminal 状态至少包括：
 
 状态约束：
 
-1. 每个 accepted run 必须最终 terminal，不能留下幽灵 queued run。
+1. 同一 Agent 生命周期内每个 accepted run 必须最终 terminal；Agent 退出时未启动 queued run 随内存状态一起丢失，不写伪 terminal。客户端以 `agent_instance_id` 变化显示 `lost_on_agent_restart`。
 2. 一个 session 最多一个 active lease；queued run 严格按 `run_sequence` FIFO。
 3. 当前 run terminal 持久化完成后，scheduler 才能启动下一个 run。
 4. queued run 只能产生 accepted/queued/cancelled 等 lifecycle event，不接收 text/tool/approval execution event。
@@ -235,13 +238,13 @@ Terminal 状态至少包括：
 
 - `reject_if_busy`：CLI、automation 等需要严格同步语义的调用方可使用。
 - `enqueue_if_busy`：TUI 和未来 GUI Follow-up 使用。
-- `supersede_session`：Channel 保持“最新消息优先”时使用；在一个 durable scheduler transaction 中取消 active 和全部既有 queued run，再接受新 run 作为唯一 successor。
+- `supersede_session`：Channel 保持“最新消息优先”时使用；在一个 scheduler 临界区中取消 active 和全部既有 queued run，再接受新 run 作为唯一 successor。
 
-`supersede_session` 是普通 abort 不级联规则的显式例外，不是插队操作。被替代的 queued run 都必须得到 `cancelled(reason=superseded)` terminal；新 run 使用更大的 `run_sequence`，因此仍保持 session 顺序单调。该事务必须先 durable 记录新 RunRequest、被取消 run 列表和 supersede intent，再发 active interrupt；任一步无法持久化时整个操作返回失败，不能只取消一半。
+`supersede_session` 是普通 abort 不级联规则的显式例外，不是插队操作。被替代的 queued run 在内存 registry 中进入 `cancelled(reason=superseded)`，新 run 使用更大的 `run_sequence`，因此仍保持 session 顺序单调。Scheduler 必须在同一锁内完成“移除全部 queued、登记其取消结果、接受唯一 successor、设置 active supersede intent”，释放锁后才发 active interrupt，避免混合客户端看到半更新状态。
 
 删除原有 `steering_mode`、`follow_up_mode`、`all/one-at-a-time` 和 `streaming_behavior`。它们属于旧的 run 内控制模型。
 
-queued run 上限必须独立可配置；首版可采用每 session 128 作为建议值，但它与 observer 的默认 128 没有语义关联。达到上限返回结构化 `queue_full`，不覆盖、不合并、不静默丢弃。全局再设置独立的 queued run 内存/磁盘配额，防止单客户端耗尽资源。
+queued run 上限必须独立可配置；首版采用每 session 128、全局 4096 的建议值，但它与 observer 的默认 128 没有语义关联。达到上限返回结构化 `queue_full`，不覆盖、不合并、不静默丢弃。RunRequest 与附件都计入独立的内存字节配额，防止单客户端耗尽进程内存。
 
 ### 4.4 Abort 和取消
 
@@ -266,8 +269,8 @@ Healthy
 规则：
 
 1. 当前 active run 发生不可满足的 append/fsync 错误时，不得宣称 clean completion；保留待提交 outcome，并进入非终态 degraded 状态。
-2. Scheduler 在释放 active lease/dequeue 前先检查 persistence health；不健康时 queued run 保持 queued，不能逐个 dequeue 后失败。
-3. unhealthy 期间默认拒绝新的提交并返回 `persistence_unavailable`；如果能够可靠写入独立的健康 WAL，才可选择继续接受但保持 queued。
+2. Scheduler 在释放 active lease/dequeue 前先检查 persistence health；不健康时内存中的 queued run 保持 queued，不能逐个 dequeue 后失败。
+3. unhealthy 期间默认拒绝新的提交并返回 `persistence_unavailable`，避免故障期间继续占用无界内存；已有 queued run 只在当前 Agent 进程内保留。
 4. 恢复必须先完成 writer probe、journal 尾部校验和 manifest 修复，再释放调度熔断。
 5. GUI/TUI 显示“存储故障，队列已暂停”，不能把它表现成普通 idle。
 6. 删除命令仍可执行，但必须走可验证的 close/fence 路径，不能因 unhealthy 永久无法回收。
@@ -278,18 +281,17 @@ Healthy
 - 已在执行的外部工具按其既有取消能力请求停止；无法撤销的副作用必须被记录为“outcome 未确认”，恢复后优先 reconciliation，不能为了补日志自动重跑工具。
 - 内存只保留一个有大小上限的 pending commit batch 和 terminal outcome；超过上限直接保持 degraded/需人工处理，禁止继续增长。
 - `abort(active_run)` 属于安全控制，即使 degraded 也要触发内存 interrupt；其 durable terminal 等 writer 恢复后提交。
-- `cancel_queued_run` 必须 durable 才能生效。degraded 期间无法写 hard barrier 时返回 `persistence_unavailable`，不得只改内存队列；完整 session 删除是例外，因为它通过 deleting fence 后回收整个 canonical store，不要求为每条 queued run 补写取消事件。
+- `cancel_queued_run` 是纯内存调度操作，即使 degraded 也允许立即生效；它不承诺生成持久化 terminal。完整 session 删除同样先清空内存队列，再回收 canonical store。
 
-### 4.6 Durable 附件
+### 4.6 Queued 附件内存快照
 
-Queued RunRequest 不能依赖 GUI/TUI/Channel 的临时文件路径，也不应把无上限 base64 直接塞进 `queue.jsonl`。
+Queued RunRequest 不能在接受后继续依赖 GUI/TUI/Channel 的临时文件路径。由于 queued run 不跨 Agent 重启恢复，首版不建设 durable blob store，而是在接受边界把附件解析成 Agent-owned 的有界内存快照。
 
-- Agent 接受前校验单文件、单请求和 session 总配额。
-- 附件先写入 Agent 管理的 content-addressed blob store，记录 `blob_id/hash/media_type/size`，fsync 成功后 RunRequest 只保存引用。
-- Blob 引用采用两阶段提交：先创建并 fsync upload lease/pending marker，再写 blob；RunRequest hard commit 后标记 referenced 并清除 pending。Orphan GC 必须忽略有效 pending lease，并且不回收创建时间小于安全窗口（建议 10 分钟）的未引用 blob。
-- ACK 返回前，RunRequest 和 blob 引用必须同时 durable；失败则整个提交不成立。
-- 启动 run 时再次校验 hash。缺失或损坏时该 run 以结构化 `attachment_unavailable` 失败，不能把残缺 prompt 发送给模型。
-- queued run 取消、session 删除和 retention 都更新引用并由 orphan GC 回收 blob。进程 crash 留下的过期 pending marker 只能在安全窗口后、并再次扫描全部 queue/checkpoint/transcript 引用后清理。
+- Agent 接受前校验单文件、单请求、per-session queue 和全局 queue 的字节配额。
+- 路径型图片/文件在 ACK 前读取并转换为不可变的内存 payload；读取失败返回 `attachment_unavailable`，不能接受一个未来必然残缺的 run。
+- 大附件超过配置上限时返回 `attachment_too_large`；不把无上限 base64 或文件内容放入队列。
+- run 开始后沿用现有 transcript 附件持久化逻辑；queued run 取消、supersede、session 删除会立即释放对应内存。
+- Agent 重启时附件与 queued run 一起丢失，不产生 orphan blob 或 GC 需求。
 - 已存在的合法 Agent-owned base64 transcript 仍兼容读取，不要求回写迁移。
 
 ### 4.7 RPC 和结构化错误契约
@@ -383,7 +385,7 @@ TUI 所有用户提交都调用同一个 `enqueuePrompt`：
 - `streaming` 从“是否有一个 activeRunId”改为 session 是否有 active run；另有 `queuedCount`。
 - 收到 A 的 `agent_end` 只终结 A；随后根据 B 的 `run_started` 更新 active，不制造整段对话已结束的闪烁。
 - Abort 精确发送当前 active `run_id`；取消排队项使用独立命令。
-- TUI 断线重连时从 Agent session state/journal 重建 active + queued runs，不能只清空本地 ID。
+- TUI 断线重连时从 Agent session state 重建 active + queued runs，并核对 `agent_instance_id`；同一实例不能只清空本地 ID，实例变化则明确标记旧 queued 项已丢失。
 
 TUI 展示仍可以把一个 user bubble 和该 run 的 assistant/tool 输出视为一轮；不需要展示 `turn_id`。
 
@@ -408,7 +410,7 @@ TUI 是当前 Follow-up 的真实调用方，必须与 Agent RPC 在同一发布
 4. 每条已启动的 Channel 消息对应一个独立流式卡片；queued 期间不创建 streaming CardKit/AI Card，避免空卡片长期占位。
 5. 如果排队等待超过短阈值，Channel 可回复轻量“已接收/等待处理中”；精确位置仅作提示，真正开始时再创建或更新该 run 的卡片。
 6. generation counter、card id、approval action 都绑定 `run_id`；旧 run 的 terminal 不能结束新 run 的卡片。
-7. 图片/文件必须先进入 Agent durable blob store，Channel 下载临时路径不能成为 queued RunRequest 的长期引用。
+7. 图片/文件必须在 enqueue ACK 前读入受配额约束的 Agent 内存快照，Channel 下载临时路径不能成为 queued RunRequest 的后续引用。
 
 后续若产品决定 IM 改为“不打断、按发送顺序回答”，只需把 Channel policy 切为 `enqueue_if_busy`；这是显式产品开关，不与本次 Steer 删除混淆。Channel bridge 必须在 proto 改动的同一版本更新，并在配置/UI 中解释 supersede 会取消其他客户端在同 session 的排队项。
 
@@ -424,23 +426,17 @@ TUI 是当前 Follow-up 的真实调用方，必须与 Agent RPC 在同一发布
   run-events/
     {session_id}/
       session-events.jsonl
-      queue.jsonl
       {run_id}.jsonl
       manifest.json
-  blobs/
-    {sha256}
 ```
 
 - session transcript JSONL 保存最终可见对话和控制事实。
-- `queue.jsonl` 保存 run accepted/queued/dequeued/cancelled 顺序，使 GUI/TUI 断开或 Agent 受控重启后仍能审计和恢复队列。
+- queued RunRequest、请求幂等表和 queue lifecycle 只在 per-session scheduler 内存中，不属于该目录。
 - `{run_id}.jsonl` 保存高频 canonical event。
-- `manifest.json` 保存 schema、next sequence 和 high-water mark；损坏时以 journal 尾部修复。
-- `blobs/{sha256}` 保存 queued/active run 的 Agent-owned 附件；引用关系由 queue/control journal 和 transcript 决定。
+- `manifest.json` 保存 event schema、已启动 run 的 next sequence 和 high-water mark；损坏时以 transcript/event journal 尾部修复。
 - 路径必须经过 safe-slug 校验，禁止使用客户端绝对路径。
 
-`queue.jsonl` 采用 checkpoint + tail 压缩：默认在 session idle 且超过行数/字节阈值时触发；达到 hard size threshold 时由 scheduler actor 建立 mutation barrier 后触发，不能与 enqueue/cancel/dequeue 并发改状态。Checkpoint 至少包含 `schema_version`、`next_run_sequence`、active/queued RunRequest、设置快照和 blob 引用、`(client_request_id, request_digest) → RunAck` 幂等索引、persistence health 以及 journal high-water mark。写入 `{session}.queue.checkpoint.tmp`、fsync、原子 rename 后才裁剪已覆盖 tail；crash 时选择最后一个校验有效的 checkpoint 并重放其后的 journal。
-
-Agent 进程 crash 后无法继续原 Rust future：active run 恢复为 `interrupted`。尚未开始的 queued run 是否自动继续必须是显式策略；本方案默认继续，因为其输入和设置快照已 durable，并在启动时先完成 interrupted active run 的终态恢复。
+Agent 进程 crash 后无法继续原 Rust future：已持久化启动证据的 active run 恢复为 `interrupted`。尚未开始的 queued run 没有磁盘记录，也不恢复。新进程通过新的 `agent_instance_id` 明确这一代际变化，并从已启动 run 的最大 `run_sequence` 继续分配。
 
 ### 7.2 单一 writer/stamping point
 
@@ -455,13 +451,11 @@ Agent 进程 crash 后无法继续原 Rust future：active run 恢复为 `interr
 
 只有成功进入 writer 的 event 才能广播。写入分为 hard barrier 和 bounded group commit：
 
-- `run_accepted`
 - `run_started`
 - `approval_request/decision`
 - `run_terminal`
-- queued run cancel
 
-以上控制边界使用 hard barrier。`tool_end` 和高频 delta 允许按 10–50ms/字节阈值 group commit，但仍必须遵守 append-and-commit-before-broadcast：同一批事件 durability 确认后才能对外发送。这样避免大量短工具调用产生每秒多次独立 fsync，同时不让 observer 看到磁盘尚未承诺的事件。
+以上已启动 run 的控制边界使用 hard barrier。`run_accepted/queued/cancel_queued` 是内存 scheduler lifecycle，只通过 live broadcaster 和 `get_session_state` 暴露，不写 event journal。`tool_end` 和高频 delta 允许按 10–50ms/字节阈值 group commit，但仍必须遵守 append-and-commit-before-broadcast：同一批事件 durability 确认后才能对外发送。这样避免大量短工具调用产生每秒多次独立 fsync，同时不让 observer 看到磁盘尚未承诺的事件。
 
 这是有意识的吞吐/崩溃窗口取舍：工具副作用可能已发生，而对应 `tool_end` 最多仍有一个 group-commit 窗口尚未 durable。恢复时依靠 transcript/tool reconciliation 标记 outcome unknown，绝不能因缺少 `tool_end` 自动重跑可能有副作用的工具。
 
@@ -493,9 +487,9 @@ Atomic attach 顺序：
 ### 7.4 Retention
 
 - session 存在时默认在已配置配额内保留 run event；达到配额只能按下面的完整 terminal run retention 规则裁剪，不能任意截断 active journal。
-- session 删除时无条件删除其全部 event journal 和 queue journal。
+- session 删除时无条件删除其全部 event journal，并清空内存 scheduler。
 - 清理 finished run 只删详细 event，不删 transcript；需 Agent prune RPC。
-- 只能按完整 terminal run 裁剪，不能裁剪 active/queued run。
+- 只能按完整 terminal run 裁剪，不能裁剪 active run；queued run 不在磁盘 retention 范围内。
 - Fork 默认复制 transcript，不复制历史 telemetry 或旧 queued 状态。
 
 ## 8. GUI Observer、SQLite 与 NATS
@@ -574,7 +568,7 @@ Active/Idle
   → Deleting（拒绝新提交和配置写入）
   → abort active + cancel all queued
   → 等待 matching task 退出
-  → transcript/event/queue writer barrier + close
+  → transcript/event writer barrier + close
   → canonical 目录 rename-to-trash
   → 从 sessions map 移除
   → Deleted
@@ -589,7 +583,7 @@ Active/Idle
 4. 先关闭 handle，再 rename/delete，兼容 Windows。
 5. 晚到 event 受 deleting fence 和 epoch 拦截，不能重建文件。
 6. observer 收到 `session_deleted`/NotFound 后终止。
-7. transcript、run-events、queue、manifest、lock、temp 都属于同一删除生命周期。
+7. transcript、run-events、manifest、lock、temp 都属于同一删除生命周期；queued RunRequest 和幂等表从内存中同步清空。
 
 ### 10.2 GUI tombstone/outbox
 
@@ -619,9 +613,9 @@ Agent 启动时继续清理 `.trash-*`、orphan event 目录和过期 temp。GUI
 
 GUI/TUI 重启：
 
-1. 从 Agent 查询 session active run、queued runs 和 cursor。
+1. 从 Agent 查询 `agent_instance_id`、session active run、queued runs 和 cursor。
 2. active run attach durable replay 后继续显示。
-3. queued run 恢复排队气泡和位置。
+3. Agent 实例未变化时，从内存 scheduler 恢复 queued 气泡和位置；实例变化时，把客户端遗留 queued 气泡标记为 `lost_on_agent_restart`。
 4. approval 从 Agent journal/get_state 重建。
 5. 不先把 SQLite 非终态 run 写成 cancelled；Agent 不可达时显示 `reconciling`。
 
@@ -629,8 +623,8 @@ Agent 重启：
 
 1. 原 active future 无法接续，matching run 记为 interrupted。
 2. 完成 interrupted terminal commit。
-3. 默认恢复 durable queued runs 并按 FIFO 启动；可通过安全模式暂停队列，但不能丢失。
-4. GUI observer 按 journal cursor 收敛，不制造假 completed/cancelled。
+3. 未启动 queued run 和进程内幂等表丢失，不恢复、不自动重提；新 Agent 生成新的 `agent_instance_id`。
+4. GUI observer 按 journal cursor 和实例 ID 收敛，不制造假 completed/cancelled；queued 项使用明确的 `lost_on_agent_restart` 展示状态。
 
 GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默认 sidecar 随 GUI 重启属于部署生命周期，不改变协议能力。
 
@@ -640,33 +634,33 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 
 - 固定 Session/Run/Event 状态机。
 - 固定“一次提交一个 run”和 session 单 active lease。
-- 测试并发提交、幂等 ACK、FIFO、abort/cancel/delete race。
+- 测试并发提交、进程内幂等 ACK、FIFO、abort/cancel/delete race。
 - 测试 event envelope 和 `idx` 唯一递增。
-- 对 scheduler 状态机使用 property-based test；输入随机 submit/abort/cancel/crash/recover 序列，持续验证单 active、无丢失、无重复 terminal。
+- 对 scheduler 状态机使用 property-based test；输入随机 submit/abort/cancel/supersede 序列，持续验证单 active、进程存活期间无丢失、无重复 terminal；单独验证 Agent restart 清空 queued 并更换 instance ID。
 - 预留 writer failpoint，在每个 append/flush/fsync/rename 边界可确定性 crash 或返回 I/O 错误，Phase 3 复用同一套 harness。
 
 退出条件：重复 request、重复 run sequence、同 session 双 active、跨 run event 均会测试失败。
 
 ### Phase 1a：Queued Run 核心
 
-- 增加 `RunRequest/RunAck`、durable queue 和 session scheduler。
+- 增加 `RunRequest/RunAck`、per-session 内存 queue 和 session scheduler。
 - 冻结 RPC、busy policy 和结构化错误 schema。
-- 普通 prompt 支持 `reject_if_busy/enqueue_if_busy`，实现 session-scoped durable idempotency。
+- 普通 prompt 支持 `reject_if_busy/enqueue_if_busy`，实现 session-scoped、Agent-lifetime idempotency。
 - 临时把 `follow_up` 适配为创建新 queued run。
 - 删除 run loop 内 steering/follow-up continuation 和 transcript rewrite。
 - 删除 steering/follow-up mode 与 streaming behavior。
 
-退出条件：正常存储条件下，每次 accepted text submit 都有独立 run、严格 FIFO、幂等 ACK 和唯一 terminal。生产客户端切换前继续受 feature flag/兼容 adapter 保护。
+退出条件：同一 Agent 生命周期内，每次 accepted text submit 都有独立 run、严格 FIFO、幂等 ACK 和唯一 terminal；Agent restart 的 queued 丢失语义有显式协议与 UI 测试。生产客户端切换前继续受 feature flag/兼容 adapter 保护。
 
 ### Phase 1b：安全边界与 Supersede
 
 - 实现 persistence health、bounded backpressure、执行 interrupt 和恢复熔断。
-- 实现 durable blob、两阶段 upload lease、配额和 GC。
+- 实现 queued 附件内存快照、per-session/global 字节配额和释放测试。
 - 实现原子 `busy_policy=supersede_session`，取消 active + 全部 queued 后接受唯一 successor。
 - Channel 改用原子 supersede，不再自行 `abort → poll idle → prompt`。
-- 完成 queue checkpoint/compaction 和 crash failpoint 测试。
+- 完成 scheduler race、内存配额和 active event writer crash failpoint 测试。
 
-退出条件：磁盘故障不继续执行或排空队列；附件不被 GC 竞态删除；supersede 在任意 crash 点不出现半取消/双 active；之后才允许 Phase 2 客户端正式切换。
+退出条件：磁盘故障不继续执行或排空当前进程的队列；附件快照不依赖临时路径且内存有界；supersede 不出现半取消/双 active；之后才允许 Phase 2 客户端正式切换。
 
 ### Phase 2：TUI/Channel 同步迁移和 Turn 收敛
 
@@ -700,12 +694,12 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 
 ### Phase 5：删除回收闭环
 
-- Agent deleting fence、队列取消、writer close、完整目录删除。
+- Agent deleting fence、内存队列清空、writer close、完整目录删除。
 - GUI tombstone/outbox。
 - 单删、批删、workspace、clear finished/all 共用服务。
 - Agent/GUI orphan GC。
 
-退出条件：Agent 离线删除重连后完成；被删 session 不回导；无 transcript/event/queue orphan。
+退出条件：Agent 离线删除重连后完成；被删 session 不回导；无 transcript/event orphan，内存 queued/ACK 状态已释放。
 
 ### Phase 6：Observer、NATS 和恢复
 
@@ -730,24 +724,23 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 | 场景 | 必须验证 |
 | --- | --- |
 | TUI 生成中连续提交 10 次 | 创建 10 个不同 queued run，FIFO，无幽灵气泡 |
-| 重复 `client_request_id` | 返回同一 RunAck，不重复入队 |
+| 同一 Agent 生命周期内重复 `client_request_id` | 返回同一 RunAck，不重复入队；payload 改变返回冲突 |
 | 同 session 并发提交 | `run_sequence` 唯一，始终只有一个 active |
 | 多 session 同时运行 | event 不串 session/run，各 session 可独立推进 |
 | active run 等待审批 | 同 session 队列不越过；其他 session 不受影响 |
 | 模型/思考等级切换 | 已 accepted run 快照不变，下一次提交使用新设置 |
 | abort active | 只终结目标 run，默认继续下一个 queued run |
 | cancel queued | 目标不启动并有 terminal；其余 FIFO 不变 |
-| Agent 在 dequeue 边界 crash | 不重复启动或丢失 queued run |
+| Agent 重启且存在 queued run | queued run 明确丢失；新 `agent_instance_id` 使 GUI/TUI 标记 `lost_on_agent_restart`，不自动重提 |
 | GUI/TUI 在 text/tool/approval 阶段退出 | 外部 Agent 继续，重启从 durable cursor 恢复 |
 | ring 超过 2,000 event | 从 Agent disk journal 完整补齐 |
 | event writer 磁盘满 | run 不假完成，进入 persistence degraded |
 | journal 最后一行截断 | 保留前序并修复/忽略 truncated tail |
 | persistence degraded 且存在 20 个 queued run | scheduler 熔断，20 个 run 保持 queued，不被排空式失败；修复后继续 FIFO |
 | active run streaming 时 writer 持续失败 | bounded backpressure 后 interrupt，不启动新 LLM/tool，内存 pending batch 不超上限 |
-| degraded 期间 cancel queued | 返回 `persistence_unavailable` 且内存/磁盘队列均不变；恢复后可重试 |
-| durable attachment 在 queued 期间重启/删除 | blob 可恢复且 hash 正确；取消/删除后引用与 orphan 被回收 |
-| blob write 与 RunRequest commit 间并发 GC/crash | pending lease/安全窗口阻止误删；过期 orphan 最终可回收 |
-| queue checkpoint 任一 fsync/rename 点 crash | 使用最后有效 checkpoint + tail 恢复，队列和幂等映射不丢不重 |
+| degraded 期间 cancel queued | 立即从内存队列取消并释放附件；不会因 event writer 故障被阻塞 |
+| 路径附件入队后源临时文件删除 | run 使用 ACK 前完成的内存快照；内容不变且内存配额正确释放 |
+| queued 内存达到 per-session/global 配额 | 返回 `queue_full`/`attachment_too_large`，不覆盖、不泄漏 |
 | 飞书/钉钉与 TUI 共用 session | `supersede_session` 取消 active 和 TUI queued，创建唯一新 run；所有被替代项有 terminal |
 | tool 已产生副作用但 `tool_end` 未 commit 即 crash | 恢复为 outcome unknown，不自动重跑工具 |
 | NATS overflow/断线 | 客户端发现 gap 并从 Agent 补齐 |
@@ -766,7 +759,7 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 - stale epoch drop count
 - event append/fsync latency
 - event journal bytes（per-session/global）
-- queue journal 行数/bytes
+- queued RunRequest count/bytes（per-session/global）
 - fsync/group-commit failure count
 - writer backpressure time/timeout 和 pending batch bytes
 - persistence health 状态和熔断持续时间
@@ -782,7 +775,7 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 2. `follow_up` 兼容适配器只把请求转换成新 run，不再保留旧同-run语义。
 3. Steer 若存在公开外部兼容承诺，先返回 deprecated/unsupported 并发布版本说明，再从下一协议版本移除；仓库内调用可直接删除。
 4. 旧 transcript 和 GUI event 文件只读不重写；legacy reader 保留到 retention/产品降级条件满足，不以固定一个发布周期强制退出。
-5. 降级到不认识 `queue.jsonl` 的旧 Agent 前必须排空或显式导出 pending queue；禁止直接回滚后让未启动输入静默消失。启动检测到未知 queue schema 时 fail closed 并提示升级，不得忽略文件。
+5. 版本升级、降级或 Agent 进程重启都会清空内存 queued run；客户端以 `agent_instance_id` 对账并明确显示丢失，禁止静默自动重提。
 6. Legacy event 文件只在 session 删除、用户显式清理或 retention 到期时删除。
 7. NATS v1 字段在兼容窗口内保持 additive-compatible，bridge 不可先于 mobile reader 移除旧字段。
 8. Deletion tombstone 在回滚版本中也不得丢弃。
@@ -792,9 +785,9 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 - 不改变 bundled sidecar 默认启动/退出策略。
 - 不实现 Agent crash 后从任意工具栈帧继续原 active future。
 - 不把 token delta 混入 transcript JSONL。
-- 不复制 fork 来源 session 的完整 telemetry 或 pending queue。
+- 不复制 fork 来源 session 的完整 telemetry 或内存 pending queue。
 - 不恢复 Steer 的“中途改变当前生成方向”能力。
-- 不要求 GUI、mobile 或 NATS 在线，外部 Agent 仍能自主完成 active/queued run。
+- 不要求 GUI、mobile 或 NATS 在线；只要 Agent 进程存活，外部 Agent 仍能自主完成 active/queued run。
 
 ## 16. Open Questions（不阻塞核心模型）
 
@@ -803,7 +796,7 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 1. **Channel 产品策略：**基线使用 `supersede_session` 保持“最新消息覆盖”；是否以及何时把 IM 默认切到 `enqueue_if_busy`。
 2. **Legacy 详情保留：**旧 aborted partial output 和 Runs inspector 详细时间线需要保留多久；若无合规要求，建议随用户 retention 清理而不是建设全量 importer。
 3. **公开 RPC 兼容窗口：**外部 gRPC 是否有稳定性承诺；这决定 `follow_up/steer` deprecated adapter 保留几个版本。
-4. **配额：**每 session/global queued run、单请求附件、blob store 和 event journal 的具体默认上限。
+4. **配额：**每 session/global queued run 数量与内存字节、单请求附件和 event journal 的具体默认上限。
 5. **NATS 发布门槛：**当前仍需支持的最低 mobile schema/capability 版本，以及 v1 字段最早移除版本。
 6. **Persistence health 粒度：**同一根目录通常按全局熔断；如果不同 session 可配置不同 volume，则按 writer/storage domain 隔离，而不是固定一刀切。
 
@@ -821,7 +814,8 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 10. **Follow-up：保留产品行为但更换内部模型。** TUI 当前真实使用，迁移为新 queued run；未来 GUI 复用同一入口。
 11. **Steer：删除有明确收益。** 可移除中断、重排、双队列、多 turn 和 transcript rewrite 复杂度。
 12. **Turn：完成收敛。** 新数据中产品 turn 与 run 1:1；历史 `turn_id` 仅兼容展示，不参与运行协议。
-13. **删除回收：闭环。** 删除 active/queued runtime、Agent 全部 journal 和 GUI 派生数据；离线删除由 tombstone/outbox 保证最终完成。
+13. **删除回收：闭环。** 删除 active/queued runtime、Agent transcript/event journal 和 GUI 派生数据；离线删除由 tombstone/outbox 保证最终完成。
 14. **迁移：有兼容路径。** TUI/Channel 同版本切换，旧 multi-turn transcript 可读，旧 GUI event 文件只读兼容并按明确 retention 回收，不默认建设全量 import RPC。
 15. **持久化故障：已闭环。** persistence health 会暂停 scheduler，queued run 不会在磁盘故障期间被排空式失败。
-16. **协议兼容：已纳入。** NATS 使用 additive versioned adapter；幂等键、附件和 queued 设置快照均跨重启 durable。
+16. **协议兼容：已纳入。** NATS 使用 additive versioned adapter；queued 状态通过 `agent_instance_id` 明确限定在单次 Agent 生命周期，已启动 run 的事件仍可 durable replay。
+17. **内存队列边界：成立。** GUI/TUI 崩溃但 Agent 存活时队列不受影响；Agent 重启后 queued run、附件快照和幂等表明确丢失，协议与 UI 都不伪装成可恢复。

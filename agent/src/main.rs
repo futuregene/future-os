@@ -531,6 +531,7 @@ async fn async_main(
     // them on demand.  Settings that used to be applied to the startup
     // default session are applied per-session in cmd_new_session.
     let app_state = future_agent::rpc::AppState {
+        agent_instance_id: format!("agent_{}", uuid::Uuid::new_v4().simple()),
         sessions: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         session_manager: manager,
         welcome_version: future_agent::utils::VERSION.to_string(),

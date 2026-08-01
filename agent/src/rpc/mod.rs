@@ -22,6 +22,10 @@ pub use session::ServerSession;
 
 #[derive(Clone)]
 pub struct AppState {
+    /// Changes on every Agent process start. Clients use it to distinguish a
+    /// reconnect to the same in-memory scheduler from a restart that dropped
+    /// queued runs and process-local idempotency state.
+    pub agent_instance_id: String,
     /// All live sessions keyed by session_id.  Sessions are equal peers —
     /// there is no privileged "default"/"current" session; clients address
     /// sessions explicitly and the agent hydrates them on demand.
@@ -257,6 +261,23 @@ fn get_state_internal(
             "lastEventIdx": sess.broadcaster.last_idx(),
         })
     });
+    let queued_runs = sess
+        .scheduler
+        .queued()
+        .into_iter()
+        .enumerate()
+        .map(|(index, run)| {
+            serde_json::json!({
+                "runId": run.run_id,
+                "runSequence": run.run_sequence,
+                "clientRequestId": run.client_request_id,
+                "state": "queued",
+                "queuePosition": index + 1,
+                "acceptedAt": run.accepted_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let queued_count = queued_runs.len();
     // Restart recovery: when no run is live but the journal still records a run
     // that began without committing (a run_started marker with no run_terminal),
     // the previous run was interrupted by a crash or agent restart. Surface it
@@ -288,6 +309,7 @@ fn get_state_internal(
     let pending_approvals = state.approval_gate.pending_for_session(&session_id);
 
     Some(serde_json::json!({
+        "agentInstanceId": state.agent_instance_id,
         "model": sess.model,
         "imageSupport": image_support,
         "thinkingLevel": sess.thinking_level,
@@ -320,6 +342,8 @@ fn get_state_internal(
         "createdBy": sess.created_by.clone(),
         "sourceMeta": sess.source_meta.clone(),
         "activeRun": active_run,
+        "queuedRuns": queued_runs,
+        "queuedCount": queued_count,
         "interruptedRun": interrupted_run,
         "requestedRun": requested_run,
         "pendingApprovals": pending_approvals,
@@ -567,6 +591,7 @@ mod tests {
             }
         }
         let state = AppState {
+            agent_instance_id: "agent-test-instance".to_string(),
             sessions: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),

@@ -221,7 +221,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                         "prompt",
                         "busy_policy_unavailable",
                         &format!(
-                            "busy policy `{}` requires the durable session scheduler",
+                            "busy policy `{}` requires the in-memory session scheduler",
                             policy.as_str()
                         ),
                         serde_json::json!({
@@ -1737,6 +1737,7 @@ mod tests {
         .into_iter()
         .collect();
         AppState {
+            agent_instance_id: "agent-test-instance".to_string(),
             sessions: Arc::new(parking_lot::RwLock::new(sessions)),
             session_manager,
             welcome_version: "0.0.0".to_string(),
@@ -1832,10 +1833,25 @@ mod tests {
     #[test]
     fn get_state_returns_session_info() {
         let state = make_app_state();
+        state
+            .get_session("default")
+            .unwrap()
+            .read()
+            .scheduler
+            .accept(
+                "queued-request",
+                Some("queued-run"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"message":"later"}),
+            )
+            .unwrap();
         let cmd = make_cmd("get_state");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert!(resp["data"]["sessionId"].is_string());
+        assert_eq!(resp["data"]["agentInstanceId"], "agent-test-instance");
+        assert_eq!(resp["data"]["queuedCount"], 1);
+        assert_eq!(resp["data"]["queuedRuns"][0]["runId"], "queued-run");
     }
 
     #[test]

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Atomic behavior requested when a session already owns an active run.
 ///
-/// Only `RejectIfBusy` is executable until the durable session scheduler lands;
+/// Only `RejectIfBusy` is executable until the in-memory session scheduler is wired;
 /// the other variants are parsed now so the wire contract can stabilize first.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,7 +48,7 @@ pub enum RunAcceptedState {
 
 /// Canonical acknowledgement for every accepted prompt request.
 ///
-/// `run_sequence` and `queue_position` remain absent until the durable
+/// `run_sequence` and `queue_position` remain absent until the session
 /// scheduler is the allocator; callers must not invent either value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunAck {

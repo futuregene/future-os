@@ -97,6 +97,29 @@ pub fn find_unterminated_run(entries: &[SessionEntry]) -> Option<String> {
     open
 }
 
+/// Continue run ordering without persisting queued work. New markers carry an
+/// explicit sequence; legacy markers contribute their count so an upgraded
+/// session never reuses a sequence already visible in its history.
+pub fn next_run_sequence(entries: &[SessionEntry]) -> u64 {
+    let mut started_count = 0_u64;
+    let mut max_sequence = 0_u64;
+    for entry in entries {
+        if entry.entry_type != ENTRY_TYPE_RUN_STARTED {
+            continue;
+        }
+        started_count = started_count.saturating_add(1);
+        if let Some(sequence) = entry
+            .content
+            .as_ref()
+            .and_then(|content| content.get("run_sequence"))
+            .and_then(serde_json::Value::as_u64)
+        {
+            max_sequence = max_sequence.max(sequence);
+        }
+    }
+    max_sequence.max(started_count).saturating_add(1).max(1)
+}
+
 /// Return the durable terminal payload for `run_id`, if the journal contains
 /// one. Scans from the end so a later healing rewrite/commit wins over an older
 /// marker. The returned value is the marker's `content` object.
@@ -265,11 +288,19 @@ impl SessionEntry {
     /// Marker written durably with the accepted user message to record that a
     /// run with this canonical id began. `content` carries `{ run_id, epoch }`.
     pub fn run_started(run_id: &str, epoch: u64) -> Self {
+        Self::run_started_with_sequence(run_id, epoch, None)
+    }
+
+    pub fn run_started_with_sequence(run_id: &str, epoch: u64, run_sequence: Option<u64>) -> Self {
+        let mut content = serde_json::json!({ "run_id": run_id, "epoch": epoch });
+        if let Some(sequence) = run_sequence {
+            content["run_sequence"] = serde_json::json!(sequence);
+        }
         Self {
             id: generate_entry_id(),
             entry_type: ENTRY_TYPE_RUN_STARTED.to_string(),
             role: ENTRY_TYPE_SYSTEM.to_string(),
-            content: Some(serde_json::json!({ "run_id": run_id, "epoch": epoch })),
+            content: Some(content),
             tool_calls: vec![],
             timestamp: Local::now(),
             tool_call_id: String::new(),
@@ -455,11 +486,8 @@ impl Manager {
         self.dir.join(format!("{}.jsonl", id))
     }
 
-    /// Durable scheduler journal for a session.
-    ///
-    /// Production session directories are `<data>/sessions`; keep run data in
-    /// the sibling `<data>/run-events` tree. Custom/test managers remain fully
-    /// contained below their configured directory.
+    /// Agent-owned event data for a session. Queued prompts are intentionally
+    /// in-memory only and never written below this path.
     fn run_data_root(&self) -> PathBuf {
         let run_events_dir =
             if self.dir.file_name().and_then(|name| name.to_str()) == Some("sessions") {
@@ -472,10 +500,6 @@ impl Manager {
 
     pub fn run_data_path(&self, id: &str) -> PathBuf {
         self.run_data_root().join(id)
-    }
-
-    pub fn run_queue_path(&self, id: &str) -> PathBuf {
-        self.run_data_path(id).join("queue.jsonl")
     }
 
     /// Append one or more entries to the session JSONL without rewriting
@@ -1422,9 +1446,9 @@ impl Manager {
         fs::remove_file(path).map_err(|e| anyhow!("failed to delete session: {}", e))?;
 
         // The session transcript is the deletion commit point. Once it is
-        // gone, reclaim every Agent-owned derivative for that session: queue
-        // journal, event journal/checkpoints, and attachment blobs all live
-        // below this directory. A missing directory is the normal legacy case.
+        // gone, reclaim every Agent-owned event derivative below this
+        // directory. The in-memory scheduler is fenced separately by the RPC
+        // deletion path. A missing directory is the normal legacy case.
         let run_data_path = self.run_data_path(id);
         match fs::remove_dir_all(&run_data_path) {
             Ok(()) => {}
@@ -2507,6 +2531,14 @@ mod tests {
         assert_eq!(c["run_id"], "run-1");
         assert_eq!(c["epoch"], 7);
 
+        let sequenced = SessionEntry::run_started_with_sequence("run-2", 8, Some(42));
+        assert_eq!(sequenced.content.as_ref().unwrap()["run_sequence"], 42);
+        assert_eq!(
+            next_run_sequence(&[started.clone(), sequenced]),
+            43,
+            "restart must continue after the largest persisted started sequence"
+        );
+
         let terminal = SessionEntry::run_terminal("run-1", RUN_STATE_COMPLETED, 42, 1500, None);
         assert_eq!(terminal.entry_type, ENTRY_TYPE_RUN_TERMINAL);
         let c = terminal.content.as_ref().unwrap();
@@ -2934,9 +2966,8 @@ mod tests {
         let session = Session::new("/tmp/test", "model", "");
         manager.save(&session).unwrap();
         let run_data_path = manager.run_data_path(&session.id);
-        std::fs::create_dir_all(run_data_path.join("blobs")).unwrap();
-        std::fs::write(manager.run_queue_path(&session.id), b"queue\n").unwrap();
-        std::fs::write(run_data_path.join("blobs").join("attachment"), b"blob").unwrap();
+        std::fs::create_dir_all(&run_data_path).unwrap();
+        std::fs::write(run_data_path.join("run-event.jsonl"), b"event\n").unwrap();
         assert!(manager.find(&session.id).is_some());
         assert!(run_data_path.exists());
 
