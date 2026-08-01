@@ -271,7 +271,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     serde_json::json!({}),
                 );
             }
-            match rlock!(session, id).scheduler.cancel_queued(
+            match wlock!(session, id).cancel_queued_run(
                 &cmd.run_id,
                 crate::runtime::QueuedCancellationReason::Cancelled,
             ) {
@@ -1944,6 +1944,7 @@ mod tests {
         let response = parse_response(&handle_command_internal(&state, cancel));
         assert_eq!(response["success"], true);
         assert_eq!(response["data"]["state"], "cancelled");
+        assert!(session.read().scheduled_setting_summary("run-1").is_none());
         assert_eq!(
             session
                 .read()

@@ -13,9 +13,41 @@ struct ScheduledPromptPayload {
     message: String,
     images: Vec<crate::types::ImageContent>,
     attachments: Vec<crate::types::Attachment>,
+    settings: ScheduledSettingsSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ScheduledSettingsSnapshot {
+    model: String,
+    thinking_level: String,
+    cwd: String,
+    auto_compaction: bool,
+    auto_retry: bool,
+    permission_level: String,
+    sandbox_tier: Option<String>,
+}
+
+pub(super) struct AcceptedRunSnapshot {
+    run_loop: crate::agent::Loop,
+    settings: ScheduledSettingsSnapshot,
 }
 
 impl ServerSession {
+    #[cfg(test)]
+    pub(super) fn scheduled_setting_summary(
+        &self,
+        run_id: &str,
+    ) -> Option<(String, String, bool, String)> {
+        self.scheduled_snapshots.get(run_id).map(|snapshot| {
+            (
+                snapshot.settings.model.clone(),
+                snapshot.settings.thinking_level.clone(),
+                snapshot.settings.auto_retry,
+                snapshot.settings.permission_level.clone(),
+            )
+        })
+    }
+
     pub fn enqueue_prompt(
         &mut self,
         msg: &str,
@@ -31,10 +63,31 @@ impl ServerSession {
         {
             return Err(crate::runtime::RunQueueError::Busy.into());
         }
+        let settings = ScheduledSettingsSnapshot {
+            model: self.model.clone(),
+            thinking_level: self.thinking_level.clone(),
+            cwd: self.cwd.clone(),
+            auto_compaction: self.auto_compaction,
+            auto_retry: self.auto_retry,
+            permission_level: self.permission_level.clone(),
+            sandbox_tier: self
+                .sandbox_policy
+                .as_ref()
+                .map(|policy| policy.tier.as_str().to_string()),
+        };
+        // Freeze the provider, model, tools and AgentConfig before accepting.
+        // A queued run must not observe a later set_model/set_thinking/tools
+        // command merely because it starts after that command.
+        let run_loop = self
+            .agent_loop
+            .try_read()
+            .map_err(|_| anyhow::anyhow!("session run configuration is busy"))?
+            .independent_copy();
         let payload = serde_json::to_value(ScheduledPromptPayload {
             message: msg.to_string(),
             images: images.to_vec(),
             attachments: attachments.to_vec(),
+            settings: settings.clone(),
         })?;
         let ack =
             self.scheduler
@@ -42,23 +95,20 @@ impl ServerSession {
         if ack.accepted_state == crate::runtime::RunAcceptedState::Existing {
             return Ok(ack);
         }
+        self.scheduled_snapshots.insert(
+            ack.run_id.clone(),
+            AcceptedRunSnapshot { run_loop, settings },
+        );
         if self.runtime.snapshot().is_none() {
+            if self.runtime.has_owned_task() {
+                // The prior run has finalized its control lease but its task
+                // monitor still owns the slot. Keep both the request and its
+                // accepted execution snapshot queued; the completion wake will
+                // start it after the task is fully gone.
+                return Ok(ack);
+            }
             return match self.start_next_scheduled() {
                 Ok(running) => Ok(running),
-                Err(_error)
-                    if self.runtime.has_owned_task()
-                        && self
-                            .scheduler
-                            .queued()
-                            .iter()
-                            .any(|queued| queued.run_id == ack.run_id) =>
-                {
-                    // The previous future has finalized its control lease but
-                    // its completion monitor still owns the task slot. Its
-                    // queued completion wake will start this request; returning
-                    // the accepted queued ACK avoids "error then executes".
-                    Ok(ack)
-                }
                 Err(error) => {
                     if self
                         .scheduler
@@ -72,6 +122,7 @@ impl ServerSession {
                             crate::runtime::QueuedCancellationReason::Cancelled,
                         );
                     }
+                    self.scheduled_snapshots.remove(&ack.run_id);
                     Err(error)
                 }
             };
@@ -87,6 +138,11 @@ impl ServerSession {
             .next()
             .ok_or_else(|| anyhow::anyhow!("there is no queued run to start"))?;
         let payload: ScheduledPromptPayload = serde_json::from_value(request.payload.clone())?;
+        let snapshot = self
+            .scheduled_snapshots
+            .remove(&request.run_id)
+            .ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
+        debug_assert_eq!(snapshot.settings.model, payload.settings.model);
         let lease = self.prompt_internal(
             &payload.message,
             &payload.images,
@@ -94,6 +150,7 @@ impl ServerSession {
             Some(&request.run_id),
             Some(&request.client_request_id),
             Some(&request),
+            Some(snapshot),
         )?;
         Ok(crate::runtime::RunAck {
             run_id: lease.run_id,
@@ -119,6 +176,7 @@ impl ServerSession {
             requested_run_id,
             client_request_id,
             None,
+            None,
         )
     }
 
@@ -130,13 +188,48 @@ impl ServerSession {
         requested_run_id: Option<&str>,
         client_request_id: Option<&str>,
         scheduled: Option<&crate::runtime::ScheduledRunRequest>,
+        accepted_snapshot: Option<AcceptedRunSnapshot>,
     ) -> Result<crate::runtime::RunLease> {
-        let cwd_path = std::path::Path::new(&self.cwd);
+        let accepted_settings = accepted_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.settings);
+        let run_cwd = accepted_settings
+            .map(|settings| settings.cwd.clone())
+            .unwrap_or_else(|| self.cwd.clone());
+        let run_model = accepted_settings
+            .map(|settings| settings.model.clone())
+            .unwrap_or_else(|| self.model.clone());
+        let run_auto_compaction = accepted_settings
+            .map(|settings| settings.auto_compaction)
+            .unwrap_or(self.auto_compaction);
+        let run_permission_level = accepted_settings
+            .map(|settings| settings.permission_level.clone())
+            .unwrap_or_else(|| self.permission_level.clone());
+        let run_sandbox_policy = if let Some(settings) = accepted_settings {
+            settings
+                .sandbox_tier
+                .as_deref()
+                .map(|tier| crate::sandbox::SandboxPolicy {
+                    tier: crate::sandbox::SandboxTier::parse(tier),
+                })
+        } else {
+            self.sandbox_policy.clone()
+        };
+
+        let cwd_path = std::path::Path::new(&run_cwd);
         crate::utils::ensure_workspace_accessible(
             cwd_path,
             crate::utils::is_future_managed_dir(cwd_path),
         )?;
-        let (system_prompt, verbose, mut run_loop) = {
+        let (system_prompt, verbose, mut run_loop) = if let Some(snapshot) = accepted_snapshot {
+            let mut run_loop = snapshot.run_loop;
+            self.swap_token_counters_into_loop(&mut run_loop);
+            self.wire_auto_compaction(&mut run_loop, run_auto_compaction, &run_model);
+            let system_prompt = self.build_system_prompt(&run_cwd, run_loop.tools.clone());
+            run_loop.system_prompt = system_prompt.clone();
+            run_loop.config.system_prompt = system_prompt.clone();
+            (system_prompt, run_loop.verbose, run_loop)
+        } else {
             let mut shared = self
                 .agent_loop
                 .try_write()
@@ -159,8 +252,8 @@ impl ServerSession {
             shared.steering_queue.mode = self.steering_mode.clone();
             shared.follow_up_queue.mode = self.follow_up_mode.clone();
             self.swap_token_counters_into_loop(&mut shared);
-            self.wire_auto_compaction(&mut shared);
-            let system_prompt = self.build_system_prompt(shared.tools.clone());
+            self.wire_auto_compaction(&mut shared, run_auto_compaction, &run_model);
+            let system_prompt = self.build_system_prompt(&run_cwd, shared.tools.clone());
             shared.system_prompt = system_prompt.clone();
             shared.config.system_prompt = system_prompt.clone();
 
@@ -191,7 +284,7 @@ impl ServerSession {
         // Uses the cached registry from ServerSession to avoid ~15% CPU overhead
         // from re-deserialising the full model catalog on every prompt.
         let model_supports_images =
-            crate::models::model_accepts_images_with(&self.model_registry.read(), &self.model);
+            crate::models::model_accepts_images_with(&self.model_registry.read(), &run_model);
         // Images are read + (down)encoded to base64 here, on the agent, from the
         // local path the GUI sent — the base64 never crosses the wire.
         let mut user_message = build_user_message(
@@ -336,7 +429,11 @@ impl ServerSession {
         let session_manager = self.session_manager.clone();
         let session_persistence = self.persistence.clone();
         let session_id = self.session_id.clone();
-        let session_cwd = self.cwd.clone();
+        let session_cwd = run_cwd;
+        // Session metadata remains the latest control-plane state. Execution
+        // uses the accepted run snapshot above; allowing an older queued run
+        // to overwrite newer session settings at terminal would be a rollback.
+        let persisted_session_cwd = self.cwd.clone();
         let session_model = self.model.clone();
         let session_thinking = self.thinking_level.clone();
         let tokens_in = self.tokens_in.clone();
@@ -364,13 +461,13 @@ impl ServerSession {
         // start and shared into the sandbox so same-run "allow in this
         // workspace" injections take effect immediately (APPROVAL_PLAN §6.2).
         self.session_rules.lock().clear();
-        let sandbox = Arc::new(match &self.sandbox_policy {
+        let sandbox = Arc::new(match &run_sandbox_policy {
             Some(policy) => crate::sandbox::ResolvedSandbox::resolve_with_session(
                 policy,
-                &self.cwd,
+                &session_cwd,
                 self.session_rules.clone(),
             ),
-            None => crate::sandbox::ResolvedSandbox::disabled(&self.cwd),
+            None => crate::sandbox::ResolvedSandbox::disabled(&session_cwd),
         });
 
         // Build per-session StreamContext (callbacks) — these are session-
@@ -505,7 +602,7 @@ impl ServerSession {
         let approval_session_id = session_id.clone();
         let approval_cwd = session_cwd.clone();
         let approval_sandbox = sandbox.clone();
-        let permission_level = self.permission_level.clone();
+        let permission_level = run_permission_level.clone();
         run_loop.config.before_tool_call =
             Some(Arc::new(
                 move |tool_name, tool_id, arguments| match permission_level.as_str() {
@@ -593,7 +690,7 @@ impl ServerSession {
         // the task slot. TODO(runtime-persistence): once terminal persistence
         // is an ordered writer command, move the remaining execution-input
         // assembly into a dedicated RunExecution value.
-        let perm = self.permission_level.clone();
+        let perm = run_permission_level;
         let scope_sandbox = sandbox.clone();
         let run_task = async move {
             // Anchors for per-reply metadata written at the save site: wall-clock
@@ -779,7 +876,7 @@ impl ServerSession {
                 };
                 let total_cost = *cumulative_cost.lock();
                 let mut info = serde_json::json!({
-                    "cwd": session_cwd,
+                    "cwd": persisted_session_cwd,
                     "tokens_in": tokens_in.load(Ordering::Relaxed),
                     "tokens_out": tokens_out.load(Ordering::Relaxed),
                     "tokens_cache_r": tokens_cache_r.load(Ordering::Relaxed),
@@ -825,7 +922,7 @@ impl ServerSession {
                     let session = Self::build_rewrite_snapshot(
                         &session_manager,
                         &session_id,
-                        &session_cwd,
+                        &persisted_session_cwd,
                         &session_model,
                         &resolved_name,
                         &parent_session_id,
@@ -998,8 +1095,8 @@ impl ServerSession {
     /// Install the pre-turn auto-compaction transform on the agent loop (a
     /// no-op when auto-compaction is off), compacting context once usage
     /// crosses ~90% of the model's window.
-    fn wire_auto_compaction(&self, r#loop: &mut crate::agent::Loop) {
-        if self.auto_compaction {
+    fn wire_auto_compaction(&self, r#loop: &mut crate::agent::Loop, enabled: bool, model: &str) {
+        if enabled {
             let comp_tokens = self.last_prompt_tokens.clone();
             let comp_result = r#loop.last_compaction_result.clone();
             let comp_failed = r#loop.compaction_failed.clone();
@@ -1009,7 +1106,7 @@ impl ServerSession {
             let context_window = self
                 .model_registry
                 .read()
-                .resolve(&self.model)
+                .resolve(model)
                 .map(|m| m.context_window)
                 .unwrap_or(1_000_000); // Modern default: 1M (was 200K — too low for 1M models)
             r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
@@ -1066,7 +1163,7 @@ impl ServerSession {
         }
     }
 
-    fn build_system_prompt(&self, tools: Vec<crate::types::AgentTool>) -> String {
+    fn build_system_prompt(&self, cwd: &str, tools: Vec<crate::types::AgentTool>) -> String {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         // Discover skills so they appear in the system prompt's <available_skills> block.
@@ -1077,7 +1174,7 @@ impl ServerSession {
         // Load project context (AGENTS.md / CLAUDE.md / GEMINI.md)
         let mut agent_content = String::new();
         for fname in &["AGENTS.md", "CLAUDE.md", "GEMINI.md"] {
-            let p = std::path::Path::new(&self.cwd).join(fname);
+            let p = std::path::Path::new(cwd).join(fname);
             if p.exists() {
                 if let Ok(content) = std::fs::read_to_string(&p) {
                     agent_content = content;
@@ -1088,11 +1185,11 @@ impl ServerSession {
 
         // Load workspace memory (FUTURE.md) — a separate layer from project
         // context, read fresh each turn (cwd only; workspace-scoped).
-        let memory_path = std::path::Path::new(&self.cwd).join("FUTURE.md");
+        let memory_path = std::path::Path::new(cwd).join("FUTURE.md");
         let memory_content = std::fs::read_to_string(&memory_path).unwrap_or_default();
 
         crate::prompt::build_prompt(&crate::prompt::PromptOptions {
-            working_directory: self.cwd.replace('\\', "/"),
+            working_directory: cwd.replace('\\', "/"),
             date: today,
             tools,
             skills,

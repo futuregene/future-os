@@ -61,6 +61,7 @@ pub struct ServerSession {
     /// Process-local queued-run state. It deliberately resets when the Agent
     /// process restarts; `agent_instance_id` lets clients reconcile that loss.
     pub scheduler: Arc<crate::runtime::InMemoryRunQueue>,
+    pub(super) scheduled_snapshots: HashMap<String, super::session_prompt::AcceptedRunSnapshot>,
     scheduler_wake_rx: Arc<
         parking_lot::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::runtime::RunLease>>>,
     >,
@@ -196,6 +197,7 @@ impl ServerSession {
             is_streaming,
             runtime,
             scheduler,
+            scheduled_snapshots: HashMap::new(),
             scheduler_wake_rx: Arc::new(parking_lot::Mutex::new(Some(scheduler_wake_rx))),
             session_name: String::new(),
             parent_session_id: String::new(),
@@ -270,6 +272,7 @@ impl ServerSession {
                             crate::runtime::QueuedCancellationReason::Cancelled,
                         );
                     }
+                    self.scheduled_snapshots.remove(&next.run_id);
                     tracing::error!(
                         run_id = %next.run_id,
                         "queued run failed before task start: {error}"
@@ -277,6 +280,16 @@ impl ServerSession {
                 }
             }
         }
+    }
+
+    pub fn cancel_queued_run(
+        &mut self,
+        run_id: &str,
+        reason: crate::runtime::QueuedCancellationReason,
+    ) -> Result<crate::runtime::ScheduledRunRequest, crate::runtime::RunQueueError> {
+        let cancelled = self.scheduler.cancel_queued(run_id, reason)?;
+        self.scheduled_snapshots.remove(run_id);
+        Ok(cancelled)
     }
 
     pub fn session_name(&self) -> String {
@@ -1401,6 +1414,26 @@ mod tests {
             crate::runtime::RunAcceptedState::Queued
         );
         assert_eq!(second.queue_position, Some(1));
+        assert_eq!(
+            session
+                .read()
+                .scheduled_setting_summary("run-second")
+                .unwrap(),
+            (String::new(), "xhigh".to_string(), true, "all".to_string())
+        );
+
+        // Settings changed after acceptance belong to a later submission; the
+        // already queued run keeps its provider/config snapshot.
+        session.write().set_thinking_level("low");
+        session.write().set_auto_retry(false);
+        session.write().set_permission_level("none");
+        assert_eq!(
+            session
+                .read()
+                .scheduled_setting_summary("run-second")
+                .unwrap(),
+            (String::new(), "xhigh".to_string(), true, "all".to_string())
+        );
 
         release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
