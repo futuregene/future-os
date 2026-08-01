@@ -14,7 +14,6 @@ export interface RpcCommand {
   // prompting
   message?: string;
   images?: ImageContent[];
-  streamingBehavior?: "steer" | "followUp";
   // new_session
   parentSession?: string;
   cwd?: string;
@@ -23,8 +22,7 @@ export interface RpcCommand {
   modelId?: string;
   // set_thinking_level
   level?: ThinkingLevel;
-  // set_steering_mode / set_follow_up_mode
-  mode?: "all" | "one-at-a-time";
+  mode?: string;
   // compact
   customInstructions?: string;
   // set_auto_compaction / set_auto_retry
@@ -181,6 +179,8 @@ export interface AgentEvent {
   runId?: string;
   epoch?: number;
   idx?: number;
+  eventId?: string;
+  timestamp?: string;
   projectionSnapshot?: boolean;
   snapshotCursor?: number;
   snapshotEvents?: ProjectedRunEvent[];

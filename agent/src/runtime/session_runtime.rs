@@ -95,25 +95,6 @@ impl SessionRuntime {
             .install_cancellation(lease, interrupt_tx, interrupt_flag)
     }
 
-    pub fn steer(
-        &self,
-        expected_run_id: Option<&str>,
-        steering_tx: &mpsc::Sender<String>,
-        message: String,
-    ) -> Result<()> {
-        self.control.steer(expected_run_id, steering_tx, message)
-    }
-
-    pub fn follow_up(
-        &self,
-        expected_run_id: Option<&str>,
-        follow_up_tx: &mpsc::Sender<String>,
-        message: String,
-    ) -> Result<bool> {
-        self.control
-            .follow_up(expected_run_id, follow_up_tx, message)
-    }
-
     /// Request cooperative cancellation and arm the bounded acknowledgement
     /// timer. The task remains owned and the session remains unavailable until
     /// that same lease finalizes.

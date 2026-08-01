@@ -326,13 +326,6 @@ async fn run_prompt_loop(
 ) -> Result<()> {
     let (expected_run_id, my_gen, mut stream) = {
         let mut client = agent.write().await;
-        let _ = client.abort(session_id).await;
-        // Wait for the aborted run to finish unwinding before prompting; the new
-        // Agent state machine keeps the session busy through Cancelling/
-        // Finalizing, so an immediate prompt would be rejected.
-        client
-            .wait_until_idle(session_id, std::time::Duration::from_secs(8))
-            .await?;
         info!(
             "[DING SEND] session={} text=\"{}\"",
             session_id,
@@ -342,7 +335,14 @@ async fn run_prompt_loop(
                 text.to_string()
             }
         );
-        let expected_run_id = client.prompt(session_id, text, vec![]).await?;
+        let expected_run_id = client.prompt_superseding(session_id, text, vec![]).await?;
+        client
+            .wait_until_run_active(
+                session_id,
+                &expected_run_id,
+                std::time::Duration::from_secs(30),
+            )
+            .await?;
         let stream = client
             .stream_run_events(session_id, &expected_run_id)
             .await?;

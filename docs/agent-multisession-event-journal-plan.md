@@ -1,6 +1,6 @@
 # Agent 多会话、Queued Run 与事件真源实施方案
 
-状态：方案草案（已按当前 `main` 实现和新架构逐项复核）
+状态：Phase 0–3 已完成并收尾；Phase 4–7 待实施
 
 日期：2026-08-01
 
@@ -10,14 +10,14 @@
 
 | 阶段 | 状态 | 已完成 / 剩余 |
 | --- | --- | --- |
-| Phase 0 | 进行中 | 已覆盖单 active、FIFO、进程内幂等、队列配额、Agent restart 清空、completion/dequeue；property test 和 writer failpoint 尚未完成 |
-| Phase 1a | 进行中 | 已完成 RunRequest/RunAck、结构化错误、内存 scheduler、`reject_if_busy/enqueue_if_busy`、自动 dequeue、`cancel_queued_run`、Follow-up RPC 适配、TUI 提交链迁移、`agent_instance_id`、run sequence 持久衔接，以及 provider/model/tools/cwd/权限等设置的接受时内存快照；Steer 与旧 mode RPC 已返回 `unsupported`，get_state/TUI/CLI 已移除旧 mode 投影；仍需删除 Agent Loop 内部不可达的 steer/follow-up continuation 与兼容字段 |
-| Phase 1b | 未开始 | persistence health 增强、附件内容快照、全局内存配额、原子 supersede 和 Channel 迁移 |
-| Phase 2 | 未开始 | TUI run registry、queued UI、Turn consumer 收敛和兼容 RPC 最终删除 |
-| Phase 3 | 进行中 | 已完成删除 admission fence、queued run/执行快照回收、active abort-and-retry 和 transcript/run-data 幂等删除；仍需 writer/observer close barrier、epoch fence 与 GUI tombstone/outbox |
-| Phase 4–7 | 未开始 | EventJournal、GUI Agent-first、Observer/NATS、GUI/Remote Follow-up |
+| Phase 0 | 完成 | 单 active、FIFO、进程内幂等、配额、restart 清空、并发 stamping 均有测试；scheduler 增加 10,000 步确定性随机状态机测试，journal 覆盖 append/flush/fsync failpoint |
+| Phase 1a | 完成 | RunRequest/RunAck、内存 scheduler、三种 busy policy、自动 dequeue/cancel、设置快照全部落地；Agent Loop 内 steer/follow-up continuation 及旧 mode/config/proto 字段已删除 |
+| Phase 1b | 完成 | persistence 熔断、附件 ACK 前内存快照、per-session/global 配额与释放、原子 supersede 已落地；飞书/钉钉不再自行执行 `abort → poll idle → prompt` |
+| Phase 2 | 完成 | TUI 使用完整 RunAck 和 run registry，queued 气泡绑定 canonical `run_id`；agent_start/end 按 run 收敛；Turn 固定为 `turn_id = run_id`；仓库客户端不再暴露 follow-up/steer RPC |
+| Phase 3 | 完成 | canonical envelope 已增加 `session_id/run_id/epoch/idx/event_id/timestamp`；Agent JSONL append+fsync-before-broadcast、disk replay、atomic attach、partial-tail recovery 与 I/O failure interrupt 已落地 |
+| Phase 4–7 | 未开始 | GUI Agent-first/旧日志兼容、删除 outbox、Observer/NATS、GUI/Remote queued run 交互 |
 
-当前保护边界：`enqueue_if_busy` 已在 Agent 执行链开放；`supersede_session` 仍返回 `busy_policy_unavailable`，直到 Phase 1b 的 active interrupt + queued replacement 原子语义完成。
+当前保护边界：`reject_if_busy`、`enqueue_if_busy`、`supersede_session` 均已开放。Queued 状态只存在于当前 `agent_instance_id` 的有界内存中；Agent 重启后明确丢失，不存在 `queue.jsonl`。
 
 ## 1. 最终结论
 
@@ -438,22 +438,20 @@ TUI 是当前 Follow-up 的真实调用方，必须与 Agent RPC 在同一发布
     {session_id}.jsonl.lock
   run-events/
     {session_id}/
-      session-events.jsonl
       {run_id}.jsonl
-      manifest.json
 ```
 
 - session transcript JSONL 保存最终可见对话和控制事实。
 - queued RunRequest、请求幂等表和 queue lifecycle 只在 per-session scheduler 内存中，不属于该目录。
 - `{run_id}.jsonl` 保存高频 canonical event。
-- `manifest.json` 保存 event schema、已启动 run 的 next sequence 和 high-water mark；损坏时以 transcript/event journal 尾部修复。
+- run sequence 从 transcript 的已启动 run 恢复；event `idx` 从对应 `{run_id}.jsonl` 尾部恢复，不维护第二份 manifest 真源。
 - 路径必须经过 safe-slug 校验，禁止使用客户端绝对路径。
 
 Agent 进程 crash 后无法继续原 Rust future：已持久化启动证据的 active run 恢复为 `interrupted`。尚未开始的 queued run 没有磁盘记录，也不恢复。新进程通过新的 `agent_instance_id` 明确这一代际变化，并从已启动 run 的最大 `run_sequence` 继续分配。
 
 ### 7.2 单一 writer/stamping point
 
-每 session 一个 `EventJournal` actor：
+每 session 一个串行 `EventJournal` stamping/writer 临界区：
 
 1. 校验 session/run lease 和 epoch。
 2. 分配 `idx` 或 `session_idx`。
@@ -462,15 +460,15 @@ Agent 进程 crash 后无法继续原 Rust future：已持久化启动证据的 
 5. 更新 replay ring/projection。
 6. 广播 gRPC observer。
 
-只有成功进入 writer 的 event 才能广播。写入分为 hard barrier 和 bounded group commit：
+只有 append、flush、fsync 全部成功的 event 才能广播。Phase 3 首版采用同步有界背压（producer 在 writer 临界区等待），不建立无界内存 channel；每条 event 都执行 durability barrier，这比下述 group commit 目标更严格。后续若按性能数据引入 10–50ms group commit，仍不得改变 append-and-commit-before-broadcast 契约。
 
-- `run_started`
+- transcript `run_started` / event `agent_start`
 - `approval_request/decision`
-- `run_terminal`
+- transcript `run_terminal` / event `agent_end`
 
-以上已启动 run 的控制边界使用 hard barrier。`run_accepted/queued/cancel_queued` 是内存 scheduler lifecycle，只通过 live broadcaster 和 `get_session_state` 暴露，不写 event journal。`tool_end` 和高频 delta 允许按 10–50ms/字节阈值 group commit，但仍必须遵守 append-and-commit-before-broadcast：同一批事件 durability 确认后才能对外发送。这样避免大量短工具调用产生每秒多次独立 fsync，同时不让 observer 看到磁盘尚未承诺的事件。
+以上已启动 run 的控制边界使用 hard barrier。`run_accepted/queued/cancel_queued` 是内存 scheduler lifecycle，只通过 live broadcaster 和 `get_session_state` 暴露，不写 event journal。
 
-这是有意识的吞吐/崩溃窗口取舍：工具副作用可能已发生，而对应 `tool_end` 最多仍有一个 group-commit 窗口尚未 durable。恢复时依靠 transcript/tool reconciliation 标记 outcome unknown，绝不能因缺少 `tool_end` 自动重跑可能有副作用的工具。
+若未来启用 group commit，这将是有意识的吞吐/崩溃窗口取舍：工具副作用可能已发生，而对应 `tool_end` 最多仍有一个 group-commit 窗口尚未 durable。恢复时依靠 transcript/tool reconciliation 标记 outcome unknown，绝不能因缺少 `tool_end` 自动重跑可能有副作用的工具。当前逐事件 fsync 实现没有主动放大该窗口。
 
 Terminal 顺序：
 
@@ -649,8 +647,8 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 - 固定“一次提交一个 run”和 session 单 active lease。
 - 测试并发提交、进程内幂等 ACK、FIFO、abort/cancel/delete race。
 - 测试 event envelope 和 `idx` 唯一递增。
-- 对 scheduler 状态机使用 property-based test；输入随机 submit/abort/cancel/supersede 序列，持续验证单 active、进程存活期间无丢失、无重复 terminal；单独验证 Agent restart 清空 queued 并更换 instance ID。
-- 预留 writer failpoint，在每个 append/flush/fsync/rename 边界可确定性 crash 或返回 I/O 错误，Phase 3 复用同一套 harness。
+- 对 scheduler 状态机使用固定 seed 的 10,000 步随机状态机测试；输入 submit/start/finish/cancel 序列，持续验证单 active、唯一身份和 sequence/FIFO 单调；另以专门用例覆盖 supersede、幂等与 Agent restart 清空 queued。
+- writer 在实际存在的 append/flush/fsync 边界提供确定性 failpoint；本实现不使用 rename 提交 event，因此没有虚构 rename failpoint。
 
 退出条件：重复 request、重复 run sequence、同 session 双 active、跨 run event 均会测试失败。
 
@@ -659,7 +657,7 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 - 增加 `RunRequest/RunAck`、per-session 内存 queue 和 session scheduler。
 - 冻结 RPC、busy policy 和结构化错误 schema。
 - 普通 prompt 支持 `reject_if_busy/enqueue_if_busy`，实现 session-scoped、Agent-lifetime idempotency。
-- 临时把 `follow_up` 适配为创建新 queued run。
+- 客户端迁移期曾把 `follow_up` 适配为新 queued run；Phase 2 已最终删除该 RPC。
 - 删除 run loop 内 steering/follow-up continuation 和 transcript rewrite。
 - 删除 steering/follow-up mode 与 streaming behavior。
 

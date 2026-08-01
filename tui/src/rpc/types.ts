@@ -21,8 +21,7 @@ export interface RpcCommand {
   modelId?: string;
   // set_thinking_level
   level?: ThinkingLevel;
-  // set_steering_mode / set_follow_up_mode
-  mode?: "all" | "one-at-a-time";
+  mode?: string;
   // compact
   customInstructions?: string;
   // set_auto_compaction / set_auto_retry
@@ -50,9 +49,6 @@ export interface RpcCommand {
 
 export function promptCmd(message: string, images?: ImageContent[], busyPolicy: RpcCommand["busyPolicy"] = "reject_if_busy"): RpcCommand {
   return { type: "prompt", message, images, busyPolicy };
-}
-export function steerCmd(message: string): RpcCommand {
-  return { type: "steer", message };
 }
 
 // ============================================================================
@@ -206,6 +202,8 @@ export type AgentEvent = {
   runId?: string;
   epoch?: number;
   idx?: number;
+  eventId?: string;
+  timestamp?: string;
   projectionSnapshot?: boolean;
   snapshotCursor?: number;
   snapshotEvents?: ProjectedRunEvent[];

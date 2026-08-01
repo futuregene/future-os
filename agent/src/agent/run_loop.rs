@@ -77,18 +77,10 @@ impl Loop {
                     max_turns
                 ));
             }
-            // Drain steering queue FIRST
-            let steering_before = self.steering_queue.len();
-            messages = self.drain_steering(messages, &ctx.on_user_message);
-
-            // Check cancellation — only exit if no steering was just drained
+            // Cancellation always terminates this run. A later user submission
+            // is a distinct scheduler-owned run and can never be injected here.
             if self.is_interrupted() {
-                if steering_before == 0 {
-                    // Pure interrupt → exit cleanly
-                    return Ok((String::new(), messages));
-                }
-                // Steering message was queued → reset interrupt flag and continue
-                self.clear_interrupt();
+                return Ok((String::new(), messages));
             }
 
             // Emit turn_start
@@ -612,11 +604,6 @@ impl Loop {
 
             // Check for stream errors before processing results
             if let Some(_err) = stream_error {
-                // If steering messages are pending, drain and restart
-                if !self.steering_queue.is_empty() {
-                    messages = self.drain_steering(messages, &ctx.on_user_message);
-                    continue;
-                }
                 build_partial_assistant(
                     &mut messages,
                     &assistant_text,
@@ -632,16 +619,13 @@ impl Loop {
             if let Some(ref mut irx) = interrupt_rx {
                 if irx.try_recv().is_ok() {
                     // Same interrupt path as above
-                    if self.steering_queue.is_empty() {
-                        build_partial_assistant(
-                            &mut messages,
-                            &assistant_text,
-                            &reasoning_text,
-                            &tool_calls,
-                        );
-                        return Ok((String::new(), messages));
-                    }
-                    messages = self.drain_steering(messages, &ctx.on_user_message);
+                    build_partial_assistant(
+                        &mut messages,
+                        &assistant_text,
+                        &reasoning_text,
+                        &tool_calls,
+                    );
+                    return Ok((String::new(), messages));
                 }
             }
 
@@ -705,8 +689,8 @@ impl Loop {
 
             // Stream was truncated mid-reply: the assistant text is a prefix,
             // not a finished answer. End the turn as `incomplete` (keeping the
-            // partial text so it isn't lost) rather than draining the follow-up
-            // queue or presenting a cut-off reply as `complete`. Tool calls, if
+            // partial text so it isn't lost) rather than presenting a cut-off
+            // reply as `complete`. Tool calls, if
             // any, are left unexecuted — their arguments may be partial.
             if stream_truncated {
                 self.stream_incomplete
@@ -729,28 +713,9 @@ impl Loop {
                 }
             }
 
-            // If no tool calls, check follow-up queue
+            // No tool calls means this run is complete. Follow-up submissions
+            // are separate queued runs and are started only by the scheduler.
             if tool_calls.is_empty() {
-                if !self.follow_up_queue.is_empty() {
-                    messages = self.drain_follow_up(messages, &ctx.on_user_message);
-                    if let Some(ref u) = total_usage {
-                        let cost = u.credit_cost.unwrap_or(0.0);
-                        tracing::info!(
-                            "[agent] turn={} (follow-up) tokens_in={} tokens_out={} cost={:.6}",
-                            turn,
-                            u.prompt_tokens,
-                            u.completion_tokens,
-                            cost,
-                        );
-                    }
-                    // Emit agent_start so the TUI creates a new assistant block
-                    // for the follow-up response (under the follow-up user message).
-                    on_event(StreamEvent {
-                        event_type: "agent_start".to_string(),
-                        ..Default::default()
-                    });
-                    continue;
-                }
                 if self.verbose {
                     tracing::info!(
                         "[agent] complete turns={} output_len={}",

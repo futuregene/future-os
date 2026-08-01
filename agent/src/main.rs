@@ -533,6 +533,7 @@ async fn async_main(
     let app_state = future_agent::rpc::AppState {
         agent_instance_id: format!("agent_{}", uuid::Uuid::new_v4().simple()),
         sessions: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+        queue_budget: Arc::new(future_agent::runtime::GlobalQueueBudget::defaults()),
         session_manager: manager,
         welcome_version: future_agent::utils::VERSION.to_string(),
         welcome_cwd: cwd.clone(),

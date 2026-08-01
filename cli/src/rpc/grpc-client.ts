@@ -63,15 +63,13 @@ message RpcCommand {
 
   // ── Prompting ──────────────────────────────────────────────────────────
 
-  // User prompt text.  Required for "prompt", "steer", "follow_up".
+  // User prompt text. Required for "prompt".
   string message = 10;
 
   // Images attached to the prompt (base64, URL, or file path).
   repeated ImageContent images = 11;
 
-  // How to queue the prompt: "steer" (interrupt current run) or
-  // "followUp" (enqueue after current run completes).
-  string streaming_behavior = 12;
+  reserved 12;
 
   // ── fork / new_session ─────────────────────────────────────────────────
 
@@ -90,9 +88,7 @@ message RpcCommand {
   // Thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
   string level = 40;
 
-  // ── set_steering_mode / set_follow_up_mode ─────────────────────────────
-
-  // Queue mode: "all" (accept all) or "one-at-a-time" (replace pending).
+  // Generic decision/rule mode (approval_result, add_session_rule).
   string mode = 50;
 
   // ── compact ────────────────────────────────────────────────────────────
@@ -285,11 +281,7 @@ message SessionState {
   // Whether a compaction run is in progress (always false in current code).
   bool is_compacting = 4;
 
-  // Steering queue mode: "all" or "one-at-a-time".
-  string steering_mode = 5;
-
-  // Follow-up queue mode: "all" or "one-at-a-time".
-  string follow_up_mode = 6;
+  reserved 5, 6;
 
   // Reserved for session file path.  Always null in current code.
   string session_file = 7;
@@ -306,11 +298,11 @@ message SessionState {
   // Whether automatic context compaction is enabled.
   bool auto_compaction_enabled = 11;
 
-  // Number of user messages (prompts + steer + follow_up).  Excludes
+  // Number of user prompts. Excludes
   // internal tool/assistant messages.  Displayed as "Queries" in /status.
   int32 query_count = 12;
 
-  // Number of messages queued but not yet processed (steering + follow_up).
+  // Number of accepted runs queued but not yet started.
   int32 pending_message_count = 13;
 
   // Agent version string (from Cargo.toml).
@@ -452,6 +444,8 @@ message StreamEvent {
   // external context.
   string session_id = 8;
   int64 epoch = 9;
+  string event_id = 10;
+  string timestamp = 11;
 }
 
 // A compressed semantic event contained in a projection snapshot. Its idx is
@@ -657,6 +651,8 @@ export class RunClient {
             runId: response.runId,
             epoch: Number(response.epoch ?? 0),
             idx: Number(response.idx ?? 0),
+            eventId: response.eventId,
+            timestamp: response.timestamp,
             projectionSnapshot: Boolean(response.projectionSnapshot),
             snapshotCursor: Number(response.snapshotCursor ?? 0),
             snapshotEvents: response.snapshotEvents ?? [],

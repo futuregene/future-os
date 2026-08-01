@@ -9,16 +9,12 @@ pub struct RpcCommand {
     /// Determines which handler processes this request.
     #[prost(string, tag = "2")]
     pub r#type: ::prost::alloc::string::String,
-    /// User prompt text.  Required for "prompt", "steer", "follow_up".
+    /// User prompt text. Required for "prompt".
     #[prost(string, tag = "10")]
     pub message: ::prost::alloc::string::String,
     /// Images attached to the prompt (base64, URL, or file path).
     #[prost(message, repeated, tag = "11")]
     pub images: ::prost::alloc::vec::Vec<ImageContent>,
-    /// How to queue the prompt: "steer" (interrupt current run) or
-    /// "followUp" (enqueue after current run completes).
-    #[prost(string, tag = "12")]
-    pub streaming_behavior: ::prost::alloc::string::String,
     /// Parent session ID when forking.  If empty, fork uses the current
     /// session.  Also used by new_session to record lineage.
     #[prost(string, tag = "20")]
@@ -30,7 +26,7 @@ pub struct RpcCommand {
     /// Thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
     #[prost(string, tag = "40")]
     pub level: ::prost::alloc::string::String,
-    /// Queue mode: "all" (accept all) or "one-at-a-time" (replace pending).
+    /// Generic decision/rule mode (approval_result, add_session_rule).
     #[prost(string, tag = "50")]
     pub mode: ::prost::alloc::string::String,
     /// Optional custom instructions for the compaction summariser.
@@ -196,12 +192,6 @@ pub struct SessionState {
     /// Whether a compaction run is in progress (always false in current code).
     #[prost(bool, tag = "4")]
     pub is_compacting: bool,
-    /// Steering queue mode: "all" or "one-at-a-time".
-    #[prost(string, tag = "5")]
-    pub steering_mode: ::prost::alloc::string::String,
-    /// Follow-up queue mode: "all" or "one-at-a-time".
-    #[prost(string, tag = "6")]
-    pub follow_up_mode: ::prost::alloc::string::String,
     /// Reserved for session file path.  Always null in current code.
     #[prost(string, tag = "7")]
     pub session_file: ::prost::alloc::string::String,
@@ -217,11 +207,11 @@ pub struct SessionState {
     /// Whether automatic context compaction is enabled.
     #[prost(bool, tag = "11")]
     pub auto_compaction_enabled: bool,
-    /// Number of user messages (prompts + steer + follow_up).  Excludes
+    /// Number of user prompts. Excludes
     /// internal tool/assistant messages.  Displayed as "Queries" in /status.
     #[prost(int32, tag = "12")]
     pub query_count: i32,
-    /// Number of messages queued but not yet processed (steering + follow_up).
+    /// Number of accepted runs queued but not yet started.
     #[prost(int32, tag = "13")]
     pub pending_message_count: i32,
     /// Agent version string (from Cargo.toml).
@@ -353,6 +343,10 @@ pub struct StreamEvent {
     pub session_id: ::prost::alloc::string::String,
     #[prost(int64, tag = "9")]
     pub epoch: i64,
+    #[prost(string, tag = "10")]
+    pub event_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "11")]
+    pub timestamp: ::prost::alloc::string::String,
 }
 /// A compressed semantic event contained in a projection snapshot. Its idx is
 /// the latest source cursor folded into this event, preserving chronological

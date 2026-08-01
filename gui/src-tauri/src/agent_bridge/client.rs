@@ -357,7 +357,6 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         message: String::new(),
         images: vec![],
         attachments: vec![],
-        streaming_behavior: String::new(),
         parent_session: String::new(),
         model_id: String::new(),
         level: String::new(),

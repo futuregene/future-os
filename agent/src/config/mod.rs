@@ -68,16 +68,6 @@ fn default_max_retry_delay_ms() -> Option<i32> {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(
-        default = "default_steering_mode",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub steering_mode: String,
-    #[serde(
-        default = "default_follow_up_mode",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub follow_up_mode: String,
-    #[serde(
         default = "default_compaction",
         skip_serializing_if = "Option::is_none"
     )]
@@ -111,12 +101,6 @@ fn default_permission_level() -> String {
 }
 fn default_true() -> Option<bool> {
     Some(true)
-}
-fn default_steering_mode() -> String {
-    "one-at-a-time".to_string()
-}
-fn default_follow_up_mode() -> String {
-    "one-at-a-time".to_string()
 }
 fn default_compaction() -> Option<Box<CompactionSettings>> {
     Some(Box::new(CompactionSettings {
@@ -184,8 +168,6 @@ pub fn load_settings(path: &Path) -> Result<Settings> {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            steering_mode: default_steering_mode(),
-            follow_up_mode: default_follow_up_mode(),
             compaction: default_compaction(),
             retry: default_retry(),
             max_turns: 0,
@@ -205,8 +187,6 @@ mod tests {
     #[test]
     fn default_settings_values() {
         let s = Settings::default();
-        assert_eq!(s.steering_mode, "one-at-a-time");
-        assert_eq!(s.follow_up_mode, "one-at-a-time");
         assert_eq!(s.max_turns, 0);
         assert_eq!(s.default_permission_level, "all");
     }
@@ -321,15 +301,14 @@ mod tests {
         let s = Settings::default();
         let json = serde_json::to_string(&s).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        // skip_serializing_if fields should be absent when matching defaults
-        assert!(parsed.get("steeringMode").is_none() || parsed["steeringMode"] == "one-at-a-time");
+        assert!(parsed.get("steeringMode").is_none());
+        assert!(parsed.get("followUpMode").is_none());
     }
 
     #[test]
     fn deserialize_minimal_json() {
         let json = r#"{}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(s.steering_mode, "one-at-a-time");
         assert_eq!(s.max_turns, 0);
         assert!(s.compaction.is_some());
         assert!(s.retry.is_some());
@@ -346,8 +325,6 @@ mod tests {
             "retry": {"enabled": false, "maxRetries": 5, "baseDelayMs": 1000}
         }"#;
         let s: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(s.steering_mode, "parallel");
-        assert_eq!(s.follow_up_mode, "queue");
         assert_eq!(s.max_turns, 10);
         assert_eq!(s.default_permission_level, "workspace");
         assert!(!s.compaction_enabled());
@@ -357,14 +334,12 @@ mod tests {
     #[test]
     fn roundtrip_preserves_custom_values() {
         let original = Settings {
-            steering_mode: "custom".to_string(),
             max_turns: 42,
             default_permission_level: "workspace".to_string(),
             ..Default::default()
         };
         let json = serde_json::to_string(&original).unwrap();
         let restored: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.steering_mode, "custom");
         assert_eq!(restored.max_turns, 42);
         assert_eq!(restored.default_permission_level, "workspace");
     }
@@ -375,7 +350,6 @@ mod tests {
     fn load_settings_missing_file_returns_defaults() {
         let path = std::path::Path::new("/tmp/nonexistent_settings_test.json");
         let s = load_settings(path).unwrap();
-        assert_eq!(s.steering_mode, "one-at-a-time");
         assert!(s.compaction_enabled());
     }
 
@@ -385,14 +359,12 @@ mod tests {
         let path = dir.join("settings.json");
 
         let original = Settings {
-            steering_mode: "test_mode".to_string(),
             max_turns: 99,
             ..Default::default()
         };
         original.save(&path).unwrap();
 
         let loaded = load_settings(&path).unwrap();
-        assert_eq!(loaded.steering_mode, "test_mode");
         assert_eq!(loaded.max_turns, 99);
 
         // Cleanup

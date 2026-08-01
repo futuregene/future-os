@@ -458,7 +458,9 @@ export class App extends Container {
         break;
 
       case "agent_end": {
-        this.state.streaming = false;
+        const runId = (event as { runId?: string }).runId;
+        if (runId) this.chat.updateRunState(runId, "terminal");
+        this.state.streaming = this.client.hasRunningRun();
         this.state.activeToolCount = 0;
         this.state.toolStartTime = 0;
         const e = event as { text?: string };
@@ -474,6 +476,10 @@ export class App extends Container {
       }
 
       case "agent_start":
+        {
+          const runId = (event as { runId?: string }).runId;
+          if (runId) this.chat.updateRunState(runId, "running");
+        }
         this.state.streaming = true;
         this.state.activeToolCount = 0;
         this.state.toolStartTime = 0;
@@ -1462,8 +1468,9 @@ export class App extends Container {
     }
 
     // Regular prompt - send to server
+    const localMessageId = crypto.randomUUID();
     this.chat.addMessage({
-      id: crypto.randomUUID(),
+      id: localMessageId,
       role: "user",
       content: value,
     });
@@ -1472,7 +1479,8 @@ export class App extends Container {
       // Every submission is its own run. The Agent owns the FIFO and returns
       // the canonical queued run identity.
       try {
-        await this.client.prompt(value, undefined, "enqueue_if_busy");
+        const ack = await this.client.prompt(value, undefined, "enqueue_if_busy");
+        this.chat.bindUserRun(localMessageId, ack.run_id, ack.accepted_state === "queued" ? "queued" : "running");
       } catch (err: any) {
         this.chat.addMessage({
           id: crypto.randomUUID(),
@@ -1488,7 +1496,8 @@ export class App extends Container {
     this.requestRender();
 
     try {
-      await this.client.prompt(value);
+      const ack = await this.client.prompt(value);
+      this.chat.bindUserRun(localMessageId, ack.run_id, ack.accepted_state === "queued" ? "queued" : "running");
     } catch (err: any) {
       this.state.streaming = false;
       const msg = err?.message || String(err);

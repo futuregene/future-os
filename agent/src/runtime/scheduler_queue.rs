@@ -11,6 +11,8 @@ use super::{BusyPolicy, RunAck};
 pub const DEFAULT_SESSION_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_SESSION_QUEUE_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+pub const DEFAULT_GLOBAL_QUEUE_CAPACITY: usize = 4_096;
+pub const DEFAULT_GLOBAL_QUEUE_BYTES: usize = 512 * 1024 * 1024;
 const DEFAULT_RECENT_ACKS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +39,12 @@ pub enum QueuedCancellationReason {
 pub enum RunQueueError {
     #[error("session is being deleted")]
     Deleting,
+    #[error("session persistence is unavailable: {0}")]
+    PersistenceUnavailable(String),
+    #[error("attachment `{path}` is unavailable: {reason}")]
+    AttachmentUnavailable { path: String, reason: String },
+    #[error("run_id `{0}` contains unsafe characters")]
+    InvalidRunId(String),
     #[error("client_request_id must not be empty")]
     MissingClientRequestId,
     #[error("client_request_id `{0}` was already used with a different request")]
@@ -53,6 +61,10 @@ pub enum RunQueueError {
     RequestTooLarge { actual: usize, limit: usize },
     #[error("session queue memory limit exceeded ({actual} bytes; limit {limit})")]
     QueueBytesExceeded { actual: usize, limit: usize },
+    #[error("global queue is full (limit {limit})")]
+    GlobalQueueFull { limit: usize },
+    #[error("global queue memory limit exceeded ({actual} bytes; limit {limit})")]
+    GlobalQueueBytesExceeded { actual: usize, limit: usize },
     #[error("session already has active run `{0}`")]
     ActiveRunExists(String),
     #[error("there is no queued run to start")]
@@ -84,6 +96,89 @@ struct QueueState {
     run_ids: HashSet<String>,
 }
 
+#[derive(Debug, Default)]
+struct GlobalBudgetState {
+    count: usize,
+    bytes: usize,
+}
+
+#[derive(Debug)]
+pub struct GlobalQueueBudget {
+    max_count: usize,
+    max_bytes: usize,
+    state: Mutex<GlobalBudgetState>,
+}
+
+impl GlobalQueueBudget {
+    pub fn new(max_count: usize, max_bytes: usize) -> Self {
+        Self {
+            max_count,
+            max_bytes,
+            state: Mutex::new(GlobalBudgetState::default()),
+        }
+    }
+
+    pub fn defaults() -> Self {
+        Self::new(DEFAULT_GLOBAL_QUEUE_CAPACITY, DEFAULT_GLOBAL_QUEUE_BYTES)
+    }
+
+    fn reserve(&self, bytes: usize) -> Result<(), RunQueueError> {
+        let mut state = self.state.lock();
+        if state.count >= self.max_count {
+            return Err(RunQueueError::GlobalQueueFull {
+                limit: self.max_count,
+            });
+        }
+        let new_bytes = state.bytes.saturating_add(bytes);
+        if new_bytes > self.max_bytes {
+            return Err(RunQueueError::GlobalQueueBytesExceeded {
+                actual: new_bytes,
+                limit: self.max_bytes,
+            });
+        }
+        state.count += 1;
+        state.bytes = new_bytes;
+        Ok(())
+    }
+
+    fn release(&self, bytes: usize) {
+        let mut state = self.state.lock();
+        state.count = state.count.saturating_sub(1);
+        state.bytes = state.bytes.saturating_sub(bytes);
+    }
+
+    fn replace_queued(
+        &self,
+        released_count: usize,
+        released_bytes: usize,
+        new_bytes: usize,
+    ) -> Result<(), RunQueueError> {
+        let mut state = self.state.lock();
+        let base_count = state.count.saturating_sub(released_count);
+        let base_bytes = state.bytes.saturating_sub(released_bytes);
+        if base_count >= self.max_count {
+            return Err(RunQueueError::GlobalQueueFull {
+                limit: self.max_count,
+            });
+        }
+        let projected_bytes = base_bytes.saturating_add(new_bytes);
+        if projected_bytes > self.max_bytes {
+            return Err(RunQueueError::GlobalQueueBytesExceeded {
+                actual: projected_bytes,
+                limit: self.max_bytes,
+            });
+        }
+        state.count = base_count + 1;
+        state.bytes = projected_bytes;
+        Ok(())
+    }
+
+    pub fn usage(&self) -> (usize, usize) {
+        let state = self.state.lock();
+        (state.count, state.bytes)
+    }
+}
+
 /// Process-local FIFO for one session.
 ///
 /// This deliberately has no persistence hooks. GUI/TUI reconnects to the same
@@ -96,18 +191,20 @@ pub struct InMemoryRunQueue {
     max_queue_bytes: usize,
     max_request_bytes: usize,
     recent_ack_limit: usize,
+    global_budget: std::sync::Arc<GlobalQueueBudget>,
     state: Mutex<QueueState>,
 }
 
 impl InMemoryRunQueue {
     pub fn new(session_id: impl Into<String>, next_sequence: u64) -> Self {
-        Self::with_limits(
+        Self::with_limits_and_global(
             session_id,
             next_sequence,
             DEFAULT_SESSION_QUEUE_CAPACITY,
             DEFAULT_SESSION_QUEUE_BYTES,
             DEFAULT_REQUEST_BYTES,
             DEFAULT_RECENT_ACKS,
+            std::sync::Arc::new(GlobalQueueBudget::new(usize::MAX, usize::MAX)),
         )
     }
 
@@ -119,12 +216,33 @@ impl InMemoryRunQueue {
         max_request_bytes: usize,
         recent_ack_limit: usize,
     ) -> Self {
+        Self::with_limits_and_global(
+            session_id,
+            next_sequence,
+            capacity,
+            max_queue_bytes,
+            max_request_bytes,
+            recent_ack_limit,
+            std::sync::Arc::new(GlobalQueueBudget::new(usize::MAX, usize::MAX)),
+        )
+    }
+
+    pub fn with_limits_and_global(
+        session_id: impl Into<String>,
+        next_sequence: u64,
+        capacity: usize,
+        max_queue_bytes: usize,
+        max_request_bytes: usize,
+        recent_ack_limit: usize,
+        global_budget: std::sync::Arc<GlobalQueueBudget>,
+    ) -> Self {
         Self {
             session_id: session_id.into(),
             capacity,
             max_queue_bytes,
             max_request_bytes,
             recent_ack_limit,
+            global_budget,
             state: Mutex::new(QueueState {
                 next_sequence: next_sequence.max(1),
                 active: None,
@@ -190,14 +308,22 @@ impl InMemoryRunQueue {
                 limit: self.max_queue_bytes,
             });
         }
-
         let run_id = requested_run_id
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| format!("run_{}", Uuid::new_v4().simple()));
+        if run_id.len() > 128
+            || run_id.is_empty()
+            || !run_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(RunQueueError::InvalidRunId(run_id));
+        }
         if state.run_ids.contains(&run_id) {
             return Err(RunQueueError::DuplicateRunId(run_id));
         }
+        self.global_budget.reserve(payload_bytes)?;
         let run_sequence = state.next_sequence;
         state.next_sequence = state.next_sequence.wrapping_add(1).max(1);
         let request = ScheduledRunRequest {
@@ -237,6 +363,7 @@ impl InMemoryRunQueue {
         }
         let request = state.queued.pop_front().ok_or(RunQueueError::QueueEmpty)?;
         state.queued_bytes = state.queued_bytes.saturating_sub(request.payload_bytes);
+        self.global_budget.release(request.payload_bytes);
         let ack = RunAck {
             run_id: request.run_id.clone(),
             run_epoch: epoch,
@@ -246,6 +373,100 @@ impl InMemoryRunQueue {
         };
         state.active = Some((request.clone(), epoch));
         Ok((request, ack))
+    }
+
+    /// Atomically replace every queued request with one successor while
+    /// leaving the current active request owned until cooperative abort
+    /// completes. Validation and quota projection happen before mutation.
+    pub fn supersede(
+        &self,
+        client_request_id: &str,
+        requested_run_id: Option<&str>,
+        payload: Value,
+    ) -> Result<(RunAck, Vec<ScheduledRunRequest>, Option<String>), RunQueueError> {
+        if client_request_id.trim().is_empty() {
+            return Err(RunQueueError::MissingClientRequestId);
+        }
+        let policy = BusyPolicy::SupersedeSession;
+        let digest = request_digest(requested_run_id, policy, &payload);
+        let payload_bytes = serde_json::to_vec(&payload)
+            .expect("JSON value serialization cannot fail")
+            .len();
+        let mut state = self.state.lock();
+        if let Some(identity) = state.requests.get(client_request_id) {
+            if identity.digest != digest {
+                return Err(RunQueueError::DuplicateRequestConflict(
+                    client_request_id.to_string(),
+                ));
+            }
+            return Ok((existing_ack(&state, identity), Vec::new(), None));
+        }
+        if payload_bytes > self.max_request_bytes || payload_bytes > self.max_queue_bytes {
+            return Err(RunQueueError::RequestTooLarge {
+                actual: payload_bytes,
+                limit: self.max_request_bytes.min(self.max_queue_bytes),
+            });
+        }
+        let run_id = requested_run_id
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("run_{}", Uuid::new_v4().simple()));
+        if run_id.len() > 128
+            || run_id.is_empty()
+            || !run_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(RunQueueError::InvalidRunId(run_id));
+        }
+        if state.run_ids.contains(&run_id) {
+            return Err(RunQueueError::DuplicateRunId(run_id));
+        }
+
+        let released_count = state.queued.len();
+        let released_bytes = state.queued_bytes;
+        self.global_budget
+            .replace_queued(released_count, released_bytes, payload_bytes)?;
+
+        let cancelled: Vec<_> = state.queued.drain(..).collect();
+        state.queued_bytes = 0;
+        for request in &cancelled {
+            remember_terminal(
+                &mut state,
+                &request.client_request_id,
+                self.recent_ack_limit,
+            );
+        }
+        let run_sequence = state.next_sequence;
+        state.next_sequence = state.next_sequence.wrapping_add(1).max(1);
+        let request = ScheduledRunRequest {
+            session_id: self.session_id.clone(),
+            run_id: run_id.clone(),
+            run_sequence,
+            client_request_id: client_request_id.to_string(),
+            request_digest: digest.clone(),
+            busy_policy: policy,
+            payload,
+            accepted_at: chrono::Utc::now().to_rfc3339(),
+            payload_bytes,
+        };
+        state.requests.insert(
+            client_request_id.to_string(),
+            RequestIdentity {
+                digest,
+                run_id: run_id.clone(),
+                run_sequence,
+            },
+        );
+        state.run_ids.insert(run_id.clone());
+        state.queued_bytes = payload_bytes;
+        state.queued.push_back(request);
+        let active_run_id = state.active.as_ref().map(|(run, _)| run.run_id.clone());
+        Ok((
+            RunAck::queued(run_id, run_sequence, 1),
+            cancelled,
+            active_run_id,
+        ))
     }
 
     pub fn finish_active(&self, run_id: &str) -> Result<(), RunQueueError> {
@@ -280,6 +501,7 @@ impl InMemoryRunQueue {
             .remove(index)
             .expect("queued run index checked");
         state.queued_bytes = state.queued_bytes.saturating_sub(cancelled.payload_bytes);
+        self.global_budget.release(cancelled.payload_bytes);
         remember_terminal(
             &mut state,
             &cancelled.client_request_id,
@@ -292,6 +514,9 @@ impl InMemoryRunQueue {
         let mut state = self.state.lock();
         let cancelled: Vec<_> = state.queued.drain(..).collect();
         state.queued_bytes = 0;
+        for request in &cancelled {
+            self.global_budget.release(request.payload_bytes);
+        }
         for request in &cancelled {
             remember_terminal(
                 &mut state,
@@ -560,5 +785,130 @@ mod tests {
         let restarted = InMemoryRunQueue::new("session-a", 1);
         assert_eq!(old.queued().len(), 1);
         assert!(restarted.queued().is_empty());
+    }
+
+    #[test]
+    fn supersede_atomically_replaces_queued_and_preserves_active() {
+        let queue = queue();
+        queue
+            .accept(
+                "request-1",
+                Some("run-1"),
+                BusyPolicy::EnqueueIfBusy,
+                Value::Null,
+            )
+            .unwrap();
+        queue.start_next(1).unwrap();
+        for number in 2..=3 {
+            queue
+                .accept(
+                    &format!("request-{number}"),
+                    Some(&format!("run-{number}")),
+                    BusyPolicy::EnqueueIfBusy,
+                    Value::Null,
+                )
+                .unwrap();
+        }
+        let (ack, cancelled, active) = queue
+            .supersede(
+                "request-4",
+                Some("run-4"),
+                serde_json::json!({"text":"latest"}),
+            )
+            .unwrap();
+        assert_eq!(active.as_deref(), Some("run-1"));
+        assert_eq!(
+            cancelled
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-2", "run-3"]
+        );
+        assert_eq!(
+            queue
+                .queued()
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-4"]
+        );
+        assert_eq!(ack.run_sequence, Some(4));
+
+        let retry = queue
+            .supersede(
+                "request-4",
+                Some("run-4"),
+                serde_json::json!({"text":"latest"}),
+            )
+            .unwrap();
+        assert_eq!(retry.0.accepted_state, RunAcceptedState::Existing);
+        assert!(retry.1.is_empty());
+        assert_eq!(queue.queued().len(), 1);
+    }
+
+    #[test]
+    fn global_budget_is_shared_and_released() {
+        let global = std::sync::Arc::new(GlobalQueueBudget::new(1, 1_024));
+        let first =
+            InMemoryRunQueue::with_limits_and_global("s1", 1, 8, 1_024, 1_024, 8, global.clone());
+        let second =
+            InMemoryRunQueue::with_limits_and_global("s2", 1, 8, 1_024, 1_024, 8, global.clone());
+        first
+            .accept("a", Some("run-a"), BusyPolicy::EnqueueIfBusy, Value::Null)
+            .unwrap();
+        assert!(matches!(
+            second.accept("b", Some("run-b"), BusyPolicy::EnqueueIfBusy, Value::Null),
+            Err(RunQueueError::GlobalQueueFull { limit: 1 })
+        ));
+        first.cancel_all_queued(QueuedCancellationReason::Cancelled);
+        second
+            .accept("b", Some("run-b"), BusyPolicy::EnqueueIfBusy, Value::Null)
+            .unwrap();
+        assert_eq!(global.usage().0, 1);
+    }
+
+    #[test]
+    fn randomized_scheduler_preserves_single_active_unique_ids_and_order() {
+        use rand::{Rng, SeedableRng};
+        let queue = queue();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x51_7e_55);
+        let mut next = 0_u64;
+        let mut last_started_sequence = 0_u64;
+        for _ in 0..10_000 {
+            match rng.gen_range(0..4) {
+                0 | 1 => {
+                    next += 1;
+                    let _ = queue.accept(
+                        &format!("request-{next}"),
+                        Some(&format!("run-{next}")),
+                        BusyPolicy::EnqueueIfBusy,
+                        serde_json::json!({"n": next}),
+                    );
+                }
+                2 if queue.active().is_none() && !queue.queued().is_empty() => {
+                    let (started, _) = queue.start_next(next + 1).unwrap();
+                    assert!(started.run_sequence > last_started_sequence);
+                    last_started_sequence = started.run_sequence;
+                }
+                3 if queue.active().is_some() => {
+                    let active = queue.active().unwrap().0.run_id;
+                    queue.finish_active(&active).unwrap();
+                }
+                _ if !queue.queued().is_empty() => {
+                    let run_id = queue.queued().last().unwrap().run_id.clone();
+                    queue
+                        .cancel_queued(&run_id, QueuedCancellationReason::Cancelled)
+                        .unwrap();
+                }
+                _ => {}
+            }
+            let queued = queue.queued();
+            assert!(queued
+                .windows(2)
+                .all(|pair| pair[0].run_sequence < pair[1].run_sequence));
+            if let Some((active, _)) = queue.active() {
+                assert!(queued.iter().all(|run| run.run_id != active.run_id));
+            }
+        }
     }
 }

@@ -50,6 +50,25 @@ function expectStreamingMatchesFullRender(full: string, width = W): number {
 }
 
 describe("ChatArea streaming render", () => {
+  test("ten queued submissions keep canonical run ownership", () => {
+    const chat = new ChatArea(W);
+    chat.render(W);
+    for (let index = 0; index < 10; index++) {
+      const localId = `local-${index}`;
+      chat.addMessage({ id: localId, role: "user", content: `prompt ${index}` });
+      chat.bindUserRun(localId, `run-${index}`, index === 0 ? "running" : "queued");
+    }
+    chat.updateRunState("run-4", "running");
+    chat.updateRunState("run-4", "terminal");
+    const messages = (chat as any).messages as ChatMessage[];
+    expect(messages).toHaveLength(10);
+    expect(messages.map((message) => message.runId)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `run-${index}`),
+    );
+    expect(messages[4].runState).toBe("terminal");
+    expect(messages.filter((message) => message.runState === "queued")).toHaveLength(8);
+  });
+
   test("deferred: deltas are not rendered until flush", () => {
     const chat = new ChatArea(W);
     chat.render(W);

@@ -30,6 +30,7 @@ pub struct AppState {
     /// there is no privileged "default"/"current" session; clients address
     /// sessions explicitly and the agent hydrates them on demand.
     pub sessions: Arc<RwLock<HashMap<String, Arc<RwLock<ServerSession>>>>>,
+    pub queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
     /// On-disk session store (JSONL).  Used for hydration and sessionless
     /// disk operations (delete, fork previews).
     pub session_manager: Arc<crate::session::Manager>,
@@ -41,7 +42,7 @@ pub struct AppState {
     pub explicit_session: bool,
     pub approval_gate: ApprovalGate,
     pub verbose: bool,
-    /// When true, new prompt/steer/follow_up requests are rejected.  Existing
+    /// When true, new prompt requests are rejected. Existing
     /// streaming runs continue to completion.  Read-only and control commands
     /// (abort, status, etc.) are still accepted.
     pub shutting_down: Arc<AtomicBool>,
@@ -91,7 +92,7 @@ impl AppState {
         // session's provider and can never fail with "agent is currently
         // streaming" just because ANOTHER session is mid-run.
         let broadcaster = Arc::new(SseBroadcaster::new());
-        let mut new_sess = ServerSession::new(
+        let mut new_sess = ServerSession::new_with_queue_budget(
             session_id.to_string(),
             Arc::new(tokio::sync::RwLock::new(
                 self.loop_template.independent_copy(),
@@ -101,6 +102,7 @@ impl AppState {
             broadcaster,
             self.approval_gate.clone(),
             self.model_registry.clone(),
+            self.queue_budget.clone(),
         );
         if new_sess.switch_session(session_id).is_err() {
             return None;
@@ -607,6 +609,7 @@ mod tests {
             sessions: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            queue_budget: std::sync::Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
             session_manager: std::sync::Arc::new(crate::session::Manager::new(
                 std::path::PathBuf::from("/tmp/futureos-test-sessions"),
             )),

@@ -71,6 +71,8 @@ fn map_broadcast_event(
             snapshot_cursor: 0,
             session_id: session_id.to_string(),
             epoch: event.epoch,
+            event_id: event.event_id,
+            timestamp: event.timestamp,
         }),
         Err(error) => {
             // Non-atomic observers can remain subscribed across multiple runs,
@@ -179,7 +181,6 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             message: cmd.message,
             images: internal_images,
             attachments: internal_attachments,
-            streaming_behavior: cmd.streaming_behavior,
             parent_session: cmd.parent_session,
             model_id: cmd.model_id,
             level: cmd.level,
@@ -317,6 +318,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         snapshot_cursor: projection.cursor,
                         session_id: session_id.clone(),
                         epoch: projection.epoch,
+                        event_id: String::new(),
+                        timestamp: String::new(),
                     });
                 }
                 initial.extend(
@@ -333,6 +336,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             snapshot_cursor: 0,
                             session_id: session_id.clone(),
                             epoch: event.epoch,
+                            event_id: event.event_id,
+                            timestamp: event.timestamp,
                         }),
                 );
                 (attachment.receiver, initial, sess.broadcaster.clone())
@@ -349,6 +354,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         snapshot_cursor: 0,
                         session_id: session_id.clone(),
                         epoch: 0,
+                        event_id: String::new(),
+                        timestamp: String::new(),
                     }],
                     sess.broadcaster.clone(),
                 )

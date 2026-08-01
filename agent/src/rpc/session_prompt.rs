@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -12,8 +13,14 @@ use super::ServerSession;
 struct ScheduledPromptPayload {
     message: String,
     images: Vec<crate::types::ImageContent>,
-    attachments: Vec<crate::types::Attachment>,
+    attachments: Vec<QueuedAttachmentSnapshot>,
     settings: ScheduledSettingsSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct QueuedAttachmentSnapshot {
+    attachment: crate::types::Attachment,
+    bytes_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +55,25 @@ impl ServerSession {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn scheduled_attachment_bytes(&self, run_id: &str) -> Option<Vec<Vec<u8>>> {
+        let request = self
+            .scheduler
+            .queued()
+            .into_iter()
+            .find(|run| run.run_id == run_id)?;
+        let payload: ScheduledPromptPayload = serde_json::from_value(request.payload).ok()?;
+        payload
+            .attachments
+            .iter()
+            .map(|snapshot| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(&snapshot.bytes_base64)
+                    .ok()
+            })
+            .collect()
+    }
+
     pub fn enqueue_prompt(
         &mut self,
         msg: &str,
@@ -60,12 +86,34 @@ impl ServerSession {
         if self.deleting {
             return Err(crate::runtime::RunQueueError::Deleting.into());
         }
+        if let Some(error) = self
+            .broadcaster
+            .persistence_error()
+            .or_else(|| self.persistence.last_error())
+        {
+            return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
+        }
         if busy_policy == crate::runtime::BusyPolicy::RejectIfBusy
             && self.runtime.snapshot().is_some()
             && self.scheduler.active().is_none()
         {
             return Err(crate::runtime::RunQueueError::Busy.into());
         }
+        let attachment_snapshots = attachments
+            .iter()
+            .map(|attachment| {
+                let bytes = std::fs::read(&attachment.path).map_err(|error| {
+                    crate::runtime::RunQueueError::AttachmentUnavailable {
+                        path: attachment.path.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
+                Ok(QueuedAttachmentSnapshot {
+                    attachment: attachment.clone(),
+                    bytes_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                })
+            })
+            .collect::<std::result::Result<Vec<_>, crate::runtime::RunQueueError>>()?;
         let settings = ScheduledSettingsSnapshot {
             model: self.model.clone(),
             thinking_level: self.thinking_level.clone(),
@@ -89,19 +137,41 @@ impl ServerSession {
         let payload = serde_json::to_value(ScheduledPromptPayload {
             message: msg.to_string(),
             images: images.to_vec(),
-            attachments: attachments.to_vec(),
+            attachments: attachment_snapshots,
             settings: settings.clone(),
         })?;
-        let ack =
-            self.scheduler
-                .accept(client_request_id, requested_run_id, busy_policy, payload)?;
+        let (ack, superseded, superseded_active) = if busy_policy
+            == crate::runtime::BusyPolicy::SupersedeSession
+        {
+            let (ack, cancelled, active) =
+                self.scheduler
+                    .supersede(client_request_id, requested_run_id, payload)?;
+            (ack, cancelled, active)
+        } else {
+            (
+                self.scheduler
+                    .accept(client_request_id, requested_run_id, busy_policy, payload)?,
+                Vec::new(),
+                None,
+            )
+        };
         if ack.accepted_state == crate::runtime::RunAcceptedState::Existing {
             return Ok(ack);
+        }
+        for request in superseded {
+            self.scheduled_snapshots.remove(&request.run_id);
         }
         self.scheduled_snapshots.insert(
             ack.run_id.clone(),
             AcceptedRunSnapshot { run_loop, settings },
         );
+        if busy_policy == crate::runtime::BusyPolicy::SupersedeSession
+            && (superseded_active.is_some() || self.runtime.snapshot().is_some())
+        {
+            if let Some(active) = self.runtime.snapshot() {
+                let _ = self.runtime.request_abort(Some(&active.run_id));
+            }
+        }
         if self.runtime.snapshot().is_none() {
             if self.runtime.has_owned_task() {
                 // The prior run has finalized its control lease but its task
@@ -146,10 +216,12 @@ impl ServerSession {
             .remove(&request.run_id)
             .ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
         debug_assert_eq!(snapshot.settings.model, payload.settings.model);
+        let materialized_attachments =
+            self.materialize_queued_attachments(&request.run_id, &payload.attachments)?;
         let lease = self.prompt_internal(
             &payload.message,
             &payload.images,
-            &payload.attachments,
+            &materialized_attachments,
             Some(&request.run_id),
             Some(&request.client_request_id),
             Some(&request),
@@ -164,6 +236,46 @@ impl ServerSession {
         })
     }
 
+    fn materialize_queued_attachments(
+        &self,
+        run_id: &str,
+        snapshots: &[QueuedAttachmentSnapshot],
+    ) -> Result<Vec<crate::types::Attachment>> {
+        if snapshots.is_empty() {
+            return Ok(Vec::new());
+        }
+        let directory = self
+            .session_manager
+            .run_data_path(&self.session_id)
+            .join("attachments")
+            .join(run_id);
+        std::fs::create_dir_all(&directory)?;
+        snapshots
+            .iter()
+            .enumerate()
+            .map(|(index, snapshot)| {
+                let bytes =
+                    base64::engine::general_purpose::STANDARD.decode(&snapshot.bytes_base64)?;
+                let extension = std::path::Path::new(&snapshot.attachment.name)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| {
+                        !value.is_empty()
+                            && value.len() <= 16
+                            && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                    });
+                let file_name = extension
+                    .map(|extension| format!("{index:04}.{extension}"))
+                    .unwrap_or_else(|| format!("{index:04}.bin"));
+                let path = directory.join(file_name);
+                std::fs::write(&path, bytes)?;
+                let mut attachment = snapshot.attachment.clone();
+                attachment.path = path.to_string_lossy().to_string();
+                Ok(attachment)
+            })
+            .collect()
+    }
+
     pub fn prompt(
         &mut self,
         msg: &str,
@@ -172,6 +284,9 @@ impl ServerSession {
         requested_run_id: Option<&str>,
         client_request_id: Option<&str>,
     ) -> Result<crate::runtime::RunLease> {
+        if let Some(error) = self.broadcaster.persistence_error() {
+            return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
+        }
         self.prompt_internal(
             msg,
             images,
@@ -183,6 +298,7 @@ impl ServerSession {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prompt_internal(
         &mut self,
         msg: &str,
@@ -252,8 +368,6 @@ impl ServerSession {
             shared
                 .provider
                 .update_thinking(&self.thinking_level, thinking_budget);
-            shared.steering_queue.mode = self.steering_mode.clone();
-            shared.follow_up_queue.mode = self.follow_up_mode.clone();
             self.swap_token_counters_into_loop(&mut shared);
             self.wire_auto_compaction(&mut shared, run_auto_compaction, &run_model);
             let system_prompt = self.build_system_prompt(&run_cwd, shared.tools.clone());
@@ -278,10 +392,6 @@ impl ServerSession {
         run_loop.cumulative_cache_write_tokens = self.tokens_cache_w.clone();
         run_loop.cumulative_cost = self.cumulative_cost.clone();
         run_loop.last_prompt_tokens = self.last_prompt_tokens.clone();
-        run_loop.steering_queue.set_mode(&self.steering_mode);
-        run_loop.follow_up_queue.set_mode(&self.follow_up_mode);
-        self.steering_tx = run_loop.steering_queue.sender();
-        self.follow_up_tx = run_loop.follow_up_queue.sender();
 
         // Whether the active model accepts image input (catalog modalities).
         // Uses the cached registry from ServerSession to avoid ~15% CPU overhead
@@ -360,7 +470,6 @@ impl ServerSession {
         // of run identity. Legacy multi-turn transcripts remain readable, but
         // every newly started run has exactly one canonical turn.
         let initial_turn_id = run_lease.run_id.clone();
-        let current_turn_id = Arc::new(std::sync::Mutex::new(initial_turn_id.clone()));
         {
             let metadata = user_message
                 .metadata
@@ -488,7 +597,7 @@ impl ServerSession {
         let save_messages = messages_arc.clone();
         let save_persistence = self.persistence.clone();
         let persisted_run_id = run_lease.run_id.clone();
-        let save_turn_id = current_turn_id.clone();
+        let save_turn_id = run_lease.run_id.clone();
         let save_closure: crate::agent::PersistCallback =
             Arc::new(move |msg: &crate::types::AgentMessage| {
                 if is_ephemeral {
@@ -498,84 +607,39 @@ impl ServerSession {
                 // Every entry of this run carries its run identity — not just
                 // assistant entries — so a message's home run never has to be
                 // re-derived from journal position. Assistant/tool entries join
-                // the turn the last user message opened; a user message
-                // reaching this path (the interrupt-save loop) opens a fresh
-                // turn, mirroring user_msg_cb. Existing ids win — a re-saved
-                // message must keep the identity it was first journaled with.
+                // the run's single canonical turn. Existing ids win for
+                // legacy messages that are re-saved during compaction.
                 let metadata = persisted.metadata.get_or_insert_with(serde_json::Map::new);
                 metadata
                     .entry("run_id".to_string())
                     .or_insert_with(|| serde_json::Value::String(persisted_run_id.clone()));
-                if persisted.role == "user" {
-                    let turn_id = metadata
-                        .get("turn_id")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| {
-                            let fresh = format!("turn_{}", crate::utils::generate_entry_id());
-                            metadata.insert(
-                                "turn_id".to_string(),
-                                serde_json::Value::String(fresh.clone()),
-                            );
-                            fresh
-                        });
-                    if let Ok(mut current) = save_turn_id.lock() {
-                        *current = turn_id;
-                    }
-                } else if let Ok(current) = save_turn_id.lock() {
-                    metadata
-                        .entry("turn_id".to_string())
-                        .or_insert_with(|| serde_json::Value::String(current.clone()));
-                }
+                metadata
+                    .entry("turn_id".to_string())
+                    .or_insert_with(|| serde_json::Value::String(save_turn_id.clone()));
                 save_messages.write().push(persisted.clone());
                 let entry = crate::session::agent_message_to_entry(&persisted);
                 if let Err(error) = save_persistence.append(vec![entry]) {
                     tracing::error!("Failed to enqueue session entry: {error}");
                 }
             });
-        // Steering can reorder a user message ahead of the current context,
-        // while follow-ups append one inside the same canonical run. Persist
-        // both immediately for crash visibility, then heal their exact
-        // in-memory ordering with a rewrite at the terminal boundary.
-        //
-        // TODO(runtime-persistence): split steering and follow-up callbacks so
-        // append-only follow-ups can avoid the rewrite while reordered steering
-        // records an explicit journal transform.
+        // The callback remains part of StreamContext for provider compatibility,
+        // but new architecture never injects another user message into this run.
         let in_run_user_message_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let user_msg_cb: crate::agent::PersistCallback = {
             let b = broadcaster.clone();
             let persistence = self.persistence.clone();
             let rewrite_required = in_run_user_message_seen.clone();
             let user_msg_run_id = run_lease.run_id.clone();
-            let user_msg_turn = current_turn_id.clone();
             Arc::new(move |msg: &crate::types::AgentMessage| {
                 rewrite_required.store(true, std::sync::atomic::Ordering::SeqCst);
-                // An in-run user message (follow-up/steer) opens a new turn.
-                // Adopt a pre-stamped turn id when the construction site set
-                // one, so the journal entry and the in-memory history copy
-                // share the same identity.
                 let mut persisted = msg.clone();
-                let turn_id = {
-                    let metadata = persisted.metadata.get_or_insert_with(serde_json::Map::new);
-                    metadata
-                        .entry("run_id".to_string())
-                        .or_insert_with(|| serde_json::Value::String(user_msg_run_id.clone()));
-                    metadata
-                        .get("turn_id")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| {
-                            let fresh = format!("turn_{}", crate::utils::generate_entry_id());
-                            metadata.insert(
-                                "turn_id".to_string(),
-                                serde_json::Value::String(fresh.clone()),
-                            );
-                            fresh
-                        })
-                };
-                if let Ok(mut current) = user_msg_turn.lock() {
-                    *current = turn_id;
-                }
+                let metadata = persisted.metadata.get_or_insert_with(serde_json::Map::new);
+                metadata
+                    .entry("run_id".to_string())
+                    .or_insert_with(|| serde_json::Value::String(user_msg_run_id.clone()));
+                metadata
+                    .entry("turn_id".to_string())
+                    .or_insert_with(|| serde_json::Value::String(user_msg_run_id.clone()));
                 let entry = crate::session::agent_message_to_entry(&persisted);
                 if let Err(error) = persistence.append(vec![entry]) {
                     tracing::error!("Failed to enqueue in-run user message: {error}");
@@ -635,13 +699,14 @@ impl ServerSession {
             prepare_session_tool_call(&prepare_cwd, tool_name, arguments)
         }));
 
-        // agent_start is now emitted inside run_streaming_with_messages via on_event,
-        // for both initial prompts and follow-up turns.
+        // agent_start is emitted inside run_streaming_with_messages via on_event.
 
         // Clear any stale interrupt flag copied from the next-run control
         // plane. Each run owns its snapshot after this boundary.
         run_loop.clear_interrupt();
         let shared_interrupt_flag = run_loop.interrupt_flag();
+        self.broadcaster
+            .set_persistence_interrupt(shared_interrupt_flag.clone());
 
         // Create interrupt channel so steer()/abort() can stop the current stream
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -712,79 +777,32 @@ impl ServerSession {
                     on_sandboxed: Some(on_sandboxed),
                 },
                 async {
-                    let mut current_messages = initial_messages;
-                    let mut current_interrupt_rx = Some(interrupt_rx);
-
-                    loop {
-                        let bt = broadcaster.clone();
-                        let be = broadcaster.clone();
-                        match run_loop
-                            .run_streaming_with_messages(
-                                current_messages,
-                                &stream_ctx,
-                                move |text| {
-                                    bt.broadcast(crate::rpc::SseEvent {
-                                        event_type: "text_chunk".to_string(),
-                                        data: serde_json::json!({"text": text}).to_string(),
+                    let bt = broadcaster.clone();
+                    let be = broadcaster.clone();
+                    run_loop
+                        .run_streaming_with_messages(
+                            initial_messages,
+                            &stream_ctx,
+                            move |text| {
+                                bt.broadcast(crate::rpc::SseEvent {
+                                    event_type: "text_chunk".to_string(),
+                                    data: serde_json::json!({"text": text}).to_string(),
+                                    ..Default::default()
+                                });
+                            },
+                            move |event| {
+                                if let Some(event) = canonical_stream_event(event) {
+                                    be.broadcast(crate::rpc::SseEvent {
+                                        event_type: event.event_type.clone(),
+                                        data: stream_event_to_sse_data(&event),
                                         ..Default::default()
                                     });
-                                },
-                                move |event| {
-                                    if let Some(event) = canonical_stream_event(event) {
-                                        be.broadcast(crate::rpc::SseEvent {
-                                            event_type: event.event_type.clone(),
-                                            data: stream_event_to_sse_data(&event),
-                                            ..Default::default()
-                                        });
-                                    }
-                                },
-                                current_interrupt_rx.take(),
-                            )
-                            .await
-                        {
-                            Ok((_, final_messages)) => {
-                                current_messages = final_messages;
-
-                                let follow_ups = run_loop.follow_up_queue.drain();
-
-                                if follow_ups.is_empty() {
-                                    return Ok(current_messages);
                                 }
-                                for msg in follow_ups {
-                                    let mut follow_up = crate::types::AgentMessage::new_user(
-                                        "user",
-                                        serde_json::json!([{"type": "text", "text": msg}]),
-                                    );
-                                    // Stamp identity before the callback fires
-                                    // so the journal entry and the in-memory
-                                    // history copy carry the same ids.
-                                    {
-                                        let metadata = follow_up
-                                            .metadata
-                                            .get_or_insert_with(serde_json::Map::new);
-                                        metadata.insert(
-                                            "run_id".to_string(),
-                                            serde_json::Value::String(task_lease.run_id.clone()),
-                                        );
-                                        metadata.insert(
-                                            "turn_id".to_string(),
-                                            serde_json::Value::String(format!(
-                                                "turn_{}",
-                                                crate::utils::generate_entry_id()
-                                            )),
-                                        );
-                                    }
-                                    if let Some(ref on_user_message) = stream_ctx.on_user_message {
-                                        on_user_message(&follow_up);
-                                    }
-                                    current_messages.push(follow_up);
-                                }
-                                // No interrupt channel for follow-up re-runs
-                                current_interrupt_rx = None;
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    }
+                            },
+                            Some(interrupt_rx),
+                        )
+                        .await
+                        .map(|(_, final_messages)| final_messages)
                 },
             )
             .await;
@@ -804,6 +822,10 @@ impl ServerSession {
             let stream_incomplete = run_loop
                 .stream_incomplete
                 .load(std::sync::atomic::Ordering::SeqCst);
+            if let Some(error) = broadcaster.persistence_error() {
+                let _ = runtime.mark_persistence_degraded(&task_lease, &error);
+                return;
+            }
             if !runtime.begin_finalizing(&task_lease) {
                 return;
             }
@@ -917,10 +939,8 @@ impl ServerSession {
                 );
 
                 if compaction_happened || history_rewrite_required {
-                    // Compaction replaced the in-memory history, so the appended
-                    // JSONL no longer matches. In-run steering/follow-up can
-                    // likewise change message ordering. Rewrite the authoritative
-                    // snapshot and retain its lifecycle journal.
+                    // Compaction replaced the in-memory history, so rewrite the
+                    // authoritative snapshot and retain its lifecycle journal.
                     let messages = messages_arc.read().clone();
                     let session = Self::build_rewrite_snapshot(
                         &session_manager,

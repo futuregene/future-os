@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::io::{BufRead, Write};
 use tokio::sync::broadcast;
 
 // ─── RPC Command (stdin) ────────────────────────────────────────────────────
@@ -19,8 +20,6 @@ pub struct RpcCommand {
     #[serde(default)]
     pub attachments: Vec<crate::types::Attachment>,
     #[serde(default)]
-    pub streaming_behavior: String,
-    #[serde(default)]
     pub parent_session: String,
 
     // set_model
@@ -31,7 +30,7 @@ pub struct RpcCommand {
     #[serde(default)]
     pub level: String,
 
-    // set_steering_mode / set_follow_up_mode
+    // Generic decision/rule mode (approval_result, add_session_rule).
     #[serde(default)]
     pub mode: String,
 
@@ -182,6 +181,24 @@ struct RunState {
     projection_events: Vec<SseEvent>,
 }
 
+#[derive(Default)]
+struct EventJournalState {
+    session_id: String,
+    directory: Option<std::path::PathBuf>,
+    last_error: Option<String>,
+    interrupt_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(test)]
+    fail_at: Option<JournalFailPoint>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum JournalFailPoint {
+    Append,
+    Flush,
+    Sync,
+}
+
 pub struct RunAttachment {
     pub receiver: broadcast::Receiver<SseEvent>,
     pub events: Vec<SseEvent>,
@@ -214,6 +231,7 @@ pub struct SseBroadcaster {
     /// resume. Observability metric for the "broadcast lag" criterion; a spike
     /// means a client couldn't keep up with the event rate.
     lag_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    journal: std::sync::Arc<parking_lot::Mutex<EventJournalState>>,
 }
 
 impl SseBroadcaster {
@@ -234,7 +252,56 @@ impl SseBroadcaster {
             })),
             truncation_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             lag_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            journal: std::sync::Arc::new(parking_lot::Mutex::new(EventJournalState::default())),
         }
+    }
+
+    /// Bind this session's broadcaster to its Agent-owned event directory.
+    /// Tests and short-lived utility broadcasters may intentionally remain
+    /// memory-only by never calling this method.
+    pub fn configure_journal(
+        &self,
+        session_id: impl Into<String>,
+        directory: std::path::PathBuf,
+    ) -> anyhow::Result<()> {
+        let session_id = session_id.into();
+        if let Err(error) = std::fs::create_dir_all(&directory) {
+            let mut journal = self.journal.lock();
+            journal.session_id = session_id;
+            journal.directory = Some(directory);
+            journal.last_error = Some(format!("event journal directory unavailable: {error}"));
+            return Err(error.into());
+        }
+        let mut journal = self.journal.lock();
+        journal.session_id = session_id;
+        journal.directory = Some(directory);
+        journal.last_error = None;
+        Ok(())
+    }
+
+    pub fn set_persistence_interrupt(
+        &self,
+        interrupt_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let mut journal = self.journal.lock();
+        if journal.last_error.is_some() {
+            interrupt_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        journal.interrupt_flag = Some(interrupt_flag);
+    }
+
+    pub fn persistence_error(&self) -> Option<String> {
+        self.journal.lock().last_error.clone()
+    }
+
+    #[cfg(test)]
+    fn fail_next_append(&self) {
+        self.journal.lock().fail_at = Some(JournalFailPoint::Append);
+    }
+
+    #[cfg(test)]
+    fn fail_at(&self, point: JournalFailPoint) {
+        self.journal.lock().fail_at = Some(point);
     }
 
     /// Subscribe to SSE events
@@ -297,18 +364,30 @@ impl SseBroadcaster {
                 "run replay ring truncated; returning projection snapshot"
             );
         }
-        let events = run
-            .events
-            .iter()
-            .filter(|event| !truncated && event.idx > after_idx)
-            .cloned()
-            .collect();
-        let projection = truncated.then(|| RunProjectionSnapshot {
-            run_id: run.run_id.clone(),
-            epoch: run.epoch,
-            cursor: run.idx.saturating_sub(1),
-            events: run.projection_events.clone(),
+        let disk_events = if truncated && self.journal.lock().directory.is_some() {
+            Some(
+                self.read_journal(run_id)?
+                    .into_iter()
+                    .filter(|event| event.idx > after_idx)
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        let events = disk_events.unwrap_or_else(|| {
+            run.events
+                .iter()
+                .filter(|event| !truncated && event.idx > after_idx)
+                .cloned()
+                .collect()
         });
+        let projection =
+            (truncated && self.journal.lock().directory.is_none()).then(|| RunProjectionSnapshot {
+                run_id: run.run_id.clone(),
+                epoch: run.epoch,
+                cursor: run.idx.saturating_sub(1),
+                events: run.projection_events.clone(),
+            });
         Ok(RunAttachment {
             receiver,
             events,
@@ -325,6 +404,25 @@ impl SseBroadcaster {
         event.run_id = run.run_id.clone();
         event.epoch = run.epoch;
         event.idx = run.idx;
+        {
+            let journal = self.journal.lock();
+            event.session_id = journal.session_id.clone();
+        }
+        event.timestamp = chrono::Utc::now().to_rfc3339();
+        event.event_id = format!(
+            "{}:{}:{}:{}",
+            event.session_id, event.run_id, event.epoch, event.idx
+        );
+        if let Err(error) = self.append_journal(&event) {
+            let message = format!("event journal append failed: {error:#}");
+            let mut journal = self.journal.lock();
+            journal.last_error = Some(message.clone());
+            if let Some(flag) = &journal.interrupt_flag {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            tracing::error!(run_id = %event.run_id, idx = event.idx, "{message}");
+            return;
+        }
         run.idx += 1;
         apply_to_projection(&mut run.projection_events, &event);
         run.events.push(event.clone());
@@ -345,12 +443,36 @@ impl SseBroadcaster {
     /// buffer. `epoch` is the run's monotonic generation within the session
     /// (from the runtime lease), stamped on every event of this run.
     pub fn start_run(&self, run_id: String, epoch: i64) {
+        let (recovered, recovery_failed) = match self.read_journal(&run_id) {
+            Ok(events) => (events, false),
+            Err(error) => {
+                self.journal.lock().last_error =
+                    Some(format!("event journal recovery failed: {error:#}"));
+                (Vec::new(), true)
+            }
+        };
         let mut run = self.run.lock();
         run.run_id = run_id;
         run.epoch = epoch;
-        run.idx = 0;
-        run.events.clear();
+        run.idx = recovered
+            .last()
+            .map_or(0, |event| event.idx.saturating_add(1));
+        run.events = recovered
+            .iter()
+            .rev()
+            .take(MAX_RUN_EVENTS)
+            .cloned()
+            .collect::<Vec<_>>();
+        run.events.reverse();
         run.projection_events.clear();
+        for event in &recovered {
+            apply_to_projection(&mut run.projection_events, event);
+        }
+        let mut journal = self.journal.lock();
+        if !recovery_failed {
+            journal.last_error = None;
+        }
+        journal.interrupt_flag = None;
     }
 
     /// Current-run events with `idx > since_idx`, plus the earliest idx still in
@@ -384,19 +506,112 @@ impl SseBroadcaster {
                 "run event query crossed replay-ring boundary; returning projection snapshot"
             );
         }
-        let events = run
-            .events
-            .iter()
-            .filter(|event| !truncated && event.idx > since_idx)
-            .cloned()
-            .collect();
-        let projection = truncated.then(|| RunProjectionSnapshot {
-            run_id: run.run_id.clone(),
-            epoch: run.epoch,
-            cursor: run.idx.saturating_sub(1),
-            events: run.projection_events.clone(),
+        let disk_events = if truncated && self.journal.lock().directory.is_some() {
+            Some(
+                self.read_journal(run_id)?
+                    .into_iter()
+                    .filter(|event| event.idx > since_idx)
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        let events = disk_events.unwrap_or_else(|| {
+            run.events
+                .iter()
+                .filter(|event| !truncated && event.idx > since_idx)
+                .cloned()
+                .collect()
         });
+        let projection =
+            (truncated && self.journal.lock().directory.is_none()).then(|| RunProjectionSnapshot {
+                run_id: run.run_id.clone(),
+                epoch: run.epoch,
+                cursor: run.idx.saturating_sub(1),
+                events: run.projection_events.clone(),
+            });
         Ok((run.run_id.clone(), events, min_idx, projection))
+    }
+
+    fn journal_path(&self, run_id: &str) -> Option<std::path::PathBuf> {
+        self.journal
+            .lock()
+            .directory
+            .as_ref()
+            .map(|directory| directory.join(format!("{run_id}.jsonl")))
+    }
+
+    fn append_journal(&self, event: &SseEvent) -> anyhow::Result<()> {
+        #[cfg(test)]
+        {
+            let mut journal = self.journal.lock();
+            if matches!(journal.fail_at, Some(JournalFailPoint::Append)) {
+                journal.fail_at = None;
+                anyhow::bail!("injected append failure");
+            }
+        }
+        let Some(path) = self.journal_path(&event.run_id) else {
+            return Ok(());
+        };
+        let mut bytes = serde_json::to_vec(event)?;
+        bytes.push(b'\n');
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        file.write_all(&bytes)?;
+        #[cfg(test)]
+        {
+            let mut journal = self.journal.lock();
+            if matches!(journal.fail_at, Some(JournalFailPoint::Flush)) {
+                journal.fail_at = None;
+                anyhow::bail!("injected flush failure");
+            }
+        }
+        file.flush()?;
+        #[cfg(test)]
+        {
+            let mut journal = self.journal.lock();
+            if matches!(journal.fail_at, Some(JournalFailPoint::Sync)) {
+                journal.fail_at = None;
+                anyhow::bail!("injected sync failure");
+            }
+        }
+        file.sync_data()?;
+        Ok(())
+    }
+
+    /// Read only complete JSONL records. A process crash can leave one partial
+    /// tail record; it is ignored and truncated before the next append.
+    fn read_journal(&self, run_id: &str) -> anyhow::Result<Vec<SseEvent>> {
+        let Some(path) = self.journal_path(run_id) else {
+            return Ok(Vec::new());
+        };
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut events = Vec::new();
+        let mut valid_bytes = 0_u64;
+        for line in std::io::BufReader::new(file).split(b'\n') {
+            let line = line?;
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_slice::<SseEvent>(&line) {
+                Ok(event) => {
+                    valid_bytes += line.len() as u64 + 1;
+                    events.push(event);
+                }
+                Err(_) => {
+                    let writable = std::fs::OpenOptions::new().write(true).open(&path)?;
+                    writable.set_len(valid_bytes)?;
+                    break;
+                }
+            }
+        }
+        Ok(events)
     }
 }
 
@@ -463,7 +678,7 @@ impl Default for SseBroadcaster {
 }
 
 /// SSE Event structure
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SseEvent {
     pub event_type: String,
     pub data: String,
@@ -473,6 +688,12 @@ pub struct SseEvent {
     pub run_id: String,
     pub epoch: i64,
     pub idx: i64,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub event_id: String,
+    #[serde(default)]
+    pub timestamp: String,
 }
 
 impl SseEvent {
@@ -483,6 +704,9 @@ impl SseEvent {
             run_id: String::new(),
             epoch: 0,
             idx: 0,
+            session_id: String::new(),
+            event_id: String::new(),
+            timestamp: String::new(),
         }
     }
 }
@@ -511,13 +735,11 @@ mod tests {
             "id": "cmd2",
             "type": "prompt",
             "sessionId": "s1",
-            "message": "hello",
-            "streamingBehavior": "realtime"
+            "message": "hello"
         }"#;
         let cmd: RpcCommand = serde_json::from_str(json).unwrap();
         assert_eq!(cmd.cmd_type, "prompt");
         assert_eq!(cmd.message, "hello");
-        assert_eq!(cmd.streaming_behavior, "realtime");
         assert!(cmd.busy_policy.is_empty());
     }
 
@@ -550,9 +772,9 @@ mod tests {
 
     #[test]
     fn rpc_command_mode_field() {
-        let json = r#"{"id":"cmd5","type":"set_steering_mode","sessionId":"s1","mode":"auto"}"#;
+        let json = r#"{"id":"cmd5","type":"approval_result","sessionId":"s1","mode":"approved"}"#;
         let cmd: RpcCommand = serde_json::from_str(json).unwrap();
-        assert_eq!(cmd.mode, "auto");
+        assert_eq!(cmd.mode, "approved");
     }
 
     #[test]
@@ -997,5 +1219,120 @@ mod tests {
         let text: serde_json::Value = serde_json::from_str(&snapshot.events[3].data).unwrap();
         assert_eq!(thinking["text"], "ab");
         assert_eq!(text["text"], "hello world");
+    }
+
+    #[test]
+    fn journal_is_committed_before_broadcast_and_failure_interrupts() {
+        let directory = tempfile::tempdir().unwrap();
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-1", directory.path().to_path_buf())
+            .unwrap();
+        b.start_run("run-1".to_string(), 3);
+        let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        b.set_persistence_interrupt(interrupt.clone());
+        let mut receiver = b.subscribe();
+
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text":"ok"}),
+        ));
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.session_id, "session-1");
+        assert_eq!(event.event_id, "session-1:run-1:3:0");
+        let stored = b.read_journal("run-1").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].event_id, event.event_id);
+
+        b.fail_next_append();
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text":"lost"}),
+        ));
+        assert!(
+            receiver.try_recv().is_err(),
+            "uncommitted event must not be visible"
+        );
+        assert!(interrupt.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(b.persistence_error().is_some());
+        assert_eq!(b.last_idx(), 0, "failed append must not advance the cursor");
+    }
+
+    #[test]
+    fn journal_failpoints_cover_append_flush_and_sync_boundaries() {
+        for point in [
+            JournalFailPoint::Append,
+            JournalFailPoint::Flush,
+            JournalFailPoint::Sync,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let b = SseBroadcaster::new();
+            b.configure_journal("session-1", directory.path().to_path_buf())
+                .unwrap();
+            b.start_run("run-1".to_string(), 1);
+            let mut receiver = b.subscribe();
+            b.fail_at(point);
+            b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
+            assert!(receiver.try_recv().is_err());
+            assert!(b.persistence_error().is_some());
+            assert_eq!(b.last_idx(), -1);
+        }
+    }
+
+    #[test]
+    fn journal_recovery_truncates_a_partial_tail() {
+        let directory = tempfile::tempdir().unwrap();
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-1", directory.path().to_path_buf())
+            .unwrap();
+        b.start_run("run-1".to_string(), 1);
+        b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
+        let path = directory.path().join("run-1.jsonl");
+        let valid_len = std::fs::metadata(&path).unwrap().len();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(br#"{"event_type":"partial""#).unwrap();
+        file.sync_all().unwrap();
+
+        let recovered = b.read_journal("run-1").unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(std::fs::metadata(path).unwrap().len(), valid_len);
+    }
+
+    #[test]
+    fn atomic_attach_replays_disk_when_memory_ring_is_truncated() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("run-1.jsonl");
+        let mut file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        for idx in 0..(MAX_RUN_EVENTS as i64 + 5) {
+            let event = SseEvent {
+                event_type: "usage".to_string(),
+                data: serde_json::json!({"n": idx}).to_string(),
+                run_id: "run-1".to_string(),
+                epoch: 2,
+                idx,
+                session_id: "session-1".to_string(),
+                event_id: format!("session-1:run-1:2:{idx}"),
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+            };
+            serde_json::to_writer(&mut file, &event).unwrap();
+            file.write_all(b"\n").unwrap();
+        }
+        file.flush().unwrap();
+
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-1", directory.path().to_path_buf())
+            .unwrap();
+        b.start_run("run-1".to_string(), 2);
+        let attachment = b.attach("run-1", -1).unwrap();
+        assert!(attachment.truncated);
+        assert!(attachment.projection.is_none());
+        assert_eq!(attachment.events.len(), MAX_RUN_EVENTS + 5);
+        assert_eq!(attachment.events.first().unwrap().idx, 0);
+        assert_eq!(
+            attachment.events.last().unwrap().idx,
+            MAX_RUN_EVENTS as i64 + 4
+        );
     }
 }

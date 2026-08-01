@@ -13,6 +13,8 @@ pub use run_request::{BusyPolicy, RunAcceptedState, RunAck};
 pub(crate) use run_state::RunControl;
 pub use run_state::{RunLease, RunPhase, RunSnapshot};
 pub use scheduler_queue::{
-    InMemoryRunQueue, QueuedCancellationReason, RunQueueError, ScheduledRunRequest,
+    GlobalQueueBudget, InMemoryRunQueue, QueuedCancellationReason, RunQueueError,
+    ScheduledRunRequest, DEFAULT_GLOBAL_QUEUE_BYTES, DEFAULT_GLOBAL_QUEUE_CAPACITY,
+    DEFAULT_REQUEST_BYTES, DEFAULT_SESSION_QUEUE_BYTES, DEFAULT_SESSION_QUEUE_CAPACITY,
 };
 pub use session_runtime::SessionRuntime;

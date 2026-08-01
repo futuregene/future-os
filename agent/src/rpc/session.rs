@@ -36,11 +36,6 @@ pub struct ServerSession {
     pub model: String,
     /// Thinking/effort level: "off", "minimal", "low", "medium", "high", "xhigh".
     pub thinking_level: String,
-    /// How new prompts are queued while streaming: "one-at-a-time" (replace
-    /// pending) or "all" (enqueue all).
-    pub steering_mode: String,
-    /// How follow-up prompts are queued: same semantics as `steering_mode`.
-    pub follow_up_mode: String,
     /// Whether auto-compaction is enabled for this session.
     pub auto_compaction: bool,
     /// Whether automatic retry on transient LLM errors is enabled.
@@ -91,10 +86,6 @@ pub struct ServerSession {
     pub cumulative_cost: Arc<parking_lot::Mutex<f64>>,
     /// Last API call's prompt_tokens (actual context size, reset each call)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
-    /// Sender for steering queue (cloned from loop, usable without loop lock)
-    pub steering_tx: tokio::sync::mpsc::Sender<String>,
-    /// Sender for follow_up queue
-    pub follow_up_tx: tokio::sync::mpsc::Sender<String>,
     /// Approval gate: holds pending approval requests and their decisions.
     pub approval_gate: ApprovalGate,
     /// Permission level for tool execution: "all" | "workspace" | "none"
@@ -153,35 +144,65 @@ impl ServerSession {
         approval_gate: ApprovalGate,
         model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
     ) -> Self {
+        Self::new_with_queue_budget(
+            session_id,
+            agent_loop,
+            manager,
+            cwd,
+            broadcaster,
+            approval_gate,
+            model_registry,
+            Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_queue_budget(
+        session_id: String,
+        agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
+        manager: Arc<Manager>,
+        cwd: &str,
+        broadcaster: Arc<SseBroadcaster>,
+        approval_gate: ApprovalGate,
+        model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
+        queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
+    ) -> Self {
+        if let Err(error) =
+            broadcaster.configure_journal(session_id.clone(), manager.run_data_path(&session_id))
+        {
+            tracing::error!(session_id, "failed to configure event journal: {error:#}");
+        }
         // Clone token counter Arcs and queue senders from the agent loop for lock-free access
-        let (ti, to, tcr, tcw, lpt, stx, ftx) = if let Ok(loop_) = agent_loop.try_read() {
+        let (ti, to, tcr, tcw, lpt) = if let Ok(loop_) = agent_loop.try_read() {
             (
                 loop_.cumulative_input_tokens.clone(),
                 loop_.cumulative_output_tokens.clone(),
                 loop_.cumulative_cache_read_tokens.clone(),
                 loop_.cumulative_cache_write_tokens.clone(),
                 loop_.last_prompt_tokens.clone(),
-                loop_.steering_queue.tx.clone(),
-                loop_.follow_up_queue.tx.clone(),
             )
         } else {
-            let (stx, _) = tokio::sync::mpsc::channel(64);
-            let (ftx, _) = tokio::sync::mpsc::channel(64);
             (
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
-                stx,
-                ftx,
             )
         };
         let is_streaming = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let runtime = Arc::new(crate::runtime::SessionRuntime::new(is_streaming.clone()));
         let (scheduler_wake_tx, scheduler_wake_rx) = tokio::sync::mpsc::unbounded_channel();
         runtime.set_completion_sender(scheduler_wake_tx);
-        let scheduler = Arc::new(crate::runtime::InMemoryRunQueue::new(&session_id, 1));
+        let scheduler = Arc::new(crate::runtime::InMemoryRunQueue::with_limits_and_global(
+            &session_id,
+            1,
+            crate::runtime::DEFAULT_SESSION_QUEUE_CAPACITY,
+            crate::runtime::DEFAULT_SESSION_QUEUE_BYTES,
+            crate::runtime::DEFAULT_REQUEST_BYTES,
+            256,
+            queue_budget,
+        ));
         let persistence =
             crate::session::SessionPersistence::new(manager.clone(), session_id.clone());
         Self {
@@ -190,9 +211,7 @@ impl ServerSession {
             messages: Arc::new(parking_lot::RwLock::new(vec![])),
             model: String::new(),
             thinking_level: "xhigh".to_string(), // Match default
-            steering_mode: "one-at-a-time".to_string(),
-            follow_up_mode: "one-at-a-time".to_string(),
-            auto_compaction: true, // Match default
+            auto_compaction: true,               // Match default
             auto_retry: true,
             session_manager: manager,
             persistence,
@@ -215,8 +234,6 @@ impl ServerSession {
             tokens_cache_w: tcw,
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: lpt,
-            steering_tx: stx,
-            follow_up_tx: ftx,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
             sandbox_policy: None,
@@ -313,40 +330,6 @@ impl ServerSession {
 
     pub fn set_session_name(&mut self, name: &str) {
         self.session_name = name.to_string();
-    }
-
-    pub fn steer(&mut self, msg: &str) -> Result<()> {
-        self.steer_run(msg, None)
-    }
-
-    pub fn steer_run(&mut self, msg: &str, expected_run_id: Option<&str>) -> Result<()> {
-        self.runtime
-            .steer(expected_run_id, &self.steering_tx, msg.to_string())?;
-        if let Ok(r#loop) = self.agent_loop.try_read() {
-            if r#loop.verbose {
-                tracing::info!("[user·steer] {msg}");
-            }
-        }
-        Ok(())
-    }
-
-    pub fn follow_up(&mut self, msg: &str) -> Result<()> {
-        self.follow_up_run(msg, None)
-    }
-
-    pub fn follow_up_run(&mut self, msg: &str, expected_run_id: Option<&str>) -> Result<()> {
-        let queued =
-            self.runtime
-                .follow_up(expected_run_id, &self.follow_up_tx, msg.to_string())?;
-        if let Ok(r#loop) = self.agent_loop.try_read() {
-            if r#loop.verbose {
-                tracing::info!("[user·follow-up] {msg}");
-            }
-        }
-        if !queued {
-            return self.prompt(msg, &[], &[], None, None).map(|_| ());
-        }
-        Ok(())
     }
 
     pub fn abort(&self) {
@@ -556,24 +539,6 @@ impl ServerSession {
         }
     }
 
-    pub fn set_steering_mode(&mut self, mode: &str) {
-        self.steering_mode = mode.to_string();
-        if let Ok(mut loop_) = self.agent_loop.try_write() {
-            loop_.steering_queue.mode = mode.to_string();
-        }
-        // A rare concurrent config update may defer this mirror; prompt() also
-        // applies the authoritative session field at the next run boundary.
-    }
-
-    pub fn set_follow_up_mode(&mut self, mode: &str) {
-        self.follow_up_mode = mode.to_string();
-        if let Ok(mut loop_) = self.agent_loop.try_write() {
-            loop_.follow_up_queue.mode = mode.to_string();
-        }
-        // A rare concurrent config update may defer this mirror; prompt() also
-        // applies the authoritative session field at the next run boundary.
-    }
-
     pub fn compact(&self, _instructions: &str) -> Result<serde_json::Value> {
         use std::sync::atomic::Ordering;
 
@@ -738,6 +703,8 @@ impl ServerSession {
             "activeRunId": self.runtime.snapshot().map(|run| run.run_id),
             "queuedRuns": self.scheduler.queued().len(),
             "queuedBytes": self.scheduler.queued_bytes(),
+            "eventJournalHealthy": self.broadcaster.persistence_error().is_none(),
+            "eventJournalError": self.broadcaster.persistence_error(),
         })
     }
 
@@ -1305,24 +1272,6 @@ mod tests {
         assert_eq!(result["exitCode"], 1);
     }
 
-    // ─── steer / follow_up ──────────────────────────────────────────────────
-
-    #[test]
-    fn steer_without_active_run_is_rejected() {
-        let mut session = make_test_session("s1");
-        assert!(session.steer("stop that").is_err());
-    }
-
-    #[tokio::test]
-    async fn follow_up_not_streaming_calls_prompt() {
-        let mut session = make_test_session("s1");
-        std::fs::create_dir_all(&session.cwd).unwrap();
-        // Not streaming → follow_up falls through to prompt, which needs an
-        // actual LLM. With EmptyProvider, prompt() may return an error, but
-        // it shouldn't panic.
-        let _ = session.follow_up("hello");
-    }
-
     #[tokio::test]
     async fn active_run_uses_snapshot_and_leaves_next_run_config_writable() {
         let cwd = test_workspace();
@@ -1368,6 +1317,40 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn queued_attachment_is_an_immutable_memory_snapshot() {
+        let mut session = make_test_session("attachment-snapshot");
+        session
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, b"accepted bytes").unwrap();
+        let attachment = crate::types::Attachment {
+            path: path.to_string_lossy().into_owned(),
+            kind: "file".to_string(),
+            name: "note.txt".to_string(),
+            thumbnail: None,
+        };
+        session
+            .enqueue_prompt(
+                "queued",
+                &[],
+                &[attachment],
+                Some("run-queued"),
+                "request-queued",
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+            )
+            .unwrap();
+        std::fs::write(&path, b"changed after ack").unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(
+            session.scheduled_attachment_bytes("run-queued").unwrap(),
+            vec![b"accepted bytes".to_vec()]
+        );
     }
 
     #[tokio::test]
@@ -1479,68 +1462,6 @@ mod tests {
         })
         .await
         .unwrap();
-    }
-
-    #[tokio::test]
-    async fn in_run_follow_up_survives_terminal_rewrite() {
-        let cwd = test_workspace();
-        let started = Arc::new(Notify::new());
-        let release = Arc::new(Notify::new());
-        let mut session = ServerSession::new(
-            "follow-up-persistence".to_string(),
-            Arc::new(tokio::sync::RwLock::new(Loop::new(
-                Arc::new(BlockingProvider {
-                    started: started.clone(),
-                    release: release.clone(),
-                }),
-                "mock",
-            ))),
-            Arc::new(Manager::new(std::path::Path::new(&cwd).join("sessions"))),
-            &cwd,
-            Arc::new(SseBroadcaster::new()),
-            ApprovalGate::default(),
-            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
-        );
-        std::fs::create_dir_all(&session.cwd).unwrap();
-        session
-            .prompt("first question", &[], &[], Some("run-follow-up"), None)
-            .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
-            .await
-            .unwrap();
-        session
-            .follow_up_run("second question", Some("run-follow-up"))
-            .unwrap();
-
-        release.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
-            .await
-            .unwrap();
-        release.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while session.runtime.snapshot().is_some() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-
-        let loaded = session.session_manager.load(&session.session_id).unwrap();
-        let user_texts: Vec<String> = loaded
-            .entries
-            .iter()
-            .filter(|entry| entry.entry_type == crate::session::ENTRY_TYPE_USER)
-            .filter_map(|entry| entry.content.as_ref().map(ToString::to_string))
-            .collect();
-        assert_eq!(user_texts.len(), 2);
-        assert!(user_texts[0].contains("first question"));
-        assert!(user_texts[1].contains("second question"));
-        assert_eq!(
-            loaded.entries.last().unwrap().entry_type,
-            crate::session::ENTRY_TYPE_RUN_TERMINAL
-        );
-
-        let _ = std::fs::remove_dir_all(&session.cwd);
     }
 
     #[tokio::test]
@@ -1819,7 +1740,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initial_persistence_rejection_emits_one_terminal_and_rolls_back() {
+    async fn initial_persistence_rejection_is_not_broadcast_as_terminal() {
         let cwd = test_workspace();
         std::fs::create_dir_all(&cwd).unwrap();
         let unusable_session_dir = std::path::Path::new(&cwd).join("not-a-directory");
@@ -1850,17 +1771,8 @@ mod tests {
         assert!(session.runtime.snapshot().is_none());
         assert!(session.messages.read().is_empty());
 
-        let (_, events, _, _) = broadcaster
-            .events_since("run-initial-save-failure", -1)
-            .unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| event.event_type == "agent_end")
-                .count(),
-            1
-        );
-        assert!(events.iter().any(|event| event.event_type == "error"));
+        assert!(broadcaster.persistence_error().is_some());
+        assert!(broadcaster.current_run_id().is_empty());
 
         let _ = std::fs::remove_dir_all(&session.cwd);
     }
