@@ -257,6 +257,8 @@ fn repair_dir_permissions(dir: &Path) -> std::io::Result<()> {
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(repaired))?;
         }
     }
+    #[cfg(not(unix))]
+    let _ = dir;
     Ok(())
 }
 
