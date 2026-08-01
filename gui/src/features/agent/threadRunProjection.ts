@@ -164,6 +164,30 @@ export function streamingBubbleBase(
 }
 
 /**
+ * Fold a pre-built live preview into restored thread history using the same
+ * reconciliation as the incremental upsert path. This matters when switching
+ * back to an active thread: the session JSONL may already contain a mid-run
+ * assistant snapshot for the current turn, which the preview must replace
+ * rather than render beside.
+ */
+export function mergeStreamingPreview(
+  current: AgentMessage[],
+  preview: AgentMessage,
+): AgentMessage[] {
+  if (!preview.runId)
+    return current;
+  const base = streamingBubbleBase(
+    current,
+    preview.runId,
+    preview.id,
+    preview.content.trim(),
+  );
+  if (!base)
+    return current;
+  return [...base.filter(message => message.id !== preview.id), preview];
+}
+
+/**
  * Render an in-flight run's live events as a streaming assistant bubble, keyed by
  * a stable `stream_<runId>` id. Unlike {@link updatePendingMessageFromRunEvents}
  * (which patches an existing optimistic bubble), this UPSERTS: it inserts the

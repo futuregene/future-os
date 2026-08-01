@@ -9,7 +9,7 @@ import { emitFutureEvent } from "../../lib/futureEvents";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun } from "./agentMessageFormatters";
 import { entriesToMessages } from "./entryProjection";
-import { applyRunMetadata, buildStreamingPreview, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
+import { applyRunMetadata, buildStreamingPreview, mergeStreamingPreview, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
   threadId: string | null;
@@ -259,7 +259,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
             .catch(() => null)
         : null;
       const finalMessages = liveBubble
-        ? [...withFailures, liveBubble]
+        ? mergeStreamingPreview(withFailures, liveBubble)
         : withFailures;
       await refreshRecentRun(tid, wid).catch(() => {});
       return { status: "loaded", messages: finalMessages, entryCount };
