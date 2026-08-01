@@ -1,7 +1,7 @@
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { describe, expect, it } from "vitest";
-import { applyRecoveredEvents, applyRunMetadata, deriveRenderFields, patchMessage, recoverFailedRuns, runDurationMs, streamingBubbleBase } from "./threadRunProjection";
+import { applyRecoveredEvents, applyRunMetadata, deriveRenderFields, mergeStreamingPreview, patchMessage, recoverFailedRuns, runDurationMs, streamingBubbleBase } from "./threadRunProjection";
 
 function message(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
   return {
@@ -641,5 +641,41 @@ describe("streamingBubbleBase", () => {
     const current = [user("u1"), divider];
     const base = streamingBubbleBase(current, RUN, BUBBLE, "live text");
     expect(base?.some(m => m.id === "div")).toBe(true);
+  });
+});
+
+describe("mergeStreamingPreview", () => {
+  it("replaces a persisted mid-run snapshot when switching back to an active thread", () => {
+    const previous = assistant("a1", { content: "earlier reply", runId: "r-old" });
+    const partial = assistant("a-partial", {
+      content: "好的，根据李白《静夜思》诗意来创作——",
+    });
+    const preview = assistant("stream_r1", {
+      content: "好的，根据李白《静夜思》诗意来创作——",
+      runId: "r1",
+      status: "streaming",
+    });
+
+    const result = mergeStreamingPreview([
+      user("u1"),
+      previous,
+      user("u2"),
+      partial,
+    ], preview);
+
+    expect(result.map(message => message.id)).toEqual(["u1", "a1", "u2", "stream_r1"]);
+    expect(result.filter(message => message.role === "assistant" && message.content === preview.content)).toHaveLength(1);
+  });
+
+  it("does not resurrect a preview after the run's persisted reply has settled", () => {
+    const settled = assistant("a2", { content: "done", runId: "r1" });
+    const preview = assistant("stream_r1", {
+      content: "done",
+      runId: "r1",
+      status: "streaming",
+    });
+
+    const current = [user("u1"), settled];
+    expect(mergeStreamingPreview(current, preview)).toBe(current);
   });
 });
