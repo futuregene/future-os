@@ -489,7 +489,23 @@ impl SseBroadcaster {
     ) -> anyhow::Result<(String, Vec<SseEvent>, i64, Option<RunProjectionSnapshot>)> {
         let run = self.run.lock();
         if run.run_id != run_id {
-            anyhow::bail!("run `{run_id}` is not the active run");
+            // A completed run is no longer in the live ring, but its durable
+            // journal remains the canonical history.  GUI/TUI inspectors and
+            // reconnect backfill must not lose that history merely because a
+            // later run became active.
+            let path = self
+                .journal_path(run_id)
+                .ok_or_else(|| anyhow::anyhow!("event journal is not configured"))?;
+            if !path.exists() {
+                anyhow::bail!("run `{run_id}` is not known by this session");
+            }
+            let events = self
+                .read_journal(run_id)?
+                .into_iter()
+                .filter(|event| event.idx > since_idx)
+                .collect::<Vec<_>>();
+            let min_idx = events.first().map(|event| event.idx).unwrap_or(0);
+            return Ok((run_id.to_string(), events, min_idx, None));
         }
         let min_idx = run.events.first().map(|e| e.idx).unwrap_or(0);
         let truncated = since_idx.saturating_add(1) < min_idx;
@@ -1334,5 +1350,23 @@ mod tests {
             attachment.events.last().unwrap().idx,
             MAX_RUN_EVENTS as i64 + 4
         );
+    }
+
+    #[test]
+    fn events_since_reads_a_settled_run_from_its_durable_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let broadcaster = SseBroadcaster::new();
+        broadcaster
+            .configure_journal("session-1", directory.path().to_path_buf())
+            .unwrap();
+        broadcaster.start_run("run-a".to_string(), 1);
+        broadcaster.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
+        broadcaster.broadcast(SseEvent::new("agent_end", serde_json::json!({})));
+        broadcaster.start_run("run-b".to_string(), 2);
+
+        let (run_id, events, _, projection) = broadcaster.events_since("run-a", -1).unwrap();
+        assert_eq!(run_id, "run-a");
+        assert_eq!(events.len(), 2);
+        assert!(projection.is_none());
     }
 }

@@ -108,15 +108,16 @@ async fn agent_events(
     let Some(events) = agent_json.get("events").and_then(|v| v.as_array()) else {
         return Ok(Vec::new());
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
     let records: Vec<store::RunEventRecord> = events
         .iter()
         .enumerate()
         .map(|(i, e)| store::RunEventRecord {
-            id: format!("agent_{run_id}_{i}"),
+            id: e
+                .get("eventId")
+                .and_then(|v| v.as_str())
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("agent_{run_id}_{i}")),
             run_id: run_id.to_string(),
             event_type: e
                 .get("type")
@@ -128,20 +129,24 @@ async fn agent_events(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
             sequence: e.get("idx").and_then(|v| v.as_i64()).unwrap_or(i as i64),
-            created_at: now,
+            created_at: e.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0),
         })
         .collect();
     Ok(records)
 }
 
 #[tauri::command]
-pub fn list_run_events_bulk(
+pub async fn list_run_events_bulk(
     run_ids: Vec<String>,
 ) -> Result<Vec<(String, Vec<store::RunEventRecord>)>, crate::AppError> {
-    // Kept synchronous for the existing IPC contract. Single-run and live
-    // preview reads above are Agent-first; this cold inspector helper is a
-    // legacy-only fallback and is intentionally not a second event source.
-    store::list_run_events_bulk(&run_ids)
+    let mut result = Vec::new();
+    for run_id in run_ids {
+        let events = list_run_events(run_id.clone()).await?;
+        if !events.is_empty() {
+            result.push((run_id, events));
+        }
+    }
+    Ok(result)
 }
 
 #[tauri::command]

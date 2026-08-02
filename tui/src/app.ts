@@ -1482,6 +1482,7 @@ export class App extends Container {
         const ack = await this.client.prompt(value, undefined, "enqueue_if_busy");
         this.chat.bindUserRun(localMessageId, ack.run_id, ack.accepted_state === "queued" ? "queued" : "running");
       } catch (err: any) {
+        this.chat.setMessageRunState(localMessageId, "failed");
         this.chat.addMessage({
           id: crypto.randomUUID(),
           role: "system",
@@ -1499,6 +1500,7 @@ export class App extends Container {
       const ack = await this.client.prompt(value);
       this.chat.bindUserRun(localMessageId, ack.run_id, ack.accepted_state === "queued" ? "queued" : "running");
     } catch (err: any) {
+      this.chat.setMessageRunState(localMessageId, "failed");
       this.state.streaming = false;
       const msg = err?.message || String(err);
       // Transport errors: prompt may have reached the agent anyway.
@@ -1681,6 +1683,9 @@ export class App extends Container {
   private async refresh(): Promise<void> {
     try {
       const s = await this.client.getState();
+      for (const runId of this.client.takeLostQueuedRunIds()) {
+        this.chat.updateRunState(runId, "failed");
+      }
       this.state.model = s.model ?? "(no model)";
       this.state.thinking = s.thinkingLevel;
       this.state.streaming = s.isStreaming ?? false;

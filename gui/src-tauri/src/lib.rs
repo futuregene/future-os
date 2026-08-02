@@ -465,15 +465,10 @@ pub fn run() {
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
             }
-            // Startup convergence for interrupted runs. Runs exactly once per
-            // *process*: its correctness argument ("a fresh process has no live
-            // event collector, so every non-terminal run is an orphan") does
-            // not hold for a webview reload, so it must not be reachable from
-            // the frontend — a reload-triggered call would cancel a live run
-            // whose collector survived in this process.
-            if let Err(error) = store::cancel_stale_approval_requests() {
-                eprintln!("FutureOS run convergence failed: {error}");
-            }
+            // Do not preemptively cancel non-terminal GUI rows at startup. The
+            // Agent is authoritative and may have survived a GUI crash; the
+            // watchdog below reattaches or settles each row only after it can
+            // query that authority.
             // Import sessions created outside the GUI (TUI, channels, another
             // machine). Runs off the launch path — failures are logged but the
             // UI renders immediately. The store must be initialized first.
@@ -512,20 +507,18 @@ pub fn run() {
             // a thread stub + an observer — streaming ones within ~1s, idle
             // ones on the 60s import pass.
             agent_bridge::spawn_session_discovery();
-            // Flush local deletion tombstones after the sidecar has had a
-            // chance to start. This is deliberately independent of the
-            // current UI route and makes offline GUI deletes converge.
-            tauri::async_runtime::spawn(async { agent_bridge::reconcile_delete_outbox().await });
+            // Continuously flush local deletion tombstones. This is independent
+            // of the current UI route and makes offline GUI deletes converge.
+            agent_bridge::spawn_delete_outbox_worker();
             // Periodically reconcile non-terminal run rows against the Agent's
             // authoritative state (mirrors terminal markers, reattaches lost
             // collectors, settles orphans). Guards against rows whose owning
             // pipeline never settled them — e.g. a suspended webview that never
             // applied the invoke response. Self-gates on Agent reachability.
             agent_bridge::spawn_active_run_watchdog();
-            // After the agent has had time to start, reanimate any runs that
-            // were cancelled by convergence but whose agent sessions are still
-            // streaming (the agent survived a GUI crash). Spawned off the launch
-            // path so it never delays the window.
+            // After the agent has had time to start, reconcile pending approvals
+            // against its authoritative state. Active-run reconciliation itself
+            // is handled continuously by the watchdog above.
             std::thread::spawn(|| {
                 // Single-threaded runtime: `Runtime::new()` is multi_thread and
                 // would spawn num_cpus workers for this one-shot task.
@@ -536,10 +529,6 @@ pub fn run() {
                 rt.block_on(async {
                     // Give the agent a few seconds to come up; then test.
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    agent_bridge::reconcile_interrupted_runs().await;
-                    // Pending approvals survive startup convergence (the Agent
-                    // may be parked on one); settle them against the Agent's
-                    // authoritative pending set once runs are reanimated.
                     agent_bridge::reconcile_pending_approvals().await;
                 });
             });

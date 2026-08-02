@@ -147,19 +147,15 @@ pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::A
 pub async fn delete_thread(
     input: store::DeleteThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
+    let session_id = store::get_thread(&input.thread_id)?
+        .map(|thread| thread.agent_session_id.unwrap_or(thread.id));
     let thread = store::delete_thread_with_files(&input.thread_id, input.delete_files)?;
-    // Also delete the agent session JSONL (the source of truth) so the mirror and
-    // the agent stay consistent. The session id mirrors the GUI's own resolution:
-    // agent_session_id when set, else the thread id. Best-effort — a failure here
-    // must not fail the local delete.
-    let session_id = thread
-        .agent_session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .unwrap_or(&thread.id)
-        .to_string();
-    crate::agent_bridge::delete_session_eventually(session_id).await;
+    if let Some(session_id) = session_id {
+        if store::is_agent_session_tombstoned(&session_id)? {
+            agent_bridge::drop_observer(&session_id);
+        }
+    }
+    crate::agent_bridge::reconcile_delete_outbox().await;
     Ok(thread)
 }
 
@@ -172,32 +168,8 @@ pub async fn delete_thread(
 pub async fn batch_delete_threads(
     input: store::BatchDeleteThreadsInput,
 ) -> Result<store::BatchDeleteResult, crate::AppError> {
-    // Pre-resolve session ids so we can delete agent JSONL files even for
-    // threads that fail the store delete (best-effort).
-    let session_info: Vec<(String, String)> = input
-        .thread_ids
-        .iter()
-        .filter_map(|tid| {
-            store::get_thread(tid).ok().flatten().map(|t| {
-                let sid = t
-                    .agent_session_id
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())
-                    .unwrap_or(&t.id)
-                    .to_string();
-                (t.id.clone(), sid)
-            })
-        })
-        .collect();
-
     let result = store::batch_delete_threads(&input)?;
-
-    // Tombstone each Agent session durably; a down sidecar is retried on the
-    // next startup instead of silently leaking the canonical JSONL.
-    for (_, session_id) in session_info {
-        crate::agent_bridge::delete_session_eventually(session_id).await;
-    }
+    crate::agent_bridge::reconcile_delete_outbox().await;
 
     Ok(result)
 }

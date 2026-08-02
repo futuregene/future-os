@@ -508,6 +508,8 @@ export class GrpcClient {
   private currentSessionId: string = "";
   private activeRunId: string | null = null;
   private runs = new Map<string, "queued" | "running" | "terminal">();
+  private agentInstanceId: string | null = null;
+  private lostQueuedRunIds: string[] = [];
   /// Resolved when the event stream delivers the first event (or the stream
   /// fails).  Eliminates the busy-wait poll loop in call() — callers await
   /// this instead of spinning every 100ms.
@@ -965,8 +967,27 @@ export class GrpcClient {
     await this.call("abort", { runId: this.activeRunId || undefined });
   }
 
+  async cancelQueuedRun(runId: string): Promise<void> {
+    await this.call("cancel_queued_run", { runId });
+    this.runs.delete(runId);
+  }
+
+  /** Queued work is intentionally memory-only. Surface losses after restart
+   * rather than leaving stale queued bubbles indefinitely. */
+  takeLostQueuedRunIds(): string[] {
+    const lost = this.lostQueuedRunIds;
+    this.lostQueuedRunIds = [];
+    return lost;
+  }
+
   async getState(): Promise<RpcSessionState> {
     const state = await this.call("get_state", {}) as RpcSessionState;
+    if (this.agentInstanceId && state.agentInstanceId && this.agentInstanceId !== state.agentInstanceId) {
+      this.lostQueuedRunIds.push(...[...this.runs]
+        .filter(([, status]) => status === "queued")
+        .map(([runId]) => runId));
+    }
+    if (state.agentInstanceId) this.agentInstanceId = state.agentInstanceId;
     this.runs.clear();
     if (state.activeRun?.runId) {
       this.activeRunId = state.activeRun.runId;

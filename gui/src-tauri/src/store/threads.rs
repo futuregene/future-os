@@ -394,6 +394,24 @@ pub(crate) fn delete_thread_inner(
     // the thread delete must land together — a crash between them would leak the
     // chat workspace directory forever (mirrors delete_workspace).
     let tx = conn.transaction()?;
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(&thread.id);
+    // A session can be represented by more than one GUI thread during import
+    // or migration. Only the last owner is allowed to tombstone its canonical
+    // Agent session.
+    let owner_count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM threads
+         WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?1",
+        [session_id],
+        |row| row.get(0),
+    )?;
+    if owner_count == 1 {
+        super::deletions::enqueue_agent_session_delete_in(&tx, session_id)?;
+    }
     delete_thread_children_in(&tx, thread_id)?;
 
     if thread.mode == "chat" {

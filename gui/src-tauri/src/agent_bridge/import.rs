@@ -301,6 +301,9 @@ async fn write_back_cwd(session_id: &str, cwd: &str) -> Result<(), String> {
 /// Import a single agent session. Creates workspace, thread, and per-turn run
 /// records. Idempotent via `find_thread_by_agent_session`.
 async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppError> {
+    if store::is_agent_session_tombstoned(&summary.id)? {
+        return Ok(0);
+    }
     let best_title = session_title(summary);
     let cwd_basename = std::path::Path::new(&summary.cwd)
         .file_name()

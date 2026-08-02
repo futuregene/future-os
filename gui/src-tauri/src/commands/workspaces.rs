@@ -49,15 +49,9 @@ pub fn rename_workspace(
 pub async fn delete_workspace(
     workspace_id: String,
 ) -> Result<store::WorkspaceRecord, crate::AppError> {
-    // Resolve every thread's agent session BEFORE the rows are gone.
-    let session_ids = store::workspace_agent_session_ids(&workspace_id)?;
     // Hard-delete the workspace, its threads, and all their child rows.
     let workspace = store::delete_workspace(&workspace_id)?;
-    // Tombstone each canonical session. Failed delivery remains in SQLite's
-    // delete outbox and is retried after the Agent comes back.
-    for session_id in session_ids {
-        crate::agent_bridge::delete_session_eventually(session_id).await;
-    }
+    crate::agent_bridge::reconcile_delete_outbox().await;
     // Physically reclaim the now-orphaned GUI dirs: the workspace's shadow-review
     // repo and each thread's image/chat-scratch dir. These key off DB presence,
     // which we just cleared. The user's own workspace files (at `workspace.path`,

@@ -130,16 +130,29 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Register (or refresh) the observer for a session. Idempotent: an existing
-/// observer is just touched (LRU activity). Safe to call from anywhere — the
-/// prompt path, thread open, session discovery.
+/// Register (or refresh) the observer for a session. User activity and an
+/// active prompt use this entry point, so an existing observer is touched for
+/// LRU purposes.
 pub fn ensure_observer(session_id: &str) {
+    ensure_observer_inner(session_id, true);
+}
+
+/// Ensure a passive observer without treating periodic discovery as user
+/// activity. Otherwise the 60-second import loop would keep every idle entry
+/// permanently hot and defeat the 128-observer LRU cap.
+fn ensure_passive_observer(session_id: &str) {
+    ensure_observer_inner(session_id, false);
+}
+
+fn ensure_observer_inner(session_id: &str, touch_existing: bool) {
     if session_id.trim().is_empty() {
         return;
     }
     let mut guard = OBSERVERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(handle) = guard.get(session_id) {
-        handle.shared.touch();
+        if touch_existing {
+            handle.shared.touch();
+        }
         return;
     }
     evict_idle_if_over_cap(&mut guard);
@@ -170,7 +183,7 @@ pub fn seed_observers_from_store() {
             .map(str::trim)
             .filter(|id| !id.is_empty())
         {
-            ensure_observer(session_id);
+            ensure_passive_observer(session_id);
         }
     }
 }
@@ -179,7 +192,8 @@ pub fn seed_observers_from_store() {
 /// channels, another machine). Two cadences: a 1s pass over the agent's
 /// streaming sessions — a run started by another client appears in the
 /// sidebar within ~1s — and a 60s full import for idle sessions plus
-/// observer re-seeding (waking any that slept or were evicted).
+/// observer import. Idle observers are not re-touched here: opening a thread,
+/// a prompt, or a newly streaming session wakes it instead.
 pub fn spawn_session_discovery() {
     tauri::async_runtime::spawn(async move {
         let mut ticks = 0u64;
@@ -191,7 +205,6 @@ pub fn spawn_session_discovery() {
                 if let Err(error) = super::import::import_missing_sessions().await {
                     eprintln!("FutureOS periodic session import failed: {error}");
                 }
-                seed_observers_from_store();
             }
         }
     });
@@ -390,6 +403,10 @@ async fn run_observer(
         // run starting in the probe→subscribe gap is caught by gap detection.
         let active_run = probe_active_run(&mut client, session_id).await;
         let mut stream = if let Some(run_id) = active_run {
+            // Mark this before attaching, not on the first streamed event. A
+            // quiet active run (for example waiting on an approval) must never
+            // be evicted in the probe→first-event window.
+            note_run_active(shared, &mut state, &run_id);
             // Resume from the in-memory cursor on re-attach: events at or
             // below it were already persisted and mirrored, so replaying them
             // would only duplicate the NATS mirror. The persisted-store cursor
@@ -415,6 +432,7 @@ async fn run_observer(
                 {
                     // The run ended between probe and attach — plain subscribe.
                     state.cursors.remove(&run_id);
+                    note_run_settled(shared, &mut state, &run_id);
                     match plain_subscribe(&mut client, session_id).await {
                         Some(stream) => stream,
                         None => {
@@ -426,6 +444,7 @@ async fn run_observer(
                     }
                 }
                 Err(_) => {
+                    note_run_settled(shared, &mut state, &run_id);
                     if sleep_or_cancel(&mut cancel, backoff).await {
                         return;
                     }

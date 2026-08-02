@@ -150,6 +150,13 @@ export class ChatArea implements Component {
     this.rerenderMessage(index);
   }
 
+  setMessageRunState(messageId: string, runState: ChatMessage["runState"]): void {
+    const index = this.messages.findIndex((message) => message.id === messageId);
+    if (index < 0) return;
+    this.messages[index].runState = runState;
+    this.rerenderMessage(index);
+  }
+
   setOnChange(cb: () => void): void {
     this.onChange = cb;
   }
