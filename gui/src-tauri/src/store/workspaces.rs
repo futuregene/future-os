@@ -203,20 +203,6 @@ pub fn rename_workspace(input: RenameWorkspaceInput) -> Result<WorkspaceRecord, 
     Ok(workspace)
 }
 
-/// Resolve the agent session id of every thread in `workspace_id` (session id =
-/// `agent_session_id` when set, else the thread id). Read *before* a workspace
-/// hard-delete so the caller can delete each thread's agent JSONL.
-pub fn workspace_agent_session_ids(workspace_id: &str) -> Result<Vec<String>, crate::AppError> {
-    let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT COALESCE(NULLIF(TRIM(agent_session_id), ''), id)
-         FROM threads WHERE workspace_id = ?1",
-    )?;
-    let rows = stmt.query_map(params![workspace_id], |row| row.get::<_, String>(0))?;
-    rows.collect::<rusqlite::Result<_>>()
-        .map_err(crate::AppError::from)
-}
-
 /// Hard-deletes a Workspace: every thread in it (via the same FK-safe cascade as
 /// [`super::delete_thread`]) plus the workspace-scoped rows (artifacts,
 /// references, file index) and finally the workspace row itself. The user's files
@@ -239,6 +225,38 @@ pub fn delete_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::Ap
 /// enforced. Deletes every thread's children and the threads, then the
 /// workspace-scoped rows, then the workspace itself. Does not touch any files.
 pub(super) fn delete_workspace_in(conn: &Connection, workspace_id: &str) -> rusqlite::Result<()> {
+    // Tombstone only sessions for which this workspace deletes the final GUI
+    // owner. This is deliberately in the same transaction as the thread
+    // cascade, so a crash cannot leave a deleted thread without delivery
+    // intent for its Agent source of truth.
+    let session_ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT COALESCE(NULLIF(TRIM(agent_session_id), ''), id)
+             FROM threads WHERE workspace_id = ?1",
+        )?;
+        let ids = stmt
+            .query_map(params![workspace_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        ids
+    };
+    for session_id in session_ids {
+        let owner_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM threads
+             WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?1",
+            [&session_id],
+            |row| row.get(0),
+        )?;
+        let deleting_here: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM threads
+             WHERE workspace_id = ?1
+               AND COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?2",
+            params![workspace_id, session_id],
+            |row| row.get(0),
+        )?;
+        if owner_count == deleting_here {
+            super::deletions::enqueue_agent_session_delete_in(conn, &session_id)?;
+        }
+    }
     // 1. Cascade every thread's children, then the threads themselves.
     let thread_ids: Vec<String> = {
         let mut stmt = conn.prepare("SELECT id FROM threads WHERE workspace_id = ?1")?;

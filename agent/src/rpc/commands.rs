@@ -25,7 +25,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let cmd_type = &cmd.cmd_type;
 
     if cmd_type == "get_agent_info" {
-        return get_agent_info_response(id);
+        return get_agent_info_response(state, id);
     }
     if cmd_type == "list_models" {
         return list_models_response(id, &state.model_registry.read());
@@ -173,62 +173,225 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             };
             let mut sess = wlock!(session, id);
-            if let Some(lease) = sess.runtime.request_lease(&cmd.client_request_id) {
-                return RpcResponse::ok(
-                    id,
-                    "prompt",
-                    serde_json::json!({
-                        "run_id": lease.run_id,
-                        "run_epoch": lease.epoch,
-                        "accepted_state": "existing",
-                    }),
-                );
-            }
-            match sess.prompt(
+            let busy_policy = match crate::runtime::BusyPolicy::parse(&cmd.busy_policy) {
+                Ok(policy) => policy,
+                Err(error) => {
+                    return RpcResponse::build_fail_code(
+                        id,
+                        "prompt",
+                        "invalid_busy_policy",
+                        &error,
+                        serde_json::json!({
+                            "provided": cmd.busy_policy,
+                            "valid": crate::runtime::BusyPolicy::VALID_VALUES,
+                        }),
+                    );
+                }
+            };
+            let client_request_id = if cmd.client_request_id.is_empty() {
+                format!("request_{}", uuid::Uuid::new_v4().simple())
+            } else {
+                cmd.client_request_id.clone()
+            };
+            match sess.enqueue_prompt(
                 &cmd.message,
                 &cmd.images,
                 &cmd.attachments,
-                Some(&cmd.requested_run_id),
-                Some(&cmd.client_request_id),
+                (!cmd.requested_run_id.is_empty()).then_some(cmd.requested_run_id.as_str()),
+                &client_request_id,
+                busy_policy,
             ) {
-                Ok(lease) => RpcResponse::ok(
-                    id,
-                    "prompt",
-                    serde_json::json!({
-                        "run_id": lease.run_id,
-                        "run_epoch": lease.epoch,
-                        "accepted_state": "running",
-                    }),
-                ),
-                Err(e) => RpcResponse::build_fail(id, "prompt", &e.to_string()),
+                Ok(ack) => {
+                    RpcResponse::ok(id, "prompt", serde_json::to_value(ack).unwrap_or_default())
+                }
+                Err(error) => {
+                    if let Some(queue_error) = error.downcast_ref::<crate::runtime::RunQueueError>()
+                    {
+                        let (code, details) = match queue_error {
+                            crate::runtime::RunQueueError::Busy => (
+                                "busy",
+                                sess.runtime.snapshot().map_or_else(
+                                    || serde_json::json!({}),
+                                    |active| {
+                                        serde_json::json!({
+                                            "active_run_id": active.run_id,
+                                            "active_epoch": active.epoch,
+                                            "active_state": active.phase.as_str(),
+                                        })
+                                    },
+                                ),
+                            ),
+                            crate::runtime::RunQueueError::DuplicateRequestConflict(_) => (
+                                "duplicate_request_conflict",
+                                serde_json::json!({"client_request_id": client_request_id}),
+                            ),
+                            crate::runtime::RunQueueError::QueueFull { limit }
+                            | crate::runtime::RunQueueError::GlobalQueueFull { limit } => {
+                                ("queue_full", serde_json::json!({"limit": limit}))
+                            }
+                            crate::runtime::RunQueueError::RequestTooLarge { actual, limit }
+                            | crate::runtime::RunQueueError::QueueBytesExceeded { actual, limit }
+                            | crate::runtime::RunQueueError::GlobalQueueBytesExceeded {
+                                actual,
+                                limit,
+                            } => (
+                                "attachment_too_large",
+                                serde_json::json!({"actual_bytes": actual, "limit_bytes": limit}),
+                            ),
+                            crate::runtime::RunQueueError::SupersedeRequiresSessionOperation => (
+                                "busy_policy_unavailable",
+                                serde_json::json!({"busy_policy": busy_policy.as_str()}),
+                            ),
+                            crate::runtime::RunQueueError::Deleting => (
+                                "deleting",
+                                serde_json::json!({"session_id": cmd.session_id}),
+                            ),
+                            crate::runtime::RunQueueError::PersistenceUnavailable(reason) => (
+                                "persistence_unavailable",
+                                serde_json::json!({"reason": reason}),
+                            ),
+                            crate::runtime::RunQueueError::AttachmentUnavailable {
+                                path, ..
+                            } => ("attachment_unavailable", serde_json::json!({"path": path})),
+                            crate::runtime::RunQueueError::InvalidRunId(run_id) => {
+                                ("invalid_run_id", serde_json::json!({"run_id": run_id}))
+                            }
+                            _ => ("scheduler_error", serde_json::json!({})),
+                        };
+                        RpcResponse::build_fail_code(
+                            id,
+                            "prompt",
+                            code,
+                            &queue_error.to_string(),
+                            details,
+                        )
+                    } else {
+                        RpcResponse::build_fail(id, "prompt", &error.to_string())
+                    }
+                }
             }
         }
-        "steer" => match wlock!(session, id).steer_run(
-            &cmd.message,
-            (!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()),
-        ) {
-            Ok(()) => RpcResponse::ok(id, "steer", serde_json::json!({})),
-            Err(e) => RpcResponse::build_fail(id, "steer", &e.to_string()),
-        },
-        "follow_up" => {
-            if state
-                .shutting_down
-                .load(std::sync::atomic::Ordering::SeqCst)
-            {
-                return RpcResponse::build_fail(
+        "cancel_queued_run" => {
+            if cmd.run_id.is_empty() {
+                return RpcResponse::build_fail_code(
                     id,
-                    "follow_up",
-                    "agent is shutting down; no new prompts accepted",
+                    "cancel_queued_run",
+                    "run_not_queued",
+                    "run_id is required",
+                    serde_json::json!({}),
                 );
             }
-            match wlock!(session, id).follow_up_run(
-                &cmd.message,
-                (!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()),
+            match wlock!(session, id).cancel_queued_run(
+                &cmd.run_id,
+                crate::runtime::QueuedCancellationReason::Cancelled,
             ) {
-                Ok(()) => RpcResponse::ok(id, "follow_up", serde_json::json!({})),
-                Err(e) => RpcResponse::build_fail(id, "follow_up", &e.to_string()),
+                Ok(cancelled) => RpcResponse::ok(
+                    id,
+                    "cancel_queued_run",
+                    serde_json::json!({
+                        "run_id": cancelled.run_id,
+                        "run_sequence": cancelled.run_sequence,
+                        "state": "cancelled",
+                        "reason": "cancelled",
+                    }),
+                ),
+                Err(error) => RpcResponse::build_fail_code(
+                    id,
+                    "cancel_queued_run",
+                    "run_not_queued",
+                    &error.to_string(),
+                    serde_json::json!({"run_id": cmd.run_id}),
+                ),
             }
         }
+        "prune_run_events" => {
+            if cmd.run_id.is_empty()
+                || !cmd
+                    .run_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            {
+                return RpcResponse::build_fail_code(
+                    id,
+                    "prune_run_events",
+                    "invalid_run_id",
+                    "run_id is required and must be a safe identifier",
+                    serde_json::json!({"run_id": cmd.run_id}),
+                );
+            }
+            let session = rlock!(session, id);
+            if session
+                .scheduler
+                .active()
+                .is_some_and(|(active, _)| active.run_id == cmd.run_id)
+            {
+                return RpcResponse::build_fail_code(
+                    id,
+                    "prune_run_events",
+                    "run_active",
+                    "cannot prune the journal of an active run",
+                    serde_json::json!({"run_id": cmd.run_id}),
+                );
+            }
+            let path = session
+                .session_manager
+                .run_data_path(&cmd.session_id)
+                .join(format!("{}.jsonl", cmd.run_id));
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    RpcResponse::ok(id, "prune_run_events", serde_json::json!({"pruned": true}))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    RpcResponse::ok(id, "prune_run_events", serde_json::json!({"pruned": true}))
+                }
+                Err(error) => RpcResponse::build_fail_code(
+                    id,
+                    "prune_run_events",
+                    "prune_failed",
+                    &error.to_string(),
+                    serde_json::json!({"run_id": cmd.run_id, "retryable": true}),
+                ),
+            }
+        }
+        "abort_session" => {
+            let (active_run_id, cancelled) = {
+                let mut sess = wlock!(session, id);
+                let cancelled = sess
+                    .cancel_all_queued_runs(crate::runtime::QueuedCancellationReason::Cancelled);
+                let active_run_id = sess.runtime.snapshot().map(|active| active.run_id);
+                if let Some(run_id) = active_run_id.as_deref() {
+                    let _ = sess.runtime.request_abort(Some(run_id));
+                }
+                (active_run_id, cancelled)
+            };
+            RpcResponse::ok(
+                id,
+                "abort_session",
+                serde_json::json!({
+                    "active_run_id": active_run_id,
+                    "queued_cancelled": cancelled.len(),
+                    "state": "cancelling",
+                }),
+            )
+        }
+        "retry_persistence" => match wlock!(session, id).recover_persistence_degraded() {
+            Ok(lease) => RpcResponse::ok(
+                id,
+                "retry_persistence",
+                serde_json::json!({
+                    "run_id": lease.run_id,
+                    "state": "interrupted",
+                    "recovered": true,
+                }),
+            ),
+            Err(error) => RpcResponse::build_fail_code(
+                id,
+                "retry_persistence",
+                "persistence_recovery_failed",
+                &error.to_string(),
+                serde_json::json!({"retryable": true}),
+            ),
+        },
         "abort" => {
             // abort() only needs &self — take a read lock so a concurrent
             // reader (get_state polling) can never make the abort a no-op,
@@ -315,6 +478,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                         "data": e.data,
                         "runId": e.run_id,
                         "idx": e.idx,
+                        "sessionId": e.session_id,
+                        "epoch": e.epoch,
+                        "eventId": e.event_id,
+                        "timestamp": e.timestamp,
+                        "sessionIdx": e.session_idx,
+                        "runSequence": e.run_sequence,
                     })
                 })
                 .collect();
@@ -328,6 +497,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                             "data": event.data,
                             "runId": event.run_id,
                             "idx": event.idx,
+                            "sessionId": event.session_id,
+                            "epoch": event.epoch,
+                            "eventId": event.event_id,
+                            "timestamp": event.timestamp,
+                            "sessionIdx": event.session_idx,
+                            "runSequence": event.run_sequence,
                         })
                     }).collect::<Vec<_>>(),
                 })
@@ -342,6 +517,30 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "projection": projection,
                 }),
             )
+        }
+        "get_session_events_since" => {
+            let replay = rlock!(session, id)
+                .broadcaster
+                .session_events_since(cmd.since_idx);
+            match replay {
+                Ok(events) => RpcResponse::ok(
+                    id,
+                    "get_session_events_since",
+                    serde_json::json!({
+                        "events": events.into_iter().map(|event| serde_json::json!({
+                            "type": event.event_type,
+                            "data": event.data,
+                            "sessionId": event.session_id,
+                            "sessionIdx": event.session_idx,
+                            "eventId": event.event_id,
+                            "timestamp": event.timestamp,
+                        })).collect::<Vec<_>>()
+                    }),
+                ),
+                Err(error) => {
+                    RpcResponse::build_fail(id, "get_session_events_since", &error.to_string())
+                }
+            }
         }
         "set_model" => {
             let (result, model_id) = {
@@ -372,26 +571,6 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 serde_json::json!({"level": level}),
             ));
             RpcResponse::ok(id, "set_thinking_level", serde_json::json!({}))
-        }
-        "set_steering_mode" => {
-            let mode = cmd.mode.clone();
-            wlock!(session, id).set_steering_mode(&mode);
-            let sess = rlock!(session, id);
-            sess.broadcaster.broadcast(SseEvent::new(
-                "steering_mode_changed",
-                serde_json::json!({"mode": mode}),
-            ));
-            RpcResponse::ok(id, "set_steering_mode", serde_json::json!({}))
-        }
-        "set_follow_up_mode" => {
-            let mode = cmd.mode.clone();
-            wlock!(session, id).set_follow_up_mode(&mode);
-            let sess = rlock!(session, id);
-            sess.broadcaster.broadcast(SseEvent::new(
-                "follow_up_mode_changed",
-                serde_json::json!({"mode": mode}),
-            ));
-            RpcResponse::ok(id, "set_follow_up_mode", serde_json::json!({}))
         }
         "compact" => {
             let result = wlock!(session, id).compact(&cmd.custom_instructions);
@@ -709,7 +888,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     }
 }
 
-fn get_agent_info_response(id: &str) -> String {
+fn get_agent_info_response(state: &AppState, id: &str) -> String {
     let skills_count =
         crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs()).len();
     RpcResponse::ok(
@@ -717,6 +896,7 @@ fn get_agent_info_response(id: &str) -> String {
         "get_agent_info",
         serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
+            "agentInstanceId": state.agent_instance_id,
             "skillsCount": skills_count,
         }),
     )
@@ -898,12 +1078,70 @@ fn cmd_delete_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
             "No session selected to delete. Choose a session first.",
         );
     }
+    let live = state.sessions.read().get(&cmd.session_id).cloned();
+    if let Some(session) = live {
+        let (active, cancelled_count) = {
+            let mut session = session.write();
+            session.deleting = true;
+            let cancelled = session
+                .cancel_all_queued_runs(crate::runtime::QueuedCancellationReason::SessionDeleted);
+            let active = session.runtime.snapshot();
+            if let Some(active) = &active {
+                let _ = session.runtime.request_abort(Some(&active.run_id));
+            }
+            (active, cancelled.len())
+        };
+        if let Some(active) = active.filter(|active| {
+            session.read().runtime.has_owned_task()
+                || !matches!(
+                    active.phase,
+                    crate::runtime::RunPhase::CancellationStuck
+                        | crate::runtime::RunPhase::PersistenceDegraded
+                )
+        }) {
+            return RpcResponse::build_fail_code(
+                id,
+                "delete_session",
+                "deleting",
+                "session deletion is waiting for the active run to stop; retry delete_session",
+                serde_json::json!({
+                    "session_id": cmd.session_id,
+                    "active_run_id": active.run_id,
+                    "queued_cancelled": cancelled_count,
+                    "retryable": true,
+                }),
+            );
+        }
+        // Hard deletion is a close-then-delete barrier. The session write lock
+        // excludes concurrent metadata commands while the ordered transcript
+        // writer drains; closing the event journal then fences late broadcasts
+        // before either filesystem tree is removed.
+        let session = session.write();
+        if let Err(error) = session.persistence.close() {
+            return RpcResponse::build_fail_code(
+                id,
+                "delete_session",
+                "delete_failed",
+                &format!("failed to close session persistence: {error}"),
+                serde_json::json!({"session_id": cmd.session_id, "retryable": true}),
+            );
+        }
+        session.broadcaster.close_journal();
+    }
+
+    // The in-memory session is fenced before disk removal. Keep it in the map
+    // if deletion fails so a retry cannot accidentally rehydrate/accept work
+    // against partially deleted state.
     if let Err(e) = state.session_manager.delete(&cmd.session_id) {
-        return RpcResponse::build_fail(id, "delete_session", &e.to_string());
+        return RpcResponse::build_fail_code(
+            id,
+            "delete_session",
+            "delete_failed",
+            &e.to_string(),
+            serde_json::json!({"session_id": cmd.session_id, "retryable": true}),
+        );
     }
-    if let Some(mut sessions) = state.sessions.try_write() {
-        sessions.remove(&cmd.session_id);
-    }
+    state.sessions.write().remove(&cmd.session_id);
     RpcResponse::ok(id, "delete_session", serde_json::json!({"deleted": true}))
 }
 
@@ -1022,7 +1260,7 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         .filter(|s| !s.entries.is_empty())
         .map(|s| (s.entries, s.model.clone()));
 
-    let mut new_sess = ServerSession::new(
+    let mut new_sess = ServerSession::new_with_queue_budget(
         new_session_id.clone(),
         Arc::new(tokio::sync::RwLock::new(fresh_loop)),
         session_manager.clone(),
@@ -1030,6 +1268,7 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         broadcaster,
         approval_gate,
         state.model_registry.clone(),
+        state.queue_budget.clone(),
     );
     // Resolve the default model from the cached registry (not inherited from
     // the active session) so that CLI one-shot runs always start from the
@@ -1051,8 +1290,6 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // session" — with sessions as equal peers, every new session gets them).
     let settings_path = std::path::PathBuf::from(crate::models::settings_path());
     if let Ok(settings) = crate::config::load_settings(&settings_path) {
-        new_sess.set_steering_mode(&settings.steering_mode);
-        new_sess.set_follow_up_mode(&settings.follow_up_mode);
         if !settings.default_permission_level.is_empty() {
             new_sess.set_permission_level(&settings.default_permission_level);
         }
@@ -1376,7 +1613,7 @@ fn cmd_fork(
     // the saved history on disk — session_prompt.rs saves
     // self.messages back to disk (via File::create), truncating
     // anything not held in memory.
-    let mut new_sess = ServerSession::new(
+    let mut new_sess = ServerSession::new_with_queue_budget(
         forked_id.clone(),
         agent_loop,
         session_manager,
@@ -1384,6 +1621,7 @@ fn cmd_fork(
         broadcaster,
         state.approval_gate.clone(),
         state.model_registry.clone(),
+        state.queue_budget.clone(),
     );
     let supports_images =
         crate::models::model_accepts_images_with(&state.model_registry.read(), &forked.model);
@@ -1470,7 +1708,7 @@ fn cmd_clone(
     // Add to sessions map.  Load the cloned entries into
     // in-memory messages (same reason as fork — prevents
     // the first prompt from truncating history on disk).
-    let mut new_sess = ServerSession::new(
+    let mut new_sess = ServerSession::new_with_queue_budget(
         forked_id.clone(),
         agent_loop,
         session_manager,
@@ -1478,6 +1716,7 @@ fn cmd_clone(
         broadcaster,
         state.approval_gate.clone(),
         state.model_registry.clone(),
+        state.queue_budget.clone(),
     );
     let supports_images =
         crate::models::model_accepts_images_with(&state.model_registry.read(), &forked.model);
@@ -1668,9 +1907,10 @@ mod tests {
         let model_registry = Arc::new(parking_lot::RwLock::new(crate::models::Registry::new()));
         let session_manager = Arc::new(crate::session::Manager::new(test_session_dir()));
         let approval_gate = ApprovalGate::default();
+        let queue_budget = Arc::new(crate::runtime::GlobalQueueBudget::defaults());
         // One live session named "default" — sessions are equal peers now,
         // so tests address it explicitly by id.
-        let session = ServerSession::new(
+        let session = ServerSession::new_with_queue_budget(
             "default".to_string(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
                 Arc::new(EmptyProvider),
@@ -1681,6 +1921,7 @@ mod tests {
             Arc::new(SseBroadcaster::new()),
             approval_gate.clone(),
             model_registry.clone(),
+            queue_budget.clone(),
         );
         let sessions: HashMap<String, Arc<parking_lot::RwLock<ServerSession>>> = [(
             "default".to_string(),
@@ -1689,7 +1930,9 @@ mod tests {
         .into_iter()
         .collect();
         AppState {
+            agent_instance_id: "agent-test-instance".to_string(),
             sessions: Arc::new(parking_lot::RwLock::new(sessions)),
+            queue_budget,
             session_manager,
             welcome_version: "0.0.0".to_string(),
             welcome_cwd: cwd.clone(),
@@ -1735,21 +1978,204 @@ mod tests {
     }
 
     #[test]
+    fn prompt_rejects_unknown_busy_policy_with_stable_code() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "hello".to_string();
+        cmd.busy_policy = "steer".to_string();
+
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "invalid_busy_policy");
+        assert_eq!(resp["error_data"]["provided"], "steer");
+    }
+
+    #[test]
+    fn prompt_enqueue_if_busy_returns_canonical_queued_ack() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        let active = session
+            .read()
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+        assert_eq!(active.run_id, "run-active");
+
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "queued later".to_string();
+        cmd.busy_policy = "enqueue_if_busy".to_string();
+        cmd.client_request_id = "request-next".to_string();
+
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["accepted_state"], "queued");
+        assert_eq!(resp["data"]["queue_position"], 1);
+        assert_eq!(
+            session.read().scheduler.queued()[0].client_request_id,
+            "request-next"
+        );
+    }
+
+    #[test]
+    fn cancel_queued_run_removes_only_the_requested_run() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+        for number in 1..=2 {
+            let mut prompt = make_cmd("prompt");
+            prompt.message = format!("queued {number}");
+            prompt.busy_policy = "enqueue_if_busy".to_string();
+            prompt.client_request_id = format!("request-{number}");
+            prompt.requested_run_id = format!("run-{number}");
+            assert_eq!(
+                parse_response(&handle_command_internal(&state, prompt))["success"],
+                true
+            );
+        }
+
+        let mut cancel = make_cmd("cancel_queued_run");
+        cancel.run_id = "run-1".to_string();
+        let response = parse_response(&handle_command_internal(&state, cancel));
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["state"], "cancelled");
+        assert!(session.read().scheduled_setting_summary("run-1").is_none());
+        assert_eq!(
+            session
+                .read()
+                .scheduler
+                .queued()
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-2"]
+        );
+    }
+
+    #[test]
+    fn delete_session_fences_admission_and_reclaims_queued_snapshots() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+
+        let mut queued = make_cmd("prompt");
+        queued.message = "must be reclaimed".to_string();
+        queued.busy_policy = "enqueue_if_busy".to_string();
+        queued.requested_run_id = "run-queued".to_string();
+        queued.client_request_id = "request-queued".to_string();
+        assert_eq!(
+            parse_response(&handle_command_internal(&state, queued))["success"],
+            true
+        );
+        assert!(session
+            .read()
+            .scheduled_setting_summary("run-queued")
+            .is_some());
+
+        let deleting = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
+        assert_eq!(deleting["success"], false);
+        assert_eq!(deleting["error_code"], "deleting");
+        assert_eq!(deleting["error_data"]["queued_cancelled"], 1);
+        assert!(session.read().deleting);
+        assert!(session.read().scheduler.queued().is_empty());
+        assert!(session
+            .read()
+            .scheduled_setting_summary("run-queued")
+            .is_none());
+
+        let mut rejected = make_cmd("prompt");
+        rejected.message = "too late".to_string();
+        rejected.client_request_id = "request-too-late".to_string();
+        let rejected = parse_response(&handle_command_internal(&state, rejected));
+        assert_eq!(rejected["success"], false);
+        assert_eq!(rejected["error_code"], "deleting");
+    }
+
+    #[test]
+    fn delete_idle_session_removes_the_live_runtime() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        assert!(state.sessions.read().contains_key("default"));
+
+        let response = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
+
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["deleted"], true);
+        assert!(!state.sessions.read().contains_key("default"));
+        assert!(session
+            .read()
+            .persistence
+            .append(vec![crate::session::SessionEntry::new_assistant(
+                serde_json::json!("late write"),
+                vec![],
+            )])
+            .is_err());
+    }
+
+    #[test]
+    fn delete_reclaims_taskless_persistence_degraded_session() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        let lease = session
+            .read()
+            .runtime
+            .begin(Some("run-degraded"), Some("request-degraded"))
+            .unwrap();
+        assert!(session
+            .read()
+            .runtime
+            .mark_persistence_degraded(&lease, "disk full"));
+        assert!(!session.read().runtime.has_owned_task());
+
+        let response = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
+
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["deleted"], true);
+        assert!(!state.sessions.read().contains_key("default"));
+    }
+
+    #[test]
     fn get_agent_info_returns_version() {
         let state = make_app_state();
         let cmd = make_cmd("get_agent_info");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert!(resp["data"]["version"].is_string());
+        assert_eq!(resp["data"]["agentInstanceId"], "agent-test-instance");
     }
 
     #[test]
     fn get_state_returns_session_info() {
         let state = make_app_state();
+        state
+            .get_session("default")
+            .unwrap()
+            .read()
+            .scheduler
+            .accept(
+                "queued-request",
+                Some("queued-run"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"message":"later"}),
+            )
+            .unwrap();
         let cmd = make_cmd("get_state");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert!(resp["data"]["sessionId"].is_string());
+        assert_eq!(resp["data"]["agentInstanceId"], "agent-test-instance");
+        assert_eq!(resp["data"]["queuedCount"], 1);
+        assert_eq!(resp["data"]["queuedRuns"][0]["runId"], "queued-run");
+        assert_eq!(resp["data"]["queuedRuns"][0]["displayText"], "later");
     }
 
     #[test]
@@ -2111,21 +2537,17 @@ mod tests {
             .begin(Some("run-current"), None)
             .unwrap();
 
-        for command_type in ["steer", "follow_up", "abort"] {
-            let mut cmd = make_cmd(command_type);
-            cmd.run_id = "run-old".to_string();
-            cmd.message = "late control".to_string();
-            let response = parse_response(&handle_command_internal(&state, cmd));
-            assert_eq!(response["success"], false, "{command_type}");
-            assert!(response["error"]
-                .as_str()
-                .is_some_and(|error| error.contains("run-old")));
-            assert_eq!(
-                session.read().runtime.snapshot().unwrap().phase,
-                crate::runtime::RunPhase::Starting
-            );
-        }
-
+        let mut abort = make_cmd("abort");
+        abort.run_id = "run-old".to_string();
+        let response = parse_response(&handle_command_internal(&state, abort));
+        assert_eq!(response["success"], false);
+        assert!(response["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("run-old")));
+        assert_eq!(
+            session.read().runtime.snapshot().unwrap().phase,
+            crate::runtime::RunPhase::Starting
+        );
         let mut abort = make_cmd("abort");
         abort.run_id = "run-current".to_string();
         let response = parse_response(&handle_command_internal(&state, abort));
@@ -2353,7 +2775,7 @@ mod tests {
         assert_eq!(resp["success"], false);
         assert!(resp["error"]
             .as_str()
-            .is_some_and(|error| error.contains("not the active run")));
+            .is_some_and(|error| error.contains("not configured") || error.contains("not known")));
     }
 
     #[test]

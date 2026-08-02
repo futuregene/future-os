@@ -24,6 +24,9 @@ export interface ChatMessage {
   pending?: boolean;  // streaming in progress
   stopped?: boolean;  // generation was interrupted (partial content kept)
   welcome?: boolean;   // skip prefix/icon for welcome/info messages
+  runId?: string;
+  runState?: "queued" | "running" | "terminal" | "failed" | "cancelled" | "superseded" | "lost_on_agent_restart";
+  queuePosition?: number;
 }
 
 export class ChatArea implements Component {
@@ -130,6 +133,55 @@ export class ChatArea implements Component {
     }
     if (this.autoScroll) this.scrollToBottom();
     this.onChange?.();
+  }
+
+  bindUserRun(messageId: string, runId: string, runState: ChatMessage["runState"], queuePosition?: number): void {
+    const index = this.messages.findIndex((message) => message.id === messageId);
+    if (index < 0 || this.messages[index].role !== "user") return;
+    this.messages[index].id = runId;
+    this.messages[index].runId = runId;
+    this.messages[index].runState = runState;
+    this.messages[index].queuePosition = queuePosition;
+    this.rerenderMessage(index);
+  }
+
+  updateRunState(runId: string, runState: ChatMessage["runState"]): void {
+    const index = this.messages.findIndex((message) => message.runId === runId);
+    if (index < 0) return;
+    this.messages[index].runState = runState;
+    this.rerenderMessage(index);
+  }
+
+  updateQueuePosition(runId: string, queuePosition: number): void {
+    const index = this.messages.findIndex((message) => message.runId === runId);
+    if (index < 0) return;
+    this.messages[index].queuePosition = queuePosition;
+    this.rerenderMessage(index);
+  }
+
+  upsertQueuedRun(runId: string, displayText: string, queuePosition: number): void {
+    const index = this.messages.findIndex((message) => message.runId === runId);
+    if (index >= 0) {
+      this.messages[index].runState = "queued";
+      this.messages[index].queuePosition = queuePosition;
+      this.rerenderMessage(index);
+      return;
+    }
+    this.addMessage({
+      id: runId,
+      role: "user",
+      content: displayText,
+      runId,
+      runState: "queued",
+      queuePosition,
+    });
+  }
+
+  setMessageRunState(messageId: string, runState: ChatMessage["runState"]): void {
+    const index = this.messages.findIndex((message) => message.id === messageId);
+    if (index < 0) return;
+    this.messages[index].runState = runState;
+    this.rerenderMessage(index);
   }
 
   setOnChange(cb: () => void): void {
@@ -495,6 +547,18 @@ export class ChatArea implements Component {
       this.renderedLines.push({
         text: bgLine,
         dim: false,
+      });
+    }
+    if (msg.runState === "queued") {
+      this.renderedLines.push({
+        text: applyBackgroundToLine(` ${dim(`queued${msg.queuePosition ? ` (#${msg.queuePosition})` : ""}`)}`, this.width, this.theme.userBg),
+        dim: true,
+      });
+    }
+    if (msg.runState === "cancelled" || msg.runState === "superseded" || msg.runState === "lost_on_agent_restart") {
+      this.renderedLines.push({
+        text: applyBackgroundToLine(` ${dim(msg.runState)}`, this.width, this.theme.userBg),
+        dim: true,
       });
     }
   }

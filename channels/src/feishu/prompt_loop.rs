@@ -29,25 +29,14 @@ pub(super) async fn run_prompt_loop(
     gen_counter: &AtomicU64,
     ack_reaction_id: Option<String>,
 ) -> Result<()> {
-    // Hold the per-chat lock through abort + idle wait + prompt + atomic attach,
+    // Hold the per-chat lock through atomic supersede + start + attach,
     // but not while consuming the stream. This closes the attach race while
     // still letting a newer message interrupt an ongoing response.
     let (expected_run_id, my_gen, mut stream) = {
         let _guard = prompt_lock.lock().await;
 
-        // Abort current generation, then send the new prompt
-        // Clone the cheap tonic client and release the process-global lock
-        // before waiting. The per-chat mutex above still serializes this
-        // session, while unrelated chats can continue issuing commands.
+        // Agent performs active abort + queued replacement atomically.
         let mut client = agent.read().await.clone();
-        let _ = client.abort(session_id).await;
-        // The new Agent run state machine keeps the session busy while the
-        // aborted run unwinds (Cancelling/Finalizing), so wait for it to go
-        // idle before prompting — otherwise the prompt is rejected and the
-        // user sees a spurious error card.
-        client
-            .wait_until_idle(session_id, Duration::from_secs(8))
-            .await?;
         let mut prompt_text = text.to_string();
         for img in images {
             match &img.data {
@@ -71,7 +60,10 @@ pub(super) async fn run_prompt_loop(
             }
         );
         let expected_run_id = client
-            .prompt(session_id, &prompt_text, images.to_vec())
+            .prompt_superseding(session_id, &prompt_text, images.to_vec())
+            .await?;
+        client
+            .wait_until_run_active(session_id, &expected_run_id, Duration::from_secs(30))
             .await?;
         // Attach before releasing the per-chat lock, so a newer message cannot
         // roll this run over between its acknowledgement and stream ownership.

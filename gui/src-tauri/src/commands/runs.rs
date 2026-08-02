@@ -61,14 +61,14 @@ pub async fn abort_run(
 pub async fn list_run_events(
     run_id: String,
 ) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
-    let local = store::list_run_events(&run_id)?;
-    // After a GUI restart the in-memory RUN_EVENT_BUFFER is empty — the agent
-    // (still running in the background) holds the authoritative events.  Pull
-    // them from the agent for active runs with no local events.
-    if !local.is_empty() {
-        return Ok(local);
+    // The Agent journal is canonical for every run, including settled ones.
+    // GUI JSONL is read only as a compatibility fallback for logs written by
+    // pre-journal builds while the Agent is unavailable.
+    match agent_events(&run_id, -1).await {
+        Ok(events) => Ok(events),
+        Err(error) if agent_unavailable(&error) => store::list_run_events(&run_id),
+        Err(error) => Err(error),
     }
-    agent_events_fallback(&run_id, -1).await
 }
 
 /// Incremental variant of [`list_run_events`] for pushed live-preview updates:
@@ -83,38 +83,24 @@ pub async fn list_run_events_since(
     if since_sequence < 0 {
         return list_run_events(run_id).await;
     }
-    let local = store::list_run_events_since(&run_id, since_sequence)?;
-    // An empty tail usually means "no new events this tick" — but when the
-    // local log is entirely cold (post-restart) AND the run is still active,
-    // the events only exist agent-side (the earlier full fetch came from the
-    // agent and was never persisted locally), so keep falling back with the
-    // same incremental query the agent natively supports.
-    if !local.is_empty() || store::has_run_events(&run_id) {
-        return Ok(local);
+    match agent_events(&run_id, since_sequence).await {
+        Ok(events) => Ok(events),
+        Err(error) if agent_unavailable(&error) => {
+            store::list_run_events_since(&run_id, since_sequence)
+        }
+        Err(error) => Err(error),
     }
-    agent_events_fallback(&run_id, since_sequence).await
 }
 
-/// Pull an active run's events from the agent (authoritative while streaming,
-/// survives GUI restarts) when the local log is cold. `since_sequence` is
-/// passed through to the agent's native incremental query (-1 = whole run).
-/// Returns an empty vec for settled runs, unknown runs, or an unreachable
-/// agent — the caller's empty local result is the right answer in all three.
-async fn agent_events_fallback(
+/// Pull canonical events from the Agent journal. `since_sequence` is passed
+/// through to the native incremental query (-1 = whole run).
+async fn agent_events(
     run_id: &str,
     since_sequence: i64,
 ) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
-    let empty = Vec::new();
-    let Some(run) = store::get_run(run_id).ok().flatten() else {
-        return Ok(empty);
-    };
-    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
-        return Ok(empty);
-    }
-    // Active run — pull events from the agent
-    let Some(thread) = store::get_thread(&run.thread_id).ok().flatten() else {
-        return Ok(empty);
-    };
+    let run = store::get_run(run_id)?.ok_or_else(|| format!("Unknown run {run_id}"))?;
+    let thread = store::get_thread(&run.thread_id)?
+        .ok_or_else(|| format!("Missing thread for run {run_id}"))?;
     let sid = thread
         .agent_session_id
         .as_deref()
@@ -122,22 +108,20 @@ async fn agent_events_fallback(
         .map(|s| s.to_string())
         .unwrap_or_else(|| run.thread_id.clone());
     let agent_json =
-        match agent_bridge::get_events_since(sid, run_id.to_string(), since_sequence).await {
-            Ok(v) => v,
-            Err(_) => return Ok(empty),
-        };
+        agent_bridge::get_events_since(sid, run_id.to_string(), since_sequence).await?;
     let Some(events) = agent_json.get("events").and_then(|v| v.as_array()) else {
-        return Ok(empty);
+        return Ok(Vec::new());
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
     let records: Vec<store::RunEventRecord> = events
         .iter()
         .enumerate()
         .map(|(i, e)| store::RunEventRecord {
-            id: format!("agent_{run_id}_{i}"),
+            id: e
+                .get("eventId")
+                .and_then(|v| v.as_str())
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("agent_{run_id}_{i}")),
             run_id: run_id.to_string(),
             event_type: e
                 .get("type")
@@ -149,17 +133,33 @@ async fn agent_events_fallback(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
             sequence: e.get("idx").and_then(|v| v.as_i64()).unwrap_or(i as i64),
-            created_at: now,
+            created_at: e
+                .get("timestamp")
+                .and_then(|value| value.as_str())
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.timestamp_millis())
+                .unwrap_or(0),
         })
         .collect();
     Ok(records)
 }
 
+fn agent_unavailable(error: &crate::AppError) -> bool {
+    matches!(error, crate::AppError::AgentUnavailable(_))
+}
+
 #[tauri::command]
-pub fn list_run_events_bulk(
+pub async fn list_run_events_bulk(
     run_ids: Vec<String>,
 ) -> Result<Vec<(String, Vec<store::RunEventRecord>)>, crate::AppError> {
-    store::list_run_events_bulk(&run_ids)
+    let mut result = Vec::new();
+    for run_id in run_ids {
+        let events = list_run_events(run_id.clone()).await?;
+        if !events.is_empty() {
+            result.push((run_id, events));
+        }
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -182,4 +182,19 @@ pub fn list_tool_outputs(
     tool_call_id: String,
 ) -> Result<Vec<store::ToolOutputRecord>, crate::AppError> {
     store::list_tool_outputs(&run_id, &tool_call_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_unavailable;
+
+    #[test]
+    fn legacy_fallback_requires_the_typed_transport_error() {
+        assert!(agent_unavailable(&crate::AppError::AgentUnavailable(
+            "connection refused".to_string()
+        )));
+        assert!(!agent_unavailable(&crate::AppError::Message(
+            "model response says service unavailable".to_string()
+        )));
+    }
 }

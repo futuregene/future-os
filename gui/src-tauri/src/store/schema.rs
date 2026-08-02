@@ -218,6 +218,16 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_at INTEGER NOT NULL
 );
 
+-- A local tombstone/outbox: GUI deletion is immediate, while delivery of the
+-- Agent delete command is retried after a sidecar/network outage.  The Agent
+-- operation is idempotent, so retry is safe.
+CREATE TABLE IF NOT EXISTS agent_delete_outbox (
+    session_id TEXT PRIMARY KEY,
+    requested_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_threads_workspace ON threads(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_threads_recent ON threads(status, pinned, last_message_at, updated_at);
 -- idx_messages_thread removed with messages table

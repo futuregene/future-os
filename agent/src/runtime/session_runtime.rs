@@ -25,6 +25,7 @@ struct RuntimeTask {
 pub struct SessionRuntime {
     control: RunControl,
     task: Mutex<Option<RuntimeTask>>,
+    completion_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<RunLease>>>,
 }
 
 impl SessionRuntime {
@@ -32,7 +33,12 @@ impl SessionRuntime {
         Self {
             control: RunControl::new(is_streaming),
             task: Mutex::new(None),
+            completion_tx: Mutex::new(None),
         }
+    }
+
+    pub fn set_completion_sender(&self, sender: tokio::sync::mpsc::UnboundedSender<RunLease>) {
+        *self.completion_tx.lock() = Some(sender);
     }
 
     pub fn begin(
@@ -54,6 +60,27 @@ impl SessionRuntime {
         self.control.begin(requested_run_id, client_request_id)
     }
 
+    pub fn begin_scheduled(
+        &self,
+        requested_run_id: &str,
+        client_request_id: &str,
+        run_sequence: u64,
+    ) -> Result<RunLease> {
+        let task = self.task.lock();
+        if let Some(active) = task.as_ref() {
+            bail!(
+                "runtime task {} at epoch {} has not exited",
+                active.lease.run_id,
+                active.lease.epoch
+            );
+        }
+        self.control.begin_with_sequence(
+            Some(requested_run_id),
+            Some(client_request_id),
+            Some(run_sequence),
+        )
+    }
+
     pub fn request_lease(&self, client_request_id: &str) -> Option<RunLease> {
         self.control.request_lease(client_request_id)
     }
@@ -68,25 +95,6 @@ impl SessionRuntime {
             .install_cancellation(lease, interrupt_tx, interrupt_flag)
     }
 
-    pub fn steer(
-        &self,
-        expected_run_id: Option<&str>,
-        steering_tx: &mpsc::Sender<String>,
-        message: String,
-    ) -> Result<()> {
-        self.control.steer(expected_run_id, steering_tx, message)
-    }
-
-    pub fn follow_up(
-        &self,
-        expected_run_id: Option<&str>,
-        follow_up_tx: &mpsc::Sender<String>,
-        message: String,
-    ) -> Result<bool> {
-        self.control
-            .follow_up(expected_run_id, follow_up_tx, message)
-    }
-
     /// Request cooperative cancellation and arm the bounded acknowledgement
     /// timer. The task remains owned and the session remains unavailable until
     /// that same lease finalizes.
@@ -99,6 +107,7 @@ impl SessionRuntime {
             let lease = RunLease {
                 run_id: snapshot.run_id,
                 epoch: snapshot.epoch,
+                run_sequence: None,
             };
             handle.spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -120,6 +129,10 @@ impl SessionRuntime {
         self.control.snapshot()
     }
 
+    pub fn has_owned_task(&self) -> bool {
+        self.task.lock().is_some()
+    }
+
     pub fn begin_finalizing(&self, lease: &RunLease) -> bool {
         self.control.begin_finalizing(lease)
     }
@@ -137,6 +150,19 @@ impl SessionRuntime {
 
     pub fn mark_persistence_degraded(&self, lease: &RunLease, reason: &str) -> bool {
         self.control.mark_persistence_degraded(lease, reason)
+    }
+
+    pub fn recover_persistence_degraded(&self, lease: &RunLease) -> bool {
+        if self.task.lock().is_some() {
+            return false;
+        }
+        let recovered = self.control.recover_persistence_degraded(lease);
+        if recovered {
+            if let Some(sender) = self.completion_tx.lock().as_ref() {
+                let _ = sender.send(lease.clone());
+            }
+        }
+        recovered
     }
 
     /// Spawn and register the only task allowed for this session. The monitor
@@ -171,6 +197,7 @@ impl SessionRuntime {
             if !slot.as_ref().is_some_and(|active| active.lease == lease) {
                 return;
             }
+            let mut completed = false;
             match outcome {
                 Err(error) => {
                     let _ = runtime.mark_stuck(&lease, &error.to_string());
@@ -181,7 +208,7 @@ impl SessionRuntime {
                             && active.epoch == lease.epoch
                             && active.phase == super::RunPhase::Finalizing =>
                     {
-                        let _ = runtime.control.finish(&lease);
+                        completed = runtime.control.finish(&lease);
                     }
                     Some(active)
                         if active.run_id == lease.run_id
@@ -200,6 +227,12 @@ impl SessionRuntime {
                 },
             }
             *slot = None;
+            drop(slot);
+            if completed {
+                if let Some(sender) = runtime.completion_tx.lock().as_ref() {
+                    let _ = sender.send(lease);
+                }
+            }
         });
         Ok(())
     }
@@ -327,6 +360,9 @@ mod tests {
             super::super::RunPhase::PersistenceDegraded
         );
         assert!(runtime.begin(Some("run-must-not-start"), None).is_err());
+        assert!(runtime.recover_persistence_degraded(&lease));
+        assert!(runtime.snapshot().is_none());
+        assert!(runtime.begin(Some("run-after-recovery"), None).is_ok());
     }
 
     #[tokio::test]

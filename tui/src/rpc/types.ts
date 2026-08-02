@@ -13,7 +13,6 @@ export interface RpcCommand {
   // prompting
   message?: string;
   images?: ImageContent[];
-  streamingBehavior?: "steer" | "followUp";
   // new_session
   parentSession?: string;
   cwd?: string;
@@ -22,8 +21,7 @@ export interface RpcCommand {
   modelId?: string;
   // set_thinking_level
   level?: ThinkingLevel;
-  // set_steering_mode / set_follow_up_mode
-  mode?: "all" | "one-at-a-time";
+  mode?: string;
   // compact
   customInstructions?: string;
   // set_auto_compaction / set_auto_retry
@@ -42,20 +40,15 @@ export interface RpcCommand {
   sinceIdx?: number;
   requestedRunId?: string;
   clientRequestId?: string;
+  busyPolicy?: "reject_if_busy" | "enqueue_if_busy" | "supersede_session";
 }
 
 // ============================================================================
 // Specific command creators (for type safety at call sites)
 // ============================================================================
 
-export function promptCmd(message: string, images?: ImageContent[], streamingBehavior?: "steer" | "followUp"): RpcCommand {
-  return { type: "prompt", message, images, streamingBehavior };
-}
-export function steerCmd(message: string): RpcCommand {
-  return { type: "steer", message };
-}
-export function followUpCmd(message: string): RpcCommand {
-  return { type: "follow_up", message };
+export function promptCmd(message: string, images?: ImageContent[], busyPolicy: RpcCommand["busyPolicy"] = "reject_if_busy"): RpcCommand {
+  return { type: "prompt", message, images, busyPolicy };
 }
 
 // ============================================================================
@@ -85,6 +78,16 @@ export interface RpcResponse {
   success: boolean;
   data?: unknown;
   error?: string;
+  errorCode?: string;
+  errorData?: unknown;
+}
+
+export interface RunAck {
+  run_id: string;
+  run_epoch: number;
+  accepted_state: "existing" | "running" | "queued";
+  run_sequence?: number;
+  queue_position?: number;
 }
 
 // ============================================================================
@@ -92,19 +95,17 @@ export interface RpcResponse {
 // ============================================================================
 
 export interface RpcSessionState {
+  agentInstanceId?: string;
   model?: string;
   thinkingLevel: ThinkingLevel;
   isStreaming: boolean;
   isCompacting: boolean;
-  steeringMode: "all" | "one-at-a-time";
-  followUpMode: "all" | "one-at-a-time";
   sessionFile?: string;
   sessionId: string;
   session_name?: string;
   explicitSession: boolean;
   autoCompactionEnabled: boolean;
   queryCount: number;
-  pendingMessageCount: number;
   // Welcome info
   version?: string;
   cwd?: string;
@@ -123,13 +124,35 @@ export interface RpcSessionState {
   tokensCacheW?: number;
   totalCost?: number;
   activeRun?: ActiveRunState | null;
+  queuedRuns?: QueuedRunState[];
+  queuedCount?: number;
+  recentTerminalAcks?: RecentTerminalAck[];
   interruptedRun?: InterruptedRunState | null;
   requestedRun?: RunTerminalState | null;
+}
+
+export interface RecentTerminalAck {
+  run_id: string;
+  run_sequence: number;
+  client_request_id: string;
+  state: "terminal" | "cancelled" | "failed";
+  reason: string;
+}
+
+export interface QueuedRunState {
+  runId: string;
+  runSequence: number;
+  clientRequestId: string;
+  state: "queued";
+  queuePosition: number;
+  acceptedAt: string;
+  displayText: string;
 }
 
 export interface ActiveRunState {
   runId: string;
   epoch: number;
+  runSequence?: number;
   state: "starting" | "running" | "cancelling" | "cancellation_stuck" | "persistence_degraded" | "finalizing";
   lastEventIdx: number;
 }
@@ -188,6 +211,8 @@ export type AgentEvent = {
   runId?: string;
   epoch?: number;
   idx?: number;
+  eventId?: string;
+  timestamp?: string;
   projectionSnapshot?: boolean;
   snapshotCursor?: number;
   snapshotEvents?: ProjectedRunEvent[];

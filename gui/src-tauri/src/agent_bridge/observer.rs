@@ -13,8 +13,8 @@
 //!    and projects events into the run-event log. Runs owned by a pipeline
 //!    collector are persisted by that collector — exactly one writer per run:
 //!    the pipeline registers its lease before the prompt ever reaches the
-//!    agent, and `append_run_event`'s sequence guard absorbs any residual
-//!    replay overlap.
+//!    agent, and the collector's cursor-ordering absorbs any residual replay
+//!    overlap.
 //! 2. **NATS mirroring** — the sole publisher for the remote bridge. The
 //!    collector deliberately does not publish; the observer's atomic-attach
 //!    replay guarantees the mirrored sequence has no holes. Events are
@@ -32,7 +32,7 @@
 //! an active run is never evicted — the cap yields to overflow in that case.
 //! An observer with no events for [`OBSERVER_IDLE_SLEEP`] and no active run
 //! puts itself to sleep; discovery (streaming poll, thread open, prompt) wakes
-//! it again via [`ensure_observer`].
+//! it again via [`ensure_observer_for_thread`].
 
 use std::{
     collections::HashMap,
@@ -48,7 +48,7 @@ use tokio::sync::oneshot;
 use tonic::Code;
 
 use super::{
-    client::get_state_command,
+    client::{base_command, get_state_command},
     connect_agent,
     run_control::{mark_run_completed_if_active, mark_run_failed_if_active},
     stream,
@@ -86,21 +86,21 @@ struct ObserverHandle {
 }
 
 /// State shared between the manager and one observer task: eviction inputs
-/// (activity, active-run flag), the session→thread mapping, and the
+/// (activity, active-run flag), the immutable session→thread owner, and the
 /// canonical→local run bindings the task builds as it projects runs.
 struct ObserverShared {
     last_activity_ms: AtomicI64,
     has_active_run: AtomicBool,
-    thread_id: Mutex<Option<String>>,
+    thread_id: String,
     run_bindings: Mutex<HashMap<String, String>>,
 }
 
 impl ObserverShared {
-    fn new() -> Self {
+    fn new(thread_id: impl Into<String>) -> Self {
         Self {
             last_activity_ms: AtomicI64::new(now_millis()),
             has_active_run: AtomicBool::new(false),
-            thread_id: Mutex::new(None),
+            thread_id: thread_id.into(),
             run_bindings: Mutex::new(HashMap::new()),
         }
     }
@@ -130,20 +130,54 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Register (or refresh) the observer for a session. Idempotent: an existing
-/// observer is just touched (LRU activity). Safe to call from anywhere — the
-/// prompt path, thread open, session discovery.
-pub fn ensure_observer(session_id: &str) {
-    if session_id.trim().is_empty() {
-        return;
+/// Register (or refresh) the sole observer for an Agent session, bound to one
+/// immutable GUI-thread owner for its lifetime. A legacy database may contain
+/// more than one thread referencing the same Agent session; that data remains
+/// readable, but a second thread cannot silently take over the live observer.
+pub fn ensure_observer_for_thread(session_id: &str, thread_id: &str) -> Result<(), String> {
+    ensure_observer_inner(session_id, thread_id, true)
+}
+
+/// Ensure a passive observer without treating periodic discovery as user
+/// activity. Otherwise the 60-second import loop would keep every idle entry
+/// permanently hot and defeat the 128-observer LRU cap.
+fn ensure_passive_observer(session_id: &str, thread_id: &str) -> Result<(), String> {
+    ensure_observer_inner(session_id, thread_id, false)
+}
+
+fn ensure_observer_inner(
+    session_id: &str,
+    thread_id: &str,
+    touch_existing: bool,
+) -> Result<(), String> {
+    let session_id = session_id.trim();
+    let thread_id = thread_id.trim();
+    if session_id.is_empty() || thread_id.is_empty() {
+        return Err("Observer requires both thread_id and session_id".to_string());
+    }
+    let thread = crate::store::get_thread(thread_id)
+        .map_err(|error| format!("get observer owner: {error}"))?
+        .ok_or_else(|| format!("Observer owner thread {thread_id} does not exist"))?;
+    let mapped_session = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    if mapped_session != Some(session_id) {
+        return Err(format!(
+            "observer_binding_mismatch: thread {thread_id} is not bound to session {session_id}"
+        ));
     }
     let mut guard = OBSERVERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(handle) = guard.get(session_id) {
-        handle.shared.touch();
-        return;
+        verify_observer_owner(session_id, handle, thread_id)?;
+        if touch_existing {
+            handle.shared.touch();
+        }
+        return Ok(());
     }
     evict_idle_if_over_cap(&mut guard);
-    let shared = Arc::new(ObserverShared::new());
+    let shared = Arc::new(ObserverShared::new(thread_id));
     let (cancel_tx, cancel_rx) = oneshot::channel();
     guard.insert(
         session_id.to_string(),
@@ -154,6 +188,21 @@ pub fn ensure_observer(session_id: &str) {
     );
     drop(guard);
     spawn_observer(session_id.to_string(), shared, cancel_rx);
+    Ok(())
+}
+
+fn verify_observer_owner(
+    session_id: &str,
+    handle: &ObserverHandle,
+    requested_thread_id: &str,
+) -> Result<(), String> {
+    if handle.shared.thread_id == requested_thread_id {
+        return Ok(());
+    }
+    Err(format!(
+        "observer_owner_conflict: session {session_id} is already observed by thread {}",
+        handle.shared.thread_id
+    ))
 }
 
 /// Startup seed: one observer per thread that already has an agent session.
@@ -170,7 +219,9 @@ pub fn seed_observers_from_store() {
             .map(str::trim)
             .filter(|id| !id.is_empty())
         {
-            ensure_observer(session_id);
+            if let Err(error) = ensure_passive_observer(session_id, &thread.id) {
+                eprintln!("FutureOS could not seed observer for session {session_id}: {error}");
+            }
         }
     }
 }
@@ -179,7 +230,8 @@ pub fn seed_observers_from_store() {
 /// channels, another machine). Two cadences: a 1s pass over the agent's
 /// streaming sessions — a run started by another client appears in the
 /// sidebar within ~1s — and a 60s full import for idle sessions plus
-/// observer re-seeding (waking any that slept or were evicted).
+/// observer import. Idle observers are not re-touched here: opening a thread,
+/// a prompt, or a newly streaming session wakes it instead.
 pub fn spawn_session_discovery() {
     tauri::async_runtime::spawn(async move {
         let mut ticks = 0u64;
@@ -191,7 +243,6 @@ pub fn spawn_session_discovery() {
                 if let Err(error) = super::import::import_missing_sessions().await {
                     eprintln!("FutureOS periodic session import failed: {error}");
                 }
-                seed_observers_from_store();
             }
         }
     });
@@ -240,12 +291,15 @@ async fn discover_streaming_sessions() {
                 }
             }
         }
-        ensure_observer(&session_id);
+        if let Ok(Some(thread)) = crate::store::find_thread_by_agent_session(&session_id) {
+            if let Err(error) = ensure_observer_for_thread(&session_id, &thread.id) {
+                eprintln!("FutureOS could not observe discovered session {session_id}: {error}");
+            }
+        }
     }
 }
 
 /// Drop the observer for a session going away (thread/session deleted).
-#[allow(dead_code)] // Wired in with thread deletion in a follow-up.
 pub fn drop_observer(session_id: &str) {
     if let Some(handle) = OBSERVERS
         .lock()
@@ -319,6 +373,13 @@ pub(super) fn ensure_run_binding(
         }
     }
     if let Ok(Some(run)) = crate::store::get_run(canonical_run_id) {
+        if run.thread_id != thread_id {
+            eprintln!(
+                "FutureOS observer refused cross-thread run binding: session={session_id} thread={thread_id} run={canonical_run_id} belongs_to={}",
+                run.thread_id
+            );
+            return None;
+        }
         bind_run(session_id, canonical_run_id, &run.id);
         return Some(run.id);
     }
@@ -351,11 +412,22 @@ fn bind_run(session_id: &str, canonical_run_id: &str, local_run_id: &str) {
 /// detection), the session's currently-active run (if any), and the most
 /// recently settled run — the broadcaster keeps stamping its identity onto
 /// between-runs settings events until the next run starts.
-#[derive(Default)]
 struct ObserverState {
     cursors: HashMap<String, i64>,
+    session_cursor: i64,
     active_run: Option<String>,
     last_settled_run: Option<String>,
+}
+
+impl Default for ObserverState {
+    fn default() -> Self {
+        Self {
+            cursors: HashMap::new(),
+            session_cursor: -1,
+            active_run: None,
+            last_settled_run: None,
+        }
+    }
 }
 
 fn spawn_observer(session_id: String, shared: Arc<ObserverShared>, cancel: oneshot::Receiver<()>) {
@@ -385,12 +457,23 @@ async fn run_observer(
             }
         };
 
+        if !replay_session_events(&mut client, session_id, shared, &mut state).await {
+            if sleep_or_cancel(&mut cancel, backoff).await {
+                return;
+            }
+            continue;
+        }
+
         // Probe: an active run gets an atomic attach from the local cursor
         // (replaying everything the ring still holds); otherwise a plain live
         // subscription — a run starting later arrives from idx 0 anyway, and a
         // run starting in the probe→subscribe gap is caught by gap detection.
         let active_run = probe_active_run(&mut client, session_id).await;
         let mut stream = if let Some(run_id) = active_run {
+            // Mark this before attaching, not on the first streamed event. A
+            // quiet active run (for example waiting on an approval) must never
+            // be evicted in the probe→first-event window.
+            note_run_active(shared, &mut state, &run_id);
             // Resume from the in-memory cursor on re-attach: events at or
             // below it were already persisted and mirrored, so replaying them
             // would only duplicate the NATS mirror. The persisted-store cursor
@@ -416,6 +499,7 @@ async fn run_observer(
                 {
                     // The run ended between probe and attach — plain subscribe.
                     state.cursors.remove(&run_id);
+                    note_run_settled(shared, &mut state, &run_id);
                     match plain_subscribe(&mut client, session_id).await {
                         Some(stream) => stream,
                         None => {
@@ -427,6 +511,7 @@ async fn run_observer(
                     }
                 }
                 Err(_) => {
+                    note_run_settled(shared, &mut state, &run_id);
                     if sleep_or_cancel(&mut cancel, backoff).await {
                         return;
                     }
@@ -578,13 +663,33 @@ async fn handle_event(
     let event_type = event.r#type.as_str();
     let run_id = event.run_id.as_str();
 
-    // Session-level event (no run scope): no cursor to validate against —
-    // forward and mirror directly.
+    // Session-level event (no run scope): validate its independent session
+    // cursor before forwarding. A hole forces re-attach and journal replay.
     if run_id.is_empty() {
-        if FORWARDED_EVENTS.contains(&event_type) {
-            forward_settings_event(session_id, event_type, &event.data);
+        if event.session_idx >= 0 {
+            if event.session_idx <= state.session_cursor {
+                return true;
+            }
+            if event.session_idx != state.session_cursor.saturating_add(1) {
+                return false;
+            }
+            state.session_cursor = event.session_idx;
         }
-        crate::remote::publish_event(session_id, event_type, &event.data, run_id, event.idx);
+        if FORWARDED_EVENTS.contains(&event_type) {
+            forward_settings_event(session_id, &shared.thread_id, event_type, &event.data);
+        }
+        crate::remote::publish_event(
+            session_id,
+            event_type,
+            &event.data,
+            run_id,
+            event.idx,
+            event.epoch,
+            &event.event_id,
+            &event.timestamp,
+            event.session_idx,
+            event.run_sequence,
+        );
         return true;
     }
 
@@ -636,6 +741,7 @@ async fn handle_event(
             run_id,
             event.snapshot_cursor,
             &event.snapshot_events,
+            event.run_sequence,
         );
         return true;
     }
@@ -663,7 +769,12 @@ async fn handle_event(
                     // treating them as gaps would force a pointless re-attach
                     // on every settings change.
                     if FORWARDED_EVENTS.contains(&event_type) {
-                        forward_settings_event(session_id, event_type, &event.data);
+                        forward_settings_event(
+                            session_id,
+                            &shared.thread_id,
+                            event_type,
+                            &event.data,
+                        );
                     }
                     crate::remote::publish_event(
                         session_id,
@@ -671,6 +782,11 @@ async fn handle_event(
                         &event.data,
                         run_id,
                         event.idx,
+                        event.epoch,
+                        &event.event_id,
+                        &event.timestamp,
+                        event.session_idx,
+                        event.run_sequence,
                     );
                     return true;
                 }
@@ -722,9 +838,79 @@ async fn handle_event(
     }
 
     if FORWARDED_EVENTS.contains(&event_type) {
-        forward_settings_event(session_id, event_type, &event.data);
+        forward_settings_event(session_id, &shared.thread_id, event_type, &event.data);
     }
-    crate::remote::publish_event(session_id, event_type, &event.data, run_id, event.idx);
+    crate::remote::publish_event(
+        session_id,
+        event_type,
+        &event.data,
+        run_id,
+        event.idx,
+        event.epoch,
+        &event.event_id,
+        &event.timestamp,
+        event.session_idx,
+        event.run_sequence,
+    );
+    true
+}
+
+async fn replay_session_events(
+    client: &mut crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    session_id: &str,
+    shared: &Arc<ObserverShared>,
+    state: &mut ObserverState,
+) -> bool {
+    let command = crate::agent_proto::RpcCommand {
+        since_idx: state.session_cursor,
+        ..base_command("get_session_events_since", session_id.to_string())
+    };
+    let Ok(response) = client.execute_command(command).await else {
+        return false;
+    };
+    let response = response.into_inner();
+    if !response.success {
+        return false;
+    }
+    let events = serde_json::from_str::<serde_json::Value>(&response.data)
+        .ok()
+        .and_then(|value| value.get("events")?.as_array().cloned())
+        .unwrap_or_default();
+    for value in events {
+        let event = crate::agent_proto::StreamEvent {
+            r#type: value
+                .get("type")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            data: value
+                .get("data")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            session_id: session_id.to_string(),
+            session_idx: value
+                .get("sessionIdx")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(-1),
+            event_id: value
+                .get("eventId")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            timestamp: value
+                .get("timestamp")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            idx: -1,
+            run_sequence: -1,
+            ..Default::default()
+        };
+        if !handle_event(session_id, shared, state, event).await {
+            return false;
+        }
+    }
     true
 }
 
@@ -745,31 +931,6 @@ fn note_run_settled(shared: &Arc<ObserverShared>, state: &mut ObserverState, run
     }
 }
 
-/// The thread this session belongs to, resolved once and cached. The mapping
-/// can appear after the observer starts (session import creates thread stubs
-/// asynchronously), so a miss is re-resolved on the next event.
-async fn resolve_thread_id(session_id: &str, shared: &Arc<ObserverShared>) -> Option<String> {
-    if let Some(thread_id) = shared.thread_id.lock().ok()?.clone() {
-        return Some(thread_id);
-    }
-    let session = session_id.to_string();
-    let found = tokio::task::spawn_blocking(move || {
-        crate::store::find_thread_by_agent_session(&session)
-            .ok()
-            .flatten()
-            .map(|thread| thread.id)
-    })
-    .await
-    .ok()
-    .flatten();
-    if let Some(thread_id) = &found {
-        if let Ok(mut cache) = shared.thread_id.lock() {
-            *cache = Some(thread_id.clone());
-        }
-    }
-    found
-}
-
 /// The thread + local run row this observer projects `run_id` into, or None
 /// when a prompt-pipeline collector owns the run — now or within the lease
 /// grace window (single-writer rule; the collector persists its terminal
@@ -783,14 +944,15 @@ async fn observer_run(
     if super::replica::AGENT_REPLICAS.is_owned_or_recently_released(canonical_run_id) {
         return None;
     }
-    let thread_id = resolve_thread_id(session_id, shared).await?;
+    let thread_id = shared.thread_id.clone();
     let local_run_id = ensure_run_binding(session_id, canonical_run_id, &thread_id)?;
     Some((thread_id, local_run_id))
 }
 
-/// Forward a whitelisted event to the webview as `agent-event` (same envelope
-/// the retired single-slot observer used: sessionId + _eventType injected).
-fn forward_settings_event(session_id: &str, event_type: &str, data: &str) {
+/// Forward a whitelisted event to the webview as `agent-event`. Both owner
+/// identities are injected so the frontend can reject stale listeners during
+/// a thread switch instead of trusting session identity alone.
+fn forward_settings_event(session_id: &str, thread_id: &str, event_type: &str, data: &str) {
     let Some(app_handle) = crate::APP_HANDLE.get() else {
         return;
     };
@@ -799,6 +961,10 @@ fn forward_settings_event(session_id: &str, event_type: &str, data: &str) {
             map.insert(
                 "sessionId".to_string(),
                 serde_json::Value::String(session_id.to_string()),
+            );
+            map.insert(
+                "threadId".to_string(),
+                serde_json::Value::String(thread_id.to_string()),
             );
             map.insert(
                 "_eventType".to_string(),
@@ -820,9 +986,17 @@ mod tests {
             shared: Arc::new(ObserverShared {
                 last_activity_ms: AtomicI64::new(last_activity_ms),
                 has_active_run: AtomicBool::new(has_active_run),
-                ..ObserverShared::new()
+                ..ObserverShared::new("thread-owner")
             }),
         }
+    }
+
+    #[test]
+    fn observer_owner_is_idempotent_but_cannot_be_rebound() {
+        let handle = handle_with(0, false);
+        assert!(verify_observer_owner("session-a", &handle, "thread-owner").is_ok());
+        let error = verify_observer_owner("session-a", &handle, "thread-other").unwrap_err();
+        assert!(error.starts_with("observer_owner_conflict:"));
     }
 
     #[test]
@@ -865,7 +1039,7 @@ mod tests {
 
     #[test]
     fn sleep_requires_quiet_and_no_active_run() {
-        let fresh = ObserverShared::new();
+        let fresh = ObserverShared::new("thread-fresh");
         assert!(
             !fresh.should_sleep(),
             "just-registered observers stay awake"
@@ -874,7 +1048,7 @@ mod tests {
         let quiet_active = ObserverShared {
             last_activity_ms: AtomicI64::new(0),
             has_active_run: AtomicBool::new(true),
-            ..ObserverShared::new()
+            ..ObserverShared::new("thread-active")
         };
         assert!(
             !quiet_active.should_sleep(),
@@ -884,7 +1058,7 @@ mod tests {
         let quiet_idle = ObserverShared {
             last_activity_ms: AtomicI64::new(0),
             has_active_run: AtomicBool::new(false),
-            ..ObserverShared::new()
+            ..ObserverShared::new("thread-idle")
         };
         assert!(
             quiet_idle.should_sleep(),
@@ -905,7 +1079,18 @@ mod tests {
             snapshot_cursor: 0,
             session_id: "sess-order".to_string(),
             epoch: 1,
+            event_id: String::new(),
+            timestamp: String::new(),
+            session_idx: -1,
+            run_sequence: 1,
         }
+    }
+
+    fn session_event(event_type: &str, session_idx: i64) -> crate::agent_proto::StreamEvent {
+        let mut event = stream_event(event_type, "", -1);
+        event.session_idx = session_idx;
+        event.run_sequence = -1;
+        event
     }
 
     /// Lease the run so `observer_run` short-circuits as pipeline-owned and
@@ -921,7 +1106,7 @@ mod tests {
     #[tokio::test]
     async fn gap_event_is_rejected_without_advancing_the_cursor() {
         let _lease = lease_run("run-gap");
-        let shared = Arc::new(ObserverShared::new());
+        let shared = Arc::new(ObserverShared::new("thread-order"));
         let mut state = ObserverState::default();
 
         assert!(
@@ -973,8 +1158,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_gap_uses_the_independent_session_cursor() {
+        let shared = Arc::new(ObserverShared::new("thread-order"));
+        let mut state = ObserverState::default();
+
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("model_changed", 0)
+            )
+            .await
+        );
+        assert!(
+            !handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("model_changed", 2)
+            )
+            .await,
+            "a missing session-scoped event must force replay"
+        );
+        assert_eq!(state.session_cursor, 0);
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("model_changed", 1)
+            )
+            .await
+        );
+        assert_eq!(state.session_cursor, 1);
+    }
+
+    #[tokio::test]
     async fn missed_head_on_first_sight_forces_reattach() {
-        let shared = Arc::new(ObserverShared::new());
+        let shared = Arc::new(ObserverShared::new("thread-order"));
         let mut state = ObserverState::default();
 
         assert!(
@@ -996,7 +1218,7 @@ mod tests {
     #[tokio::test]
     async fn settled_run_stragglers_fan_out_without_bookkeeping() {
         let _lease = lease_run("run-fresh");
-        let shared = Arc::new(ObserverShared::new());
+        let shared = Arc::new(ObserverShared::new("thread-order"));
         let mut state = ObserverState {
             last_settled_run: Some("run-settled".to_string()),
             ..ObserverState::default()

@@ -192,6 +192,13 @@ pub fn delete_session_command(session_id: String) -> RpcCommand {
     base_command("delete_session", session_id)
 }
 
+pub fn prune_run_events_command(session_id: String, run_id: String) -> RpcCommand {
+    RpcCommand {
+        run_id,
+        ..base_command("prune_run_events", session_id)
+    }
+}
+
 pub fn list_sessions_command() -> RpcCommand {
     base_command("list_sessions", String::new())
 }
@@ -357,7 +364,6 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         message: String::new(),
         images: vec![],
         attachments: vec![],
-        streaming_behavior: String::new(),
         parent_session: String::new(),
         model_id: String::new(),
         level: String::new(),
@@ -377,6 +383,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         since_idx: 0,
         requested_run_id: String::new(),
         client_request_id: String::new(),
+        busy_policy: String::new(),
         sandbox_policy: None,
     }
 }

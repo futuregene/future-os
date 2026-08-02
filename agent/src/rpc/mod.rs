@@ -22,10 +22,15 @@ pub use session::ServerSession;
 
 #[derive(Clone)]
 pub struct AppState {
+    /// Changes on every Agent process start. Clients use it to distinguish a
+    /// reconnect to the same in-memory scheduler from a restart that dropped
+    /// queued runs and process-local idempotency state.
+    pub agent_instance_id: String,
     /// All live sessions keyed by session_id.  Sessions are equal peers —
     /// there is no privileged "default"/"current" session; clients address
     /// sessions explicitly and the agent hydrates them on demand.
     pub sessions: Arc<RwLock<HashMap<String, Arc<RwLock<ServerSession>>>>>,
+    pub queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
     /// On-disk session store (JSONL).  Used for hydration and sessionless
     /// disk operations (delete, fork previews).
     pub session_manager: Arc<crate::session::Manager>,
@@ -37,7 +42,7 @@ pub struct AppState {
     pub explicit_session: bool,
     pub approval_gate: ApprovalGate,
     pub verbose: bool,
-    /// When true, new prompt/steer/follow_up requests are rejected.  Existing
+    /// When true, new prompt requests are rejected. Existing
     /// streaming runs continue to completion.  Read-only and control commands
     /// (abort, status, etc.) are still accepted.
     pub shutting_down: Arc<AtomicBool>,
@@ -71,7 +76,10 @@ impl AppState {
         {
             let sessions = self.sessions.read();
             if let Some(sess) = sessions.get(session_id) {
-                return Some(sess.clone());
+                let sess = sess.clone();
+                drop(sessions);
+                ServerSession::ensure_scheduler_worker(&sess);
+                return Some(sess);
             }
         }
         self.session_manager.find(session_id)?;
@@ -84,7 +92,7 @@ impl AppState {
         // session's provider and can never fail with "agent is currently
         // streaming" just because ANOTHER session is mid-run.
         let broadcaster = Arc::new(SseBroadcaster::new());
-        let mut new_sess = ServerSession::new(
+        let mut new_sess = ServerSession::new_with_queue_budget(
             session_id.to_string(),
             Arc::new(tokio::sync::RwLock::new(
                 self.loop_template.independent_copy(),
@@ -94,6 +102,7 @@ impl AppState {
             broadcaster,
             self.approval_gate.clone(),
             self.model_registry.clone(),
+            self.queue_budget.clone(),
         );
         if new_sess.switch_session(session_id).is_err() {
             return None;
@@ -117,10 +126,15 @@ impl AppState {
         {
             let mut sessions = self.sessions.write();
             if let Some(sess) = sessions.get(session_id) {
-                return Some(sess.clone());
+                let sess = sess.clone();
+                drop(sessions);
+                ServerSession::ensure_scheduler_worker(&sess);
+                return Some(sess);
             }
             let sess_arc = Arc::new(RwLock::new(new_sess));
             sessions.insert(session_id.to_string(), sess_arc.clone());
+            drop(sessions);
+            ServerSession::ensure_scheduler_worker(&sess_arc);
             Some(sess_arc)
         }
     }
@@ -131,9 +145,9 @@ impl AppState {
     pub fn create_session(&self, mut session: ServerSession) -> String {
         let id = session.session_id.clone();
         session.broadcaster = Arc::new(SseBroadcaster::new());
-        self.sessions
-            .write()
-            .insert(id.clone(), Arc::new(RwLock::new(session)));
+        let session = Arc::new(RwLock::new(session));
+        self.sessions.write().insert(id.clone(), session.clone());
+        ServerSession::ensure_scheduler_worker(&session);
         id
     }
 
@@ -253,10 +267,35 @@ fn get_state_internal(
         serde_json::json!({
             "runId": run.run_id,
             "epoch": run.epoch,
+            "runSequence": run.run_sequence,
             "state": run.phase.as_str(),
             "lastEventIdx": sess.broadcaster.last_idx(),
         })
     });
+    let queued_runs = sess
+        .scheduler
+        .queued()
+        .into_iter()
+        .enumerate()
+        .map(|(index, run)| {
+            let display_text = run
+                .payload
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            serde_json::json!({
+                "runId": run.run_id,
+                "runSequence": run.run_sequence,
+                "clientRequestId": run.client_request_id,
+                "state": "queued",
+                "queuePosition": index + 1,
+                "acceptedAt": run.accepted_at,
+                "displayText": display_text,
+            })
+        })
+        .collect::<Vec<_>>();
+    let queued_count = queued_runs.len();
+    let recent_terminal_acks = sess.scheduler.recent_terminal_acks();
     // Restart recovery: when no run is live but the journal still records a run
     // that began without committing (a run_started marker with no run_terminal),
     // the previous run was interrupted by a crash or agent restart. Surface it
@@ -288,20 +327,18 @@ fn get_state_internal(
     let pending_approvals = state.approval_gate.pending_for_session(&session_id);
 
     Some(serde_json::json!({
+        "agentInstanceId": state.agent_instance_id,
         "model": sess.model,
         "imageSupport": image_support,
         "thinkingLevel": sess.thinking_level,
         "isStreaming": sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed),
         "isCompacting": false,
-        "steeringMode": sess.steering_mode,
-        "followUpMode": sess.follow_up_mode,
         "sessionFile": if session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String("".to_string()) },
         "sessionId": if session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(session_id) },
         "session_name": if sess.session_name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(sess.session_name.clone()) },
         "explicitSession": state.explicit_session,
         "autoCompactionEnabled": sess.auto_compaction,
         "queryCount": query_count,
-        "pendingMessageCount": sess.agent_loop.try_read().map(|l|l.pending_message_count()).unwrap_or(0),
         "version": crate::utils::VERSION,
         "cwd": cwd,
         "skills": state.welcome_skills.read().clone(),
@@ -320,6 +357,9 @@ fn get_state_internal(
         "createdBy": sess.created_by.clone(),
         "sourceMeta": sess.source_meta.clone(),
         "activeRun": active_run,
+        "queuedRuns": queued_runs,
+        "recentTerminalAcks": recent_terminal_acks,
+        "queuedCount": queued_count,
         "interruptedRun": interrupted_run,
         "requestedRun": requested_run,
         "pendingApprovals": pending_approvals,
@@ -567,9 +607,11 @@ mod tests {
             }
         }
         let state = AppState {
+            agent_instance_id: "agent-test-instance".to_string(),
             sessions: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            queue_budget: std::sync::Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
             session_manager: std::sync::Arc::new(crate::session::Manager::new(
                 std::path::PathBuf::from("/tmp/futureos-test-sessions"),
             )),

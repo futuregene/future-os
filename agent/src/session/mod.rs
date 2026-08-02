@@ -97,6 +97,29 @@ pub fn find_unterminated_run(entries: &[SessionEntry]) -> Option<String> {
     open
 }
 
+/// Continue run ordering without persisting queued work. New markers carry an
+/// explicit sequence; legacy markers contribute their count so an upgraded
+/// session never reuses a sequence already visible in its history.
+pub fn next_run_sequence(entries: &[SessionEntry]) -> u64 {
+    let mut started_count = 0_u64;
+    let mut max_sequence = 0_u64;
+    for entry in entries {
+        if entry.entry_type != ENTRY_TYPE_RUN_STARTED {
+            continue;
+        }
+        started_count = started_count.saturating_add(1);
+        if let Some(sequence) = entry
+            .content
+            .as_ref()
+            .and_then(|content| content.get("run_sequence"))
+            .and_then(serde_json::Value::as_u64)
+        {
+            max_sequence = max_sequence.max(sequence);
+        }
+    }
+    max_sequence.max(started_count).saturating_add(1).max(1)
+}
+
 /// Return the durable terminal payload for `run_id`, if the journal contains
 /// one. Scans from the end so a later healing rewrite/commit wins over an older
 /// marker. The returned value is the marker's `content` object.
@@ -265,11 +288,19 @@ impl SessionEntry {
     /// Marker written durably with the accepted user message to record that a
     /// run with this canonical id began. `content` carries `{ run_id, epoch }`.
     pub fn run_started(run_id: &str, epoch: u64) -> Self {
+        Self::run_started_with_sequence(run_id, epoch, None)
+    }
+
+    pub fn run_started_with_sequence(run_id: &str, epoch: u64, run_sequence: Option<u64>) -> Self {
+        let mut content = serde_json::json!({ "run_id": run_id, "epoch": epoch });
+        if let Some(sequence) = run_sequence {
+            content["run_sequence"] = serde_json::json!(sequence);
+        }
         Self {
             id: generate_entry_id(),
             entry_type: ENTRY_TYPE_RUN_STARTED.to_string(),
             role: ENTRY_TYPE_SYSTEM.to_string(),
-            content: Some(serde_json::json!({ "run_id": run_id, "epoch": epoch })),
+            content: Some(content),
             tool_calls: vec![],
             timestamp: Local::now(),
             tool_call_id: String::new(),
@@ -453,6 +484,49 @@ impl Manager {
 
     fn session_path(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{}.jsonl", id))
+    }
+
+    /// Agent-owned event data for a session. Queued prompts are intentionally
+    /// in-memory only and never written below this path.
+    fn run_data_root(&self) -> PathBuf {
+        let run_events_dir =
+            if self.dir.file_name().and_then(|name| name.to_str()) == Some("sessions") {
+                self.dir.parent().unwrap_or(&self.dir).join("run-events")
+            } else {
+                self.dir.join(".run-events")
+            };
+        run_events_dir
+    }
+
+    pub fn run_data_path(&self, id: &str) -> PathBuf {
+        self.run_data_root().join(id)
+    }
+
+    /// Reclaim Agent-owned run data whose transcript no longer exists. This is
+    /// safe at startup before sessions are hydrated; live deletion uses the
+    /// same transcript-as-commit-point rule.
+    pub fn gc_orphan_run_data(&self) -> Result<usize> {
+        let root = self.run_data_root();
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(error.into()),
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(session_id) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !self.session_path(session_id).exists() {
+                fs::remove_dir_all(&path)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     /// Append one or more entries to the session JSONL without rewriting
@@ -1396,7 +1470,29 @@ impl Manager {
         // Also remove the lock file if present — no session means no lock.
         let lock_path = path.with_extension("jsonl.lock");
         let _ = fs::remove_file(&lock_path);
-        fs::remove_file(path).map_err(|e| anyhow!("failed to delete session: {}", e))
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(anyhow!("failed to delete session: {}", error)),
+        }
+
+        // The session transcript is the deletion commit point. Once it is
+        // gone, reclaim every Agent-owned event derivative below this
+        // directory. The in-memory scheduler is fenced separately by the RPC
+        // deletion path. A missing directory is the normal legacy case.
+        let run_data_path = self.run_data_path(id);
+        match fs::remove_dir_all(&run_data_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(anyhow!(
+                    "session deleted but failed to reclaim run data at {}: {}",
+                    run_data_path.display(),
+                    error
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2466,6 +2562,14 @@ mod tests {
         assert_eq!(c["run_id"], "run-1");
         assert_eq!(c["epoch"], 7);
 
+        let sequenced = SessionEntry::run_started_with_sequence("run-2", 8, Some(42));
+        assert_eq!(sequenced.content.as_ref().unwrap()["run_sequence"], 42);
+        assert_eq!(
+            next_run_sequence(&[started.clone(), sequenced]),
+            43,
+            "restart must continue after the largest persisted started sequence"
+        );
+
         let terminal = SessionEntry::run_terminal("run-1", RUN_STATE_COMPLETED, 42, 1500, None);
         assert_eq!(terminal.entry_type, ENTRY_TYPE_RUN_TERMINAL);
         let c = terminal.content.as_ref().unwrap();
@@ -2488,6 +2592,33 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("future-{tag}-{}", generate_id()));
         let manager = Manager::new(dir.clone());
         (dir, manager)
+    }
+
+    #[test]
+    fn orphan_run_data_gc_preserves_sessions_with_transcripts() {
+        let (dir, manager) = temp_manager("orphan-run-data");
+        std::fs::create_dir_all(manager.run_data_path("orphan")).unwrap();
+        std::fs::create_dir_all(manager.run_data_path("live")).unwrap();
+        std::fs::write(
+            manager.run_data_path("orphan").join("run.jsonl"),
+            b"event\n",
+        )
+        .unwrap();
+
+        let session = Session::snapshot(
+            "live".to_string(),
+            "/tmp".to_string(),
+            "test-model".to_string(),
+            "live".to_string(),
+            String::new(),
+            vec![SessionEntry::new_user("user", serde_json::json!("hi"))],
+        );
+        manager.save(&session).unwrap();
+
+        assert_eq!(manager.gc_orphan_run_data().unwrap(), 1);
+        assert!(!manager.run_data_path("orphan").exists());
+        assert!(manager.run_data_path("live").exists());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -2892,10 +3023,15 @@ mod tests {
         let manager = Manager::new(dir.clone());
         let session = Session::new("/tmp/test", "model", "");
         manager.save(&session).unwrap();
+        let run_data_path = manager.run_data_path(&session.id);
+        std::fs::create_dir_all(&run_data_path).unwrap();
+        std::fs::write(run_data_path.join("run-event.jsonl"), b"event\n").unwrap();
         assert!(manager.find(&session.id).is_some());
+        assert!(run_data_path.exists());
 
         manager.delete(&session.id).unwrap();
         assert!(manager.find(&session.id).is_none());
+        assert!(!run_data_path.exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

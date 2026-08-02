@@ -50,6 +50,41 @@ function expectStreamingMatchesFullRender(full: string, width = W): number {
 }
 
 describe("ChatArea streaming render", () => {
+  test("ten queued submissions keep canonical run ownership", () => {
+    const chat = new ChatArea(W);
+    chat.render(W);
+    for (let index = 0; index < 10; index++) {
+      const localId = `local-${index}`;
+      chat.addMessage({ id: localId, role: "user", content: `prompt ${index}` });
+      chat.bindUserRun(localId, `run-${index}`, index === 0 ? "running" : "queued");
+    }
+    chat.updateRunState("run-4", "running");
+    chat.updateRunState("run-4", "terminal");
+    const messages = (chat as any).messages as ChatMessage[];
+    expect(messages).toHaveLength(10);
+    expect(messages.map((message) => message.runId)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `run-${index}`),
+    );
+    expect(messages[4].runState).toBe("terminal");
+    expect(messages.filter((message) => message.runState === "queued")).toHaveLength(8);
+  });
+
+  test("queued state replay reconstructs bubbles after a TUI restart", () => {
+    const chat = new ChatArea(W);
+    chat.render(W);
+    chat.upsertQueuedRun("run-2", "second prompt", 2);
+    chat.upsertQueuedRun("run-1", "first prompt", 1);
+    chat.upsertQueuedRun("run-2", "ignored replacement", 1);
+    const messages = (chat as any).messages as ChatMessage[];
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({
+      id: "run-2",
+      content: "second prompt",
+      runState: "queued",
+      queuePosition: 1,
+    });
+  });
+
   test("deferred: deltas are not rendered until flush", () => {
     const chat = new ChatArea(W);
     chat.render(W);

@@ -9,16 +9,12 @@ pub struct RpcCommand {
     /// Determines which handler processes this request.
     #[prost(string, tag = "2")]
     pub r#type: ::prost::alloc::string::String,
-    /// User prompt text.  Required for "prompt", "steer", "follow_up".
+    /// User prompt text. Required for "prompt".
     #[prost(string, tag = "10")]
     pub message: ::prost::alloc::string::String,
     /// Images attached to the prompt (base64, URL, or file path).
     #[prost(message, repeated, tag = "11")]
     pub images: ::prost::alloc::vec::Vec<ImageContent>,
-    /// How to queue the prompt: "steer" (interrupt current run) or
-    /// "followUp" (enqueue after current run completes).
-    #[prost(string, tag = "12")]
-    pub streaming_behavior: ::prost::alloc::string::String,
     /// Parent session ID when forking.  If empty, fork uses the current
     /// session.  Also used by new_session to record lineage.
     #[prost(string, tag = "20")]
@@ -30,7 +26,7 @@ pub struct RpcCommand {
     /// Thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
     #[prost(string, tag = "40")]
     pub level: ::prost::alloc::string::String,
-    /// Queue mode: "all" (accept all) or "one-at-a-time" (replace pending).
+    /// Generic decision/rule mode (approval_result, add_session_rule).
     #[prost(string, tag = "50")]
     pub mode: ::prost::alloc::string::String,
     /// Optional custom instructions for the compaction summariser.
@@ -85,6 +81,11 @@ pub struct RpcCommand {
     /// Idempotency key for retrying StartRun independently of run identity.
     #[prost(string, tag = "143")]
     pub client_request_id: ::prost::alloc::string::String,
+    /// Atomic behavior when the session already has an active run:
+    /// "reject_if_busy" (default), "enqueue_if_busy", or "supersede_session".
+    /// Empty is interpreted as "reject_if_busy" for backward compatibility.
+    #[prost(string, tag = "144")]
+    pub busy_policy: ::prost::alloc::string::String,
     /// ── set_sandbox_policy ─────────────────────────────────────────────────
     /// Session sandbox + approval policy (typed sub-message, not JSON-in-string).
     /// Read when type == "set_sandbox_policy".
@@ -169,6 +170,13 @@ pub struct RpcResponse {
     /// Error message when success is false.
     #[prost(string, tag = "6")]
     pub error: ::prost::alloc::string::String,
+    /// Stable machine-readable error code. Additive: legacy handlers may leave it
+    /// empty and legacy clients may ignore it.
+    #[prost(string, tag = "7")]
+    pub error_code: ::prost::alloc::string::String,
+    /// Optional JSON-serialised structured error details.
+    #[prost(string, tag = "8")]
+    pub error_data: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SessionState {
@@ -184,12 +192,6 @@ pub struct SessionState {
     /// Whether a compaction run is in progress (always false in current code).
     #[prost(bool, tag = "4")]
     pub is_compacting: bool,
-    /// Steering queue mode: "all" or "one-at-a-time".
-    #[prost(string, tag = "5")]
-    pub steering_mode: ::prost::alloc::string::String,
-    /// Follow-up queue mode: "all" or "one-at-a-time".
-    #[prost(string, tag = "6")]
-    pub follow_up_mode: ::prost::alloc::string::String,
     /// Reserved for session file path.  Always null in current code.
     #[prost(string, tag = "7")]
     pub session_file: ::prost::alloc::string::String,
@@ -205,11 +207,11 @@ pub struct SessionState {
     /// Whether automatic context compaction is enabled.
     #[prost(bool, tag = "11")]
     pub auto_compaction_enabled: bool,
-    /// Number of user messages (prompts + steer + follow_up).  Excludes
+    /// Number of user prompts. Excludes
     /// internal tool/assistant messages.  Displayed as "Queries" in /status.
     #[prost(int32, tag = "12")]
     pub query_count: i32,
-    /// Number of messages queued but not yet processed (steering + follow_up).
+    /// Number of accepted runs queued but not yet started.
     #[prost(int32, tag = "13")]
     pub pending_message_count: i32,
     /// Agent version string (from Cargo.toml).
@@ -341,6 +343,17 @@ pub struct StreamEvent {
     pub session_id: ::prost::alloc::string::String,
     #[prost(int64, tag = "9")]
     pub epoch: i64,
+    #[prost(string, tag = "10")]
+    pub event_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "11")]
+    pub timestamp: ::prost::alloc::string::String,
+    /// Monotonic ordering identity for session-scoped events (settings, name,
+    /// cwd, config). It is independent of any run's idx.
+    #[prost(int64, tag = "12")]
+    pub session_idx: i64,
+    /// Monotonic ordering identity across runs in this session.
+    #[prost(int64, tag = "13")]
+    pub run_sequence: i64,
 }
 /// A compressed semantic event contained in a projection snapshot. Its idx is
 /// the latest source cursor folded into this event, preserving chronological

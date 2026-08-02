@@ -6,6 +6,7 @@ mod approvals;
 mod artifacts;
 mod cleanup;
 mod db;
+mod deletions;
 mod markdown_refs;
 mod records;
 mod review_snapshots;
@@ -31,12 +32,15 @@ pub use artifacts::{
     import_attachment_artifact, list_artifacts, ArtifactRecord,
 };
 pub use cleanup::{
-    cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
-    list_active_runs, list_interrupted_runs, reanimate_run, reconcile_orphan_chat_workspaces,
-    reconcile_orphan_images, reconcile_orphan_review_repos, settle_interrupted_run_from_agent,
-    ActiveRun,
+    clear_finished_runs, get_thread_cleanup_summary, list_active_runs, list_interrupted_runs,
+    reanimate_run, reconcile_orphan_chat_workspaces, reconcile_orphan_images,
+    reconcile_orphan_review_repos, settle_interrupted_run_from_agent, ActiveRun,
 };
 pub use db::{app_images_root, future_dir, get_approval_request, get_run, thread_images_dir};
+pub use deletions::{
+    acknowledge_agent_session_delete, is_agent_session_tombstoned,
+    note_agent_session_delete_failure, pending_agent_session_deletes,
+};
 pub use markdown_refs::resolve_markdown_references;
 pub use records::*;
 pub use review_snapshots::{
@@ -45,16 +49,15 @@ pub use review_snapshots::{
     mark_snapshot_failed, prune_thread_changesets, upsert_run_changeset, ReviewChangesetRecord,
     ReviewFileChangeRecord, ReviewSnapshotRecord,
 };
-#[cfg(test)]
-pub(crate) use runs::flush_run_event_log_for_test;
 pub use runs::{
-    active_run_sessions, append_run_event, clear_all_run_events_files, clear_run_event_buffer,
-    create_run, delete_run_events_file, fail_run_if_active, get_tool_call_input, has_run_events,
-    latest_run, latest_run_infos, list_run_events, list_run_events_bulk, list_run_events_since,
-    list_runs, list_tool_calls, list_tool_calls_bulk, list_tool_outputs,
-    update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord,
-    ToolOutputRecord,
+    active_run_sessions, clear_all_run_events_files, clear_run_event_buffer, create_run,
+    delete_run_events_file, fail_run_if_active, get_tool_call_input, latest_run, latest_run_infos,
+    list_run_events, list_run_events_since, list_runs, list_tool_calls, list_tool_calls_bulk,
+    list_tool_outputs, update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord,
+    ToolCallRecord, ToolOutputRecord,
 };
+#[cfg(test)]
+pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
 pub use threads::{
     archive_thread, batch_delete_threads, create_thread, delete_thread, delete_thread_with_files,
     find_thread_by_agent_session, get_recent_thread, get_thread, list_threads,
@@ -67,7 +70,7 @@ pub use workspace_files::{search_workspace_files, WorkspaceFileResult, Workspace
 pub use workspaces::{
     create_workspace, delete_workspace, get_or_create_chat_workspace, get_workspace,
     list_workspaces, purge_soft_deleted_workspaces, rename_workspace, update_chat_workspace_path,
-    workspace_agent_session_ids, WorkspaceRecord,
+    WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::AppError> {
@@ -131,6 +134,10 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
 /// by Settings ▸ Debug ▸ Reset.
 pub fn clear_all_data() -> Result<(), crate::AppError> {
     let conn = connect()?;
+    // Retain a durable deletion intent even though all display/projection data
+    // is being reset. The table is deliberately control-plane state, not user
+    // history, and startup will retry it against the Agent.
+    deletions::enqueue_all_agent_session_deletes_in(&conn)?;
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
     let tables: Vec<String> = {
         let mut stmt = conn.prepare(
@@ -141,6 +148,9 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
     };
     // DROP TABLE also removes the table's indexes and triggers.
     for table in &tables {
+        if table == "agent_delete_outbox" {
+            continue;
+        }
         conn.execute(&format!("DROP TABLE IF EXISTS \"{table}\""), [])?;
     }
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;

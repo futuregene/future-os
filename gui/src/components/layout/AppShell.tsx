@@ -125,11 +125,12 @@ export function AppShell() {
   // Start observing the active thread's agent session for real-time
   // settings-change events (model, thinking, name, cwd, etc.).
   useEffect(() => {
+    const threadId = activeThread?.id;
     const sessionId = activeThread?.agentSessionId;
-    if (sessionId) {
-      invokeCommand("observe_session", { sessionId }).catch(() => {});
+    if (threadId && sessionId) {
+      invokeCommand("observe_session", { threadId, sessionId }).catch(() => {});
     }
-  }, [activeThread?.agentSessionId]);
+  }, [activeThread?.id, activeThread?.agentSessionId]);
 
   // Refresh the store when the agent session's cwd changes (e.g. TUI /cwd),
   // so the thread moves to the correct workspace in the sidebar.

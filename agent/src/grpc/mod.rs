@@ -71,6 +71,10 @@ fn map_broadcast_event(
             snapshot_cursor: 0,
             session_id: session_id.to_string(),
             epoch: event.epoch,
+            event_id: event.event_id,
+            timestamp: event.timestamp,
+            session_idx: event.session_idx,
+            run_sequence: event.run_sequence,
         }),
         Err(error) => {
             // Non-atomic observers can remain subscribed across multiple runs,
@@ -179,7 +183,6 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             message: cmd.message,
             images: internal_images,
             attachments: internal_attachments,
-            streaming_behavior: cmd.streaming_behavior,
             parent_session: cmd.parent_session,
             model_id: cmd.model_id,
             level: cmd.level,
@@ -199,6 +202,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             since_idx: cmd.since_idx,
             requested_run_id: cmd.requested_run_id,
             client_request_id: cmd.client_request_id,
+            busy_policy: cmd.busy_policy,
             sandbox_policy: cmd
                 .sandbox_policy
                 .map(|policy| crate::sandbox::SandboxPolicy {
@@ -226,6 +230,10 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             success: bool,
             data: Option<serde_json::Value>,
             error: Option<String>,
+            #[serde(default)]
+            error_code: Option<String>,
+            #[serde(default)]
+            error_data: Option<serde_json::Value>,
         }
 
         let json_resp: JsonResp = serde_json::from_str(&resp_str)
@@ -242,6 +250,11 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 .map(|d| serde_json::to_string(&d).unwrap_or_default())
                 .unwrap_or_default(),
             error: json_resp.error.unwrap_or_default(),
+            error_code: json_resp.error_code.unwrap_or_default(),
+            error_data: json_resp
+                .error_data
+                .map(|data| serde_json::to_string(&data).unwrap_or_default())
+                .unwrap_or_default(),
         };
 
         Ok(tonic::Response::new(proto_resp))
@@ -307,6 +320,10 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         snapshot_cursor: projection.cursor,
                         session_id: session_id.clone(),
                         epoch: projection.epoch,
+                        event_id: String::new(),
+                        timestamp: String::new(),
+                        session_idx: -1,
+                        run_sequence: projection.run_sequence,
                     });
                 }
                 initial.extend(
@@ -323,6 +340,10 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             snapshot_cursor: 0,
                             session_id: session_id.clone(),
                             epoch: event.epoch,
+                            event_id: event.event_id,
+                            timestamp: event.timestamp,
+                            session_idx: event.session_idx,
+                            run_sequence: event.run_sequence,
                         }),
                 );
                 (attachment.receiver, initial, sess.broadcaster.clone())
@@ -339,6 +360,10 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         snapshot_cursor: 0,
                         session_id: session_id.clone(),
                         epoch: 0,
+                        event_id: String::new(),
+                        timestamp: String::new(),
+                        session_idx: -1,
+                        run_sequence: -1,
                     }],
                     sess.broadcaster.clone(),
                 )

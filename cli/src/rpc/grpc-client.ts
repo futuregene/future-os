@@ -63,15 +63,13 @@ message RpcCommand {
 
   // ── Prompting ──────────────────────────────────────────────────────────
 
-  // User prompt text.  Required for "prompt", "steer", "follow_up".
+  // User prompt text. Required for "prompt".
   string message = 10;
 
   // Images attached to the prompt (base64, URL, or file path).
   repeated ImageContent images = 11;
 
-  // How to queue the prompt: "steer" (interrupt current run) or
-  // "followUp" (enqueue after current run completes).
-  string streaming_behavior = 12;
+  reserved 12;
 
   // ── fork / new_session ─────────────────────────────────────────────────
 
@@ -90,9 +88,7 @@ message RpcCommand {
   // Thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
   string level = 40;
 
-  // ── set_steering_mode / set_follow_up_mode ─────────────────────────────
-
-  // Queue mode: "all" (accept all) or "one-at-a-time" (replace pending).
+  // Generic decision/rule mode (approval_result, add_session_rule).
   string mode = 50;
 
   // ── compact ────────────────────────────────────────────────────────────
@@ -163,6 +159,11 @@ message RpcCommand {
 
   // Idempotency key for retrying StartRun independently of run identity.
   string client_request_id = 143;
+
+  // Atomic behavior when the session already has an active run:
+  // "reject_if_busy" (default), "enqueue_if_busy", or "supersede_session".
+  // Empty is interpreted as "reject_if_busy" for backward compatibility.
+  string busy_policy = 144;
 
   // ── set_sandbox_policy ─────────────────────────────────────────────────
   // Session sandbox + approval policy (typed sub-message, not JSON-in-string).
@@ -254,6 +255,13 @@ message RpcResponse {
 
   // Error message when success is false.
   string error = 6;
+
+  // Stable machine-readable error code. Additive: legacy handlers may leave it
+  // empty and legacy clients may ignore it.
+  string error_code = 7;
+
+  // Optional JSON-serialised structured error details.
+  string error_data = 8;
 }
 
 // =============================================================================
@@ -273,11 +281,7 @@ message SessionState {
   // Whether a compaction run is in progress (always false in current code).
   bool is_compacting = 4;
 
-  // Steering queue mode: "all" or "one-at-a-time".
-  string steering_mode = 5;
-
-  // Follow-up queue mode: "all" or "one-at-a-time".
-  string follow_up_mode = 6;
+  reserved 5, 6;
 
   // Reserved for session file path.  Always null in current code.
   string session_file = 7;
@@ -294,11 +298,11 @@ message SessionState {
   // Whether automatic context compaction is enabled.
   bool auto_compaction_enabled = 11;
 
-  // Number of user messages (prompts + steer + follow_up).  Excludes
+  // Number of user prompts. Excludes
   // internal tool/assistant messages.  Displayed as "Queries" in /status.
   int32 query_count = 12;
 
-  // Number of messages queued but not yet processed (steering + follow_up).
+  // Number of accepted runs queued but not yet started.
   int32 pending_message_count = 13;
 
   // Agent version string (from Cargo.toml).
@@ -440,6 +444,13 @@ message StreamEvent {
   // external context.
   string session_id = 8;
   int64 epoch = 9;
+  string event_id = 10;
+  string timestamp = 11;
+  // Monotonic ordering identity for session-scoped events (settings, name,
+  // cwd, config). It is independent of any run's idx.
+  int64 session_idx = 12;
+  // Monotonic ordering identity across runs in this session.
+  int64 run_sequence = 13;
 }
 
 // A compressed semantic event contained in a projection snapshot. Its idx is
@@ -645,6 +656,8 @@ export class RunClient {
             runId: response.runId,
             epoch: Number(response.epoch ?? 0),
             idx: Number(response.idx ?? 0),
+            eventId: response.eventId,
+            timestamp: response.timestamp,
             projectionSnapshot: Boolean(response.projectionSnapshot),
             snapshotCursor: Number(response.snapshotCursor ?? 0),
             snapshotEvents: response.snapshotEvents ?? [],

@@ -99,6 +99,7 @@ fn expand_projection_snapshot(event: proto::StreamEvent) -> VecDeque<proto::Stre
     let run_id = event.run_id;
     let session_id = event.session_id;
     let epoch = event.epoch;
+    let run_sequence = event.run_sequence;
     event
         .snapshot_events
         .into_iter()
@@ -112,6 +113,10 @@ fn expand_projection_snapshot(event: proto::StreamEvent) -> VecDeque<proto::Stre
             snapshot_cursor: 0,
             session_id: session_id.clone(),
             epoch,
+            event_id: String::new(),
+            timestamp: String::new(),
+            session_idx: -1,
+            run_sequence,
         })
         .collect()
 }
@@ -198,6 +203,27 @@ impl AgentClient {
         message: &str,
         images: Vec<ImageInput>,
     ) -> Result<String> {
+        self.prompt_with_policy(session_id, message, images, "reject_if_busy")
+            .await
+    }
+
+    pub async fn prompt_superseding(
+        &mut self,
+        session_id: &str,
+        message: &str,
+        images: Vec<ImageInput>,
+    ) -> Result<String> {
+        self.prompt_with_policy(session_id, message, images, "supersede_session")
+            .await
+    }
+
+    async fn prompt_with_policy(
+        &mut self,
+        session_id: &str,
+        message: &str,
+        images: Vec<ImageInput>,
+        busy_policy: &str,
+    ) -> Result<String> {
         let proto_images: Vec<proto::ImageContent> = images
             .into_iter()
             .map(|img| proto::ImageContent {
@@ -217,6 +243,9 @@ impl AgentClient {
                 RpcCommand {
                     message: message.to_string(),
                     images: proto_images,
+                    client_request_id: format!("request_{}", uuid::Uuid::new_v4().simple()),
+                    requested_run_id: format!("run_{}", uuid::Uuid::new_v4().simple()),
+                    busy_policy: busy_policy.to_string(),
                     ..Default::default()
                 },
             )
@@ -230,6 +259,45 @@ impl AgentClient {
             active_runs.insert(session_id.to_string(), run_id.clone());
         }
         Ok(run_id)
+    }
+
+    pub async fn wait_until_run_active(
+        &mut self,
+        session_id: &str,
+        run_id: &str,
+        timeout: Duration,
+    ) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let state = self
+                .call("get_state", session_id, Default::default())
+                .await?;
+            if state
+                .get("activeRun")
+                .and_then(|run| run.get("runId"))
+                .and_then(|value| value.as_str())
+                == Some(run_id)
+            {
+                return Ok(());
+            }
+            let still_queued = state
+                .get("queuedRuns")
+                .and_then(|runs| runs.as_array())
+                .is_some_and(|runs| {
+                    runs.iter().any(|run| {
+                        run.get("runId").and_then(|value| value.as_str()) == Some(run_id)
+                    })
+                });
+            if !still_queued {
+                return Err(anyhow!(
+                    "superseding run {run_id} was cancelled before start"
+                ));
+            }
+            if Instant::now() >= deadline {
+                return Err(anyhow!("timed out waiting for run {run_id} to start"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// Abort current generation.

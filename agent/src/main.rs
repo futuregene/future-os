@@ -513,6 +513,13 @@ async fn async_main(
     engine.agent_loop.config.system_prompt = system_prompt;
 
     let manager = Arc::new(Manager::default_for(&cwd));
+    match manager.gc_orphan_run_data() {
+        Ok(count) if count > 0 => {
+            tracing::info!(count, "reclaimed orphan Agent run-data directories")
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!("failed to reclaim orphan Agent run data: {error:#}"),
+    }
     let approval_gate = future_agent::rpc::ApprovalGate::default();
     // Template for minting per-session agent loops.  Sessions no longer
     // share one global loop — each hydrated/created session gets an
@@ -531,7 +538,9 @@ async fn async_main(
     // them on demand.  Settings that used to be applied to the startup
     // default session are applied per-session in cmd_new_session.
     let app_state = future_agent::rpc::AppState {
+        agent_instance_id: format!("agent_{}", uuid::Uuid::new_v4().simple()),
         sessions: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+        queue_budget: Arc::new(future_agent::runtime::GlobalQueueBudget::defaults()),
         session_manager: manager,
         welcome_version: future_agent::utils::VERSION.to_string(),
         welcome_cwd: cwd.clone(),

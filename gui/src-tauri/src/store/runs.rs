@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(test)]
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -106,10 +107,8 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
 /// `agent_session_id` when set (trimmed, non-empty), else the thread id, mirroring
 /// the GUI's own session-id resolution (see `useAgentThreadState` /
 /// `cleanup::orphan_thread_ids`). Deduplicated. Powers the quit guard: whether to
-/// warn before exit, and which sessions to abort on force-quit. Within a live
-/// process this is a faithful "is anything running" signal — startup convergence
-/// (`cancel_stale_approval_requests`) has already cancelled every orphaned
-/// non-terminal run left by a previous process.
+/// warn before exit, and which sessions to abort on force-quit. On startup the
+/// Agent watchdog reconciles these rows rather than guessing that they died.
 pub fn active_run_sessions() -> Result<Vec<String>, crate::AppError> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
@@ -345,11 +344,7 @@ pub fn list_run_events_since(
     if since_sequence < 0 {
         return Ok(read_run_events(run_id));
     }
-    // Filter rather than slice: every buffer writer today appends in
-    // monotonically increasing sequence order (one collector per run), but
-    // that invariant is implicit — a scan keeps the tail correct even if a
-    // future writer appends out of order, and still clones only the new
-    // events. The scan is integer compares; the clone was the real cost.
+    #[cfg(test)]
     if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
         if let Some(events) = buf.get(run_id) {
             return Ok(events
@@ -359,35 +354,12 @@ pub fn list_run_events_since(
                 .collect());
         }
     }
+    // This is deliberately a legacy compatibility reader only. New events
+    // live in the Agent journal; GUI never buffers or writes a second source.
     Ok(read_events_from_disk(run_id)
         .into_iter()
         .filter(|event| event.sequence > since_sequence)
         .collect())
-}
-
-/// Whether any events for `run_id` exist locally (buffer or persisted log).
-/// Cheap — no event cloning — so the incremental-read command can decide
-/// whether an empty tail means "no new events" or "cold buffer, ask the agent".
-pub fn has_run_events(run_id: &str) -> bool {
-    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
-        if buf.get(run_id).is_some_and(|events| !events.is_empty()) {
-            return true;
-        }
-    }
-    run_events_path(run_id).is_some_and(|path| path.exists())
-}
-
-pub fn list_run_events_bulk(
-    run_ids: &[String],
-) -> Result<Vec<(String, Vec<RunEventRecord>)>, crate::AppError> {
-    let mut result = Vec::new();
-    for rid in run_ids {
-        let events = read_run_events(rid);
-        if !events.is_empty() {
-            result.push((rid.clone(), events));
-        }
-    }
-    Ok(result)
 }
 
 /// In-memory buffer for streaming run events. A run's events live here while it
@@ -395,6 +367,7 @@ pub fn list_run_events_bulk(
 /// file on disk so the Runs panel/inspector survive an app restart. The buffer
 /// entry is dropped once the run settles (see `clear_run_event_buffer`); reads
 /// then fall back to the file. Keyed by run_id.
+#[cfg(test)]
 static RUN_EVENT_BUFFER: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, Vec<RunEventRecord>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
@@ -405,6 +378,7 @@ static RUN_EVENT_BUFFER: std::sync::LazyLock<
 // open BufWriter per active run, coalescing bursts into one flush — previously
 // every event did its own open/append/close syscall trio, several times per
 // second while streaming.
+#[cfg(test)]
 enum WriterMsg {
     Event(RunEventRecord),
     /// Flush and close the run's writer, then ack. Sent before the run's log
@@ -415,15 +389,13 @@ enum WriterMsg {
         run_id: String,
         ack: std::sync::mpsc::Sender<()>,
     },
-    /// Flush and close every writer (clear_all_data), then ack.
-    CloseAll {
-        ack: std::sync::mpsc::Sender<()>,
-    },
 }
 
+#[cfg(test)]
 static DISK_WRITER: std::sync::LazyLock<std::sync::mpsc::Sender<WriterMsg>> =
     std::sync::LazyLock::new(spawn_disk_writer);
 
+#[cfg(test)]
 fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
     let (tx, rx) = std::sync::mpsc::channel::<WriterMsg>();
     std::thread::Builder::new()
@@ -448,12 +420,6 @@ fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
                                     }
                                     let _ = ack.send(());
                                 }
-                                Ok(WriterMsg::CloseAll { ack }) => {
-                                    for (_, mut writer) in writers.drain() {
-                                        let _ = writer.flush();
-                                    }
-                                    let _ = ack.send(());
-                                }
                                 Err(_) => break,
                             }
                         }
@@ -467,12 +433,6 @@ fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
                         }
                         let _ = ack.send(());
                     }
-                    WriterMsg::CloseAll { ack } => {
-                        for (_, mut writer) in writers.drain() {
-                            let _ = writer.flush();
-                        }
-                        let _ = ack.send(());
-                    }
                 }
             }
         })
@@ -480,6 +440,7 @@ fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
     tx
 }
 
+#[cfg(test)]
 fn write_event(
     writers: &mut HashMap<String, std::io::BufWriter<std::fs::File>>,
     record: &RunEventRecord,
@@ -508,6 +469,7 @@ fn write_event(
 /// Flush + close the run's writer on the disk-writer thread and wait for the
 /// ack (bounded), so a following disk read sees the complete log and a
 /// following delete doesn't hit an open handle.
+#[cfg(test)]
 fn close_disk_writer(run_id: &str) {
     let (ack_tx, ack_rx) = std::sync::mpsc::channel();
     if DISK_WRITER
@@ -515,17 +477,6 @@ fn close_disk_writer(run_id: &str) {
             run_id: run_id.to_string(),
             ack: ack_tx,
         })
-        .is_ok()
-    {
-        let _ = ack_rx.recv_timeout(std::time::Duration::from_secs(2));
-    }
-}
-
-/// Flush + close every writer and wait for the ack (bounded).
-fn close_all_disk_writers() {
-    let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-    if DISK_WRITER
-        .send(WriterMsg::CloseAll { ack: ack_tx })
         .is_ok()
     {
         let _ = ack_rx.recv_timeout(std::time::Duration::from_secs(2));
@@ -542,6 +493,9 @@ pub(crate) fn flush_run_event_log_for_test(run_id: &str) {
 /// Directory holding per-run event logs: `~/.future/app/run_events/`.
 fn run_events_dir() -> Option<PathBuf> {
     let dir = app_dir().ok()?.join("run_events");
+    // Production never writes this legacy directory. Unit tests retain a
+    // fixture writer so pre-journal logs remain covered by the fallback reader.
+    #[cfg(test)]
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
@@ -562,6 +516,7 @@ fn run_events_path(run_id: &str) -> Option<PathBuf> {
 /// Queue one event for the run's JSONL log (best-effort; a dead writer thread
 /// just means that event won't survive a restart — same contract as the old
 /// synchronous write, whose errors were also dropped).
+#[cfg(test)]
 fn persist_event_to_disk(record: RunEventRecord) {
     let _ = DISK_WRITER.send(WriterMsg::Event(record));
 }
@@ -584,6 +539,7 @@ fn read_events_from_disk(run_id: &str) -> Vec<RunEventRecord> {
 /// A run's events, in append order: the in-memory buffer while the run is
 /// active, else the persisted log (survives restart / post-settle eviction).
 fn read_run_events(run_id: &str) -> Vec<RunEventRecord> {
+    #[cfg(test)]
     if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
         if let Some(events) = buf.get(run_id) {
             return events.clone();
@@ -592,6 +548,7 @@ fn read_run_events(run_id: &str) -> Vec<RunEventRecord> {
     read_events_from_disk(run_id)
 }
 
+#[cfg(test)]
 pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, crate::AppError> {
     // Re-delivery guard: a run's events arrive in strictly increasing sequence
     // from its single writer, so a sequence at/below the buffered high-water
@@ -637,7 +594,9 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
 /// FIRST (its ack guarantees the log is complete), so the post-clear disk
 /// reads see every event the buffer held.
 pub fn clear_run_event_buffer(run_id: &str) {
-    close_disk_writer(run_id);
+    // Agent journal is canonical. Keep only the derived projection cache.
+    let _ = run_id;
+    #[cfg(test)]
     if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
         buf.remove(run_id);
     }
@@ -646,7 +605,6 @@ pub fn clear_run_event_buffer(run_id: &str) {
 /// Delete a run's persisted event log (called when the run/thread is deleted).
 /// The writer is closed first — Windows refuses to delete an open file.
 pub fn delete_run_events_file(run_id: &str) {
-    close_disk_writer(run_id);
     if let Some(path) = run_events_path(run_id) {
         let _ = std::fs::remove_file(path);
     }
@@ -657,12 +615,8 @@ pub fn delete_run_events_file(run_id: &str) {
 
 /// Remove the whole run-events directory (called by `clear_all_data`).
 pub fn clear_all_run_events_files() {
-    close_all_disk_writers();
     if let Ok(dir) = app_dir() {
         let _ = std::fs::remove_dir_all(dir.join("run_events"));
-    }
-    if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
-        buf.clear();
     }
     if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
         cache.clear();
@@ -1110,15 +1064,6 @@ mod tests {
         assert_eq!(list_run_events_since(&run_id, -1).expect("full").len(), 10);
 
         clear_run_event_buffer(&run_id);
-    }
-
-    #[test]
-    fn has_run_events_tracks_buffer_contents() {
-        let run_id = seed_event_buffer("has", 3);
-        assert!(has_run_events(&run_id));
-        clear_run_event_buffer(&run_id);
-        // Buffer entry gone; no disk log was written by the seed, so absent.
-        assert!(!has_run_events(&run_id));
     }
 
     /// Push one event into the process-global buffer (no disk writes).

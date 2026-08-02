@@ -9,7 +9,6 @@ use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc;
 
 // ANSI terminal colors (matching Go). Only for raw stderr prints via
 // eprint_log! — never inside tracing messages (tracing escapes ESC bytes in
@@ -46,8 +45,6 @@ pub struct Loop {
     pub config: crate::types::AgentConfig,
     pub verbose: bool,
     pub session_id: String,
-    pub steering_queue: PendingMessageQueue,
-    pub follow_up_queue: PendingMessageQueue,
     pub parallel_tools: bool,
     pub(crate) interrupt_flag: Arc<AtomicBool>,
     pub(crate) last_compaction_result: Arc<Mutex<Option<crate::compaction::CompactionResult>>>,
@@ -88,8 +85,6 @@ impl Loop {
             config: crate::types::AgentConfig::default(),
             verbose: false,
             session_id: String::new(),
-            steering_queue: PendingMessageQueue::new(64, "all"),
-            follow_up_queue: PendingMessageQueue::new(64, "all"),
             parallel_tools: false,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             last_compaction_result: Arc::new(Mutex::new(None)),
@@ -122,8 +117,8 @@ impl Loop {
     }
 
     /// Create an independent copy of this loop: same provider, model, tools,
-    /// config and system prompt, but FRESH steering/follow-up
-    /// queues, token counters, interrupt flag and compaction state.
+    /// config and system prompt, but fresh token counters, interrupt flag and
+    /// compaction state.
     ///
     /// `ServerSession` first uses this to isolate sessions from the process
     /// template, then snapshots its session-owned control plane again at each
@@ -402,22 +397,6 @@ impl Loop {
     // STEERING / INTERRUPT METHODS (matching Go)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Interrupt cancels current streaming and queues a steering message.
-    pub fn interrupt(&self, message: String) {
-        self.steering_queue.enqueue(message);
-        self.abort();
-    }
-
-    /// Steer injects a steering message without aborting.
-    pub fn steer(&self, message: String) {
-        self.steering_queue.enqueue(message);
-    }
-
-    /// FollowUp injects a follow-up message for after agent finishes.
-    pub fn follow_up(&self, message: String) {
-        self.follow_up_queue.enqueue(message);
-    }
-
     /// Abort cancels current streaming without queuing a message.
     pub fn abort(&self) {
         self.interrupt_flag.store(true, Ordering::SeqCst);
@@ -435,69 +414,6 @@ impl Loop {
     /// with cooperative cancellation points (e.g., shell tool).
     pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
         self.interrupt_flag.clone()
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // QUEUE MANAGEMENT (matching Go)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /// ClearQueues drains all pending messages from both queues.
-    pub fn clear_queues(&self) {
-        self.steering_queue.clear();
-        self.follow_up_queue.clear();
-    }
-
-    /// QueuedCounts returns (steering_count, followup_count).
-    pub fn queued_counts(&self) -> (usize, usize) {
-        (self.steering_queue.len(), self.follow_up_queue.len())
-    }
-
-    /// PendingMessageCount returns total pending messages.
-    pub fn pending_message_count(&self) -> usize {
-        self.steering_queue.len() + self.follow_up_queue.len()
-    }
-
-    /// DrainQueues drains all pending messages and returns them.
-    pub fn drain_queues(&self) -> Vec<String> {
-        let mut msgs = self.steering_queue.drain();
-        msgs.extend(self.follow_up_queue.drain());
-        msgs
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PRIVATE HELPERS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    fn drain_steering(
-        &self,
-        mut messages: Vec<AgentMessage>,
-        on_user_msg: &Option<PersistCallback>,
-    ) -> Vec<AgentMessage> {
-        let msgs = self.steering_queue.drain();
-        for msg in msgs {
-            let m = self.new_user_message(msg);
-            if let Some(ref cb) = on_user_msg {
-                cb(&m);
-            }
-            messages.insert(0, m);
-        }
-        messages
-    }
-
-    fn drain_follow_up(
-        &self,
-        mut messages: Vec<AgentMessage>,
-        on_user_msg: &Option<PersistCallback>,
-    ) -> Vec<AgentMessage> {
-        let msgs = self.follow_up_queue.drain();
-        for msg in msgs {
-            let m = self.new_user_message(msg);
-            if let Some(ref cb) = on_user_msg {
-                cb(&m);
-            }
-            messages.push(m);
-        }
-        messages
     }
 
     fn new_user_message(&self, content: impl Into<String>) -> AgentMessage {
@@ -544,62 +460,6 @@ impl Loop {
     }
 }
 
-// ─── PendingMessageQueue ────────────────────────────────────────────────────
-
-pub struct PendingMessageQueue {
-    pub(crate) tx: mpsc::Sender<String>,
-    pub(crate) rx: Mutex<mpsc::Receiver<String>>,
-    pub mode: String,
-}
-
-impl PendingMessageQueue {
-    pub fn new(capacity: usize, mode: &str) -> Self {
-        let (tx, rx) = mpsc::channel(capacity);
-        Self {
-            tx,
-            rx: Mutex::new(rx),
-            mode: mode.to_string(),
-        }
-    }
-
-    pub fn enqueue(&self, msg: String) {
-        let _ = self.tx.try_send(msg);
-    }
-
-    pub(crate) fn sender(&self) -> mpsc::Sender<String> {
-        self.tx.clone()
-    }
-
-    pub fn drain(&self) -> Vec<String> {
-        let mut rx = self.rx.lock();
-        let mut msgs = vec![];
-        while let Ok(msg) = rx.try_recv() {
-            msgs.push(msg);
-            if self.mode == "one-at-a-time" {
-                break;
-            }
-        }
-        msgs
-    }
-
-    pub fn len(&self) -> usize {
-        self.rx.lock().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn set_mode(&mut self, mode: &str) {
-        self.mode = mode.to_string();
-    }
-
-    pub fn clear(&self) {
-        let mut rx = self.rx.lock();
-        while rx.try_recv().is_ok() {}
-    }
-}
-
 impl Default for crate::types::AgentConfig {
     fn default() -> Self {
         Self {
@@ -622,93 +482,6 @@ impl Default for crate::types::AgentConfig {
 mod tests {
     use super::*;
 
-    // ─── PendingMessageQueue ────────────────────────────────────────────────
-
-    #[test]
-    fn queue_new_is_empty() {
-        let q = PendingMessageQueue::new(10, "all");
-        assert!(q.is_empty());
-        assert_eq!(q.len(), 0);
-        assert_eq!(q.mode, "all");
-    }
-
-    #[test]
-    fn queue_enqueue_and_len() {
-        let q = PendingMessageQueue::new(10, "all");
-        q.enqueue("msg1".to_string());
-        q.enqueue("msg2".to_string());
-        assert_eq!(q.len(), 2);
-        assert!(!q.is_empty());
-    }
-
-    #[test]
-    fn queue_drain_all_mode() {
-        let q = PendingMessageQueue::new(10, "all");
-        q.enqueue("a".to_string());
-        q.enqueue("b".to_string());
-        q.enqueue("c".to_string());
-        let msgs = q.drain();
-        assert_eq!(msgs, vec!["a", "b", "c"]);
-        assert!(q.is_empty());
-    }
-
-    #[test]
-    fn queue_drain_one_at_a_time_mode() {
-        let q = PendingMessageQueue::new(10, "one-at-a-time");
-        q.enqueue("first".to_string());
-        q.enqueue("second".to_string());
-        let msgs = q.drain();
-        assert_eq!(msgs, vec!["first"]);
-        assert_eq!(q.len(), 1); // second still queued
-    }
-
-    #[test]
-    fn queue_drain_empty() {
-        let q = PendingMessageQueue::new(10, "all");
-        let msgs = q.drain();
-        assert!(msgs.is_empty());
-    }
-
-    #[test]
-    fn queue_clear() {
-        let q = PendingMessageQueue::new(10, "all");
-        q.enqueue("a".to_string());
-        q.enqueue("b".to_string());
-        q.clear();
-        assert!(q.is_empty());
-    }
-
-    #[test]
-    fn queue_set_mode() {
-        let mut q = PendingMessageQueue::new(10, "all");
-        assert_eq!(q.mode, "all");
-        q.set_mode("one-at-a-time");
-        assert_eq!(q.mode, "one-at-a-time");
-    }
-
-    #[test]
-    fn queue_capacity_overflow_drops() {
-        let q = PendingMessageQueue::new(2, "all");
-        q.enqueue("a".to_string());
-        q.enqueue("b".to_string());
-        q.enqueue("c".to_string()); // channel full — dropped
-        assert_eq!(q.len(), 2);
-        let msgs = q.drain();
-        assert_eq!(msgs, vec!["a", "b"]);
-    }
-
-    #[test]
-    fn queue_drain_one_at_a_time_then_all() {
-        let q = PendingMessageQueue::new(10, "one-at-a-time");
-        q.enqueue("a".to_string());
-        q.enqueue("b".to_string());
-        q.enqueue("c".to_string());
-        assert_eq!(q.drain(), vec!["a"]);
-        assert_eq!(q.drain(), vec!["b"]);
-        assert_eq!(q.drain(), vec!["c"]);
-        assert!(q.drain().is_empty());
-    }
-
     // ─── Loop struct (needs mock provider) ──────────────────────────────────
 
     struct MockProvider;
@@ -730,45 +503,6 @@ mod tests {
 
     fn make_loop() -> Loop {
         Loop::new(std::sync::Arc::new(MockProvider), "test-model")
-    }
-
-    #[test]
-    fn loop_steer_and_queued_counts() {
-        let loop_ = make_loop();
-        loop_.steer("steer msg".to_string());
-        let (s, f) = loop_.queued_counts();
-        assert_eq!(s, 1);
-        assert_eq!(f, 0);
-        assert_eq!(loop_.pending_message_count(), 1);
-    }
-
-    #[test]
-    fn loop_follow_up_and_counts() {
-        let loop_ = make_loop();
-        loop_.follow_up("followup msg".to_string());
-        let (s, f) = loop_.queued_counts();
-        assert_eq!(s, 0);
-        assert_eq!(f, 1);
-    }
-
-    #[test]
-    fn loop_clear_queues() {
-        let loop_ = make_loop();
-        loop_.steer("a".to_string());
-        loop_.follow_up("b".to_string());
-        assert_eq!(loop_.pending_message_count(), 2);
-        loop_.clear_queues();
-        assert_eq!(loop_.pending_message_count(), 0);
-    }
-
-    #[test]
-    fn loop_drain_queues() {
-        let loop_ = make_loop();
-        loop_.steer("steer1".to_string());
-        loop_.follow_up("follow1".to_string());
-        let msgs = loop_.drain_queues();
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(loop_.pending_message_count(), 0);
     }
 
     #[test]
@@ -839,15 +573,10 @@ mod tests {
         let copy = loop_.independent_copy();
         assert_eq!(copy.model, loop_.model);
         assert_eq!(copy.system_prompt, "original prompt");
-        // Independent state: interrupt flag, queues should be fresh
+        // Independent state: interrupt flag should be fresh.
         assert!(!copy
             .interrupt_flag()
             .load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(copy.pending_message_count(), 0);
-        // Modify original's queue, copy should be unaffected
-        loop_.steer("test".to_string());
-        assert_eq!(loop_.pending_message_count(), 1);
-        assert_eq!(copy.pending_message_count(), 0);
     }
 
     #[test]
@@ -857,26 +586,6 @@ mod tests {
         > = std::sync::Arc::new(|msgs, _| msgs);
         let loop_ = make_loop().with_transform_context(f);
         assert!(loop_.config.transform_context.is_some());
-    }
-
-    #[test]
-    fn loop_interrupt_combines_steer_and_abort() {
-        let loop_ = make_loop();
-        loop_.interrupt("stop and steer".to_string());
-        assert!(loop_
-            .interrupt_flag()
-            .load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(loop_.queued_counts().0, 1);
-    }
-
-    #[test]
-    fn loop_steer_does_not_abort() {
-        let loop_ = make_loop();
-        loop_.steer("steer only".to_string());
-        assert!(!loop_
-            .interrupt_flag()
-            .load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(loop_.queued_counts().0, 1);
     }
 
     // ─── execute_one_tool_impl_static ──────────────────────────────────────
@@ -1150,31 +859,5 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             "EOF without a provider stop frame must not be a clean completion"
         );
-    }
-
-    #[tokio::test]
-    async fn run_streaming_steer_injected() {
-        let provider = TextStreamProvider {
-            chunks: vec!["Response".to_string()],
-        };
-        let loop_ = Loop::new(std::sync::Arc::new(provider), "test-model");
-        // Inject a steer before running
-        loop_.steer("steered message".to_string());
-        let result = loop_.run_streaming("original".to_string(), |_| {}).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn run_streaming_drain_queues() {
-        let provider = TextStreamProvider {
-            chunks: vec!["Response".to_string()],
-        };
-        let loop_ = Loop::new(std::sync::Arc::new(provider), "test-model");
-        loop_.steer("s1".to_string());
-        loop_.follow_up("f1".to_string());
-        assert_eq!(loop_.pending_message_count(), 2);
-        let drained = loop_.drain_queues();
-        assert_eq!(drained.len(), 2);
-        assert_eq!(loop_.pending_message_count(), 0);
     }
 }

@@ -35,12 +35,14 @@ impl RunPhase {
 pub struct RunLease {
     pub run_id: String,
     pub epoch: u64,
+    pub run_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunSnapshot {
     pub run_id: String,
     pub epoch: u64,
+    pub run_sequence: Option<u64>,
     pub phase: RunPhase,
 }
 
@@ -89,6 +91,15 @@ impl RunControl {
         &self,
         requested_run_id: Option<&str>,
         client_request_id: Option<&str>,
+    ) -> Result<RunLease> {
+        self.begin_with_sequence(requested_run_id, client_request_id, None)
+    }
+
+    pub fn begin_with_sequence(
+        &self,
+        requested_run_id: Option<&str>,
+        client_request_id: Option<&str>,
+        run_sequence: Option<u64>,
     ) -> Result<RunLease> {
         let mut state = self.state.lock();
         let client_request_id = client_request_id.unwrap_or_default();
@@ -146,6 +157,7 @@ impl RunControl {
                 .map(ToOwned::to_owned)
                 .unwrap_or_else(crate::utils::generate_id),
             epoch: state.epoch,
+            run_sequence,
         };
         state.active = Some(ActiveRun {
             lease: lease.clone(),
@@ -229,6 +241,7 @@ impl RunControl {
                 RunSnapshot {
                     run_id: active.lease.run_id.clone(),
                     epoch: active.lease.epoch,
+                    run_sequence: active.lease.run_sequence,
                     phase: active.phase,
                 },
                 active.interrupt_tx.clone(),
@@ -249,74 +262,6 @@ impl RunControl {
             "session run cancellation requested"
         );
         Ok(Some(snapshot))
-    }
-
-    /// Validate the canonical run and enqueue steering while holding the same
-    /// short control lock. This prevents a late command from being accepted
-    /// after its run finalized and then leaking into the next run's queue.
-    ///
-    /// Steering is only accepted while the run can still drain its queue
-    /// (`Starting` / `Running`). Once it is cancelling or finalizing the loop is
-    /// unwinding and will never read the queue again, so enqueueing would silently
-    /// drop the message — reject it instead and let the caller retry as a fresh
-    /// prompt after the run releases.
-    pub fn steer(
-        &self,
-        expected_run_id: Option<&str>,
-        steering_tx: &mpsc::Sender<String>,
-        message: String,
-    ) -> Result<()> {
-        let state = self.state.lock();
-        let active = state
-            .active
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("there is no active run to steer"))?;
-        validate_run_id(&active.lease.run_id, expected_run_id)?;
-        if !accepts_control(active.phase) {
-            bail!(
-                "run {} is {}; steering is accepted only while starting or running",
-                active.lease.run_id,
-                active.phase.as_str()
-            );
-        }
-        steering_tx
-            .try_send(message)
-            .map_err(|error| anyhow::anyhow!("unable to enqueue steering message: {error}"))?;
-        if let Some(tx) = &active.interrupt_tx {
-            let _ = tx.try_send(());
-        }
-        Ok(())
-    }
-
-    /// Returns false only for the legacy "follow up while idle" behavior, which
-    /// asks ServerSession to start a fresh prompt. A run-scoped request can
-    /// never silently turn into a new run, and is rejected (rather than silently
-    /// dropped) when the active run can no longer drain its queue.
-    pub fn follow_up(
-        &self,
-        expected_run_id: Option<&str>,
-        follow_up_tx: &mpsc::Sender<String>,
-        message: String,
-    ) -> Result<bool> {
-        let state = self.state.lock();
-        let Some(active) = state.active.as_ref() else {
-            if let Some(expected) = nonempty(expected_run_id) {
-                bail!("run `{expected}` is no longer active");
-            }
-            return Ok(false);
-        };
-        validate_run_id(&active.lease.run_id, expected_run_id)?;
-        if !accepts_control(active.phase) {
-            bail!(
-                "run {} is {}; follow-up is accepted only while starting or running",
-                active.lease.run_id,
-                active.phase.as_str()
-            );
-        }
-        follow_up_tx
-            .try_send(message)
-            .map_err(|error| anyhow::anyhow!("unable to enqueue follow-up message: {error}"))?;
-        Ok(true)
     }
 
     /// Fence all final messages, persistence, and terminal events. A late task
@@ -406,10 +351,24 @@ impl RunControl {
         true
     }
 
+    pub fn recover_persistence_degraded(&self, lease: &RunLease) -> bool {
+        let mut state = self.state.lock();
+        let Some(active) = state.active.as_mut() else {
+            return false;
+        };
+        if active.lease != *lease || active.phase != RunPhase::PersistenceDegraded {
+            return false;
+        }
+        active.phase = RunPhase::Finalizing;
+        drop(state);
+        self.finish(lease)
+    }
+
     pub fn snapshot(&self) -> Option<RunSnapshot> {
         self.state.lock().active.as_ref().map(|active| RunSnapshot {
             run_id: active.lease.run_id.clone(),
             epoch: active.lease.epoch,
+            run_sequence: active.lease.run_sequence,
             phase: active.phase,
         })
     }
@@ -468,13 +427,6 @@ fn validate_run_id(active_run_id: &str, expected_run_id: Option<&str>) -> Result
         }
     }
     Ok(())
-}
-
-/// Whether a run-scoped control command (steer / follow-up) can still reach the
-/// run loop's queues. Only `Starting` and `Running` drain them; once cancelling
-/// or finalizing the loop is unwinding and an enqueue would be silently lost.
-fn accepts_control(phase: RunPhase) -> bool {
-    matches!(phase, RunPhase::Starting | RunPhase::Running)
 }
 
 /// Whether an `abort` can still meaningfully request cancellation. A run that is
@@ -581,97 +533,6 @@ mod tests {
             assert!(control.finish(&lease));
             assert_eq!(control.active_task_count(), 0);
         }
-    }
-
-    #[test]
-    fn stale_run_scoped_controls_cannot_touch_current_queues_or_cancel() {
-        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
-        let current = control
-            .begin(Some("run-current"), Some("request-current"))
-            .unwrap();
-        let (steering_tx, mut steering_rx) = mpsc::channel(4);
-        let (follow_up_tx, mut follow_up_rx) = mpsc::channel(4);
-
-        assert!(control
-            .steer(Some("run-old"), &steering_tx, "stale steer".to_string())
-            .is_err());
-        assert!(control
-            .follow_up(
-                Some("run-old"),
-                &follow_up_tx,
-                "stale follow-up".to_string()
-            )
-            .is_err());
-        assert!(control.abort_expected(Some("run-old")).is_err());
-        assert!(steering_rx.try_recv().is_err());
-        assert!(follow_up_rx.try_recv().is_err());
-        assert_eq!(control.snapshot().unwrap().phase, RunPhase::Starting);
-
-        assert!(control
-            .steer(
-                Some("run-current"),
-                &steering_tx,
-                "current steer".to_string()
-            )
-            .is_ok());
-        assert_eq!(steering_rx.try_recv().unwrap(), "current steer");
-        assert!(control
-            .abort_expected(Some("run-current"))
-            .unwrap()
-            .is_some());
-        assert!(control.begin_finalizing(&current));
-        assert!(control.finish(&current));
-    }
-
-    #[test]
-    fn scoped_follow_up_cannot_turn_into_a_new_run_after_terminal() {
-        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
-        let (follow_up_tx, mut follow_up_rx) = mpsc::channel(1);
-
-        assert!(control
-            .follow_up(Some("finished-run"), &follow_up_tx, "late".to_string())
-            .is_err());
-        assert!(follow_up_rx.try_recv().is_err());
-        assert!(!control
-            .follow_up(None, &follow_up_tx, "legacy idle prompt".to_string())
-            .unwrap());
-    }
-
-    #[test]
-    fn steer_and_follow_up_rejected_once_run_is_cancelling_or_finalizing() {
-        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
-        let lease = control.begin(Some("run-1"), None).unwrap();
-        let (steering_tx, mut steering_rx) = mpsc::channel(4);
-        let (follow_up_tx, mut follow_up_rx) = mpsc::channel(4);
-
-        // Accepted while the loop can still drain its queues.
-        assert!(control
-            .steer(Some("run-1"), &steering_tx, "ok".to_string())
-            .is_ok());
-        assert_eq!(steering_rx.try_recv().unwrap(), "ok");
-
-        // Cancelling: the loop is unwinding, so enqueueing would silently drop
-        // the message — reject instead and never touch the queues.
-        control.abort();
-        assert!(control
-            .steer(Some("run-1"), &steering_tx, "lost".to_string())
-            .is_err());
-        assert!(control
-            .follow_up(Some("run-1"), &follow_up_tx, "lost".to_string())
-            .is_err());
-        assert!(steering_rx.try_recv().is_err());
-        assert!(follow_up_rx.try_recv().is_err());
-
-        // Finalizing: same — reject and keep the queues empty.
-        assert!(control.begin_finalizing(&lease));
-        assert!(control
-            .steer(Some("run-1"), &steering_tx, "lost".to_string())
-            .is_err());
-        assert!(control
-            .follow_up(Some("run-1"), &follow_up_tx, "lost".to_string())
-            .is_err());
-        assert!(steering_rx.try_recv().is_err());
-        assert!(follow_up_rx.try_recv().is_err());
     }
 
     #[test]
