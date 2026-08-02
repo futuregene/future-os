@@ -126,8 +126,10 @@ function segId(): string {
   return `ep_${Date.now()}_${++_seq}`;
 }
 
-/** The agent replaces summarized history with a single user message
- * "[Context compaction: …]" (compaction/mod.rs). */
+/**
+ * The agent replaces summarized history with a single user message
+ * "[Context compaction: …]" (compaction/mod.rs).
+ */
 function isCompactionDivider(entry: SessionEntry): boolean {
   return entry.role === "user" && entry.content.startsWith("[Context compaction:");
 }
