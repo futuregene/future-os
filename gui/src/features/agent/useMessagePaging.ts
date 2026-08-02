@@ -55,6 +55,8 @@ interface UseMessagePagingResult {
 
 /** Distance from the top that counts as "at the top" for the load hint. */
 const TOP_THRESHOLD_PX = 8;
+/** Wheel events within this window after a load are ignored — one page per gesture. */
+const WHEEL_COOLDOWN_MS = 300;
 
 /**
  * Windowed rendering for long threads. `messages` stays fully loaded in memory
@@ -80,6 +82,13 @@ export function useMessagePaging({
   const onScrollRef = useRef(onScroll);
   onScrollRef.current = onScroll;
 
+  // Synchronous re-entrancy guard. Unlike the `loadingOlder` state (which only
+  // flips after React commits), this ref is read in the same tick a wheel event
+  // fires, so a single scroll gesture can't queue a dozen page loads — and a
+  // trailing wheel event after the commit is swallowed by the cooldown stamp.
+  const loadingOlderRef = useRef(false);
+  const lastWheelAtRef = useRef(0);
+
   const pageStart = computePageStart(messages, loadedPages * userTurnCount);
   // Clamp to the current list (the list can shrink during an in-flight load)
   // and never produce an empty window.
@@ -96,16 +105,19 @@ export function useMessagePaging({
   const restoreRef = useRef<{ anchor: Anchor | null } | null>(null);
 
   const loadOlder = useCallback(() => {
-    if (loadingOlder)
+    // The synchronous ref guard is the real re-entrancy fence; the `loadingOlder`
+    // state check only prevents the hint from looking "idle" mid-load.
+    if (loadingOlderRef.current)
       return;
     if (effectivePageStart <= 0)
       return;
+    loadingOlderRef.current = true;
     restoreRef.current = {
       anchor: captureAnchor(scrollRef.current, "data-message-id"),
     };
     setLoadingOlder(true);
     setLoadedPages(pages => pages + 1);
-  }, [effectivePageStart, loadingOlder, scrollRef]);
+  }, [effectivePageStart, scrollRef]);
 
   // Reset on thread switch: newest page, top hint hidden. A layout effect
   // declared before the restore effect below, so on a reset that races an
@@ -115,6 +127,7 @@ export function useMessagePaging({
     setLoadedPages(1);
     setLoadingOlder(false);
     setAtTop(false);
+    loadingOlderRef.current = false;
     restoreRef.current = null;
     // `messages` isn't a dependency: the reset targets the thread change only.
   }, [resetKey]);
@@ -129,6 +142,7 @@ export function useMessagePaging({
     if (!pending)
       return;
     restoreRef.current = null;
+    loadingOlderRef.current = false;
     setLoadingOlder(false);
     const container = scrollRef.current;
     if (!container)
@@ -144,7 +158,7 @@ export function useMessagePaging({
       }
     }
     container.scrollTop = 0;
-  }, [scrollRef]);
+  }, [loadedPages, scrollRef]);
 
   // Compose the caller's scroll handling with top detection. `scrollTop === 0`
   // means the user is at the very top of the thread.
@@ -157,8 +171,8 @@ export function useMessagePaging({
 
   // Second channel for the load gesture: a wheel-scroll up while already stuck
   // at the top fires the load, alongside clicking the hint button. The listener
-  // only mounts while the hint is live, so a single fast scroll-up can't fire
-  // two loads (the guard in `loadOlder` would ignore the second anyway).
+  // only mounts while the hint is live; the sync ref guard + cooldown stamp keep
+  // one gesture to one page load.
   useEffect(() => {
     if (!canLoadOlder || !atTop || loadingOlder)
       return;
@@ -166,8 +180,14 @@ export function useMessagePaging({
     if (!container)
       return;
     const onWheel = (event: WheelEvent) => {
-      if (event.deltaY < 0)
-        loadOlder();
+      if (event.deltaY >= 0)
+        return;
+      const now = performance.now();
+      // Swallow the tail of the same gesture so it can't queue a second page.
+      if (now - lastWheelAtRef.current < WHEEL_COOLDOWN_MS)
+        return;
+      lastWheelAtRef.current = now;
+      loadOlder();
     };
     container.addEventListener("wheel", onWheel, { passive: true });
     return () => container.removeEventListener("wheel", onWheel);
