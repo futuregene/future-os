@@ -3,7 +3,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
-import { ArrowDown, History, Loader2 } from "lucide-react";
+import { ArrowDown, History } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
@@ -117,9 +117,10 @@ export function AgentThread({
   // Windowed rendering for long threads: only the last PAGE_USER_TURNS turns
   // render; loading an older page is a sync window change (the full message
   // list stays in memory) with scroll anchoring so the viewport never jumps.
+  // The paging hook composes the sticky auto-scroll handler via `onScroll`, so
+  // one scroll event reaches both.
   const {
     visibleMessages,
-    loadingOlder,
     showLoadOlderHint,
     handleScroll: handlePagingScroll,
     loadOlder,
@@ -130,13 +131,6 @@ export function AgentThread({
     resetKey: thread?.id ?? null,
     onScroll: handleScroll,
   });
-
-  // Compose scroll handling: sticky auto-scroll + floating scrollbar + paging
-  // top detection all observe the same container.
-  const combinedHandleScroll = useCallback(() => {
-    handlePagingScroll();
-    handleScroll();
-  }, [handlePagingScroll, handleScroll]);
 
   // When loading completes (initial load or thread switch), scroll to the
   // latest message.  useStickyAutoScroll's useLayoutEffect fires on contentKey
@@ -240,14 +234,11 @@ export function AgentThread({
                 <button
                   type="button"
                   onClick={loadOlder}
-                  disabled={loadingOlder}
                   aria-label={t("thread.loadOlder")}
                   title={t("thread.loadOlder")}
-                  className="pointer-events-auto flex animate-pop-in items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink disabled:cursor-default disabled:opacity-70"
+                  className="pointer-events-auto flex animate-pop-in items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
                 >
-                  {loadingOlder
-                    ? <Loader2 className="size-3.5 animate-spin" />
-                    : <History className="size-3.5" />}
+                  <History className="size-3.5" />
                   {t("thread.loadOlder")}
                 </button>
               </div>
@@ -260,7 +251,7 @@ export function AgentThread({
             activeApproval ? "pb-112" : "pb-48",
           )}
           data-chat-scroll="true"
-          onScroll={combinedHandleScroll}
+          onScroll={handlePagingScroll}
         >
           <div className="mx-auto w-full max-w-4xl">
             {loadingIndicator

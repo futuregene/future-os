@@ -46,7 +46,6 @@ interface UseMessagePagingInput {
 interface UseMessagePagingResult {
   visibleMessages: AgentMessage[];
   canLoadOlder: boolean;
-  loadingOlder: boolean;
   /** True when the user is pinned to the top and more history exists. */
   showLoadOlderHint: boolean;
   handleScroll: () => void;
@@ -84,40 +83,35 @@ export function useMessagePaging({
   onScroll,
 }: UseMessagePagingInput): UseMessagePagingResult {
   const [loadedPages, setLoadedPages] = useState(1);
-  const [loadingOlder, setLoadingOlder] = useState(false);
   const [atTop, setAtTop] = useState(false);
   const [topSettled, setTopSettled] = useState(false);
   const topSettleTimerRef = useRef<number | null>(null);
   const onScrollRef = useRef(onScroll);
   onScrollRef.current = onScroll;
 
-  // Synchronous re-entrancy guard. Unlike the `loadingOlder` state (which only
-  // flips after React commits), this ref is read in the same tick a wheel event
-  // fires, so a single scroll gesture can't queue a dozen page loads — and a
-  // trailing wheel event after the commit is swallowed by the cooldown stamp.
+  // Synchronous re-entrancy guard. This ref is read in the same tick a wheel
+  // event fires (a state flag would only flip after React commits), so a single
+  // scroll gesture can't queue a dozen page loads — and a trailing wheel event
+  // after the commit is swallowed by the cooldown stamp.
   const loadingOlderRef = useRef(false);
   const lastWheelAtRef = useRef(0);
 
-  const pageStart = computePageStart(messages, loadedPages * userTurnCount);
-  // Clamp to the current list (the list can shrink during an in-flight load)
-  // and never produce an empty window.
-  const clampedPageStart = Math.min(pageStart, messages.length);
-  const effectivePageStart = clampedPageStart >= messages.length
-    ? Math.max(0, messages.length - 1)
-    : clampedPageStart;
+  // computePageStart always returns a valid index (or 0 for an empty/short
+  // list), so no clamping is needed here.
+  const effectivePageStart = computePageStart(messages, loadedPages * userTurnCount);
   const visibleMessages = messages.slice(effectivePageStart);
   const canLoadOlder = effectivePageStart > 0;
   // The button only appears after the user has rested at the top for the settle
   // window — arriving at the top must not, by itself, ever trigger a load.
-  const showLoadOlderHint = canLoadOlder && atTop && topSettled && !loadingOlder;
+  const showLoadOlderHint = canLoadOlder && atTop && topSettled;
 
   // Pending scroll restore for the in-flight page load. Written synchronously in
   // `loadOlder`, consumed (and cleared) by the layout effect after commit.
   const restoreRef = useRef<{ anchor: Anchor | null } | null>(null);
 
   const loadOlder = useCallback(() => {
-    // The synchronous ref guard is the real re-entrancy fence; the `loadingOlder`
-    // state check only prevents the hint from looking "idle" mid-load.
+    // The synchronous ref guard is the real re-entrancy fence: it blocks every
+    // wheel event of the gesture until the restore effect clears it.
     if (loadingOlderRef.current)
       return;
     if (effectivePageStart <= 0)
@@ -130,7 +124,6 @@ export function useMessagePaging({
     restoreRef.current = {
       anchor: captureAnchor(scrollRef.current, "data-message-id"),
     };
-    setLoadingOlder(true);
     setLoadedPages(pages => pages + 1);
   }, [effectivePageStart, scrollRef]);
 
@@ -140,7 +133,6 @@ export function useMessagePaging({
   // read a pending anchor captured for the previous thread.
   useLayoutEffect(() => {
     setLoadedPages(1);
-    setLoadingOlder(false);
     setAtTop(false);
     setTopSettled(false);
     if (topSettleTimerRef.current !== null) {
@@ -163,7 +155,6 @@ export function useMessagePaging({
       return;
     restoreRef.current = null;
     loadingOlderRef.current = false;
-    setLoadingOlder(false);
     setTopSettled(false);
     const container = scrollRef.current;
     if (!container)
@@ -214,7 +205,7 @@ export function useMessagePaging({
   // the top can never auto-load — the pull must happen after the button shows.
   // The sync ref guard + cooldown stamp keep one gesture to one page load.
   useEffect(() => {
-    if (!canLoadOlder || !atTop || !topSettled || loadingOlder)
+    if (!canLoadOlder || !atTop || !topSettled)
       return;
     const container = scrollRef.current;
     if (!container)
@@ -231,12 +222,19 @@ export function useMessagePaging({
     };
     container.addEventListener("wheel", onWheel, { passive: true });
     return () => container.removeEventListener("wheel", onWheel);
-  }, [atTop, canLoadOlder, loadOlder, loadingOlder, scrollRef, topSettled]);
+  }, [atTop, canLoadOlder, loadOlder, scrollRef, topSettled]);
+
+  // Don't leave a pending settle timer firing setState after unmount.
+  useEffect(() => () => {
+    if (topSettleTimerRef.current !== null) {
+      window.clearTimeout(topSettleTimerRef.current);
+      topSettleTimerRef.current = null;
+    }
+  }, []);
 
   return {
     visibleMessages,
     canLoadOlder,
-    loadingOlder,
     showLoadOlderHint,
     handleScroll,
     loadOlder,
