@@ -380,8 +380,17 @@ pub async fn attach_remote_stream(thread_id: String) -> Result<serde_json::Value
 /// (LRU touch), no longer a single-slot re-subscription. Safe to call on
 /// every thread switch.
 #[tauri::command]
-pub fn observe_session(session_id: String) {
-    crate::agent_bridge::ensure_observer(&session_id);
+pub fn observe_session(thread_id: String, session_id: String) -> Result<(), crate::AppError> {
+    let thread_id = thread_id.trim();
+    let session_id = session_id.trim();
+    if thread_id.is_empty() || session_id.is_empty() {
+        return Err("Both thread id and session id are required to observe a session.".into());
+    }
+    // This GUI command is deliberately single-target: it may wake or create
+    // exactly the observer keyed by this already-owned session, never a global
+    // stream or a different thread's observer.
+    crate::agent_bridge::ensure_observer_for_thread(session_id, thread_id)
+        .map_err(crate::AppError::from)
 }
 
 /// Move a thread to the workspace matching a new cwd (e.g. after TUI /cwd).

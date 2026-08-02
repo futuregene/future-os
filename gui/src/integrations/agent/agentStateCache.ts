@@ -212,6 +212,7 @@ export function installAgentEventListener() {
     if (!p)
       return;
 
+    const threadId = typeof p.threadId === "string" ? p.threadId : null;
     const sessionId = typeof p.sessionId === "string" ? p.sessionId : null;
     const eventType = typeof p._eventType === "string" ? p._eventType : null;
     if (!sessionId || !eventType)
@@ -240,8 +241,10 @@ export function installAgentEventListener() {
       case "tool_start":
       case "tool_delta":
       case "tool_end":
+        if (!threadId)
+          return;
         window.dispatchEvent(new CustomEvent("future:agent-event", {
-          detail: { sessionId, eventType, payload: p },
+          detail: { threadId, sessionId, eventType, payload: p },
         }));
         break;
     }

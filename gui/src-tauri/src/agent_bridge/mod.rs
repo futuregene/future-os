@@ -24,7 +24,7 @@ pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, Prepared
 pub(crate) use self::import::import_missing_sessions;
 pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::observer::{
-    drop_observer, ensure_observer, seed_observers_from_store, spawn_session_discovery,
+    drop_observer, ensure_observer_for_thread, seed_observers_from_store, spawn_session_discovery,
 };
 pub use self::run_control::abort_run;
 pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
@@ -563,7 +563,7 @@ async fn agent_prompt_inner(
     let replica_lease = AGENT_REPLICAS
         .acquire(&run_id)
         .map_err(crate::AppError::from)?;
-    observer::ensure_observer(&session_id);
+    observer::ensure_observer_for_thread(&session_id, &thread_id).map_err(crate::AppError::from)?;
 
     let prompt_response = command_client
         .execute_command(prompt_command(
@@ -708,7 +708,8 @@ pub async fn reconcile_interrupted_runs() {
     for run in runs {
         let session_id = run.session_id;
         let run_id = run.run_id;
-        match check_and_reanimate_run(&session_id, &run_id).await {
+        let thread_id = run.thread_id;
+        match check_and_reanimate_run(&session_id, &run_id, &thread_id).await {
             Ok(()) => {}
             Err(error) => {
                 eprintln!("FutureOS run reanimation failed for {run_id}: {error}");
@@ -735,7 +736,11 @@ pub async fn reconcile_interrupted_runs() {
 ///    than falsely settling it as completed.
 /// 3. Neither: use `requestedRun` to mirror the exact durable terminal state.
 ///    If the Agent has no marker for this id, conservatively leave interrupted.
-async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), String> {
+async fn check_and_reanimate_run(
+    session_id: &str,
+    run_id: &str,
+    thread_id: &str,
+) -> Result<(), String> {
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
     let state = client
         .execute_command(get_run_state_command(
@@ -793,7 +798,7 @@ async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), S
         // The session observer takes over from the local cursor: it projects
         // the remaining events (this run has no pipeline owner), mirrors them
         // to NATS, and settles the row at agent_end.
-        observer::ensure_observer(session_id);
+        observer::ensure_observer_for_thread(session_id, thread_id)?;
     } else if interrupted_run_id.as_deref() == Some(run_id) {
         // The Agent confirms this run began but never committed (interrupted by
         // the restart). The synchronous phase already cancelled it with
@@ -1055,7 +1060,7 @@ async fn reconcile_active_run_once(
             // or one reanimated out from under a dead lease). The session
             // observer projects it from its local cursor — idempotent, and
             // never races a pipeline collector (single-writer rule).
-            observer::ensure_observer(&run.session_id);
+            observer::ensure_observer_for_thread(&run.session_id, &run.thread_id)?;
             Ok(())
         }
         ActiveRunAction::SettleTerminal { agent_state, error } => {
@@ -1162,7 +1167,7 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
     }
     let existing_runs = crate::store::list_runs(thread_id).unwrap_or_default();
     if let Some(active) = existing_runs.iter().find(|r| is_active(&r.status)) {
-        observer::ensure_observer(session_id);
+        observer::ensure_observer_for_thread(session_id, thread_id)?;
         return Ok(active.id.clone());
     }
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
@@ -1181,7 +1186,7 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .ok_or_else(|| "Agent session has no active canonical run".to_string())?
         .to_string();
 
-    observer::ensure_observer(session_id);
+    observer::ensure_observer_for_thread(session_id, thread_id)?;
     // Get-or-create the local row NOW (id == canonical run id) so the frontend
     // gets a concrete run id back instead of waiting for the observer's first
     // event. The observer reuses this row via the same binding path.

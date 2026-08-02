@@ -32,7 +32,7 @@
 //! an active run is never evicted — the cap yields to overflow in that case.
 //! An observer with no events for [`OBSERVER_IDLE_SLEEP`] and no active run
 //! puts itself to sleep; discovery (streaming poll, thread open, prompt) wakes
-//! it again via [`ensure_observer`].
+//! it again via [`ensure_observer_for_thread`].
 
 use std::{
     collections::HashMap,
@@ -86,21 +86,21 @@ struct ObserverHandle {
 }
 
 /// State shared between the manager and one observer task: eviction inputs
-/// (activity, active-run flag), the session→thread mapping, and the
+/// (activity, active-run flag), the immutable session→thread owner, and the
 /// canonical→local run bindings the task builds as it projects runs.
 struct ObserverShared {
     last_activity_ms: AtomicI64,
     has_active_run: AtomicBool,
-    thread_id: Mutex<Option<String>>,
+    thread_id: String,
     run_bindings: Mutex<HashMap<String, String>>,
 }
 
 impl ObserverShared {
-    fn new() -> Self {
+    fn new(thread_id: impl Into<String>) -> Self {
         Self {
             last_activity_ms: AtomicI64::new(now_millis()),
             has_active_run: AtomicBool::new(false),
-            thread_id: Mutex::new(None),
+            thread_id: thread_id.into(),
             run_bindings: Mutex::new(HashMap::new()),
         }
     }
@@ -130,33 +130,54 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Register (or refresh) the observer for a session. User activity and an
-/// active prompt use this entry point, so an existing observer is touched for
-/// LRU purposes.
-pub fn ensure_observer(session_id: &str) {
-    ensure_observer_inner(session_id, true);
+/// Register (or refresh) the sole observer for an Agent session, bound to one
+/// immutable GUI-thread owner for its lifetime. A legacy database may contain
+/// more than one thread referencing the same Agent session; that data remains
+/// readable, but a second thread cannot silently take over the live observer.
+pub fn ensure_observer_for_thread(session_id: &str, thread_id: &str) -> Result<(), String> {
+    ensure_observer_inner(session_id, thread_id, true)
 }
 
 /// Ensure a passive observer without treating periodic discovery as user
 /// activity. Otherwise the 60-second import loop would keep every idle entry
 /// permanently hot and defeat the 128-observer LRU cap.
-fn ensure_passive_observer(session_id: &str) {
-    ensure_observer_inner(session_id, false);
+fn ensure_passive_observer(session_id: &str, thread_id: &str) -> Result<(), String> {
+    ensure_observer_inner(session_id, thread_id, false)
 }
 
-fn ensure_observer_inner(session_id: &str, touch_existing: bool) {
-    if session_id.trim().is_empty() {
-        return;
+fn ensure_observer_inner(
+    session_id: &str,
+    thread_id: &str,
+    touch_existing: bool,
+) -> Result<(), String> {
+    let session_id = session_id.trim();
+    let thread_id = thread_id.trim();
+    if session_id.is_empty() || thread_id.is_empty() {
+        return Err("Observer requires both thread_id and session_id".to_string());
+    }
+    let thread = crate::store::get_thread(thread_id)
+        .map_err(|error| format!("get observer owner: {error}"))?
+        .ok_or_else(|| format!("Observer owner thread {thread_id} does not exist"))?;
+    let mapped_session = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    if mapped_session != Some(session_id) {
+        return Err(format!(
+            "observer_binding_mismatch: thread {thread_id} is not bound to session {session_id}"
+        ));
     }
     let mut guard = OBSERVERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(handle) = guard.get(session_id) {
+        verify_observer_owner(session_id, handle, thread_id)?;
         if touch_existing {
             handle.shared.touch();
         }
-        return;
+        return Ok(());
     }
     evict_idle_if_over_cap(&mut guard);
-    let shared = Arc::new(ObserverShared::new());
+    let shared = Arc::new(ObserverShared::new(thread_id));
     let (cancel_tx, cancel_rx) = oneshot::channel();
     guard.insert(
         session_id.to_string(),
@@ -167,6 +188,21 @@ fn ensure_observer_inner(session_id: &str, touch_existing: bool) {
     );
     drop(guard);
     spawn_observer(session_id.to_string(), shared, cancel_rx);
+    Ok(())
+}
+
+fn verify_observer_owner(
+    session_id: &str,
+    handle: &ObserverHandle,
+    requested_thread_id: &str,
+) -> Result<(), String> {
+    if handle.shared.thread_id == requested_thread_id {
+        return Ok(());
+    }
+    Err(format!(
+        "observer_owner_conflict: session {session_id} is already observed by thread {}",
+        handle.shared.thread_id
+    ))
 }
 
 /// Startup seed: one observer per thread that already has an agent session.
@@ -183,7 +219,9 @@ pub fn seed_observers_from_store() {
             .map(str::trim)
             .filter(|id| !id.is_empty())
         {
-            ensure_passive_observer(session_id);
+            if let Err(error) = ensure_passive_observer(session_id, &thread.id) {
+                eprintln!("FutureOS could not seed observer for session {session_id}: {error}");
+            }
         }
     }
 }
@@ -253,7 +291,11 @@ async fn discover_streaming_sessions() {
                 }
             }
         }
-        ensure_observer(&session_id);
+        if let Ok(Some(thread)) = crate::store::find_thread_by_agent_session(&session_id) {
+            if let Err(error) = ensure_observer_for_thread(&session_id, &thread.id) {
+                eprintln!("FutureOS could not observe discovered session {session_id}: {error}");
+            }
+        }
     }
 }
 
@@ -331,6 +373,13 @@ pub(super) fn ensure_run_binding(
         }
     }
     if let Ok(Some(run)) = crate::store::get_run(canonical_run_id) {
+        if run.thread_id != thread_id {
+            eprintln!(
+                "FutureOS observer refused cross-thread run binding: session={session_id} thread={thread_id} run={canonical_run_id} belongs_to={}",
+                run.thread_id
+            );
+            return None;
+        }
         bind_run(session_id, canonical_run_id, &run.id);
         return Some(run.id);
     }
@@ -627,7 +676,7 @@ async fn handle_event(
             state.session_cursor = event.session_idx;
         }
         if FORWARDED_EVENTS.contains(&event_type) {
-            forward_settings_event(session_id, event_type, &event.data);
+            forward_settings_event(session_id, &shared.thread_id, event_type, &event.data);
         }
         crate::remote::publish_event(
             session_id,
@@ -720,7 +769,12 @@ async fn handle_event(
                     // treating them as gaps would force a pointless re-attach
                     // on every settings change.
                     if FORWARDED_EVENTS.contains(&event_type) {
-                        forward_settings_event(session_id, event_type, &event.data);
+                        forward_settings_event(
+                            session_id,
+                            &shared.thread_id,
+                            event_type,
+                            &event.data,
+                        );
                     }
                     crate::remote::publish_event(
                         session_id,
@@ -784,7 +838,7 @@ async fn handle_event(
     }
 
     if FORWARDED_EVENTS.contains(&event_type) {
-        forward_settings_event(session_id, event_type, &event.data);
+        forward_settings_event(session_id, &shared.thread_id, event_type, &event.data);
     }
     crate::remote::publish_event(
         session_id,
@@ -877,31 +931,6 @@ fn note_run_settled(shared: &Arc<ObserverShared>, state: &mut ObserverState, run
     }
 }
 
-/// The thread this session belongs to, resolved once and cached. The mapping
-/// can appear after the observer starts (session import creates thread stubs
-/// asynchronously), so a miss is re-resolved on the next event.
-async fn resolve_thread_id(session_id: &str, shared: &Arc<ObserverShared>) -> Option<String> {
-    if let Some(thread_id) = shared.thread_id.lock().ok()?.clone() {
-        return Some(thread_id);
-    }
-    let session = session_id.to_string();
-    let found = tokio::task::spawn_blocking(move || {
-        crate::store::find_thread_by_agent_session(&session)
-            .ok()
-            .flatten()
-            .map(|thread| thread.id)
-    })
-    .await
-    .ok()
-    .flatten();
-    if let Some(thread_id) = &found {
-        if let Ok(mut cache) = shared.thread_id.lock() {
-            *cache = Some(thread_id.clone());
-        }
-    }
-    found
-}
-
 /// The thread + local run row this observer projects `run_id` into, or None
 /// when a prompt-pipeline collector owns the run — now or within the lease
 /// grace window (single-writer rule; the collector persists its terminal
@@ -915,14 +944,15 @@ async fn observer_run(
     if super::replica::AGENT_REPLICAS.is_owned_or_recently_released(canonical_run_id) {
         return None;
     }
-    let thread_id = resolve_thread_id(session_id, shared).await?;
+    let thread_id = shared.thread_id.clone();
     let local_run_id = ensure_run_binding(session_id, canonical_run_id, &thread_id)?;
     Some((thread_id, local_run_id))
 }
 
-/// Forward a whitelisted event to the webview as `agent-event` (same envelope
-/// the retired single-slot observer used: sessionId + _eventType injected).
-fn forward_settings_event(session_id: &str, event_type: &str, data: &str) {
+/// Forward a whitelisted event to the webview as `agent-event`. Both owner
+/// identities are injected so the frontend can reject stale listeners during
+/// a thread switch instead of trusting session identity alone.
+fn forward_settings_event(session_id: &str, thread_id: &str, event_type: &str, data: &str) {
     let Some(app_handle) = crate::APP_HANDLE.get() else {
         return;
     };
@@ -931,6 +961,10 @@ fn forward_settings_event(session_id: &str, event_type: &str, data: &str) {
             map.insert(
                 "sessionId".to_string(),
                 serde_json::Value::String(session_id.to_string()),
+            );
+            map.insert(
+                "threadId".to_string(),
+                serde_json::Value::String(thread_id.to_string()),
             );
             map.insert(
                 "_eventType".to_string(),
@@ -952,9 +986,17 @@ mod tests {
             shared: Arc::new(ObserverShared {
                 last_activity_ms: AtomicI64::new(last_activity_ms),
                 has_active_run: AtomicBool::new(has_active_run),
-                ..ObserverShared::new()
+                ..ObserverShared::new("thread-owner")
             }),
         }
+    }
+
+    #[test]
+    fn observer_owner_is_idempotent_but_cannot_be_rebound() {
+        let handle = handle_with(0, false);
+        assert!(verify_observer_owner("session-a", &handle, "thread-owner").is_ok());
+        let error = verify_observer_owner("session-a", &handle, "thread-other").unwrap_err();
+        assert!(error.starts_with("observer_owner_conflict:"));
     }
 
     #[test]
@@ -997,7 +1039,7 @@ mod tests {
 
     #[test]
     fn sleep_requires_quiet_and_no_active_run() {
-        let fresh = ObserverShared::new();
+        let fresh = ObserverShared::new("thread-fresh");
         assert!(
             !fresh.should_sleep(),
             "just-registered observers stay awake"
@@ -1006,7 +1048,7 @@ mod tests {
         let quiet_active = ObserverShared {
             last_activity_ms: AtomicI64::new(0),
             has_active_run: AtomicBool::new(true),
-            ..ObserverShared::new()
+            ..ObserverShared::new("thread-active")
         };
         assert!(
             !quiet_active.should_sleep(),
@@ -1016,7 +1058,7 @@ mod tests {
         let quiet_idle = ObserverShared {
             last_activity_ms: AtomicI64::new(0),
             has_active_run: AtomicBool::new(false),
-            ..ObserverShared::new()
+            ..ObserverShared::new("thread-idle")
         };
         assert!(
             quiet_idle.should_sleep(),
@@ -1064,7 +1106,7 @@ mod tests {
     #[tokio::test]
     async fn gap_event_is_rejected_without_advancing_the_cursor() {
         let _lease = lease_run("run-gap");
-        let shared = Arc::new(ObserverShared::new());
+        let shared = Arc::new(ObserverShared::new("thread-order"));
         let mut state = ObserverState::default();
 
         assert!(
@@ -1117,7 +1159,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_gap_uses_the_independent_session_cursor() {
-        let shared = Arc::new(ObserverShared::new());
+        let shared = Arc::new(ObserverShared::new("thread-order"));
         let mut state = ObserverState::default();
 
         assert!(
@@ -1154,7 +1196,7 @@ mod tests {
 
     #[tokio::test]
     async fn missed_head_on_first_sight_forces_reattach() {
-        let shared = Arc::new(ObserverShared::new());
+        let shared = Arc::new(ObserverShared::new("thread-order"));
         let mut state = ObserverState::default();
 
         assert!(
@@ -1176,7 +1218,7 @@ mod tests {
     #[tokio::test]
     async fn settled_run_stragglers_fan_out_without_bookkeeping() {
         let _lease = lease_run("run-fresh");
-        let shared = Arc::new(ObserverShared::new());
+        let shared = Arc::new(ObserverShared::new("thread-order"));
         let mut state = ObserverState {
             last_settled_run: Some("run-settled".to_string()),
             ..ObserverState::default()

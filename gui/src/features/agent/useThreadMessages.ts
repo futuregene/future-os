@@ -18,6 +18,29 @@ interface UseThreadMessagesInput {
   agentSessionId?: string | null;
 }
 
+/**
+ * A DOM event is safe to apply only when both the listener's captured target
+ * and the live AgentThread target still agree. This closes the React
+ * commit→effect-cleanup window during a conversation switch.
+ */
+export function isCurrentAgentEventTarget(
+  activeThreadId: string | null,
+  activeSessionId: string | null,
+  listenerThreadId: string | null,
+  listenerSessionId: string | null,
+  eventThreadId: string | null | undefined,
+  eventSessionId: string | null | undefined,
+): boolean {
+  return Boolean(
+    activeThreadId
+    && activeSessionId
+    && listenerThreadId === activeThreadId
+    && listenerSessionId === activeSessionId
+    && eventThreadId === activeThreadId
+    && eventSessionId === activeSessionId,
+  );
+}
+
 interface ThreadCacheEntry {
   messages: AgentMessage[];
   recentRun: StoredRun | null;
@@ -78,6 +101,7 @@ const LOADING_INDICATOR_MIN_MS = 200;
  * recently-visited threads so switching back is instant.
  */
 export function useThreadMessages({ threadId, workspaceId, workspacePath, agentSessionId }: UseThreadMessagesInput) {
+  const normalizedAgentSessionId = agentSessionId?.trim() || null;
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   // The workspace the message tree renders against, committed in the same render
   // as `messages` (see the set points below). `thread.workspaceId` flips the
@@ -151,6 +175,12 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   // state — otherwise a slow load for thread A can overwrite thread B's view.
   const activeThreadIdRef = useRef(threadId);
   activeThreadIdRef.current = threadId;
+  // React keeps AgentThread mounted across conversation switches. Event
+  // handlers from the previous effect can run in the narrow commit→cleanup
+  // window, so the handler must compare against this live target rather than
+  // only its captured session id.
+  const activeAgentSessionIdRef = useRef<string | null>(normalizedAgentSessionId);
+  activeAgentSessionIdRef.current = normalizedAgentSessionId;
 
   // Guard against overlapping refreshes (poll tick, send, thread switch) where a
   // slow response lands after a newer one and writes stale run state — e.g. a
@@ -440,16 +470,29 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   // tools, agent_end) continue through the synthetic run → useRunReattach
   // path to avoid conflicting with the existing streaming bubble logic.
   useEffect(() => {
-    if (!threadId || !agentSessionId)
+    if (!threadId || !normalizedAgentSessionId)
       return;
     const handler = (ev: Event) => {
       const detail = (ev as CustomEvent).detail as {
+        threadId: string;
         sessionId: string;
         eventType: string;
         payload: Record<string, unknown>;
       } | undefined;
-      if (!detail || detail.sessionId !== agentSessionId)
+      // One GUI event may affect only the observer target that is currently
+      // rendered. `AgentThread` is intentionally not keyed by thread id, so a
+      // stale listener for session A can otherwise mutate B between React's
+      // commit and passive-effect cleanup.
+      if (!detail || !isCurrentAgentEventTarget(
+        activeThreadIdRef.current,
+        activeAgentSessionIdRef.current,
+        threadId,
+        normalizedAgentSessionId,
+        detail.threadId,
+        detail.sessionId,
+      )) {
         return;
+      }
       if (detail.eventType === "agent_end") {
         attachedRef.current = false;
         emitFutureEvent("agent_end", undefined);
@@ -501,7 +544,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
     window.addEventListener("future:agent-event", handler);
     return () => window.removeEventListener("future:agent-event", handler);
   }, [
-    agentSessionId,
+    normalizedAgentSessionId,
     isRunActive,
     refreshRecentRun,
     reloadMessagesQuiet,

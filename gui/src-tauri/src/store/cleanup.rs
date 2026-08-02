@@ -21,6 +21,7 @@ pub struct InterruptedRun {
 /// which reconciles rows whose owning pipeline/collector never finalized them.
 pub struct ActiveRun {
     pub run_id: String,
+    pub thread_id: String,
     pub session_id: String,
     pub created_at: i64,
 }
@@ -56,7 +57,7 @@ pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
 pub fn list_active_runs() -> Result<Vec<ActiveRun>, crate::AppError> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT r.id, r.created_at,
+        "SELECT r.id, r.thread_id, r.created_at,
                 COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id) AS session_id
          FROM runs r
          JOIN threads t ON t.id = r.thread_id
@@ -66,8 +67,9 @@ pub fn list_active_runs() -> Result<Vec<ActiveRun>, crate::AppError> {
     let rows = stmt.query_map([], |row| {
         Ok(ActiveRun {
             run_id: row.get(0)?,
-            created_at: row.get(1)?,
-            session_id: row.get(2)?,
+            thread_id: row.get(1)?,
+            created_at: row.get(2)?,
+            session_id: row.get(3)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
