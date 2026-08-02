@@ -5,15 +5,6 @@ use rusqlite::{params, Connection};
 use super::db::connect;
 use super::util::now_millis;
 
-pub fn enqueue_agent_session_delete(session_id: &str) -> Result<(), crate::AppError> {
-    if session_id.trim().is_empty() {
-        return Ok(());
-    }
-    let conn = connect()?;
-    enqueue_agent_session_delete_in(&conn, session_id)?;
-    Ok(())
-}
-
 pub(super) fn enqueue_agent_session_delete_in(
     conn: &Connection,
     session_id: &str,

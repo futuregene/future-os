@@ -362,32 +362,6 @@ pub fn list_run_events_since(
         .collect())
 }
 
-/// Whether any legacy events for `run_id` exist locally.
-/// Cheap — no event cloning — so the incremental-read command can decide
-/// whether an empty tail means "no new events" or "cold buffer, ask the agent".
-pub fn has_run_events(run_id: &str) -> bool {
-    #[cfg(test)]
-    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
-        if buf.get(run_id).is_some_and(|events| !events.is_empty()) {
-            return true;
-        }
-    }
-    run_events_path(run_id).is_some_and(|path| path.exists())
-}
-
-pub fn list_run_events_bulk(
-    run_ids: &[String],
-) -> Result<Vec<(String, Vec<RunEventRecord>)>, crate::AppError> {
-    let mut result = Vec::new();
-    for rid in run_ids {
-        let events = read_run_events(rid);
-        if !events.is_empty() {
-            result.push((rid.clone(), events));
-        }
-    }
-    Ok(result)
-}
-
 /// In-memory buffer for streaming run events. A run's events live here while it
 /// is active (fast streaming reads) and are also appended to a per-run JSONL
 /// file on disk so the Runs panel/inspector survive an app restart. The buffer
@@ -413,10 +387,6 @@ enum WriterMsg {
     /// to delete an open file).
     Close {
         run_id: String,
-        ack: std::sync::mpsc::Sender<()>,
-    },
-    /// Flush and close every writer (clear_all_data), then ack.
-    CloseAll {
         ack: std::sync::mpsc::Sender<()>,
     },
 }
@@ -450,12 +420,6 @@ fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
                                     }
                                     let _ = ack.send(());
                                 }
-                                Ok(WriterMsg::CloseAll { ack }) => {
-                                    for (_, mut writer) in writers.drain() {
-                                        let _ = writer.flush();
-                                    }
-                                    let _ = ack.send(());
-                                }
                                 Err(_) => break,
                             }
                         }
@@ -465,12 +429,6 @@ fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
                     }
                     WriterMsg::Close { run_id, ack } => {
                         if let Some(mut writer) = writers.remove(&run_id) {
-                            let _ = writer.flush();
-                        }
-                        let _ = ack.send(());
-                    }
-                    WriterMsg::CloseAll { ack } => {
-                        for (_, mut writer) in writers.drain() {
                             let _ = writer.flush();
                         }
                         let _ = ack.send(());
@@ -519,18 +477,6 @@ fn close_disk_writer(run_id: &str) {
             run_id: run_id.to_string(),
             ack: ack_tx,
         })
-        .is_ok()
-    {
-        let _ = ack_rx.recv_timeout(std::time::Duration::from_secs(2));
-    }
-}
-
-/// Flush + close every writer and wait for the ack (bounded).
-#[cfg(test)]
-fn close_all_disk_writers() {
-    let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-    if DISK_WRITER
-        .send(WriterMsg::CloseAll { ack: ack_tx })
         .is_ok()
     {
         let _ = ack_rx.recv_timeout(std::time::Duration::from_secs(2));
@@ -1118,15 +1064,6 @@ mod tests {
         assert_eq!(list_run_events_since(&run_id, -1).expect("full").len(), 10);
 
         clear_run_event_buffer(&run_id);
-    }
-
-    #[test]
-    fn has_run_events_tracks_buffer_contents() {
-        let run_id = seed_event_buffer("has", 3);
-        assert!(has_run_events(&run_id));
-        clear_run_event_buffer(&run_id);
-        // Buffer entry gone; no disk log was written by the seed, so absent.
-        assert!(!has_run_events(&run_id));
     }
 
     /// Push one event into the process-global buffer (no disk writes).

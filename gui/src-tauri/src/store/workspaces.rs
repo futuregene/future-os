@@ -203,20 +203,6 @@ pub fn rename_workspace(input: RenameWorkspaceInput) -> Result<WorkspaceRecord, 
     Ok(workspace)
 }
 
-/// Resolve the agent session id of every thread in `workspace_id` (session id =
-/// `agent_session_id` when set, else the thread id). Read *before* a workspace
-/// hard-delete so the caller can delete each thread's agent JSONL.
-pub fn workspace_agent_session_ids(workspace_id: &str) -> Result<Vec<String>, crate::AppError> {
-    let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT COALESCE(NULLIF(TRIM(agent_session_id), ''), id)
-         FROM threads WHERE workspace_id = ?1",
-    )?;
-    let rows = stmt.query_map(params![workspace_id], |row| row.get::<_, String>(0))?;
-    rows.collect::<rusqlite::Result<_>>()
-        .map_err(crate::AppError::from)
-}
-
 /// Hard-deletes a Workspace: every thread in it (via the same FK-safe cascade as
 /// [`super::delete_thread`]) plus the workspace-scoped rows (artifacts,
 /// references, file index) and finally the workspace row itself. The user's files

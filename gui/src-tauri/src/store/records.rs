@@ -206,6 +206,9 @@ pub struct UpdateRunStatusInput {
     pub error_type: Option<String>,
 }
 
+/// `append_run_event`'s input — constructed only by test code (the journal
+/// append machinery is test-only), so non-test builds see it unused.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppendRunEventInput {

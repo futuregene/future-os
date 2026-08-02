@@ -425,6 +425,7 @@ pub fn status() -> RemoteStatus {
 ///
 /// On queue overflow the newest event is dropped and logged; the client heals
 /// the gap via `get_events_since` backfill on its next reattach.
+#[allow(clippy::too_many_arguments)]
 pub fn publish_event(
     session_id: &str,
     event_type: &str,

@@ -13,8 +13,8 @@
 //!    and projects events into the run-event log. Runs owned by a pipeline
 //!    collector are persisted by that collector — exactly one writer per run:
 //!    the pipeline registers its lease before the prompt ever reaches the
-//!    agent, and `append_run_event`'s sequence guard absorbs any residual
-//!    replay overlap.
+//!    agent, and the collector's cursor-ordering absorbs any residual replay
+//!    overlap.
 //! 2. **NATS mirroring** — the sole publisher for the remote bridge. The
 //!    collector deliberately does not publish; the observer's atomic-attach
 //!    replay guarantees the mirrored sequence has no holes. Events are
