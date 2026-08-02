@@ -529,6 +529,12 @@ pub fn run() {
                 rt.block_on(async {
                     // Give the agent a few seconds to come up; then test.
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    // Rows produced by older startup convergence builds are
+                    // terminal locally (`cancelled/interrupted`) and therefore
+                    // outside the active-run watchdog. Reconcile that legacy
+                    // shape once before approvals so an Agent run that survived
+                    // the GUI restart is reanimated instead of staying hidden.
+                    agent_bridge::reconcile_interrupted_runs().await;
                     agent_bridge::reconcile_pending_approvals().await;
                 });
             });

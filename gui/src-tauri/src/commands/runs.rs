@@ -145,17 +145,7 @@ async fn agent_events(
 }
 
 fn agent_unavailable(error: &crate::AppError) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
-    [
-        "connection refused",
-        "transport error",
-        "connection reset",
-        "broken pipe",
-        "timed out",
-        "unavailable",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
+    matches!(error, crate::AppError::AgentUnavailable(_))
 }
 
 #[tauri::command]
@@ -192,4 +182,19 @@ pub fn list_tool_outputs(
     tool_call_id: String,
 ) -> Result<Vec<store::ToolOutputRecord>, crate::AppError> {
     store::list_tool_outputs(&run_id, &tool_call_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_unavailable;
+
+    #[test]
+    fn legacy_fallback_requires_the_typed_transport_error() {
+        assert!(agent_unavailable(&crate::AppError::AgentUnavailable(
+            "connection refused".to_string()
+        )));
+        assert!(!agent_unavailable(&crate::AppError::Message(
+            "model response says service unavailable".to_string()
+        )));
+    }
 }

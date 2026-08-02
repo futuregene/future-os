@@ -187,6 +187,7 @@ struct EventJournalState {
     session_id: String,
     session_idx: i64,
     directory: Option<std::path::PathBuf>,
+    closed: bool,
     last_error: Option<String>,
     interrupt_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     #[cfg(test)]
@@ -293,6 +294,7 @@ impl SseBroadcaster {
             })
             .unwrap_or(0);
         journal.directory = Some(directory);
+        journal.closed = false;
         journal.last_error = None;
         Ok(())
     }
@@ -310,6 +312,16 @@ impl SseBroadcaster {
 
     pub fn persistence_error(&self) -> Option<String> {
         self.journal.lock().last_error.clone()
+    }
+
+    /// Fence the event journal before session deletion. The journal mutex is
+    /// also held by append for the complete file operation, so when this
+    /// returns no append can still own a path or recreate the deleted tree.
+    pub fn close_journal(&self) {
+        let mut journal = self.journal.lock();
+        journal.closed = true;
+        journal.directory = None;
+        journal.interrupt_flag = None;
     }
 
     pub fn recover_storage(&self) -> anyhow::Result<()> {
@@ -336,7 +348,7 @@ impl SseBroadcaster {
     }
 
     #[cfg(test)]
-    fn fail_next_append(&self) {
+    pub(crate) fn fail_next_append(&self) {
         self.journal.lock().fail_at = Some(JournalFailPoint::Append);
     }
 
@@ -445,6 +457,9 @@ impl SseBroadcaster {
         let mut run = self.run.lock();
         let session_scoped = is_session_scoped_event(&event.event_type);
         let mut journal = self.journal.lock();
+        if journal.closed {
+            return;
+        }
         event.session_id = journal.session_id.clone();
         if session_scoped {
             event.run_id.clear();
@@ -460,7 +475,6 @@ impl SseBroadcaster {
             event.session_idx = -1;
             event.run_sequence = run.run_sequence;
         }
-        drop(journal);
         event.timestamp = chrono::Utc::now().to_rfc3339();
         event.event_id = if session_scoped {
             format!("{}:session:{}", event.session_id, event.session_idx)
@@ -470,9 +484,8 @@ impl SseBroadcaster {
                 event.session_id, event.run_id, event.epoch, event.idx
             )
         };
-        if let Err(error) = self.append_journal(&event) {
+        if let Err(error) = Self::append_journal(&mut journal, &event) {
             let message = format!("event journal append failed: {error:#}");
-            let mut journal = self.journal.lock();
             journal.last_error = Some(message.clone());
             if let Some(flag) = &journal.interrupt_flag {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -480,6 +493,7 @@ impl SseBroadcaster {
             tracing::error!(run_id = %event.run_id, idx = event.idx, "{message}");
             return;
         }
+        drop(journal);
         if !session_scoped {
             run.idx += 1;
             apply_to_projection(&mut run.projection_events, &event);
@@ -635,17 +649,24 @@ impl SseBroadcaster {
         })
     }
 
-    fn append_journal(&self, event: &SseEvent) -> anyhow::Result<()> {
+    fn append_journal(journal: &mut EventJournalState, event: &SseEvent) -> anyhow::Result<()> {
         #[cfg(test)]
         {
-            let mut journal = self.journal.lock();
             if matches!(journal.fail_at, Some(JournalFailPoint::Append)) {
                 journal.fail_at = None;
                 anyhow::bail!("injected append failure");
             }
         }
-        let Some(path) = self.journal_path(&event.run_id) else {
+        if journal.closed {
             return Ok(());
+        }
+        let Some(directory) = journal.directory.as_ref() else {
+            return Ok(());
+        };
+        let path = if event.run_id.is_empty() {
+            directory.join("_session.jsonl")
+        } else {
+            directory.join(format!("{}.jsonl", event.run_id))
         };
         let mut bytes = serde_json::to_vec(event)?;
         bytes.push(b'\n');
@@ -656,7 +677,6 @@ impl SseBroadcaster {
         file.write_all(&bytes)?;
         #[cfg(test)]
         {
-            let mut journal = self.journal.lock();
             if matches!(journal.fail_at, Some(JournalFailPoint::Flush)) {
                 journal.fail_at = None;
                 anyhow::bail!("injected flush failure");
@@ -665,7 +685,6 @@ impl SseBroadcaster {
         file.flush()?;
         #[cfg(test)]
         {
-            let mut journal = self.journal.lock();
             if matches!(journal.fail_at, Some(JournalFailPoint::Sync)) {
                 journal.fail_at = None;
                 anyhow::bail!("injected sync failure");
@@ -1409,6 +1428,26 @@ mod tests {
         assert!(interrupt.load(std::sync::atomic::Ordering::SeqCst));
         assert!(b.persistence_error().is_some());
         assert_eq!(b.last_idx(), 0, "failed append must not advance the cursor");
+    }
+
+    #[test]
+    fn closed_journal_rejects_late_broadcast_without_recreating_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-delete", directory.path().to_path_buf())
+            .unwrap();
+        b.start_run("run-delete".to_string(), 1);
+        let mut receiver = b.subscribe();
+
+        b.close_journal();
+        std::fs::remove_dir_all(directory.path()).unwrap();
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text":"too late"}),
+        ));
+
+        assert!(!directory.path().exists());
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]

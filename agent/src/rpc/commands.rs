@@ -1091,7 +1091,14 @@ fn cmd_delete_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
             }
             (active, cancelled.len())
         };
-        if let Some(active) = active {
+        if let Some(active) = active.filter(|active| {
+            session.read().runtime.has_owned_task()
+                || !matches!(
+                    active.phase,
+                    crate::runtime::RunPhase::CancellationStuck
+                        | crate::runtime::RunPhase::PersistenceDegraded
+                )
+        }) {
             return RpcResponse::build_fail_code(
                 id,
                 "delete_session",
@@ -1105,6 +1112,21 @@ fn cmd_delete_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
                 }),
             );
         }
+        // Hard deletion is a close-then-delete barrier. The session write lock
+        // excludes concurrent metadata commands while the ordered transcript
+        // writer drains; closing the event journal then fences late broadcasts
+        // before either filesystem tree is removed.
+        let session = session.write();
+        if let Err(error) = session.persistence.close() {
+            return RpcResponse::build_fail_code(
+                id,
+                "delete_session",
+                "delete_failed",
+                &format!("failed to close session persistence: {error}"),
+                serde_json::json!({"session_id": cmd.session_id, "retryable": true}),
+            );
+        }
+        session.broadcaster.close_journal();
     }
 
     // The in-memory session is fenced before disk removal. Keep it in the map
@@ -2081,7 +2103,38 @@ mod tests {
     #[test]
     fn delete_idle_session_removes_the_live_runtime() {
         let state = make_app_state();
+        let session = state.get_session("default").unwrap();
         assert!(state.sessions.read().contains_key("default"));
+
+        let response = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
+
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["deleted"], true);
+        assert!(!state.sessions.read().contains_key("default"));
+        assert!(session
+            .read()
+            .persistence
+            .append(vec![crate::session::SessionEntry::new_assistant(
+                serde_json::json!("late write"),
+                vec![],
+            )])
+            .is_err());
+    }
+
+    #[test]
+    fn delete_reclaims_taskless_persistence_degraded_session() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        let lease = session
+            .read()
+            .runtime
+            .begin(Some("run-degraded"), Some("request-degraded"))
+            .unwrap();
+        assert!(session
+            .read()
+            .runtime
+            .mark_persistence_degraded(&lease, "disk full"));
+        assert!(!session.read().runtime.has_owned_task());
 
         let response = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
 

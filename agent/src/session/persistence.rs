@@ -46,6 +46,7 @@ struct PersistenceInner {
     session_id: String,
     worker: Mutex<Option<WorkerSlot>>,
     next_generation: AtomicU64,
+    closed: std::sync::atomic::AtomicBool,
     last_error: Mutex<Option<String>>,
     idle_timeout: Duration,
     #[cfg(test)]
@@ -81,6 +82,7 @@ impl SessionPersistence {
                 session_id,
                 worker: Mutex::new(None),
                 next_generation: AtomicU64::new(0),
+                closed: std::sync::atomic::AtomicBool::new(false),
                 last_error: Mutex::new(None),
                 idle_timeout,
                 #[cfg(test)]
@@ -159,10 +161,44 @@ impl SessionPersistence {
     /// to supersede a prior writer error and records a conservative terminal
     /// outcome before the scheduler is released.
     pub fn recover_with_entries(&self, entries: Vec<SessionEntry>) -> Result<()> {
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(anyhow!("session persistence is closed"));
+        }
         self.inner
             .manager
             .append_entries_synced(&self.inner.session_id, &entries)?;
         *self.inner.last_error.lock() = None;
+        Ok(())
+    }
+
+    /// Stop accepting persistence work and wait until every command accepted
+    /// before this boundary has released its file handle. Deletion uses this
+    /// before removing the transcript so a late writer cannot recreate it and
+    /// Windows never has to unlink an open file. Prior write errors do not
+    /// block close: deletion remains an allowed recovery operation while the
+    /// session is persistence-degraded.
+    pub fn close(&self) -> Result<()> {
+        let worker = {
+            let worker = self.inner.worker.lock();
+            if self.inner.closed.swap(true, Ordering::AcqRel) {
+                return Ok(());
+            }
+            worker
+                .as_ref()
+                .map(|slot| (slot.generation, slot.sender.clone()))
+        };
+        let Some((generation, sender)) = worker else {
+            return Ok(());
+        };
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        if sender.send(PersistenceCommand::Barrier(ack_tx)).is_err() {
+            clear_worker_generation(&mut self.inner.worker.lock(), generation);
+            return Ok(());
+        }
+        let _prior_result = ack_rx
+            .recv()
+            .map_err(|_| anyhow!("session persistence worker stopped before close boundary"))?;
+        clear_worker_generation(&mut self.inner.worker.lock(), generation);
         Ok(())
     }
 
@@ -177,8 +213,14 @@ impl SessionPersistence {
     }
 
     fn try_send(&self, mut command: PersistenceCommand) -> Result<()> {
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(anyhow!("session persistence is closed"));
+        }
         for _ in 0..2 {
             let mut worker = self.inner.worker.lock();
+            if self.inner.closed.load(Ordering::Acquire) {
+                return Err(anyhow!("session persistence is closed"));
+            }
             let (generation, sender) = self.ensure_worker_locked(&mut worker)?;
             match sender.try_send(command) {
                 Ok(()) => return Ok(()),
@@ -204,8 +246,14 @@ impl SessionPersistence {
     /// Durability boundaries may wait behind already accepted appends. These
     /// calls run from blocking RPC/finalization contexts, never a Tokio worker.
     fn send_boundary(&self, mut command: PersistenceCommand) -> Result<()> {
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(anyhow!("session persistence is closed"));
+        }
         for _ in 0..2 {
             let mut worker = self.inner.worker.lock();
+            if self.inner.closed.load(Ordering::Acquire) {
+                return Err(anyhow!("session persistence is closed"));
+            }
             let (generation, sender) = self.ensure_worker_locked(&mut worker)?;
             match sender.send(command) {
                 Ok(()) => return Ok(()),
@@ -617,6 +665,38 @@ mod tests {
             .filter(|entry| entry.entry_type == super::super::ENTRY_TYPE_ASSISTANT)
             .count();
         assert_eq!(assistant_count, 2);
+    }
+
+    #[test]
+    fn close_drains_prior_writes_and_rejects_late_recreation() {
+        let (_dir, manager, _) = fixture();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            "session-1".to_string(),
+            Duration::from_secs(1),
+        );
+        persistence
+            .append(vec![SessionEntry::new_assistant(
+                serde_json::json!("before close"),
+                vec![],
+            )])
+            .unwrap();
+
+        persistence.close().unwrap();
+        let loaded = manager.load("session-1").unwrap();
+        assert!(loaded
+            .entries
+            .iter()
+            .any(|entry| { entry.content.as_ref() == Some(&serde_json::json!("before close")) }));
+
+        std::fs::remove_file(manager.session_path("session-1")).unwrap();
+        assert!(persistence
+            .append(vec![SessionEntry::new_assistant(
+                serde_json::json!("after close"),
+                vec![],
+            )])
+            .is_err());
+        assert!(!manager.session_path("session-1").exists());
     }
 
     #[test]

@@ -19,9 +19,10 @@ pub struct DingtalkBridge {
     agent_cfg: Arc<AgentConfig>,
     gen_counters: RwLock<HashMap<String, Arc<AtomicU64>>>,
     processed: RwLock<HashSet<String>>,
-    /// Cached session ID so slash commands can reuse the last prompt session
-    /// instead of calling new_session() (which fails when agent is busy).
-    session_id: RwLock<Option<String>>,
+    /// One Agent session per DingTalk conversation. Sharing a single cached
+    /// session across chats would leak context; creating one per message would
+    /// make supersede_session a no-op.
+    session_ids: RwLock<HashMap<String, String>>,
 }
 
 impl DingtalkBridge {
@@ -38,7 +39,7 @@ impl DingtalkBridge {
             agent_cfg,
             gen_counters: RwLock::new(HashMap::new()),
             processed: RwLock::new(HashSet::new()),
-            session_id: RwLock::new(None),
+            session_ids: RwLock::new(HashMap::new()),
         })
     }
 
@@ -96,16 +97,27 @@ impl DingtalkBridge {
         );
 
         let webhook = event.session_webhook.clone();
+        let conversation_key = event
+            .chat_id
+            .clone()
+            .unwrap_or_else(|| format!("sender:{sender_id}"));
 
         if text.starts_with('/') {
-            self.handle_slash_command(&text, &webhook).await?;
+            self.handle_slash_command(&text, &webhook, &conversation_key)
+                .await?;
         } else {
-            self.process_prompt(&text, webhook).await?;
+            self.process_prompt(&text, webhook, &conversation_key)
+                .await?;
         }
         Ok(())
     }
 
-    async fn handle_slash_command(&self, text: &str, webhook: &Option<String>) -> Result<()> {
+    async fn handle_slash_command(
+        &self,
+        text: &str,
+        webhook: &Option<String>,
+        conversation_key: &str,
+    ) -> Result<()> {
         let parts: Vec<&str> = text.trim().splitn(2, char::is_whitespace).collect();
         let cmd = parts[0].to_lowercase();
         let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
@@ -130,14 +142,17 @@ impl DingtalkBridge {
                 // Abort current session (if any) then create a fresh one.
                 // Hold agent lock once to avoid "agent is busy" from an
                 // in-flight prompt.
-                let old_sid = self.session_id.read().await.clone();
+                let old_sid = self.session_ids.read().await.get(conversation_key).cloned();
                 let mut agent = self.agent.write().await;
                 if let Some(ref sid) = old_sid {
                     let _ = agent.abort(sid).await;
                 }
                 match agent.new_session(&self.agent_cfg.cwd, "dingtalk").await {
                     Ok(sid) => {
-                        *self.session_id.write().await = Some(sid.clone());
+                        self.session_ids
+                            .write()
+                            .await
+                            .insert(conversation_key.to_string(), sid.clone());
                         reply_md("New Session", &format!("**Session:** `{}`", sid));
                     }
                     Err(e) => reply_md("Error", &format!("**Error:** {}", e)),
@@ -146,7 +161,7 @@ impl DingtalkBridge {
             "/status" | "/stop" | "/model" | "/models" | "/compact" | "/effort" | "/cwd" => {
                 // Reuse cached session (from last prompt) instead of creating a new
                 // one — new_session() fails when the agent is busy.
-                let sid = match self.get_or_create_session().await {
+                let sid = match self.get_or_create_session(conversation_key).await {
                     Ok(s) => s,
                     Err(e) => {
                         reply_md("Error", &format!("**Error:** {}", e));
@@ -244,20 +259,26 @@ impl DingtalkBridge {
                 reply_md("Help", "**Commands**\n\n`/new` — new session\n\n`/status` — session status\n\n`/stop` — abort prompt\n\n`/model <id>` — switch model\n\n`/models` — list models\n\n`/effort <level>` — thinking level\n\n`/compact` — compact context\n\n`/cwd <path>` — set working directory\n\n`/help` — this help");
             }
             _ => {
-                self.process_prompt(text, webhook.clone()).await?;
+                self.process_prompt(text, webhook.clone(), conversation_key)
+                    .await?;
             }
         }
         Ok(())
     }
 
-    /// Return cached session ID (from last prompt), or create a new one as fallback.
-    async fn get_or_create_session(&self) -> Result<String> {
-        if let Some(ref sid) = *self.session_id.read().await {
-            return Ok(sid.clone());
+    /// Return this conversation's Agent session, or create it on first use.
+    async fn get_or_create_session(&self, conversation_key: &str) -> Result<String> {
+        if let Some(sid) = self.session_ids.read().await.get(conversation_key).cloned() {
+            return Ok(sid);
         }
         let mut agent = self.agent.write().await;
+        // Two first messages for one chat can race past the read above. The
+        // Agent write lock serializes session creation, so recheck after it.
+        if let Some(sid) = self.session_ids.read().await.get(conversation_key).cloned() {
+            return Ok(sid);
+        }
         let sid = agent.new_session(&self.agent_cfg.cwd, "dingtalk").await?;
-        // Apply channel defaults for slash-command sessions.
+        // Apply channel defaults once when this conversation is first seen.
         if !self.agent_cfg.model.is_empty() {
             let _ = agent.set_model(&sid, &self.agent_cfg.model).await;
         }
@@ -266,42 +287,35 @@ impl DingtalkBridge {
                 .set_thinking_level(&sid, &self.agent_cfg.thinking_level)
                 .await;
         }
-        *self.session_id.write().await = Some(sid.clone());
+        if !self.agent_cfg.permission_level.is_empty() {
+            let _ = agent
+                .set_permission_level(&sid, &self.agent_cfg.permission_level)
+                .await;
+        }
+        self.session_ids
+            .write()
+            .await
+            .insert(conversation_key.to_string(), sid.clone());
         Ok(sid)
     }
 
-    async fn process_prompt(&self, text: &str, webhook: Option<String>) -> Result<()> {
-        let session_id = {
-            let mut agent = self.agent.write().await;
-            let sid = agent.new_session(&self.agent_cfg.cwd, "dingtalk").await?;
-            // Apply channel defaults
-            if !self.agent_cfg.model.is_empty() {
-                match agent.set_model(&sid, &self.agent_cfg.model).await {
-                    Ok(()) => tracing::info!("[ding] set model={}", self.agent_cfg.model),
-                    Err(e) => tracing::warn!("[ding] set model failed: {}", e),
-                }
-            }
-            if !self.agent_cfg.thinking_level.is_empty() {
-                let _ = agent
-                    .set_thinking_level(&sid, &self.agent_cfg.thinking_level)
-                    .await;
-            }
-            if !self.agent_cfg.permission_level.is_empty() {
-                let _ = agent
-                    .set_permission_level(&sid, &self.agent_cfg.permission_level)
-                    .await;
-            }
-            sid
-        };
-        // Cache for subsequent slash commands
-        *self.session_id.write().await = Some(session_id.clone());
+    async fn process_prompt(
+        &self,
+        text: &str,
+        webhook: Option<String>,
+        conversation_key: &str,
+    ) -> Result<()> {
+        // Ordinary messages share one Agent session, so the Agent scheduler's
+        // supersede_session policy can atomically replace the prior run. /new
+        // is the only path that deliberately rotates this cached session.
+        let session_id = self.get_or_create_session(conversation_key).await?;
         let agent = self.agent.clone();
         let dingtalk = self.dingtalk.clone();
         let text = text.to_string();
         let gen_counter = {
             let mut counters = self.gen_counters.write().await;
             counters
-                .entry("global".into())
+                .entry(conversation_key.to_string())
                 .or_insert_with(|| Arc::new(AtomicU64::new(0)))
                 .clone()
         };

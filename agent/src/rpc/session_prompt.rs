@@ -234,6 +234,13 @@ impl ServerSession {
     }
 
     pub(super) fn start_next_scheduled(&mut self) -> Result<crate::runtime::RunAck> {
+        if let Some(error) = self
+            .broadcaster
+            .persistence_error()
+            .or_else(|| self.persistence.last_error())
+        {
+            return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
+        }
         let request = self
             .scheduler
             .queued()

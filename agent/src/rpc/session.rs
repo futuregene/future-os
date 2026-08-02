@@ -269,6 +269,17 @@ impl ServerSession {
     }
 
     fn on_scheduled_run_finished(&mut self, finished: &crate::runtime::RunLease) {
+        if let Some(error) = self
+            .broadcaster
+            .persistence_error()
+            .or_else(|| self.persistence.last_error())
+        {
+            tracing::error!(
+                run_id = %finished.run_id,
+                "scheduler paused before dequeue because persistence is unavailable: {error}"
+            );
+            return;
+        }
         if self.scheduler.active().is_some() {
             if let Err(error) = self.scheduler.finish_active(&finished.run_id) {
                 tracing::error!(
@@ -1381,6 +1392,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn persistence_failure_pauses_dequeue_without_cancelling_queued_runs() {
+        let mut session = make_test_session("scheduler-persistence-fence");
+        session
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+        for index in 1..=2 {
+            session
+                .enqueue_prompt(
+                    &format!("queued {index}"),
+                    &[],
+                    &[],
+                    Some(&format!("run-{index}")),
+                    &format!("request-{index}"),
+                    crate::runtime::BusyPolicy::EnqueueIfBusy,
+                )
+                .unwrap();
+        }
+        session.broadcaster.fail_next_append();
+        session.broadcaster.broadcast(crate::rpc::SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text":"fails persistence"}),
+        ));
+
+        let error = session.start_next_scheduled().unwrap_err();
+        assert!(error.to_string().contains("persistence is unavailable"));
+        assert_eq!(
+            session
+                .scheduler
+                .queued()
+                .iter()
+                .map(|request| request.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-1", "run-2"]
+        );
+        assert!(session.scheduled_setting_summary("run-1").is_some());
+        assert!(session.scheduled_setting_summary("run-2").is_some());
+
+        // Also cover the completion-wake race directly: even if a run was
+        // already marked scheduler-active before journal health degraded, its
+        // lease must remain held and the successor must remain queued.
+        let (started, ack) = session.scheduler.start_next(7).unwrap();
+        session.on_scheduled_run_finished(&crate::runtime::RunLease {
+            run_id: started.run_id,
+            epoch: ack.run_epoch,
+            run_sequence: ack.run_sequence,
+        });
+        assert_eq!(
+            session
+                .scheduler
+                .active()
+                .map(|(request, _)| request.run_id),
+            Some("run-1".to_string())
+        );
+        assert_eq!(
+            session
+                .scheduler
+                .queued()
+                .iter()
+                .map(|request| request.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-2"]
+        );
+    }
+
     #[tokio::test]
     async fn in_memory_scheduler_starts_next_run_after_matching_task_exits() {
         let cwd = test_workspace();
@@ -1477,14 +1554,15 @@ mod tests {
         release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                let session = session.read();
-                if session.runtime.snapshot().is_none()
-                    && session.scheduler.active().is_none()
-                    && session.scheduler.queued().is_empty()
-                {
+                let settled = {
+                    let session = session.read();
+                    session.runtime.snapshot().is_none()
+                        && session.scheduler.active().is_none()
+                        && session.scheduler.queued().is_empty()
+                };
+                if settled {
                     break;
                 }
-                drop(session);
                 tokio::task::yield_now().await;
             }
         })
