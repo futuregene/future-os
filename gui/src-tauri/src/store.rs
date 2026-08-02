@@ -6,6 +6,7 @@ mod approvals;
 mod artifacts;
 mod cleanup;
 mod db;
+mod deletions;
 mod markdown_refs;
 mod records;
 mod review_snapshots;
@@ -37,6 +38,10 @@ pub use cleanup::{
     ActiveRun,
 };
 pub use db::{app_images_root, future_dir, get_approval_request, get_run, thread_images_dir};
+pub use deletions::{
+    acknowledge_agent_session_delete, enqueue_agent_session_delete,
+    note_agent_session_delete_failure, pending_agent_session_deletes,
+};
 pub use markdown_refs::resolve_markdown_references;
 pub use records::*;
 pub use review_snapshots::{
@@ -49,11 +54,10 @@ pub use review_snapshots::{
 pub(crate) use runs::flush_run_event_log_for_test;
 pub use runs::{
     active_run_sessions, append_run_event, clear_all_run_events_files, clear_run_event_buffer,
-    create_run, delete_run_events_file, fail_run_if_active, get_tool_call_input, has_run_events,
-    latest_run, latest_run_infos, list_run_events, list_run_events_bulk, list_run_events_since,
-    list_runs, list_tool_calls, list_tool_calls_bulk, list_tool_outputs,
-    update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord,
-    ToolOutputRecord,
+    create_run, delete_run_events_file, fail_run_if_active, get_tool_call_input, latest_run,
+    latest_run_infos, list_run_events, list_run_events_bulk, list_run_events_since, list_runs,
+    list_tool_calls, list_tool_calls_bulk, list_tool_outputs, update_run_status_if_active,
+    LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord, ToolOutputRecord,
 };
 pub use threads::{
     archive_thread, batch_delete_threads, create_thread, delete_thread, delete_thread_with_files,

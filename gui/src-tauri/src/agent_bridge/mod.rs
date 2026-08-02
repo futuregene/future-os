@@ -41,6 +41,53 @@ use self::session::{
     workspace_path_for_thread,
 };
 
+/// Deliver locally tombstoned session deletions after the Agent becomes
+/// reachable. A delete is idempotent; `session not found` is success too.
+pub async fn reconcile_delete_outbox() {
+    let Ok(session_ids) = crate::store::pending_agent_session_deletes() else {
+        return;
+    };
+    for session_id in session_ids {
+        let result = async {
+            let mut client = connect_agent().await?;
+            let response = client
+                .execute_command(delete_session_command(session_id.clone()))
+                .await
+                .map_err(|status| map_rpc_error("Agent delete delivery failed", status))?;
+            let response = response.into_inner();
+            if response.success || response.error.contains("session not found") {
+                Ok(())
+            } else {
+                Err(crate::AppError::Message(response.error))
+            }
+        }
+        .await;
+        match result {
+            Ok(()) => {
+                let _ = crate::store::acknowledge_agent_session_delete(&session_id);
+            }
+            Err(error) => {
+                let _ = crate::store::note_agent_session_delete_failure(
+                    &session_id,
+                    &error.to_string(),
+                );
+            }
+        }
+    }
+}
+
+/// Fence local observers immediately and durably queue the Agent deletion.
+/// The GUI may disappear after this point without resurrecting the session:
+/// startup reconciliation retries the outbox entry until the Agent accepts it.
+pub async fn delete_session_eventually(session_id: String) {
+    if session_id.trim().is_empty() {
+        return;
+    }
+    let _ = crate::store::enqueue_agent_session_delete(&session_id);
+    observer::drop_observer(&session_id);
+    reconcile_delete_outbox().await;
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPromptResponse {

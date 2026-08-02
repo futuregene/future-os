@@ -439,7 +439,17 @@ pub fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &st
     // truncated `data` marker (type/runId/idx preserved) rather than dropped,
     // so the client's dedup cursor doesn't get a permanent hole.
     let data = cap_event_data(data);
-    let body = json!({ "type": event_type, "data": data, "runId": run_id, "idx": idx });
+    // Additive v2 envelope. Keep the v1 fields byte-for-byte named so already
+    // paired mobile clients continue to render and dedupe; v2 clients can use
+    // the explicit session identity even when subject routing is abstracted.
+    let body = json!({
+        "schemaVersion": 2,
+        "sessionId": session_id,
+        "type": event_type,
+        "data": data,
+        "runId": run_id,
+        "idx": idx,
+    });
     let Ok(payload) = serde_json::to_vec(&body) else {
         return;
     };

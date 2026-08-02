@@ -95,11 +95,9 @@ pub(super) async fn replace_projection_off_thread(
         .any(|(event_type, _, _)| event_type == "agent_end");
     let _ = tokio::task::spawn_blocking(move || {
         if let Some(run_id) = local_run_id.as_deref() {
-            // A projection snapshot replaces, rather than extends, the local
-            // replica. Closing/removing the old append log first prevents a
-            // truncated prefix from being rendered alongside the snapshot.
-            crate::store::clear_run_event_buffer(run_id);
-            crate::store::delete_run_events_file(run_id);
+            // The Agent snapshot is already its canonical journal projection.
+            // Fold it only into derived SQLite records; GUI raw-event JSONL is
+            // legacy read-only and must never be rewritten here.
             for (event_type, data, sequence) in events {
                 persist_run_event(Some(run_id), &event_type, &data, sequence);
             }

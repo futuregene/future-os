@@ -53,16 +53,10 @@ pub async fn delete_workspace(
     let session_ids = store::workspace_agent_session_ids(&workspace_id)?;
     // Hard-delete the workspace, its threads, and all their child rows.
     let workspace = store::delete_workspace(&workspace_id)?;
-    // Best-effort: delete each thread's agent JSONL (the source of truth).
-    if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
-        for session_id in session_ids {
-            let trimmed = session_id.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let cmd = crate::agent_bridge::delete_session_command(trimmed.to_string());
-            let _ = client.execute_command(cmd).await;
-        }
+    // Tombstone each canonical session. Failed delivery remains in SQLite's
+    // delete outbox and is retried after the Agent comes back.
+    for session_id in session_ids {
+        crate::agent_bridge::delete_session_eventually(session_id).await;
     }
     // Physically reclaim the now-orphaned GUI dirs: the workspace's shadow-review
     // repo and each thread's image/chat-scratch dir. These key off DB presence,

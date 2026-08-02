@@ -61,14 +61,13 @@ pub async fn abort_run(
 pub async fn list_run_events(
     run_id: String,
 ) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
-    let local = store::list_run_events(&run_id)?;
-    // After a GUI restart the in-memory RUN_EVENT_BUFFER is empty — the agent
-    // (still running in the background) holds the authoritative events.  Pull
-    // them from the agent for active runs with no local events.
-    if !local.is_empty() {
-        return Ok(local);
+    // The Agent journal is canonical for every run, including settled ones.
+    // GUI JSONL is read only as a compatibility fallback for logs written by
+    // pre-journal builds while the Agent is unavailable.
+    match agent_events(&run_id, -1).await {
+        Ok(events) => Ok(events),
+        Err(_) => store::list_run_events(&run_id),
     }
-    agent_events_fallback(&run_id, -1).await
 }
 
 /// Incremental variant of [`list_run_events`] for pushed live-preview updates:
@@ -83,38 +82,21 @@ pub async fn list_run_events_since(
     if since_sequence < 0 {
         return list_run_events(run_id).await;
     }
-    let local = store::list_run_events_since(&run_id, since_sequence)?;
-    // An empty tail usually means "no new events this tick" — but when the
-    // local log is entirely cold (post-restart) AND the run is still active,
-    // the events only exist agent-side (the earlier full fetch came from the
-    // agent and was never persisted locally), so keep falling back with the
-    // same incremental query the agent natively supports.
-    if !local.is_empty() || store::has_run_events(&run_id) {
-        return Ok(local);
+    match agent_events(&run_id, since_sequence).await {
+        Ok(events) => Ok(events),
+        Err(_) => store::list_run_events_since(&run_id, since_sequence),
     }
-    agent_events_fallback(&run_id, since_sequence).await
 }
 
-/// Pull an active run's events from the agent (authoritative while streaming,
-/// survives GUI restarts) when the local log is cold. `since_sequence` is
-/// passed through to the agent's native incremental query (-1 = whole run).
-/// Returns an empty vec for settled runs, unknown runs, or an unreachable
-/// agent — the caller's empty local result is the right answer in all three.
-async fn agent_events_fallback(
+/// Pull canonical events from the Agent journal. `since_sequence` is passed
+/// through to the native incremental query (-1 = whole run).
+async fn agent_events(
     run_id: &str,
     since_sequence: i64,
 ) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
-    let empty = Vec::new();
-    let Some(run) = store::get_run(run_id).ok().flatten() else {
-        return Ok(empty);
-    };
-    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
-        return Ok(empty);
-    }
-    // Active run — pull events from the agent
-    let Some(thread) = store::get_thread(&run.thread_id).ok().flatten() else {
-        return Ok(empty);
-    };
+    let run = store::get_run(run_id)?.ok_or_else(|| format!("Unknown run {run_id}"))?;
+    let thread = store::get_thread(&run.thread_id)?
+        .ok_or_else(|| format!("Missing thread for run {run_id}"))?;
     let sid = thread
         .agent_session_id
         .as_deref()
@@ -122,12 +104,9 @@ async fn agent_events_fallback(
         .map(|s| s.to_string())
         .unwrap_or_else(|| run.thread_id.clone());
     let agent_json =
-        match agent_bridge::get_events_since(sid, run_id.to_string(), since_sequence).await {
-            Ok(v) => v,
-            Err(_) => return Ok(empty),
-        };
+        agent_bridge::get_events_since(sid, run_id.to_string(), since_sequence).await?;
     let Some(events) = agent_json.get("events").and_then(|v| v.as_array()) else {
-        return Ok(empty);
+        return Ok(Vec::new());
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -159,6 +138,9 @@ async fn agent_events_fallback(
 pub fn list_run_events_bulk(
     run_ids: Vec<String>,
 ) -> Result<Vec<(String, Vec<store::RunEventRecord>)>, crate::AppError> {
+    // Kept synchronous for the existing IPC contract. Single-run and live
+    // preview reads above are Agent-first; this cold inspector helper is a
+    // legacy-only fallback and is intentionally not a second event source.
     store::list_run_events_bulk(&run_ids)
 }
 

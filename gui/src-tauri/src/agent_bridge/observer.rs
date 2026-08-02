@@ -245,7 +245,6 @@ async fn discover_streaming_sessions() {
 }
 
 /// Drop the observer for a session going away (thread/session deleted).
-#[allow(dead_code)] // Wired in with thread deletion in a follow-up.
 pub fn drop_observer(session_id: &str) {
     if let Some(handle) = OBSERVERS
         .lock()
@@ -905,6 +904,8 @@ mod tests {
             snapshot_cursor: 0,
             session_id: "sess-order".to_string(),
             epoch: 1,
+            event_id: String::new(),
+            timestamp: String::new(),
         }
     }
 

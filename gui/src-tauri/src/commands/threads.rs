@@ -159,10 +159,7 @@ pub async fn delete_thread(
         .filter(|id| !id.is_empty())
         .unwrap_or(&thread.id)
         .to_string();
-    if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
-        let cmd = crate::agent_bridge::delete_session_command(session_id);
-        let _ = client.execute_command(cmd).await;
-    }
+    crate::agent_bridge::delete_session_eventually(session_id).await;
     Ok(thread)
 }
 
@@ -196,12 +193,10 @@ pub async fn batch_delete_threads(
 
     let result = store::batch_delete_threads(&input)?;
 
-    // Delete agent session JSONLs for every thread (best-effort).
-    if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
-        for (_, session_id) in &session_info {
-            let cmd = crate::agent_bridge::delete_session_command(session_id.clone());
-            let _ = client.execute_command(cmd).await;
-        }
+    // Tombstone each Agent session durably; a down sidecar is retried on the
+    // next startup instead of silently leaking the canonical JSONL.
+    for (_, session_id) in session_info {
+        crate::agent_bridge::delete_session_eventually(session_id).await;
     }
 
     Ok(result)

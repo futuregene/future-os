@@ -407,12 +407,15 @@ pub(super) fn synthesize_run_events_from_entries(
                 "tool_name": name,
                 "tool_args": args,
             });
-            store::append_run_event(store::AppendRunEventInput {
-                run_id: run_id.clone(),
-                event_type: "tool_start".to_string(),
-                payload: Some(start_payload.to_string()),
-                sequence: seq,
-            })?;
+            // Imported history is represented by the Agent transcript. Keep
+            // only the GUI's derived tool projection; never recreate a GUI
+            // raw-event JSONL from it.
+            super::persist::persist_run_event(
+                Some(run_id),
+                "tool_start",
+                &start_payload.to_string(),
+                seq,
+            );
             seq += 1;
 
             // tool_end from the matching result entry, if one exists.
@@ -431,12 +434,12 @@ pub(super) fn synthesize_run_events_from_entries(
                         "text": content,
                     })
                 };
-                store::append_run_event(store::AppendRunEventInput {
-                    run_id: run_id.clone(),
-                    event_type: "tool_end".to_string(),
-                    payload: Some(end_payload.to_string()),
-                    sequence: seq,
-                })?;
+                super::persist::persist_run_event(
+                    Some(run_id),
+                    "tool_end",
+                    &end_payload.to_string(),
+                    seq,
+                );
                 seq += 1;
             }
         }

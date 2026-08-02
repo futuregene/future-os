@@ -512,6 +512,10 @@ pub fn run() {
             // a thread stub + an observer — streaming ones within ~1s, idle
             // ones on the 60s import pass.
             agent_bridge::spawn_session_discovery();
+            // Flush local deletion tombstones after the sidecar has had a
+            // chance to start. This is deliberately independent of the
+            // current UI route and makes offline GUI deletes converge.
+            tauri::async_runtime::spawn(async { agent_bridge::reconcile_delete_outbox().await });
             // Periodically reconcile non-terminal run rows against the Agent's
             // authoritative state (mirrors terminal markers, reattaches lost
             // collectors, settles orphans). Guards against rows whose owning

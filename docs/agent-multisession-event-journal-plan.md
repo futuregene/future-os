@@ -1,6 +1,6 @@
 # Agent 多会话、Queued Run 与事件真源实施方案
 
-状态：Phase 0–3 已完成并收尾；Phase 4–7 待实施
+状态：Phase 0–6 已完成并收尾；Phase 7 待实施
 
 日期：2026-08-01
 
@@ -15,7 +15,10 @@
 | Phase 1b | 完成 | persistence 熔断、附件 ACK 前内存快照、per-session/global 配额与释放、原子 supersede 已落地；飞书/钉钉不再自行执行 `abort → poll idle → prompt` |
 | Phase 2 | 完成 | TUI 使用完整 RunAck 和 run registry，queued 气泡绑定 canonical `run_id`；agent_start/end 按 run 收敛；Turn 固定为 `turn_id = run_id`；仓库客户端不再暴露 follow-up/steer RPC |
 | Phase 3 | 完成 | canonical envelope 已增加 `session_id/run_id/epoch/idx/event_id/timestamp`；Agent JSONL append+fsync-before-broadcast、disk replay、atomic attach、partial-tail recovery 与 I/O failure interrupt 已落地 |
-| Phase 4–7 | 未开始 | GUI Agent-first/旧日志兼容、删除 outbox、Observer/NATS、GUI/Remote queued run 交互 |
+| Phase 4 | 完成 | `list_run_events` / incremental read 先读 Agent canonical journal；Observer 只写 SQLite 派生投影、通知和 NATS；旧 `~/.future/app/run_events` 仅在 Agent 不可用时只读降级，不再有生产写入路径 |
+| Phase 5 | 完成 | Agent delete fence/reclaim 已由前序完成；GUI 增加 SQLite `agent_delete_outbox`，单删/批删/workspace 都先 tombstone，再幂等投递；启动后自动重试，删除时立即取消 observer |
+| Phase 6 | 完成 | Observer 已具备 idle-LRU、active 不逐出和 overflow 语义；NATS 增加 additive `schemaVersion: 2`/`sessionId`，保留 v1 `type/data/runId/idx`；启动继续导入、observer discovery、run/approval reconciliation 与删除 outbox reconciliation |
+| Phase 7 | 未开始 | GUI/Remote 直接创建、展示和取消 queued run 的产品交互 |
 
 当前保护边界：`reject_if_busy`、`enqueue_if_busy`、`supersede_session` 均已开放。Queued 状态只存在于当前 `agent_instance_id` 的有界内存中；Agent 重启后明确丢失，不存在 `queue.jsonl`。
 
@@ -703,6 +706,8 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 
 退出条件：GUI event 目录无新写入，历史数据仍可读。
 
+**完成记录（2026-08-02）**：生产读取已改为 Agent-first；仅当 Agent 连接/查询失败才读取旧 GUI JSONL。`persist_run_event` 和 snapshot/import 投影不再追加 GUI 原始事件，保留旧 reader/清理函数只为已存在文件的兼容与回收，测试 fixture 不代表生产写入路径。
+
 ### Phase 5：删除回收闭环
 
 - Agent deleting fence、内存队列清空、writer close、完整目录删除。
@@ -712,6 +717,8 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 
 退出条件：Agent 离线删除重连后完成；被删 session 不回导；无 transcript/event orphan，内存 queued/ACK 状态已释放。
 
+**完成记录（2026-08-02）**：`agent_delete_outbox` 以 `session_id` 去重；本地 hard delete 后仍可在 Agent 暂不可用时保留待投递 tombstone。重试把 Agent 的 `session not found` 视作幂等成功，避免已删除会话滞留 outbox。
+
 ### Phase 6：Observer、NATS 和恢复
 
 - 修复 observer LRU touch/active race。
@@ -720,6 +727,8 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 - active/queued/approval 状态从 Agent 重建。
 
 退出条件：128+ session 无周期抖动；active observer 不逐出；重启无假状态。
+
+**完成记录（2026-08-02）**：NATS 采用只增字段升级，已发布消费者继续按 v1 字段工作；缺口仍通过已有 `get_events_since` cursor backfill 修复。Observer 活跃保护/LRU 及 startup reconciliation 在本阶段复核，无新增实现缺口。
 
 ### Phase 7：GUI/Remote 开放 Follow-up
 
