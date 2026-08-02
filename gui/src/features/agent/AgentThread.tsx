@@ -234,6 +234,25 @@ export function AgentThread({
         onToggleLeftPanel={onToggleLeftPanel}
       />
       <div className="group relative min-h-0 flex-1 overflow-hidden">
+        {showLoadOlderHint
+          ? (
+              <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-8 pt-5">
+                <button
+                  type="button"
+                  onClick={loadOlder}
+                  disabled={loadingOlder}
+                  aria-label={t("thread.loadOlder")}
+                  title={t("thread.loadOlder")}
+                  className="pointer-events-auto flex animate-pop-in items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink disabled:cursor-default disabled:opacity-70"
+                >
+                  {loadingOlder
+                    ? <Loader2 className="size-3.5 animate-spin" />
+                    : <History className="size-3.5" />}
+                  {t("thread.loadOlder")}
+                </button>
+              </div>
+            )
+          : null}
         <div
           ref={scrollRef}
           className={cn(
@@ -244,25 +263,6 @@ export function AgentThread({
           onScroll={combinedHandleScroll}
         >
           <div className="mx-auto w-full max-w-4xl">
-            {showLoadOlderHint
-              ? (
-                  <div className="flex justify-center py-3">
-                    <button
-                      type="button"
-                      onClick={loadOlder}
-                      disabled={loadingOlder}
-                      aria-label={t("thread.loadOlder")}
-                      title={t("thread.loadOlder")}
-                      className="flex items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink disabled:cursor-default disabled:opacity-70"
-                    >
-                      {loadingOlder
-                        ? <Loader2 className="size-3.5 animate-spin" />
-                        : <History className="size-3.5" />}
-                      {t("thread.loadOlder")}
-                    </button>
-                  </div>
-                )
-              : null}
             {loadingIndicator
               ? (
                   <div className="py-8 text-sm text-ink-soft">{t("thread.loading")}</div>

@@ -57,6 +57,13 @@ interface UseMessagePagingResult {
 const TOP_THRESHOLD_PX = 8;
 /** Wheel events within this window after a load are ignored — one page per gesture. */
 const WHEEL_COOLDOWN_MS = 300;
+/**
+ * How long the user must rest at the top before the load button appears. This
+ * is the "confirm gate": the gesture that brought the user to the top ends
+ * while the timer runs, so its trailing wheel events can never auto-load — the
+ * button must be visibly settled before a pull counts.
+ */
+const TOP_SETTLE_MS = 350;
 
 /**
  * Windowed rendering for long threads. `messages` stays fully loaded in memory
@@ -79,6 +86,8 @@ export function useMessagePaging({
   const [loadedPages, setLoadedPages] = useState(1);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [atTop, setAtTop] = useState(false);
+  const [topSettled, setTopSettled] = useState(false);
+  const topSettleTimerRef = useRef<number | null>(null);
   const onScrollRef = useRef(onScroll);
   onScrollRef.current = onScroll;
 
@@ -98,7 +107,9 @@ export function useMessagePaging({
     : clampedPageStart;
   const visibleMessages = messages.slice(effectivePageStart);
   const canLoadOlder = effectivePageStart > 0;
-  const showLoadOlderHint = canLoadOlder && atTop && !loadingOlder;
+  // The button only appears after the user has rested at the top for the settle
+  // window — arriving at the top must not, by itself, ever trigger a load.
+  const showLoadOlderHint = canLoadOlder && atTop && topSettled && !loadingOlder;
 
   // Pending scroll restore for the in-flight page load. Written synchronously in
   // `loadOlder`, consumed (and cleared) by the layout effect after commit.
@@ -112,6 +123,10 @@ export function useMessagePaging({
     if (effectivePageStart <= 0)
       return;
     loadingOlderRef.current = true;
+    if (topSettleTimerRef.current !== null) {
+      window.clearTimeout(topSettleTimerRef.current);
+      topSettleTimerRef.current = null;
+    }
     restoreRef.current = {
       anchor: captureAnchor(scrollRef.current, "data-message-id"),
     };
@@ -127,6 +142,11 @@ export function useMessagePaging({
     setLoadedPages(1);
     setLoadingOlder(false);
     setAtTop(false);
+    setTopSettled(false);
+    if (topSettleTimerRef.current !== null) {
+      window.clearTimeout(topSettleTimerRef.current);
+      topSettleTimerRef.current = null;
+    }
     loadingOlderRef.current = false;
     restoreRef.current = null;
     // `messages` isn't a dependency: the reset targets the thread change only.
@@ -144,6 +164,7 @@ export function useMessagePaging({
     restoreRef.current = null;
     loadingOlderRef.current = false;
     setLoadingOlder(false);
+    setTopSettled(false);
     const container = scrollRef.current;
     if (!container)
       return;
@@ -161,20 +182,39 @@ export function useMessagePaging({
   }, [loadedPages, scrollRef]);
 
   // Compose the caller's scroll handling with top detection. `scrollTop === 0`
-  // means the user is at the very top of the thread.
+  // means the user is at the very top; resting there for the settle window turns
+  // the load button on. Any scroll away (or a load starting) cancels it — the
+  // button must re-settle before the next pull counts.
   const handleScroll = useCallback(() => {
     onScrollRef.current?.();
     const container = scrollRef.current;
-    if (container)
-      setAtTop(container.scrollTop <= TOP_THRESHOLD_PX);
+    if (!container)
+      return;
+    const isAtTop = container.scrollTop <= TOP_THRESHOLD_PX;
+    setAtTop(isAtTop);
+    if (!isAtTop) {
+      if (topSettleTimerRef.current !== null) {
+        window.clearTimeout(topSettleTimerRef.current);
+        topSettleTimerRef.current = null;
+      }
+      setTopSettled(false);
+      return;
+    }
+    if (topSettleTimerRef.current !== null)
+      return;
+    topSettleTimerRef.current = window.setTimeout(() => {
+      topSettleTimerRef.current = null;
+      setTopSettled(true);
+    }, TOP_SETTLE_MS);
   }, [scrollRef]);
 
-  // Second channel for the load gesture: a wheel-scroll up while already stuck
-  // at the top fires the load, alongside clicking the hint button. The listener
-  // only mounts while the hint is live; the sync ref guard + cooldown stamp keep
-  // one gesture to one page load.
+  // Second channel for the load gesture: a wheel-scroll up while the load button
+  // is visible fires the load, alongside clicking it. The listener only mounts
+  // once the button has settled (`topSettled`), so the gesture that arrived at
+  // the top can never auto-load — the pull must happen after the button shows.
+  // The sync ref guard + cooldown stamp keep one gesture to one page load.
   useEffect(() => {
-    if (!canLoadOlder || !atTop || loadingOlder)
+    if (!canLoadOlder || !atTop || !topSettled || loadingOlder)
       return;
     const container = scrollRef.current;
     if (!container)
@@ -191,7 +231,7 @@ export function useMessagePaging({
     };
     container.addEventListener("wheel", onWheel, { passive: true });
     return () => container.removeEventListener("wheel", onWheel);
-  }, [atTop, canLoadOlder, loadOlder, loadingOlder, scrollRef]);
+  }, [atTop, canLoadOlder, loadOlder, loadingOlder, scrollRef, topSettled]);
 
   return {
     visibleMessages,

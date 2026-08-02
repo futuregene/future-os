@@ -1,6 +1,27 @@
 @import "tailwindcss";
 @config "../../tailwind.config.js";
 
+/* Load-older button entrance: a quick pop with a small overshoot bounce so the
+   "pause + confirm" affordance is unmissable when it settles at the top. */
+@keyframes pop-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.96);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(1px) scale(1.02);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-pop-in {
+  animation: pop-in 0.24s ease-out both;
+}
+
 :root {
   color: theme(colors.ink);
   background: theme(colors.canvas);
