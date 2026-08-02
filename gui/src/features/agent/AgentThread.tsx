@@ -3,7 +3,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, History, Loader2 } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
@@ -18,7 +18,11 @@ import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
 import { useAgentThreadState } from "./useAgentThreadState";
+import { useMessagePaging } from "./useMessagePaging";
 import { useStickyAutoScroll } from "./useStickyAutoScroll";
+
+/** How many user turns one loaded page renders. */
+const PAGE_USER_TURNS = 10;
 
 interface AgentThreadProps {
   thread: StoredThread | null;
@@ -109,6 +113,30 @@ export function AgentThread({
     onScroll: handleScrollbarVisibility,
     onContentSettled: () => updateFloatingScrollbar(false),
   });
+
+  // Windowed rendering for long threads: only the last PAGE_USER_TURNS turns
+  // render; loading an older page is a sync window change (the full message
+  // list stays in memory) with scroll anchoring so the viewport never jumps.
+  const {
+    visibleMessages,
+    loadingOlder,
+    showLoadOlderHint,
+    handleScroll: handlePagingScroll,
+    loadOlder,
+  } = useMessagePaging({
+    messages,
+    scrollRef,
+    userTurnCount: PAGE_USER_TURNS,
+    resetKey: thread?.id ?? null,
+    onScroll: handleScroll,
+  });
+
+  // Compose scroll handling: sticky auto-scroll + floating scrollbar + paging
+  // top detection all observe the same container.
+  const combinedHandleScroll = useCallback(() => {
+    handlePagingScroll();
+    handleScroll();
+  }, [handlePagingScroll, handleScroll]);
 
   // When loading completes (initial load or thread switch), scroll to the
   // latest message.  useStickyAutoScroll's useLayoutEffect fires on contentKey
@@ -213,9 +241,28 @@ export function AgentThread({
             activeApproval ? "pb-112" : "pb-48",
           )}
           data-chat-scroll="true"
-          onScroll={handleScroll}
+          onScroll={combinedHandleScroll}
         >
           <div className="mx-auto w-full max-w-4xl">
+            {showLoadOlderHint
+              ? (
+                  <div className="flex justify-center py-3">
+                    <button
+                      type="button"
+                      onClick={loadOlder}
+                      disabled={loadingOlder}
+                      aria-label={t("thread.loadOlder")}
+                      title={t("thread.loadOlder")}
+                      className="flex items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink disabled:cursor-default disabled:opacity-70"
+                    >
+                      {loadingOlder
+                        ? <Loader2 className="size-3.5 animate-spin" />
+                        : <History className="size-3.5" />}
+                      {t("thread.loadOlder")}
+                    </button>
+                  </div>
+                )
+              : null}
             {loadingIndicator
               ? (
                   <div className="py-8 text-sm text-ink-soft">{t("thread.loading")}</div>
@@ -226,7 +273,7 @@ export function AgentThread({
                     )
                   : (
                       <MessageList
-                        messages={messages}
+                        messages={visibleMessages}
                         showThinking={showThinking}
                         workspaceId={renderWorkspace.workspaceId}
                         workspacePath={renderWorkspace.workspacePath}
