@@ -304,6 +304,94 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 ),
             }
         }
+        "prune_run_events" => {
+            if cmd.run_id.is_empty()
+                || !cmd
+                    .run_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            {
+                return RpcResponse::build_fail_code(
+                    id,
+                    "prune_run_events",
+                    "invalid_run_id",
+                    "run_id is required and must be a safe identifier",
+                    serde_json::json!({"run_id": cmd.run_id}),
+                );
+            }
+            let session = rlock!(session, id);
+            if session
+                .scheduler
+                .active()
+                .is_some_and(|(active, _)| active.run_id == cmd.run_id)
+            {
+                return RpcResponse::build_fail_code(
+                    id,
+                    "prune_run_events",
+                    "run_active",
+                    "cannot prune the journal of an active run",
+                    serde_json::json!({"run_id": cmd.run_id}),
+                );
+            }
+            let path = session
+                .session_manager
+                .run_data_path(&cmd.session_id)
+                .join(format!("{}.jsonl", cmd.run_id));
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    RpcResponse::ok(id, "prune_run_events", serde_json::json!({"pruned": true}))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    RpcResponse::ok(id, "prune_run_events", serde_json::json!({"pruned": true}))
+                }
+                Err(error) => RpcResponse::build_fail_code(
+                    id,
+                    "prune_run_events",
+                    "prune_failed",
+                    &error.to_string(),
+                    serde_json::json!({"run_id": cmd.run_id, "retryable": true}),
+                ),
+            }
+        }
+        "abort_session" => {
+            let (active_run_id, cancelled) = {
+                let mut sess = wlock!(session, id);
+                let cancelled = sess
+                    .cancel_all_queued_runs(crate::runtime::QueuedCancellationReason::Cancelled);
+                let active_run_id = sess.runtime.snapshot().map(|active| active.run_id);
+                if let Some(run_id) = active_run_id.as_deref() {
+                    let _ = sess.runtime.request_abort(Some(run_id));
+                }
+                (active_run_id, cancelled)
+            };
+            RpcResponse::ok(
+                id,
+                "abort_session",
+                serde_json::json!({
+                    "active_run_id": active_run_id,
+                    "queued_cancelled": cancelled.len(),
+                    "state": "cancelling",
+                }),
+            )
+        }
+        "retry_persistence" => match wlock!(session, id).recover_persistence_degraded() {
+            Ok(lease) => RpcResponse::ok(
+                id,
+                "retry_persistence",
+                serde_json::json!({
+                    "run_id": lease.run_id,
+                    "state": "interrupted",
+                    "recovered": true,
+                }),
+            ),
+            Err(error) => RpcResponse::build_fail_code(
+                id,
+                "retry_persistence",
+                "persistence_recovery_failed",
+                &error.to_string(),
+                serde_json::json!({"retryable": true}),
+            ),
+        },
         "abort" => {
             // abort() only needs &self — take a read lock so a concurrent
             // reader (get_state polling) can never make the abort a no-op,
@@ -394,6 +482,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                         "epoch": e.epoch,
                         "eventId": e.event_id,
                         "timestamp": e.timestamp,
+                        "sessionIdx": e.session_idx,
+                        "runSequence": e.run_sequence,
                     })
                 })
                 .collect();
@@ -411,6 +501,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                             "epoch": event.epoch,
                             "eventId": event.event_id,
                             "timestamp": event.timestamp,
+                            "sessionIdx": event.session_idx,
+                            "runSequence": event.run_sequence,
                         })
                     }).collect::<Vec<_>>(),
                 })
@@ -425,6 +517,30 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "projection": projection,
                 }),
             )
+        }
+        "get_session_events_since" => {
+            let replay = rlock!(session, id)
+                .broadcaster
+                .session_events_since(cmd.since_idx);
+            match replay {
+                Ok(events) => RpcResponse::ok(
+                    id,
+                    "get_session_events_since",
+                    serde_json::json!({
+                        "events": events.into_iter().map(|event| serde_json::json!({
+                            "type": event.event_type,
+                            "data": event.data,
+                            "sessionId": event.session_id,
+                            "sessionIdx": event.session_idx,
+                            "eventId": event.event_id,
+                            "timestamp": event.timestamp,
+                        })).collect::<Vec<_>>()
+                    }),
+                ),
+                Err(error) => {
+                    RpcResponse::build_fail(id, "get_session_events_since", &error.to_string())
+                }
+            }
         }
         "set_model" => {
             let (result, model_id) = {
@@ -2606,7 +2722,7 @@ mod tests {
         assert_eq!(resp["success"], false);
         assert!(resp["error"]
             .as_str()
-            .is_some_and(|error| error.contains("not the active run")));
+            .is_some_and(|error| error.contains("not configured") || error.contains("not known")));
     }
 
     #[test]

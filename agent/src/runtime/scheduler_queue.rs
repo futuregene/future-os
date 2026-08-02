@@ -34,6 +34,25 @@ pub enum QueuedCancellationReason {
     SessionDeleted,
 }
 
+impl QueuedCancellationReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Superseded => "superseded",
+            Self::SessionDeleted => "session_deleted",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TerminalRunAck {
+    pub run_id: String,
+    pub run_sequence: u64,
+    pub client_request_id: String,
+    pub state: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RunQueueError {
     #[error("session is being deleted")]
@@ -94,6 +113,7 @@ struct QueueState {
     queued_bytes: usize,
     requests: HashMap<String, RequestIdentity>,
     run_ids: HashSet<String>,
+    terminal_acks: VecDeque<TerminalRunAck>,
 }
 
 #[derive(Debug, Default)]
@@ -191,6 +211,7 @@ pub struct InMemoryRunQueue {
     max_queue_bytes: usize,
     max_request_bytes: usize,
     global_budget: std::sync::Arc<GlobalQueueBudget>,
+    recent_ack_limit: usize,
     state: Mutex<QueueState>,
 }
 
@@ -202,7 +223,7 @@ impl InMemoryRunQueue {
             DEFAULT_SESSION_QUEUE_CAPACITY,
             DEFAULT_SESSION_QUEUE_BYTES,
             DEFAULT_REQUEST_BYTES,
-            0,
+            256,
             std::sync::Arc::new(GlobalQueueBudget::new(usize::MAX, usize::MAX)),
         )
     }
@@ -213,7 +234,7 @@ impl InMemoryRunQueue {
         capacity: usize,
         max_queue_bytes: usize,
         max_request_bytes: usize,
-        _recent_ack_limit: usize,
+        recent_ack_limit: usize,
     ) -> Self {
         Self::with_limits_and_global(
             session_id,
@@ -221,7 +242,7 @@ impl InMemoryRunQueue {
             capacity,
             max_queue_bytes,
             max_request_bytes,
-            _recent_ack_limit,
+            recent_ack_limit,
             std::sync::Arc::new(GlobalQueueBudget::new(usize::MAX, usize::MAX)),
         )
     }
@@ -232,7 +253,7 @@ impl InMemoryRunQueue {
         capacity: usize,
         max_queue_bytes: usize,
         max_request_bytes: usize,
-        _recent_ack_limit: usize,
+        recent_ack_limit: usize,
         global_budget: std::sync::Arc<GlobalQueueBudget>,
     ) -> Self {
         Self {
@@ -241,6 +262,7 @@ impl InMemoryRunQueue {
             max_queue_bytes,
             max_request_bytes,
             global_budget,
+            recent_ack_limit,
             state: Mutex::new(QueueState {
                 next_sequence: next_sequence.max(1),
                 active: None,
@@ -248,6 +270,7 @@ impl InMemoryRunQueue {
                 queued_bytes: 0,
                 requests: HashMap::new(),
                 run_ids: HashSet::new(),
+                terminal_acks: VecDeque::new(),
             }),
         }
     }
@@ -320,8 +343,11 @@ impl InMemoryRunQueue {
         if state.run_ids.contains(&run_id) {
             return Err(RunQueueError::DuplicateRunId(run_id));
         }
+        if state.next_sequence.checked_add(1).is_none() {
+            return Err(RunQueueError::SequenceExhausted);
+        }
         self.global_budget.reserve(payload_bytes)?;
-        let run_sequence = next_sequence(&mut state)?;
+        let run_sequence = next_sequence(&mut state).expect("sequence capacity preflighted");
         let request = ScheduledRunRequest {
             session_id: self.session_id.clone(),
             run_id: run_id.clone(),
@@ -418,6 +444,9 @@ impl InMemoryRunQueue {
         if state.run_ids.contains(&run_id) {
             return Err(RunQueueError::DuplicateRunId(run_id));
         }
+        if state.next_sequence.checked_add(1).is_none() {
+            return Err(RunQueueError::SequenceExhausted);
+        }
 
         let released_count = state.queued.len();
         let released_bytes = state.queued_bytes;
@@ -427,9 +456,15 @@ impl InMemoryRunQueue {
         let cancelled: Vec<_> = state.queued.drain(..).collect();
         state.queued_bytes = 0;
         for request in &cancelled {
-            remember_terminal(&mut state, &request.client_request_id);
+            remember_terminal(
+                &mut state,
+                request,
+                "cancelled",
+                "superseded",
+                self.recent_ack_limit,
+            );
         }
-        let run_sequence = next_sequence(&mut state)?;
+        let run_sequence = next_sequence(&mut state).expect("sequence capacity preflighted");
         let request = ScheduledRunRequest {
             session_id: self.session_id.clone(),
             run_id: run_id.clone(),
@@ -470,14 +505,20 @@ impl InMemoryRunQueue {
             });
         }
         let (finished, _) = state.active.take().expect("active run checked");
-        remember_terminal(&mut state, &finished.client_request_id);
+        remember_terminal(
+            &mut state,
+            &finished,
+            "terminal",
+            "settled",
+            self.recent_ack_limit,
+        );
         Ok(())
     }
 
     pub fn cancel_queued(
         &self,
         run_id: &str,
-        _reason: QueuedCancellationReason,
+        reason: QueuedCancellationReason,
     ) -> Result<ScheduledRunRequest, RunQueueError> {
         let mut state = self.state.lock();
         let Some(index) = state.queued.iter().position(|run| run.run_id == run_id) else {
@@ -489,11 +530,17 @@ impl InMemoryRunQueue {
             .expect("queued run index checked");
         state.queued_bytes = state.queued_bytes.saturating_sub(cancelled.payload_bytes);
         self.global_budget.release(cancelled.payload_bytes);
-        remember_terminal(&mut state, &cancelled.client_request_id);
+        remember_terminal(
+            &mut state,
+            &cancelled,
+            "cancelled",
+            reason.as_str(),
+            self.recent_ack_limit,
+        );
         Ok(cancelled)
     }
 
-    pub fn cancel_all_queued(&self, _reason: QueuedCancellationReason) -> Vec<ScheduledRunRequest> {
+    pub fn cancel_all_queued(&self, reason: QueuedCancellationReason) -> Vec<ScheduledRunRequest> {
         let mut state = self.state.lock();
         let cancelled: Vec<_> = state.queued.drain(..).collect();
         state.queued_bytes = 0;
@@ -501,13 +548,31 @@ impl InMemoryRunQueue {
             self.global_budget.release(request.payload_bytes);
         }
         for request in &cancelled {
-            remember_terminal(&mut state, &request.client_request_id);
+            remember_terminal(
+                &mut state,
+                request,
+                "cancelled",
+                reason.as_str(),
+                self.recent_ack_limit,
+            );
         }
         cancelled
     }
 
     pub fn active(&self) -> Option<(ScheduledRunRequest, u64)> {
         self.state.lock().active.clone()
+    }
+
+    pub fn release_active_payload(&self, run_id: &str) {
+        let mut state = self.state.lock();
+        if let Some((active, _)) = state
+            .active
+            .as_mut()
+            .filter(|(active, _)| active.run_id == run_id)
+        {
+            active.payload = Value::Null;
+            active.payload_bytes = 0;
+        }
     }
 
     pub fn queued(&self) -> Vec<ScheduledRunRequest> {
@@ -517,13 +582,36 @@ impl InMemoryRunQueue {
     pub fn queued_bytes(&self) -> usize {
         self.state.lock().queued_bytes
     }
+
+    pub fn knows_request(&self, client_request_id: &str) -> bool {
+        self.state.lock().requests.contains_key(client_request_id)
+    }
+
+    pub fn recent_terminal_acks(&self) -> Vec<TerminalRunAck> {
+        self.state.lock().terminal_acks.iter().cloned().collect()
+    }
 }
 
-fn remember_terminal(_state: &mut QueueState, _client_request_id: &str) {
-    // Request identities intentionally live for the Agent process lifetime.
-    // Retrying an ambiguous RPC after a run settles must return its original
-    // run id, never schedule a second turn. Queue contents remain restart-
-    // volatile by product decision; this is only an in-process guarantee.
+fn remember_terminal(
+    state: &mut QueueState,
+    request: &ScheduledRunRequest,
+    terminal_state: &str,
+    reason: &str,
+    limit: usize,
+) {
+    state.terminal_acks.push_back(TerminalRunAck {
+        run_id: request.run_id.clone(),
+        run_sequence: request.run_sequence,
+        client_request_id: request.client_request_id.clone(),
+        state: terminal_state.to_string(),
+        reason: reason.to_string(),
+    });
+    while state.terminal_acks.len() > limit {
+        if let Some(evicted) = state.terminal_acks.pop_front() {
+            state.requests.remove(&evicted.client_request_id);
+            state.run_ids.remove(&evicted.run_id);
+        }
+    }
 }
 
 fn next_sequence(state: &mut QueueState) -> Result<u64, RunQueueError> {
@@ -880,5 +968,27 @@ mod tests {
                 assert!(queued.iter().all(|run| run.run_id != active.run_id));
             }
         }
+    }
+
+    #[test]
+    fn terminal_ack_lru_is_bounded_and_releases_old_request_identity() {
+        let queue = InMemoryRunQueue::with_limits("s", 1, 8, 1024, 1024, 2);
+        for n in 1..=3 {
+            queue
+                .accept(
+                    &format!("request-{n}"),
+                    Some(&format!("run-{n}")),
+                    BusyPolicy::EnqueueIfBusy,
+                    serde_json::json!({"n":n}),
+                )
+                .unwrap();
+            let (run, _) = queue.start_next(n).unwrap();
+            queue.finish_active(&run.run_id).unwrap();
+        }
+        let recent = queue.recent_terminal_acks();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].run_id, "run-2");
+        assert!(!queue.knows_request("request-1"));
+        assert!(queue.knows_request("request-3"));
     }
 }

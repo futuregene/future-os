@@ -17,13 +17,15 @@ pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     connect_agent, delete_session_command, get_available_models_command, get_run_state_command,
     get_session_entries_command, get_state_command, list_streaming_sessions_command, map_rpc_error,
-    set_default_model_command, set_model_command, set_session_name_command,
-    set_thinking_level_command, RpcResponseExt,
+    prune_run_events_command, set_default_model_command, set_model_command,
+    set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub(crate) use self::import::import_missing_sessions;
 pub use self::models::{list_agent_models, AgentModelOption};
-pub use self::observer::{drop_observer, ensure_observer, seed_observers_from_store, spawn_session_discovery};
+pub use self::observer::{
+    drop_observer, ensure_observer, seed_observers_from_store, spawn_session_discovery,
+};
 pub use self::run_control::abort_run;
 pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
 pub use self::session::fork_agent_session;

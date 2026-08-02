@@ -25,6 +25,7 @@ struct QueuedAttachmentSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScheduledSettingsSnapshot {
+    settings_schema_version: u32,
     model: String,
     thinking_level: String,
     cwd: String,
@@ -86,6 +87,34 @@ impl ServerSession {
         if self.deleting {
             return Err(crate::runtime::RunQueueError::Deleting.into());
         }
+        if !self.scheduler.knows_request(client_request_id) {
+            if let Some(run_id) = requested_run_id.filter(|run_id| !run_id.is_empty()) {
+                let journal_exists = self
+                    .session_manager
+                    .run_data_path(&self.session_id)
+                    .join(format!("{run_id}.jsonl"))
+                    .exists();
+                let transcript_exists = self
+                    .session_manager
+                    .load(&self.session_id)
+                    .ok()
+                    .is_some_and(|session| {
+                        session.entries.iter().any(|entry| {
+                            entry
+                                .content
+                                .as_ref()
+                                .and_then(|content| content.get("run_id"))
+                                .and_then(serde_json::Value::as_str)
+                                == Some(run_id)
+                        })
+                    });
+                if journal_exists || transcript_exists {
+                    return Err(
+                        crate::runtime::RunQueueError::DuplicateRunId(run_id.to_string()).into(),
+                    );
+                }
+            }
+        }
         if let Some(error) = self
             .broadcaster
             .persistence_error()
@@ -115,6 +144,7 @@ impl ServerSession {
             })
             .collect::<std::result::Result<Vec<_>, crate::runtime::RunQueueError>>()?;
         let settings = ScheduledSettingsSnapshot {
+            settings_schema_version: 1,
             model: self.model.clone(),
             thinking_level: self.thinking_level.clone(),
             cwd: self.cwd.clone(),
@@ -447,9 +477,13 @@ impl ServerSession {
                     return Err(error.into());
                 }
             }
+            self.scheduler.release_active_payload(&request.run_id);
         }
-        self.broadcaster
-            .start_run(run_lease.run_id.clone(), run_lease.epoch as i64);
+        self.broadcaster.start_run_with_sequence(
+            run_lease.run_id.clone(),
+            run_lease.epoch as i64,
+            run_lease.run_sequence,
+        );
         // This run starts with a clean persistence-error and compaction state so
         // the run-end commit decision (append-only vs healing rewrite) reflects
         // only this run. Runs are serialized per session, so no concurrent run

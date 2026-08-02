@@ -351,6 +351,19 @@ impl RunControl {
         true
     }
 
+    pub fn recover_persistence_degraded(&self, lease: &RunLease) -> bool {
+        let mut state = self.state.lock();
+        let Some(active) = state.active.as_mut() else {
+            return false;
+        };
+        if active.lease != *lease || active.phase != RunPhase::PersistenceDegraded {
+            return false;
+        }
+        active.phase = RunPhase::Finalizing;
+        drop(state);
+        self.finish(lease)
+    }
+
     pub fn snapshot(&self) -> Option<RunSnapshot> {
         self.state.lock().active.as_ref().map(|active| RunSnapshot {
             run_id: active.lease.run_id.clone(),

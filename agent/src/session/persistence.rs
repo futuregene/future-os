@@ -155,6 +155,17 @@ impl SessionPersistence {
         self.inner.last_error.lock().clone()
     }
 
+    /// Operator-triggered recovery boundary. Unlike CommitRun, this is allowed
+    /// to supersede a prior writer error and records a conservative terminal
+    /// outcome before the scheduler is released.
+    pub fn recover_with_entries(&self, entries: Vec<SessionEntry>) -> Result<()> {
+        self.inner
+            .manager
+            .append_entries_synced(&self.inner.session_id, &entries)?;
+        *self.inner.last_error.lock() = None;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn fail_next_rewrite(&self) {
         self.inner.fail_next_rewrite.store(true, Ordering::Release);

@@ -66,7 +66,8 @@ pub async fn list_run_events(
     // pre-journal builds while the Agent is unavailable.
     match agent_events(&run_id, -1).await {
         Ok(events) => Ok(events),
-        Err(_) => store::list_run_events(&run_id),
+        Err(error) if agent_unavailable(&error) => store::list_run_events(&run_id),
+        Err(error) => Err(error),
     }
 }
 
@@ -84,7 +85,10 @@ pub async fn list_run_events_since(
     }
     match agent_events(&run_id, since_sequence).await {
         Ok(events) => Ok(events),
-        Err(_) => store::list_run_events_since(&run_id, since_sequence),
+        Err(error) if agent_unavailable(&error) => {
+            store::list_run_events_since(&run_id, since_sequence)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -129,10 +133,29 @@ async fn agent_events(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
             sequence: e.get("idx").and_then(|v| v.as_i64()).unwrap_or(i as i64),
-            created_at: e.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0),
+            created_at: e
+                .get("timestamp")
+                .and_then(|value| value.as_str())
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.timestamp_millis())
+                .unwrap_or(0),
         })
         .collect();
     Ok(records)
+}
+
+fn agent_unavailable(error: &crate::AppError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    [
+        "connection refused",
+        "transport error",
+        "connection reset",
+        "broken pipe",
+        "timed out",
+        "unavailable",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 #[tauri::command]

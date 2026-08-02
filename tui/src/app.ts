@@ -72,6 +72,7 @@ export class App extends Container {
     { value: "/approve", label: "/approve", description: "approve pending tool execution" },
     { value: "/reject", label: "/reject", description: "reject pending tool execution" },
     { value: "/stop", label: "/stop", description: "stop current generation" },
+    { value: "/cancel", label: "/cancel <run-id>", description: "cancel a queued run" },
     { value: "/status", label: "/status", description: "show session and model info" },
     { value: "/model", label: "/model", description: "select model", takesModelArg: true },
     { value: "/sessions", label: "/sessions", description: "browse sessions" },
@@ -1423,6 +1424,21 @@ export class App extends Container {
         return;
       }
 
+      if (cmd === "cancel") {
+        if (!arg) {
+          this.chat.addMessage({ id: crypto.randomUUID(), role: "system", content: "Usage: /cancel <queued-run-id>" });
+          return;
+        }
+        try {
+          await this.client.cancelQueuedRun(arg);
+          this.chat.updateRunState(arg, "cancelled");
+          this.chat.addMessage({ id: crypto.randomUUID(), role: "system", content: `Cancelled queued run: ${arg}` });
+        } catch (err) {
+          this.chat.addMessage({ id: crypto.randomUUID(), role: "system", content: `Failed to cancel queued run: ${err}` });
+        }
+        return;
+      }
+
       if (cmd === "status") {
         try {
           const s = await this.client.getState();
@@ -1480,7 +1496,7 @@ export class App extends Container {
       // the canonical queued run identity.
       try {
         const ack = await this.client.prompt(value, undefined, "enqueue_if_busy");
-        this.chat.bindUserRun(localMessageId, ack.run_id, ack.accepted_state === "queued" ? "queued" : "running");
+        this.chat.bindUserRun(localMessageId, ack.run_id, ack.accepted_state === "queued" ? "queued" : "running", ack.queue_position);
       } catch (err: any) {
         this.chat.setMessageRunState(localMessageId, "failed");
         this.chat.addMessage({
@@ -1498,7 +1514,7 @@ export class App extends Container {
 
     try {
       const ack = await this.client.prompt(value);
-      this.chat.bindUserRun(localMessageId, ack.run_id, ack.accepted_state === "queued" ? "queued" : "running");
+      this.chat.bindUserRun(localMessageId, ack.run_id, ack.accepted_state === "queued" ? "queued" : "running", ack.queue_position);
     } catch (err: any) {
       this.chat.setMessageRunState(localMessageId, "failed");
       this.state.streaming = false;
@@ -1684,7 +1700,14 @@ export class App extends Container {
     try {
       const s = await this.client.getState();
       for (const runId of this.client.takeLostQueuedRunIds()) {
-        this.chat.updateRunState(runId, "failed");
+        this.chat.updateRunState(runId, "lost_on_agent_restart");
+      }
+      for (const queued of s.queuedRuns ?? []) {
+        this.chat.upsertQueuedRun(queued.runId, queued.displayText, queued.queuePosition);
+      }
+      for (const terminal of s.recentTerminalAcks ?? []) {
+        const state = terminal.reason === "superseded" ? "superseded" : terminal.state === "cancelled" ? "cancelled" : "terminal";
+        this.chat.updateRunState(terminal.run_id, state);
       }
       this.state.model = s.model ?? "(no model)";
       this.state.thinking = s.thinkingLevel;

@@ -324,6 +324,34 @@ impl ServerSession {
         cancelled
     }
 
+    pub fn recover_persistence_degraded(&mut self) -> Result<crate::runtime::RunLease> {
+        let active = self
+            .runtime
+            .snapshot()
+            .ok_or_else(|| anyhow::anyhow!("session has no active run"))?;
+        if active.phase != crate::runtime::RunPhase::PersistenceDegraded {
+            anyhow::bail!("active run is not persistence_degraded");
+        }
+        let lease = crate::runtime::RunLease {
+            run_id: active.run_id,
+            epoch: active.epoch,
+            run_sequence: active.run_sequence,
+        };
+        self.broadcaster.recover_storage()?;
+        let terminal = crate::session::SessionEntry::run_terminal(
+            &lease.run_id,
+            crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
+            0,
+            0,
+            Some("persistence recovered after an uncertain outcome"),
+        );
+        self.persistence.recover_with_entries(vec![terminal])?;
+        if !self.runtime.recover_persistence_degraded(&lease) {
+            anyhow::bail!("persistence recovery lost the active run lease");
+        }
+        Ok(lease)
+    }
+
     pub fn session_name(&self) -> String {
         self.session_name.clone()
     }

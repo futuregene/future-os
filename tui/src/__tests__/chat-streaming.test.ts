@@ -69,6 +69,22 @@ describe("ChatArea streaming render", () => {
     expect(messages.filter((message) => message.runState === "queued")).toHaveLength(8);
   });
 
+  test("queued state replay reconstructs bubbles after a TUI restart", () => {
+    const chat = new ChatArea(W);
+    chat.render(W);
+    chat.upsertQueuedRun("run-2", "second prompt", 2);
+    chat.upsertQueuedRun("run-1", "first prompt", 1);
+    chat.upsertQueuedRun("run-2", "ignored replacement", 1);
+    const messages = (chat as any).messages as ChatMessage[];
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({
+      id: "run-2",
+      content: "second prompt",
+      runState: "queued",
+      queuePosition: 1,
+    });
+  });
+
   test("deferred: deltas are not rendered until flush", () => {
     const chat = new ChatArea(W);
     chat.render(W);

@@ -73,6 +73,8 @@ fn map_broadcast_event(
             epoch: event.epoch,
             event_id: event.event_id,
             timestamp: event.timestamp,
+            session_idx: event.session_idx,
+            run_sequence: event.run_sequence,
         }),
         Err(error) => {
             // Non-atomic observers can remain subscribed across multiple runs,
@@ -320,6 +322,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         epoch: projection.epoch,
                         event_id: String::new(),
                         timestamp: String::new(),
+                        session_idx: -1,
+                        run_sequence: projection.run_sequence,
                     });
                 }
                 initial.extend(
@@ -338,6 +342,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             epoch: event.epoch,
                             event_id: event.event_id,
                             timestamp: event.timestamp,
+                            session_idx: event.session_idx,
+                            run_sequence: event.run_sequence,
                         }),
                 );
                 (attachment.receiver, initial, sess.broadcaster.clone())
@@ -356,6 +362,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         epoch: 0,
                         event_id: String::new(),
                         timestamp: String::new(),
+                        session_idx: -1,
+                        run_sequence: -1,
                     }],
                     sess.broadcaster.clone(),
                 )

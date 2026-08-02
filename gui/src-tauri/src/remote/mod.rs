@@ -425,7 +425,18 @@ pub fn status() -> RemoteStatus {
 ///
 /// On queue overflow the newest event is dropped and logged; the client heals
 /// the gap via `get_events_since` backfill on its next reattach.
-pub fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &str, idx: i64) {
+pub fn publish_event(
+    session_id: &str,
+    event_type: &str,
+    data: &str,
+    run_id: &str,
+    idx: i64,
+    epoch: i64,
+    event_id: &str,
+    timestamp: &str,
+    session_idx: i64,
+    run_sequence: i64,
+) {
     let target = {
         let guard = STATE.lock().unwrap();
         guard
@@ -438,18 +449,18 @@ pub fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &st
     // Guard the NATS payload cap: an oversized event is published with a
     // truncated `data` marker (type/runId/idx preserved) rather than dropped,
     // so the client's dedup cursor doesn't get a permanent hole.
-    let data = cap_event_data(data);
-    // Additive v2 envelope. Keep the v1 fields byte-for-byte named so already
-    // paired mobile clients continue to render and dedupe; v2 clients can use
-    // the explicit session identity even when subject routing is abstracted.
-    let body = json!({
-        "schemaVersion": 2,
-        "sessionId": session_id,
-        "type": event_type,
-        "data": data,
-        "runId": run_id,
-        "idx": idx,
-    });
+    let body = build_event_body(
+        session_id,
+        event_type,
+        data,
+        run_id,
+        idx,
+        epoch,
+        event_id,
+        timestamp,
+        session_idx,
+        run_sequence,
+    );
     let Ok(payload) = serde_json::to_vec(&body) else {
         return;
     };
@@ -460,6 +471,35 @@ pub fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &st
     if tx.try_send(event).is_err() {
         eprintln!("remote: event publish queue full; dropping {event_type} for {session_id}");
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_event_body(
+    session_id: &str,
+    event_type: &str,
+    data: &str,
+    run_id: &str,
+    idx: i64,
+    epoch: i64,
+    event_id: &str,
+    timestamp: &str,
+    session_idx: i64,
+    run_sequence: i64,
+) -> serde_json::Value {
+    let data = cap_event_data(data);
+    json!({
+        "schemaVersion": 2,
+        "sessionId": session_id,
+        "type": event_type,
+        "data": data,
+        "runId": run_id,
+        "idx": idx,
+        "epoch": epoch,
+        "eventId": event_id,
+        "timestamp": timestamp,
+        "sessionIdx": session_idx,
+        "runSequence": run_sequence,
+    })
 }
 
 /// Mirror a run's projection snapshot as a wholesale-replacement signal. The
@@ -473,6 +513,7 @@ pub fn publish_snapshot(
     run_id: &str,
     snapshot_cursor: i64,
     snapshot_events: &[crate::agent_proto::ProjectedRunEvent],
+    run_sequence: i64,
 ) {
     let events: Vec<serde_json::Value> = snapshot_events
         .iter()
@@ -486,7 +527,18 @@ pub fn publish_snapshot(
         })
         .collect();
     let data = json!({ "snapshotEvents": events, "snapshotCursor": snapshot_cursor }).to_string();
-    publish_event(session_id, "run_snapshot", &data, run_id, snapshot_cursor);
+    publish_event(
+        session_id,
+        "run_snapshot",
+        &data,
+        run_id,
+        snapshot_cursor,
+        0,
+        &format!("{session_id}:{run_id}:snapshot:{snapshot_cursor}"),
+        "",
+        -1,
+        run_sequence,
+    );
 }
 
 /// Return `data` unchanged when it fits the payload budget, else a well-formed
@@ -978,5 +1030,54 @@ async fn handle_web_request(stream: &mut tokio::net::TcpStream, web_dir: &std::p
             );
             let _ = stream.write_all(resp.as_bytes()).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    #[test]
+    fn nats_v2_event_keeps_every_v1_field_unchanged() {
+        let body = build_event_body(
+            "session-1",
+            "text_chunk",
+            r#"{"text":"hi"}"#,
+            "run-1",
+            7,
+            2,
+            "evt-1",
+            "2026-08-02T00:00:00Z",
+            -1,
+            11,
+        );
+        assert_eq!(body["type"], "text_chunk");
+        assert_eq!(body["data"], r#"{"text":"hi"}"#);
+        assert_eq!(body["runId"], "run-1");
+        assert_eq!(body["idx"], 7);
+        assert_eq!(body["schemaVersion"], 2);
+        assert_eq!(body["sessionId"], "session-1");
+        assert_eq!(body["epoch"], 2);
+        assert_eq!(body["eventId"], "evt-1");
+        assert_eq!(body["runSequence"], 11);
+    }
+
+    #[test]
+    fn nats_session_event_has_independent_cursor() {
+        let body = build_event_body(
+            "session-1",
+            "model_changed",
+            "{}",
+            "",
+            -1,
+            0,
+            "session-1:session:4",
+            "2026-08-02T00:00:00Z",
+            4,
+            -1,
+        );
+        assert_eq!(body["runId"], "");
+        assert_eq!(body["sessionIdx"], 4);
+        assert_eq!(body["runSequence"], -1);
     }
 }

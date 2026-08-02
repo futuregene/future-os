@@ -126,8 +126,17 @@ export interface RpcSessionState {
   activeRun?: ActiveRunState | null;
   queuedRuns?: QueuedRunState[];
   queuedCount?: number;
+  recentTerminalAcks?: RecentTerminalAck[];
   interruptedRun?: InterruptedRunState | null;
   requestedRun?: RunTerminalState | null;
+}
+
+export interface RecentTerminalAck {
+  run_id: string;
+  run_sequence: number;
+  client_request_id: string;
+  state: "terminal" | "cancelled" | "failed";
+  reason: string;
 }
 
 export interface QueuedRunState {

@@ -295,6 +295,7 @@ fn get_state_internal(
         })
         .collect::<Vec<_>>();
     let queued_count = queued_runs.len();
+    let recent_terminal_acks = sess.scheduler.recent_terminal_acks();
     // Restart recovery: when no run is live but the journal still records a run
     // that began without committing (a run_started marker with no run_terminal),
     // the previous run was interrupted by a crash or agent restart. Surface it
@@ -357,6 +358,7 @@ fn get_state_internal(
         "sourceMeta": sess.source_meta.clone(),
         "activeRun": active_run,
         "queuedRuns": queued_runs,
+        "recentTerminalAcks": recent_terminal_acks,
         "queuedCount": queued_count,
         "interruptedRun": interrupted_run,
         "requestedRun": requested_run,

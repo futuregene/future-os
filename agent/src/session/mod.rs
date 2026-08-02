@@ -502,6 +502,33 @@ impl Manager {
         self.run_data_root().join(id)
     }
 
+    /// Reclaim Agent-owned run data whose transcript no longer exists. This is
+    /// safe at startup before sessions are hydrated; live deletion uses the
+    /// same transcript-as-commit-point rule.
+    pub fn gc_orphan_run_data(&self) -> Result<usize> {
+        let root = self.run_data_root();
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(error.into()),
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(session_id) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !self.session_path(session_id).exists() {
+                fs::remove_dir_all(&path)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     /// Append one or more entries to the session JSONL without rewriting
     /// the file.  Each entry is written as a single `write_all` syscall
     /// (JSON + newline pre-assembled) so a crash mid-write at most loses
@@ -2565,6 +2592,33 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("future-{tag}-{}", generate_id()));
         let manager = Manager::new(dir.clone());
         (dir, manager)
+    }
+
+    #[test]
+    fn orphan_run_data_gc_preserves_sessions_with_transcripts() {
+        let (dir, manager) = temp_manager("orphan-run-data");
+        std::fs::create_dir_all(manager.run_data_path("orphan")).unwrap();
+        std::fs::create_dir_all(manager.run_data_path("live")).unwrap();
+        std::fs::write(
+            manager.run_data_path("orphan").join("run.jsonl"),
+            b"event\n",
+        )
+        .unwrap();
+
+        let session = Session::snapshot(
+            "live".to_string(),
+            "/tmp".to_string(),
+            "test-model".to_string(),
+            "live".to_string(),
+            String::new(),
+            vec![SessionEntry::new_user("user", serde_json::json!("hi"))],
+        );
+        manager.save(&session).unwrap();
+
+        assert_eq!(manager.gc_orphan_run_data().unwrap(), 1);
+        assert!(!manager.run_data_path("orphan").exists());
+        assert!(manager.run_data_path("live").exists());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

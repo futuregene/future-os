@@ -192,6 +192,13 @@ pub fn delete_session_command(session_id: String) -> RpcCommand {
     base_command("delete_session", session_id)
 }
 
+pub fn prune_run_events_command(session_id: String, run_id: String) -> RpcCommand {
+    RpcCommand {
+        run_id,
+        ..base_command("prune_run_events", session_id)
+    }
+}
+
 pub fn list_sessions_command() -> RpcCommand {
     base_command("list_sessions", String::new())
 }

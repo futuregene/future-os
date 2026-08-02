@@ -99,6 +99,7 @@ fn expand_projection_snapshot(event: proto::StreamEvent) -> VecDeque<proto::Stre
     let run_id = event.run_id;
     let session_id = event.session_id;
     let epoch = event.epoch;
+    let run_sequence = event.run_sequence;
     event
         .snapshot_events
         .into_iter()
@@ -114,6 +115,8 @@ fn expand_projection_snapshot(event: proto::StreamEvent) -> VecDeque<proto::Stre
             epoch,
             event_id: String::new(),
             timestamp: String::new(),
+            session_idx: -1,
+            run_sequence,
         })
         .collect()
 }

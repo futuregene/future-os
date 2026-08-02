@@ -10,14 +10,14 @@
 
 | 阶段 | 状态 | 已完成 / 剩余 |
 | --- | --- | --- |
-| Phase 0 | 完成 | 单 active、FIFO、进程内幂等、配额、restart 清空、并发 stamping 均有测试；scheduler 增加 10,000 步确定性随机状态机测试，journal 覆盖 append/flush/fsync failpoint |
-| Phase 1a | 完成 | RunRequest/RunAck、内存 scheduler、三种 busy policy、自动 dequeue/cancel、设置快照全部落地；Agent Loop 内 steer/follow-up continuation 及旧 mode/config/proto 字段已删除 |
-| Phase 1b | 完成 | persistence 熔断、附件 ACK 前内存快照、per-session/global 配额与释放、原子 supersede 已落地；飞书/钉钉不再自行执行 `abort → poll idle → prompt` |
-| Phase 2 | 完成 | TUI 使用完整 RunAck 和 run registry，queued 气泡绑定 canonical `run_id`；agent_start/end 按 run 收敛；Turn 固定为 `turn_id = run_id`；仓库客户端不再暴露 follow-up/steer RPC |
-| Phase 3 | 完成 | canonical envelope 已增加 `session_id/run_id/epoch/idx/event_id/timestamp`；Agent JSONL append+fsync-before-broadcast、disk replay、atomic attach、partial-tail recovery 与 I/O failure interrupt 已落地 |
-| Phase 4 | 完成 | `list_run_events` / incremental read 先读 Agent canonical journal；Observer 只写 SQLite 派生投影、通知和 NATS；旧 `~/.future/app/run_events` 仅在 Agent 不可用时只读降级，不再有生产写入路径 |
-| Phase 5 | 完成 | Agent delete fence/reclaim 已由前序完成；GUI 增加 SQLite `agent_delete_outbox`，单删/批删/workspace 都先 tombstone，再幂等投递；启动后自动重试，删除时立即取消 observer |
-| Phase 6 | 完成 | Observer 已具备 idle-LRU、active 不逐出和 overflow 语义；NATS 增加 additive `schemaVersion: 2`/`sessionId`，保留 v1 `type/data/runId/idx`；启动继续导入、observer discovery、run/approval reconciliation 与删除 outbox reconciliation |
+| Phase 0 | 完成 | 单 active、FIFO、幂等、配额、restart 清空、并发 stamping 均有测试；scheduler 有 10,000 步确定性状态机测试，journal 覆盖 append/flush/fsync 与中段损坏拒绝截断 |
+| Phase 1a | 完成 | RunRequest/RunAck、内存 scheduler、三种 busy policy、自动 dequeue/cancel、版本化设置快照落地；近期 terminal ACK 为有界 LRU，旧 `run_id` 由 durable marker 防复用 |
+| Phase 1b | 完成 | persistence 熔断、显式 writer probe + 保守 interrupted 恢复、附件 ACK 前内存快照、per-session/global 配额与释放、原子 supersede 全部落地 |
+| Phase 2 | 完成 | TUI 使用完整 RunAck/run registry；重启可从 `queuedRuns` 重建气泡，并区分 cancelled/superseded/lost；Channel 使用 canonical run envelope |
+| Phase 3 | 完成 | canonical envelope 包含 `session_id/run_id/epoch/run_sequence/idx/event_id/timestamp`；run/session 各自 cursor、durable replay、atomic attach、partial-tail recovery 与 I/O failure interrupt 已落地 |
+| Phase 4 | 完成 | GUI 先读 Agent canonical journal；只有明确 transport unavailable 才读 legacy；RFC3339 时间正确投影；Observer 只写派生投影、通知和 NATS |
+| Phase 5 | 完成 | Agent delete fence/reclaim、GUI tombstone/outbox、启动重试与 observer 取消已落地；Agent 启动 GC 无 transcript 的 orphan run-data |
+| Phase 6 | 完成 | Observer 已具备 idle-LRU、active 不逐出、run/session gap replay；NATS v2 additive envelope 保留 v1 字段，并有契约测试；启动 reconciliation 闭环 |
 | Phase 7 | 未开始 | GUI/Remote 直接创建、展示和取消 queued run 的产品交互 |
 
 当前保护边界：`reject_if_busy`、`enqueue_if_busy`、`supersede_session` 均已开放。Queued 状态只存在于当前 `agent_instance_id` 的有界内存中；Agent 重启后明确丢失，不存在 `queue.jsonl`。
@@ -154,7 +154,7 @@ Session-scoped event：
 | CLI | `future run` 为单次普通 prompt | 保持；如遇 busy 返回明确错误，除非显式选择 enqueue |
 | GUI/Remote | streaming 时禁止二次提交，无 Follow-up 入口 | GUI 将来可开放 queued submit；Remote 策略可独立开放 |
 | 飞书/钉钉 Channel | 新消息会 abort 当前 run、等待 idle 后再 prompt，并用 generation 丢弃旧 stream | 先保留 supersede 产品语义，但改为 Agent 原子操作和独立新 run |
-| 请求幂等 | active + 最近 64 个 request ID 的进程内窗口，同 key 返回拒绝而非原 ACK | 改为 session scheduler 内的 request→RunAck 映射；同一 Agent 生命周期返回原 ACK，重启后不保证 |
+| 请求幂等 | active + 最近 64 个 request ID 的进程内窗口，同 key 返回拒绝而非原 ACK | session scheduler 保存 active/queued + 有界近期 terminal request→RunAck；窗口内返回原 ACK，started run 另由 durable marker 防 `run_id` 复用；重启后 queued request 不保证 |
 | Run fencing | `run_id + epoch` 防旧 task finalize 新 run | 保留 |
 | Run 内排序 | broadcaster 在内存锁内生成 `idx`，ring 约 2,000 条 | stamping 移到 durable Agent event writer |
 | Event 真源 | Agent 只有内存 ring；GUI 写 per-run JSONL | 新 run 的 per-run JSONL 移到 Agent；旧 GUI 文件只读兼容并按 retention 回收 |
@@ -655,16 +655,20 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 
 退出条件：重复 request、重复 run sequence、同 session 双 active、跨 run event 均会测试失败。
 
+**完成记录（2026-08-02，闭环复核）**：补齐有界 terminal ACK/LRU、`run_sequence` envelope 和 session 独立 cursor 测试；journal 仅自动修复未换行的末尾残片，中段或已换行损坏会报错且不改写原文件。
+
 ### Phase 1a：Queued Run 核心
 
 - 增加 `RunRequest/RunAck`、per-session 内存 queue 和 session scheduler。
 - 冻结 RPC、busy policy 和结构化错误 schema。
-- 普通 prompt 支持 `reject_if_busy/enqueue_if_busy`，实现 session-scoped、Agent-lifetime idempotency。
+- 普通 prompt 支持 `reject_if_busy/enqueue_if_busy`，实现 session-scoped、active/queued + 有界近期 terminal idempotency。
 - 客户端迁移期曾把 `follow_up` 适配为新 queued run；Phase 2 已最终删除该 RPC。
 - 删除 run loop 内 steering/follow-up continuation 和 transcript rewrite。
 - 删除 steering/follow-up mode 与 streaming behavior。
 
-退出条件：同一 Agent 生命周期内，每次 accepted text submit 都有独立 run、严格 FIFO、幂等 ACK 和唯一 terminal；Agent restart 的 queued 丢失语义有显式协议与 UI 测试。生产客户端切换前继续受 feature flag/兼容 adapter 保护。
+退出条件：每次 accepted text submit 都有独立 run、严格 FIFO；active/queued 和配置的近期 terminal 窗口内重复 request 返回原 ACK；每个未因 Agent restart 丢失的 accepted run 只有一个 terminal。Agent restart 的 queued 丢失语义有显式协议与 UI 测试。
+
+**完成记录（2026-08-02，闭环复核）**：scheduler 的 request/run identity 与 terminal ACK 都按配置上限回收；active 启动后立即释放队列持有的附件 payload。近期 ACK 被淘汰后，显式 `run_id` 仍会通过 Agent journal/transcript marker 拒绝复用；设置快照带 `settings_schema_version=1`。
 
 ### Phase 1b：安全边界与 Supersede
 
@@ -675,6 +679,8 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 - 完成 scheduler race、内存配额和 active event writer crash failpoint 测试。
 
 退出条件：磁盘故障不继续执行或排空当前进程的队列；附件快照不依赖临时路径且内存有界；supersede 不出现半取消/双 active；之后才允许 Phase 2 客户端正式切换。
+
+**完成记录（2026-08-02，闭环复核）**：persistence degraded 会持续持有 session fence；`retry_persistence` 先探测 event writer、再同步追加保守的 `interrupted_by_restart` terminal，最后释放 runtime/scheduler。无法确认的执行结果不会伪装成 completed。
 
 ### Phase 2：TUI/Channel 同步迁移和 Turn 收敛
 
@@ -687,6 +693,8 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 
 退出条件：TUI 连续排队 10 次不出现幽灵气泡、错 run、错误 idle 状态或丢消息。
 
+**完成记录（2026-08-02，闭环复核）**：TUI reconnect 从 Agent `queuedRuns` 创建缺失气泡，从 `recentTerminalAcks` 收敛已取消/被替代 run；Agent 实例变化显示 `lost_on_agent_restart`。10 次连续排队与 TUI 重启重建均有渲染测试。
+
 ### Phase 3：Wire envelope 与 Agent EventJournal
 
 - 修改 proto、Agent event builder、TUI/CLI/GUI/Channel types。
@@ -695,6 +703,8 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 - 增加 I/O failure 和 truncated tail recovery。
 
 退出条件：GUI/TUI kill 后可从任意 cursor 恢复；所有 event 身份和顺序正确。
+
+**完成记录（2026-08-02，闭环复核）**：proto 和 Agent/TUI/CLI/GUI/Channel 生成代码统一携带 `run_sequence`；projection snapshot 也保留该值。run 使用 `idx`，session-scoped event 使用 `session_idx` 和独立 replay RPC，避免以某个 run cursor 误判全局事件。
 
 ### Phase 4：GUI Agent-first 与旧日志兼容
 
@@ -706,7 +716,7 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 
 退出条件：GUI event 目录无新写入，历史数据仍可读。
 
-**完成记录（2026-08-02）**：生产读取已改为 Agent-first；仅当 Agent 连接/查询失败才读取旧 GUI JSONL。`persist_run_event` 和 snapshot/import 投影不再追加 GUI 原始事件，保留旧 reader/清理函数只为已存在文件的兼容与回收，测试 fixture 不代表生产写入路径。
+**完成记录（2026-08-02，闭环复核）**：生产读取已改为 Agent-first；仅当连接拒绝、transport unavailable、连接重置/断管或超时等明确传输故障时才读取旧 GUI JSONL，Agent 的语义错误会直接上抛。RFC3339 event timestamp 转成毫秒时间戳，不再误按整数解析。`persist_run_event` 和 snapshot/import 投影不再追加 GUI 原始事件。
 
 ### Phase 5：删除回收闭环
 
@@ -717,7 +727,7 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 
 退出条件：Agent 离线删除重连后完成；被删 session 不回导；无 transcript/event orphan，内存 queued/ACK 状态已释放。
 
-**完成记录（2026-08-02）**：`agent_delete_outbox` 以 `session_id` 去重；本地 hard delete 后仍可在 Agent 暂不可用时保留待投递 tombstone。重试把 Agent 的 `session not found` 视作幂等成功，避免已删除会话滞留 outbox。
+**完成记录（2026-08-02，闭环复核）**：`agent_delete_outbox` 以 `session_id` 去重；本地 hard delete 后仍可在 Agent 暂不可用时保留待投递 tombstone。重试把 Agent 的 `session not found` 视作幂等成功。Agent 启动扫描 run-data，只有 transcript 不存在的 session 目录才回收，并有保留 live transcript 数据的测试。
 
 ### Phase 6：Observer、NATS 和恢复
 
@@ -728,7 +738,15 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 
 退出条件：128+ session 无周期抖动；active observer 不逐出；重启无假状态。
 
-**完成记录（2026-08-02）**：NATS 采用只增字段升级，已发布消费者继续按 v1 字段工作；缺口仍通过已有 `get_events_since` cursor backfill 修复。Observer 活跃保护/LRU 及 startup reconciliation 在本阶段复核，无新增实现缺口。
+**完成记录（2026-08-02，闭环复核）**：NATS 采用只增字段升级，保留 v1 `type/data/runId/idx`，v2 增加 session/envelope 字段并以契约测试锁定兼容性。Observer attach 前先补 session-scoped cursor；live session/run gap 会触发重连 replay。active run 在 probe 后、首事件前即受保护，idle observer 才参与 LRU 淘汰；startup reconciliation 延续 Agent-first 收敛。
+
+### Phase 0–6 最终验收证据（2026-08-02）
+
+- `cargo test -p future-agent --lib --quiet`：812 passed。
+- 完整 Rust workspace 测试：Agent、Channel 及集成测试全部通过；仅平台/外部环境 smoke test 按设计 ignored。
+- GUI Rust：173 passed，1 ignored；GUI Web：232 passed；TUI：162 passed。
+- `cargo check --workspace --quiet`、GUI `tsc --noEmit`、Rust format 与 `git diff --check` 均通过。
+- Phase 7 仍是独立产品功能（GUI/Remote 开放 queued follow-up），不属于 Phase 0–6 正确性闭环。
 
 ### Phase 7：GUI/Remote 开放 Follow-up
 
@@ -744,7 +762,7 @@ GUI 崩溃不影响外部部署 Agent 的 executor、队列或审批状态。默
 | 场景 | 必须验证 |
 | --- | --- |
 | TUI 生成中连续提交 10 次 | 创建 10 个不同 queued run，FIFO，无幽灵气泡 |
-| 同一 Agent 生命周期内重复 `client_request_id` | 返回同一 RunAck，不重复入队；payload 改变返回冲突 |
+| active/queued 或近期 terminal 窗口内重复 `client_request_id` | 返回同一 RunAck，不重复入队；payload 改变返回冲突；窗口有明确上限 |
 | 同 session 并发提交 | `run_sequence` 唯一，始终只有一个 active |
 | 多 session 同时运行 | event 不串 session/run，各 session 可独立推进 |
 | active run 等待审批 | 同 session 队列不越过；其他 session 不受影响 |

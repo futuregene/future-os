@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Write};
+use std::io::Write;
 use tokio::sync::broadcast;
 
 // ─── RPC Command (stdin) ────────────────────────────────────────────────────
@@ -177,6 +177,7 @@ struct RunState {
     run_id: String,
     epoch: i64,
     idx: i64,
+    run_sequence: i64,
     events: Vec<SseEvent>,
     projection_events: Vec<SseEvent>,
 }
@@ -184,6 +185,7 @@ struct RunState {
 #[derive(Default)]
 struct EventJournalState {
     session_id: String,
+    session_idx: i64,
     directory: Option<std::path::PathBuf>,
     last_error: Option<String>,
     interrupt_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -210,6 +212,7 @@ pub struct RunAttachment {
 pub struct RunProjectionSnapshot {
     pub run_id: String,
     pub epoch: i64,
+    pub run_sequence: i64,
     pub cursor: i64,
     pub events: Vec<SseEvent>,
 }
@@ -247,6 +250,7 @@ impl SseBroadcaster {
                 run_id: String::new(),
                 epoch: 0,
                 idx: 0,
+                run_sequence: -1,
                 events: Vec::new(),
                 projection_events: Vec::new(),
             })),
@@ -274,6 +278,20 @@ impl SseBroadcaster {
         }
         let mut journal = self.journal.lock();
         journal.session_id = session_id;
+        // Session-scoped events have their own durable sequence. Resume after
+        // an Agent restart so their event ids cannot collide with prior
+        // model/name/cwd events for this session.
+        journal.session_idx = std::fs::read_to_string(directory.join("_session.jsonl"))
+            .ok()
+            .map(|contents| {
+                contents
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<SseEvent>(line).ok())
+                    .filter_map(|event| (event.session_idx >= 0).then_some(event.session_idx))
+                    .max()
+                    .map_or(0, |idx| idx.saturating_add(1))
+            })
+            .unwrap_or(0);
         journal.directory = Some(directory);
         journal.last_error = None;
         Ok(())
@@ -292,6 +310,29 @@ impl SseBroadcaster {
 
     pub fn persistence_error(&self) -> Option<String> {
         self.journal.lock().last_error.clone()
+    }
+
+    pub fn recover_storage(&self) -> anyhow::Result<()> {
+        let directory = self
+            .journal
+            .lock()
+            .directory
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("event journal is not configured"))?;
+        std::fs::create_dir_all(&directory)?;
+        let probe = directory.join(".health-probe.tmp");
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&probe)?;
+            file.write_all(b"ok")?;
+            file.sync_data()?;
+        }
+        std::fs::remove_file(probe)?;
+        self.journal.lock().last_error = None;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -385,6 +426,7 @@ impl SseBroadcaster {
             (truncated && self.journal.lock().directory.is_none()).then(|| RunProjectionSnapshot {
                 run_id: run.run_id.clone(),
                 epoch: run.epoch,
+                run_sequence: run.run_sequence,
                 cursor: run.idx.saturating_sub(1),
                 events: run.projection_events.clone(),
             });
@@ -401,18 +443,33 @@ impl SseBroadcaster {
     /// reordering race).
     pub fn broadcast(&self, mut event: SseEvent) {
         let mut run = self.run.lock();
-        event.run_id = run.run_id.clone();
-        event.epoch = run.epoch;
-        event.idx = run.idx;
-        {
-            let journal = self.journal.lock();
-            event.session_id = journal.session_id.clone();
+        let session_scoped = is_session_scoped_event(&event.event_type);
+        let mut journal = self.journal.lock();
+        event.session_id = journal.session_id.clone();
+        if session_scoped {
+            event.run_id.clear();
+            event.epoch = 0;
+            event.idx = -1;
+            event.session_idx = journal.session_idx;
+            event.run_sequence = -1;
+            journal.session_idx += 1;
+        } else {
+            event.run_id = run.run_id.clone();
+            event.epoch = run.epoch;
+            event.idx = run.idx;
+            event.session_idx = -1;
+            event.run_sequence = run.run_sequence;
         }
+        drop(journal);
         event.timestamp = chrono::Utc::now().to_rfc3339();
-        event.event_id = format!(
-            "{}:{}:{}:{}",
-            event.session_id, event.run_id, event.epoch, event.idx
-        );
+        event.event_id = if session_scoped {
+            format!("{}:session:{}", event.session_id, event.session_idx)
+        } else {
+            format!(
+                "{}:{}:{}:{}",
+                event.session_id, event.run_id, event.epoch, event.idx
+            )
+        };
         if let Err(error) = self.append_journal(&event) {
             let message = format!("event journal append failed: {error:#}");
             let mut journal = self.journal.lock();
@@ -423,12 +480,14 @@ impl SseBroadcaster {
             tracing::error!(run_id = %event.run_id, idx = event.idx, "{message}");
             return;
         }
-        run.idx += 1;
-        apply_to_projection(&mut run.projection_events, &event);
-        run.events.push(event.clone());
-        if run.events.len() > MAX_RUN_EVENTS {
-            let overflow = run.events.len() - MAX_RUN_EVENTS;
-            run.events.drain(0..overflow);
+        if !session_scoped {
+            run.idx += 1;
+            apply_to_projection(&mut run.projection_events, &event);
+            run.events.push(event.clone());
+            if run.events.len() > MAX_RUN_EVENTS {
+                let overflow = run.events.len() - MAX_RUN_EVENTS;
+                run.events.drain(0..overflow);
+            }
         }
         // tokio broadcast semantics: send() only fails when there are NO
         // active receivers — normal for ephemeral sessions before a client
@@ -443,6 +502,10 @@ impl SseBroadcaster {
     /// buffer. `epoch` is the run's monotonic generation within the session
     /// (from the runtime lease), stamped on every event of this run.
     pub fn start_run(&self, run_id: String, epoch: i64) {
+        self.start_run_with_sequence(run_id, epoch, None);
+    }
+
+    pub fn start_run_with_sequence(&self, run_id: String, epoch: i64, run_sequence: Option<u64>) {
         let (recovered, recovery_failed) = match self.read_journal(&run_id) {
             Ok(events) => (events, false),
             Err(error) => {
@@ -454,6 +517,9 @@ impl SseBroadcaster {
         let mut run = self.run.lock();
         run.run_id = run_id;
         run.epoch = epoch;
+        run.run_sequence = run_sequence
+            .and_then(|value| i64::try_from(value).ok())
+            .unwrap_or(-1);
         run.idx = recovered
             .last()
             .map_or(0, |event| event.idx.saturating_add(1));
@@ -543,18 +609,30 @@ impl SseBroadcaster {
             (truncated && self.journal.lock().directory.is_none()).then(|| RunProjectionSnapshot {
                 run_id: run.run_id.clone(),
                 epoch: run.epoch,
+                run_sequence: run.run_sequence,
                 cursor: run.idx.saturating_sub(1),
                 events: run.projection_events.clone(),
             });
         Ok((run.run_id.clone(), events, min_idx, projection))
     }
 
+    pub fn session_events_since(&self, since_idx: i64) -> anyhow::Result<Vec<SseEvent>> {
+        self.read_journal("").map(|events| {
+            events
+                .into_iter()
+                .filter(|event| event.session_idx > since_idx)
+                .collect()
+        })
+    }
+
     fn journal_path(&self, run_id: &str) -> Option<std::path::PathBuf> {
-        self.journal
-            .lock()
-            .directory
-            .as_ref()
-            .map(|directory| directory.join(format!("{run_id}.jsonl")))
+        self.journal.lock().directory.as_ref().map(|directory| {
+            if run_id.is_empty() {
+                directory.join("_session.jsonl")
+            } else {
+                directory.join(format!("{run_id}.jsonl"))
+            }
+        })
     }
 
     fn append_journal(&self, event: &SseEvent) -> anyhow::Result<()> {
@@ -603,28 +681,33 @@ impl SseBroadcaster {
         let Some(path) = self.journal_path(run_id) else {
             return Ok(Vec::new());
         };
-        let file = match std::fs::File::open(&path) {
-            Ok(file) => file,
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
         let mut events = Vec::new();
         let mut valid_bytes = 0_u64;
-        for line in std::io::BufReader::new(file).split(b'\n') {
-            let line = line?;
+        let ends_with_newline = bytes.ends_with(b"\n");
+        let parts = bytes.split(|byte| *byte == b'\n').collect::<Vec<_>>();
+        for (index, line) in parts.iter().enumerate() {
             if line.is_empty() {
                 continue;
             }
-            match serde_json::from_slice::<SseEvent>(&line) {
+            match serde_json::from_slice::<SseEvent>(line) {
                 Ok(event) => {
                     valid_bytes += line.len() as u64 + 1;
                     events.push(event);
                 }
-                Err(_) => {
+                Err(_error) if index + 1 == parts.len() && !ends_with_newline => {
                     let writable = std::fs::OpenOptions::new().write(true).open(&path)?;
                     writable.set_len(valid_bytes)?;
                     break;
                 }
+                Err(error) => anyhow::bail!(
+                    "event journal corruption at byte {valid_bytes} in {}: {error}",
+                    path.display()
+                ),
             }
         }
         Ok(events)
@@ -710,6 +793,10 @@ pub struct SseEvent {
     pub event_id: String,
     #[serde(default)]
     pub timestamp: String,
+    #[serde(default = "default_session_idx")]
+    pub session_idx: i64,
+    #[serde(default = "default_session_idx")]
+    pub run_sequence: i64,
 }
 
 impl SseEvent {
@@ -723,8 +810,30 @@ impl SseEvent {
             session_id: String::new(),
             event_id: String::new(),
             timestamp: String::new(),
+            session_idx: -1,
+            run_sequence: -1,
         }
     }
+}
+
+fn default_session_idx() -> i64 {
+    -1
+}
+
+fn is_session_scoped_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "model_changed"
+            | "thinking_level_changed"
+            | "session_name_changed"
+            | "cwd_changed"
+            | "permission_level_changed"
+            | "sandbox_policy_changed"
+            | "auto_compaction_changed"
+            | "tools_changed"
+            | "config_reloaded"
+            | "skills_reloaded"
+    )
 }
 
 // ─── Approval Gate ─────────────────────────────────────────────────────────
@@ -1036,6 +1145,35 @@ mod tests {
     }
 
     #[test]
+    fn session_scoped_events_have_independent_durable_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-1", directory.path().to_path_buf())
+            .unwrap();
+        b.start_run("run-1".to_string(), 1);
+        b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
+        b.broadcast(SseEvent::new(
+            "model_changed",
+            serde_json::json!({"model":"x"}),
+        ));
+        b.broadcast(SseEvent::new(
+            "cwd_changed",
+            serde_json::json!({"cwd":"/tmp"}),
+        ));
+        let contents = std::fs::read_to_string(directory.path().join("_session.jsonl")).unwrap();
+        let events: Vec<SseEvent> = contents
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].run_id, "");
+        assert_eq!(events[0].idx, -1);
+        assert_eq!(events[0].session_idx, 0);
+        assert_eq!(events[1].session_idx, 1);
+        assert_eq!(events[1].event_id, "session-1:session:1");
+    }
+
+    #[test]
     fn attach_has_no_snapshot_subscribe_window() {
         let b = SseBroadcaster::new();
         b.start_run("run1".to_string(), 1);
@@ -1317,6 +1455,45 @@ mod tests {
     }
 
     #[test]
+    fn journal_recovery_refuses_middle_corruption_without_truncating() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("run-1.jsonl");
+        let first = serde_json::to_vec(&SseEvent::new("ok", serde_json::json!({}))).unwrap();
+        let later = serde_json::to_vec(&SseEvent::new("later", serde_json::json!({}))).unwrap();
+        let mut bytes = first;
+        bytes.extend_from_slice(b"\nnot-json\n");
+        bytes.extend_from_slice(&later);
+        bytes.push(b'\n');
+        std::fs::write(&path, bytes).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-1", directory.path().to_path_buf())
+            .unwrap();
+        assert!(b.read_journal("run-1").is_err());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn envelope_carries_run_sequence_and_session_replay_has_own_cursor() {
+        let directory = tempfile::tempdir().unwrap();
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-1", directory.path().to_path_buf())
+            .unwrap();
+        b.start_run_with_sequence("run-1".to_string(), 3, Some(17));
+        b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
+        let (_, events, _, _) = b.events_since("run-1", -1).unwrap();
+        assert_eq!(events[0].run_sequence, 17);
+        b.broadcast(SseEvent::new(
+            "model_changed",
+            serde_json::json!({"model":"x"}),
+        ));
+        let session_events = b.session_events_since(-1).unwrap();
+        assert_eq!(session_events.len(), 1);
+        assert_eq!(session_events[0].session_idx, 0);
+        assert_eq!(session_events[0].run_sequence, -1);
+    }
+
+    #[test]
     fn atomic_attach_replays_disk_when_memory_ring_is_truncated() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("run-1.jsonl");
@@ -1331,6 +1508,8 @@ mod tests {
                 session_id: "session-1".to_string(),
                 event_id: format!("session-1:run-1:2:{idx}"),
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
+                session_idx: -1,
+                run_sequence: 9,
             };
             serde_json::to_writer(&mut file, &event).unwrap();
             file.write_all(b"\n").unwrap();

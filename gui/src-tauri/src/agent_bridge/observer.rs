@@ -48,7 +48,7 @@ use tokio::sync::oneshot;
 use tonic::Code;
 
 use super::{
-    client::get_state_command,
+    client::{base_command, get_state_command},
     connect_agent,
     run_control::{mark_run_completed_if_active, mark_run_failed_if_active},
     stream,
@@ -363,11 +363,22 @@ fn bind_run(session_id: &str, canonical_run_id: &str, local_run_id: &str) {
 /// detection), the session's currently-active run (if any), and the most
 /// recently settled run — the broadcaster keeps stamping its identity onto
 /// between-runs settings events until the next run starts.
-#[derive(Default)]
 struct ObserverState {
     cursors: HashMap<String, i64>,
+    session_cursor: i64,
     active_run: Option<String>,
     last_settled_run: Option<String>,
+}
+
+impl Default for ObserverState {
+    fn default() -> Self {
+        Self {
+            cursors: HashMap::new(),
+            session_cursor: -1,
+            active_run: None,
+            last_settled_run: None,
+        }
+    }
 }
 
 fn spawn_observer(session_id: String, shared: Arc<ObserverShared>, cancel: oneshot::Receiver<()>) {
@@ -396,6 +407,13 @@ async fn run_observer(
                 continue;
             }
         };
+
+        if !replay_session_events(&mut client, session_id, shared, &mut state).await {
+            if sleep_or_cancel(&mut cancel, backoff).await {
+                return;
+            }
+            continue;
+        }
 
         // Probe: an active run gets an atomic attach from the local cursor
         // (replaying everything the ring still holds); otherwise a plain live
@@ -596,13 +614,33 @@ async fn handle_event(
     let event_type = event.r#type.as_str();
     let run_id = event.run_id.as_str();
 
-    // Session-level event (no run scope): no cursor to validate against —
-    // forward and mirror directly.
+    // Session-level event (no run scope): validate its independent session
+    // cursor before forwarding. A hole forces re-attach and journal replay.
     if run_id.is_empty() {
+        if event.session_idx >= 0 {
+            if event.session_idx <= state.session_cursor {
+                return true;
+            }
+            if event.session_idx != state.session_cursor.saturating_add(1) {
+                return false;
+            }
+            state.session_cursor = event.session_idx;
+        }
         if FORWARDED_EVENTS.contains(&event_type) {
             forward_settings_event(session_id, event_type, &event.data);
         }
-        crate::remote::publish_event(session_id, event_type, &event.data, run_id, event.idx);
+        crate::remote::publish_event(
+            session_id,
+            event_type,
+            &event.data,
+            run_id,
+            event.idx,
+            event.epoch,
+            &event.event_id,
+            &event.timestamp,
+            event.session_idx,
+            event.run_sequence,
+        );
         return true;
     }
 
@@ -654,6 +692,7 @@ async fn handle_event(
             run_id,
             event.snapshot_cursor,
             &event.snapshot_events,
+            event.run_sequence,
         );
         return true;
     }
@@ -689,6 +728,11 @@ async fn handle_event(
                         &event.data,
                         run_id,
                         event.idx,
+                        event.epoch,
+                        &event.event_id,
+                        &event.timestamp,
+                        event.session_idx,
+                        event.run_sequence,
                     );
                     return true;
                 }
@@ -742,7 +786,77 @@ async fn handle_event(
     if FORWARDED_EVENTS.contains(&event_type) {
         forward_settings_event(session_id, event_type, &event.data);
     }
-    crate::remote::publish_event(session_id, event_type, &event.data, run_id, event.idx);
+    crate::remote::publish_event(
+        session_id,
+        event_type,
+        &event.data,
+        run_id,
+        event.idx,
+        event.epoch,
+        &event.event_id,
+        &event.timestamp,
+        event.session_idx,
+        event.run_sequence,
+    );
+    true
+}
+
+async fn replay_session_events(
+    client: &mut crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    session_id: &str,
+    shared: &Arc<ObserverShared>,
+    state: &mut ObserverState,
+) -> bool {
+    let command = crate::agent_proto::RpcCommand {
+        since_idx: state.session_cursor,
+        ..base_command("get_session_events_since", session_id.to_string())
+    };
+    let Ok(response) = client.execute_command(command).await else {
+        return false;
+    };
+    let response = response.into_inner();
+    if !response.success {
+        return false;
+    }
+    let events = serde_json::from_str::<serde_json::Value>(&response.data)
+        .ok()
+        .and_then(|value| value.get("events")?.as_array().cloned())
+        .unwrap_or_default();
+    for value in events {
+        let event = crate::agent_proto::StreamEvent {
+            r#type: value
+                .get("type")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            data: value
+                .get("data")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            session_id: session_id.to_string(),
+            session_idx: value
+                .get("sessionIdx")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(-1),
+            event_id: value
+                .get("eventId")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            timestamp: value
+                .get("timestamp")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            idx: -1,
+            run_sequence: -1,
+            ..Default::default()
+        };
+        if !handle_event(session_id, shared, state, event).await {
+            return false;
+        }
+    }
     true
 }
 
@@ -925,7 +1039,16 @@ mod tests {
             epoch: 1,
             event_id: String::new(),
             timestamp: String::new(),
+            session_idx: -1,
+            run_sequence: 1,
         }
+    }
+
+    fn session_event(event_type: &str, session_idx: i64) -> crate::agent_proto::StreamEvent {
+        let mut event = stream_event(event_type, "", -1);
+        event.session_idx = session_idx;
+        event.run_sequence = -1;
+        event
     }
 
     /// Lease the run so `observer_run` short-circuits as pipeline-owned and
@@ -990,6 +1113,43 @@ mod tests {
             "the replayed continuation validates against the untouched cursor"
         );
         assert_eq!(state.cursors.get("run-gap"), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn session_gap_uses_the_independent_session_cursor() {
+        let shared = Arc::new(ObserverShared::new());
+        let mut state = ObserverState::default();
+
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("model_changed", 0)
+            )
+            .await
+        );
+        assert!(
+            !handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("model_changed", 2)
+            )
+            .await,
+            "a missing session-scoped event must force replay"
+        );
+        assert_eq!(state.session_cursor, 0);
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("model_changed", 1)
+            )
+            .await
+        );
+        assert_eq!(state.session_cursor, 1);
     }
 
     #[tokio::test]

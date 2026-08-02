@@ -412,6 +412,11 @@ message StreamEvent {
   int64 epoch = 9;
   string event_id = 10;
   string timestamp = 11;
+  // Monotonic ordering identity for session-scoped events (settings, name,
+  // cwd, config). It is independent of any run's idx.
+  int64 session_idx = 12;
+  // Monotonic ordering identity across runs in this session.
+  int64 run_sequence = 13;
 }
 
 // A compressed semantic event contained in a projection snapshot. Its idx is

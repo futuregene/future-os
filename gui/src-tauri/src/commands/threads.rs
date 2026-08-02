@@ -330,7 +330,31 @@ pub async fn get_session_entries(thread_id: String) -> Result<serde_json::Value,
 }
 
 #[tauri::command]
-pub fn clear_finished_runs(thread_id: String) -> Result<usize, crate::AppError> {
+pub async fn clear_finished_runs(thread_id: String) -> Result<usize, crate::AppError> {
+    let thread =
+        store::get_thread(&thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let session_id = thread.agent_session_id.unwrap_or(thread.id);
+    let terminal_runs = store::list_runs(&thread_id)?
+        .into_iter()
+        .filter(|run| matches!(run.status.as_str(), "completed" | "failed" | "cancelled"))
+        .map(|run| run.id)
+        .collect::<Vec<_>>();
+    if !terminal_runs.is_empty() {
+        let mut client = agent_bridge::connect_agent().await?;
+        for run_id in terminal_runs {
+            let response = client
+                .execute_command(agent_bridge::prune_run_events_command(
+                    session_id.clone(),
+                    run_id,
+                ))
+                .await
+                .map_err(|status| agent_bridge::map_rpc_error("Agent event prune failed", status))?
+                .into_inner();
+            if !response.success {
+                return Err(format!("Agent event prune failed: {}", response.error).into());
+            }
+        }
+    }
     store::clear_finished_runs(&thread_id)
 }
 

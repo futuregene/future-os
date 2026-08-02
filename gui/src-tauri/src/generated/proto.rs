@@ -347,6 +347,13 @@ pub struct StreamEvent {
     pub event_id: ::prost::alloc::string::String,
     #[prost(string, tag = "11")]
     pub timestamp: ::prost::alloc::string::String,
+    /// Monotonic ordering identity for session-scoped events (settings, name,
+    /// cwd, config). It is independent of any run's idx.
+    #[prost(int64, tag = "12")]
+    pub session_idx: i64,
+    /// Monotonic ordering identity across runs in this session.
+    #[prost(int64, tag = "13")]
+    pub run_sequence: i64,
 }
 /// A compressed semantic event contained in a projection snapshot. Its idx is
 /// the latest source cursor folded into this event, preserving chronological

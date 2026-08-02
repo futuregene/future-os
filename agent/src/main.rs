@@ -513,6 +513,13 @@ async fn async_main(
     engine.agent_loop.config.system_prompt = system_prompt;
 
     let manager = Arc::new(Manager::default_for(&cwd));
+    match manager.gc_orphan_run_data() {
+        Ok(count) if count > 0 => {
+            tracing::info!(count, "reclaimed orphan Agent run-data directories")
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!("failed to reclaim orphan Agent run data: {error:#}"),
+    }
     let approval_gate = future_agent::rpc::ApprovalGate::default();
     // Template for minting per-session agent loops.  Sessions no longer
     // share one global loop — each hydrated/created session gets an

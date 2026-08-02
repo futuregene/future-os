@@ -152,6 +152,19 @@ impl SessionRuntime {
         self.control.mark_persistence_degraded(lease, reason)
     }
 
+    pub fn recover_persistence_degraded(&self, lease: &RunLease) -> bool {
+        if self.task.lock().is_some() {
+            return false;
+        }
+        let recovered = self.control.recover_persistence_degraded(lease);
+        if recovered {
+            if let Some(sender) = self.completion_tx.lock().as_ref() {
+                let _ = sender.send(lease.clone());
+            }
+        }
+        recovered
+    }
+
     /// Spawn and register the only task allowed for this session. The monitor
     /// is runtime-owned, so a panic cannot silently orphan the lifecycle state.
     pub fn spawn(
@@ -347,6 +360,9 @@ mod tests {
             super::super::RunPhase::PersistenceDegraded
         );
         assert!(runtime.begin(Some("run-must-not-start"), None).is_err());
+        assert!(runtime.recover_persistence_degraded(&lease));
+        assert!(runtime.snapshot().is_none());
+        assert!(runtime.begin(Some("run-after-recovery"), None).is_ok());
     }
 
     #[tokio::test]
