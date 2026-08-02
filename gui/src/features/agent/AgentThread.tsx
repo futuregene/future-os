@@ -3,7 +3,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, History } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
@@ -18,7 +18,11 @@ import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
 import { useAgentThreadState } from "./useAgentThreadState";
+import { useMessagePaging } from "./useMessagePaging";
 import { useStickyAutoScroll } from "./useStickyAutoScroll";
+
+/** How many user turns one loaded page renders. */
+const PAGE_USER_TURNS = 10;
 
 interface AgentThreadProps {
   thread: StoredThread | null;
@@ -108,6 +112,24 @@ export function AgentThread({
     contentKey: messages,
     onScroll: handleScrollbarVisibility,
     onContentSettled: () => updateFloatingScrollbar(false),
+  });
+
+  // Windowed rendering for long threads: only the last PAGE_USER_TURNS turns
+  // render; loading an older page is a sync window change (the full message
+  // list stays in memory) with scroll anchoring so the viewport never jumps.
+  // The paging hook composes the sticky auto-scroll handler via `onScroll`, so
+  // one scroll event reaches both.
+  const {
+    visibleMessages,
+    showLoadOlderHint,
+    handleScroll: handlePagingScroll,
+    loadOlder,
+  } = useMessagePaging({
+    messages,
+    scrollRef,
+    userTurnCount: PAGE_USER_TURNS,
+    resetKey: thread?.id ?? null,
+    onScroll: handleScroll,
   });
 
   // When loading completes (initial load or thread switch), scroll to the
@@ -206,6 +228,22 @@ export function AgentThread({
         onToggleLeftPanel={onToggleLeftPanel}
       />
       <div className="group relative min-h-0 flex-1 overflow-hidden">
+        {showLoadOlderHint
+          ? (
+              <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-8 pt-5">
+                <button
+                  type="button"
+                  onClick={loadOlder}
+                  aria-label={t("thread.loadOlder")}
+                  title={t("thread.loadOlder")}
+                  className="pointer-events-auto flex animate-pop-in items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                >
+                  <History className="size-3.5" />
+                  {t("thread.loadOlder")}
+                </button>
+              </div>
+            )
+          : null}
         <div
           ref={scrollRef}
           className={cn(
@@ -213,7 +251,7 @@ export function AgentThread({
             activeApproval ? "pb-112" : "pb-48",
           )}
           data-chat-scroll="true"
-          onScroll={handleScroll}
+          onScroll={handlePagingScroll}
         >
           <div className="mx-auto w-full max-w-4xl">
             {loadingIndicator
@@ -226,7 +264,7 @@ export function AgentThread({
                     )
                   : (
                       <MessageList
-                        messages={messages}
+                        messages={visibleMessages}
                         showThinking={showThinking}
                         workspaceId={renderWorkspace.workspaceId}
                         workspacePath={renderWorkspace.workspacePath}

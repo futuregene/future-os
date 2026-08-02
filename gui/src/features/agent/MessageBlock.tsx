@@ -22,6 +22,8 @@ interface MessageBlockProps {
   message: AgentMessage;
   /** Whether this row is the hovered one (single-owner state in MessageList). */
   hovered: boolean;
+  /** Anchor for scroll restoration when an older page loads above this row. */
+  dataMessageId?: string;
   /** Whether this is the last message in the thread. */
   isLast?: boolean;
   recoverySource?: AgentMessage | null;
@@ -46,6 +48,7 @@ export const MessageBlock = memo(MessageBlockImpl);
 function MessageBlockImpl({
   message,
   hovered,
+  dataMessageId,
   isLast,
   recoverySource,
   showThinking,
@@ -104,7 +107,7 @@ function MessageBlockImpl({
   if (segments && segments.length === 1 && segments[0]!.kind === "compaction") {
     return (
       <article className="flex justify-center">
-        <div className="min-w-0 w-full max-w-3xl">
+        <div className="min-w-0 w-full max-w-3xl" data-message-id={dataMessageId}>
           <CompactionDivider tokensBefore={segments[0]!.tokensBefore} />
         </div>
       </article>
@@ -115,6 +118,7 @@ function MessageBlockImpl({
     <article className="flex justify-center">
       <div
         className="min-w-0 w-full max-w-3xl"
+        data-message-id={dataMessageId}
         onPointerLeave={() => onLeave(message.id)}
         onPointerOver={() => onHover(message.id)}
       >

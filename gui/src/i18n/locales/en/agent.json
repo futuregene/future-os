@@ -34,6 +34,7 @@
     "loading": "Loading FutureOS thread...",
     "noActiveThread": "No active thread.",
     "jumpToLatest": "Jump to latest",
+    "loadOlder": "Load earlier messages",
     "defaultTitle": "FutureOS",
     "agentDoneNoText": "The assistant finished but returned no text.",
     "messagesLoadFailed": "Couldn't load this conversation. Please try again — if it keeps happening, restart FutureOS.",

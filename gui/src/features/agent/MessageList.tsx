@@ -81,6 +81,7 @@ export function MessageList({ messages, showThinking, onContinue, onFork, onRetr
             key={message.id}
             message={message}
             hovered={hoveredId === message.id}
+            dataMessageId={message.id}
             isLast={isLast}
             recoverySource={recoverySource}
             showThinking={showThinking}
