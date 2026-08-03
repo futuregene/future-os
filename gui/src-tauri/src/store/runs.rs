@@ -73,7 +73,7 @@ sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {
 });
 
 // TOOL_CALL_COLUMNS & tool_call_from_row removed — table dropped; ToolCallRecord
-// is now reconstructed from run events in `list_tool_calls`.
+// is now reconstructed from run events (`project_tool_calls`).
 // TOOL_OUTPUT_COLUMNS & tool_output_from_row removed — table dropped
 
 pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
@@ -588,14 +588,13 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
     Ok(record)
 }
 
-/// Drop a settled run's in-memory events (called on `agent_end`). The persisted
-/// log stays, so reads still work — this only bounds memory so a long-lived app
-/// doesn't accumulate every run's events forever. The disk writer is flushed
-/// FIRST (its ack guarantees the log is complete), so the post-clear disk
-/// reads see every event the buffer held.
+/// Drop a settled run's in-memory events (called on `agent_end`). The
+/// canonical Agent journal stays; this only bounds GUI-side memory. The tool
+/// projection cache survives (settled events are immutable, so later polls
+/// reuse it), but the tool-input index is no longer needed once the run's
+/// `tool_end` events have all been persisted.
 pub fn clear_run_event_buffer(run_id: &str) {
-    // Agent journal is canonical. Keep only the derived projection cache.
-    let _ = run_id;
+    evict_tool_inputs(run_id);
     #[cfg(test)]
     if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
         buf.remove(run_id);
@@ -611,6 +610,7 @@ pub fn delete_run_events_file(run_id: &str) {
     if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
         cache.remove(run_id);
     }
+    evict_tool_inputs(run_id);
 }
 
 /// Remove the whole run-events directory (called by `clear_all_data`).
@@ -624,11 +624,13 @@ pub fn clear_all_run_events_files() {
 }
 
 /// Per-run incremental tool-call projection. The context panel polls tool
-/// calls for every run every 1.5s; rebuilding from the full event log each
-/// time costs O(events) per run per poll (clone + JSON parse of every event).
-/// Events are append-only, so the projection can advance over just the new
-/// tail instead. State survives the run settling (the events are then
-/// immutable on disk) and is dropped only when the run's log is deleted.
+/// calls for every run; rebuilding from the full event log each time costs
+/// O(events) per run per poll (clone + JSON parse of every event). Events are
+/// append-only, so the projection advances over just the new tail instead. The
+/// caller feeds the tail (fetched from the Agent journal, the canonical event
+/// source — see `commands::runs`); this module only folds and caches it. State
+/// survives the run settling (the journal is then immutable) and is dropped
+/// only when the run's data is deleted or the cache overflows.
 struct ToolProjectionState {
     tools: Vec<ToolCallRecord>,
     index_by_id: HashMap<String, usize>,
@@ -643,46 +645,28 @@ static TOOL_PROJECTION_CACHE: std::sync::LazyLock<
 /// Bound the cache (entries are small: one record per tool call).
 const TOOL_PROJECTION_CACHE_MAX: usize = 64;
 
-pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> {
-    Ok(tool_calls_for_run(run_id))
+/// The highest event sequence already folded into the run's cached tool
+/// projection, or -1 when nothing is cached. Callers fetch the journal tail
+/// after this cursor so [`advance_tool_projection`] only sees new events.
+pub fn tool_projection_cursor(run_id: &str) -> i64 {
+    TOOL_PROJECTION_CACHE
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(run_id).map(|state| state.last_sequence))
+        .unwrap_or(-1)
 }
 
-/// Tool calls for many runs in one call — backs the context panel's poll,
-/// which used to fan out one IPC round-trip per run every 1.5s. Every run id
-/// appears in the result (with an empty vec when it has no tool activity) so
-/// the caller's `Object.fromEntries` shape is unchanged.
-pub fn list_tool_calls_bulk(
-    run_ids: &[String],
-) -> Result<Vec<(String, Vec<ToolCallRecord>)>, crate::AppError> {
-    Ok(run_ids
-        .iter()
-        .map(|run_id| (run_id.clone(), tool_calls_for_run(run_id)))
-        .collect())
-}
-
-/// The run's tool calls, advancing the cached projection over only the events
-/// appended since the last call. The cache mutex is held across the event
-/// read — the lock order (tool cache → event buffer) is used nowhere in
-/// reverse, so there's no deadlock cycle, and holding it prevents two
-/// concurrent pollers from double-applying the same tail.
-fn tool_calls_for_run(run_id: &str) -> Vec<ToolCallRecord> {
+/// Fold `events` into the run's cached tool projection and return the full
+/// list. Empty `events` just returns the cached state. Holding the cache mutex
+/// across the fold prevents two concurrent pollers from double-applying the
+/// same tail.
+pub fn advance_tool_projection(run_id: &str, events: &[RunEventRecord]) -> Vec<ToolCallRecord> {
     let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() else {
         // Poisoned lock: fall back to a one-shot full rebuild.
-        return tool_calls_from_events(&read_run_events(run_id));
+        return project_tool_calls(events);
     };
     if cache.len() >= TOOL_PROJECTION_CACHE_MAX && !cache.contains_key(run_id) {
         cache.clear();
-    }
-    let last_sequence = cache
-        .get(run_id)
-        .map(|state| state.last_sequence)
-        .unwrap_or(-1);
-    let new_events = list_run_events_since(run_id, last_sequence).unwrap_or_default();
-    if new_events.is_empty() {
-        return cache
-            .get(run_id)
-            .map(|state| state.tools.clone())
-            .unwrap_or_default();
     }
     let state = cache
         .entry(run_id.to_string())
@@ -691,7 +675,10 @@ fn tool_calls_for_run(run_id: &str) -> Vec<ToolCallRecord> {
             index_by_id: HashMap::new(),
             last_sequence: -1,
         });
-    for event in &new_events {
+    for event in events {
+        if event.sequence <= state.last_sequence {
+            continue; // replay overlap — already folded
+        }
         apply_tool_event(state, event);
         if event.sequence > state.last_sequence {
             state.last_sequence = event.sequence;
@@ -700,11 +687,11 @@ fn tool_calls_for_run(run_id: &str) -> Vec<ToolCallRecord> {
     state.tools.clone()
 }
 
-/// Reconstruct each tool call from its tool_start / tool_end events (the
-/// tool_calls table was dropped). Both events carry the agent's stable tool
-/// id, so pair by id — a single "current" slot would mispair overlapping
-/// (parallel) tool calls.
-fn tool_calls_from_events(events: &[RunEventRecord]) -> Vec<ToolCallRecord> {
+/// One-shot tool-call projection over an event log (no cache). Reconstructs
+/// each tool call from its tool_start / tool_end events (the tool_calls table
+/// was dropped). Both events carry the agent's stable tool id, so pair by id —
+/// a single "current" slot would mispair overlapping (parallel) tool calls.
+pub fn project_tool_calls(events: &[RunEventRecord]) -> Vec<ToolCallRecord> {
     let mut state = ToolProjectionState {
         tools: Vec::new(),
         index_by_id: HashMap::new(),
@@ -716,7 +703,7 @@ fn tool_calls_from_events(events: &[RunEventRecord]) -> Vec<ToolCallRecord> {
     state.tools
 }
 
-/// Fold one event into the tool-call projection (see [`tool_calls_from_events`]).
+/// Fold one event into the tool-call projection (see [`project_tool_calls`]).
 fn apply_tool_event(state: &mut ToolProjectionState, event: &RunEventRecord) {
     let tools = &mut state.tools;
     let index_by_id = &mut state.index_by_id;
@@ -896,12 +883,49 @@ fn shell_command_from_input(input: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// In-memory tool-input index: `(run_id, tool_call_id)` → the `tool_args`
+/// from the call's `tool_start` event. Fed by `persist.rs` as live events are
+/// projected (and by fork/import synthesis), then read by
+/// [`get_tool_call_input`] when a `tool_end` is persisted — the structured
+/// input beats parsing the tool's output prose. Bounded; evicted per run when
+/// the run settles.
+static TOOL_INPUT_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<(String, String), String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Bound the cache (entries are one tool call's args string each).
+const TOOL_INPUT_CACHE_MAX: usize = 1024;
+
+pub fn remember_tool_input(run_id: &str, tool_call_id: &str, args: &str) {
+    let Ok(mut cache) = TOOL_INPUT_CACHE.lock() else {
+        return;
+    };
+    if cache.len() >= TOOL_INPUT_CACHE_MAX {
+        cache.clear();
+    }
+    cache.insert(
+        (run_id.to_string(), tool_call_id.to_string()),
+        args.to_string(),
+    );
+}
+
+fn evict_tool_inputs(run_id: &str) {
+    if let Ok(mut cache) = TOOL_INPUT_CACHE.lock() {
+        cache.retain(|(cached_run_id, _), _| cached_run_id != run_id);
+    }
+}
+
 pub fn get_tool_call_input(
     run_id: &str,
     tool_call_id: &str,
 ) -> Result<Option<String>, crate::AppError> {
-    // Look for the tool_start event whose stable tool id matches and return its
-    // input/args (buffer while active, else the persisted log).
+    // Live runs: the input cache populated as events were projected.
+    if let Ok(cache) = TOOL_INPUT_CACHE.lock() {
+        if let Some(args) = cache.get(&(run_id.to_string(), tool_call_id.to_string())) {
+            return Ok(Some(args.clone()));
+        }
+    }
+    // Compatibility fallback: pre-journal builds persisted raw events to the
+    // legacy GUI JSONL log. Scan it for the matching tool_start.
     let events = read_run_events(run_id);
     for event in events.iter().rev() {
         if event.event_type == "tool_start" && event_tool_id(event).as_deref() == Some(tool_call_id)
@@ -923,15 +947,14 @@ pub fn get_tool_call_input(
 
 /// Reconstruct a tool call's output from the run's `tool_end` event that
 /// carries the same stable tool id. `tool_end` carries the result text and any
-/// error (agent/mod.rs broadcasts `text`/`error`). Reads the buffer while the
-/// run is active, else the persisted log, so the inspector's stdout/stderr
-/// panes survive an app restart.
-pub fn list_tool_outputs(
-    run_id: &str,
+/// error (agent/mod.rs broadcasts `text`/`error`). The caller supplies the
+/// run's event log (Agent journal, canonical); the inspector's stdout/stderr
+/// panes thus survive an app restart.
+pub fn project_tool_outputs(
+    events: &[RunEventRecord],
     tool_call_id: &str,
-) -> Result<Vec<ToolOutputRecord>, crate::AppError> {
-    let events = read_run_events(run_id);
-    for event in &events {
+) -> Vec<ToolOutputRecord> {
+    for event in events {
         if !matches!(event.event_type.as_str(), "tool_end" | "tool_result") {
             continue;
         }
@@ -985,15 +1008,15 @@ pub fn list_tool_outputs(
             Some(serde_json::Value::Object(obj).to_string())
         };
 
-        return Ok(vec![ToolOutputRecord {
+        return vec![ToolOutputRecord {
             id: event.id.clone(),
             tool_call_id: tool_call_id.to_string(),
             kind: if error.is_some() { "error" } else { "text" }.to_string(),
             content,
             created_at: event.created_at,
-        }]);
+        }];
     }
-    Ok(vec![])
+    vec![]
 }
 
 #[cfg(test)]
@@ -1066,56 +1089,122 @@ mod tests {
         clear_run_event_buffer(&run_id);
     }
 
-    /// Push one event into the process-global buffer (no disk writes).
-    fn push_tool_event(run_id: &str, event_type: &str, payload: &str, sequence: i64) {
-        let mut buf = RUN_EVENT_BUFFER.lock().expect("lock event buffer");
-        buf.entry(run_id.to_string())
-            .or_default()
-            .push(RunEventRecord {
-                id: format!("e{sequence}"),
-                run_id: run_id.to_string(),
-                event_type: event_type.to_string(),
-                payload: Some(payload.to_string()),
-                sequence,
-                created_at: sequence,
-            });
+    /// Build one run event record for tool-projection tests.
+    fn tool_event(run_id: &str, event_type: &str, payload: &str, sequence: i64) -> RunEventRecord {
+        RunEventRecord {
+            id: format!("e{sequence}"),
+            run_id: run_id.to_string(),
+            event_type: event_type.to_string(),
+            payload: Some(payload.to_string()),
+            sequence,
+            created_at: sequence,
+        }
     }
 
     #[test]
-    fn tool_calls_advance_incrementally_without_duplicates() {
+    fn tool_projection_advances_incrementally_without_duplicates() {
         let run_id = format!("test_tools_{}", std::process::id());
-        push_tool_event(
-            &run_id,
-            "tool_start",
-            r#"{"tool_id":"t1","tool_name":"read","tool_args":"{\"path\":\"/a.ts\"}"}"#,
-            0,
-        );
-        push_tool_event(&run_id, "tool_end", r#"{"tool_id":"t1","text":"ok"}"#, 1);
 
-        let first = list_tool_calls(&run_id).expect("first read");
+        let first = advance_tool_projection(
+            &run_id,
+            &[
+                tool_event(
+                    &run_id,
+                    "tool_start",
+                    r#"{"tool_id":"t1","tool_name":"read","tool_args":"{\"path\":\"/a.ts\"}"}"#,
+                    0,
+                ),
+                tool_event(&run_id, "tool_end", r#"{"tool_id":"t1","text":"ok"}"#, 1),
+            ],
+        );
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].status, "completed");
+        assert_eq!(tool_projection_cursor(&run_id), 1);
 
-        // A second identical read must not duplicate the already-folded events.
-        let second = list_tool_calls(&run_id).expect("second read");
+        // Re-feeding the same tail (replay overlap) must not duplicate.
+        let second = advance_tool_projection(
+            &run_id,
+            &[tool_event(
+                &run_id,
+                "tool_end",
+                r#"{"tool_id":"t1","text":"ok"}"#,
+                1,
+            )],
+        );
         assert_eq!(second.len(), 1);
 
-        // A later event is folded in on the next read.
-        push_tool_event(
+        // A later event is folded in on the next advance.
+        let third = advance_tool_projection(
             &run_id,
-            "tool_start",
-            r#"{"tool_id":"t2","tool_name":"edit","tool_args":"{\"path\":\"/b.ts\"}"}"#,
-            2,
+            &[tool_event(
+                &run_id,
+                "tool_start",
+                r#"{"tool_id":"t2","tool_name":"edit","tool_args":"{\"path\":\"/b.ts\"}"}"#,
+                2,
+            )],
         );
-        let third = list_tool_calls(&run_id).expect("third read");
         assert_eq!(third.len(), 2);
         assert_eq!(third[1].name, "edit");
         assert_eq!(third[1].status, "running");
 
-        clear_run_event_buffer(&run_id);
         if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
             cache.remove(&run_id);
         }
+    }
+
+    #[test]
+    fn project_tool_outputs_pairs_by_stable_tool_id() {
+        let events = vec![
+            tool_event(
+                "r",
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"shell","tool_args":"{\"command\":\"ls\"}"}"#,
+                0,
+            ),
+            tool_event("r", "tool_end", r#"{"tool_id":"t1","text":"file.ts"}"#, 1),
+            tool_event(
+                "r",
+                "tool_end",
+                r#"{"tool_id":"t2","text":"x","error":"boom"}"#,
+                2,
+            ),
+        ];
+
+        let outputs = project_tool_outputs(&events, "t1");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].kind, "text");
+        assert!(outputs[0]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("file.ts"));
+
+        let errored = project_tool_outputs(&events, "t2");
+        assert_eq!(errored.len(), 1);
+        assert_eq!(errored[0].kind, "error");
+
+        assert!(project_tool_outputs(&events, "missing").is_empty());
+    }
+
+    #[test]
+    fn tool_input_cache_serves_get_tool_call_input_and_evicts_per_run() {
+        let run_id = format!("test_tool_input_{}", std::process::id());
+        remember_tool_input(&run_id, "t1", r#"{"path":"/a.ts"}"#);
+
+        assert_eq!(
+            get_tool_call_input(&run_id, "t1").expect("read cached input"),
+            Some(r#"{"path":"/a.ts"}"#.to_string())
+        );
+        assert_eq!(
+            get_tool_call_input(&run_id, "other").expect("read missing input"),
+            None
+        );
+
+        evict_tool_inputs(&run_id);
+        assert_eq!(
+            get_tool_call_input(&run_id, "t1").expect("read after eviction"),
+            None
+        );
     }
 
     fn insert_thread(conn: &Connection, id: &str, agent_session_id: Option<&str>) {
