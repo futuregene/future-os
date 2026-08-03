@@ -84,7 +84,7 @@
     "placeholder": "描述任务，@文件 添加到上下文，按 / 使用技能",
     "attachFiles": "添加附件",
     "attachFilesHint": "添加附件（图片、PDF、文本）",
-    "attachLimitReached": "已达到附件上限（每轮 4 个）",
+    "attachLimitReached": "已达到附件上限（每条消息 4 个）",
     "attachDialogFilter": "支持的文件（图片、PDF、文本）",
     "attachDialogTitle": "添加附件",
     "removeAttachment": "移除 {{name}}",

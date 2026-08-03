@@ -3,7 +3,7 @@ import { MarkdownContent } from "../markdown/MarkdownContent";
 
 /**
  * Dimmed, always-expanded display of the model's reasoning for one point in the
- * assistant turn's timeline. Rendered inline (in chronological order with text
+ * assistant reply's timeline. Rendered inline (in chronological order with text
  * and tool activity) and only when the "show thinking" setting is on.
  */
 export function ThinkingBlock({

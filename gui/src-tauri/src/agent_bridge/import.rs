@@ -1,6 +1,6 @@
 //! Import agent sessions into the GUI on startup. Discovers sessions that exist
 //! on the agent but not in the local SQLite DB, then creates workspace + thread
-//! records + per-turn run records so they appear in the thread list and right
+//! records + per-reply run records so they appear in the thread list and right
 //! panel immediately.
 
 use serde::Deserialize;
@@ -169,7 +169,7 @@ fn session_title(summary: &AgentSessionSummary) -> String {
     "Imported Chat".to_string()
 }
 
-/// Create a completed run record for one assistant turn in an imported session.
+/// Create a completed run record for one assistant reply in an imported session.
 fn create_historical_run(
     thread_id: &str,
     model: &str,
@@ -298,7 +298,7 @@ async fn write_back_cwd(session_id: &str, cwd: &str) -> Result<(), String> {
 
 // ─── import ─────────────────────────────────────────────────────────────────
 
-/// Import a single agent session. Creates workspace, thread, and per-turn run
+/// Import a single agent session. Creates workspace, thread, and per-reply run
 /// records. Idempotent via `find_thread_by_agent_session`.
 async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppError> {
     if store::is_agent_session_tombstoned(&summary.id)? {
@@ -402,7 +402,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
         }
     }
 
-    // Fetch entries to count assistant turns and synthesize run events.
+    // Fetch entries to count assistant replies and synthesize run events.
     let entries = fetch_session_entries(&summary.id).await;
     let assistant_count = entries
         .iter()
@@ -483,7 +483,7 @@ pub(crate) async fn import_streaming_session(session_id: &str) -> Result<(), cra
 /// background on startup — failures are logged but never block the UI.
 ///
 /// Concurrency is bounded by a semaphore (4 parallel imports). Each import may
-/// fetch session entries (one extra RPC) to create per-turn run records.
+/// fetch session entries (one extra RPC) to create per-reply run records.
 pub async fn import_missing_sessions() -> Result<(), crate::AppError> {
     let sessions = list_agent_sessions().await;
     if sessions.is_empty() {

@@ -34,7 +34,6 @@ pub struct StreamContext {
     pub save_callback: Option<PersistCallback>,
     #[allow(clippy::type_complexity)]
     pub tool_event_callback: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
-    pub on_user_message: Option<PersistCallback>,
 }
 
 pub struct Loop {
@@ -394,7 +393,7 @@ impl Loop {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // STEERING / INTERRUPT METHODS (matching Go)
+    // INTERRUPT METHODS
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Abort cancels current streaming without queuing a message.

@@ -21,8 +21,8 @@ import { useAgentThreadState } from "./useAgentThreadState";
 import { useMessagePaging } from "./useMessagePaging";
 import { useStickyAutoScroll } from "./useStickyAutoScroll";
 
-/** How many user turns one loaded page renders. */
-const PAGE_USER_TURNS = 10;
+/** How many user exchanges one loaded page renders. */
+const PAGE_USER_EXCHANGES = 10;
 
 interface AgentThreadProps {
   thread: StoredThread | null;
@@ -114,8 +114,8 @@ export function AgentThread({
     onContentSettled: () => updateFloatingScrollbar(false),
   });
 
-  // Windowed rendering for long threads: only the last PAGE_USER_TURNS turns
-  // render; loading an older page is a sync window change (the full message
+  // Windowed rendering for long threads: only the last PAGE_USER_EXCHANGES
+  // exchanges render; loading an older page is a sync window change (the full
   // list stays in memory) with scroll anchoring so the viewport never jumps.
   // The paging hook composes the sticky auto-scroll handler via `onScroll`, so
   // one scroll event reaches both.
@@ -127,7 +127,7 @@ export function AgentThread({
   } = useMessagePaging({
     messages,
     scrollRef,
-    userTurnCount: PAGE_USER_TURNS,
+    userExchangeCount: PAGE_USER_EXCHANGES,
     resetKey: thread?.id ?? null,
     onScroll: handleScroll,
   });
@@ -421,7 +421,7 @@ function agentNotice(
       action: { label: t("notice.needsLogin.action"), onClick: actions.onOpenProviders },
     };
   }
-  // Models loaded, but the user disabled every one — steer them to re-enable.
+  // Models loaded, but the user disabled every one — guide them to re-enable.
   if (connection.readiness === "all_disabled") {
     return {
       title: t("notice.allModelsDisabled.title"),

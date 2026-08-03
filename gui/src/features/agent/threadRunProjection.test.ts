@@ -117,7 +117,7 @@ describe("applyRunMetadata", () => {
     expect(result[3]).toMatchObject({ id: "a2", runId: "r-new", status: "failed", modelId: "new-model" });
   });
 
-  it("marks the most recent turn failed when its run failed", () => {
+  it("marks the most recent exchange failed when its run failed", () => {
     const messages = [
       user("u1"),
       assistant("a1"),
@@ -133,13 +133,13 @@ describe("applyRunMetadata", () => {
     expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete", modelId: "m-1", stopped: false });
   });
 
-  it("marks a cancelled run's turn as stopped without failing it", () => {
+  it("marks a cancelled run's exchange as stopped without failing it", () => {
     const result = applyRunMetadata([user("u1"), assistant("a1")], [run("r1", { status: "cancelled" })]);
     expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete", stopped: true });
   });
 
   it("aligns from the newest end and ignores extra older runs", () => {
-    // One turn, two runs: only the newest run pairs with the turn.
+    // One exchange, two runs: only the newest run pairs with the exchange.
     const result = applyRunMetadata([user("u1"), assistant("a1")], [
       run("r-new", { status: "failed" }),
       run("r-old", { status: "completed" }),
@@ -147,14 +147,14 @@ describe("applyRunMetadata", () => {
     expect(result[1]).toMatchObject({ id: "a1", runId: "r-new", status: "failed" });
   });
 
-  it("leaves older turns untouched when there are fewer runs than turns", () => {
+  it("leaves older exchanges untouched when there are fewer runs than exchanges", () => {
     const result = applyRunMetadata([
       user("u1"),
       assistant("a1"),
       user("u2"),
       assistant("a2"),
     ], [run("r2", { status: "failed" })]);
-    // Newest turn pairs with the only run; the older turn keeps its defaults.
+    // Newest exchange pairs with the only run; the older exchange keeps its defaults.
     expect(result[3]).toMatchObject({ id: "a2", runId: "r2", status: "failed" });
     expect(result[1]?.runId).toBeUndefined();
     expect(result[1]?.status).toBe("complete");
@@ -179,13 +179,13 @@ describe("applyRunMetadata", () => {
     expect(result[2]?.status).toBe("complete");
   });
 
-  it("stamps an aborted (empty) turn with the run's end time — the stop time", () => {
+  it("stamps an aborted (empty) exchange with the run's end time — the stop time", () => {
     const stopMs = Date.parse("2026-07-01T10:00:06.000Z");
     const result = applyRunMetadata(
       [
         user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
-        // The turn's projected time falls inside the run's window (as real
-        // session-derived turns do) so window matching can pair them.
+        // The exchange's projected time falls inside the run's window (as real
+        // session-derived exchanges do) so window matching can pair them.
         assistant("a1", { content: "", createdAt: "2026-07-01T10:00:01.000Z" }),
       ],
       [run("r1", { status: "cancelled", startedAt: stopMs - 6000, endedAt: stopMs })],
@@ -194,10 +194,10 @@ describe("applyRunMetadata", () => {
     expect(result[1]?.stopped).toBe(true);
   });
 
-  it("does not stamp a run that failed before any assistant entry onto the previous turn", () => {
+  it("does not stamp a run that failed before any assistant entry onto the previous exchange", () => {
     // r2 (402 insufficient credit) died before the agent saved an entry: the
     // projected history ends with u2. Positional newest-first pairing would
-    // stamp r2 onto a1 — the previous, successful turn — and mislabel it as
+    // stamp r2 onto a1 — the previous, successful exchange — and mislabel it as
     // failed. Window matching excludes the orphan instead.
     const result = applyRunMetadata([
       user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
@@ -218,8 +218,8 @@ describe("applyRunMetadata", () => {
     expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete" });
   });
 
-  it("keeps later turns aligned when a middle run left no assistant entry", () => {
-    // Turn 2's run failed without an entry; turn 3 succeeded afterwards.
+  it("keeps later exchanges aligned when a middle run left no assistant entry", () => {
+    // Exchange 2's run failed without an entry; exchange 3 succeeded afterwards.
     const result = applyRunMetadata([
       user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
       assistant("a1", { content: "one", createdAt: "2026-07-01T10:00:05.000Z" }),
@@ -247,7 +247,7 @@ describe("applyRunMetadata", () => {
     expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete" });
   });
 
-  it("falls back to positional pairing when no run window matches any turn (legacy timestamps)", () => {
+  it("falls back to positional pairing when no run window matches any exchange (legacy timestamps)", () => {
     const result = applyRunMetadata([
       user("u1"),
       assistant("a1"),
@@ -259,7 +259,7 @@ describe("applyRunMetadata", () => {
     expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "failed" });
   });
 
-  it("keeps a completed turn's own reply time rather than restamping it", () => {
+  it("keeps a completed exchange's own reply time rather than restamping it", () => {
     const replyTs = "2026-07-01T10:00:07.000Z";
     const result = applyRunMetadata(
       [user("u1"), assistant("a1", { content: "answer", createdAt: replyTs })],
@@ -273,10 +273,10 @@ describe("applyRunMetadata", () => {
     expect(applyRunMetadata(messages, [])).toBe(messages);
   });
 
-  it("leaves the in-flight turn unstamped when its mid-run partial entry is persisted", () => {
+  it("leaves the in-flight exchange unstamped when its mid-run partial entry is persisted", () => {
     // The agent's save_callback persists each completed LLM call mid-run, so a
     // reload during streaming surfaces a partial assistant entry for the
-    // ACTIVE run's turn. Turns then outnumber settled runs — stamping the
+    // ACTIVE run's exchange. Exchanges then outnumber settled runs — stamping the
     // newest settled run onto the partial entry misaligns every pairing and
     // defeats streamingBubbleBase's dedup (the frozen partial renders next to
     // the growing live bubble).
@@ -289,7 +289,7 @@ describe("applyRunMetadata", () => {
       run("r2", { status: "running", createdAt: 2 }),
       run("r1", { status: "completed", createdAt: 1, modelId: "m-1" }),
     ]);
-    // The in-flight turn keeps no runId — the streaming bubble owns it.
+    // The in-flight exchange keeps no runId — the streaming bubble owns it.
     expect(result[3]?.runId).toBeUndefined();
     // The settled run pairs with its real owner.
     expect(result[1]).toMatchObject({ id: "a1", runId: "r1", modelId: "m-1" });
@@ -324,10 +324,10 @@ describe("applyRunMetadata", () => {
     expect(base!.some(message => message.id === "a2-partial")).toBe(false);
   });
 
-  it("still stamps the newest turn when the active run has no persisted entry yet", () => {
-    // Turns == settled runs here: the active run's first LLM call hasn't
-    // completed, so its turn has no entry on disk and the newest assistant
-    // turn belongs to the last settled run.
+  it("still stamps the newest exchange when the active run has no persisted entry yet", () => {
+    // Exchanges == settled runs here: the active run's first LLM call hasn't
+    // completed, so its exchange has no entry on disk and the newest assistant
+    // exchange belongs to the last settled run.
     const result = applyRunMetadata([
       user("u1"),
       assistant("a1", { content: "answer" }),
@@ -379,7 +379,7 @@ describe("recoverFailedRuns", () => {
     expect(bubble.content.trim()).not.toBe("");
   });
 
-  it("inserts the bubble at its chronological position when a later turn succeeded", () => {
+  it("inserts the bubble at its chronological position when a later exchange succeeded", () => {
     const result = recoverFailedRuns([
       user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
       assistant("a1", { content: "one", createdAt: "2026-07-01T10:00:05.000Z", runId: "r1" }),
@@ -400,8 +400,8 @@ describe("recoverFailedRuns", () => {
 
   it("appends a failure bubble when the FIRST run of the session failed (no assistant entry at all)", () => {
     // The "prompt acknowledgement omitted run_id" case: the run failed before
-    // the agent saved anything — the user's message is the only turn inside the
-    // run's window, so the trust guard must not require an assistant turn.
+    // the agent saved anything — the user's message is the only exchange inside the
+    // run's window, so the trust guard must not require an assistant reply.
     const result = recoverFailedRuns([
       user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
     ], [
@@ -417,7 +417,7 @@ describe("recoverFailedRuns", () => {
     expect(result[1]!.content.trim()).not.toBe("");
   });
 
-  it("leaves messages unchanged when the failed run already owns a projected turn", () => {
+  it("leaves messages unchanged when the failed run already owns a projected exchange", () => {
     const messages = [
       user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
       assistant("a1", { content: "partial", createdAt: "2026-07-01T10:00:05.000Z", runId: "r1", status: "failed" }),
@@ -445,9 +445,9 @@ describe("recoverFailedRuns", () => {
     expect(result).toBe(messages);
   });
 
-  it("skips recovery entirely when no run window matches any turn (legacy timestamps)", () => {
+  it("skips recovery entirely when no run window matches any exchange (legacy timestamps)", () => {
     // Legacy session entries have no real timestamps (the agent backfills
-    // load-time `now`), so every turn sits after every run — window matching is
+    // load-time `now`), so every exchange sits after every run — window matching is
     // meaningless and bubbles would land at the wrong end of history.
     const messages = [
       user("u1", { createdAt: "2026-07-20T09:00:00.000Z" }),
@@ -461,7 +461,7 @@ describe("recoverFailedRuns", () => {
 });
 
 describe("applyRecoveredEvents", () => {
-  it("fills an empty aborted turn with the streamed partial text", () => {
+  it("fills an empty aborted exchange with the streamed partial text", () => {
     const messages = [
       user("u1"),
       assistant("a1", { content: "", runId: "r1", stopped: true }),
@@ -476,7 +476,7 @@ describe("applyRecoveredEvents", () => {
     expect(result[1]?.stopped).toBe(true);
   });
 
-  it("leaves a turn that already has content untouched", () => {
+  it("leaves an exchange that already has content untouched", () => {
     const messages = [user("u1"), assistant("a1", { content: "final answer", runId: "r1" })];
     const result = applyRecoveredEvents(
       messages,
@@ -485,7 +485,7 @@ describe("applyRecoveredEvents", () => {
     expect(result[1]?.content).toBe("final answer");
   });
 
-  it("leaves a turn with segments untouched (tool activity already projected)", () => {
+  it("leaves an exchange with segments untouched (tool activity already projected)", () => {
     const withSegments = assistant("a1", {
       content: "",
       runId: "r1",
@@ -499,13 +499,13 @@ describe("applyRecoveredEvents", () => {
     expect(result[1]?.content).toBe("");
   });
 
-  it("leaves an empty turn untouched when its events carried no text", () => {
+  it("leaves an empty exchange untouched when its events carried no text", () => {
     const messages = [user("u1"), assistant("a1", { content: "", runId: "r1" })];
     const result = applyRecoveredEvents(messages, new Map([["r1", events([])]]));
     expect(result[1]?.content).toBe("");
   });
 
-  it("ignores turns without a runId", () => {
+  it("ignores exchanges without a runId", () => {
     const messages = [user("u1"), assistant("a1", { content: "" })];
     const result = applyRecoveredEvents(messages, new Map([["r1", events([["text_chunk", { text: "x" }]])]]));
     expect(result[1]?.content).toBe("");
@@ -555,7 +555,7 @@ describe("streamingBubbleBase", () => {
     expect(base?.some(m => m.id === "u2")).toBe(true);
   });
 
-  it("drops the persisted entry of a multi-call turn (finalText is the last call's text)", () => {
+  it("drops the persisted entry of a multi-call exchange (finalText is the last call's text)", () => {
     // Two LLM calls persisted separately; entriesToMessages keeps only the last
     // call's text as content, which is a substring (not prefix) of the live projection.
     const persisted = assistant("a-partial", { content: "second call text" });
@@ -564,22 +564,22 @@ describe("streamingBubbleBase", () => {
     expect(base?.some(m => m.id === "a-partial")).toBe(false);
   });
 
-  it("keeps an earlier turn's reply even when the new stream starts alike", () => {
+  it("keeps an earlier exchange's reply even when the new stream starts alike", () => {
     const earlier = assistant("a1", { content: "OK" });
     const current = [user("u1"), earlier, user("u2")];
     const base = streamingBubbleBase(current, RUN, BUBBLE, "OK, let me help with that");
     expect(base?.some(m => m.id === "a1")).toBe(true);
   });
 
-  it("returns null when another turn's persisted reply already covers the live text", () => {
+  it("returns null when another exchange's persisted reply already covers the live text", () => {
     const earlier = assistant("a1", { content: "Hello world, how are you today?" });
     const current = [user("u1"), earlier, user("u2")];
-    // u2's turn has no persisted entry; u1's reply happens to contain the head.
+    // u2's exchange has no persisted entry; u1's reply happens to contain the head.
     expect(streamingBubbleBase(current, RUN, BUBBLE, "Hello world, how")).toBeNull();
   });
 
-  it("does not prefix-suppress an earlier turn that carries a canonical runId", () => {
-    // N9 / 5.4E: the prefix heuristic is legacy-only. A settled canonical turn
+  it("does not prefix-suppress an earlier exchange that carries a canonical runId", () => {
+    // N9 / 5.4E: the prefix heuristic is legacy-only. A settled canonical exchange
     // (runId present) whose reply shares a head with a repeated question's live
     // text ("continue" / "yes" / deterministic output) must NOT kill the new
     // bubble — that prefix match was the mis-kill. The runId guard at the top
@@ -591,7 +591,7 @@ describe("streamingBubbleBase", () => {
     expect(base?.some(m => m.id === "a1")).toBe(true);
   });
 
-  it("returns the list unchanged when the in-flight turn has no persisted entry", () => {
+  it("returns the list unchanged when the in-flight exchange has no persisted entry", () => {
     const current = [user("u1"), assistant("a1", { content: "previous reply" }), user("u2")];
     const base = streamingBubbleBase(current, RUN, BUBBLE, "brand new stream");
     expect(base).toBe(current);
@@ -600,15 +600,15 @@ describe("streamingBubbleBase", () => {
   it("returns the list unchanged when live content is empty (thinking-only so far)", () => {
     const persisted = assistant("a-partial", { content: "partial text" });
     const current = [user("u1"), persisted];
-    // Same-turn persisted entry is always dropped — the bubble will fill in
+    // Same-exchange persisted entry is always dropped — the bubble will fill in
     // as events arrive.
     const base = streamingBubbleBase(current, RUN, BUBBLE, "");
     expect(base?.some(m => m.id === "a-partial")).toBe(false);
   });
 
-  it("drops the same-turn persisted entry even when it carries another run's id", () => {
+  it("drops the same-exchange persisted entry even when it carries another run's id", () => {
     // Defense in depth: a runId that is NOT the active run's (e.g. a stale
-    // misaligned stamp) must not shield the in-flight turn's mid-run snapshot
+    // misaligned stamp) must not shield the in-flight exchange's mid-run snapshot
     // from the dedup — the bubble replaces it either way.
     const persisted = assistant("a-partial", { content: "ABC", runId: "r-old-settled" });
     const current = [user("u1"), assistant("a1", { content: "earlier reply" }), user("u2"), persisted];
@@ -617,8 +617,8 @@ describe("streamingBubbleBase", () => {
     expect(base?.some(m => m.id === "a1")).toBe(true);
   });
 
-  it("drops the same-turn snapshot that has no text yet (thinking/tools-only)", () => {
-    // Mid-run the turn may have produced only thinking + tool calls: the
+  it("drops the same-exchange snapshot that has no text yet (thinking/tools-only)", () => {
+    // Mid-run the exchange may have produced only thinking + tool calls: the
     // persisted entry's `content` is empty but its segments still render, so
     // leaving it in place duplicates the live bubble's thinking/activity.
     const persisted = assistant("a-partial", {
@@ -634,7 +634,7 @@ describe("streamingBubbleBase", () => {
     expect(base?.some(m => m.id === "a1")).toBe(true);
   });
 
-  it("keeps a compaction divider sitting at the head of the in-flight turn", () => {
+  it("keeps a compaction divider sitting at the head of the in-flight exchange", () => {
     // A divider is a marker, not a reply snapshot — the bubble must be
     // appended AFTER it, never replace it.
     const divider = assistant("div", { content: "", segments: [{ id: "s", kind: "compaction" }] });

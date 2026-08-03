@@ -502,15 +502,11 @@ impl ServerSession {
         run_loop
             .stream_incomplete
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        // Stamp run + turn identity on the message itself, not just the
-        // journal entry: the terminal history rewrite regenerates entries from
-        // the in-memory messages, so identity injected only at the entry layer
-        // would be lost there. Every user message opens a turn; assistant and
-        // tool entries inherit the current one (see save_closure/user_msg_cb).
-        // New architecture makes product turn identity a deterministic alias
-        // of run identity. Legacy multi-turn transcripts remain readable, but
-        // every newly started run has exactly one canonical turn.
-        let initial_turn_id = run_lease.run_id.clone();
+        // Stamp run identity on the message itself, not just the journal
+        // entry: the terminal history rewrite regenerates entries from the
+        // in-memory messages, so identity injected only at the entry layer
+        // would be lost there. Assistant and tool entries inherit the run id
+        // at save time (see save_closure/user_msg_cb).
         {
             let metadata = user_message
                 .metadata
@@ -518,10 +514,6 @@ impl ServerSession {
             metadata.insert(
                 "run_id".to_string(),
                 serde_json::Value::String(run_lease.run_id.clone()),
-            );
-            metadata.insert(
-                "turn_id".to_string(),
-                serde_json::Value::String(initial_turn_id),
             );
         }
         self.messages.write().push(user_message);
@@ -533,7 +525,7 @@ impl ServerSession {
         }
 
         // Persist immediately so the GUI can see the user message (and any
-        // tool entries from prior turns) during streaming. Without this, a
+        // tool entries from earlier runs) during streaming. Without this, a
         // thread switch mid-stream loses the question until the run settles
         // because get_session_entries reads from disk.
         // Ephemeral sessions (--no-session) skip persistence entirely.
@@ -638,7 +630,6 @@ impl ServerSession {
         let save_messages = messages_arc.clone();
         let save_persistence = self.persistence.clone();
         let persisted_run_id = run_lease.run_id.clone();
-        let save_turn_id = run_lease.run_id.clone();
         let save_closure: crate::agent::PersistCallback =
             Arc::new(move |msg: &crate::types::AgentMessage| {
                 if is_ephemeral {
@@ -647,50 +638,18 @@ impl ServerSession {
                 let mut persisted = msg.clone();
                 // Every entry of this run carries its run identity — not just
                 // assistant entries — so a message's home run never has to be
-                // re-derived from journal position. Assistant/tool entries join
-                // the run's single canonical turn. Existing ids win for
+                // re-derived from journal position. Existing ids win for
                 // legacy messages that are re-saved during compaction.
                 let metadata = persisted.metadata.get_or_insert_with(serde_json::Map::new);
                 metadata
                     .entry("run_id".to_string())
                     .or_insert_with(|| serde_json::Value::String(persisted_run_id.clone()));
-                metadata
-                    .entry("turn_id".to_string())
-                    .or_insert_with(|| serde_json::Value::String(save_turn_id.clone()));
                 save_messages.write().push(persisted.clone());
                 let entry = crate::session::agent_message_to_entry(&persisted);
                 if let Err(error) = save_persistence.append(vec![entry]) {
                     tracing::error!("Failed to enqueue session entry: {error}");
                 }
             });
-        // The callback remains part of StreamContext for provider compatibility,
-        // but new architecture never injects another user message into this run.
-        let in_run_user_message_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let user_msg_cb: crate::agent::PersistCallback = {
-            let b = broadcaster.clone();
-            let persistence = self.persistence.clone();
-            let rewrite_required = in_run_user_message_seen.clone();
-            let user_msg_run_id = run_lease.run_id.clone();
-            Arc::new(move |msg: &crate::types::AgentMessage| {
-                rewrite_required.store(true, std::sync::atomic::Ordering::SeqCst);
-                let mut persisted = msg.clone();
-                let metadata = persisted.metadata.get_or_insert_with(serde_json::Map::new);
-                metadata
-                    .entry("run_id".to_string())
-                    .or_insert_with(|| serde_json::Value::String(user_msg_run_id.clone()));
-                metadata
-                    .entry("turn_id".to_string())
-                    .or_insert_with(|| serde_json::Value::String(user_msg_run_id.clone()));
-                let entry = crate::session::agent_message_to_entry(&persisted);
-                if let Err(error) = persistence.append(vec![entry]) {
-                    tracing::error!("Failed to enqueue in-run user message: {error}");
-                }
-                b.broadcast(crate::rpc::SseEvent::new(
-                    "user_message",
-                    serde_json::json!({"text": msg.display_text()}),
-                ));
-            })
-        };
         let stream_ctx = crate::agent::StreamContext {
             // Use the bare model ID from the Loop — the LLM API expects just
             // the model name, not the "provider/model" display format stored
@@ -700,7 +659,6 @@ impl ServerSession {
             on_tool_result: Some(save_closure.clone()),
             save_callback: Some(save_closure),
             tool_event_callback: tool_event_cb,
-            on_user_message: Some(user_msg_cb),
         };
 
         // Set approval/sandbox hooks on this session's Loop config (these
@@ -749,7 +707,7 @@ impl ServerSession {
         self.broadcaster
             .set_persistence_interrupt(shared_interrupt_flag.clone());
 
-        // Create interrupt channel so steer()/abort() can stop the current stream
+        // Create interrupt channel so abort() can stop the current stream
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::channel::<()>(1);
         // Capture both cancellation paths in the run-scoped lease. Abort can
         // now signal the task without making the session appear idle.
@@ -898,8 +856,6 @@ impl ServerSession {
             // reports the latter by refusing to commit, and we then heal via a
             // full rewrite (which also applies the compacted history).
             let compaction_happened = compaction_occurred.load(std::sync::atomic::Ordering::SeqCst);
-            let history_rewrite_required =
-                in_run_user_message_seen.load(std::sync::atomic::Ordering::SeqCst);
             let terminal_state = if was_cancelled {
                 crate::session::RUN_STATE_CANCELLED
             } else if run_error.is_some() {
@@ -979,7 +935,7 @@ impl ServerSession {
                     commit_run_error.as_deref(),
                 );
 
-                if compaction_happened || history_rewrite_required {
+                if compaction_happened {
                     // Compaction replaced the in-memory history, so rewrite the
                     // authoritative snapshot and retain its lifecycle journal.
                     let messages = messages_arc.read().clone();
@@ -1142,9 +1098,9 @@ impl ServerSession {
 
         Ok(run_lease)
     }
-    /// Build this turn's system prompt: project context (CLAUDE.md/AGENTS.md/
+    /// Build this run's system prompt: project context (CLAUDE.md/AGENTS.md/
     /// GEMINI.md), workspace memory (FUTURE.md), discovered skills, and the
-    /// write/memory guidelines. Read fresh each turn (cwd-scoped).
+    /// write/memory guidelines. Read fresh each run (cwd-scoped).
     /// Point the agent loop's cumulative token/cost counters at this session's
     /// shared atomics so streaming updates are tracked per-session.
     fn swap_token_counters_into_loop(&self, r#loop: &mut crate::agent::Loop) {
@@ -1156,7 +1112,7 @@ impl ServerSession {
         r#loop.last_prompt_tokens = self.last_prompt_tokens.clone();
     }
 
-    /// Install the pre-turn auto-compaction transform on the agent loop (a
+    /// Install the pre-call auto-compaction transform on the agent loop (a
     /// no-op when auto-compaction is off), compacting context once usage
     /// crosses ~90% of the model's window.
     fn wire_auto_compaction(&self, r#loop: &mut crate::agent::Loop, enabled: bool, model: &str) {
@@ -1248,7 +1204,7 @@ impl ServerSession {
         }
 
         // Load workspace memory (FUTURE.md) — a separate layer from project
-        // context, read fresh each turn (cwd only; workspace-scoped).
+        // context, read fresh each run (cwd only; workspace-scoped).
         let memory_path = std::path::Path::new(cwd).join("FUTURE.md");
         let memory_content = std::fs::read_to_string(&memory_path).unwrap_or_default();
 
@@ -1578,18 +1534,18 @@ impl ServerSession {
     }
 }
 
-/// Reconcile run/turn identity across a run's final in-memory history before
-/// it replaces the shared session messages (and before any terminal rewrite
+/// Reconcile run identity across a run's final in-memory history before it
+/// replaces the shared session messages (and before any terminal rewrite
 /// regenerates journal entries from it). The run loop builds its own
-/// un-stamped message copies (assistant/tool results, steering-drained user
-/// messages), while the journal entries persisted mid-run were stamped at
-/// save time — without this pass the rewrite would diverge from them.
+/// un-stamped message copies (assistant/tool results), while the journal
+/// entries persisted mid-run were stamped at save time — without this pass
+/// the rewrite would diverge from them.
 ///
 /// The sweep covers only this run's messages: it starts at the run's opening
 /// user message, which was stamped before the run began, and never touches
-/// earlier turns — their entries carry their own runs' identities (or, for
+/// earlier runs — their entries carry their own run identities (or, for
 /// legacy journals, none at all, and they must stay that way). Existing ids
-/// win: a message first journaled with a turn id keeps it.
+/// win: a message first journaled with a run id keeps it.
 fn reconcile_run_identity(messages: &mut [crate::types::AgentMessage], run_id: &str) {
     let start = messages
         .iter()
@@ -1603,31 +1559,11 @@ fn reconcile_run_identity(messages: &mut [crate::types::AgentMessage], run_id: &
                     == Some(run_id)
         })
         .unwrap_or(messages.len());
-    let mut current_turn: Option<String> = None;
     for message in &mut messages[start..] {
         let metadata = message.metadata.get_or_insert_with(serde_json::Map::new);
         metadata
             .entry("run_id".to_string())
             .or_insert_with(|| serde_json::Value::String(run_id.to_string()));
-        if message.role == "user" {
-            let turn_id = metadata
-                .get("turn_id")
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    let fresh = format!("turn_{}", crate::utils::generate_entry_id());
-                    metadata.insert(
-                        "turn_id".to_string(),
-                        serde_json::Value::String(fresh.clone()),
-                    );
-                    fresh
-                });
-            current_turn = Some(turn_id);
-        } else if let Some(turn_id) = &current_turn {
-            metadata
-                .entry("turn_id".to_string())
-                .or_insert_with(|| serde_json::Value::String(turn_id.clone()));
-        }
     }
     // The run's final assistant reply is always attributable to it, even when
     // a compaction rewrite cost the opening user message its stamp.

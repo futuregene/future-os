@@ -21,7 +21,7 @@ export interface AgentActivityItem {
 }
 
 /**
- * One ordered slice of an assistant turn. Text and tool activity are kept in
+ * One ordered slice of an assistant reply. Text and tool activity are kept in
  * the chronological order the agent produced them (Claude-style inline tool
  * calls), instead of being flattened into "all text, then all tools".
  */
@@ -47,8 +47,6 @@ export interface MessageAttachment {
 export interface AgentMessage {
   id: string;
   runId?: string | null;
-  /** Conversation-turn identity from the agent journal (`meta.turn_id`). */
-  turnId?: string | null;
   role: MessageRole;
   /**
    * i18n key (in the `agent` namespace) for the author, e.g. `author.you`. It is
@@ -67,7 +65,7 @@ export interface AgentMessage {
   segments?: MessageSegment[];
   attachments?: MessageAttachment[];
   /**
-   * Model id of the run that produced this assistant turn (resolved to a
+   * Model id of the run that produced this assistant reply (resolved to a
    * display label at render time).
    */
   modelId?: string | null;

@@ -31,10 +31,28 @@ fn persist_agent_tool_projection(run_id: &str, event_type: &str, payload: &str, 
     match event_type {
         "approval_request" => persist_approval_request(run_id, &value),
         "approval_decision" => persist_approval_decision(run_id, &value),
+        "tool_start" | "toolcall_start" => remember_tool_input(run_id, &value),
         "tool_end" | "tool_result" => persist_tool_end(run_id, &value, sequence),
         "artifact_created" | "artifact.created" => persist_artifact(run_id, &value),
         _ => {}
     }
+}
+
+/// Index the call's structured input so `tool_end` persistence (artifact
+/// path extraction) can read it back via `store::get_tool_call_input`. The
+/// execution `tool_start` arrives after the args-less `toolcall_start`, so a
+/// plain overwrite lands on the complete args; empty args never clobber.
+fn remember_tool_input(run_id: &str, value: &serde_json::Value) {
+    let Some(tool_call_id) =
+        value_string(value, &["tool_id", "toolID", "tool_call_id"]).filter(|id| !id.is_empty())
+    else {
+        return;
+    };
+    let Some(args) = value_string(value, &["tool_args", "input"]).filter(|args| !args.is_empty())
+    else {
+        return;
+    };
+    store::remember_tool_input(run_id, &tool_call_id, &args);
 }
 
 fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
@@ -44,10 +62,8 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
         return;
     };
     // Escalation approvals carry no tool_call id (they belong to the run, not a
-    // specific persisted tool_call). Store NULL rather than an empty string —
-    // an empty string violates the tool_calls(id) foreign key, which would drop
-    // the approval on the floor and leave the run stuck "waiting_approval" with
-    // no card to act on.
+    // specific tool call). Store NULL rather than an empty string so queries
+    // can treat "no tool call" uniformly with IS NULL.
     let tool_call_id =
         value_string(value, &["tool_id", "toolID", "tool_call_id"]).filter(|id| !id.is_empty());
     let tool_name =

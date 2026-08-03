@@ -1982,13 +1982,13 @@ mod tests {
         let state = make_app_state();
         let mut cmd = make_cmd("prompt");
         cmd.message = "hello".to_string();
-        cmd.busy_policy = "steer".to_string();
+        cmd.busy_policy = "frobnicate".to_string();
 
         let resp = parse_response(&handle_command_internal(&state, cmd));
 
         assert_eq!(resp["success"], false);
         assert_eq!(resp["error_code"], "invalid_busy_policy");
-        assert_eq!(resp["error_data"]["provided"], "steer");
+        assert_eq!(resp["error_data"]["provided"], "frobnicate");
     }
 
     #[test]
@@ -2318,7 +2318,7 @@ mod tests {
             String::new(),
             vec![
                 info,
-                crate::session::SessionEntry::new_user("user", serde_json::json!("legacy turn")),
+                crate::session::SessionEntry::new_user("user", serde_json::json!("legacy message")),
                 crate::session::SessionEntry::new_assistant(
                     serde_json::json!("legacy reply"),
                     vec![],
@@ -2339,7 +2339,7 @@ mod tests {
         assert!(loaded
             .entries
             .iter()
-            .any(|entry| entry.content == Some(serde_json::json!("legacy turn"))));
+            .any(|entry| entry.content == Some(serde_json::json!("legacy message"))));
         assert!(loaded
             .entries
             .iter()

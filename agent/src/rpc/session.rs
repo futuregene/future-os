@@ -23,7 +23,7 @@ pub struct ServerSession {
     /// Stable unique session identifier (UUID v4).  Used as the JSONL filename
     /// on disk and as the key in `AppState::sessions`.
     pub session_id: String,
-    /// The agent run-loop: LLM provider + tool registry + turn counter.
+    /// The agent run-loop: LLM provider + tool registry + iteration counter.
     /// Each session owns an independent loop minted from
     /// `AppState::loop_template` (`Loop::independent_copy`) — never a shared
     /// one — so concurrent runs, `set_model` calls and aborts stay

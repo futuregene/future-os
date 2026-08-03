@@ -1,4 +1,4 @@
-//! The "previous turn changes" (last-run delta) read model (§10.3): assemble the
+//! The "last-run changes" (last-run delta) read model (§10.3): assemble the
 //! Thread's latest run_snapshot changeset, its file rows, the owning Run, and the
 //! derived `snapshotStatus` (§8.5) into the payload the frontend renders. Pure
 //! store + git reads — no agent involvement — so it lives in the review subsystem
@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::store;
 use crate::{git_review, AppError};
 
-/// The "previous turn changes" payload for a Thread (§10.3).
+/// The "last-run changes" payload for a Thread (§10.3).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LastRunReviewData {

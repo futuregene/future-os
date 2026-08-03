@@ -164,7 +164,7 @@ use super::{delete_thread, get_thread, get_workspace};
 /// "forgetting" a conversation the UI still shows.
 ///
 /// Only threads with at least one `completed` run are considered: the agent
-/// persists the JSONL on the successful-turn path *before* it signals
+/// persists the JSONL on the successful-run path *before* it signals
 /// completion, so a completed run proves base data was written at some point. A
 /// missing file then means external deletion, not a conversation that simply
 /// hasn't produced base data yet (which must never be deleted). Runs once at

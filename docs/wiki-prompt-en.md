@@ -75,7 +75,7 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 | `Home.md` | FutureOS | Landing page: one sentence explaining what it is and what you can do, navigation to other pages |
 | `Installation.md` | Install FutureOS | Download, first launch (macOS/Windows), data location, updates, uninstall |
 | `Quick-Start.md` | Quick Start | From fresh install to first answer: login → start conversation → send message → choose model → see the work |
-| `Using-FutureOS.md` | Using FutureOS | App tour: three-panel layout, Chat vs Workspace, how to follow up and steer the agent, approval mechanism, right-side panel |
+| `Using-FutureOS.md` | Using FutureOS | App tour: three-panel layout, Chat vs Workspace, how to follow up and guide the agent, approval mechanism, right-side panel |
 | `Settings.md` | Settings | Settings pages (focus on General / Providers / Models); built-in FutureGene login, custom provider, model visibility |
 | `Skills.md` | Skills | Overview of built-in skill packs and how to use them |
 | `CLI.md` | CLI (`future-cli`) | Optional advanced command-line tool: location, running, command groups |
@@ -137,7 +137,7 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 **Code entry points (read first):** `gui/src/features/settings/FutureLoginDialog.tsx` (device-code login flow), `gui/src/features/settings/ProvidersPage.tsx`, `gui/src/features/agent/NewConversation.tsx`, `gui/src/features/agent/Composer.tsx` (send, model selector, attachments), `gui/src/components/layout/ActivityRail.tsx` (New Chat / Workspace entries).
 - **Open and sign in**: Settings (gear icon bottom-left) → Providers → built-in FutureGene → Connect → authorize in browser (if it doesn't open automatically, use the verification code + copyable link shown in the app). Mention you can also bring your own provider (see Settings).
 - **Start a conversation**: two ways — **New Chat** (fastest, for questions and one-off tasks), **Workspace** (bind a folder on your computer, for real projects).
-- **Send your first message**: use the input box at the bottom; you'll see streaming replies, tool call displays, and **pauses for your approval** before risky actions; local files are supported, with up to 4 images per turn (25 MiB each) and no count limit for other files.
+- **Send your first message**: use the input box at the bottom; you'll see streaming replies, tool call displays, and **pauses for your approval** before risky actions; local files are supported, with up to 4 images per message (25 MiB each) and no count limit for other files.
 - **Choose a model (optional)**: the model selector is right in the input box; you can also manage models in Settings → Models.
 - **See the work**: right-side panel — Runs (background tasks), Review (file changes in Workspace), Artifacts (outputs from Chat).
 
@@ -145,7 +145,7 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 **Code entry points (read first):** `gui/src/components/layout/AppShell.tsx` (three-panel layout), `gui/src/components/layout/ActivityRail.tsx` (left navigation — use this to confirm exactly which entries exist), `gui/src/components/layout/ContextPanel.tsx` (right panel), `gui/src/features/agent/ApprovalPrompt.tsx` (approval mechanism), `gui/src/features/runs/RunsPanel.tsx` + `gui/src/features/review/ReviewPanel.tsx` + `gui/src/features/artifacts/ArtifactsPanel.tsx` (three right-side views).
 - **Three-panel layout**: left = navigation (use what `ActivityRail.tsx` actually renders: New Chat, your Workspaces & conversations, Chats, Settings); center = conversation (messages, streaming replies, plans, tool activity, command previews, errors, approval cards, input box fixed at bottom); right = context (see what the agent is doing, collapsible).
 - **Chat vs Workspace**: compare in a table (how created, suitable scenarios, what the right panel shows). Emphasize each conversation is an independent agent session that doesn't interfere with others.
-- **Talking to the agent**: send via input box; model selector can be changed per-session; up to 4 images per turn, while non-image attachments are not count-limited.
+- **Talking to the agent**: send via input box; model selector can be changed per-session; up to 4 images per message, while non-image attachments are not count-limited.
 - **Approval mechanism — you're in control**: risky actions pause with an approval card above the input box and wait (no timeout); Allow to continue, Reject to cancel and inform the agent so it can adjust.
 - **Right panel for reviewing work**: Runs (running/completed, can stop/clear, each card shows real commands), Review (Workspace file changes: file list, stats, diff; under version control there's also a "previous changes" view), Artifacts (Chat outputs).
 - (Don't write about Research / Data entries — they are hidden from navigation.)

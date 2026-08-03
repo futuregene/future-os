@@ -69,8 +69,8 @@ function MessageBlockImpl({
   // While the reply streams, the footer is pinned open and shows a live activity
   // indicator instead of the copy button; the copy button returns once it settles.
   const streaming = !isUser && message.status === "streaming";
-  // Retry/Continue only make sense on the latest turn — once a newer round has
-  // started, recovering an earlier failed turn would fork the conversation.
+  // Retry/Continue only make sense on the latest exchange — once a newer round has
+  // started, recovering an earlier failed exchange would fork the conversation.
   // Also suppress for interrupted runs (the agent may still be processing the
   // original after a GUI restart — retrying would race the in-flight run).
   const canRecover = !isUser

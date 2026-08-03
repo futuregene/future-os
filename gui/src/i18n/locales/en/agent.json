@@ -88,7 +88,7 @@
     "placeholder": "Describe the task, @ to add files, / to use skills",
     "attachFiles": "Attach files",
     "attachFilesHint": "Attach files (images, PDF, text)",
-    "attachLimitReached": "Attachment limit reached (4 per turn)",
+    "attachLimitReached": "Attachment limit reached (4 per message)",
     "attachDialogFilter": "Supported (images, PDF, text)",
     "attachDialogTitle": "Attach files",
     "removeAttachment": "Remove {{name}}",

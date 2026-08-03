@@ -9,7 +9,7 @@ export function matchesSettledRun(status: StoredRun["status"]) {
 
 /**
  * Nearest user message at or before `beforeIndex`, scanning backward. Used to
- * find the turn that produced a given assistant reply (retry/continue recovery).
+ * find the exchange that produced a given assistant reply (retry/continue recovery).
  */
 export function previousUserMessageBefore(messages: AgentMessage[], beforeIndex: number): AgentMessage | null {
   for (let index = beforeIndex; index >= 0; index -= 1) {

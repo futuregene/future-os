@@ -297,7 +297,7 @@ All config under `~/.future/`:
 
 | Path | Component | Purpose |
 |---|---|---|
-| `agent/settings.json` | Agent | Steering/follow-up mode, compaction, retry, max turns |
+| `agent/settings.json` | Agent | Compaction, retry, max turns per prompt, default model & permission level |
 | `agent/auth.json` | Agent | API keys by provider (FutureOS + custom) |
 | `agent/models.json` | Agent | Custom model overrides (base URL, API key, compat) |
 | `agent/sessions/` | Agent | JSONL session files |

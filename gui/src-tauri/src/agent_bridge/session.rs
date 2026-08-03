@@ -142,7 +142,7 @@ pub(super) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate
 /// Fork a session at the given user message. Returns the new GUI thread id.
 ///
 /// Creates a dedicated chat workspace named after the forked session id, copies
-/// thread metadata from the parent, and creates per-turn completed run records
+/// thread metadata from the parent, and creates per-reply completed run records
 /// so the right panel is populated immediately.  Messages are served from the
 /// agent JSONL (no SQLite `messages` table), so no message import is needed.
 pub async fn fork_agent_session(
@@ -152,7 +152,7 @@ pub async fn fork_agent_session(
     // renders exactly one message per user entry in order, so the Nth user
     // message maps to the Nth user entry — matching by ordinal instead of
     // content means two identical prompts ("continue", "run the tests") fork the
-    // intended turn, not the first occurrence. `< 0` (unknown) falls back to
+    // intended run, not the first occurrence. `< 0` (unknown) falls back to
     // content matching.
     user_message_index: i64,
 ) -> Result<String, crate::AppError> {
@@ -346,8 +346,11 @@ pub async fn fork_agent_session(
 }
 
 /// Write synthetic `tool_start` and `tool_end` run events from agent session
-/// entries so `list_tool_calls` can reconstruct tool calls for runs that have
-/// no live event stream (forked and imported sessions).
+/// entries for runs that have no live event stream (forked and imported
+/// sessions). The persistence pass extracts file artifacts and indexes tool
+/// inputs; the same events also seed the Runs-panel tool projection (the
+/// Agent journal has no forked history to serve it). Panel state is
+/// in-memory, so it lasts for this process lifetime.
 ///
 /// The Nth assistant entry maps to the Nth run_id. Tool result entries
 /// (role = "tool") are matched by `tool_call_id`.
@@ -371,6 +374,21 @@ pub(super) fn synthesize_run_events_from_entries(
 
     let mut run_idx: usize = 0;
     let mut seq: i64 = 0;
+    // Synthetic events per run, for seeding the Runs-panel tool projection
+    // (runs appear in order, so a run change flushes the previous batch).
+    let mut panel_run: Option<String> = None;
+    let mut panel_events: Vec<crate::store::RunEventRecord> = Vec::new();
+    let panel_record =
+        |run_id: &str, event_type: &str, payload: &serde_json::Value, sequence: i64| {
+            crate::store::RunEventRecord {
+                id: format!("synthetic_{run_id}_{sequence}"),
+                run_id: run_id.to_string(),
+                event_type: event_type.to_string(),
+                payload: Some(payload.to_string()),
+                sequence,
+                created_at: 0,
+            }
+        };
 
     for entry in entries {
         if entry.get("role").and_then(|r| r.as_str()) != Some("assistant") {
@@ -381,6 +399,13 @@ pub(super) fn synthesize_run_events_from_entries(
         }
         let run_id = &run_ids[run_idx];
         run_idx += 1;
+        if panel_run.as_deref() != Some(run_id) {
+            if let Some(previous_run) = panel_run.take() {
+                crate::store::advance_tool_projection(&previous_run, &panel_events);
+                panel_events.clear();
+            }
+            panel_run = Some(run_id.clone());
+        }
 
         let Some(tool_calls) = entry.get("tool_calls").and_then(|v| v.as_array()) else {
             continue;
@@ -416,6 +441,7 @@ pub(super) fn synthesize_run_events_from_entries(
                 &start_payload.to_string(),
                 seq,
             );
+            panel_events.push(panel_record(run_id, "tool_start", &start_payload, seq));
             seq += 1;
 
             // tool_end from the matching result entry, if one exists.
@@ -440,9 +466,13 @@ pub(super) fn synthesize_run_events_from_entries(
                     &end_payload.to_string(),
                     seq,
                 );
+                panel_events.push(panel_record(run_id, "tool_end", &end_payload, seq));
                 seq += 1;
             }
         }
+    }
+    if let Some(previous_run) = panel_run.take() {
+        crate::store::advance_tool_projection(&previous_run, &panel_events);
     }
     Ok(())
 }

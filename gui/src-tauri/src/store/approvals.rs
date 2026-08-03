@@ -68,6 +68,9 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
 
     let now = now_millis();
     let reviewer = input.reviewer.unwrap_or_else(|| "user".to_string());
+    let approval_request_id = input
+        .approval_request_id
+        .unwrap_or_else(|| create_id("approval"));
     tx.execute(
         "INSERT INTO approval_requests (
              id, thread_id, run_id, tool_call_id, kind, status, title, summary,
@@ -77,9 +80,7 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
          ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10, ?10,
                    ?11, ?12, ?13, ?14, ?15, 'once', 'user')",
         params![
-            input
-                .approval_request_id
-                .unwrap_or_else(|| create_id("approval")),
+            approval_request_id,
             thread_id,
             input.run_id,
             input.tool_call_id,
@@ -97,6 +98,8 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
         ],
     )?;
     tx.commit()?;
+    // The pending row is durable — push it to the webview immediately.
+    crate::emit_approvals_updated(&thread_id, &approval_request_id);
     Ok(())
 }
 
@@ -147,7 +150,7 @@ pub fn decide_approval_request(
     // Compare-and-set on `pending`: a decision is only recorded once, so a
     // concurrent/late decision (or a duplicate event) can't rewrite an already
     // decided request — the audit record stays immutable.
-    conn.execute(
+    let affected = conn.execute(
         "UPDATE approval_requests
          SET status = ?1, decision_note = ?2, decided_at = ?3, updated_at = ?3
          WHERE id = ?4
@@ -155,10 +158,16 @@ pub fn decide_approval_request(
         params![status, input.decision_note, now, input.approval_request_id],
     )?;
 
-    loaded(
+    let record = loaded(
         get_approval_request(&input.approval_request_id)?,
         "Approval request",
-    )
+    )?;
+    // Only a decision that actually flipped a pending row changes the queue —
+    // duplicate/late decisions must not re-notify.
+    if affected > 0 {
+        crate::emit_approvals_updated(&record.thread_id, &record.id);
+    }
+    Ok(record)
 }
 
 pub fn list_review_file_changes(

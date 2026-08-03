@@ -12,7 +12,7 @@
 
 - 支持 Workspace 与普通 Chat 两种工作入口；Workspace 支持打开（按路径去重）、重命名、软删除（级联软删子对话）。
 - 支持 Thread 创建、恢复、重命名、置顶、归档、删除。
-- 支持消息、Run、Run Event 的持久化。
+- 支持消息、Run、Run Event 的持久化（消息与事件现由 Agent 持久化，GUI 只存 Run 状态等附加数据，见 §4.3、§4.5）。
 - 支持 artifacts、Data sources、Skills。（Research 延后，见 §4.12。）
 - 支持统一引用对象，用于 `@` 引用 Artifact、文件和 Data Source。
 - 支持审批对象，用于高风险操作的批准或拒绝。
@@ -26,30 +26,26 @@ erDiagram
     WORKSPACE ||--o{ ARTIFACT : stores
     WORKSPACE ||--o{ WORKSPACE_FILE : exposes
 
-    THREAD ||--o{ MESSAGE : has
     THREAD ||--o{ RUN : triggers
     THREAD ||--o{ ARTIFACT : produces
     THREAD ||--o{ APPROVAL_REQUEST : requests
     THREAD ||--o{ REVIEW_CHANGESET : reviews
 
-    RUN ||--o{ RUN_EVENT : emits
-    RUN ||--o{ TOOL_CALL : invokes
     RUN ||--o{ APPROVAL_REQUEST : creates
     RUN ||--o{ REVIEW_CHANGESET : produces
     RUN ||--o{ REVIEW_SNAPSHOT : snapshots
-    TOOL_CALL ||--o{ TOOL_OUTPUT : produces
 
     REVIEW_CHANGESET ||--o{ REVIEW_FILE_CHANGE : contains
     REVIEW_SNAPSHOT ||--o{ REVIEW_CHANGESET : bounds
 
-    DATA_SOURCE ||--o{ DATA_CREDENTIAL : uses
-    SKILL ||--o{ SKILL_ENABLEMENT : enabled_by
-    WORKSPACE ||--o{ SKILL_ENABLEMENT : scopes
-
     REFERENCE_TARGET ||--o{ OBJECT_REFERENCE : target_of
-    MESSAGE ||--o{ OBJECT_REFERENCE : mentions
     REVIEW_FILE_CHANGE ||--o{ OBJECT_REFERENCE : compares
 ```
+
+> Message / Run Event / Tool Call / Tool Output 已不是 GUI SQLite 对象：它们由
+> Agent 持久化（会话 JSONL 与 run-events journal，唯一真源），GUI 经 gRPC
+> 读取后投影展示。见 §4.3、§4.5–4.7。Data Source / Skill 相关对象已废弃，
+> 见 §4.14–4.17。
 
 ## 3. 命名约定
 
@@ -118,9 +114,6 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 | `status` | `active`、`archived`、`deleted` |
 | `pinned` | 是否置顶 |
 | `readonly` | 是否只读 |
-| `model_provider` | 最近或默认模型 provider |
-| `model_id` | 最近或默认模型 |
-| `thinking_level` | 该 Thread 的思考档位（`store/schema.rs`；随模型切换持久化） |
 | `agent_session_id` | GUI Thread ↔ Agent 会话映射；解析 Agent 侧 sessions JSONL、远程控制查会话时用（`store/schema.rs`） |
 | `last_message_at` | 最近消息时间 |
 | `last_opened_at` | 最近打开时间 |
@@ -145,35 +138,27 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 - 标题默认生成，用户可以修改。
 - 归档对话默认隐藏、只读，但允许搜索命中。
 - 用户在归档对话中点击输入框时，产品自动引导恢复后继续。
+- 模型与思考等级**不再是 Thread 列**（`model_provider` / `model_id` / `thinking_level` 已经 `DROPPED_COLUMNS` 从旧库删除）：权威状态在 Agent session，GUI 经 `get_thread_agent_state` 读取，切换经 `set_model` / `set_thinking_level` 下发，只影响该会话之后的 run，不打断进行中的 run。
 
 ### 4.3 Message
 
 Message 表示对话中的一条消息。
 
-字段草案：
-
-| 字段 | 说明 |
-| --- | --- |
-| `id` | Message 唯一标识 |
-| `thread_id` | 所属 Thread |
-| `run_id` | 关联 Run，可为空 |
-| `role` | `user`、`assistant`、`system`、`tool` |
-| `content_type` | `text`、`markdown`、`mixed` |
-| `content` | 消息正文 |
-| `status` | `complete`、`streaming`、`failed` |
-| `created_at` | 创建时间 |
-| `updated_at` | 更新时间 |
+**存储：`messages` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 消息由 Agent 会话
+JSONL（`~/.future/agent/sessions/<session-id>.jsonl`）单一持久化，是唯一真源；
+GUI 通过 `get_session_entries` gRPC 命令读取并投影为界面消息，不再落 GUI
+SQLite，也没有第二份副本需要合并仲裁。
 
 关系：
 
-- 一个 Message 属于一个 Thread。
-- 一个 Message 可以关联一个 Run。
+- 一个 Message 逻辑上属于一个 Thread（经 Thread 的 `agent_session_id` 映射到 Agent session）。
+- 一个 Message 可以关联一个 Run（JSONL 条目 `meta` 携带 `run_id`）。
 - 一个 Message 可以包含多个 Object Reference。
 
 说明：
 
-- Assistant 流式输出时，可以先创建 `status = streaming` 的 Message，再逐步更新内容。
-- 工具结果可以作为 Message，也可以由 Tool Output 单独记录；第一版可保留两者兼容空间。
+- 流式输出由 Agent 事件流驱动（见 §4.5），GUI 实时投影；run 结束后消息以 JSONL 为准。
+- 附件元数据（`path` / `kind` / `name` / `thumbnail`）存于用户消息条目的 `meta.attachments`，无独立附件表。
 
 ### 4.4 Run
 
@@ -216,55 +201,54 @@ Run 表示一次 Agent 执行，通常由用户消息触发。
 
 Run Event 表示 Run 过程中的结构化事件。
 
-字段草案：
+**存储：`run_events` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 事件由 Agent 的
+run-events journal（`~/.future/agent/run-events/<session-id>/<run-id>.jsonl`，
+逐事件落盘 + fsync）持久化，是唯一真源；GUI 经 `get_events_since` gRPC 命令
+按游标增量读取，不写第二份。旧版 GUI JSONL（`~/.future/app/run_events/`）仅作为
+Agent 不可达时的兼容读取源，生产不再写入。
 
-| 字段 | 说明 |
-| --- | --- |
-| `id` | Run Event 唯一标识 |
-| `run_id` | 所属 Run |
-| `event_type` | 事件类型 |
-| `payload` | 事件数据 |
-| `sequence` | Run 内顺序 |
-| `created_at` | 创建时间 |
+事件标识与顺序：每个事件带 run 内单调 `idx`、session 级 `session_idx`、跨 run 的
+`run_sequence` 与 `event_id`；GUI 观察者先按游标校验再扇出（重放去重、跳号触发
+重连重放），保证不乱序、不重复。
 
-常见事件类型：
+事件类型（与 proto 词汇表一致）：
 
-- `run.started`
-- `message.delta`
-- `plan.updated`
-- `tool.started`
-- `tool.output`
-- `tool.completed`
-- `approval.requested`
-- `approval.decided`
-- `approval.cancelled`
-- `file.changed`
-- `artifact.created`
-- `review.created`
-- `run.cancelled`
-- `run.completed`
-- `run.failed`
+- `agent_start` / `agent_end` — Run 生命周期（`agent_end` 携带 error / usage / duration 权威合计）
+- `user_message` — 用户 prompt
+- `text_chunk` — 助手文本增量
+- `thinking_start` / `thinking_delta` / `thinking_end` — 推理流
+- `tool_start` / `tool_delta` / `tool_end` — 工具执行
+- `approval_request` / `approval_decision` — 审批
+- `usage` — token 计量
+- `error` — Run 错误
+- `tool_sandboxed` / `persistence_error` / `compaction_end` — 旁路信号
 
 说明：
 
-- GUI 可根据 Run Event 渲染过程卡片、时间线、工具调用和状态变化。
-- 当前右侧 Runs 面板不直接展示完整 Run Event；Run Event 主要服务对话投影、调试视图和后续 timeline / review 能力。
-- CLI 后续可以复用 Run Event 输出 JSON 或 NDJSON。
+- GUI 根据 Run Event 渲染流式预览、工具活动时间线和 Runs 面板（工具列表 / 输出也是事件投影，见 §4.6、§4.7）。
+- 右侧 Runs 面板不直接展示完整 Run Event 原文；长输出与调试细节由 Run 检查器承载。
 
 ### 4.6 Tool Call
 
 Tool Call 表示 Agent 调用某个工具的记录。
 
-字段草案：
+**存储：`tool_calls` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 工具调用由 Run
+Event 投影重建：`tool_start` / `tool_end` 事件携带稳定的 `tool_id`，按 id 配对
+（并行工具调用不会错配）。Runs 面板经 `list_tool_calls` / `list_tool_calls_bulk`
+命令从 Agent journal 拉取事件投影（GUI 侧带增量投影缓存，Agent 不可达时回退旧
+GUI JSONL）。`tool_start` 的结构化输入另存内存索引（`store::remember_tool_input`），
+供 `tool_end` 落库时的工件路径提取（`persist.rs`）。
+
+字段（投影结构 `ToolCallRecord`）：
 
 | 字段 | 说明 |
 | --- | --- |
-| `id` | Tool Call 唯一标识 |
+| `id` | Tool Call 唯一标识（agent 稳定 tool id） |
 | `run_id` | 所属 Run |
 | `name` | 工具名称 |
-| `kind` | `shell`、`read_file`、`write_file`、`edit_file`、`data_query` 等 |
-| `input` | 工具输入 |
-| `status` | `running`、`completed`、`failed`、`cancelled` |
+| `kind` | 工具类别（与 name 同源：shell、read、write、edit 等） |
+| `input` | 工具输入（`tool_args`） |
+| `status` | `running`、`completed`、`failed` |
 | `started_at` | 开始时间 |
 | `ended_at` | 结束时间 |
 | `created_at` | 创建时间 |
@@ -272,28 +256,31 @@ Tool Call 表示 Agent 调用某个工具的记录。
 关系：
 
 - 一个 Tool Call 属于一个 Run。
-- 一个 Tool Call 可以产生多个 Tool Output。
-- 一个 Tool Call 可以触发 Approval Request。
-- 一个 Tool Call 可以产生 Review Changeset。
+- 一个 Tool Call 可以触发 Approval Request（`approval_requests.tool_call_id`，可为空）。
+- 一个 Tool Call 的输出可以产生文件 Artifact（write / edit 成功后由 `persist.rs` 登记）。
 
 ### 4.7 Tool Output
 
 Tool Output 表示工具调用产生的输出。
 
-字段草案：
+**存储：`tool_outputs` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 输出由
+`tool_end` 事件投影（`list_tool_outputs` 命令，数据源同 §4.6）：`text` / `error`
+包装为 JSON 供检查器的 stdout / stderr 面板解析。
+
+字段（投影结构 `ToolOutputRecord`）：
 
 | 字段 | 说明 |
 | --- | --- |
 | `id` | Tool Output 唯一标识 |
 | `tool_call_id` | 所属 Tool Call |
-| `kind` | `stdout`、`stderr`、`result`、`error` |
-| `content` | 输出内容 |
+| `kind` | `text` 或 `error` |
+| `content` | 输出内容（JSON 字符串） |
 | `created_at` | 创建时间 |
 
 说明：
 
-- Shell 输出可以按块写入 Tool Output。
-- 大输出后续可以考虑落文件，只在数据库保存摘要和引用。
+- Shell 非零退出以 `[exit: N]` 尾部标记判定失败（裸 grep/diff/test 退出 1 属正常信号的豁免除外）。
+- 大输出不经 GUI 落库——事件投影按需读取 Agent journal。
 
 ### 4.8 Approval Request
 
@@ -340,7 +327,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 - `requested_action` 预览需要可读化展示；内容过长时 UI 内部滚动，最大高度不超过窗口高度的三分之一。
 - 批量操作使用 `batch_operation`，用于一组文件写入、批量删除、批量命令或跨多个资源的高风险动作。
 - 超出当前 workspace 范围的读取对应枚举值 `outside_workspace_read`（与上表 `kind` 一致）。注意：该读取审批**当前尚未实现**，Agent 侧仅对 workspace 外的写入 / 编辑 / 删除（`outside_workspace_write` 等）触发审批。
-- GUI 或 Agent 重启后遗留的 `pending` 审批应标记为 `cancelled`，防止旧审批继续显示为可操作状态。启动收敛（`cleanup::cancel_stale_approval_requests`）把每个非终态 Run 置为 `cancelled` 并级联其 `pending` 审批与 `running` 工具调用；它**只在后端进程启动时执行一次**（`lib.rs` setup），刻意不暴露为 Tauri 命令——webview 重载会重跑前端 bootstrap，而彼时后端进程仍持有存活 Run 的事件收集器，若由前端触发收敛会误杀正在进行的 Run。
+- GUI 或 Agent 重启后遗留的 `pending` 审批**不**无条件取消：启动收敛保留它们，由 `reconcile_pending_approvals`（启动一次 + watchdog 周期）按 Agent `get_state.pendingApprovals` 的权威集合裁决——Agent 仍在等待的保留卡片（run 复活并回到 `waiting_approval`），Agent 已不持有的（在他处已决、已 abort、或 Agent 自身重启丢失）才转为 `cancelled`，本地缺失的可从 Agent payload 重建。非终态 Run 同样不启动即取消，而是经 `reconcile_interrupted_runs` + `reanimate_run` + active-run watchdog 按 Agent 实际状态收敛（GUI 崩溃期间 Agent 可能仍在运行；仅当 Agent 确认 run 已消失才 settle）。
 - 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
 - P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段（设计细节见 git history，原 `P2_APPROVAL_MODEL.md`）。
 - **v2（审批规则重构，2026-07-04）**：审批对象收敛为**文件路径访问**，规则改为**文件式**（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`，agent 直接读），语义与实现见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) / [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)。相应地：
@@ -595,11 +582,7 @@ Object Reference 表示某个对象引用了另一个对象。
 
 - `workspaces`
 - `threads`
-- `messages`
 - `runs`
-- `run_events`
-- `tool_calls`
-- `tool_outputs`
 - `approval_requests`
 - `review_changesets`
 - `review_file_changes`
@@ -609,7 +592,10 @@ Object Reference 表示某个对象引用了另一个对象。
 - `reference_targets`
 - `object_references`
 - `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`、`show_thinking`，见 `store/app_settings.rs`；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
+- `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
 
+> `messages`、`run_events`、`tool_calls`、`tool_outputs` 曾在此清单，随「Agent JSONL 为唯一真源」改造从 schema 删除（`DROPPED_TABLES` 在旧库清除；消息与事件改由 Agent 持久化，详见 §4.3、§4.5–4.7）。
+>
 > `research_collections`、`research_resources` 曾在此清单，因 Research 延后于第一版发布前从 schema 移除（详见 §4.12–4.13）。
 >
 > `data_sources`、`data_credentials`、`skills`、`skill_enablements` 曾在此清单，已于 2026-07-07 从 schema 删除（从未接线，详见 §4.14–4.17）。

@@ -101,10 +101,10 @@ async function projectRunForLivePreview(
  *
  * The agent's save_callback persists each completed LLM call mid-run, so a
  * reload during streaming surfaces a persisted assistant entry for THIS
- * in-flight turn (no runId of its own — applyRunMetadata leaves in-flight
- * turns unstamped). Left in place, it renders alongside the live bubble as a
+ * in-flight exchange (no runId of its own — applyRunMetadata leaves in-flight
+ * exchanges unstamped). Left in place, it renders alongside the live bubble as a
  * duplicate of the same reply. Detect it — the entry sits after the last user
- * message — and drop it, so the turn renders once.
+ * message — and drop it, so the exchange renders once.
  */
 export function streamingBubbleBase(
   current: AgentMessage[],
@@ -121,19 +121,19 @@ export function streamingBubbleBase(
   const lastAssistant = lastAssistantIdx >= 0 ? current[lastAssistantIdx] : undefined;
   // Reaching here, no message carries `runId` (checked above) — so a runId on
   // the last assistant always belongs to ANOTHER run. If that assistant sits
-  // in the in-flight turn (after the last user message), its stamp can only be
+  // in the in-flight exchange (after the last user message), its stamp can only be
   // a misaligned leftover (e.g. persisted by an older build) and the entry is
-  // this turn's mid-run snapshot regardless — don't let a stray runId shield
+  // this exchange's mid-run snapshot regardless — don't let a stray runId shield
   // it from the dedup.
   if (lastAssistant && lastAssistant.runId !== runId) {
-    // The mid-run persisted entry belongs to the in-flight turn only when the
+    // The mid-run persisted entry belongs to the in-flight exchange only when the
     // last user message precedes it; an assistant that appears before the last
-    // user is an earlier completed turn.
+    // user is an earlier completed exchange.
     const lastUserIdx = current.map(message => message.role).lastIndexOf("user");
     const sameTurn = lastUserIdx >= 0 && lastUserIdx < lastAssistantIdx;
 
-    // A mid-run snapshot for THIS in-flight turn — the streaming bubble is
-    // authoritative: it re-projects the turn's thinking, tool activity AND
+    // A mid-run snapshot for THIS in-flight exchange — the streaming bubble is
+    // authoritative: it re-projects the exchange's thinking, tool activity AND
     // text from the run's event log, so dropping the snapshot loses nothing,
     // even when the snapshot carries no text yet (thinking/tools-only — its
     // `content` is empty but its segments render) or when no event has landed
@@ -146,9 +146,9 @@ export function streamingBubbleBase(
 
     const persisted = lastAssistant.content.trim();
     // Prefix suppression is a legacy-only heuristic (5.4E): for canonical data
-    // every settled turn carries a runId, so the runId guard above already
+    // every settled exchange carries a runId, so the runId guard above already
     // handles a settled-run reload racing this tick. Applying the prefix test to
-    // runId-bearing turns mis-kills repeated questions whose prior answer shares
+    // runId-bearing exchanges mis-kills repeated questions whose prior answer shares
     // a head with the live text ("continue" / "yes" / deterministic output), so
     // only fall back to it for legacy entries that carry no runId at all.
     if (
@@ -167,7 +167,7 @@ export function streamingBubbleBase(
  * Fold a pre-built live preview into restored thread history using the same
  * reconciliation as the incremental upsert path. This matters when switching
  * back to an active thread: the session JSONL may already contain a mid-run
- * assistant snapshot for the current turn, which the preview must replace
+ * assistant snapshot for the current exchange, which the preview must replace
  * rather than render beside.
  */
 export function mergeStreamingPreview(
@@ -300,7 +300,7 @@ export async function updatePendingMessageFromRunEvents(
       return;
 
     // Nothing renderable yet: no answer text, no tool activity, and no inline
-    // segments. Reasoning-only turns DO carry a thinking segment, so this must
+    // segments. Reasoning-only exchanges DO carry a thinking segment, so this must
     // check segments too — otherwise the live thinking view (show-thinking on)
     // is swallowed until the first text/tool lands.
     if (!projection.content.trim() && projection.activityItems.length === 0 && projection.segments.length === 0)
@@ -331,7 +331,7 @@ export async function updatePendingMessageFromRunEvents(
  * Derive the renderable content + ordered segments from a run's events. Segments
  * are only trusted when the events actually carried the assistant text — the
  * stored reply (from the gRPC return) is otherwise authoritative, so legacy data
- * and text-only-via-gRPC turns fall back to flat content + activity list.
+ * and text-only-via-gRPC exchanges fall back to flat content + activity list.
  */
 export function deriveRenderFields(
   events: StoredRunEvent[],
@@ -373,8 +373,8 @@ export function runDurationMs(run: StoredRun | null | undefined, fallbackStartMs
 
 /**
  * A compaction divider is projected as an assistant message but is not a real
- * turn — it carries no content and a single `compaction` segment. It must not
- * consume a run slot when aligning runs to turns.
+ * exchange — it carries no content and a single `compaction` segment. It must not
+ * consume a run slot when aligning runs to exchanges.
  */
 function isCompactionDivider(message: AgentMessage): boolean {
   return message.role === "assistant"
@@ -387,7 +387,7 @@ function isCompactionDivider(message: AgentMessage): boolean {
  * Backfill run-derived status onto messages projected from agent session
  * entries. Agent JSONL only records message content, not a run's GUI-side
  * outcome (failed/cancelled/model) — that lives in the SQLite `runs` table. So a
- * reload from the agent path would otherwise show every turn as "complete",
+ * reload from the agent path would otherwise show every exchange as "complete",
  * losing the Retry/Continue affordance, the "stopped" marker, and the model
  * badge.
  *
@@ -429,8 +429,8 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
     boundRunIds.add(run.id);
   }
 
-  // Indices of real assistant turns, oldest-first; reversed to newest-first to
-  // zip against newest-first legacy runs. Canonically-bound turns never enter
+  // Indices of real assistant replies, oldest-first; reversed to newest-first to
+  // zip against newest-first legacy runs. Canonically-bound exchanges never enter
   // this fallback.
   const turnIndices = patched
     .map((message, index) => (
@@ -442,17 +442,17 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
     .reverse();
 
   // Only assign settled runs to persistent assistant messages.  Matching an
-  // active run to an old assistant turn (positional misalignment after an
+  // active run to an old assistant reply (positional misalignment after an
   // abort) would steal the runId and block the streaming bubble from ever
   // appearing.
   const settledAll = runs.filter(run =>
     matchesSettledRun(run.status) && !boundRunIds.has(run.id));
 
-  // Exclude orphan runs (no turn inside their window — the run failed before
+  // Exclude orphan runs (no exchange inside their window — the run failed before
   // the agent saved any assistant entry). Pairing them positionally would stamp
-  // the failure onto the previous turn and misalign every older pairing.
+  // the failure onto the previous exchange and misalign every older pairing.
   // Guard: only trust window matching when at least one run actually matches a
-  // turn — legacy sessions without entry timestamps would orphan every run and
+  // exchange — legacy sessions without entry timestamps would orphan every run and
   // wipe out all pairing, so fall back to the positional behavior there.
   const settled = settledAll.some(run => runMatchesAnyTurn(run, messages))
     ? settledAll.filter(run => !isOrphanRun(run, messages))
@@ -460,9 +460,9 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
 
   // The agent's save_callback persists each completed LLM call MID-RUN, so an
   // active (still-streaming) run can already have a partial assistant entry on
-  // disk — it projects as the newest turn. When turns outnumber settled runs,
-  // the excess newest turns belong to the in-flight runs: leave them
-  // unstamped. Stamping the newest settled run onto such a turn instead
+  // disk — it projects as the newest exchange. When exchanges outnumber settled runs,
+  // the excess newest exchanges belong to the in-flight runs: leave them
+  // unstamped. Stamping the newest settled run onto such an exchange instead
   // misaligns every older pairing (the real owner loses its runId/model badge)
   // and — worse — defeats streamingBubbleBase's duplicate detection, so the
   // frozen partial renders next to the growing live bubble (the "ABC, ABC →
@@ -480,9 +480,9 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
 }
 
 function applyRunToMessage(message: AgentMessage, run: StoredRun): AgentMessage {
-  // An aborted turn projects with no content and no reply time (the agent
+  // An aborted exchange projects with no content and no reply time (the agent
   // saved no assistant entry). Stamp it with the run's end time — the actual
-  // stop time — instead of the session-derived fallback. A turn with real
+  // stop time — instead of the session-derived fallback. An exchange with real
   // content keeps its own recorded reply time.
   const isEmpty = !message.content.trim() && !message.segments?.length;
   const stopTime = isEmpty ? runEndedIso(run) : null;
@@ -504,7 +504,7 @@ function runEndedIso(run: StoredRun): string | null {
 }
 
 /**
- * Slack when matching a turn's timestamp against a run's [start, end] window —
+ * Slack when matching an exchange's timestamp against a run's [start, end] window —
  * covers the gap between the user entry's save time and the run's creation,
  * plus minor clock granularity differences.
  */
@@ -521,7 +521,7 @@ function runWindow(run: StoredRun): { start: number; end: number } | null {
   return { start: run.startedAt - RUN_WINDOW_TOLERANCE_MS, end: end + RUN_WINDOW_TOLERANCE_MS };
 }
 
-/** Whether any projected assistant turn's timestamp falls inside the run's window. */
+/** Whether any projected assistant reply's timestamp falls inside the run's window. */
 function runMatchesAnyTurn(run: StoredRun, messages: AgentMessage[]): boolean {
   const window = runWindow(run);
   if (!window)
@@ -535,9 +535,9 @@ function runMatchesAnyTurn(run: StoredRun, messages: AgentMessage[]): boolean {
 }
 
 /**
- * Whether the run's window covers a projected user turn. A session whose FIRST
+ * Whether the run's window covers a projected user exchange. A session whose FIRST
  * run failed has no assistant entry at all — the only message inside the run's
- * window is the user's — so window trust must not require an assistant turn.
+ * window is the user's — so window trust must not require an assistant reply.
  */
 function runMatchesUserTurn(run: StoredRun, messages: AgentMessage[]): boolean {
   const window = runWindow(run);
@@ -552,10 +552,10 @@ function runMatchesUserTurn(run: StoredRun, messages: AgentMessage[]): boolean {
 }
 
 /**
- * A settled run that produced NO assistant turn in the session JSONL — e.g. the
+ * A settled run that produced NO assistant reply in the session JSONL — e.g. the
  * very first LLM call failed (insufficient credit, auth) or the run died before
  * any entry was saved. Positional newest-first pairing would stamp such a run
- * onto the PREVIOUS turn, misaligning every older pairing; detect it by
+ * onto the PREVIOUS exchange, misaligning every older pairing; detect it by
  * timestamp so it can be excluded from pairing and surfaced as its own failure
  * bubble instead ({@link recoverFailedRuns}).
  */
@@ -563,7 +563,7 @@ function isOrphanRun(run: StoredRun, messages: AgentMessage[]): boolean {
   return runWindow(run) !== null && !runMatchesAnyTurn(run, messages);
 }
 
-/** Whether a turn projected from session entries carries nothing renderable. */
+/** Whether an exchange projected from session entries carries nothing renderable. */
 function isEmptyTurn(message: AgentMessage): boolean {
   return message.role === "assistant"
     && !!message.runId
@@ -572,11 +572,11 @@ function isEmptyTurn(message: AgentMessage): boolean {
 }
 
 /**
- * Fill empty aborted/failed turns from their run events (pure; events already
+ * Fill empty aborted/failed exchanges from their run events (pure; events already
  * fetched). When a run is stopped mid-stream the agent's session JSONL holds no
- * assistant reply, so the turn projects empty — but the partial text the model
+ * assistant reply, so the exchange projects empty — but the partial text the model
  * streamed was persisted as run events. Recover it so a reload shows the
- * half-written answer instead of a blank "stopped" bubble. Turns that already
+ * half-written answer instead of a blank "stopped" bubble. Exchanges that already
  * have content or segments are left untouched, so clean session-derived segments
  * are never overwritten by event-derived ones.
  */
@@ -604,8 +604,8 @@ export function applyRecoveredEvents(
 }
 
 /**
- * Recover partial content for aborted turns loaded via the agent session path.
- * Fetches events only for the empty turns, then applies {@link applyRecoveredEvents}.
+ * Recover partial content for aborted exchanges loaded via the agent session path.
+ * Fetches events only for the empty exchanges, then applies {@link applyRecoveredEvents}.
  * Best-effort: any failure leaves the messages as-is.
  */
 export async function recoverAbortedTurns(messages: AgentMessage[]): Promise<AgentMessage[]> {
@@ -625,22 +625,22 @@ export async function recoverAbortedTurns(messages: AgentMessage[]): Promise<Age
  * Restore failure bubbles for runs that failed before the agent saved any
  * assistant entry (e.g. the first LLM call rejected with HTTP 402 insufficient
  * credit). The live send pipeline shows a failure bubble for these, but the
- * agent session JSONL — the reload source of truth — has no trace of the turn,
+ * agent session JSONL — the reload source of truth — has no trace of the exchange,
  * so without this the error silently vanishes on a thread switch / reload. The
  * SQLite `runs` table still carries status + errorMessage, so rebuild the same
  * friendly failure bubble the live path showed and splice it in at the run's
  * chronological position (usually the tail; mid-history when the user retried
- * and a later turn succeeded).
+ * and a later exchange succeeded).
  */
 export function recoverFailedRuns(messages: AgentMessage[], runs: StoredRun[]): AgentMessage[] {
-  // Same guard as applyRunMetadata: when NO run window matches any turn, the
+  // Same guard as applyRunMetadata: when NO run window matches any exchange, the
   // session's timestamps are meaningless (legacy entries get load-time `now`
   // backfilled by the agent), every run would look like an orphan, and bubbles
   // would be spliced to the wrong end of history. Skip recovery there — it
   // degrades to main's behavior instead of inventing misplaced bubbles.
-  // A user turn counts as trust evidence too: a session whose FIRST run failed
+  // A user exchange counts as trust evidence too: a session whose FIRST run failed
   // (the "prompt acknowledgement omitted run_id" case) has no assistant entry
-  // at all — the user's message is the only turn inside the run's window.
+  // at all — the user's message is the only exchange inside the run's window.
   if (!runs.some(run => runMatchesAnyTurn(run, messages) || runMatchesUserTurn(run, messages)))
     return messages;
   const orphans = runs.filter(run =>

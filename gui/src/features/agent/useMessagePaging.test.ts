@@ -20,13 +20,13 @@ describe("computePageStart", () => {
     expect(computePageStart([user("u1")], -3)).toBe(0);
   });
 
-  it("renders everything when the thread has fewer turns than a page", () => {
+  it("renders everything when the thread has fewer exchanges than a page", () => {
     const messages = [user("u1"), assistant("a1"), user("u2"), assistant("a2")];
     expect(computePageStart(messages, 10)).toBe(0);
   });
 
   it("starts at the Nth user message from the end", () => {
-    // 3 turns: u1→a1, u2→a2, u3→a3. A 2-turn page starts at u2 (index 2).
+    // 3 exchanges: u1→a1, u2→a2, u3→a3. A 2-exchange page starts at u2 (index 2).
     const messages = [
       user("u1"),
       assistant("a1"),
@@ -47,11 +47,11 @@ describe("computePageStart", () => {
       assistant("a2"),
       assistant("orphan"),
     ];
-    // A 1-turn page must start at u2, keeping u2→a2→orphan together.
+    // A 1-exchange page must start at u2, keeping u2→a2→orphan together.
     expect(computePageStart(messages, 1)).toBe(2);
   });
 
-  it("does not count compaction dividers as user turns", () => {
+  it("does not count compaction dividers as user exchanges", () => {
     const divider = assistant("divider");
     // u1→a1, u2→a2, [divider], u3→a3.
     const messages = [
@@ -63,7 +63,7 @@ describe("computePageStart", () => {
       user("u3"),
       assistant("a3"),
     ];
-    // A 2-turn page still starts at u2 — the divider sits inside the window.
+    // A 2-exchange page still starts at u2 — the divider sits inside the window.
     expect(computePageStart(messages, 2)).toBe(2);
   });
 

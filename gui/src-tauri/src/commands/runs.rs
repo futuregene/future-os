@@ -162,26 +162,62 @@ pub async fn list_run_events_bulk(
     Ok(result)
 }
 
-#[tauri::command]
-pub fn list_tool_calls(run_id: String) -> Result<Vec<store::ToolCallRecord>, crate::AppError> {
-    store::list_tool_calls(&run_id)
+/// Fetch a run's event tail for tool projection: Agent journal first (the
+/// canonical source), legacy GUI JSONL only when the Agent is unreachable
+/// (pre-journal compatibility).
+async fn tool_events_since(
+    run_id: &str,
+    since_sequence: i64,
+) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
+    match agent_events(run_id, since_sequence).await {
+        Ok(events) => Ok(events),
+        Err(error) if agent_unavailable(&error) => {
+            store::list_run_events_since(run_id, since_sequence)
+        }
+        Err(error) => Err(error),
+    }
 }
 
-/// Batch variant: the context panel's 1.5s poll needs tool calls for every
-/// run of the thread — one IPC round-trip instead of N.
 #[tauri::command]
-pub fn list_tool_calls_bulk(
+pub async fn list_tool_calls(
+    run_id: String,
+) -> Result<Vec<store::ToolCallRecord>, crate::AppError> {
+    advance_tool_projection(&run_id).await
+}
+
+/// Batch variant: the context panel's poll needs tool calls for every run of
+/// the thread — one IPC round-trip instead of N. Every run id appears in the
+/// result (with an empty vec when it has no tool activity) so the caller's
+/// `Object.fromEntries` shape is unchanged.
+#[tauri::command]
+pub async fn list_tool_calls_bulk(
     run_ids: Vec<String>,
 ) -> Result<Vec<(String, Vec<store::ToolCallRecord>)>, crate::AppError> {
-    store::list_tool_calls_bulk(&run_ids)
+    let mut result = Vec::with_capacity(run_ids.len());
+    for run_id in run_ids {
+        let tools = advance_tool_projection(&run_id).await?;
+        result.push((run_id, tools));
+    }
+    Ok(result)
+}
+
+/// Advance the run's cached tool projection over the events appended since
+/// the last read, keeping the poll at O(new events) instead of O(full log).
+async fn advance_tool_projection(
+    run_id: &str,
+) -> Result<Vec<store::ToolCallRecord>, crate::AppError> {
+    let cursor = store::tool_projection_cursor(run_id);
+    let events = tool_events_since(run_id, cursor).await?;
+    Ok(store::advance_tool_projection(run_id, &events))
 }
 
 #[tauri::command]
-pub fn list_tool_outputs(
+pub async fn list_tool_outputs(
     run_id: String,
     tool_call_id: String,
 ) -> Result<Vec<store::ToolOutputRecord>, crate::AppError> {
-    store::list_tool_outputs(&run_id, &tool_call_id)
+    let events = tool_events_since(&run_id, -1).await?;
+    Ok(store::project_tool_outputs(&events, &tool_call_id))
 }
 
 #[cfg(test)]

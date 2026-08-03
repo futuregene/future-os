@@ -68,7 +68,7 @@ interface ComposerProps {
   /**
    * A reply is streaming. The send button becomes an interrupt button and
    * submission (button + Enter) is blocked until the stream ends — but the
-   * editor stays editable so the user can draft the next turn early. Keep this
+   * editor stays editable so the user can draft the next message early. Keep this
    * separate from `disabled`: `disabled` locks the editor, so folding the
    * streaming state into it (as the call site used to do) would prevent that
    * early drafting.
@@ -236,7 +236,7 @@ export function Composer({
   // Autofocus so the user can type immediately: on mount, when switching
   // conversations (draftKey changes), and when a send settles. The streaming
   // lock lives on `sending` now (the editor stays editable mid-stream so the
-  // user can draft the next turn), so we key off `sending` here: don't steal
+  // user can draft the next message), so we key off `sending` here: don't steal
   // focus while a reply streams, but re-focus the moment it ends. A hard-
   // disabled editor is contentEditable=false and can't hold a caret, so only
   // focus while enabled.
@@ -253,7 +253,7 @@ export function Composer({
   function submitValue() {
     const trimmed = (editorRef.current?.getContent() ?? "").trim();
     // Block submission while a reply streams (the send button is already an
-    // abort button then; this guard stops Enter from firing a new turn) and
+    // abort button then; this guard stops Enter from firing a new message) and
     // while an async send is in flight.
     if ((!trimmed && attachments.length === 0) || disabled || sendPending || sending)
       return;
@@ -298,7 +298,7 @@ export function Composer({
         rejected.push(t("composer.attachRejectedReason", { name: fileNameFromPath(path), reason: result.reason }));
         continue;
       }
-      // Images carry a per-turn count cap regardless of model (a text-only model
+      // Images carry a per-message count cap regardless of model (a text-only model
       // still receives the paths, but keeping the same ceiling avoids surprises
       // when switching models mid-draft). Every other file type is unlimited —
       // the agent reads local paths on demand with its own tools.

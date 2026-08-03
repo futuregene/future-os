@@ -29,8 +29,6 @@ export interface SessionEntry {
   meta?: {
     /** Canonical Agent run identity (new entries; absent in legacy JSONL). */
     run_id?: string;
-    /** Conversation-turn identity (new entries; absent in legacy JSONL). */
-    turn_id?: string;
     attachments?: Array<{
       path: string;
       kind?: "image" | "file" | null;
@@ -53,19 +51,17 @@ function attachmentsFromMeta(entry: SessionEntry): MessageAttachment[] | undefin
   }));
 }
 
-interface TurnAcc {
+interface ExchangeAcc {
   userMessage?: AgentMessage;
   segments: MessageSegment[];
   finalText: string;
-  /** Timestamp of the assistant reply (last assistant entry of the turn wins). */
+  /** Timestamp of the assistant reply (last assistant entry of the exchange wins). */
   assistantCreatedAt?: string;
   /** Per-reply usage/timing carried on the final assistant entry. */
   outputTokens?: number;
   durationMs?: number;
   /** Set only from an assistant entry finalized by the Agent. */
   runId?: string;
-  /** The turn this accumulator groups, when the journal carries turn ids. */
-  turnId?: string;
   /**
    * Tool activities awaiting their result entry, in call order. A `tool` result
    * entry updates the oldest one's status (the agent executes and appends
@@ -134,7 +130,7 @@ function isCompactionDivider(entry: SessionEntry): boolean {
   return entry.role === "user" && entry.content.startsWith("[Context compaction:");
 }
 
-/** Render a compaction marker as a divider, not as a user bubble / new turn. */
+/** Render a compaction marker as a divider, not as a user bubble / new exchange. */
 function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
   return {
     id: segId(),
@@ -147,7 +143,7 @@ function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
   };
 }
 
-function newTurnAcc(): TurnAcc {
+function newExchangeAcc(): ExchangeAcc {
   return { segments: [], finalText: "", pendingTools: [] };
 }
 
@@ -162,16 +158,14 @@ function userMessageFromEntry(entry: SessionEntry, now: string): AgentMessage {
     attachments: attachmentsFromMeta(entry),
     // Run identity stays off the user bubble on purpose: runId-on-assistant is
     // the convention applyRunMetadata / streamingBubbleBase use to tell
-    // settled turns from in-flight ones — a stamped user message would
-    // suppress the live streaming bubble after a mid-run reload. The turn id
-    // carries the message's journal identity instead.
-    turnId: entry.meta?.turn_id ?? null,
+    // settled exchanges from in-flight ones — a stamped user message would
+    // suppress the live streaming bubble after a mid-run reload.
   };
 }
 
-/** Fold one assistant entry into a turn's accumulator. */
-function foldAssistantEntry(acc: TurnAcc, entry: SessionEntry) {
-  // Last assistant entry of the turn carries the reply's time + usage.
+/** Fold one assistant entry into an exchange's accumulator. */
+function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
+  // Last assistant entry of the exchange carries the reply's time + usage.
   if (entry.timestamp)
     acc.assistantCreatedAt = entry.timestamp;
   if (typeof entry.output_tokens === "number")
@@ -218,7 +212,7 @@ function foldAssistantEntry(acc: TurnAcc, entry: SessionEntry) {
  * as a blank activity). Use it only to mark that call failed, matching the
  * tool_calls in order (the agent executes and appends results in order).
  */
-function foldToolEntry(acc: TurnAcc | null, entry: SessionEntry) {
+function foldToolEntry(acc: ExchangeAcc | null, entry: SessionEntry) {
   const item = acc?.pendingTools.shift();
   if (item) {
     const command = item.kind === "shell" ? item.target : undefined;
@@ -227,8 +221,8 @@ function foldToolEntry(acc: TurnAcc | null, entry: SessionEntry) {
   }
 }
 
-/** Emit a completed turn as 1 user message + (when non-empty) 1 assistant. */
-function flushAcc(messages: AgentMessage[], acc: TurnAcc) {
+/** Emit a completed exchange as 1 user message + (when non-empty) 1 assistant. */
+function flushAcc(messages: AgentMessage[], acc: ExchangeAcc) {
   if (!acc.userMessage)
     return;
   messages.push(acc.userMessage);
@@ -236,11 +230,11 @@ function flushAcc(messages: AgentMessage[], acc: TurnAcc) {
   // Collapse same-kind tool bursts only after statuses are final (a failing
   // tool result, processed later, must break the group).
   const segments = collapseActivitySegments(acc.segments);
-  // Skip assistant message for incomplete turns — the user message is the last
-  // entry and the assistant reply hasn't been written to the JSONL yet (the
-  // agent is still streaming). An empty completed bubble would steal the runId
-  // in applyRunMetadata and block upsertStreamingPreview from inserting the
-  // live preview when the user returns to this thread.
+  // Skip the assistant message for incomplete exchanges — the user message is
+  // the last entry and the assistant reply hasn't been written to the JSONL
+  // yet (the agent is still streaming). An empty completed bubble would steal
+  // the runId in applyRunMetadata and block upsertStreamingPreview from
+  // inserting the live preview when the user returns to this thread.
   const hasContent = acc.finalText
     || textSegments.length > 0
     || segments.length > 0
@@ -254,78 +248,30 @@ function flushAcc(messages: AgentMessage[], acc: TurnAcc) {
       content: acc.finalText || textSegments.map(s => s.text).join("\n"),
       segments: segments.length > 0 ? segments : undefined,
       status: "complete",
-      // An aborted turn has no assistant entry, so no recorded reply time — fall
-      // back to the turn's user time (a real timestamp) rather than `now`, which
-      // would re-stamp the reply "just now" on every reload.
+      // An aborted exchange has no assistant entry, so no recorded reply time —
+      // fall back to the user message's time (a real timestamp) rather than
+      // `now`, which would re-stamp the reply "just now" on every reload.
       createdAt: acc.assistantCreatedAt ?? acc.userMessage.createdAt,
       outputTokens: acc.outputTokens,
       durationMs: acc.durationMs,
       runId: acc.runId,
-      turnId: acc.turnId ?? null,
     });
   }
 }
 
 /**
  * Convert raw agent session entries into AgentMessage[] for the GUI pipeline.
- * Each user→assistant turn yields 1 user + 1 assistant message with segments
- * for thinking, tool activity, and text.
+ * Each user→assistant exchange yields 1 user + 1 assistant message with
+ * segments for thinking, tool activity, and text.
  *
- * Two grouping strategies: when the journal carries turn ids on every turn
- * entry (current agents), entries are grouped by `turn_id`, so an in-run
- * follow-up/steer whose journal order differs from conversation order still
- * attributes content to the right turn. Legacy journals (no turn ids) group
- * positionally — a user entry always opens a turn.
+ * Grouping is positional: a user entry always opens a new exchange (each run
+ * has exactly one user message, so journal order is conversation order).
  */
 export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
   const messages: AgentMessage[] = [];
   const now = new Date().toISOString();
-  const keyed = entries.length > 0 && entries
-    .filter(e => !isCompactionDivider(e) && e.role !== "tool")
-    .every(e => typeof e.meta?.turn_id === "string" && e.meta.turn_id);
 
-  if (keyed) {
-    const accs = new Map<string, TurnAcc>();
-    const ordered: TurnAcc[] = [];
-    let open: TurnAcc | null = null;
-    const accFor = (turnId: string | undefined): TurnAcc => {
-      if (turnId === undefined) {
-        // Only reachable for a stray tool entry — attach to the open turn.
-        if (!open) {
-          open = newTurnAcc();
-          ordered.push(open);
-        }
-        return open;
-      }
-      let acc = accs.get(turnId);
-      if (!acc) {
-        acc = newTurnAcc();
-        acc.turnId = turnId;
-        accs.set(turnId, acc);
-        ordered.push(acc);
-      }
-      open = acc;
-      return acc;
-    };
-    for (const entry of entries) {
-      if (isCompactionDivider(entry)) {
-        messages.push(dividerMessage(entry, now));
-        continue;
-      }
-      if (entry.role === "user")
-        accFor(entry.meta?.turn_id).userMessage = userMessageFromEntry(entry, now);
-      else if (entry.role === "assistant")
-        foldAssistantEntry(accFor(entry.meta?.turn_id), entry);
-      else if (entry.role === "tool")
-        foldToolEntry(accFor(entry.meta?.turn_id), entry);
-    }
-    for (const acc of ordered)
-      flushAcc(messages, acc);
-    return messages;
-  }
-
-  // Positional grouping (legacy journals, mixed files, compaction rewrites).
-  let acc: TurnAcc | null = null;
+  let acc: ExchangeAcc | null = null;
   for (const entry of entries) {
     if (isCompactionDivider(entry)) {
       if (acc) {
@@ -340,13 +286,12 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
         flushAcc(messages, acc);
         acc = null;
       }
-      acc = newTurnAcc();
-      acc.turnId = entry.meta?.turn_id;
+      acc = newExchangeAcc();
       acc.userMessage = userMessageFromEntry(entry, now);
     }
     else if (entry.role === "assistant") {
       if (!acc)
-        acc = newTurnAcc();
+        acc = newExchangeAcc();
       foldAssistantEntry(acc, entry);
     }
     else if (entry.role === "tool") {

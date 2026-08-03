@@ -20,9 +20,9 @@ export interface ComposerDraft {
    * that MessageBlock renders, re-hydrated into pills by `MentionEditor.restore`.
    */
   text?: string;
-  /** Pending attachments for the next turn. */
+  /** Pending attachments for the next message. */
   attachments?: MessageAttachment[];
-  // Add further per-turn draft fields here (e.g. a future per-turn override).
+  // Add further per-message draft fields here (e.g. a future per-message override).
 }
 
 const DRAFT_VERSION = 1;
