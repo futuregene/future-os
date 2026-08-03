@@ -62,12 +62,17 @@ pub async fn list_run_events(
     run_id: String,
 ) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
     // The Agent journal is canonical for every run, including settled ones.
-    // GUI JSONL is read only as a compatibility fallback for logs written by
-    // pre-journal builds while the Agent is unavailable.
+    // These are display readers: any Agent-side failure (unreachable, or no
+    // durable history for the run) degrades to the legacy GUI JSONL instead
+    // of blanking the panel with an error.
     match agent_events(&run_id, -1).await {
         Ok(events) => Ok(events),
-        Err(error) if agent_unavailable(&error) => store::list_run_events(&run_id),
-        Err(error) => Err(error),
+        Err(error) => {
+            if !agent_unavailable(&error) {
+                eprintln!("FutureOS: agent event read failed for {run_id}, falling back to legacy log: {error}");
+            }
+            store::list_run_events(&run_id)
+        }
     }
 }
 
@@ -85,10 +90,12 @@ pub async fn list_run_events_since(
     }
     match agent_events(&run_id, since_sequence).await {
         Ok(events) => Ok(events),
-        Err(error) if agent_unavailable(&error) => {
+        Err(error) => {
+            if !agent_unavailable(&error) {
+                eprintln!("FutureOS: agent event read failed for {run_id}, falling back to legacy log: {error}");
+            }
             store::list_run_events_since(&run_id, since_sequence)
         }
-        Err(error) => Err(error),
     }
 }
 

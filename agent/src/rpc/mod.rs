@@ -141,10 +141,20 @@ impl AppState {
 
     /// Create a new session and return its ID.
     /// Each session gets its own private SseBroadcaster so events are only
-    /// delivered to subscribers of that specific session (not globally).
+    /// delivered to subscribers of that specific session (not globally) —
+    /// fork/clone pass the parent's broadcaster in and must not keep sharing
+    /// it. The journal is (re)bound to the broadcaster that will actually
+    /// broadcast: construction configured one that may be discarded here, and
+    /// an unbound broadcaster silently holds events in memory only.
     pub fn create_session(&self, mut session: ServerSession) -> String {
         let id = session.session_id.clone();
         session.broadcaster = Arc::new(SseBroadcaster::new());
+        if let Err(error) = session
+            .broadcaster
+            .configure_journal(id.clone(), session.session_manager.run_data_path(&id))
+        {
+            tracing::error!(session_id = %id, "failed to configure event journal: {error:#}");
+        }
         let session = Arc::new(RwLock::new(session));
         self.sessions.write().insert(id.clone(), session.clone());
         ServerSession::ensure_scheduler_worker(&session);
