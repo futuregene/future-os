@@ -120,8 +120,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_busy_policy_without_guessing() {
-        let error = BusyPolicy::parse("steer").unwrap_err();
-        assert!(error.contains("unknown busy policy `steer`"));
+        let error = BusyPolicy::parse("frobnicate").unwrap_err();
+        assert!(error.contains("unknown busy policy `frobnicate`"));
         for value in BusyPolicy::VALID_VALUES {
             assert!(error.contains(value));
         }

@@ -122,7 +122,7 @@ describe("buildAssistantRunProjection segments", () => {
     expect(segment.kind === "activity" && segment.item.count).toBe(2);
   });
 
-  it("still produces activity segments for a tool-only turn (no text)", () => {
+  it("still produces activity segments for a tool-only exchange (no text)", () => {
     const projection = buildAssistantRunProjection(
       events([
         ["tool_start", read("t1", "/a.ts")[0]],
@@ -244,7 +244,7 @@ describe("buildAssistantRunProjection output tokens", () => {
       ]),
     );
 
-    // 40 + 110 generated across the two turns.
+    // 40 + 110 generated across the two exchanges.
     expect(projection.outputTokens).toBe(150);
   });
 

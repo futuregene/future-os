@@ -80,7 +80,7 @@ function dropInFlightSnapshot(messages: AgentMessage[]): AgentMessage[] {
   return messages;
 }
 
-/** A compaction divider is projected as an assistant message but is not a real turn. */
+/** A compaction divider is projected as an assistant message but is not a real exchange. */
 function isCompactionDivider(message: AgentMessage): boolean {
   return message.role === "assistant"
     && !message.content
@@ -122,7 +122,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   // `loadingIndicator` below instead, so this can stay honest without flashing.
   const [loadingThread, setLoadingThread] = useState(true);
   // Debounced projection of `loadingThread` for the "loading" indicator: only
-  // turns on if a load outlasts the delay, and once on stays for a minimum so a
+  // comes on if a load outlasts the delay, and once on stays for a minimum so a
   // fast switch-back can't flash it. Purely presentational.
   const [loadingIndicator, setLoadingIndicator] = useState(false);
   const indicatorShownAtRef = useRef<number | null>(null);
@@ -266,7 +266,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       // Retry/Continue button, the "stopped" marker, and the model badge.
       const runs = await listRuns(tid).catch(() => [] as StoredRun[]);
       const withRunMeta = applyRunMetadata(messages, runs);
-      // An aborted turn has no reply in the session JSONL — recover the partial
+      // An aborted exchange has no reply in the session JSONL — recover the partial
       // text the model streamed (persisted as run events) so it isn't lost.
       const recovered = await recoverAbortedTurns(withRunMeta);
       // A run that failed before any assistant entry was saved (e.g. the model
@@ -357,9 +357,9 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
                 && !restored.some(r => r.id === m.id),
             );
             // When a streaming bubble is alive, the agent's save_callback may
-            // have persisted a mid-run partial snapshot of the same turn (an
+            // have persisted a mid-run partial snapshot of the same exchange (an
             // assistant message with no runId at the tail).  Drop it so the
-            // turn renders once — the live bubble re-projects the full event
+            // exchange renders once — the live bubble re-projects the full event
             // log, so nothing is lost.
             let restoredOut = restored;
             if (keepBubbles.length > 0) {

@@ -7,8 +7,8 @@ use std::path::Path;
 /// Serialize a `StreamEvent` into the JSON `data` payload of an `SseEvent`.
 ///
 /// Every optional field is emitted only when the event carries it, so the
-/// tool-only callback (tool_start/tool_end) and the full turn callback share one
-/// schema instead of drifting — previously the tool path silently omitted
+/// tool-only callback (tool_start/tool_end) and the full event callback share
+/// one schema instead of drifting — previously the tool path silently omitted
 /// `stopReason`/`usage`/`tc_index`.
 pub(super) fn stream_event_to_sse_data(event: &crate::types::StreamEvent) -> String {
     let mut data = event

@@ -920,7 +920,7 @@ impl Manager {
     /// Find every assistant entry with tool_calls that lacks matching tool
     /// responses in the entries that follow it (up to the next non-tool entry
     /// or run-marker boundary).  An orphaned assistant can appear anywhere in
-    /// the journal — not just at the end — when a crash happens mid-turn and a
+    /// the journal — not just at the end — when a crash happens mid-run and a
     /// later restart appends run markers + new user messages ahead of it.
     /// Insert placeholder tool-result entries immediately after each orphaned
     /// assistant so the conversation stays API-valid.
@@ -1077,7 +1077,7 @@ impl Manager {
         // The healed entries are deliberately NOT written back to the file
         // here.  load_path is called from many read-only paths (session list,
         // summaries, get_session_entries, fork/clone) that can run while the
-        // owning agent process is still mid-turn.  Persisting a placeholder
+        // owning agent process is still mid-run.  Persisting a placeholder
         // for a dangling tool_call at that moment corrupts the file: when the
         // running tool finishes, its real result is appended with the same
         // tool_call_id, producing duplicate tool messages that the LLM API
@@ -2364,7 +2364,7 @@ mod tests {
 
         // The file on disk must NOT be rewritten by load: read-only callers
         // (session list, get_session_entries) can run while the owning agent
-        // is mid-turn, and persisting repairs is what created the duplicates.
+        // is mid-run, and persisting repairs is what created the duplicates.
         let on_disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
         assert_eq!(
             on_disk.lines().count(),

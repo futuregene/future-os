@@ -208,7 +208,7 @@ fn icon_ico_bytes() -> &'static [u8] {
     include_bytes!("../icons/icon.ico")
 }
 
-/// Notify the frontend that a Thread's "previous turn changes" changeset has updated. The
+/// Notify the frontend that a Thread's "last-run changes" changeset has updated. The
 /// frontend bridges this to its typed event bus (§6.1, C1).
 pub(crate) fn emit_review_updated(thread_id: &str) {
     if let Some(handle) = APP_HANDLE.get() {

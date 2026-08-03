@@ -397,7 +397,7 @@ message StreamEvent {
   //   agent_start / agent_end      run lifecycle (agent_start carries the run's
   //                                started_at_ms; agent_end carries error/usage/
   //                                duration_ms — the authoritative run totals)
-  //   user_message                 a user turn (prompt / steer / follow-up)
+  //   user_message                 the user's prompt message
   //   text_chunk                   assistant text token (the projected token stream)
   //   thinking_start / thinking_delta / thinking_end   reasoning stream
   //   tool_start                   tool execution began  {tool_id, tool_name, tool_args}

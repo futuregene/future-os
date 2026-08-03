@@ -142,7 +142,7 @@ pub(super) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate
 /// Fork a session at the given user message. Returns the new GUI thread id.
 ///
 /// Creates a dedicated chat workspace named after the forked session id, copies
-/// thread metadata from the parent, and creates per-turn completed run records
+/// thread metadata from the parent, and creates per-reply completed run records
 /// so the right panel is populated immediately.  Messages are served from the
 /// agent JSONL (no SQLite `messages` table), so no message import is needed.
 pub async fn fork_agent_session(
@@ -152,7 +152,7 @@ pub async fn fork_agent_session(
     // renders exactly one message per user entry in order, so the Nth user
     // message maps to the Nth user entry — matching by ordinal instead of
     // content means two identical prompts ("continue", "run the tests") fork the
-    // intended turn, not the first occurrence. `< 0` (unknown) falls back to
+    // intended run, not the first occurrence. `< 0` (unknown) falls back to
     // content matching.
     user_message_index: i64,
 ) -> Result<String, crate::AppError> {

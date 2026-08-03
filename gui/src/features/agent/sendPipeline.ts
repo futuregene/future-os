@@ -151,7 +151,7 @@ export async function runSendPipeline(
     if (reply.sessionRecreated) {
       // The agent lost this thread's session (data gone or cwd drift) and a
       // fresh empty session replaced it. The visible history is intact, but
-      // the agent starts this turn with zero context — say so explicitly,
+      // the agent starts this run with zero context — say so explicitly,
       // otherwise the next reply reads like sudden amnesia.
       emitFutureEvent("toast", {
         message: i18n.t("agent:thread.sessionRecreated"),

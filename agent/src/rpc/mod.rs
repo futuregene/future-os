@@ -52,7 +52,7 @@ pub struct AppState {
     /// Template for minting per-session agent loops (`Loop::independent_copy`).
     /// Every session gets its OWN loop — never a shared one — so a streaming
     /// run's long-held read lock can't block another session's `set_model`
-    /// (`try_write`), and interrupt flags / steering queues / tool hooks /
+    /// (`try_write`), and interrupt flags / tool hooks /
     /// token counters stay session-local.  The template itself is never used
     /// to run prompts.
     pub loop_template: Arc<crate::agent::Loop>,
@@ -244,7 +244,7 @@ fn get_state_internal(
 
     // Use API-reported prompt_tokens from the last request as actual context usage
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
-    // Query count: number of user messages (prompts, steering, follow-ups).
+    // Query count: number of user messages (prompts and follow-ups).
     // Excludes internal tool/assistant messages.
     let query_count = sess
         .messages

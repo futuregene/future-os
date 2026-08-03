@@ -301,7 +301,7 @@ mod tests {
         let s = Settings::default();
         let json = serde_json::to_string(&s).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(parsed.get("steeringMode").is_none());
+        assert!(parsed.get("hypotheticalMode").is_none());
         assert!(parsed.get("followUpMode").is_none());
     }
 
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn deserialize_full_json() {
         let json = r#"{
-            "steeringMode": "parallel",
+            "hypotheticalMode": "parallel",
             "followUpMode": "queue",
             "maxTurns": 10,
             "defaultPermissionLevel": "workspace",

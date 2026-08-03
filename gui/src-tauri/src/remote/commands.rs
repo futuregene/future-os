@@ -826,7 +826,7 @@ async fn prepare_remote_prompt(
         }
     };
     // Reject a prompt for a session that is already running BEFORE persisting
-    // anything (matches GUI semantics: no steer/follow-up/queue). The agent
+    // anything (matches GUI semantics: no follow-up/queue). The agent
     // refuses a concurrent prompt too, but only after the ack — checking here
     // keeps a busy session from accumulating a phantom user message, a failed
     // run, and a fake "Future Agent error" assistant reply. Residual race: two

@@ -579,7 +579,7 @@ export class App extends Container {
         if (e.usage?.cache_write_tokens !== undefined) this.state.tokensCacheW += e.usage.cache_write_tokens;
         this.state.contextTokens = (e.usage?.prompt_tokens ?? 0) + (e.usage?.completion_tokens ?? 0);
         // Pull latest cumulative cost/token totals from the agent so the
-        // footer updates after every model call — a single user turn often
+        // footer updates after every model call — a single user message often
         // spans multiple thinking blocks and tool calls, and previously the
         // cost only refreshed once at agent_end. The agent updates its
         // cumulative cost right before emitting this event, so the state

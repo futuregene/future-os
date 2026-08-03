@@ -22,7 +22,7 @@ export interface AssistantRunProjection {
    */
   outputTokens: number;
   /**
-   * The model's reasoning/thinking text for this turn (empty when none). Blocks
+   * The model's reasoning/thinking text for this exchange (empty when none). Blocks
    * separated by blank lines; rendered only when the "show thinking" setting is
    * on. Extracted from `thinking_delta` events — always captured, gated at render.
    */
@@ -75,7 +75,7 @@ export interface RunProjector {
 
 export function createRunProjector(): RunProjector {
   const toolActivities = new Map<string, ToolActivity>();
-  // Ordered timeline of the turn. Text accumulates into the open text slot;
+  // Ordered timeline of the exchange. Text accumulates into the open text slot;
   // each tool call pins a slot at the point it started.
   const slots: Slot[] = [];
   const slottedToolIds = new Set<string>();
@@ -154,7 +154,7 @@ export function createRunProjector(): RunProjector {
       return;
     }
 
-    // Context compaction ran this turn (usually at the top, before any text).
+    // Context compaction ran this exchange (usually at the top, before any text).
     // Pin a marker at this point so the reply shows where history was summarized.
     // `compaction_end` carries the pre-compaction token count; the retry-path
     // variant reports 0. An aborted compaction changed nothing — skip it.
@@ -255,7 +255,7 @@ export function createRunProjector(): RunProjector {
     const thinkingActive = Boolean(thinking) && !content.trim() && !sawVisibleWork;
 
     // Concatenated reasoning (blocks joined by blank lines) — the inline segments
-    // carry the ordered form; this is the whole-turn text for any non-inline use.
+    // carry the ordered form; this is the whole-exchange text for any non-inline use.
     const thinkingText = slots
       .filter((slot): slot is Extract<Slot, { type: "thinking" }> => slot.type === "thinking")
       .map(slot => slot.text.trim())

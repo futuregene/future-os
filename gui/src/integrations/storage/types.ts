@@ -197,7 +197,7 @@ export interface WorkspaceReviewCapabilities {
   changePreview: "ready" | "unsupported_too_large";
 }
 
-/// The "previous turn changes" payload for a Thread (§10.3).
+/// The "last-run changes" payload for a Thread (§10.3).
 export interface LastRunReviewData {
   changeset: StoredReviewChangeset;
   files: StoredReviewFileChange[];

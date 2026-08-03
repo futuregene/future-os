@@ -3,19 +3,19 @@ import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**
- * One rendered page of conversation history: a run of turns starting at a user
- * message (a "turn" is one user question plus the reply that follows it). The
- * window is defined by the index of its first user message, so the top of a
- * loaded page is always a user bubble — the "must have a user question" rule.
- * The tail beyond the window (streaming bubbles, replies whose user message
- * landed inside the window) is always included.
+ * One rendered page of conversation history: a run of exchanges starting at a
+ * user message (an "exchange" is one user question plus the reply that follows
+ * it). The window is defined by the index of its first user message, so the
+ * top of a loaded page is always a user bubble — the "must have a user
+ * question" rule. The tail beyond the window (streaming bubbles, replies whose
+ * user message landed inside the window) is always included.
  */
-export function computePageStart(messages: AgentMessage[], userTurnCount: number): number {
-  if (userTurnCount <= 0 || messages.length === 0)
+export function computePageStart(messages: AgentMessage[], userExchangeCount: number): number {
+  if (userExchangeCount <= 0 || messages.length === 0)
     return 0;
   // Walk backwards from the tail, counting user messages until the window is
   // full; the page starts at that user's index.
-  let remaining = userTurnCount;
+  let remaining = userExchangeCount;
   for (let index = messages.length - 1; index >= 0; index--) {
     if (messages[index]!.role === "user") {
       remaining -= 1;
@@ -35,8 +35,8 @@ interface UseMessagePagingInput {
    * (see `handleScroll`).
    */
   scrollRef: RefObject<HTMLElement | null>;
-  /** How many user turns each page renders. The first page shows the last N. */
-  userTurnCount: number;
+  /** How many user exchanges each page renders. The first page shows the last N. */
+  userExchangeCount: number;
   /** Changing this (the active thread id) resets the window to the latest page. */
   resetKey: unknown;
   /** Caller's scroll handler — composed in front of the paging handler. */
@@ -67,8 +67,8 @@ const TOP_SETTLE_MS = 350;
 /**
  * Windowed rendering for long threads. `messages` stays fully loaded in memory
  * (the agent session JSONL is projected once, cheaply); this hook only controls
- * which slice renders. Pages are counted in user turns, so loading an older page
- * never splits a user question from its reply.
+ * which slice renders. Pages are counted in user exchanges, so loading an older
+ * page never splits a user question from its reply.
  *
  * Scroll anchoring across a page load follows the same idea opencode uses: when
  * a page is prepended, record the first visible message and its offset from the
@@ -78,7 +78,7 @@ const TOP_SETTLE_MS = 350;
 export function useMessagePaging({
   messages,
   scrollRef,
-  userTurnCount,
+  userExchangeCount,
   resetKey,
   onScroll,
 }: UseMessagePagingInput): UseMessagePagingResult {
@@ -98,7 +98,7 @@ export function useMessagePaging({
 
   // computePageStart always returns a valid index (or 0 for an empty/short
   // list), so no clamping is needed here.
-  const effectivePageStart = computePageStart(messages, loadedPages * userTurnCount);
+  const effectivePageStart = computePageStart(messages, loadedPages * userExchangeCount);
   const visibleMessages = messages.slice(effectivePageStart);
   const canLoadOlder = effectivePageStart > 0;
   // The button only appears after the user has rested at the top for the settle
