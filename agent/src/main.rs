@@ -406,18 +406,11 @@ async fn async_main(
         })
         .unwrap_or_default();
 
-    // Cap max_tokens at 32000. For reasoning models without an explicit
-    // max_tokens, default to 32000 so thinking has room to breathe without
-    // starving the visible output.
-    let max_tokens = model_config.as_ref().map(|m| {
-        if m.max_tokens > 0 {
-            std::cmp::min(m.max_tokens, 32000)
-        } else if m.reasoning {
-            32000
-        } else {
-            16384
-        }
-    });
+    // Honor each model's advertised output limit. Models without one retain
+    // the existing reasoning/non-reasoning fallbacks.
+    let max_tokens = model_config
+        .as_ref()
+        .map(future_agent::models::effective_max_tokens);
 
     // Build engine config from settings and model config
     let config = EngineConfig {

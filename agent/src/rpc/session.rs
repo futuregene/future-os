@@ -438,6 +438,7 @@ impl ServerSession {
                 .get("requiresReasoningContentOnAssistantMessages")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let max_tokens = Some(crate::models::effective_max_tokens(&model_config));
             let tlm: HashMap<String, String> = model_config
                 .thinking_level_map
                 .into_iter()
@@ -454,13 +455,6 @@ impl ServerSession {
             // the fresh client is this session's alone: concurrent sessions
             // use independent connections and never clobber each other's
             // endpoint mid-run.
-            let max_tokens = if model_config.max_tokens > 0 {
-                Some(std::cmp::min(model_config.max_tokens, 32000))
-            } else if model_config.reasoning {
-                Some(32000)
-            } else {
-                Some(16384)
-            };
             // maxTokensField: compat field controlling max_tokens vs max_completion_tokens
             let max_tokens_field = model_config
                 .compat

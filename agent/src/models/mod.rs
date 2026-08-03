@@ -138,6 +138,18 @@ pub fn model_accepts_images_with(registry: &Registry, model: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve the output token budget advertised by a model. Catalog values are
+/// used as-is; only models without a configured limit receive a fallback.
+pub fn effective_max_tokens(model: &Model) -> i32 {
+    if model.max_tokens > 0 {
+        model.max_tokens
+    } else if model.reasoning {
+        32000
+    } else {
+        16384
+    }
+}
+
 /// UserModelsPath returns ~/.future/agent/models.json.
 pub fn user_models_path() -> String {
     let home = dirs::home_dir()
@@ -860,6 +872,26 @@ mod tests {
             provider: provider.to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn effective_max_tokens_preserves_catalog_limit() {
+        let model = Model {
+            max_tokens: 384000,
+            ..Default::default()
+        };
+        assert_eq!(super::effective_max_tokens(&model), 384000);
+    }
+
+    #[test]
+    fn effective_max_tokens_uses_fallback_only_when_missing() {
+        let reasoning = Model {
+            reasoning: true,
+            ..Default::default()
+        };
+        let plain = Model::default();
+        assert_eq!(super::effective_max_tokens(&reasoning), 32000);
+        assert_eq!(super::effective_max_tokens(&plain), 16384);
     }
 
     #[test]
