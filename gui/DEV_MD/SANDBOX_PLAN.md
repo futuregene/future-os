@@ -87,7 +87,7 @@ bash 在沙盒内失败且匹配拒绝特征（`Operation not permitted` 等，�
 - **read（新增拦截点）**：`run_read` 执行前评估规则；`ask` → 经 before_tool_call 同款审批流前置弹窗；`deny` → 直接错误。v1 中 read 完全不受控，是本次补上的真实漏洞。
 - **write / edit**：`ensure_workspace_access` 从"writable_roots 集合判定"改为完整规则判定（含第 0 层写保护、workspace 内 ask/deny）。路径规范化（`~`→真实 HOME、最近存在祖先 canonicalize、symlink 最终路径、macOS 大小写不敏感）沿用 v1 的 `sandbox/paths.rs`，原样复用。
 - **grep / ls 工具**（非默认工具集，但存在）：`run_grep` spawn 的系统 `grep` 子进程必须同样包 Seatbelt（否则是旁路读通道）；`run_ls` 按目录读评估规则。
-- **审批弹窗**：复用现有 ApprovalPrompt 链路（SSE → SQLite → 1.5s 轮询 → composer 上方卡片，串行、不超时），按钮改为"拒绝 / 允许一次 / 本工作区允许"（APPROVAL_PLAN §6）。
+- **审批弹窗**：复用现有 ApprovalPrompt 链路（gRPC 事件流 → SQLite 落库 → `approvals-updated` 推送、15s 轮询兜底 → composer 上方卡片，串行、不超时），按钮改为"拒绝 / 允许一次 / 本工作区允许"（APPROVAL_PLAN §6）。
 - **当轮即时生效**：`approval_decision` 回传附带已保存规则，agent 注入当前 session 内存规则集（机制类比现有 `approve_outside_path`）。
 
 ## 5. 协议与配置
