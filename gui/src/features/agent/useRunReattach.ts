@@ -43,6 +43,15 @@ export function useRunReattach({
 }: UseRunReattachInput) {
   const prevActiveRunIdRef = useRef<string | null>(null);
 
+  // AgentThread stays mounted across thread switches, so the outgoing thread's
+  // effect closure (push listener + in-flight ticks) survives until passive
+  // cleanup — a window during which a streaming push for the old thread would
+  // write its live bubble into the messages state now rendering the new thread
+  // (the same race isCurrentAgentEventTarget closes for the event listener).
+  // Mirror the live prop so stale writers stop at commit, not at cleanup.
+  const liveThreadIdRef = useRef(threadId);
+  liveThreadIdRef.current = threadId;
+
   useEffect(() => {
     return () => {
       // Drop the run tracked for the outgoing thread so the incoming thread's
@@ -56,8 +65,8 @@ export function useRunReattach({
   // still running, or one picked up after an app reload. While a local send owns
   // the view (`sendingRef`), that path renders the stream itself, so skip.
   //
-  // The `() => !cancelled` token handed to `upsertStreamingPreview` stops an
-  // outgoing thread's in-flight snapshot from applying after a switch.
+  // The `isLive` token handed to `upsertStreamingPreview` stops an outgoing
+  // thread's in-flight snapshot from applying after a switch.
   useEffect(() => {
     if (!threadId || !activeRunId || sendingRef.current)
       return;
@@ -65,15 +74,22 @@ export function useRunReattach({
     const runId = activeRunId;
     const startedAt = activeRunStartedAt;
     let cancelled = false;
+    // Stale-writer guard: once the view re-renders for another thread (commit),
+    // this closure's run no longer owns the messages state — drop pushes and
+    // in-flight upserts even before the effect cleanup runs.
+    const isLive = () => !cancelled && liveThreadIdRef.current === threadId;
     const tick = () => {
-      if (cancelled)
+      if (!isLive())
         return;
-      void upsertStreamingPreview(runId, startedAt, setMessages, () => !cancelled).then(() => {
+      void upsertStreamingPreview(runId, startedAt, setMessages, isLive).then(() => {
         // Bump the generation counter after every streaming upsert so
         // any in-flight direct-replacement load (loadFromAgent callers)
         // sees that state changed under them and discards its write
-        // instead of clobbering the live bubble.
-        messagesGenRef.current += 1;
+        // instead of clobbering the live bubble. Only while this closure
+        // still owns the view — a stale bump would discard the incoming
+        // thread's load instead.
+        if (isLive())
+          messagesGenRef.current += 1;
       });
     };
     tick();
@@ -84,7 +100,7 @@ export function useRunReattach({
       status: string;
       resetProjection: boolean;
     }>("thread-runtime-updated", (event) => {
-      if (cancelled || event.payload.threadId !== threadId || event.payload.runId !== runId)
+      if (!isLive() || event.payload.threadId !== threadId || event.payload.runId !== runId)
         return;
       if (event.payload.resetProjection)
         resetRunProjection(runId);

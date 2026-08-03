@@ -41,6 +41,27 @@ export function isCurrentAgentEventTarget(
   );
 }
 
+/**
+ * The live streaming bubbles to carry over a thread-switch merge. `current` is
+ * still the PREVIOUS thread's array when the updater runs, so a bubble only
+ * survives when it belongs to the loaded thread's own in-flight run — a foreign
+ * bubble grafted here would render the old conversation's stream inside the
+ * new one. Bubbles the fresh projection already folded in are deduped away.
+ */
+export function liveBubblesToKeep(
+  current: AgentMessage[],
+  restored: AgentMessage[],
+  ownRunId: string | null,
+): AgentMessage[] {
+  const settledRunIds = new Set(restored.filter(m => m.runId).map(m => m.runId));
+  return current.filter(
+    m => m.id.startsWith("stream_")
+      && m.runId === ownRunId
+      && !settledRunIds.has(m.runId)
+      && !restored.some(r => r.id === m.id),
+  );
+}
+
 interface ThreadCacheEntry {
   messages: AgentMessage[];
   recentRun: StoredRun | null;
@@ -348,14 +369,11 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
             return;
           const restored = result.status === "loaded" ? result.messages : [];
           setMessages((current) => {
-            // Preserve streaming bubbles whose run hasn't settled yet — but
-            // never one already folded into `restored` by the load (dedup).
-            const settledRunIds = new Set(restored.filter(m => m.runId).map(m => m.runId));
-            const keepBubbles = current.filter(
-              m => m.id.startsWith("stream_")
-                && !settledRunIds.has(m.runId)
-                && !restored.some(r => r.id === m.id),
-            );
+            // Preserve the live bubble of this thread's in-flight run (it may
+            // have been inserted by useRunReattach while the load was in
+            // flight) without carrying over any bubble from the previous
+            // thread's array.
+            const keepBubbles = liveBubblesToKeep(current, restored, activeRunRef.current.runId);
             // When a streaming bubble is alive, the agent's save_callback may
             // have persisted a mid-run partial snapshot of the same exchange (an
             // assistant message with no runId at the tail).  Drop it so the
