@@ -1,5 +1,6 @@
 import type { StoredApprovalRequest } from "../../../integrations/storage/threadStore";
-import { useMemo } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { useEffect, useMemo } from "react";
 import { listPendingApprovalRequests } from "../../../integrations/storage/threadStore";
 import { useAsyncResource } from "../../../lib/useAsyncResource";
 import { usePolling } from "../../../lib/usePolling";
@@ -13,8 +14,10 @@ const NO_APPROVALS: StoredApprovalRequest[] = [];
  * drives the card above the composer. This one watches every thread, so an
  * approval raised in a background conversation (a GUI-started run, or one the
  * approval reconcile rebuilt after a restart) surfaces as a marker on its rail
- * item without opening the thread. The query returns pending rows only, so the
- * list is tiny and a full 2s refetch is cheap.
+ * item without opening the thread. The backend pushes `approvals-updated` the
+ * moment a pending row is written or decided; the slow poll is only a backstop
+ * for a lost push. The query returns pending rows only, so each refetch is
+ * cheap.
  */
 export function usePendingApprovalCounts(): Map<string, number> {
   const { data, reload } = useAsyncResource(
@@ -28,7 +31,18 @@ export function usePendingApprovalCounts(): Map<string, number> {
     },
   );
 
-  usePolling(reload, 2000);
+  useEffect(() => {
+    const unlisten = listen("approvals-updated", () => {
+      // The push names one approval, but the query is global and tiny — a
+      // change in any thread can shift every count, so reload the whole list.
+      reload();
+    });
+    return () => {
+      void unlisten.then(stop => stop());
+    };
+  }, [reload]);
+
+  usePolling(reload, 15_000);
 
   return useMemo(() => {
     const counts = new Map<string, number>();

@@ -345,6 +345,33 @@ struct ThreadStreamingUpdate {
     thread_ids: Vec<String>,
 }
 
+/// Notify the webview that the approval queue changed: a new pending request
+/// was persisted or a decision was recorded. Emitted from the store write
+/// sites, so the signal never races the row it announces. Approval changes
+/// are rare next to run events, so this goes out directly instead of through
+/// the 40ms coalescing channel — the composer card and the sidebar badge
+/// react as soon as the write lands, and polling is only a backstop.
+pub(crate) fn emit_approvals_updated(thread_id: &str, approval_request_id: &str) {
+    let Some(handle) = APP_HANDLE.get() else {
+        return;
+    };
+    use tauri::Emitter;
+    let _ = handle.emit(
+        "approvals-updated",
+        ApprovalsUpdate {
+            thread_id: thread_id.to_string(),
+            approval_request_id: approval_request_id.to_string(),
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApprovalsUpdate {
+    thread_id: String,
+    approval_request_id: String,
+}
+
 /// Bridge the Agent's compatibility-only `is_streaming` projection into a
 /// desktop push signal. React performs one initial snapshot read and then
 /// consumes only deltas from this monitor, avoiding a permanent sidebar IPC /
