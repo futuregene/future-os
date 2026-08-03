@@ -41,6 +41,27 @@ export function isCurrentAgentEventTarget(
   );
 }
 
+/**
+ * The live streaming bubbles to carry over a thread-switch merge. `current` is
+ * still the PREVIOUS thread's array when the updater runs, so a bubble only
+ * survives when it belongs to the loaded thread's own in-flight run — a foreign
+ * bubble grafted here would render the old conversation's stream inside the
+ * new one. Bubbles the fresh projection already folded in are deduped away.
+ */
+export function liveBubblesToKeep(
+  current: AgentMessage[],
+  restored: AgentMessage[],
+  ownRunId: string | null,
+): AgentMessage[] {
+  const settledRunIds = new Set(restored.filter(m => m.runId).map(m => m.runId));
+  return current.filter(
+    m => m.id.startsWith("stream_")
+      && m.runId === ownRunId
+      && !settledRunIds.has(m.runId)
+      && !restored.some(r => r.id === m.id),
+  );
+}
+
 interface ThreadCacheEntry {
   messages: AgentMessage[];
   recentRun: StoredRun | null;
@@ -127,6 +148,16 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   const [loadingIndicator, setLoadingIndicator] = useState(false);
   const indicatorShownAtRef = useRef<number | null>(null);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
+  // The thread whose history the current `messages` array actually holds. Full
+  // replacement commits (load restore, cache restore, quiet reload) set it in
+  // the same batch as their setMessages; the discard paths leave it stale on
+  // purpose. Append writers (the reattach live bubble, real-time user_message)
+  // must not fire while it differs from the live threadId: they would graft the
+  // new conversation onto the previous thread's stale base, and the gen bump
+  // would then make the in-flight authoritative load discard itself.
+  const [baseThreadId, setBaseThreadId] = useState<string | null>(null);
+  const baseThreadIdRef = useRef<string | null>(null);
+  baseThreadIdRef.current = baseThreadId;
 
   // ── Generation counter for message writes ────────────────────────────
   // Functional-updater paths bump this after writing; direct-replacement
@@ -237,6 +268,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
     if (!force && gen !== undefined && messagesGenRef.current !== gen)
       return;
     setMessages(result.messages);
+    setBaseThreadId(targetThreadId);
     cachePut(targetThreadId, { messages: result.messages, recentRun: null, entryCount: result.entryCount });
     // loadFromAgent is a hoisted inner function; this reload fires only on
     // explicit call, so it's intentionally excluded from the deps.
@@ -305,6 +337,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
     async function loadThreadMessages() {
       if (!threadId) {
         setMessages([]);
+        setBaseThreadId(null);
         setRenderWorkspace({ workspaceId: null, workspacePath: null });
         setLoadingThread(false);
         return;
@@ -319,6 +352,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       const cached = cacheGet(threadId);
       if (cached) {
         setMessages(cached.messages);
+        setBaseThreadId(threadId);
         setRecentRun(cached.recentRun);
         setRenderWorkspace({ workspaceId: workspaceId ?? null, workspacePath: workspacePath ?? null });
         setLoadingThread(false);
@@ -348,14 +382,11 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
             return;
           const restored = result.status === "loaded" ? result.messages : [];
           setMessages((current) => {
-            // Preserve streaming bubbles whose run hasn't settled yet — but
-            // never one already folded into `restored` by the load (dedup).
-            const settledRunIds = new Set(restored.filter(m => m.runId).map(m => m.runId));
-            const keepBubbles = current.filter(
-              m => m.id.startsWith("stream_")
-                && !settledRunIds.has(m.runId)
-                && !restored.some(r => r.id === m.id),
-            );
+            // Preserve the live bubble of this thread's in-flight run (it may
+            // have been inserted by useRunReattach while the load was in
+            // flight) without carrying over any bubble from the previous
+            // thread's array.
+            const keepBubbles = liveBubblesToKeep(current, restored, activeRunRef.current.runId);
             // When a streaming bubble is alive, the agent's save_callback may
             // have persisted a mid-run partial snapshot of the same exchange (an
             // assistant message with no runId at the tail).  Drop it so the
@@ -413,6 +444,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
           setMessages(restoredMessages);
           cachePut(threadId, { messages: restoredMessages, recentRun: null, entryCount: result.entryCount });
         }
+        setBaseThreadId(threadId);
         setRenderWorkspace({ workspaceId: workspaceId ?? null, workspacePath: workspacePath ?? null });
         setLoadingThread(false);
       }
@@ -517,6 +549,13 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       if (detail.eventType !== "user_message")
         return;
 
+      // A user_message that lands while this thread's load is still in flight
+      // would append to the previous thread's stale base — and the gen bump
+      // would make the authoritative load discard itself. The projected JSONL
+      // load carries the entry, so dropping the append is lossless.
+      if (baseThreadIdRef.current !== threadId)
+        return;
+
       const text = typeof detail.payload.text === "string" ? detail.payload.text : "";
       if (!text)
         return;
@@ -558,6 +597,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
     messages,
     recentRun,
     renderWorkspace,
+    baseThreadId,
     reloadMessagesQuiet,
     refreshRecentRun,
     setMessages,

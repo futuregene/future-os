@@ -12,6 +12,12 @@ interface UseRunReattachInput {
   activeRunId: string | null;
   // Epoch-ms anchor for the re-attached run's live elapsed timer.
   activeRunStartedAt: number | null;
+  // The thread the current messages base belongs to (committed in lockstep with
+  // full replacements). Until it equals `threadId` the view still renders the
+  // previous thread's array: ticking here would graft this run's live bubble
+  // onto that stale base, and the gen bump would make the in-flight first load
+  // discard itself.
+  baseThreadId: string | null;
   // In-flight lock owned by the parent: while a local send owns the view it
   // renders the stream itself, so every re-attach path skips.
   sendingRef: MutableRefObject<boolean>;
@@ -35,6 +41,7 @@ export function useRunReattach({
   workspaceId,
   activeRunId,
   activeRunStartedAt,
+  baseThreadId,
   sendingRef,
   setMessages,
   refreshRecentRun,
@@ -42,6 +49,15 @@ export function useRunReattach({
   messagesGenRef,
 }: UseRunReattachInput) {
   const prevActiveRunIdRef = useRef<string | null>(null);
+
+  // AgentThread stays mounted across thread switches, so the outgoing thread's
+  // effect closure (push listener + in-flight ticks) survives until passive
+  // cleanup — a window during which a streaming push for the old thread would
+  // write its live bubble into the messages state now rendering the new thread
+  // (the same race isCurrentAgentEventTarget closes for the event listener).
+  // Mirror the live prop so stale writers stop at commit, not at cleanup.
+  const liveThreadIdRef = useRef(threadId);
+  liveThreadIdRef.current = threadId;
 
   useEffect(() => {
     return () => {
@@ -56,24 +72,37 @@ export function useRunReattach({
   // still running, or one picked up after an app reload. While a local send owns
   // the view (`sendingRef`), that path renders the stream itself, so skip.
   //
-  // The `() => !cancelled` token handed to `upsertStreamingPreview` stops an
-  // outgoing thread's in-flight snapshot from applying after a switch.
+  // The `baseThreadId` gate keeps the first tick (and the push listener) off
+  // until this thread's load has committed the messages base: between the switch
+  // and that commit the state still holds the previous thread's array, and an
+  // upsert onto it would render this run inside the old conversation while the
+  // gen bump discards the in-flight load that would have fixed the base.
+  //
+  // The `isLive` token handed to `upsertStreamingPreview` stops an outgoing
+  // thread's in-flight snapshot from applying after a switch.
   useEffect(() => {
-    if (!threadId || !activeRunId || sendingRef.current)
+    if (!threadId || !activeRunId || sendingRef.current || baseThreadId !== threadId)
       return;
 
     const runId = activeRunId;
     const startedAt = activeRunStartedAt;
     let cancelled = false;
+    // Stale-writer guard: once the view re-renders for another thread (commit),
+    // this closure's run no longer owns the messages state — drop pushes and
+    // in-flight upserts even before the effect cleanup runs.
+    const isLive = () => !cancelled && liveThreadIdRef.current === threadId;
     const tick = () => {
-      if (cancelled)
+      if (!isLive())
         return;
-      void upsertStreamingPreview(runId, startedAt, setMessages, () => !cancelled).then(() => {
+      void upsertStreamingPreview(runId, startedAt, setMessages, isLive).then(() => {
         // Bump the generation counter after every streaming upsert so
         // any in-flight direct-replacement load (loadFromAgent callers)
         // sees that state changed under them and discards its write
-        // instead of clobbering the live bubble.
-        messagesGenRef.current += 1;
+        // instead of clobbering the live bubble. Only while this closure
+        // still owns the view — a stale bump would discard the incoming
+        // thread's load instead.
+        if (isLive())
+          messagesGenRef.current += 1;
       });
     };
     tick();
@@ -84,7 +113,7 @@ export function useRunReattach({
       status: string;
       resetProjection: boolean;
     }>("thread-runtime-updated", (event) => {
-      if (cancelled || event.payload.threadId !== threadId || event.payload.runId !== runId)
+      if (!isLive() || event.payload.threadId !== threadId || event.payload.runId !== runId)
         return;
       if (event.payload.resetProjection)
         resetRunProjection(runId);
@@ -120,6 +149,7 @@ export function useRunReattach({
   }, [
     activeRunId,
     activeRunStartedAt,
+    baseThreadId,
     messagesGenRef,
     refreshRecentRun,
     reloadMessagesQuiet,

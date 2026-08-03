@@ -89,7 +89,13 @@ export async function runSendPipeline(
     modelId,
     runStartedAt: runStartAnchorMs,
   };
-  setMessages(current => [...current, optimisticUserMessage, assistantMessage]);
+  // Guarded like every later view write: the attachment import above awaits,
+  // and a thread switch landing in that window must not append this send's
+  // optimistic pair to the new thread's view (the run still proceeds — the
+  // origin thread picks it up via the observer/reattach on return).
+  if (isCurrentSend()) {
+    setMessages(current => [...current, optimisticUserMessage, assistantMessage]);
+  }
   onThreadActivity();
 
   let run: StoredRun | null = null;
