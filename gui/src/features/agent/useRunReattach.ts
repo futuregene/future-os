@@ -12,6 +12,12 @@ interface UseRunReattachInput {
   activeRunId: string | null;
   // Epoch-ms anchor for the re-attached run's live elapsed timer.
   activeRunStartedAt: number | null;
+  // The thread the current messages base belongs to (committed in lockstep with
+  // full replacements). Until it equals `threadId` the view still renders the
+  // previous thread's array: ticking here would graft this run's live bubble
+  // onto that stale base, and the gen bump would make the in-flight first load
+  // discard itself.
+  baseThreadId: string | null;
   // In-flight lock owned by the parent: while a local send owns the view it
   // renders the stream itself, so every re-attach path skips.
   sendingRef: MutableRefObject<boolean>;
@@ -35,6 +41,7 @@ export function useRunReattach({
   workspaceId,
   activeRunId,
   activeRunStartedAt,
+  baseThreadId,
   sendingRef,
   setMessages,
   refreshRecentRun,
@@ -65,10 +72,16 @@ export function useRunReattach({
   // still running, or one picked up after an app reload. While a local send owns
   // the view (`sendingRef`), that path renders the stream itself, so skip.
   //
+  // The `baseThreadId` gate keeps the first tick (and the push listener) off
+  // until this thread's load has committed the messages base: between the switch
+  // and that commit the state still holds the previous thread's array, and an
+  // upsert onto it would render this run inside the old conversation while the
+  // gen bump discards the in-flight load that would have fixed the base.
+  //
   // The `isLive` token handed to `upsertStreamingPreview` stops an outgoing
   // thread's in-flight snapshot from applying after a switch.
   useEffect(() => {
-    if (!threadId || !activeRunId || sendingRef.current)
+    if (!threadId || !activeRunId || sendingRef.current || baseThreadId !== threadId)
       return;
 
     const runId = activeRunId;
@@ -136,6 +149,7 @@ export function useRunReattach({
   }, [
     activeRunId,
     activeRunStartedAt,
+    baseThreadId,
     messagesGenRef,
     refreshRecentRun,
     reloadMessagesQuiet,

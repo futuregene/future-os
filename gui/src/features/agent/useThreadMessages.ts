@@ -148,6 +148,16 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   const [loadingIndicator, setLoadingIndicator] = useState(false);
   const indicatorShownAtRef = useRef<number | null>(null);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
+  // The thread whose history the current `messages` array actually holds. Full
+  // replacement commits (load restore, cache restore, quiet reload) set it in
+  // the same batch as their setMessages; the discard paths leave it stale on
+  // purpose. Append writers (the reattach live bubble, real-time user_message)
+  // must not fire while it differs from the live threadId: they would graft the
+  // new conversation onto the previous thread's stale base, and the gen bump
+  // would then make the in-flight authoritative load discard itself.
+  const [baseThreadId, setBaseThreadId] = useState<string | null>(null);
+  const baseThreadIdRef = useRef<string | null>(null);
+  baseThreadIdRef.current = baseThreadId;
 
   // ── Generation counter for message writes ────────────────────────────
   // Functional-updater paths bump this after writing; direct-replacement
@@ -258,6 +268,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
     if (!force && gen !== undefined && messagesGenRef.current !== gen)
       return;
     setMessages(result.messages);
+    setBaseThreadId(targetThreadId);
     cachePut(targetThreadId, { messages: result.messages, recentRun: null, entryCount: result.entryCount });
     // loadFromAgent is a hoisted inner function; this reload fires only on
     // explicit call, so it's intentionally excluded from the deps.
@@ -326,6 +337,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
     async function loadThreadMessages() {
       if (!threadId) {
         setMessages([]);
+        setBaseThreadId(null);
         setRenderWorkspace({ workspaceId: null, workspacePath: null });
         setLoadingThread(false);
         return;
@@ -340,6 +352,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       const cached = cacheGet(threadId);
       if (cached) {
         setMessages(cached.messages);
+        setBaseThreadId(threadId);
         setRecentRun(cached.recentRun);
         setRenderWorkspace({ workspaceId: workspaceId ?? null, workspacePath: workspacePath ?? null });
         setLoadingThread(false);
@@ -431,6 +444,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
           setMessages(restoredMessages);
           cachePut(threadId, { messages: restoredMessages, recentRun: null, entryCount: result.entryCount });
         }
+        setBaseThreadId(threadId);
         setRenderWorkspace({ workspaceId: workspaceId ?? null, workspacePath: workspacePath ?? null });
         setLoadingThread(false);
       }
@@ -535,6 +549,13 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       if (detail.eventType !== "user_message")
         return;
 
+      // A user_message that lands while this thread's load is still in flight
+      // would append to the previous thread's stale base — and the gen bump
+      // would make the authoritative load discard itself. The projected JSONL
+      // load carries the entry, so dropping the append is lossless.
+      if (baseThreadIdRef.current !== threadId)
+        return;
+
       const text = typeof detail.payload.text === "string" ? detail.payload.text : "";
       if (!text)
         return;
@@ -576,6 +597,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
     messages,
     recentRun,
     renderWorkspace,
+    baseThreadId,
     reloadMessagesQuiet,
     refreshRecentRun,
     setMessages,
