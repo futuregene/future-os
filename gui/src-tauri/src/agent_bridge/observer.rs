@@ -476,11 +476,13 @@ async fn run_observer(
             note_run_active(shared, &mut state, &run_id);
             // Resume from the in-memory cursor on re-attach: events at or
             // below it were already persisted and mirrored, so replaying them
-            // would only duplicate the NATS mirror. The persisted-store cursor
-            // is the resume point for a fresh attach (startup, first sight).
+            // would only duplicate the NATS mirror. A fresh attach (startup,
+            // first sight) has no durable GUI-side cursor — the Agent journal
+            // is the source of truth — so it replays from the start (-1);
+            // replayed events are deduped by the cursor check before fan-out.
             let cursor = match state.cursors.get(&run_id) {
                 Some(&cursor) => cursor,
-                None => attach_cursor(session_id, &run_id).await,
+                None => -1,
             };
             state.cursors.insert(run_id.clone(), cursor);
             match client
@@ -608,42 +610,6 @@ async fn probe_active_run(
         .as_str()
         .filter(|id| !id.is_empty())
         .map(str::to_string)
-}
-
-/// Resume cursor for an atomic attach: the last persisted sequence of the
-/// run's local events, or -1 (full ring replay) when nothing is stored yet.
-async fn attach_cursor(session_id: &str, canonical_run_id: &str) -> i64 {
-    let local = {
-        let guard = OBSERVERS.lock().unwrap_or_else(|e| e.into_inner());
-        guard
-            .get(session_id)
-            .and_then(|handle| {
-                handle
-                    .shared
-                    .run_bindings
-                    .lock()
-                    .ok()?
-                    .get(canonical_run_id)
-                    .cloned()
-            })
-            .or_else(|| {
-                crate::store::get_run(canonical_run_id)
-                    .ok()
-                    .flatten()
-                    .map(|run| run.id)
-            })
-    };
-    let Some(local_run_id) = local else {
-        return -1;
-    };
-    tokio::task::spawn_blocking(move || {
-        crate::store::list_run_events(&local_run_id)
-            .ok()
-            .and_then(|events| events.into_iter().map(|event| event.sequence).max())
-            .unwrap_or(-1)
-    })
-    .await
-    .unwrap_or(-1)
 }
 
 /// Process one event. Returns false when the run's idx sequence broke — the

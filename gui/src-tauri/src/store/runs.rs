@@ -333,9 +333,9 @@ pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppEr
 }
 
 /// The tail of a run's events with `sequence > since_sequence`, in append
-/// order. Backs the frontend's pushed live-preview projection: instead of cloning and
-/// re-serializing the whole log every tick (O(n) per tick → O(n²) over a run),
-/// only the events the caller hasn't seen cross IPC. `since_sequence < 0`
+/// order. Legacy compatibility reader over the pre-journal GUI JSONL logs;
+/// live reads go through the Agent journal (see `commands::runs`), which
+/// falls back here only while the Agent is unreachable. `since_sequence < 0`
 /// returns the full log (same as [`list_run_events`]).
 pub fn list_run_events_since(
     run_id: &str,
@@ -362,22 +362,18 @@ pub fn list_run_events_since(
         .collect())
 }
 
-/// In-memory buffer for streaming run events. A run's events live here while it
-/// is active (fast streaming reads) and are also appended to a per-run JSONL
-/// file on disk so the Runs panel/inspector survive an app restart. The buffer
-/// entry is dropped once the run settles (see `clear_run_event_buffer`); reads
-/// then fall back to the file. Keyed by run_id.
+/// Test-only in-memory event buffer. Production keeps no GUI-side event copy —
+/// the Agent journal is the source of truth — so this buffer exists purely as
+/// a fixture for the compatibility-reader tests below.
 #[cfg(test)]
 static RUN_EVENT_BUFFER: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, Vec<RunEventRecord>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-// ── Async disk writer ─────────────────────────────────────────────────
-// Run events are appended to a per-run JSONL log so the Runs panel survives
-// an app restart. Writes go through a single background thread holding one
-// open BufWriter per active run, coalescing bursts into one flush — previously
-// every event did its own open/append/close syscall trio, several times per
-// second while streaming.
+// ── Test fixture: async disk writer ─────────────────────────────────────
+// The compatibility reader must stay covered against real on-disk logs, so
+// tests retain a writer that produces them: a single background thread
+// holding one open BufWriter per run, coalescing bursts into one flush.
 #[cfg(test)]
 enum WriterMsg {
     Event(RunEventRecord),

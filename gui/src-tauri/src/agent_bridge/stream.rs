@@ -132,16 +132,12 @@ pub(super) async fn collect_agent_response(
 ) -> Result<AgentResponse, CollectError> {
     let mut content = String::new();
     let mut waiting_for_approval = false;
-    let cursor_run_id = local_run_id.map(str::to_string);
-    let mut last_idx = tokio::task::spawn_blocking(move || {
-        cursor_run_id
-            .as_deref()
-            .and_then(|run_id| crate::store::list_run_events(run_id).ok())
-            .and_then(|events| events.into_iter().map(|event| event.sequence).max())
-            .unwrap_or(-1)
-    })
-    .await
-    .map_err(|error| format!("Unable to load local run cursor: {error}"))?;
+    // The collector only runs for freshly accepted prompts: the Agent journal
+    // holds no earlier events for this run, so attach from the start. The GUI
+    // keeps no durable event copy to resume from (the Agent journal is the
+    // source of truth); a mid-collect reconnect resumes from `last_idx` below,
+    // and a forced re-attach replays through the gap check.
+    let mut last_idx: i64 = -1;
     let mut reconnect_attempt = 0_u32;
 
     let clean_end = 'attach: loop {
@@ -377,7 +373,7 @@ fn fold_response_event(
     Ok(FoldOutcome::Continue)
 }
 
-/// Returns true when an `agent_end` event's data marks the turn as incomplete —
+/// Returns true when an `agent_end` event's data marks the reply as incomplete —
 /// i.e. the LLM stream was truncated before a genuine finish. Such a reply is a
 /// prefix and must not be persisted as a clean completion.
 pub(super) fn agent_end_incomplete(data: &str) -> bool {
