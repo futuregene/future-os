@@ -2665,6 +2665,53 @@ mod tests {
         assert_eq!(resp["data"]["cwd"], "/tmp/project");
     }
 
+    /// `create_session` swaps in a fresh private broadcaster (fork/clone pass
+    /// the parent's); the event journal must be rebound to that broadcaster or
+    /// events silently stay memory-only and the durable journal is never
+    /// written. Regression guard for the Runs-panel blanking bug.
+    #[test]
+    fn create_session_rebinds_event_journal_to_live_broadcaster() {
+        let state = make_app_state();
+        let session_id = "journal-rebind".to_string();
+
+        // Mimic fork/clone: construct with a broadcaster that create_session
+        // will discard, so the live one must be (re)configured by it.
+        let new_sess = ServerSession::new_with_queue_budget(
+            session_id.clone(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(EmptyProvider),
+                "mock",
+            ))),
+            state.session_manager.clone(),
+            &test_workspace(),
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        state.create_session(new_sess);
+
+        let session_arc = {
+            let sessions = state.sessions.read();
+            sessions.get(&session_id).unwrap().clone()
+        };
+        let live_broadcaster = session_arc.read().broadcaster.clone();
+        live_broadcaster.start_run("run-j".to_string(), 1);
+        live_broadcaster.broadcast(crate::rpc::SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "hello"}),
+        ));
+
+        let journal = state
+            .session_manager
+            .run_data_path(&session_id)
+            .join("run-j.jsonl");
+        assert!(
+            journal.exists(),
+            "live broadcaster must write the durable event journal"
+        );
+    }
+
     #[test]
     fn set_sandbox_policy_missing_payload() {
         let state = make_app_state();
