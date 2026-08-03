@@ -142,6 +142,13 @@ struct FutureModelEntry {
     name: Option<String>,
     #[serde(alias = "ContextWindow", alias = "contextWindow")]
     context_length: Option<i64>,
+    #[serde(
+        alias = "maxTokens",
+        alias = "max_output",
+        alias = "maxOutput",
+        alias = "max_output_tokens"
+    )]
+    max_tokens: Option<i64>,
     architecture: Option<FutureArchitecture>,
     pricing: Option<FuturePricing>,
     supported_parameters: Option<Vec<String>>,
@@ -332,6 +339,11 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         .unwrap_or_else(|| (vec!["text".to_string()], vec!["text".to_string()]));
 
     let context_window = entry.context_length.map(|v| v as i32).unwrap_or(128000);
+    let max_tokens = entry
+        .max_tokens
+        .filter(|value| *value > 0)
+        .and_then(|value| i32::try_from(value).ok())
+        .unwrap_or(0);
 
     // Parse pricing
     let (cost_input, cost_output, cost_cache_read, cost_cache_write) = entry
@@ -368,7 +380,7 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         input,
         output,
         context_window,
-        max_tokens: 16384,
+        max_tokens,
         cost: Cost {
             input: cost_input,
             output: cost_output,
@@ -645,6 +657,7 @@ mod tests {
             id: "test-model".to_string(),
             name: Some("Test".to_string()),
             context_length: Some(128000),
+            max_tokens: Some(384000),
             architecture: Some(FutureArchitecture {
                 modality: Some("text+image->text".to_string()),
                 tokenizer: None,
@@ -663,6 +676,7 @@ mod tests {
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert!(model.reasoning);
         assert_eq!(model.provider, "future");
+        assert_eq!(model.max_tokens, 384000);
     }
 
     #[test]
@@ -671,6 +685,7 @@ mod tests {
             id: "plain-model".to_string(),
             name: None,
             context_length: Some(64000),
+            max_tokens: Some(65536),
             architecture: None,
             pricing: None,
             supported_parameters: Some(vec!["temperature".to_string()]),
@@ -683,6 +698,7 @@ mod tests {
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert!(!model.reasoning);
         assert_eq!(model.name, "plain-model"); // falls back to id
+        assert_eq!(model.max_tokens, 65536);
     }
 
     #[test]
@@ -691,6 +707,7 @@ mod tests {
             id: "vision".to_string(),
             name: Some("Vision".to_string()),
             context_length: None,
+            max_tokens: None,
             architecture: Some(FutureArchitecture {
                 modality: Some("text+image->text".to_string()),
                 tokenizer: None,
@@ -706,6 +723,7 @@ mod tests {
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert!(model.input.iter().any(|i| i == "image"));
         assert_eq!(model.context_window, 128000); // default
+        assert_eq!(model.max_tokens, 0); // runtime fallback applies when omitted
     }
 
     #[test]
@@ -714,6 +732,7 @@ mod tests {
             id: "priced".to_string(),
             name: None,
             context_length: Some(128000),
+            max_tokens: Some(8192),
             architecture: None,
             pricing: Some(FuturePricing {
                 currency: None,
