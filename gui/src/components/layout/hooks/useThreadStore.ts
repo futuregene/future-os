@@ -296,19 +296,17 @@ export function useThreadStore(): ThreadStore {
     }
   }, [activeThreads.length]);
 
-  // Pre-fetch agent state for the active thread so model/thinking/title
-  // are available from cache without a network delay on first render.
-  // Keep refreshing on an interval shorter than the cache TTL (30s): the
-  // cached entry must never expire while the thread is being viewed — an
-  // expired snapshot dropped the composer back to the global draft
-  // model/thinking level mid-view. getAgentState dedupes via the TTL and
-  // its in-flight map, so a 10s tick costs at most one fetch per 30s.
+  // Pre-fetch agent state when a thread becomes active: seeds the cache so
+  // model/thinking/title render without a network delay, and revalidates the
+  // entry (TTL-throttled inside getAgentState) on every switch back. Between
+  // activations the push events (model_changed / thinking_level_changed /
+  // session_name_changed / config_reloaded) keep the entry current — no
+  // timer needed. Synchronous reads are stale-while-revalidate, so a late
+  // revalidation can never flash the composer back to the draft model.
   useEffect(() => {
     if (!activeThreadId)
       return;
     prefetchAgentState(activeThreadId);
-    const timer = window.setInterval(prefetchAgentState, 10_000, activeThreadId);
-    return () => window.clearInterval(timer);
   }, [activeThreadId]);
 
   return {

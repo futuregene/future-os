@@ -31,7 +31,13 @@ interface CacheEntry {
   fetchedAt: number;
 }
 
-/** TTL for cached agent state (30s). Agent restarts invalidate the cache. */
+/**
+ * Revalidation throttle for getAgentState (30s). Freshness between fetches
+ * comes from the agent's push events (applySettingsEvent) and optimistic
+ * updates; this gate only limits how often an explicit fetch (thread
+ * activation, post-rename) actually hits the agent. Synchronous reads are
+ * stale-while-revalidate regardless of it.
+ */
 const CACHE_TTL_MS = 30_000;
 const CACHE_MAX = 100;
 
@@ -60,7 +66,11 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
-/** Fetch session state from the agent, caching the result for CACHE_TTL_MS. */
+/**
+ * Fetch session state from the agent. A fresh entry is returned as-is; an
+ * older one is revalidated at most once per CACHE_TTL_MS (in-flight requests
+ * are deduped either way).
+ */
 export async function getAgentState(threadId: string): Promise<AgentSessionState> {
   const now = Date.now();
   const cached = cache.get(threadId);
