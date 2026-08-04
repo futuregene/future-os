@@ -3,7 +3,6 @@ import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall
 import type { WorkspaceReviewCapabilities } from "../../../integrations/storage/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { matchesSettledRun } from "../../../features/agent/agentMessageFormatters";
-import { upsertFutureReferenceEntries } from "../../../features/markdown/futureReferenceStore";
 import {
   ensureWorkspaceGit,
   getGitReview,
@@ -119,10 +118,6 @@ export function useContextData({
       setArtifacts(nextArtifacts);
       setGitReview(nextGitReview);
       setReviewCapabilities(nextCapabilities);
-      upsertContextReferences(activeWorkspaceId, {
-        artifacts: nextArtifacts,
-        runs: nextRuns,
-      });
     }
     catch {
       if (isCurrentRefresh()) {
@@ -233,20 +228,4 @@ export function useContextData({
     setReviewCustomBase,
     refreshContext,
   };
-}
-
-function upsertContextReferences(
-  workspaceId: string | null,
-  {
-    artifacts,
-    runs,
-  }: {
-    artifacts: StoredArtifact[];
-    runs: StoredRun[];
-  },
-) {
-  upsertFutureReferenceEntries(workspaceId, [
-    ...runs.map(run => ({ data: run, targetId: run.id, targetType: "run" as const })),
-    ...artifacts.map(artifact => ({ data: artifact, targetId: artifact.id, targetType: "artifact" as const })),
-  ]);
 }

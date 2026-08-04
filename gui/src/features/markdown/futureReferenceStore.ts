@@ -1,34 +1,31 @@
 import type { ResolvedMarkdownReference } from "../../integrations/storage/markdownReferences";
 import type { FutureReference } from "./futureMarkdownTypes";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useSyncExternalStore } from "react";
 import { resolveMarkdownReferences } from "../../integrations/storage/markdownReferences";
 import { errorMessage } from "../../lib/errors";
 
-// Opportunistic write-through cache for markdown reference chips (run/tool/
-// artifact embeds). ONE consumer — chips subscribe via `useFutureReference` —
-// and intentionally MANY producers: any layer that already fetched an object
-// for its own purpose warms this cache with `upsertFutureReference*` so chips
-// resolve without extra IPC. Current producers: the context panel's data hook
-// (`useContextData`, bulk on poll), the send pipeline (the freshly-created run),
-// and thread-message loading (the latest run). This is deliberate — there is no
-// single "owner" effect, because forcing one would either duplicate those
-// fetches or route every fetch through this store. `useFutureReferences`
-// back-fills anything a producer never supplied (unresolved identities only).
+// Lazy resolution cache for markdown reference chips (run/artifact/file
+// embeds). Chips resolve on demand: `useFutureReferences` back-fills whatever
+// the cache doesn't hold, batched per workspace. Resolved records stay put —
+// a settled run or an artifact is an immutable reference — so no producer
+// needs to keep the cache warm; the only update path is a run reaching a
+// terminal status (the listener below re-resolves those records in place).
+// Non-resolved records (a missing object, or a transport failure) retry after
+// a backoff so a race (e.g. a run row not committed yet) heals without
+// re-firing IPC on every streaming delta.
 
 interface ReferenceIdentity {
   targetId: string;
   targetType: FutureReference["targetType"];
 }
 
-type ReferenceData = ResolvedMarkdownReference["data"];
-
-interface ReferenceStoreEntry extends ReferenceIdentity {
-  data: ReferenceData;
-}
-
 const records = new Map<string, ResolvedMarkdownReference>();
 const listeners = new Set<() => void>();
 const pendingLoads = new Map<string, Map<string, ReferenceIdentity>>();
+// Earliest retry time (ms) for non-resolved records.
+const retryAfter = new Map<string, number>();
+const RETRY_BACKOFF_MS = 30_000;
 const maxReferenceRecords = 1000;
 let pendingFlush: ReturnType<typeof setTimeout> | undefined;
 
@@ -53,13 +50,22 @@ export function useFutureReference(
 }
 
 function loadFutureReferences(workspaceId: string, references: ReferenceIdentity[]) {
+  installTerminalRunListener();
+  const now = Date.now();
   const workspaceLoads = pendingLoads.get(workspaceId) ?? new Map<string, ReferenceIdentity>();
   for (const reference of references) {
-    // The parsed `references` array gets a fresh identity on every streaming
-    // delta, so this fires per keystroke. Already-resolved records stay hot via
-    // the context panel's data hook (upsertFutureReferenceEntries), so
-    // re-resolving them is wasted IPC — only fetch unresolved/unknown identities.
-    if (records.get(storeKey(workspaceId, reference.targetType, reference.targetId))?.status === "resolved")
+    const key = storeKey(workspaceId, reference.targetType, reference.targetId);
+    const existing = records.get(key);
+    // Resolved records are final (immutable objects; run records are refreshed
+    // by the terminal-status listener), so they never re-resolve — the parsed
+    // `references` array gets a fresh identity on every streaming delta, and
+    // re-resolving hot records per keystroke would be wasted IPC.
+    if (existing?.status === "resolved")
+      continue;
+    // A missing object or a failed transport retries after the backoff, not on
+    // every render — but it DOES retry, so a record that missed a row not yet
+    // committed (or a transient IPC error) heals on its own.
+    if (existing && (retryAfter.get(key) ?? 0) > now)
       continue;
     workspaceLoads.set(referenceIdentityKey(reference), reference);
   }
@@ -72,65 +78,6 @@ function loadFutureReferences(workspaceId: string, references: ReferenceIdentity
       pendingFlush = undefined;
       void flushPendingReferenceLoads();
     }, 0);
-  }
-}
-
-export function upsertFutureReferenceData(
-  workspaceId: string | null | undefined,
-  targetType: ReferenceIdentity["targetType"],
-  targetId: string,
-  data: ReferenceData,
-) {
-  upsertFutureReferenceEntries(workspaceId, [{ data, targetId, targetType }]);
-}
-
-export function upsertFutureReferenceEntries(
-  workspaceId: string | null | undefined,
-  entries: ReferenceStoreEntry[],
-) {
-  if (!workspaceId)
-    return;
-
-  let changed = false;
-  for (const entry of entries) {
-    const key = storeKey(workspaceId, entry.targetType, entry.targetId);
-    const existing = records.get(key);
-    // Delete-then-set so `set` moves the key to the end — Map preserves
-    // insertion order and does not refresh it on overwrite; keeps prune LRU.
-    records.delete(key);
-    if (existing?.status === "resolved" && sameReferenceData(existing.data, entry.data)) {
-      // Data is byte-identical to what's already resolved (the common case on
-      // the context panel's 1.5s data poll). Re-store the SAME record object so the LRU
-      // position refreshes but the snapshot reference stays stable — otherwise a
-      // fresh object would make every subscribed reference chip re-render each
-      // tick even though nothing changed.
-      records.set(key, existing);
-      continue;
-    }
-    records.set(key, {
-      data: entry.data,
-      status: "resolved",
-      targetId: entry.targetId,
-      targetType: entry.targetType,
-    });
-    changed = true;
-  }
-  pruneReferenceRecords();
-  // Only wake subscribers when a record actually changed; a no-op poll must not
-  // churn every chip.
-  if (changed) {
-    notifyFutureReferenceSubscribers();
-  }
-}
-
-function sameReferenceData(a: ReferenceData, b: ReferenceData): boolean {
-  if (a === b)
-    return true;
-  try {
-    return JSON.stringify(a) === JSON.stringify(b);
-  }
-  catch {
-    return false;
   }
 }
 
@@ -185,14 +132,57 @@ async function resolveAndStoreReferences(workspaceId: string, references: Refere
     }));
   }
 
+  const retryAt = Date.now() + RETRY_BACKOFF_MS;
   for (const reference of resolved) {
     const key = storeKey(workspaceId, reference.targetType, reference.targetId);
-    // Delete-then-set so overwrites refresh LRU order (see upsert).
+    // Delete-then-set so overwrites refresh LRU order (Map preserves insertion
+    // order, not overwrite order).
     records.delete(key);
     records.set(key, reference);
+    if (reference.status === "resolved")
+      retryAfter.delete(key);
+    else
+      retryAfter.set(key, retryAt);
   }
   pruneReferenceRecords();
   notifyFutureReferenceSubscribers();
+}
+
+// ── Terminal-status refresh ───────────────────────────────────────────────
+// A run's record (status, tokens, error) changes one last time when it
+// settles. The push names the run, so re-resolve exactly those records in
+// place — deleting them instead would flash the chip to its pending state.
+
+let terminalListenerInstalled = false;
+
+function installTerminalRunListener() {
+  if (terminalListenerInstalled)
+    return;
+  terminalListenerInstalled = true;
+  void listen<{ runId?: string; status?: string }>("thread-runtime-updated", (event) => {
+    const { runId, status } = event.payload ?? {};
+    if (!runId || !status || !["completed", "failed", "cancelled"].includes(status))
+      return;
+    void reresolveRunRecords(runId);
+  });
+}
+
+async function reresolveRunRecords(runId: string) {
+  const suffix = `:run:${runId}`;
+  // Group the affected records by workspace (the key prefix) so each
+  // workspace gets one batched resolve call.
+  const byWorkspace = new Map<string, ReferenceIdentity>();
+  for (const key of records.keys()) {
+    if (!key.endsWith(suffix))
+      continue;
+    const workspaceId = key.slice(0, key.length - suffix.length);
+    byWorkspace.set(workspaceId, { targetId: runId, targetType: "run" });
+  }
+  await Promise.all(
+    [...byWorkspace.entries()].map(([workspaceId, identity]) =>
+      resolveAndStoreReferences(workspaceId, [identity]),
+    ),
+  );
 }
 
 function pruneReferenceRecords() {
@@ -201,6 +191,7 @@ function pruneReferenceRecords() {
     if (!oldest)
       return;
     records.delete(oldest);
+    retryAfter.delete(oldest);
   }
 }
 
