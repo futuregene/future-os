@@ -69,12 +69,17 @@ function subscribe(listener: () => void): () => void {
 /**
  * Fetch session state from the agent. A fresh entry is returned as-is; an
  * older one is revalidated at most once per CACHE_TTL_MS (in-flight requests
- * are deduped either way).
+ * are deduped either way). With `force`, the TTL throttle is bypassed — the
+ * stale snapshot stays readable to synchronous callers while the fresh fetch
+ * lands.
  */
-export async function getAgentState(threadId: string): Promise<AgentSessionState> {
+export async function getAgentState(
+  threadId: string,
+  options?: { force?: boolean },
+): Promise<AgentSessionState> {
   const now = Date.now();
   const cached = cache.get(threadId);
-  if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
+  if (!options?.force && cached && now - cached.fetchedAt < CACHE_TTL_MS) {
     touchCache(threadId, cached);
     return cached.state;
   }
@@ -191,6 +196,20 @@ export function prefetchAgentState(threadId: string | undefined | null) {
   // Fire-and-forget: the agent may be offline or the thread may have no session
   // yet, so swallow the rejection here — awaiting callers still see it.
   void getAgentState(threadId).catch(() => {});
+}
+
+/**
+ * Revalidate a thread's agent state regardless of the TTL throttle. Used when
+ * the world changed out from under the cache — an agent restart/reconnect,
+ * which can happen well inside the TTL window; a plain prefetch would
+ * short-circuit on the fresh-looking entry and nothing else would trigger a
+ * fetch while the user stays on the thread. The stale snapshot remains
+ * available to synchronous readers until the fresh one lands.
+ */
+export function revalidateAgentState(threadId: string | undefined | null) {
+  if (!threadId)
+    return;
+  void getAgentState(threadId, { force: true }).catch(() => {});
 }
 
 /**

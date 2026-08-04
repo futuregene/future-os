@@ -78,6 +78,25 @@ describe("agentStateCache", () => {
     expect(getCachedAgentState("thread-race")).toMatchObject({ model: "future/new" });
   });
 
+  it("revalidateAgentState bypasses the TTL throttle", async () => {
+    invokeCommand.mockResolvedValue({ model: "future/m1", sessionId: "sess_1" });
+    const { getAgentState, getCachedAgentState, revalidateAgentState } = await import("./agentStateCache");
+
+    await getAgentState("thread-force");
+    expect(invokeCommand).toHaveBeenCalledTimes(1);
+
+    // The entry is fresh (well inside the TTL): a plain prefetch would
+    // short-circuit, but an agent restart within that window must still
+    // revalidate — that's the gap force semantics close.
+    invokeCommand.mockResolvedValue({ model: "future/m2", sessionId: "sess_2" });
+    revalidateAgentState("thread-force");
+
+    await vi.waitFor(() => {
+      expect(invokeCommand).toHaveBeenCalledTimes(2);
+      expect(getCachedAgentState("thread-force")).toMatchObject({ model: "future/m2" });
+    });
+  });
+
   it("config_reloaded drops the stale entry and revalidates instead of re-inserting it", async () => {
     invokeCommand.mockResolvedValue({ model: "future/m1", thinkingLevel: "low", sessionId: "sess_1" });
     const { getAgentState, getCachedAgentState, installAgentEventListener } = await import("./agentStateCache");
