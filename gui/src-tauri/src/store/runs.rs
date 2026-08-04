@@ -652,32 +652,41 @@ pub fn tool_projection_cursor(run_id: &str) -> i64 {
 /// Fold `events` into the run's cached tool projection and return the full
 /// list. Empty `events` just returns the cached state. Holding the cache mutex
 /// across the fold prevents two concurrent pollers from double-applying the
-/// same tail.
+/// same tail. The entry is re-inserted last so the Map's insertion order
+/// doubles as LRU recency.
 pub fn advance_tool_projection(run_id: &str, events: &[RunEventRecord]) -> Vec<ToolCallRecord> {
     let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() else {
         // Poisoned lock: fall back to a one-shot full rebuild.
         return project_tool_calls(events);
     };
-    if cache.len() >= TOOL_PROJECTION_CACHE_MAX && !cache.contains_key(run_id) {
-        cache.clear();
+    // Make room one entry at a time, evicting the least recently used. A bulk
+    // `clear()` used to drop EVERY run's folded state at once — including a
+    // live run whose tool_start input tool_end persistence still needed for
+    // artifact path extraction. An active run is fed on every tool event
+    // (persist path), so it stays near the MRU end and survives.
+    while cache.len() >= TOOL_PROJECTION_CACHE_MAX && !cache.contains_key(run_id) {
+        let Some(oldest) = cache.keys().next().cloned() else {
+            break;
+        };
+        cache.remove(&oldest);
     }
-    let state = cache
-        .entry(run_id.to_string())
-        .or_insert_with(|| ToolProjectionState {
-            tools: Vec::new(),
-            index_by_id: HashMap::new(),
-            last_sequence: -1,
-        });
+    let mut state = cache.remove(run_id).unwrap_or_else(|| ToolProjectionState {
+        tools: Vec::new(),
+        index_by_id: HashMap::new(),
+        last_sequence: -1,
+    });
     for event in events {
         if event.sequence <= state.last_sequence {
             continue; // replay overlap — already folded
         }
-        apply_tool_event(state, event);
+        apply_tool_event(&mut state, event);
         if event.sequence > state.last_sequence {
             state.last_sequence = event.sequence;
         }
     }
-    state.tools.clone()
+    let tools = state.tools.clone();
+    cache.insert(run_id.to_string(), state);
+    tools
 }
 
 /// One-shot tool-call projection over an event log (no cache). Reconstructs
@@ -886,10 +895,17 @@ pub fn get_tool_call_input(
     run_id: &str,
     tool_call_id: &str,
 ) -> Result<Option<String>, crate::AppError> {
-    if let Ok(cache) = TOOL_PROJECTION_CACHE.lock() {
-        if let Some(state) = cache.get(run_id) {
-            if let Some(&idx) = state.index_by_id.get(tool_call_id) {
-                return Ok(state.tools[idx].input.clone());
+    if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
+        if let Some(state) = cache.remove(run_id) {
+            let input = state
+                .index_by_id
+                .get(tool_call_id)
+                .and_then(|&idx| state.tools[idx].input.clone());
+            // Re-insert last: the read counts as a use, so a run whose tools
+            // are still being persisted stays near the MRU end.
+            cache.insert(run_id.to_string(), state);
+            if input.is_some() {
+                return Ok(input);
             }
         }
     }
@@ -1118,6 +1134,76 @@ mod tests {
 
         if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
             cache.remove(&run_id);
+        }
+    }
+
+    #[test]
+    fn projection_lru_protects_a_live_run_from_capacity_eviction() {
+        // Regression: at capacity the cache used to `clear()` wholesale,
+        // dropping a live run's folded tool_start input right before its
+        // tool_end persisted — artifact path extraction then lost the
+        // structured input. LRU eviction must keep a continuously-fed run.
+        // (The global cache is shared across parallel tests, so this asserts
+        // invariants, not exact membership.)
+        let live = format!("test_lru_live_{}", std::process::id());
+        let mut others = Vec::new();
+        for i in 0..=TOOL_PROJECTION_CACHE_MAX {
+            // The live run streams tool events continuously — as the persist
+            // path feeds every tool event of an active run — keeping it at
+            // the MRU end so capacity evictions never pick it.
+            advance_tool_projection(
+                &live,
+                &[tool_event(
+                    &live,
+                    "tool_start",
+                    r#"{"tool_id":"t1","tool_name":"write","tool_args":"{\"path\":\"/a.ts\"}"}"#,
+                    i as i64,
+                )],
+            );
+            let other = format!("test_lru_other_{i}_{}", std::process::id());
+            others.push(other.clone());
+            advance_tool_projection(
+                &other,
+                &[tool_event(
+                    &other,
+                    "tool_start",
+                    r#"{"tool_id":"x","tool_name":"read"}"#,
+                    0,
+                )],
+            );
+        }
+
+        // The live run survived; its structured input is still readable for
+        // tool_end persistence.
+        assert_eq!(
+            get_tool_call_input(&live, "t1").expect("read live run input"),
+            Some(r#"{"path":"/a.ts"}"#.to_string())
+        );
+        assert_eq!(advance_tool_projection(&live, &[]).len(), 1);
+
+        // 66 distinct runs into 64 slots: at least one filler was evicted,
+        // and an evicted run rebuilds cleanly from its events (cursor reset
+        // to -1 makes the journal-tail poll refetch the full log).
+        let evicted = others
+            .iter()
+            .find(|id| tool_projection_cursor(id) == -1)
+            .expect("capacity eviction happened");
+        let rebuilt = advance_tool_projection(
+            evicted,
+            &[tool_event(
+                evicted,
+                "tool_start",
+                r#"{"tool_id":"x","tool_name":"read"}"#,
+                0,
+            )],
+        );
+        assert_eq!(rebuilt.len(), 1);
+
+        if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
+            cache.remove(&live);
+            for other in &others {
+                cache.remove(other);
+            }
         }
     }
 
