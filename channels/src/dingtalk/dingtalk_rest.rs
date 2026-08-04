@@ -4,6 +4,7 @@
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -11,7 +12,12 @@ pub struct DingtalkRestClient {
     domain: String,
     client_id: String,
     client_secret: String,
-    token: Arc<RwLock<Option<String>>>,
+    token: Arc<RwLock<CachedToken>>,
+}
+
+struct CachedToken {
+    value: String,
+    expires_at: Instant,
 }
 
 impl DingtalkRestClient {
@@ -20,13 +26,19 @@ impl DingtalkRestClient {
             domain: domain.to_string(),
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
-            token: Arc::new(RwLock::new(None)),
+            token: Arc::new(RwLock::new(CachedToken {
+                value: String::new(),
+                expires_at: Instant::now(),
+            })),
         }
     }
 
     async fn get_token(&self) -> Result<String> {
-        if let Some(ref t) = *self.token.read().await {
-            return Ok(t.clone());
+        {
+            let cached = self.token.read().await;
+            if cached.expires_at > Instant::now() + std::time::Duration::from_secs(60) {
+                return Ok(cached.value.clone());
+            }
         }
         let client = crate::tls::http_client();
         let url = format!("https://{}/v1.0/oauth2/accessToken", self.domain);
@@ -45,7 +57,17 @@ impl DingtalkRestClient {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Failed to get access token: {}", resp))?
             .to_string();
-        *self.token.write().await = Some(t.clone());
+        // Tokens live ~7200s server-side; retire the cache 60s early so an
+        // in-flight request never races the expiry (same rule as Feishu).
+        let expire_in = resp
+            .get("expireIn")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(7200);
+        *self.token.write().await = CachedToken {
+            value: t.clone(),
+            expires_at: Instant::now()
+                + std::time::Duration::from_secs((expire_in - 60).max(0) as u64),
+        };
         Ok(t)
     }
 
