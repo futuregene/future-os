@@ -69,6 +69,30 @@ mod tests {
     }
 
     #[test]
+    fn sync_of_tool_reference_is_a_noop_not_an_error() {
+        // The `tool_calls` table is gone (journal-era pipeline): syncing a
+        // message that links a tool must neither fail the message write nor
+        // create a reference target.
+        let conn = test_conn();
+        seed_workspace_artifact(&conn);
+
+        sync_message_markdown_references(
+            &conn,
+            "msg_tool",
+            "thread_test",
+            "[shell](futureos://tool/tool_123)",
+        )
+        .expect("sync must not fail on a tool reference");
+
+        let target_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reference_targets", [], |row| {
+                row.get(0)
+            })
+            .expect("count reference targets");
+        assert_eq!(target_count, 0);
+    }
+
+    #[test]
     fn resolves_references_with_workspace_scope_and_deleted_filter() {
         let conn = test_conn();
         seed_workspace_artifact(&conn);
