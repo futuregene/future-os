@@ -503,6 +503,10 @@ export function AppShell() {
                   )
                 : (
                     <AgentThread
+                      // One instance per conversation: switching threads
+                      // remounts, so a conversation's messages, listeners and
+                      // in-flight writes can never bleed into another.
+                      key={activeThread?.id ?? "__none"}
                       activeApproval={activeApproval}
                       agentConnection={agentConnection}
                       approvalTier={appSettings.approvalTier}

@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 /** Within this many px of the bottom, auto-follow streaming output. */
 const STICK_THRESHOLD_PX = 48;
@@ -8,8 +8,6 @@ const JUMP_BUTTON_THRESHOLD_PX = 240;
 
 interface UseStickyAutoScrollInput {
   scrollRef: RefObject<HTMLElement | null>;
-  /** Changing this (e.g. the active thread id) re-pins to the latest message. */
-  resetKey: unknown;
   /** Changing this (e.g. the message list) re-runs the follow effect. */
   contentKey: unknown;
   /** Extra work to run on every scroll event (e.g. floating-scrollbar visibility). */
@@ -26,7 +24,6 @@ interface UseStickyAutoScrollInput {
  */
 export function useStickyAutoScroll({
   scrollRef,
-  resetKey,
   contentKey,
   onScroll,
   onContentSettled,
@@ -65,12 +62,6 @@ export function useStickyAutoScroll({
     setShowJumpToLatest(false);
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
   }, [scrollRef]);
-
-  // Opening/switching a thread starts pinned to the latest message.
-  useEffect(() => {
-    stickToBottomRef.current = true;
-    setShowJumpToLatest(false);
-  }, [resetKey]);
 
   // useLayoutEffect so the scroll-to-bottom happens before the browser paints,
   // avoiding a visible "flash at top → jump to bottom" when switching threads.
