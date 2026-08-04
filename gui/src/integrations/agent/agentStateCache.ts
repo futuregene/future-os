@@ -285,9 +285,21 @@ function applySettingsEvent(
     });
   }
 
+  const revalidate: string[] = [];
   for (const [threadId, entry] of cache) {
     if (entry.state.sessionId !== sessionId)
       continue;
+
+    if (eventType === "config_reloaded") {
+      // The agent rebuilt this session's settings: drop the snapshot and
+      // revalidate it right away. Re-inserting the pre-reload state with a
+      // fresh fetchedAt here used to defeat the delete and keep a stale
+      // model/thinking level alive indefinitely.
+      versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
+      cache.delete(threadId);
+      revalidate.push(threadId);
+      continue;
+    }
 
     const next = { ...entry.state };
     let changed = false;
@@ -318,11 +330,6 @@ function applySettingsEvent(
           // reconcile_thread_workspace already called above
         }
         break;
-      case "config_reloaded":
-        versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
-        cache.delete(threadId);
-        changed = true;
-        break;
     }
 
     if (changed) {
@@ -331,6 +338,9 @@ function applySettingsEvent(
     // Don't break — multiple threads can share the same agent session.
   }
   notify();
+  for (const threadId of revalidate) {
+    void getAgentState(threadId).catch(() => {});
+  }
 }
 
 // ── Bulk streaming-status snapshot (no per-thread get_state fan-out) ────

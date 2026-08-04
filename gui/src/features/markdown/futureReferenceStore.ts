@@ -12,8 +12,9 @@ import { errorMessage } from "../../lib/errors";
 // needs to keep the cache warm; the only update path is a run reaching a
 // terminal status (the listener below re-resolves those records in place).
 // Non-resolved records (a missing object, or a transport failure) retry after
-// a backoff so a race (e.g. a run row not committed yet) heals without
-// re-firing IPC on every streaming delta.
+// a backoff: actively scheduled, so a record that missed a row not yet
+// committed (or a transient IPC error) heals even on a page that never
+// re-renders.
 
 interface ReferenceIdentity {
   targetId: string;
@@ -23,11 +24,15 @@ interface ReferenceIdentity {
 const records = new Map<string, ResolvedMarkdownReference>();
 const listeners = new Set<() => void>();
 const pendingLoads = new Map<string, Map<string, ReferenceIdentity>>();
-// Earliest retry time (ms) for non-resolved records.
+// Unresolved records waiting for a retry, with the workspace they resolve
+// against (the record key doesn't carry it parseably — file ids are paths).
+const pendingRetry = new Map<string, { workspaceId: string; identity: ReferenceIdentity }>();
+// Earliest retry time (ms) per record key.
 const retryAfter = new Map<string, number>();
 const RETRY_BACKOFF_MS = 30_000;
 const maxReferenceRecords = 1000;
 let pendingFlush: ReturnType<typeof setTimeout> | undefined;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 export function useFutureReferences(workspaceId: string | null | undefined, references: FutureReference[]) {
   useEffect(() => {
@@ -49,6 +54,21 @@ export function useFutureReference(
   );
 }
 
+/** Imperative counterpart of `useFutureReferences` (also used by tests). */
+export function queueFutureReferenceLoad(workspaceId: string, references: ReferenceIdentity[]) {
+  if (references.length === 0)
+    return;
+  loadFutureReferences(workspaceId, references);
+}
+
+/** Synchronous read of a cached record without subscribing. */
+export function peekFutureReference(
+  workspaceId: string | null | undefined,
+  reference: ReferenceIdentity,
+) {
+  return getFutureReferenceSnapshot(workspaceId, reference);
+}
+
 function loadFutureReferences(workspaceId: string, references: ReferenceIdentity[]) {
   installTerminalRunListener();
   const now = Date.now();
@@ -62,9 +82,8 @@ function loadFutureReferences(workspaceId: string, references: ReferenceIdentity
     // re-resolving hot records per keystroke would be wasted IPC.
     if (existing?.status === "resolved")
       continue;
-    // A missing object or a failed transport retries after the backoff, not on
-    // every render — but it DOES retry, so a record that missed a row not yet
-    // committed (or a transient IPC error) heals on its own.
+    // A missing object or a failed transport retries after the backoff (the
+    // sweep timer re-queues it actively), not on every render.
     if (existing && (retryAfter.get(key) ?? 0) > now)
       continue;
     workspaceLoads.set(referenceIdentityKey(reference), reference);
@@ -72,13 +91,7 @@ function loadFutureReferences(workspaceId: string, references: ReferenceIdentity
   if (workspaceLoads.size === 0)
     return;
   pendingLoads.set(workspaceId, workspaceLoads);
-
-  if (!pendingFlush) {
-    pendingFlush = setTimeout(() => {
-      pendingFlush = undefined;
-      void flushPendingReferenceLoads();
-    }, 0);
-  }
+  queueFlush();
 }
 
 function getFutureReferenceSnapshot(
@@ -95,6 +108,15 @@ function subscribeFutureReferences(listener: () => void) {
   return () => {
     listeners.delete(listener);
   };
+}
+
+function queueFlush() {
+  if (pendingFlush)
+    return;
+  pendingFlush = setTimeout(() => {
+    pendingFlush = undefined;
+    void flushPendingReferenceLoads();
+  }, 0);
 }
 
 async function flushPendingReferenceLoads() {
@@ -139,13 +161,70 @@ async function resolveAndStoreReferences(workspaceId: string, references: Refere
     // order, not overwrite order).
     records.delete(key);
     records.set(key, reference);
-    if (reference.status === "resolved")
+    if (reference.status === "resolved") {
       retryAfter.delete(key);
-    else
+      pendingRetry.delete(key);
+    }
+    else {
       retryAfter.set(key, retryAt);
+      pendingRetry.set(key, {
+        workspaceId,
+        identity: {
+          targetId: reference.targetId,
+          targetType: reference.targetType as ReferenceIdentity["targetType"],
+        },
+      });
+    }
   }
   pruneReferenceRecords();
   notifyFutureReferenceSubscribers();
+  scheduleRetrySweep();
+}
+
+// ── Retry sweep ───────────────────────────────────────────────────────────
+// Unresolved records re-queue themselves when their backoff elapses. The
+// timer targets the earliest deadline; nothing else polls the map, so a
+// static page still heals a record that first resolved missing (row not yet
+// committed) or failed (transient IPC error).
+
+function scheduleRetrySweep() {
+  let earliest = Number.POSITIVE_INFINITY;
+  for (const key of pendingRetry.keys()) {
+    const due = retryAfter.get(key);
+    if (due !== undefined && due < earliest)
+      earliest = due;
+  }
+  if (!Number.isFinite(earliest)) {
+    if (retryTimer !== undefined) {
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+    }
+    return;
+  }
+  // A new earlier deadline replaces a later scheduled sweep.
+  if (retryTimer !== undefined)
+    clearTimeout(retryTimer);
+  retryTimer = setTimeout(runRetrySweep, Math.max(0, earliest - Date.now()));
+}
+
+function runRetrySweep() {
+  retryTimer = undefined;
+  const now = Date.now();
+  let queued = false;
+  for (const [key, entry] of [...pendingRetry]) {
+    if ((retryAfter.get(key) ?? 0) > now)
+      continue;
+    pendingRetry.delete(key);
+    const workspaceLoads = pendingLoads.get(entry.workspaceId) ?? new Map<string, ReferenceIdentity>();
+    workspaceLoads.set(referenceIdentityKey(entry.identity), entry.identity);
+    pendingLoads.set(entry.workspaceId, workspaceLoads);
+    queued = true;
+  }
+  if (queued)
+    queueFlush();
+  // Re-arm for deadlines that aren't due yet.
+  if (pendingRetry.size > 0)
+    scheduleRetrySweep();
 }
 
 // ── Terminal-status refresh ───────────────────────────────────────────────
@@ -192,6 +271,7 @@ function pruneReferenceRecords() {
       return;
     records.delete(oldest);
     retryAfter.delete(oldest);
+    pendingRetry.delete(oldest);
   }
 }
 
