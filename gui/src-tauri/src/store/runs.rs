@@ -587,13 +587,11 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
 /// Drop a settled run's in-memory events (called on `agent_end`). The
 /// canonical Agent journal stays; this only bounds GUI-side memory. The tool
 /// projection cache survives (settled events are immutable, so later polls
-/// reuse it), but the tool-input index is no longer needed once the run's
-/// `tool_end` events have all been persisted.
-pub fn clear_run_event_buffer(run_id: &str) {
-    evict_tool_inputs(run_id);
+/// reuse it). The buffer itself is test-only; in production this is a no-op.
+pub fn clear_run_event_buffer(_run_id: &str) {
     #[cfg(test)]
     if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
-        buf.remove(run_id);
+        buf.remove(_run_id);
     }
 }
 
@@ -606,7 +604,6 @@ pub fn delete_run_events_file(run_id: &str) {
     if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
         cache.remove(run_id);
     }
-    evict_tool_inputs(run_id);
 }
 
 /// Remove the whole run-events directory (called by `clear_all_data`).
@@ -879,45 +876,21 @@ fn shell_command_from_input(input: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// In-memory tool-input index: `(run_id, tool_call_id)` → the `tool_args`
-/// from the call's `tool_start` event. Fed by `persist.rs` as live events are
-/// projected (and by fork/import synthesis), then read by
-/// [`get_tool_call_input`] when a `tool_end` is persisted — the structured
-/// input beats parsing the tool's output prose. Bounded; evicted per run when
-/// the run settles.
-static TOOL_INPUT_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<(String, String), String>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
-
-/// Bound the cache (entries are one tool call's args string each).
-const TOOL_INPUT_CACHE_MAX: usize = 1024;
-
-pub fn remember_tool_input(run_id: &str, tool_call_id: &str, args: &str) {
-    let Ok(mut cache) = TOOL_INPUT_CACHE.lock() else {
-        return;
-    };
-    if cache.len() >= TOOL_INPUT_CACHE_MAX {
-        cache.clear();
-    }
-    cache.insert(
-        (run_id.to_string(), tool_call_id.to_string()),
-        args.to_string(),
-    );
-}
-
-fn evict_tool_inputs(run_id: &str) {
-    if let Ok(mut cache) = TOOL_INPUT_CACHE.lock() {
-        cache.retain(|(cached_run_id, _), _| cached_run_id != run_id);
-    }
-}
-
+/// The structured `tool_args` recorded for a tool call, read from the run's
+/// tool projection (the persist path folds every live event into it as it
+/// lands, journal-tail polls and fork/import synthesis do the same). Falls
+/// back to the legacy GUI JSONL for pre-journal builds. This is what
+/// `tool_end` persistence uses for artifact path extraction — the structured
+/// input beats parsing the tool's output prose.
 pub fn get_tool_call_input(
     run_id: &str,
     tool_call_id: &str,
 ) -> Result<Option<String>, crate::AppError> {
-    // Live runs: the input cache populated as events were projected.
-    if let Ok(cache) = TOOL_INPUT_CACHE.lock() {
-        if let Some(args) = cache.get(&(run_id.to_string(), tool_call_id.to_string())) {
-            return Ok(Some(args.clone()));
+    if let Ok(cache) = TOOL_PROJECTION_CACHE.lock() {
+        if let Some(state) = cache.get(run_id) {
+            if let Some(&idx) = state.index_by_id.get(tool_call_id) {
+                return Ok(state.tools[idx].input.clone());
+            }
         }
     }
     // Compatibility fallback: pre-journal builds persisted raw events to the
@@ -1183,12 +1156,20 @@ mod tests {
     }
 
     #[test]
-    fn tool_input_cache_serves_get_tool_call_input_and_evicts_per_run() {
+    fn get_tool_call_input_reads_the_tool_projection() {
         let run_id = format!("test_tool_input_{}", std::process::id());
-        remember_tool_input(&run_id, "t1", r#"{"path":"/a.ts"}"#);
+        advance_tool_projection(
+            &run_id,
+            &[tool_event(
+                &run_id,
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"write","tool_args":"{\"path\":\"/a.ts\"}"}"#,
+                0,
+            )],
+        );
 
         assert_eq!(
-            get_tool_call_input(&run_id, "t1").expect("read cached input"),
+            get_tool_call_input(&run_id, "t1").expect("read projected input"),
             Some(r#"{"path":"/a.ts"}"#.to_string())
         );
         assert_eq!(
@@ -1196,11 +1177,17 @@ mod tests {
             None
         );
 
-        evict_tool_inputs(&run_id);
+        // Settling keeps the projection (settled events are immutable), so the
+        // input stays readable after the run's event buffer is dropped.
+        clear_run_event_buffer(&run_id);
         assert_eq!(
-            get_tool_call_input(&run_id, "t1").expect("read after eviction"),
-            None
+            get_tool_call_input(&run_id, "t1").expect("read after settle"),
+            Some(r#"{"path":"/a.ts"}"#.to_string())
         );
+
+        if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
+            cache.remove(&run_id);
+        }
     }
 
     fn insert_thread(conn: &Connection, id: &str, agent_session_id: Option<&str>) {
