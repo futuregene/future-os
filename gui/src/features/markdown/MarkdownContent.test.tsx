@@ -1,6 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { upsertFutureReferenceData } from "./futureReferenceStore";
 import { MarkdownContent } from "./MarkdownContent";
 
 describe("markdown content", () => {
@@ -41,16 +40,8 @@ describe("markdown content", () => {
   });
 
   it("renders a disabled app-object embed as a plain code block (minimal link mode)", () => {
-    // Even with resolvable run data in the store, app-object embeds are disabled:
-    // the fence is shown verbatim as code, never resolved into a run card.
-    upsertFutureReferenceData("workspace_test", "run", "run_store", {
-      createdAt: 1,
-      id: "run_store",
-      status: "running",
-      threadId: "thread_1",
-      updatedAt: 1,
-    });
-
+    // App-object embeds are disabled at parse level: the fence is shown
+    // verbatim as code, never resolved into a run card.
     const html = renderToStaticMarkup(
       <MarkdownContent
         content={[

@@ -6,7 +6,6 @@ import { getLatestRun, getRun, getSessionEntries, listRuns } from "../../integra
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun } from "./agentMessageFormatters";
 import { entriesToMessages } from "./entryProjection";
 import { applyRunMetadata, buildStreamingPreview, mergeStreamingPreview, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
@@ -217,7 +216,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   // slow response lands after a newer one and writes stale run state — e.g. a
   // previous thread's run after switching. Newest call wins.
   const recentRunGenRef = useRef(0);
-  const refreshRecentRun = useCallback(async (targetThreadId: string, targetWorkspaceId?: string | null) => {
+  const refreshRecentRun = useCallback(async (targetThreadId: string, _targetWorkspaceId?: string | null) => {
     const generation = ++recentRunGenRef.current;
     try {
       // One row, not the thread's whole run history. Invoked on push events
@@ -236,9 +235,6 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       }
       if (targetThreadId === activeThreadIdRef.current) {
         setRecentRun(latestRun);
-      }
-      if (latestRun) {
-        upsertFutureReferenceData(targetWorkspaceId, "run", latestRun.id, latestRun);
       }
     }
     catch {

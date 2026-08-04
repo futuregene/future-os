@@ -8,7 +8,6 @@ import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import { createRun, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import {
   buildAgentFailureContent,
   matchesSettledRun,
@@ -117,7 +116,6 @@ export async function runSendPipeline(
 
     if (isCurrentSend()) {
       setRecentRun(run);
-      upsertFutureReferenceData(thread.workspaceId, "run", run.id, run);
       patchMessage(setMessages, pendingId, { runId: run?.id ?? null });
     }
 
