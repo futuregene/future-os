@@ -10,7 +10,7 @@ import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
 import { modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
-import { installAgentEventListener, prefetchAgentState } from "../../integrations/agent/agentStateCache";
+import { installAgentEventListener, revalidateAgentState } from "../../integrations/agent/agentStateCache";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
 import { openExternalUrl } from "../../integrations/storage/files";
@@ -191,10 +191,11 @@ export function AppShell() {
   useEffect(() => {
     if (agentConnection.status === "connected") {
       void refreshSkills();
-      // Cached per-thread agent state may predate the restart/reconnect; the
-      // activation prefetch only runs on thread switches, so revalidate the
-      // viewed thread here too (deduped by the in-flight map + TTL gate).
-      prefetchAgentState(activeThreadId);
+      // Cached per-thread agent state may predate the restart/reconnect —
+      // possibly by less than the TTL, which would short-circuit a plain
+      // prefetch — so force-revalidate the viewed thread. Other threads
+      // revalidate on their next activation.
+      revalidateAgentState(activeThreadId);
     }
   }, [activeThreadId, agentConnection.status]);
 
