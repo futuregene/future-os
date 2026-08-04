@@ -19,11 +19,9 @@ interface UseAgentThreadStateInput {
   onThreadActivity: () => void;
 }
 
-// The run this thread is actively executing, or null. Guards on `threadId`
-// because `recentRun` lags a thread switch by one poll — a stale run from the
-// previous thread must not read as active here.
-function activeRunIdOf(recentRun: StoredRun | null, threadId: string | null): string | null {
-  return recentRun && recentRun.threadId === threadId && !matchesSettledRun(recentRun.status)
+// The run this thread is actively executing, or null.
+function activeRunIdOf(recentRun: StoredRun | null): string | null {
+  return recentRun && !matchesSettledRun(recentRun.status)
     ? recentRun.id
     : null;
 }
@@ -52,7 +50,6 @@ export function useAgentThreadState({
     messages,
     recentRun,
     renderWorkspace,
-    baseThreadId,
     reloadMessagesQuiet,
     refreshRecentRun,
     setMessages,
@@ -65,10 +62,8 @@ export function useAgentThreadState({
   // this is the anchor for re-attaching a live preview to a conversation that was
   // started, backgrounded, and returned to (or picked up after an app reload) —
   // the in-flight send only drives the view while its own thread stays
-  // foreground. Guarded on `threadId` because `recentRun` lags a thread switch by
-  // one poll, and a stale run from the previous thread must not leak into this
-  // one. Null once the run settles.
-  const activeRunId = activeRunIdOf(recentRun, threadId);
+  // foreground. Null once the run settles.
+  const activeRunId = activeRunIdOf(recentRun);
   // Epoch-ms anchor for the live elapsed timer of a re-attached run. Stable while
   // the run stays active (derived from persisted run times), so it doesn't churn
   // the resume effect the way the `recentRun` object identity would.
@@ -76,7 +71,6 @@ export function useAgentThreadState({
 
   const { handleSend, abandonSend } = useSendMessage({
     thread,
-    threadId,
     modelId,
     thinkingLevel,
     activeRunId,
@@ -92,7 +86,7 @@ export function useAgentThreadState({
     workspaceId,
     activeRunId,
     activeRunStartedAt,
-    baseThreadId,
+    loadingThread,
     sendingRef,
     setMessages,
     refreshRecentRun,
@@ -111,19 +105,15 @@ export function useAgentThreadState({
   // from this view) and force-reload the persisted reply. Runs periodically
   // and immediately when the window becomes visible/focused again, so a run
   // that finished while hidden unsticks the moment the user returns.
-  const threadIdRef = useRef(threadId);
-  threadIdRef.current = threadId;
   const reconcileHungSend = useCallback(async () => {
-    const targetThreadId = threadIdRef.current;
-    if (!targetThreadId || !sendingRef.current)
+    if (!threadId || !sendingRef.current)
       return;
-    const latest = await getLatestRun(targetThreadId).catch(() => null);
-    // Re-check ownership after the await: a thread switch may have handed
-    // `sendingRef` to a new send, which a stale result must not abandon.
+    const latest = await getLatestRun(threadId).catch(() => null);
+    // Re-check after the await: the send may have settled or been abandoned
+    // while the read was in flight.
     if (
       !latest
-      || latest.threadId !== targetThreadId
-      || threadIdRef.current !== targetThreadId
+      || latest.threadId !== threadId
       || !sendingRef.current
       || !matchesSettledRun(latest.status)
     ) {
@@ -131,8 +121,8 @@ export function useAgentThreadState({
     }
     abandonSend();
     setRecentRun(latest);
-    void reloadMessagesQuiet(targetThreadId, true);
-  }, [abandonSend, reloadMessagesQuiet, sendingRef, setRecentRun]);
+    void reloadMessagesQuiet(threadId, true);
+  }, [abandonSend, reloadMessagesQuiet, sendingRef, setRecentRun, threadId]);
 
   usePolling(() => {
     void reconcileHungSend();
@@ -163,7 +153,7 @@ export function useAgentThreadState({
     if (!threadId)
       return;
     const runId
-      = activeRunIdOf(recentRun, threadId)
+      = activeRunIdOf(recentRun)
         ?? messages.find(message => message.role === "assistant" && message.status === "streaming")?.runId ?? null;
     if (!runId)
       return;

@@ -105,10 +105,11 @@ export function AgentThread({
   } = useFloatingScrollbar();
 
   // Sticky auto-scroll: follow streaming output only while pinned near the
-  // bottom; re-pins on thread switch and follows the growing message list.
+  // bottom; follows the growing message list while pinned. The view is keyed
+  // by thread id, so each conversation starts on a fresh instance pinned to
+  // the latest message.
   const { handleScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
     scrollRef,
-    resetKey: thread?.id ?? null,
     contentKey: messages,
     onScroll: handleScrollbarVisibility,
     onContentSettled: () => updateFloatingScrollbar(false),
@@ -128,7 +129,6 @@ export function AgentThread({
     messages,
     scrollRef,
     userExchangeCount: PAGE_USER_EXCHANGES,
-    resetKey: thread?.id ?? null,
     onScroll: handleScroll,
   });
 

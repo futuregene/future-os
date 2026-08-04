@@ -37,8 +37,6 @@ interface UseMessagePagingInput {
   scrollRef: RefObject<HTMLElement | null>;
   /** How many user exchanges each page renders. The first page shows the last N. */
   userExchangeCount: number;
-  /** Changing this (the active thread id) resets the window to the latest page. */
-  resetKey: unknown;
   /** Caller's scroll handler — composed in front of the paging handler. */
   onScroll?: () => void;
 }
@@ -79,7 +77,6 @@ export function useMessagePaging({
   messages,
   scrollRef,
   userExchangeCount,
-  resetKey,
   onScroll,
 }: UseMessagePagingInput): UseMessagePagingResult {
   const [loadedPages, setLoadedPages] = useState(1);
@@ -126,23 +123,6 @@ export function useMessagePaging({
     };
     setLoadedPages(pages => pages + 1);
   }, [effectivePageStart, scrollRef]);
-
-  // Reset on thread switch: newest page, top hint hidden. A layout effect
-  // declared before the restore effect below, so on a reset that races an
-  // in-flight page load the reset's clear runs first and the restore can't
-  // read a pending anchor captured for the previous thread.
-  useLayoutEffect(() => {
-    setLoadedPages(1);
-    setAtTop(false);
-    setTopSettled(false);
-    if (topSettleTimerRef.current !== null) {
-      window.clearTimeout(topSettleTimerRef.current);
-      topSettleTimerRef.current = null;
-    }
-    loadingOlderRef.current = false;
-    restoreRef.current = null;
-    // `messages` isn't a dependency: the reset targets the thread change only.
-  }, [resetKey]);
 
   // Restore the viewport after the new page renders, before paint. The anchor
   // was captured relative to the container's viewport top; move the scroll

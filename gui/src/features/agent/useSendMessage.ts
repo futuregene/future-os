@@ -10,7 +10,6 @@ import { runSendPipeline } from "./sendPipeline";
 
 interface UseSendMessageInput {
   thread: StoredThread | null;
-  threadId: string | null;
   modelId: string;
   thinkingLevel: string;
   // A run already in flight this view is only re-attached to (backgrounded,
@@ -33,7 +32,6 @@ interface UseSendMessageInput {
  */
 export function useSendMessage({
   thread,
-  threadId,
   modelId,
   thinkingLevel,
   activeRunId,
@@ -89,16 +87,18 @@ export function useSendMessage({
   }, [activeRunId, modelId, onThreadActivity, refreshRecentRun, sendingRef, setMessages, setRecentRun, thinkingLevel, thread]);
 
   useEffect(() => {
+    // Unmount (the user switched conversations — AgentThread is keyed by
+    // thread id) abandons any in-flight send for this thread; let the new
+    // thread's instance send freely (its run is a different session). The
+    // abandoned send's stream timer is a closure-local handle now, and its
+    // interval callback no-ops once `isCurrentSend()` turns false, so there's
+    // nothing to clear here — it stops on its own when that send's await
+    // returns.
     return () => {
       sendGenerationRef.current += 1;
-      // A switch away abandons any in-flight send for this thread; let the new
-      // thread send freely (its run is a different session). The abandoned send's
-      // stream timer is a closure-local handle now, and its interval callback
-      // no-ops once `isCurrentSend()` turns false, so there's nothing to clear
-      // here — it stops on its own when that send's await returns.
       sendingRef.current = false;
     };
-  }, [sendingRef, threadId]);
+  }, [sendingRef]);
 
   // Invalidate any in-flight send this view started and release the lock.
   // Invoked by the settle watchdog once the persisted run row shows the send's

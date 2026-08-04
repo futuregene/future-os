@@ -413,10 +413,9 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
       // The agent's save_callback stamps run_id on EVERY persisted assistant
       // message, including the partial snapshots it saves mid-run. Binding one
       // of those — or even leaving the stamp in place — makes the live-bubble
-      // guards (streamingBubbleBase's runId check, the cache merge's
-      // settledRunIds, dropInFlightSnapshot's !runId filter) treat the run as
-      // settled, so after ANY mid-run reload (thread switch, reattach, remote
-      // activity) the streaming bubble is suppressed and the user sees a frozen
+      // guards (streamingBubbleBase's runId check) treat the run as settled,
+      // so after ANY mid-run reload (thread switch, reattach, remote activity)
+      // the streaming bubble is suppressed and the user sees a frozen
       // "complete" partial with no stop button. Strip the stamp so the entry
       // re-enters the legacy in-flight handling below (dropped when a bubble is
       // alive, rendered plainly otherwise). Self-heals on settle: the on-disk
