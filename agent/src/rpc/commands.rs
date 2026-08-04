@@ -130,7 +130,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         // install/uninstall without a session_id, and a "session not found"
         // here silently left the cache stale (the installed list never
         // refreshed until restart / TTL expiry).
-        "refresh_skills" => return cmd_refresh_skills(id),
+        "refresh_skills" => return cmd_refresh_skills(state, id),
         "set_enabled_models" => {
             // Scoped models are managed entirely by the TUI/client; the agent
             // returns all available models. Kept as a no-op for compatibility.
@@ -1733,7 +1733,7 @@ fn cmd_clone(
     RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
 }
 
-fn cmd_refresh_skills(id: &str) -> String {
+fn cmd_refresh_skills(state: &AppState, id: &str) -> String {
     // Always invalidate the cache. install/uninstall write to disk *after* the
     // previous scan, so the cache is stale for them no matter how recently it
     // was refreshed; invalidation is O(1) and the rescan below repopulates it
@@ -1752,6 +1752,11 @@ fn cmd_refresh_skills(id: &str) -> String {
     crate::skills::invalidate_skills_cache();
     let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+    // Keep the get_state snapshot in step with the discovery cache — reload_config
+    // updates it too, but that path needs a session, and refresh_skills is the
+    // sessionless post-install/uninstall entry point. Without this, get_state
+    // kept reporting the pre-install skill list until the next reload_config.
+    *state.welcome_skills.write() = skill_names.clone();
     RpcResponse::ok(
         id,
         "refresh_skills",
@@ -2366,6 +2371,18 @@ mod tests {
             resp["data"]["skills"].as_array().unwrap().len() as u64
         );
         assert!(resp["data"]["refreshed"].is_boolean());
+        // The get_state snapshot must follow the discovery cache: reload_config
+        // needs a session, so refresh_skills is the only post-install path that
+        // can update it. A stale welcome_skills made get_state keep reporting
+        // the pre-install skill list.
+        let welcomed = state.welcome_skills.read().clone();
+        let returned: Vec<String> = resp["data"]["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(welcomed, returned);
     }
 
     #[test]

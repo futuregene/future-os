@@ -9,8 +9,7 @@ use crate::store::util::{create_id, now_millis};
 
 use super::extract::{extract_markdown_references, MarkdownObjectReference};
 use super::metadata::{
-    approval_metadata, artifact_metadata, review_metadata, run_metadata, tool_metadata,
-    ReferenceMetadata,
+    approval_metadata, artifact_metadata, review_metadata, run_metadata, ReferenceMetadata,
 };
 
 pub fn sync_message_markdown_references(
@@ -118,25 +117,13 @@ fn resolve_reference_target_metadata(
             )
             .optional()
             .map_err(crate::AppError::from),
-        "tool" => conn
-            .query_row(
-                "SELECT tc.name, tc.kind, tc.status, tc.input
-                 FROM tool_calls tc
-                 JOIN runs r ON r.id = tc.run_id
-                 JOIN threads t ON t.id = r.thread_id
-                 WHERE tc.id = ?1 AND t.workspace_id = ?2",
-                params![reference.target_id, workspace_id],
-                |row| {
-                    Ok(tool_metadata(
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(crate::AppError::from),
+        // Tool calls no longer live in a GUI table (the `tool_calls` table was
+        // dropped with the journal-era pipeline; the Agent run-events journal
+        // is their source of truth), so there is nothing to denormalize from.
+        // Skip the target row — consistent with the resolve path, which treats
+        // tool references as unsupported. The message write itself must not
+        // fail because a link names a tool.
+        "tool" => Ok(None),
         "approval" => conn
             .query_row(
                 "SELECT title, kind, status, summary, requested_action
