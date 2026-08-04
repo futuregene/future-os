@@ -95,6 +95,34 @@ describe("futureReferenceStore", () => {
     });
   });
 
+  it("parks a permanently missing reference instead of retrying forever", async () => {
+    invokeCommand.mockResolvedValue([
+      { targetType: "run", targetId: "run_gone", status: "missing", error: "run was not found" },
+    ]);
+    const { queueFutureReferenceLoad, peekFutureReference } = await import("./futureReferenceStore");
+    const identity = { targetId: "run_gone", targetType: "run" as const };
+
+    queueFutureReferenceLoad("ws_gone", [identity]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(invokeCommand).toHaveBeenCalledTimes(1);
+
+    // Attempt 2 after the first backoff (30s)...
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(invokeCommand).toHaveBeenCalledTimes(2);
+    // ...attempt 3 after the escalated one (60s)...
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(invokeCommand).toHaveBeenCalledTimes(3);
+
+    // ...then it parks: no further IPC no matter how long the page sits,
+    // and the record keeps its terminal missing status for the chip.
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(invokeCommand).toHaveBeenCalledTimes(3);
+    expect(peekFutureReference("ws_gone", identity)).toMatchObject({
+      status: "missing",
+      targetId: "run_gone",
+    });
+  });
+
   it("keeps resolved records final across streaming-delta re-queues", async () => {
     invokeCommand.mockResolvedValue([
       { targetType: "run", targetId: "run_final", status: "resolved", data: { id: "run_final" } },

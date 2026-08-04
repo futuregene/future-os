@@ -11,10 +11,10 @@ import { errorMessage } from "../../lib/errors";
 // a settled run or an artifact is an immutable reference — so no producer
 // needs to keep the cache warm; the only update path is a run reaching a
 // terminal status (the listener below re-resolves those records in place).
-// Non-resolved records (a missing object, or a transport failure) retry after
-// a backoff: actively scheduled, so a record that missed a row not yet
-// committed (or a transient IPC error) heals even on a page that never
-// re-renders.
+// Non-resolved records (a missing object, or a transport failure) retry on an
+// escalating backoff, actively scheduled so a static page still heals — but
+// only a bounded number of times: a genuinely missing/deleted/unsupported
+// target parks instead of IPCing forever.
 
 interface ReferenceIdentity {
   targetId: string;
@@ -27,9 +27,17 @@ const pendingLoads = new Map<string, Map<string, ReferenceIdentity>>();
 // Unresolved records waiting for a retry, with the workspace they resolve
 // against (the record key doesn't carry it parseably — file ids are paths).
 const pendingRetry = new Map<string, { workspaceId: string; identity: ReferenceIdentity }>();
-// Earliest retry time (ms) per record key.
+// Earliest retry time (ms) per record key; absent once a record resolves or
+// its attempts are exhausted (parked).
 const retryAfter = new Map<string, number>();
+// Resolve attempts in the current unresolved streak (cleared on success).
+const retryAttempts = new Map<string, number>();
 const RETRY_BACKOFF_MS = 30_000;
+// Give up after this many attempts: a genuinely missing, deleted, or
+// unsupported target must not IPC forever. The races this mechanism exists
+// for (a row not yet committed, a transient transport error) resolve within
+// the first backoffs; later than that, the record's status is the truth.
+const MAX_RETRY_ATTEMPTS = 3;
 const maxReferenceRecords = 1000;
 let pendingFlush: ReturnType<typeof setTimeout> | undefined;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -82,10 +90,14 @@ function loadFutureReferences(workspaceId: string, references: ReferenceIdentity
     // re-resolving hot records per keystroke would be wasted IPC.
     if (existing?.status === "resolved")
       continue;
-    // A missing object or a failed transport retries after the backoff (the
-    // sweep timer re-queues it actively), not on every render.
-    if (existing && (retryAfter.get(key) ?? 0) > now)
-      continue;
+    if (existing) {
+      // Unresolved records retry on their own schedule. One that isn't due
+      // yet — or is parked after exhausting its attempts (no deadline left) —
+      // must not re-queue on every render.
+      const due = retryAfter.get(key);
+      if (due === undefined || due > now)
+        continue;
+    }
     workspaceLoads.set(referenceIdentityKey(reference), reference);
   }
   if (workspaceLoads.size === 0)
@@ -154,7 +166,6 @@ async function resolveAndStoreReferences(workspaceId: string, references: Refere
     }));
   }
 
-  const retryAt = Date.now() + RETRY_BACKOFF_MS;
   for (const reference of resolved) {
     const key = storeKey(workspaceId, reference.targetType, reference.targetId);
     // Delete-then-set so overwrites refresh LRU order (Map preserves insertion
@@ -164,17 +175,27 @@ async function resolveAndStoreReferences(workspaceId: string, references: Refere
     if (reference.status === "resolved") {
       retryAfter.delete(key);
       pendingRetry.delete(key);
+      retryAttempts.delete(key);
+      continue;
     }
-    else {
-      retryAfter.set(key, retryAt);
-      pendingRetry.set(key, {
-        workspaceId,
-        identity: {
-          targetId: reference.targetId,
-          targetType: reference.targetType as ReferenceIdentity["targetType"],
-        },
-      });
+    const attempts = (retryAttempts.get(key) ?? 0) + 1;
+    retryAttempts.set(key, attempts);
+    if (attempts >= MAX_RETRY_ATTEMPTS) {
+      // Parked: the record keeps its missing/failed status and the chip
+      // renders it as such; no further IPC.
+      retryAfter.delete(key);
+      pendingRetry.delete(key);
+      continue;
     }
+    // Escalating backoff: 30s, then 60s.
+    retryAfter.set(key, Date.now() + RETRY_BACKOFF_MS * 2 ** (attempts - 1));
+    pendingRetry.set(key, {
+      workspaceId,
+      identity: {
+        targetId: reference.targetId,
+        targetType: reference.targetType as ReferenceIdentity["targetType"],
+      },
+    });
   }
   pruneReferenceRecords();
   notifyFutureReferenceSubscribers();
@@ -272,6 +293,7 @@ function pruneReferenceRecords() {
     records.delete(oldest);
     retryAfter.delete(oldest);
     pendingRetry.delete(oldest);
+    retryAttempts.delete(oldest);
   }
 }
 
