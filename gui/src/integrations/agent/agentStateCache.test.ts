@@ -1,9 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeCommand = vi.fn();
+const { agentEventHandlers } = vi.hoisted(() => ({
+  agentEventHandlers: [] as Array<(event: { payload: Record<string, unknown> }) => void>,
+}));
 
 vi.mock("../tauri/invoke", () => ({
   invokeCommand: (...args: unknown[]) => invokeCommand(...args),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (_name: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+    agentEventHandlers.push(handler);
+    return () => {};
+  }),
 }));
 
 describe("agentStateCache", () => {
@@ -66,5 +76,29 @@ describe("agentStateCache", () => {
 
     await expect(pending).resolves.toMatchObject({ model: "future/new" });
     expect(getCachedAgentState("thread-race")).toMatchObject({ model: "future/new" });
+  });
+
+  it("config_reloaded drops the stale entry and revalidates instead of re-inserting it", async () => {
+    invokeCommand.mockResolvedValue({ model: "future/m1", thinkingLevel: "low", sessionId: "sess_1" });
+    const { getAgentState, getCachedAgentState, installAgentEventListener } = await import("./agentStateCache");
+
+    await getAgentState("thread-cfg");
+    expect(getCachedAgentState("thread-cfg")).toMatchObject({ model: "future/m1" });
+
+    installAgentEventListener();
+    const handler = agentEventHandlers[agentEventHandlers.length - 1];
+    expect(handler).toBeDefined();
+
+    invokeCommand.mockResolvedValue({ model: "future/m2", thinkingLevel: "high", sessionId: "sess_1" });
+    handler?.({ payload: { _eventType: "config_reloaded", sessionId: "sess_1" } });
+
+    // The pre-reload snapshot must be gone immediately — it used to be
+    // re-inserted with a fresh fetchedAt and linger indefinitely.
+    expect(getCachedAgentState("thread-cfg")).toBeUndefined();
+
+    // ...and the cache revalidates against the agent right away.
+    await vi.waitFor(() => {
+      expect(getCachedAgentState("thread-cfg")).toMatchObject({ model: "future/m2" });
+    });
   });
 });
