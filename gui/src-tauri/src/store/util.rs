@@ -65,7 +65,7 @@ pub fn create_id(prefix: &str) -> String {
     format!("{prefix}-{ts}-{hex}")
 }
 
-pub(super) fn now_millis() -> i64 {
+pub fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)

@@ -587,13 +587,11 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
 /// Drop a settled run's in-memory events (called on `agent_end`). The
 /// canonical Agent journal stays; this only bounds GUI-side memory. The tool
 /// projection cache survives (settled events are immutable, so later polls
-/// reuse it), but the tool-input index is no longer needed once the run's
-/// `tool_end` events have all been persisted.
-pub fn clear_run_event_buffer(run_id: &str) {
-    evict_tool_inputs(run_id);
+/// reuse it). The buffer itself is test-only; in production this is a no-op.
+pub fn clear_run_event_buffer(_run_id: &str) {
     #[cfg(test)]
     if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
-        buf.remove(run_id);
+        buf.remove(_run_id);
     }
 }
 
@@ -606,7 +604,6 @@ pub fn delete_run_events_file(run_id: &str) {
     if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
         cache.remove(run_id);
     }
-    evict_tool_inputs(run_id);
 }
 
 /// Remove the whole run-events directory (called by `clear_all_data`).
@@ -632,11 +629,21 @@ struct ToolProjectionState {
     index_by_id: HashMap<String, usize>,
     /// Highest event sequence folded into `tools` so far.
     last_sequence: i64,
+    /// Recency stamp for LRU eviction (see `PROJECTION_CLOCK`).
+    last_used: u64,
 }
 
 static TOOL_PROJECTION_CACHE: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, ToolProjectionState>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Monotonic recency clock: every cache touch takes the next stamp. HashMap
+/// iteration order is arbitrary, so LRU needs an explicit stamp.
+static PROJECTION_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_projection_stamp() -> u64 {
+    PROJECTION_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
 
 /// Bound the cache (entries are small: one record per tool call).
 const TOOL_PROJECTION_CACHE_MAX: usize = 64;
@@ -652,35 +659,69 @@ pub fn tool_projection_cursor(run_id: &str) -> i64 {
         .unwrap_or(-1)
 }
 
+/// True when the projection holds a tool call that started but never ended.
+/// Such an entry carries the only in-memory copy of that call's tool_start
+/// input, which tool_end persistence still needs (artifact path extraction),
+/// so eviction prefers entries without one.
+fn has_open_tool_call(state: &ToolProjectionState) -> bool {
+    state.tools.iter().any(|tool| tool.status == "running")
+}
+
 /// Fold `events` into the run's cached tool projection and return the full
-/// list. Empty `events` just returns the cached state. Holding the cache mutex
-/// across the fold prevents two concurrent pollers from double-applying the
-/// same tail.
+/// list. Empty `events` just returns the cached state — and creates NO entry
+/// for a run with no cached state, so a bulk sweep over history runs without
+/// tool activity doesn't churn the cache. Holding the cache mutex across the
+/// fold prevents two concurrent pollers from double-applying the same tail.
 pub fn advance_tool_projection(run_id: &str, events: &[RunEventRecord]) -> Vec<ToolCallRecord> {
     let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() else {
         // Poisoned lock: fall back to a one-shot full rebuild.
         return project_tool_calls(events);
     };
-    if cache.len() >= TOOL_PROJECTION_CACHE_MAX && !cache.contains_key(run_id) {
-        cache.clear();
+    if events.is_empty() {
+        // Read-only advance: refresh recency and return what's folded.
+        if let Some(state) = cache.get_mut(run_id) {
+            state.last_used = next_projection_stamp();
+            return state.tools.clone();
+        }
+        return Vec::new();
     }
-    let state = cache
-        .entry(run_id.to_string())
-        .or_insert_with(|| ToolProjectionState {
-            tools: Vec::new(),
-            index_by_id: HashMap::new(),
-            last_sequence: -1,
-        });
+    // Make room one entry at a time. The victim is the least recently used
+    // entry WITHOUT an open tool call: bulk polls advance the newest (active)
+    // run first and then 64+ history runs (list_runs is created_at DESC), so
+    // plain recency would leave the active run as the OLDEST entry mid-sweep
+    // and evict it — dropping the tool_start input its tool_end persistence
+    // still needs. A bulk `clear()` (the historical behavior) was worse.
+    while cache.len() >= TOOL_PROJECTION_CACHE_MAX && !cache.contains_key(run_id) {
+        let victim = cache
+            .iter()
+            .filter(|(_, state)| !has_open_tool_call(state))
+            .min_by_key(|(_, state)| state.last_used)
+            .or_else(|| cache.iter().min_by_key(|(_, state)| state.last_used))
+            .map(|(id, _)| id.clone());
+        let Some(victim) = victim else {
+            break;
+        };
+        cache.remove(&victim);
+    }
+    let mut state = cache.remove(run_id).unwrap_or_else(|| ToolProjectionState {
+        tools: Vec::new(),
+        index_by_id: HashMap::new(),
+        last_sequence: -1,
+        last_used: 0,
+    });
     for event in events {
         if event.sequence <= state.last_sequence {
             continue; // replay overlap — already folded
         }
-        apply_tool_event(state, event);
+        apply_tool_event(&mut state, event);
         if event.sequence > state.last_sequence {
             state.last_sequence = event.sequence;
         }
     }
-    state.tools.clone()
+    state.last_used = next_projection_stamp();
+    let tools = state.tools.clone();
+    cache.insert(run_id.to_string(), state);
+    tools
 }
 
 /// One-shot tool-call projection over an event log (no cache). Reconstructs
@@ -692,6 +733,7 @@ pub fn project_tool_calls(events: &[RunEventRecord]) -> Vec<ToolCallRecord> {
         tools: Vec::new(),
         index_by_id: HashMap::new(),
         last_sequence: -1,
+        last_used: 0,
     };
     for event in events {
         apply_tool_event(&mut state, event);
@@ -879,45 +921,29 @@ fn shell_command_from_input(input: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// In-memory tool-input index: `(run_id, tool_call_id)` → the `tool_args`
-/// from the call's `tool_start` event. Fed by `persist.rs` as live events are
-/// projected (and by fork/import synthesis), then read by
-/// [`get_tool_call_input`] when a `tool_end` is persisted — the structured
-/// input beats parsing the tool's output prose. Bounded; evicted per run when
-/// the run settles.
-static TOOL_INPUT_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<(String, String), String>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
-
-/// Bound the cache (entries are one tool call's args string each).
-const TOOL_INPUT_CACHE_MAX: usize = 1024;
-
-pub fn remember_tool_input(run_id: &str, tool_call_id: &str, args: &str) {
-    let Ok(mut cache) = TOOL_INPUT_CACHE.lock() else {
-        return;
-    };
-    if cache.len() >= TOOL_INPUT_CACHE_MAX {
-        cache.clear();
-    }
-    cache.insert(
-        (run_id.to_string(), tool_call_id.to_string()),
-        args.to_string(),
-    );
-}
-
-fn evict_tool_inputs(run_id: &str) {
-    if let Ok(mut cache) = TOOL_INPUT_CACHE.lock() {
-        cache.retain(|(cached_run_id, _), _| cached_run_id != run_id);
-    }
-}
-
+/// The structured `tool_args` recorded for a tool call, read from the run's
+/// tool projection (the persist path folds every live event into it as it
+/// lands, journal-tail polls and fork/import synthesis do the same). Falls
+/// back to the legacy GUI JSONL for pre-journal builds. This is what
+/// `tool_end` persistence uses for artifact path extraction — the structured
+/// input beats parsing the tool's output prose.
 pub fn get_tool_call_input(
     run_id: &str,
     tool_call_id: &str,
 ) -> Result<Option<String>, crate::AppError> {
-    // Live runs: the input cache populated as events were projected.
-    if let Ok(cache) = TOOL_INPUT_CACHE.lock() {
-        if let Some(args) = cache.get(&(run_id.to_string(), tool_call_id.to_string())) {
-            return Ok(Some(args.clone()));
+    if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
+        if let Some(mut state) = cache.remove(run_id) {
+            let input = state
+                .index_by_id
+                .get(tool_call_id)
+                .and_then(|&idx| state.tools[idx].input.clone());
+            // The read counts as a use — refresh recency so a run whose tools
+            // are still being persisted isn't evicted mid-flight.
+            state.last_used = next_projection_stamp();
+            cache.insert(run_id.to_string(), state);
+            if input.is_some() {
+                return Ok(input);
+            }
         }
     }
     // Compatibility fallback: pre-journal builds persisted raw events to the
@@ -1149,6 +1175,83 @@ mod tests {
     }
 
     #[test]
+    fn bulk_sweep_cannot_evict_a_run_with_an_open_tool_call() {
+        // Regression (review round 2): list_runs is created_at DESC, so the
+        // context panel's bulk poll advances the NEWEST (active) run first
+        // and then 64+ history runs. Plain recency then leaves the active run
+        // as the OLDEST entry mid-sweep and evicts it — and for a long tool
+        // call (minutes between tool_start and tool_end, no projection events
+        // in between) the tool_end persistence loses the tool_start input,
+        // degrading artifact path extraction. Eviction must skip projections
+        // that still hold an open tool call.
+        let live = format!("test_open_live_{}", std::process::id());
+        // The live run starts a long tool call.
+        advance_tool_projection(
+            &live,
+            &[tool_event(
+                &live,
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"write","tool_args":"{\"path\":\"/a.ts\"}"}"#,
+                0,
+            )],
+        );
+
+        // Bulk sweep in real poll order: the live run first (re-advanced with
+        // no new events), then more than a cache capacity of settled history
+        // runs.
+        advance_tool_projection(&live, &[]);
+        let mut others = Vec::new();
+        for i in 0..=TOOL_PROJECTION_CACHE_MAX {
+            let other = format!("test_open_other_{i}_{}", std::process::id());
+            others.push(other.clone());
+            advance_tool_projection(
+                &other,
+                &[
+                    tool_event(
+                        &other,
+                        "tool_start",
+                        r#"{"tool_id":"x","tool_name":"read"}"#,
+                        0,
+                    ),
+                    tool_event(&other, "tool_end", r#"{"tool_id":"x","text":"ok"}"#, 1),
+                ],
+            );
+        }
+
+        // Capacity pressure did evict history runs...
+        assert!(
+            others.iter().any(|id| tool_projection_cursor(id) == -1),
+            "expected at least one settled run to be evicted"
+        );
+        // ...but the live run's open tool call survived: its structured input
+        // is still readable at tool_end persistence...
+        assert_eq!(
+            get_tool_call_input(&live, "t1").expect("read live run input"),
+            Some(r#"{"path":"/a.ts"}"#.to_string())
+        );
+        // ...and the tool_end folds onto the folded start (status resolves)
+        // rather than producing an end-only record with no input.
+        let tools = advance_tool_projection(
+            &live,
+            &[tool_event(
+                &live,
+                "tool_end",
+                r#"{"tool_id":"t1","text":"ok"}"#,
+                1,
+            )],
+        );
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].status, "completed");
+
+        if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
+            cache.remove(&live);
+            for other in &others {
+                cache.remove(other);
+            }
+        }
+    }
+
+    #[test]
     fn project_tool_outputs_pairs_by_stable_tool_id() {
         let events = vec![
             tool_event(
@@ -1183,12 +1286,20 @@ mod tests {
     }
 
     #[test]
-    fn tool_input_cache_serves_get_tool_call_input_and_evicts_per_run() {
+    fn get_tool_call_input_reads_the_tool_projection() {
         let run_id = format!("test_tool_input_{}", std::process::id());
-        remember_tool_input(&run_id, "t1", r#"{"path":"/a.ts"}"#);
+        advance_tool_projection(
+            &run_id,
+            &[tool_event(
+                &run_id,
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"write","tool_args":"{\"path\":\"/a.ts\"}"}"#,
+                0,
+            )],
+        );
 
         assert_eq!(
-            get_tool_call_input(&run_id, "t1").expect("read cached input"),
+            get_tool_call_input(&run_id, "t1").expect("read projected input"),
             Some(r#"{"path":"/a.ts"}"#.to_string())
         );
         assert_eq!(
@@ -1196,11 +1307,17 @@ mod tests {
             None
         );
 
-        evict_tool_inputs(&run_id);
+        // Settling keeps the projection (settled events are immutable), so the
+        // input stays readable after the run's event buffer is dropped.
+        clear_run_event_buffer(&run_id);
         assert_eq!(
-            get_tool_call_input(&run_id, "t1").expect("read after eviction"),
-            None
+            get_tool_call_input(&run_id, "t1").expect("read after settle"),
+            Some(r#"{"path":"/a.ts"}"#.to_string())
         );
+
+        if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
+            cache.remove(&run_id);
+        }
     }
 
     fn insert_thread(conn: &Connection, id: &str, agent_session_id: Option<&str>) {

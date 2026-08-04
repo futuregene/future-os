@@ -31,7 +31,13 @@ interface CacheEntry {
   fetchedAt: number;
 }
 
-/** TTL for cached agent state (30s). Agent restarts invalidate the cache. */
+/**
+ * Revalidation throttle for getAgentState (30s). Freshness between fetches
+ * comes from the agent's push events (applySettingsEvent) and optimistic
+ * updates; this gate only limits how often an explicit fetch (thread
+ * activation, post-rename) actually hits the agent. Synchronous reads are
+ * stale-while-revalidate regardless of it.
+ */
 const CACHE_TTL_MS = 30_000;
 const CACHE_MAX = 100;
 
@@ -60,11 +66,20 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
-/** Fetch session state from the agent, caching the result for CACHE_TTL_MS. */
-export async function getAgentState(threadId: string): Promise<AgentSessionState> {
+/**
+ * Fetch session state from the agent. A fresh entry is returned as-is; an
+ * older one is revalidated at most once per CACHE_TTL_MS (in-flight requests
+ * are deduped either way). With `force`, the TTL throttle is bypassed — the
+ * stale snapshot stays readable to synchronous callers while the fresh fetch
+ * lands.
+ */
+export async function getAgentState(
+  threadId: string,
+  options?: { force?: boolean },
+): Promise<AgentSessionState> {
   const now = Date.now();
   const cached = cache.get(threadId);
-  if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
+  if (!options?.force && cached && now - cached.fetchedAt < CACHE_TTL_MS) {
     touchCache(threadId, cached);
     return cached.state;
   }
@@ -184,6 +199,20 @@ export function prefetchAgentState(threadId: string | undefined | null) {
 }
 
 /**
+ * Revalidate a thread's agent state regardless of the TTL throttle. Used when
+ * the world changed out from under the cache — an agent restart/reconnect,
+ * which can happen well inside the TTL window; a plain prefetch would
+ * short-circuit on the fresh-looking entry and nothing else would trigger a
+ * fetch while the user stays on the thread. The stale snapshot remains
+ * available to synchronous readers until the fresh one lands.
+ */
+export function revalidateAgentState(threadId: string | undefined | null) {
+  if (!threadId)
+    return;
+  void getAgentState(threadId, { force: true }).catch(() => {});
+}
+
+/**
  * Reactive read of cached agent state: subscribes to cache mutations so a
  * background fetch (prefetchAgentState) or optimistic update re-renders the
  * caller as soon as the value lands, without waiting for an unrelated tick.
@@ -275,9 +304,21 @@ function applySettingsEvent(
     });
   }
 
+  const revalidate: string[] = [];
   for (const [threadId, entry] of cache) {
     if (entry.state.sessionId !== sessionId)
       continue;
+
+    if (eventType === "config_reloaded") {
+      // The agent rebuilt this session's settings: drop the snapshot and
+      // revalidate it right away. Re-inserting the pre-reload state with a
+      // fresh fetchedAt here used to defeat the delete and keep a stale
+      // model/thinking level alive indefinitely.
+      versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
+      cache.delete(threadId);
+      revalidate.push(threadId);
+      continue;
+    }
 
     const next = { ...entry.state };
     let changed = false;
@@ -308,11 +349,6 @@ function applySettingsEvent(
           // reconcile_thread_workspace already called above
         }
         break;
-      case "config_reloaded":
-        versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
-        cache.delete(threadId);
-        changed = true;
-        break;
     }
 
     if (changed) {
@@ -321,6 +357,9 @@ function applySettingsEvent(
     // Don't break — multiple threads can share the same agent session.
   }
   notify();
+  for (const threadId of revalidate) {
+    void getAgentState(threadId).catch(() => {});
+  }
 }
 
 // ── Bulk streaming-status snapshot (no per-thread get_state fan-out) ────

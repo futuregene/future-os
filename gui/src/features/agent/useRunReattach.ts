@@ -12,12 +12,10 @@ interface UseRunReattachInput {
   activeRunId: string | null;
   // Epoch-ms anchor for the re-attached run's live elapsed timer.
   activeRunStartedAt: number | null;
-  // The thread the current messages base belongs to (committed in lockstep with
-  // full replacements). Until it equals `threadId` the view still renders the
-  // previous thread's array: ticking here would graft this run's live bubble
-  // onto that stale base, and the gen bump would make the in-flight first load
-  // discard itself.
-  baseThreadId: string | null;
+  // While this thread's history load hasn't committed, the messages base is
+  // not ready for live writes: the load folds the run's streaming bubble into
+  // the array it commits itself, so re-attach only starts once loading settles.
+  loadingThread: boolean;
   // In-flight lock owned by the parent: while a local send owns the view it
   // renders the stream itself, so every re-attach path skips.
   sendingRef: MutableRefObject<boolean>;
@@ -35,13 +33,17 @@ interface UseRunReattachInput {
  * backgrounded and returned to, one picked up after a reload, or one driven by a
  * remote (phone/web) client. Runtime deltas are pushed by Tauri in coalesced
  * batches; the initial snapshot handles events produced before subscription.
+ *
+ * AgentThread is keyed by thread id, so this hook's instance lives and dies
+ * with its conversation — a switch tears the listener and in-flight ticks
+ * down with it, and writes from the outgoing thread can't reach the new one.
  */
 export function useRunReattach({
   threadId,
   workspaceId,
   activeRunId,
   activeRunStartedAt,
-  baseThreadId,
+  loadingThread,
   sendingRef,
   setMessages,
   refreshRecentRun,
@@ -50,57 +52,30 @@ export function useRunReattach({
 }: UseRunReattachInput) {
   const prevActiveRunIdRef = useRef<string | null>(null);
 
-  // AgentThread stays mounted across thread switches, so the outgoing thread's
-  // effect closure (push listener + in-flight ticks) survives until passive
-  // cleanup — a window during which a streaming push for the old thread would
-  // write its live bubble into the messages state now rendering the new thread
-  // (the same race isCurrentAgentEventTarget closes for the event listener).
-  // Mirror the live prop so stale writers stop at commit, not at cleanup.
-  const liveThreadIdRef = useRef(threadId);
-  liveThreadIdRef.current = threadId;
-
-  useEffect(() => {
-    return () => {
-      // Drop the run tracked for the outgoing thread so the incoming thread's
-      // settle detection doesn't fire against a stale run id.
-      prevActiveRunIdRef.current = null;
-    };
-  }, [threadId]);
-
   // Re-attach a live preview to a run that this view didn't start (or is no
   // longer driving): a conversation started, backgrounded, and returned to while
   // still running, or one picked up after an app reload. While a local send owns
   // the view (`sendingRef`), that path renders the stream itself, so skip.
   //
-  // The `baseThreadId` gate keeps the first tick (and the push listener) off
-  // until this thread's load has committed the messages base: between the switch
-  // and that commit the state still holds the previous thread's array, and an
-  // upsert onto it would render this run inside the old conversation while the
-  // gen bump discards the in-flight load that would have fixed the base.
-  //
-  // The `isLive` token handed to `upsertStreamingPreview` stops an outgoing
-  // thread's in-flight snapshot from applying after a switch.
+  // The `loadingThread` gate keeps the first tick (and the push listener) off
+  // until this thread's load has committed the messages base: the load folds
+  // the run's live bubble into the array it commits, so ticking earlier would
+  // only race that fold.
   useEffect(() => {
-    if (!threadId || !activeRunId || sendingRef.current || baseThreadId !== threadId)
+    if (!threadId || !activeRunId || sendingRef.current || loadingThread)
       return;
 
     const runId = activeRunId;
     const startedAt = activeRunStartedAt;
     let cancelled = false;
-    // Stale-writer guard: once the view re-renders for another thread (commit),
-    // this closure's run no longer owns the messages state — drop pushes and
-    // in-flight upserts even before the effect cleanup runs.
-    const isLive = () => !cancelled && liveThreadIdRef.current === threadId;
+    const isLive = () => !cancelled;
     const tick = () => {
       if (!isLive())
         return;
       void upsertStreamingPreview(runId, startedAt, setMessages, isLive).then(() => {
-        // Bump the generation counter after every streaming upsert so
-        // any in-flight direct-replacement load (loadFromAgent callers)
-        // sees that state changed under them and discards its write
-        // instead of clobbering the live bubble. Only while this closure
-        // still owns the view — a stale bump would discard the incoming
-        // thread's load instead.
+        // Bump the generation counter after every streaming upsert so an
+        // in-flight quiet reload sees that state changed under it and
+        // discards its write instead of clobbering the live bubble.
         if (isLive())
           messagesGenRef.current += 1;
       });
@@ -149,7 +124,7 @@ export function useRunReattach({
   }, [
     activeRunId,
     activeRunStartedAt,
-    baseThreadId,
+    loadingThread,
     messagesGenRef,
     refreshRecentRun,
     reloadMessagesQuiet,

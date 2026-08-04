@@ -45,20 +45,6 @@ pub(super) fn run_metadata(
     }
 }
 
-pub(super) fn tool_metadata(
-    name: String,
-    kind: String,
-    status: String,
-    input: Option<String>,
-) -> ReferenceMetadata {
-    let search_text = compact_search_text(&[&name, &kind, &status], &[input.as_ref()]);
-    ReferenceMetadata {
-        subtitle: Some(format!("{kind} · {status}")),
-        search_text: Some(search_text),
-        title: name,
-    }
-}
-
 pub(super) fn approval_metadata(
     title: String,
     kind: String,

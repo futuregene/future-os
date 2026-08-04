@@ -10,7 +10,7 @@ import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
 import { modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
-import { installAgentEventListener } from "../../integrations/agent/agentStateCache";
+import { installAgentEventListener, revalidateAgentState } from "../../integrations/agent/agentStateCache";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
 import { openExternalUrl } from "../../integrations/storage/files";
@@ -191,8 +191,13 @@ export function AppShell() {
   useEffect(() => {
     if (agentConnection.status === "connected") {
       void refreshSkills();
+      // Cached per-thread agent state may predate the restart/reconnect —
+      // possibly by less than the TTL, which would short-circuit a plain
+      // prefetch — so force-revalidate the viewed thread. Other threads
+      // revalidate on their next activation.
+      revalidateAgentState(activeThreadId);
     }
-  }, [agentConnection.status]);
+  }, [activeThreadId, agentConnection.status]);
 
   // BYOK (bring your own key): the user chose to skip FutureOS sign-in and add
   // their own provider. Open Settings → Providers so they can configure it.
@@ -498,6 +503,10 @@ export function AppShell() {
                   )
                 : (
                     <AgentThread
+                      // One instance per conversation: switching threads
+                      // remounts, so a conversation's messages, listeners and
+                      // in-flight writes can never bleed into another.
+                      key={activeThread?.id ?? "__none"}
                       activeApproval={activeApproval}
                       agentConnection={agentConnection}
                       approvalTier={appSettings.approvalTier}
