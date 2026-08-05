@@ -152,9 +152,13 @@ use super::{delete_thread, get_thread, get_workspace};
 
 /// Startup reconciliation: delete active threads whose agent session has been
 /// removed out from under the GUI — e.g. via the TUI/CLI `delete_session` or a
-/// manual delete. The authoritative source is the agent's own session list
-/// (`list_sessions` RPC); the GUI no longer probes `{id}.jsonl` filenames, so
-/// it stays correct regardless of how or where the agent persists sessions.
+/// manual delete. The authoritative source is the agent's FILENAME-ONLY session
+/// enumeration (`list_session_ids` RPC): ids are read from the session file
+/// names without touching file contents, so a session whose journal is
+/// momentarily unreadable or corrupt is still reported as live and is never
+/// mistaken for a deleted session. The GUI no longer probes `{id}.jsonl`
+/// filenames itself, so it stays correct regardless of how or where the agent
+/// persists sessions.
 ///
 /// The agent treats the session journal as the source of truth for a
 /// conversation's context and reloads it on a cold start; the GUI keeps only a

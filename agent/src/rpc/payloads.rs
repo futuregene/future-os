@@ -1,7 +1,9 @@
-//! Typed, serde-serialisable carriers for the big read-command payloads
-//! (audit item 1). Each struct mirrors a message in `proto/future.proto`'s
-//! "Response payload contracts" section — the single source of truth for the
-//! shape of the corresponding `RpcResponse.data` JSON.
+//! Serde-serialisable carriers for the big read-command payloads — the agent
+//! side of the transitional payload work. Each struct mirrors a message in
+//! `proto/future.proto`'s "Response payload contracts" section and is the
+//! single source for constructing the corresponding `RpcResponse.data` JSON.
+//! This centralizes payload construction in the agent; it is NOT a typed wire
+//! contract yet — `data` is still a JSON string that clients parse themselves.
 //!
 //! Wire casing: camelCase for get_state / list_sessions / get_events_since
 //! (via `rename_all = "camelCase"`); get_session_entries mirrors the on-disk

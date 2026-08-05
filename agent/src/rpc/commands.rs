@@ -137,6 +137,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     match cmd_type.as_str() {
         "shutdown" => return cmd_shutdown(state, id),
         "list_sessions" => return cmd_list_sessions(state, &cmd, id),
+        "list_session_ids" => return cmd_list_session_ids(state, id),
         "list_streaming_sessions" => return cmd_list_streaming_sessions(state, id),
         "new_session" => return cmd_new_session(state, &cmd, id),
         "switch_session" => return cmd_switch_session(state, &cmd, id),
@@ -1022,6 +1023,34 @@ fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
     if !carries_change {
         return RpcResponse::build_fail(id, "upsert_provider", "provider_config carries no change");
     }
+    // The agent is the authority on its own built-in catalog: reject any write
+    // that would *define* a custom provider (name/api/models/key) under an id
+    // that belongs to a built-in provider or the Future platform. Pure base-URL
+    // overrides (no name/api/models/key) are still allowed — that is how clients
+    // legitimately point a built-in provider at a different endpoint. Guarding
+    // here (not only in the GUI) keeps the invariant correct no matter which
+    // client issues the write and whether any client-side catalog is stale or
+    // temporarily unavailable.
+    let defines_custom_provider = spec.name.is_some()
+        || spec.api.is_some()
+        || !spec.models.is_empty()
+        || spec.api_key.is_some();
+    if defines_custom_provider
+        && state
+            .model_registry
+            .read()
+            .builtin_provider_ids()
+            .contains(spec.id.trim())
+    {
+        return RpcResponse::build_fail(
+            id,
+            "upsert_provider",
+            &format!(
+                "Provider ID `{}` is reserved for a built-in provider.",
+                spec.id.trim()
+            ),
+        );
+    }
     if let Err(error) = crate::config::providers::upsert_provider(spec) {
         return RpcResponse::build_fail(id, "upsert_provider", &error);
     }
@@ -1038,6 +1067,27 @@ fn cmd_delete_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
     let provider_id = spec.id.trim();
     if provider_id.is_empty() {
         return RpcResponse::build_fail(id, "delete_provider", "provider_config.id is empty");
+    }
+    // The agent is the authority on its own catalog: refuse to delete a
+    // built-in provider or the Future platform entry via this command. Clients
+    // legitimately remove built-in overrides / the Future login through the
+    // dedicated set_auth / upsert paths — a direct `delete_provider` must never
+    // be able to wipe the Future sign-in credentials or a built-in's key/URL
+    // override. The GUI already guards this; guarding here closes the bypass
+    // for any other gRPC client.
+    if state
+        .model_registry
+        .read()
+        .builtin_provider_ids()
+        .contains(provider_id)
+    {
+        return RpcResponse::build_fail(
+            id,
+            "delete_provider",
+            &format!(
+                "Provider ID `{provider_id}` is reserved for a built-in provider and cannot be deleted."
+            ),
+        );
     }
     if let Err(error) = crate::config::providers::delete_provider(provider_id) {
         return RpcResponse::build_fail(id, "delete_provider", &error);
@@ -1062,7 +1112,22 @@ fn cmd_shutdown(state: &AppState, id: &str) -> String {
 }
 
 fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
-    let summaries = state.session_manager.list_all().unwrap_or_default();
+    // Propagate enumeration errors instead of coercing them to an empty list.
+    // A directory that is momentarily unreadable must NOT be reported as "the
+    // agent has zero sessions" — clients that reconcile their own mirrors
+    // against this list (GUI orphan cleanup) would treat every known thread as
+    // deleted and hard-delete them. Failure lets callers distinguish "could not
+    // enumerate" (skip / retry) from "genuinely empty".
+    let summaries = match state.session_manager.list_all() {
+        Ok(summaries) => summaries,
+        Err(error) => {
+            return RpcResponse::build_fail(
+                id,
+                "list_sessions",
+                &format!("failed to enumerate sessions: {error}"),
+            );
+        }
+    };
     // Scope by the caller's cwd when provided (empty = all sessions).
     let cwd_filter = cmd.cwd.trim().to_string();
 
@@ -1121,6 +1186,28 @@ fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         "list_sessions",
         serde_json::json!({"sessions": sessions}),
     )
+}
+
+/// Enumeration of session ids by FILENAME ONLY — no file contents are read.
+///
+/// This is the reconciliation-safe variant of `list_sessions`: a session whose
+/// JSONL is momentarily unreadable, truncated, or corrupt still exists on disk
+/// and so is still reported as live here. Clients that reconcile their own
+/// mirrors against this list (the GUI's orphan-thread cleanup) can never
+/// mistake a transient read failure for a deleted session and hard-delete
+/// local state. Only a genuine directory-listing error fails the command.
+fn cmd_list_session_ids(state: &AppState, id: &str) -> String {
+    let ids = match state.session_manager.list_ids() {
+        Ok(ids) => ids,
+        Err(error) => {
+            return RpcResponse::build_fail(
+                id,
+                "list_session_ids",
+                &format!("failed to enumerate session files: {error}"),
+            );
+        }
+    };
+    RpcResponse::ok(id, "list_session_ids", serde_json::json!({ "ids": ids }))
 }
 
 /// Lightweight streaming-status query: scans ONLY the in-memory session map
@@ -3090,6 +3177,46 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert!(resp["data"]["sessions"].is_array());
+    }
+
+    #[test]
+    fn list_session_ids_reports_all_files_including_corrupt() {
+        let state = make_app_state();
+        // Persist one real session.
+        let mut session = crate::session::Session::new("/tmp", "mock", "");
+        session
+            .entries
+            .push(crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": "/tmp", "model": "mock"}),
+                "mock".to_string(),
+                "low".to_string(),
+            ));
+        state.session_manager.save(&session).unwrap();
+        // Drop a corrupt JSONL next to it — must STILL be reported as a live
+        // session id (orphan cleanup depends on filename-only enumeration).
+        let corrupt_id = "corrupt-session";
+        std::fs::write(
+            state
+                .session_manager
+                .dir
+                .join(format!("{corrupt_id}.jsonl")),
+            "{ not json",
+        )
+        .unwrap();
+
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("list_session_ids"),
+        ));
+        assert_eq!(resp["success"], true);
+        let mut ids: Vec<String> = resp["data"]["ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![session.id.clone(), corrupt_id.to_string()]);
     }
 
     /// Audit item 1 contract: list_sessions rows carry canonical camelCase

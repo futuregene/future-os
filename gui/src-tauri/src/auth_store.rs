@@ -110,19 +110,6 @@ pub(crate) fn remove_provider_key(id: &str) -> Result<bool, AppError> {
 }
 
 /// Remove a provider's whole auth entry (used when a custom provider is deleted).
-/// Returns whether an entry was present.
-pub(crate) fn remove_provider_entry(id: &str) -> Result<bool, AppError> {
-    let path = auth_json_path()?;
-    config_io::with_config_lock(&path, || {
-        let mut auth = read()?;
-        let removed = auth.remove(id).is_some();
-        if removed {
-            write(&auth)?;
-        }
-        Ok(removed)
-    })
-}
-
 /// FutureGene login: store the device-flow API key and pin `base_url` under the
 /// `future` entry. Mirrors the CLI's `saveAuth` (which writes
 /// `base_url = {platform}/api`) so a GUI login and a CLI login leave identical
@@ -324,9 +311,18 @@ mod tests {
     fn remove_provider_entry_drops_whole_entry() {
         let _home = HomeGuard::new("delete");
         set_provider_key("dashscope", "k").unwrap();
-        assert!(remove_provider_entry("dashscope").unwrap());
+        let path = auth_json_path().unwrap();
+        config_io::with_config_lock(&path, || {
+            let mut auth = read()?;
+            let removed = auth.remove("dashscope").is_some();
+            assert!(removed);
+            if removed {
+                write(&auth)?;
+            }
+            Ok(removed)
+        })
+        .unwrap();
         assert!(read().unwrap().get("dashscope").is_none());
-        assert!(!remove_provider_entry("dashscope").unwrap());
     }
 
     #[cfg(unix)]

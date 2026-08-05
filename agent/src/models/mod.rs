@@ -76,15 +76,69 @@ pub struct Cost {
 
 /// Catalog summary of one built-in provider: how many models it has and its
 /// catalog base URL (no `models.json` overrides applied — clients merge those
-/// themselves, and need the raw catalog URL to detect placeholder URLs).
-/// Serialized into the `list_models` response when the client sets
-/// `include_builtin_providers`, so clients can fetch the catalog at runtime
-/// instead of compiling it in.
+/// themselves, and need the raw catalog URL to detect placeholder URLs), plus
+/// the provider's human-readable display name. Serialized into the `list_models`
+/// response when the client sets `include_builtin_providers`, so clients can
+/// fetch the catalog at runtime instead of compiling it in. The agent is the
+/// single source of truth for these display names — clients render `name`
+/// verbatim rather than maintaining their own id→name maps.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuiltinProviderSummary {
+    pub name: String,
     pub model_count: usize,
     pub base_url: String,
+}
+
+/// Human-readable display name for a provider id. Curated brand casings for the
+/// well-known providers; a title-case fallback for everything else. This is the
+/// single source of truth for provider display names (the GUI renders the
+/// `name` it receives over RPC rather than hard-coding its own map).
+pub fn provider_display_name(id: &str) -> String {
+    match id {
+        "amazon-bedrock" => "Amazon Bedrock".to_string(),
+        "anthropic" => "Anthropic".to_string(),
+        "azure-openai-responses" => "Azure OpenAI Responses".to_string(),
+        "cerebras" => "Cerebras".to_string(),
+        "cloudflare-workers-ai" => "Cloudflare Workers AI".to_string(),
+        "deepseek" => "DeepSeek".to_string(),
+        "github-copilot" => "GitHub Copilot".to_string(),
+        "google" => "Google".to_string(),
+        "google-vertex" => "Google Vertex".to_string(),
+        "groq" => "Groq".to_string(),
+        "huggingface" => "Hugging Face".to_string(),
+        "kimi-coding" => "Kimi Coding".to_string(),
+        "minimax" => "MiniMax".to_string(),
+        "minimax-cn" => "MiniMax CN".to_string(),
+        "mistral" => "Mistral".to_string(),
+        "moonshotai" => "Moonshot AI".to_string(),
+        "moonshotai-cn" => "Moonshot AI CN".to_string(),
+        "openai" => "OpenAI".to_string(),
+        "openai-codex" => "OpenAI Codex".to_string(),
+        "opencode" => "opencode".to_string(),
+        "opencode-go" => "opencode Go".to_string(),
+        "openrouter" => "OpenRouter".to_string(),
+        "vercel-ai-gateway" => "Vercel AI Gateway".to_string(),
+        "xai" => "xAI".to_string(),
+        "xiaomi" => "Xiaomi".to_string(),
+        "xiaomi-token-plan-ams" => "Xiaomi Token Plan AMS".to_string(),
+        "xiaomi-token-plan-cn" => "Xiaomi Token Plan CN".to_string(),
+        "xiaomi-token-plan-sgp" => "Xiaomi Token Plan SGP".to_string(),
+        "zai" => "Z.ai".to_string(),
+        "zhipuai" => "ZhipuAI".to_string(),
+        _ => id
+            .split('-')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
 }
 
 /// Process-wide shared copy of the parsed built-in catalog.  The embedded
@@ -717,6 +771,7 @@ impl Registry {
                 summaries
                     .entry(model.provider.clone())
                     .or_insert_with(|| BuiltinProviderSummary {
+                        name: provider_display_name(&model.provider),
                         model_count: 0,
                         base_url: String::new(),
                     });
@@ -726,6 +781,22 @@ impl Registry {
             }
         }
         summaries
+    }
+
+    /// The set of built-in provider ids (plus the reserved Future platform id).
+    /// Used to reject custom-provider writes that would collide with a built-in —
+    /// the agent is the authority on its own catalog, so this guard stays
+    /// correct regardless of which client issues the write and whether any
+    /// client-side catalog is stale or unavailable.
+    pub fn builtin_provider_ids(&self) -> std::collections::HashSet<String> {
+        let mut ids: std::collections::HashSet<String> = self
+            .builtin
+            .iter()
+            .filter(|model| !model.provider.is_empty())
+            .map(|model| model.provider.clone())
+            .collect();
+        ids.insert("future".to_string());
+        ids
     }
 
     /// Resolve a model ID to a Model (checks user first, then builtin)

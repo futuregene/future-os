@@ -203,6 +203,15 @@ pub fn list_sessions_command() -> RpcCommand {
     base_command("list_sessions", String::new())
 }
 
+/// Reconciliation-safe session enumeration: returns only session ids, resolved
+/// from the agent's session FILE NAMES (no file contents read). A session whose
+/// journal is momentarily unreadable/corrupt is still reported as live, so the
+/// orphan-thread cleanup that consumes this can never mistake a transient read
+/// failure for a deleted session and hard-delete local threads.
+pub fn list_session_ids_command() -> RpcCommand {
+    base_command("list_session_ids", String::new())
+}
+
 /// Bulk "who is streaming" query: one RPC returns every streaming session
 /// id, so the thread list doesn't fan out one get_state per thread (which
 /// also hydrated each polled session on the agent).

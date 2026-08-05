@@ -1379,6 +1379,36 @@ impl Manager {
         Ok(summaries)
     }
 
+    /// List the ids of every session in the flat sessions directory, WITHOUT
+    /// reading any file contents.
+    ///
+    /// This is the safe primitive for client-side reconciliation (e.g. the
+    /// GUI's orphan-thread cleanup): a session whose JSONL is momentarily
+    /// unreadable, truncated, or corrupt still has a file on disk, so its id
+    /// must still be reported as live. Enumerating by filename alone means a
+    /// transient read failure can never be mistaken for "the session was
+    /// deleted" — the exact misclassification that would hard-delete a
+    /// client's mirror thread. Only a genuine directory-listing error surfaces
+    /// as `Err` (callers treat that as "unknown state, delete nothing").
+    pub fn list_ids(&self) -> Result<Vec<String>> {
+        if !self.dir.exists() {
+            return Ok(vec![]);
+        }
+        let mut ids = vec![];
+        for entry in fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                    if !id.is_empty() {
+                        ids.push(id.to_string());
+                    }
+                }
+            }
+        }
+        Ok(ids)
+    }
+
     /// List all sessions in the flat sessions directory.
     ///
     /// Files are scanned in parallel (each JSONL is an independent cheap
@@ -3620,5 +3650,32 @@ mod fork_tests {
             "fixed code: history (2) + new user (1) = {} entries (expected >= 3)",
             entries_with_history.len()
         );
+    }
+
+    // ─── list_ids (filename-only reconciliation) ────────────────────────────
+
+    #[test]
+    fn list_ids_reports_files_even_when_unreadable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = Manager::new(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("good.jsonl"), "{}").unwrap();
+        // A corrupt/truncated file is still a live session: its id MUST be
+        // listed (the orphan cleanup relies on this so a transient read
+        // failure is never mistaken for a deleted session).
+        std::fs::write(dir.path().join("corrupt.jsonl"), "{ not json").unwrap();
+        // A non-jsonl file (e.g. a lock or stray) must be ignored.
+        std::fs::write(dir.path().join("notes.txt"), "hi").unwrap();
+
+        let mut ids = manager.list_ids().unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["corrupt".to_string(), "good".to_string()]);
+    }
+
+    #[test]
+    fn list_ids_empty_when_dir_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("nope");
+        let manager = Manager::new(missing);
+        assert!(manager.list_ids().unwrap().is_empty());
     }
 }

@@ -120,15 +120,23 @@ fn write_json_atomic(
     map: &Map<String, Value>,
     owner_only: bool,
 ) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
-    }
     let serialized = format!(
         "{}\n",
         serde_json::to_string_pretty(&Value::Object(map.clone()))
             .map_err(|error| format!("failed to serialize config: {error}"))?
     );
+    write_bytes_atomic(path, serialized.as_bytes(), owner_only)
+}
+
+/// Low-level atomic write of raw bytes: temp-file + `rename`, so a torn write
+/// can never leave a half-written config. Shared by the JSON writer and by the
+/// transactional rollback path (which restores the *exact* original bytes, not
+/// a re-serialization that could reorder or reformat them).
+fn write_bytes_atomic(path: &Path, bytes: &[u8], owner_only: bool) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
     static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let file_name = path
         .file_name()
@@ -154,7 +162,7 @@ fn write_json_atomic(
             } else {
                 options.open(&tmp)?
             };
-            std::io::Write::write_all(&mut file, serialized.as_bytes())?;
+            std::io::Write::write_all(&mut file, bytes)?;
             file.sync_all()?;
         }
         std::fs::rename(&tmp, path)?;
@@ -164,6 +172,40 @@ fn write_json_atomic(
         let _ = std::fs::remove_file(&tmp);
     }
     write_result.map_err(|error| format!("failed to write {}: {error}", path.display()))
+}
+
+/// Capture a file's exact pre-mutation bytes for transactional rollback.
+/// `Ok(None)` means the file did not exist (rollback must delete, not empty,
+/// it). Any OTHER read error (permission, transient I/O) surfaces as `Err` —
+/// it must never be confused with "did not exist", which would make rollback
+/// DELETE an existing file.
+fn snapshot_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "failed to read {} for rollback: {error}",
+            path.display()
+        )),
+    }
+}
+
+/// Best-effort restore of a snapshot taken by [`snapshot_file`]. Used only on
+/// the error path, so a failed restore is logged to stderr rather than
+/// shadowing the original write error being returned to the caller.
+fn restore_file(path: &Path, snapshot: Option<&[u8]>, owner_only: bool) {
+    let result = match snapshot {
+        Some(bytes) => write_bytes_atomic(path, bytes, owner_only),
+        None => std::fs::remove_file(path)
+            .map_err(|error| format!("failed to remove {}: {error}", path.display())),
+    };
+    if let Err(error) = result {
+        // A `NotFound` remove just means the file was never created — fine.
+        eprintln!(
+            "FutureOS: config rollback could not restore {}: {error}",
+            path.display()
+        );
+    }
 }
 
 /// Upsert a provider entry in an in-memory auth map: normalizes a missing or
@@ -328,59 +370,88 @@ pub fn mutate_auth_file(auth_path: &Path, mutation: &AuthMutation) -> Result<(),
     })
 }
 
-/// Create/update a provider across both files. The API key is written AFTER
-/// the in-memory models.json validation passes but BEFORE the models.json
-/// write (mirroring the GUI): a models.json write failure then rolls the
-/// orphaned key back for a brand-new provider, so auth.json never accumulates
-/// dangling credentials.
+/// Create/update a provider across both files, transactionally. models.json is
+/// written first, then auth.json; each write is atomic (temp-file + rename), so
+/// a failed write leaves that file untouched. On failure, ONLY the file(s)
+/// already written in this call are rolled back to their exact pre-mutation
+/// bytes — an unmodified file is never restored (restoring it could clobber a
+/// concurrent writer's just-committed change).
 pub fn upsert_provider_files(
     auth_path: &Path,
     models_path: &Path,
     spec: &ProviderUpsertSpec,
 ) -> Result<(), String> {
     with_config_lock(|| {
-        let mut models_doc = read_json_object(models_path)?;
-        let provider_existed = models_doc
-            .get("providers")
-            .and_then(Value::as_object)
-            .map(|providers| providers.contains_key(&spec.id))
-            .unwrap_or(false);
+        // A snapshot read error must abort BEFORE any write, never be treated
+        // as "file did not exist" (which would make rollback delete the file).
+        // Only models.json can be rolled back in an upsert — auth.json is
+        // written last and atomically, so a failed auth write leaves it
+        // untouched and there is nothing to restore.
+        let models_snapshot = snapshot_file(models_path)?;
 
         // Validate + apply in memory first; nothing is written if this fails.
+        let mut models_doc = read_json_object(models_path)?;
         apply_provider_upsert(&mut models_doc, spec)?;
 
+        // Prepare the auth mutation in memory too, so all reads/validations
+        // precede the first disk write.
+        let mut auth_doc = None;
         if let Some(key) = &spec.api_key {
             let mut auth = read_json_object(auth_path)?;
             upsert_auth_entry(&mut auth, &spec.id)
                 .insert("key".to_string(), Value::String(key.clone()));
-            write_json_atomic(auth_path, &auth, true)?;
+            auth_doc = Some(auth);
         }
 
+        // Persist models.json, then auth.json. Restore only what this call
+        // already wrote: a failed models write means nothing was persisted; a
+        // failed auth write means only models.json changed.
         if let Err(error) = write_json_atomic(models_path, &models_doc, false) {
-            if !provider_existed && spec.api_key.is_some() {
-                // Roll back the orphaned key from the brand-new provider.
-                if let Ok(mut auth) = read_json_object(auth_path) {
-                    if auth.remove(&spec.id).is_some() {
-                        let _ = write_json_atomic(auth_path, &auth, true);
-                    }
-                }
-            }
+            restore_file(models_path, models_snapshot.as_deref(), false);
             return Err(error);
+        }
+        if let Some(auth) = auth_doc {
+            if let Err(error) = write_json_atomic(auth_path, &auth, true) {
+                restore_file(models_path, models_snapshot.as_deref(), false);
+                return Err(error);
+            }
         }
         Ok(())
     })
 }
 
-/// Remove a provider's models.json entry AND its auth.json entry.
+/// Remove a provider's models.json entry AND its auth.json entry,
+/// transactionally. Same rule as [`upsert_provider_files`]: models.json is
+/// written first, then auth.json, and on failure only models.json (the file
+/// already written this call) is restored — a failed auth write leaves auth.json
+/// untouched, and restoring it could clobber a concurrent writer's just-committed
+/// change.
 pub fn delete_provider_files(auth_path: &Path, models_path: &Path, id: &str) -> Result<(), String> {
     with_config_lock(|| {
+        let models_snapshot = snapshot_file(models_path)?;
+
         let mut models_doc = read_json_object(models_path)?;
-        if apply_provider_delete(&mut models_doc, id) {
-            write_json_atomic(models_path, &models_doc, false)?;
-        }
+        let models_changed = apply_provider_delete(&mut models_doc, id);
+
         let mut auth = read_json_object(auth_path)?;
-        if auth.remove(id).is_some() {
-            write_json_atomic(auth_path, &auth, true)?;
+        let auth_changed = auth.remove(id).is_some();
+
+        if !models_changed && !auth_changed {
+            // Nothing to remove; leave both files untouched.
+            return Ok(());
+        }
+
+        if models_changed {
+            if let Err(error) = write_json_atomic(models_path, &models_doc, false) {
+                restore_file(models_path, models_snapshot.as_deref(), false);
+                return Err(error);
+            }
+        }
+        if auth_changed {
+            if let Err(error) = write_json_atomic(auth_path, &auth, true) {
+                restore_file(models_path, models_snapshot.as_deref(), false);
+                return Err(error);
+            }
         }
         Ok(())
     })
@@ -699,5 +770,66 @@ mod tests {
 
         // Deleting again is a no-op.
         delete_provider_files(&auth, &models, "myprov").unwrap();
+    }
+
+    #[test]
+    fn snapshot_restore_roundtrips_exact_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cfg.json");
+
+        // A missing file snapshots to Ok(None).
+        assert_eq!(snapshot_file(&path).unwrap(), None);
+
+        // Non-alphabetical key order: restore must return the exact bytes, not
+        // a re-serialization (which could reorder/reformat them).
+        let content = "{\n  \"b\": 1,\n  \"a\": 2\n}\n";
+        std::fs::write(&path, content).unwrap();
+        let snap = snapshot_file(&path).unwrap();
+        assert_eq!(snap.as_deref(), Some(content.as_bytes()));
+
+        std::fs::write(&path, "mutated").unwrap();
+        restore_file(&path, snap.as_deref(), false);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+
+        // Restoring a None snapshot removes the file entirely.
+        restore_file(&path, None, false);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn upsert_snapshot_read_error_aborts_without_touching_files() {
+        let (_dir, auth, models) = temp_paths("upsert-snapshot-err");
+        // Pre-existing models.json content that must survive the aborted upsert.
+        let original =
+            "{\n  \"providers\": {\n    \"keep\": {\n      \"name\": \"Keep\"\n    }\n  }\n}\n";
+        std::fs::write(&models, original).unwrap();
+        // Making auth a directory makes its snapshot read fail (not NotFound) —
+        // the upsert must abort BEFORE any write, not treat it as "no file".
+        std::fs::create_dir_all(&auth).unwrap();
+
+        let spec = ProviderUpsertSpec {
+            id: "newprov".to_string(),
+            name: Some("New".to_string()),
+            api_key: Some("sk-x".to_string()),
+            ..Default::default()
+        };
+        assert!(upsert_provider_files(&auth, &models, &spec).is_err());
+
+        // No partial "newprov" entry, and the models file is untouched.
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), original);
+    }
+
+    #[test]
+    fn delete_no_change_leaves_files_untouched() {
+        let (_dir, auth, models) = temp_paths("delete-noop");
+        let original_models =
+            "{\n  \"providers\": {\n    \"keep\": {\n      \"name\": \"Keep\"\n    }\n  }\n}\n";
+        std::fs::write(&models, original_models).unwrap();
+        std::fs::write(&auth, "{}\n").unwrap();
+
+        // Deleting an unknown provider touches neither file.
+        delete_provider_files(&auth, &models, "ghost").unwrap();
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), original_models);
+        assert_eq!(std::fs::read_to_string(&auth).unwrap(), "{}\n");
     }
 }

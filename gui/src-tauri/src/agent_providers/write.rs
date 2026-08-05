@@ -225,6 +225,19 @@ fn validate_upsert_against_catalog(
     validated: &ValidatedCustomProvider,
     catalog: &BTreeMap<String, CatalogProviderSummary>,
 ) -> Result<(), AppError> {
+    // The built-in catalog is never empty in practice, so an empty catalog
+    // means it could not be obtained (agent unreachable on a cold start, no
+    // in-process cache). Creating a provider then would validate against
+    // nothing — a reserved id like "openai" could slip through and shadow the
+    // built-in once the agent returns. Refuse rather than trust an empty set;
+    // once the catalog has been fetched once it stays cached for the process,
+    // so this only bites on a cold start with the agent already down.
+    if validated.create && catalog.is_empty() {
+        return Err(
+            "Cannot create a custom provider right now: the built-in provider catalog is unavailable. Please make sure the Future Agent is running and try again."
+                .into(),
+        );
+    }
     if validated.create && catalog.contains_key(&validated.id) {
         return Err(format!(
             "Provider ID `{}` is reserved for a built-in provider.",
@@ -281,10 +294,21 @@ fn provider_upsert_message(
 
 /// Local fallback: locked models.json read-modify-write (with the file-state
 /// uniqueness checks) plus the auth.json key write, mirroring the agent's
-/// `upsert_provider_files` ordering and rollback.
+/// `upsert_provider_files` ordering and rollback — transactionally, so a failure
+/// on either file never leaves a dangling key or a provider whose models and
+/// key disagree. The models write comes first; if the key write then fails, the
+/// models file is rolled back to its exact pre-call bytes.
 fn apply_upsert_local(validated: &ValidatedCustomProvider) -> Result<(), AppError> {
     let models_path = models_json_path()?;
     config_io::with_config_lock(&models_path, || {
+        // A snapshot read error must abort BEFORE any write, never be treated
+        // as "file did not exist" (which would make rollback delete the file).
+        // Only models.json can be rolled back here — auth.json is written last
+        // and atomically, so a failed key write leaves it untouched and there
+        // is nothing to restore (restoring it could clobber a concurrent
+        // writer's just-committed change).
+        let models_snapshot = config_io::snapshot_file(&models_path)?;
+
         let mut models_doc = config_io::read_json_object(&models_path)?;
         let root = models_doc
             .as_object_mut()
@@ -331,24 +355,20 @@ fn apply_upsert_local(validated: &ValidatedCustomProvider) -> Result<(), AppErro
             "models".to_string(),
             Value::Array(model_json_values(&validated.models)),
         );
-        // Write the API key first: if it fails we abort before persisting the
-        // provider, avoiding a saved provider with a missing key while returning Err.
-        let provider_existed = providers.contains_key(&validated.id);
-        if let Some(key) = validated.api_key.as_deref() {
-            crate::auth_store::set_provider_key(&validated.id, key)?;
-        }
-
         providers.insert(validated.id.clone(), Value::Object(provider));
+
+        // Persist models.json, then auth.json. A failed models write leaves
+        // nothing persisted; a failed key write leaves auth.json untouched, so
+        // only models.json is ever rolled back.
         if let Err(error) = config_io::write_json_atomic(&models_path, &models_doc, false) {
-            // The models.json write failed after the key landed. For a brand-new
-            // provider that key is now orphaned (no provider entry references it),
-            // so roll it back to keep auth.json from accumulating dangling
-            // credentials. For an existing provider the prior (still-intact)
-            // entry references the key, so leave it in place.
-            if !provider_existed && validated.api_key.is_some() {
-                let _ = crate::auth_store::remove_provider_entry(&validated.id);
-            }
+            config_io::restore_file(&models_path, models_snapshot.as_deref(), false);
             return Err(error);
+        }
+        if let Some(key) = validated.api_key.as_deref() {
+            if let Err(error) = crate::auth_store::set_provider_key(&validated.id, key) {
+                config_io::restore_file(&models_path, models_snapshot.as_deref(), false);
+                return Err(error);
+            }
         }
         Ok(())
     })
@@ -410,20 +430,59 @@ fn validate_delete_id(
 fn apply_delete_local(id: &str) -> Result<(), AppError> {
     let models_path = models_json_path()?;
     config_io::with_config_lock(&models_path, || {
+        // A snapshot read error must abort BEFORE any write, never be treated
+        // as "file did not exist" (which would make rollback delete the file).
+        // Only models.json can be rolled back here — auth.json is written last
+        // and atomically, so a failed auth write leaves it untouched and there
+        // is nothing to restore.
+        let models_snapshot = config_io::snapshot_file(&models_path)?;
+        let auth_path = crate::auth_store::auth_json_path()?;
+
         let mut models_doc = config_io::read_json_object(&models_path)?;
-        if let Some(providers) = models_doc
+        let models_changed = models_doc
             .get_mut("providers")
             .and_then(Value::as_object_mut)
-        {
-            if providers.remove(id).is_some() {
-                config_io::write_json_atomic(&models_path, &models_doc, false)?;
+            .map(|providers| providers.remove(id).is_some())
+            .unwrap_or(false);
+
+        // Determine the auth half under the auth path lock so a concurrent key
+        // write can't interleave; delete always removes the whole entry, so a
+        // later re-read under the same lock stays consistent.
+        let auth_changed = config_io::with_config_lock(&auth_path, || {
+            Ok(crate::auth_store::read()?.contains_key(id))
+        })?;
+
+        if !models_changed && !auth_changed {
+            // Nothing to remove; leave both files untouched.
+            return Ok(());
+        }
+
+        // Transactional: if the models write succeeds but the auth write fails,
+        // roll back ONLY models.json (the file already written this call) to its
+        // exact pre-call bytes — auth.json is untouched, and restoring it could
+        // clobber a concurrent writer's just-committed change. Lock order is
+        // models → auth everywhere, so nesting is safe.
+        if models_changed {
+            if let Err(error) = config_io::write_json_atomic(&models_path, &models_doc, false) {
+                config_io::restore_file(&models_path, models_snapshot.as_deref(), false);
+                return Err(error);
+            }
+        }
+        if auth_changed {
+            let result = config_io::with_config_lock(&auth_path, || {
+                let mut auth = crate::auth_store::read()?;
+                if auth.remove(id).is_some() {
+                    crate::auth_store::write(&auth)?;
+                }
+                Ok(())
+            });
+            if let Err(error) = result {
+                config_io::restore_file(&models_path, models_snapshot.as_deref(), false);
+                return Err(error);
             }
         }
         Ok(())
-    })?;
-
-    crate::auth_store::remove_provider_entry(id)?;
-    Ok(())
+    })
 }
 
 pub async fn delete_custom_provider(id: String) -> Result<ProvidersView, AppError> {
