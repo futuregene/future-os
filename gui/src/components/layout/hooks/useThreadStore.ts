@@ -48,6 +48,19 @@ export function reduceThreadRunStatus(
   if (current?.revision !== undefined && update.revision <= current.revision)
     return previous;
   const terminal = ["completed", "failed", "cancelled"].includes(update.status);
+  // A run's terminal state is final. The abort path emits the terminal push
+  // (run-row CAS) while the collector is still draining the stream, so its
+  // trailing "finalizing" push arrives AFTER with a higher revision — it must
+  // not regress the projection back to "running". Only a new run (different
+  // runId) or a terminal status replaces the settled entry.
+  if (
+    current
+    && current.runId === update.runId
+    && !terminal
+    && ["completed", "failed", "cancelled"].includes(current.status)
+  ) {
+    return previous;
+  }
   return {
     ...previous,
     [update.threadId]: {
