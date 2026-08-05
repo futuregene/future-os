@@ -17,6 +17,8 @@ export interface RpcCommand {
   // new_session
   parentSession?: string;
   cwd?: string;
+  createdBy?: string;
+  sourceMeta?: string;
   // set_model
   provider?: string;
   modelId?: string;

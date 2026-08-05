@@ -1,5 +1,6 @@
 mod approval;
 mod client;
+pub(crate) mod config;
 mod headless;
 mod import;
 mod models;
@@ -21,8 +22,8 @@ pub use self::client::{
     set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
-pub(crate) use self::import::import_missing_sessions;
-pub use self::models::{list_agent_models, AgentModelOption};
+pub(crate) use self::import::{import_missing_sessions, list_agent_session_ids};
+pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
 pub use self::observer::{
     drop_observer, ensure_observer_for_thread, seed_observers_from_store, spawn_session_discovery,
 };
@@ -308,10 +309,15 @@ pub(crate) async fn provision_agent_session(
 }
 
 /// Tell the running agent to re-read `auth.json` and refresh every live
-/// session's in-memory API key. Call after the GUI mutates credentials
-/// (FutureGene login/logout, custom-provider key edits): the agent caches the
+/// session's in-memory API key.
+///
+/// Since audit item 2 this is the FALLBACK-ONLY refresher: the primary config
+/// writes go through `agent_bridge::config` (set_auth / upsert_provider /
+/// delete_provider), and the agent refreshes its own live sessions inline. This
+/// `reload_auth` round-trip is still sent after a LOCAL file write — used when
+/// the agent is unreachable or pre-item-2 — because the agent caches the
 /// resolved key inside each session's provider and the prompt path never
-/// re-reads `auth.json`, so without this a session keeps serving prompts with a
+/// re-reads `auth.json`, so without it a session keeps serving prompts with a
 /// stale key (e.g. still answering after logout) while the model list — which
 /// does re-read disk — already shows logged-out.
 ///

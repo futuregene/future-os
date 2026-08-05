@@ -117,7 +117,7 @@ export function streamingBubbleBase(
   if (current.some(message => message.runId === runId && message.id !== bubbleId))
     return null;
 
-  const lastAssistantIdx = current.map(message => message.role).lastIndexOf("assistant");
+  const lastAssistantIdx = lastIndexOfRole(current, "assistant");
   const lastAssistant = lastAssistantIdx >= 0 ? current[lastAssistantIdx] : undefined;
   // Reaching here, no message carries `runId` (checked above) — so a runId on
   // the last assistant always belongs to ANOTHER run. If that assistant sits
@@ -129,7 +129,7 @@ export function streamingBubbleBase(
     // The mid-run persisted entry belongs to the in-flight exchange only when the
     // last user message precedes it; an assistant that appears before the last
     // user is an earlier completed exchange.
-    const lastUserIdx = current.map(message => message.role).lastIndexOf("user");
+    const lastUserIdx = lastIndexOfRole(current, "user");
     const sameTurn = lastUserIdx >= 0 && lastUserIdx < lastAssistantIdx;
 
     // A mid-run snapshot for THIS in-flight exchange — the streaming bubble is
@@ -161,6 +161,15 @@ export function streamingBubbleBase(
     }
   }
   return current;
+}
+
+/** Index of the last message with the given role (reverse scan — no throwaway role array). */
+function lastIndexOfRole(messages: AgentMessage[], role: AgentMessage["role"]): number {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]!.role === role)
+      return index;
+  }
+  return -1;
 }
 
 /**
@@ -228,7 +237,9 @@ export async function upsertStreamingPreview(
         thinkingActive: projection.thinkingActive,
         outputTokens: projection.outputTokens,
       };
-      return [...base.filter((_, i) => i !== existingIndex), updated];
+      // Replace in place — the old filter+append moved the bubble to the
+      // array's end on every push (a DOM move when it wasn't last already).
+      return base.map((message, index) => (index === existingIndex ? updated : message));
     });
   }
   catch {
@@ -318,7 +329,8 @@ export async function updatePendingMessageFromRunEvents(
         thinkingActive: projection.thinkingActive,
         outputTokens: projection.outputTokens,
       };
-      return [...current.filter((_, i) => i !== existingIndex), updated];
+      // Replace in place (see upsertStreamingPreview).
+      return current.map((message, index) => (index === existingIndex ? updated : message));
     });
   }
   catch {
@@ -453,8 +465,9 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
   // Guard: only trust window matching when at least one run actually matches a
   // exchange — legacy sessions without entry timestamps would orphan every run and
   // wipe out all pairing, so fall back to the positional behavior there.
-  const settled = settledAll.some(run => runMatchesAnyTurn(run, messages))
-    ? settledAll.filter(run => !isOrphanRun(run, messages))
+  const timestamps = collectTurnTimestamps(messages);
+  const settled = settledAll.some(run => runMatchesAnyTurn(run, timestamps))
+    ? settledAll.filter(run => !isOrphanRun(run, timestamps))
     : settledAll;
 
   // The agent's save_callback persists each completed LLM call MID-RUN, so an
@@ -520,17 +533,40 @@ function runWindow(run: StoredRun): { start: number; end: number } | null {
   return { start: run.startedAt - RUN_WINDOW_TOLERANCE_MS, end: end + RUN_WINDOW_TOLERANCE_MS };
 }
 
+/**
+ * Per-role message timestamps (Date.parse, finite only), collected ONCE per
+ * load pass: the window matchers below run for every run, and re-parsing each
+ * message's createdAt per run was O(runs × messages) of Date.parse work (L7).
+ */
+interface TurnTimestamps {
+  assistant: number[];
+  user: number[];
+}
+
+function collectTurnTimestamps(messages: AgentMessage[]): TurnTimestamps {
+  const timestamps: TurnTimestamps = { assistant: [], user: [] };
+  for (const message of messages) {
+    if (message.role === "user") {
+      const at = Date.parse(message.createdAt);
+      if (Number.isFinite(at))
+        timestamps.user.push(at);
+      continue;
+    }
+    if (message.role === "assistant" && !isCompactionDivider(message)) {
+      const at = Date.parse(message.createdAt);
+      if (Number.isFinite(at))
+        timestamps.assistant.push(at);
+    }
+  }
+  return timestamps;
+}
+
 /** Whether any projected assistant reply's timestamp falls inside the run's window. */
-function runMatchesAnyTurn(run: StoredRun, messages: AgentMessage[]): boolean {
+function runMatchesAnyTurn(run: StoredRun, timestamps: TurnTimestamps): boolean {
   const window = runWindow(run);
   if (!window)
     return false;
-  return messages.some((message) => {
-    if (message.role !== "assistant" || isCompactionDivider(message))
-      return false;
-    const at = Date.parse(message.createdAt);
-    return Number.isFinite(at) && at >= window.start && at <= window.end;
-  });
+  return timestamps.assistant.some(at => at >= window.start && at <= window.end);
 }
 
 /**
@@ -538,16 +574,11 @@ function runMatchesAnyTurn(run: StoredRun, messages: AgentMessage[]): boolean {
  * run failed has no assistant entry at all — the only message inside the run's
  * window is the user's — so window trust must not require an assistant reply.
  */
-function runMatchesUserTurn(run: StoredRun, messages: AgentMessage[]): boolean {
+function runMatchesUserTurn(run: StoredRun, timestamps: TurnTimestamps): boolean {
   const window = runWindow(run);
   if (!window)
     return false;
-  return messages.some((message) => {
-    if (message.role !== "user")
-      return false;
-    const at = Date.parse(message.createdAt);
-    return Number.isFinite(at) && at >= window.start && at <= window.end;
-  });
+  return timestamps.user.some(at => at >= window.start && at <= window.end);
 }
 
 /**
@@ -558,8 +589,8 @@ function runMatchesUserTurn(run: StoredRun, messages: AgentMessage[]): boolean {
  * timestamp so it can be excluded from pairing and surfaced as its own failure
  * bubble instead ({@link recoverFailedRuns}).
  */
-function isOrphanRun(run: StoredRun, messages: AgentMessage[]): boolean {
-  return runWindow(run) !== null && !runMatchesAnyTurn(run, messages);
+function isOrphanRun(run: StoredRun, timestamps: TurnTimestamps): boolean {
+  return runWindow(run) !== null && !runMatchesAnyTurn(run, timestamps);
 }
 
 /** Whether an exchange projected from session entries carries nothing renderable. */
@@ -640,12 +671,13 @@ export function recoverFailedRuns(messages: AgentMessage[], runs: StoredRun[]): 
   // A user exchange counts as trust evidence too: a session whose FIRST run failed
   // (the "prompt acknowledgement omitted run_id" case) has no assistant entry
   // at all — the user's message is the only exchange inside the run's window.
-  if (!runs.some(run => runMatchesAnyTurn(run, messages) || runMatchesUserTurn(run, messages)))
+  const timestamps = collectTurnTimestamps(messages);
+  if (!runs.some(run => runMatchesAnyTurn(run, timestamps) || runMatchesUserTurn(run, timestamps)))
     return messages;
   const orphans = runs.filter(run =>
     run.status === "failed"
     && !messages.some(message => message.runId === run.id)
-    && isOrphanRun(run, messages));
+    && isOrphanRun(run, timestamps));
   if (orphans.length === 0)
     return messages;
 

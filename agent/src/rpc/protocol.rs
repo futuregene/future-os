@@ -38,6 +38,13 @@ pub struct RpcCommand {
     #[serde(default)]
     pub custom_instructions: String,
 
+    // new_session — typed provenance (see proto). Legacy clients smuggle the
+    // same info as JSON in custom_instructions.
+    #[serde(default)]
+    pub created_by: String,
+    #[serde(default)]
+    pub source_meta: String,
+
     // set_auto_compaction / set_auto_retry
     #[serde(default)]
     pub enabled: bool,
@@ -83,10 +90,25 @@ pub struct RpcCommand {
     #[serde(default)]
     pub busy_policy: String,
 
+    // list_models: also carry a summary of the built-in provider catalog
+    // (`builtinProviders`) in the response, so clients can render the full
+    // catalog at runtime instead of compiling it in.
+    #[serde(default)]
+    pub include_builtin_providers: bool,
+
     // set_sandbox_policy — populated from the typed proto sub-message by the
     // gRPC layer (not part of the JSON command surface).
     #[serde(skip)]
     pub sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
+
+    // set_auth / upsert_provider / delete_provider — typed config writes
+    // (audit item 2). Populated from the proto sub-messages by the gRPC
+    // layer; the agent applies them to its own auth.json/models.json and
+    // refreshes live sessions, replacing out-of-band file edits + reload_auth.
+    #[serde(skip)]
+    pub auth_update: Option<crate::config::providers::AuthMutation>,
+    #[serde(skip)]
+    pub provider_config: Option<crate::config::providers::ProviderUpsertSpec>,
 }
 
 // ─── RPC Response (stdout) ───────────────────────────────────────────────

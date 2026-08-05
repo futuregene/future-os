@@ -187,19 +187,32 @@ fn persist_tool_end(run_id: &str, value: &serde_json::Value, sequence: i64) {
     let output_content =
         value_string(value, &["text", "result"]).or_else(|| value.get("output").map(compact_json));
     // A shell command that runs but exits non-zero is returned as a *successful*
-    // tool result (no error field) with the code baked into the output text as
-    // "[exit code: N]\n…". Treat a non-zero code as a failure so the Runs panel
-    // and inspector don't mark an errored command as completed.
+    // tool result (no error field). The agent reports the conclusion structured
+    // (`exit_code` / `is_soft_fail`) on the event; legacy/synthesized events
+    // without those fields fall back to inspecting the output text.
     let failed = !error.as_deref().unwrap_or_default().is_empty()
-        || output_is_failure(output_content.as_deref(), run_id, &tool_call_id);
+        || output_is_failure(value, output_content.as_deref(), run_id, &tool_call_id);
     let final_output = error.or(output_content);
 
     if !failed {
-        persist_file_artifact(run_id, &tool_name, &tool_call_id, final_output.as_deref());
+        let target_path = value_string(value, &["target_path", "targetPath"]);
+        persist_file_artifact(
+            run_id,
+            &tool_name,
+            &tool_call_id,
+            final_output.as_deref(),
+            target_path.as_deref(),
+        );
     }
 }
 
-fn persist_file_artifact(run_id: &str, tool_name: &str, tool_call_id: &str, output: Option<&str>) {
+fn persist_file_artifact(
+    run_id: &str,
+    tool_name: &str,
+    tool_call_id: &str,
+    output: Option<&str>,
+    target_path: Option<&str>,
+) {
     let summary = match tool_name {
         "write" => "Written by Agent.",
         "edit" => "Edited by Agent.",
@@ -209,8 +222,10 @@ fn persist_file_artifact(run_id: &str, tool_name: &str, tool_call_id: &str, outp
     // Prefer the structured `tool_args` persisted at tool_start — the output
     // prose ("Written to …" / "Edited …") is display text, not a contract, and a
     // reworded agent message would otherwise silently stop artifact recording.
-    // The prose parse stays as a fallback for rows without a stored input.
+    // The agent's structured `target_path` on tool_end is next, and the prose
+    // parse stays as a last fallback for rows without either.
     let Some(path) = file_path_from_tool_input(run_id, tool_call_id)
+        .or_else(|| target_path.map(str::to_string))
         .or_else(|| output.and_then(file_path_from_tool_output))
     else {
         return;
@@ -336,11 +351,33 @@ fn event_value(payload: &str) -> Option<serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(payload).ok()
 }
 
-/// Whether a tool_end output represents a failure. A shell result carries an
-/// "[exit: N]" footer on its last line (see agent
+/// Whether a tool_end output represents a failure. Prefers the agent's
+/// structured `exit_code` + `is_soft_fail` conclusion on the event; events
+/// without those (older agents, journal-synthesized imports) fall back to
+/// parsing the "[exit: N]" footer the agent's shell tool appends (see
 /// `tools::run_shell`). Any non-zero code is a failure, except exit 1 from a
 /// bare grep/diff/cmp/test (a normal "no match / differs / false" signal).
-fn output_is_failure(output: Option<&str>, run_id: &str, tool_call_id: &str) -> bool {
+fn output_is_failure(
+    value: &serde_json::Value,
+    output: Option<&str>,
+    run_id: &str,
+    tool_call_id: &str,
+) -> bool {
+    if let Some(code) = value
+        .get("exit_code")
+        .or_else(|| value.get("exitCode"))
+        .and_then(|code| code.as_i64())
+    {
+        if code == 0 {
+            return false;
+        }
+        let soft_fail = value
+            .get("is_soft_fail")
+            .or_else(|| value.get("isSoftFail"))
+            .and_then(|flag| flag.as_bool())
+            .unwrap_or(false);
+        return !soft_fail;
+    }
     let Some(code) = nonzero_exit_code(output) else {
         return false;
     };
@@ -493,5 +530,36 @@ mod tests {
         assert!(!is_soft_fail_command(Some("python script.py")));
         assert!(!is_soft_fail_command(Some("npm run build")));
         assert!(!is_soft_fail_command(None));
+    }
+
+    #[test]
+    fn structured_exit_fields_beat_the_output_prose() {
+        use super::output_is_failure;
+        use serde_json::json;
+
+        // Structured exit 0 wins even if prose carries a scary footer.
+        let value = json!({"exit_code": 0, "text": "ok\n[exit: 127]"});
+        assert!(!output_is_failure(
+            &value,
+            Some("ok\n[exit: 127]"),
+            "r",
+            "t"
+        ));
+
+        // A structured non-zero exit is a failure without any prose.
+        let value = json!({"exit_code": 127});
+        assert!(output_is_failure(&value, None, "r", "t"));
+
+        // The agent's soft-fail conclusion exempts a bare grep exit 1.
+        let value = json!({"exit_code": 1, "is_soft_fail": true});
+        assert!(!output_is_failure(&value, None, "r", "t"));
+
+        // camelCase aliases are accepted too.
+        let value = json!({"exitCode": 1, "isSoftFail": true});
+        assert!(!output_is_failure(&value, None, "r", "t"));
+
+        // No structured fields, no prose -> not a failure.
+        let value = json!({"text": "hello"});
+        assert!(!output_is_failure(&value, Some("hello"), "r", "t"));
     }
 }

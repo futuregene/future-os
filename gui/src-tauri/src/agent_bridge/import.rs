@@ -8,19 +8,25 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use super::client::{
-    connect_agent, get_session_entries_command, get_state_command, list_sessions_command,
-    set_session_name_command,
+    connect_agent, get_session_entries_command, get_state_command, list_session_ids_command,
+    list_sessions_command, map_rpc_error, set_session_name_command, RpcResponseExt,
 };
 use crate::store;
 
 // ─── agent RPC types ────────────────────────────────────────────────────────
 
 /// Lightweight session summary from the agent's `list_sessions` RPC.
+///
+/// Field casing (audit item 1): the canonical wire keys are camelCase. The
+/// agent also emits snake_case legacy aliases alongside them during the
+/// migration window — the struct reads only the canonical camelCase keys, and
+/// the legacy keys are ignored (declaring an `alias` here would make serde see
+/// both spellings of the same field as a duplicate and reject the entry).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionSummary {
     pub id: String,
-    #[serde(default, rename = "session_name")]
+    #[serde(default, rename = "sessionName")]
     pub name: Option<String>,
     // Tolerate a missing/null cwd (e.g. channel sessions) — an empty cwd is
     // routed to a chat workspace by `thread_mode`, not dropped.
@@ -28,13 +34,13 @@ pub struct AgentSessionSummary {
     pub cwd: String,
     #[serde(default)]
     pub model: String,
-    #[serde(default, rename = "first_message")]
+    #[serde(default)]
     pub first_message: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     pub parent_session_id: String,
     /// Whether the agent is currently streaming a response for this session.
-    #[serde(default, rename = "is_streaming")]
+    #[serde(default)]
     #[allow(dead_code)]
     pub is_streaming: bool,
 }
@@ -94,6 +100,56 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
         }
     }
     sessions
+}
+
+/// The set of session ids the agent currently knows about, with transport
+/// failures surfaced as `Err` instead of an empty list. Consumed by the
+/// orphan-thread cleanup, which must distinguish "agent unreachable" (skip,
+/// delete nothing) from "agent has no sessions" — an ambiguous empty list
+/// could nuke every thread on a transient failure.
+///
+/// Uses the filename-only `list_session_ids` RPC (not `list_sessions`), so a
+/// session whose journal is momentarily unreadable, truncated, or corrupt is
+/// still reported as live here — reconciliation must never mistake a transient
+/// read failure for a deleted session and hard-delete local threads.
+pub(crate) async fn list_agent_session_ids(
+) -> Result<std::collections::HashSet<String>, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(list_session_ids_command())
+        .await
+        .map_err(|status| map_rpc_error("list_session_ids", status))?
+        .into_inner()
+        .ok_or_rpc_error("list_session_ids rejected")?;
+    // A failed enumeration (e.g. the agent's session directory was momentarily
+    // unreadable) must surface as `Err`, never be coerced to an empty set —
+    // the orphan cleanup would then treat every thread as deleted. The agent
+    // returns `success=false` in that case; refuse to proceed.
+    if !response.success {
+        return Err(format!(
+            "list_session_ids failed: {}",
+            if response.error.is_empty() {
+                "(no message)"
+            } else {
+                response.error.as_str()
+            }
+        )
+        .into());
+    }
+    let value: serde_json::Value = serde_json::from_str(&response.data)
+        .map_err(|error| format!("list_session_ids parse: {error}"))?;
+    let mut ids = std::collections::HashSet::new();
+    for id in value
+        .get("ids")
+        .and_then(|ids| ids.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if let Some(id) = id.as_str().filter(|id| !id.is_empty()) {
+            ids.insert(id.to_string());
+        }
+    }
+    Ok(ids)
 }
 
 /// Fetch the full entry list for a session. Returns empty on any failure.
@@ -448,8 +504,11 @@ pub(crate) async fn import_streaming_session(session_id: &str) -> Result<(), cra
         serde_json::from_str(&response.data).map_err(|e| format!("get_state parse: {e}"))?;
     let summary = AgentSessionSummary {
         id: session_id.to_string(),
+        // get_state emits canonical `sessionName` plus the legacy `session_name`
+        // alias (audit item 1); prefer canonical, tolerate pre-item-1 agents.
         name: state
-            .get("session_name")
+            .get("sessionName")
+            .or_else(|| state.get("session_name"))
             .and_then(|value| value.as_str())
             .map(str::to_string),
         cwd: state
@@ -540,19 +599,29 @@ pub async fn import_missing_sessions() -> Result<(), crate::AppError> {
 mod tests {
     use super::*;
 
-    /// Verify that rename_all = "camelCase" + individual rename attributes
-    /// correctly parse the agent's snake_case JSON keys.
+    /// Audit item 1: the canonical casing of list_sessions rows is camelCase;
+    /// the struct must parse it directly. The agent also emits snake_case
+    /// legacy aliases alongside the canonical keys during the migration window,
+    /// so the struct reads ONLY the camelCase spellings — declaring aliases for
+    /// the legacy keys would make serde treat the two spellings of one field as
+    /// a duplicate and reject the whole entry.
     #[test]
     fn agent_session_summary_parses_list_sessions_json() {
         let raw = serde_json::json!({
             "id": "abc123",
-            "session_name": "fix the login bug",
+            "sessionName": "fix the login bug",
             "model": "deepseek-v4-pro",
             "cwd": "/Users/test/my-project",
-            "updated_at": "2026-07-21 10:00:00",
-            "parent_session_id": "parent-1",
+            "updatedAt": "2026-07-21 10:00:00",
+            "parentSessionId": "parent-1",
+            "firstMessage": "please fix the login bug on the homepage",
+            "queryCount": 5,
+            "isStreaming": true,
+            // Legacy snake_case aliases the agent still emits alongside the
+            // canonical keys — must be ignored, not treated as duplicates.
+            "session_name": "fix the login bug",
             "first_message": "please fix the login bug on the homepage",
-            "query_count": 5,
+            "parent_session_id": "parent-1",
             "is_streaming": true,
         });
 

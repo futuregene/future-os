@@ -57,6 +57,8 @@ interface ExchangeAcc {
   finalText: string;
   /** Timestamp of the assistant reply (last assistant entry of the exchange wins). */
   assistantCreatedAt?: string;
+  /** Key of the last assistant entry — the assistant message's stable id seed. */
+  assistantEntryId?: string;
   /** Per-reply usage/timing carried on the final assistant entry. */
   outputTokens?: number;
   durationMs?: number;
@@ -107,10 +109,13 @@ function collapseActivitySegments(segments: MessageSegment[]): MessageSegment[] 
       .filter((seg): seg is Extract<MessageSegment, { kind: "activity" }> => seg.kind === "activity")
       .map(seg => seg.item);
     const children = run.kind === "shell" ? items : dedupeByTarget(items);
+    // Seed both ids from the first child tool-call id (stable across reloads)
+    // so a re-projection reuses the collapsed row instead of remounting it.
+    const base = items[0]?.id ?? segId();
     out.push({
-      id: segId(),
+      id: `seg_${base}`,
       kind: "activity",
-      item: { id: segId(), kind: run.kind, status: "completed", count: children.length, children },
+      item: { id: `collapsed_${base}`, kind: run.kind, status: "completed", count: children.length, children },
     });
   }
 
@@ -123,6 +128,17 @@ function segId(): string {
 }
 
 /**
+ * Stable key for deriving React ids from a JSONL entry. Entry ids are
+ * assigned once by the agent and preserved across re-saves, so ids derived
+ * from them survive re-projection (run settle, thread switch) — a fresh
+ * segId() per projection used to remount the whole window. segId() stays as
+ * the fallback for entries without one.
+ */
+function entryKey(entry: SessionEntry): string {
+  return entry.id || segId();
+}
+
+/**
  * The agent replaces summarized history with a single user message
  * "[Context compaction: …]" (compaction/mod.rs).
  */
@@ -132,14 +148,15 @@ function isCompactionDivider(entry: SessionEntry): boolean {
 
 /** Render a compaction marker as a divider, not as a user bubble / new exchange. */
 function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
+  const key = entryKey(entry);
   return {
-    id: segId(),
+    id: `m_${key}`,
     role: "assistant",
     authorKey: "author.researchCopilot",
     content: "",
     status: "complete",
     createdAt: entry.timestamp ?? now,
-    segments: [{ id: segId(), kind: "compaction" }],
+    segments: [{ id: `seg_${key}_compaction`, kind: "compaction" }],
   };
 }
 
@@ -149,7 +166,7 @@ function newExchangeAcc(): ExchangeAcc {
 
 function userMessageFromEntry(entry: SessionEntry, now: string): AgentMessage {
   return {
-    id: segId(),
+    id: `m_${entryKey(entry)}`,
     role: "user",
     authorKey: "author.you",
     content: entry.content,
@@ -165,7 +182,10 @@ function userMessageFromEntry(entry: SessionEntry, now: string): AgentMessage {
 
 /** Fold one assistant entry into an exchange's accumulator. */
 function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
-  // Last assistant entry of the exchange carries the reply's time + usage.
+  const key = entryKey(entry);
+  // Last assistant entry of the exchange carries the reply's time + usage,
+  // and seeds the assistant message's stable id.
+  acc.assistantEntryId = key;
   if (entry.timestamp)
     acc.assistantCreatedAt = entry.timestamp;
   if (typeof entry.output_tokens === "number")
@@ -175,18 +195,18 @@ function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
   if (typeof entry.meta?.run_id === "string" && entry.meta.run_id)
     acc.runId = entry.meta.run_id;
   if (entry.thinking) {
-    acc.segments.push({ id: segId(), kind: "thinking", text: entry.thinking });
+    acc.segments.push({ id: `seg_${key}_thinking`, kind: "thinking", text: entry.thinking });
   }
   // Text (any preamble) comes before the tool calls it introduces — that's
   // the order the model emits within a message, and the order the live path
   // shows. Pushing tools first put "Read config.toml" above "Let me check
   // the config".
   if (entry.content?.trim()) {
-    acc.segments.push({ id: segId(), kind: "text", text: entry.content });
+    acc.segments.push({ id: `seg_${key}_text`, kind: "text", text: entry.content });
     acc.finalText = entry.content;
   }
   if (entry.tool_calls) {
-    for (const tc of entry.tool_calls) {
+    for (const [index, tc] of entry.tool_calls.entries()) {
       const kind = asToolKind(tc.function.name);
       const target = targetFromArgs(kind, normalizeArgs(tc.function.arguments));
       const item: AgentActivityItem = {
@@ -200,7 +220,7 @@ function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
         // keeps a write's hover from being its entire file content.
         detail: target,
       };
-      acc.segments.push({ id: segId(), kind: "activity", item });
+      acc.segments.push({ id: `seg_${key}_${tc.id || index}`, kind: "activity", item });
       acc.pendingTools.push(item);
     }
   }
@@ -242,7 +262,7 @@ function flushAcc(messages: AgentMessage[], acc: ExchangeAcc) {
     || acc.durationMs !== undefined;
   if (hasContent) {
     messages.push({
-      id: segId(),
+      id: acc.assistantEntryId ? `m_${acc.assistantEntryId}` : segId(),
       role: "assistant",
       authorKey: "author.researchCopilot",
       content: acc.finalText || textSegments.map(s => s.text).join("\n"),

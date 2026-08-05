@@ -3,8 +3,9 @@
 //!
 //! The agent loads providers from `~/.future/agent/models.json` (merged over
 //! its built-in catalog) and API keys from `~/.future/agent/auth.json`. The
-//! built-in "FutureGene" provider is dynamic (its base URL comes from
-//! `auth.json` `future.platform_base_url` or legacy `future.base_url`,
+//! built-in "FutureGene" provider is dynamic (its base URL is resolved from
+//! the `future` entry in `auth.json` — legacy `base_url` first, then
+//! `platform_base_url`, per the shared contract in `proto/future.proto` —
 //! defaulting to the Future API host) and is
 //! presented read-only; user-defined providers live under
 //! `models.json.providers` and are fully editable here.
@@ -13,7 +14,7 @@
 //! `validate` (custom-provider field validation), `write` (the mutating command
 //! paths). This module owns the public DTOs and the read-only `list` view.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,7 +33,9 @@ pub use write::{
     upsert_custom_provider,
 };
 
-use catalog::{builtin_catalog_providers, future_model_count, models_json_path};
+use catalog::{
+    builtin_catalog_providers, future_model_count, models_json_path, CatalogProviderSummary,
+};
 use write::{is_override_only, provider_base_url_override};
 
 /// Display name of the built-in Future provider. Shared with `write` so the
@@ -90,7 +93,7 @@ pub struct CustomProviderModel {
     pub supports_images: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpsertCustomProviderInput {
     pub id: String,
@@ -131,7 +134,7 @@ pub struct SetBuiltinProviderBaseUrlInput {
     pub base_url: String,
 }
 
-pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
+pub async fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     // Display path stays lenient: a corrupt models.json shouldn't fail the whole
     // Providers page — show built-ins and let the user fix the file. Write paths
     // read strictly (see the upsert/delete functions) so they never clobber it.
@@ -139,7 +142,30 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     // Display path: a corrupt auth.json shouldn't blank the providers list, so
     // fall back to empty (key badges show "Not Configured"); write paths stay strict.
     let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
+    let catalog = builtin_catalog_providers().await;
+    Ok(build_providers_view(&models, &auth, &catalog))
+}
 
+/// Re-read the config files and rebuild the view with an already-fetched
+/// catalog. Used by the write paths so each command fetches the catalog once
+/// (for validation and for the view) instead of twice.
+pub(super) fn refresh_view_with_catalog(
+    catalog: &BTreeMap<String, CatalogProviderSummary>,
+) -> Result<ProvidersView, crate::AppError> {
+    // Same lenient display-path reads as `list_agent_providers`.
+    let models = config_io::read_json_lenient(&models_json_path()?);
+    let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
+    Ok(build_providers_view(&models, &auth, catalog))
+}
+
+/// Pure view assembly over the current config files and the agent-provided
+/// built-in catalog. Split out so the write paths can rebuild the view with
+/// the catalog they already fetched, and so tests can inject a fixture catalog.
+fn build_providers_view(
+    models: &Value,
+    auth: &Value,
+    catalog: &BTreeMap<String, CatalogProviderSummary>,
+) -> ProvidersView {
     // Entries that fully define a provider (name/api/models) shadow a same-id
     // built-in and show as custom. "Override-only" entries (just a `baseUrl`,
     // e.g. an Azure resource URL) don't shadow — they stay built-in and only
@@ -159,23 +185,24 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     let mut builtin = vec![BuiltinProvider {
         id: FUTURE_PROVIDER_ID.to_string(),
         name: FUTURE_PROVIDER_NAME.to_string(),
-        base_url: crate::future_platform::resolve_future_base_url(&auth),
-        has_api_key: auth_has_key(&auth, FUTURE_PROVIDER_ID),
+        base_url: crate::future_platform::resolve_future_base_url(auth),
+        has_api_key: auth_has_key(auth, FUTURE_PROVIDER_ID),
         model_count: future_model_count(),
         requires_base_url: false,
     }];
-    for (id, summary) in builtin_catalog_providers() {
-        if custom_provider_ids.contains(&id) {
+    for (id, summary) in catalog {
+        if custom_provider_ids.contains(id) {
             continue;
         }
         // The catalog base URL is the source of truth for whether this provider
         // needs a user-supplied Base URL; a stored override then fills it in.
         let requires_base_url = summary.base_url.contains(BASE_URL_PLACEHOLDER);
-        let base_url = provider_base_url_override(&models, &id).unwrap_or(summary.base_url);
+        let base_url =
+            provider_base_url_override(models, id).unwrap_or_else(|| summary.base_url.clone());
         builtin.push(BuiltinProvider {
-            has_api_key: auth_has_key(&auth, &id),
-            id,
-            name: summary.name,
+            has_api_key: auth_has_key(auth, id),
+            id: id.clone(),
+            name: summary.name.clone(),
             base_url,
             model_count: summary.model_count,
             requires_base_url,
@@ -242,7 +269,7 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
                 })
                 .unwrap_or_default();
             custom.push(CustomProvider {
-                has_api_key: auth_has_key(&auth, id),
+                has_api_key: auth_has_key(auth, id),
                 api,
                 base_url,
                 name,
@@ -253,7 +280,7 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     }
     custom.sort_by(|left, right| left.id.cmp(&right.id));
 
-    Ok(ProvidersView { builtin, custom })
+    ProvidersView { builtin, custom }
 }
 
 fn auth_has_key(auth: &Value, id: &str) -> bool {

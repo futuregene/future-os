@@ -178,14 +178,13 @@ impl AgentClient {
 
     /// Create a new agent session. Returns the session_id.
     pub async fn new_session(&mut self, cwd: &str, created_by: &str) -> Result<String> {
-        let meta = serde_json::json!({ "createdBy": created_by });
         let resp = self
             .call(
                 "new_session",
                 "",
                 RpcCommand {
                     cwd: cwd.to_string(),
-                    custom_instructions: meta.to_string(),
+                    created_by: created_by.to_string(),
                     ..Default::default()
                 },
             )
@@ -375,7 +374,13 @@ impl AgentClient {
             tokens_out: resp["tokensOut"].as_i64().unwrap_or(0),
             query_count: resp["queryCount"].as_i64().unwrap_or(0) as usize,
             session_id: resp["sessionId"].as_str().unwrap_or("").to_string(),
-            session_name: resp["session_name"].as_str().unwrap_or("").to_string(),
+            // Canonical `sessionName` since audit item 1; fall back to the
+            // legacy `session_name` emitted by older agents.
+            session_name: resp["sessionName"]
+                .as_str()
+                .or_else(|| resp["session_name"].as_str())
+                .unwrap_or("")
+                .to_string(),
             cwd: resp["cwd"].as_str().unwrap_or("").to_string(),
             auto_compaction: resp["autoCompactionEnabled"].as_bool().unwrap_or(true),
             total_cost: resp["totalCost"].as_f64().unwrap_or(0.0),

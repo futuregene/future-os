@@ -19,7 +19,7 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
@@ -170,7 +170,10 @@ export function ActivityRail({
     });
   }
 
-  function toggleThreadSelection(thread: StoredThread) {
+  // Stable row callbacks for the memoized ThreadListItem: one instance shared
+  // by every row (each row passes its own thread back), instead of fresh
+  // per-row closures on every render.
+  const toggleThreadSelection = useCallback((thread: StoredThread) => {
     setSelectedThreadIds((current) => {
       const next = new Set(current);
       if (next.has(thread.id)) {
@@ -181,7 +184,11 @@ export function ActivityRail({
       }
       return next;
     });
-  }
+  }, []);
+
+  const handleThreadMenuOpenChange = useCallback((thread: StoredThread, open: boolean) => {
+    setOpenThreadMenuId(open ? thread.id : null);
+  }, []);
 
   function exitSelectionMode() {
     setSelectionMode(false);
@@ -201,16 +208,21 @@ export function ActivityRail({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [selectionMode]);
 
-  const visibleThreads = sortThreads(
-    threads.filter(thread => thread.status === "active"),
+  // Derived thread lists are memoized: the rail re-renders whenever any
+  // run/streaming status changes, but these depend only on the thread list
+  // and selection scope — recomputing the sort + filters (O(W×T) with the
+  // workspace grouping) on every render was wasted churn (M3).
+  const visibleThreads = useMemo(
+    () => sortThreads(threads.filter(thread => thread.status === "active")),
+    [threads],
   );
 
   // Scope-filtered threads for the current selection mode.
-  const scopedThreads = visibleThreads.filter((thread) => {
+  const scopedThreads = useMemo(() => visibleThreads.filter((thread) => {
     if (selectionScope === "chat")
       return thread.mode === "chat";
     return thread.mode === "workspace" && thread.workspaceId === selectionScope;
-  });
+  }), [selectionScope, visibleThreads]);
 
   function enterChatSelectionMode() {
     setSelectionScope("chat");
@@ -233,11 +245,23 @@ export function ActivityRail({
   }
 
   /** Whether a thread is selectable in the current selection scope. */
-  function isThreadInScope(thread: StoredThread) {
+  const isThreadInScope = useCallback((thread: StoredThread) => {
     if (selectionScope === "chat")
       return thread.mode === "chat";
     return thread.mode === "workspace" && thread.workspaceId === selectionScope;
-  }
+  }, [selectionScope]);
+
+  // One stable row-click handler for all memoized ThreadListItems: in
+  // selection mode it toggles in-scope threads (out-of-scope rows are a
+  // deliberate no-op), otherwise it opens the thread.
+  const handleRowSelect = useCallback((thread: StoredThread) => {
+    if (selectionMode) {
+      if (isThreadInScope(thread))
+        toggleThreadSelection(thread);
+      return;
+    }
+    onSelectThread(thread);
+  }, [isThreadInScope, onSelectThread, selectionMode, toggleThreadSelection]);
 
   /** Whether this thread should show a selection checkbox. */
   function threadSelectionMode(thread: StoredThread): boolean {
@@ -253,15 +277,15 @@ export function ActivityRail({
   }
   // Pinned threads are hoisted into a single global section (regardless of
   // workspace/chat); the per-group lists show only the unpinned rest.
-  const pinnedThreads = visibleThreads.filter(thread => thread.pinned);
-  const chatThreads = visibleThreads.filter(thread => thread.mode === "chat" && !thread.pinned);
-  const workspaceThreads = visibleThreads.filter(thread => thread.mode === "workspace" && !thread.pinned);
-  const workspaceGroups = workspaces
+  const pinnedThreads = useMemo(() => visibleThreads.filter(thread => thread.pinned), [visibleThreads]);
+  const chatThreads = useMemo(() => visibleThreads.filter(thread => thread.mode === "chat" && !thread.pinned), [visibleThreads]);
+  const workspaceThreads = useMemo(() => visibleThreads.filter(thread => thread.mode === "workspace" && !thread.pinned), [visibleThreads]);
+  const workspaceGroups = useMemo(() => workspaces
     .filter(workspace => workspace.kind === "user" || workspaceThreads.some(thread => thread.workspaceId === workspace.id))
     .map(workspace => ({
       workspace,
       threads: workspaceThreads.filter(thread => thread.workspaceId === workspace.id),
-    }));
+    })), [workspaceThreads, workspaces]);
   const visibleWorkspaceGroups = workspaceSectionCollapsed ? [] : workspaceGroups;
   const visibleChatThreads = chatSectionCollapsed ? [] : chatThreads;
   const toggleLabel = floating
@@ -354,10 +378,10 @@ export function ActivityRail({
                                 thread={thread}
                                 unread={unreadThreadIds.has(thread.id)}
                                 onDeleteThread={onDeleteThread}
-                                onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
+                                onMenuOpenChange={handleThreadMenuOpenChange}
                                 onRenameThread={onRenameThread}
                                 onRestoreThread={onRestoreThread}
-                                onSelectThread={selectionMode ? (isThreadInScope(thread) ? () => toggleThreadSelection(thread) : () => {}) : onSelectThread}
+                                onSelectThread={handleRowSelect}
                                 onTogglePinThread={onTogglePinThread}
                                 onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
                               />
@@ -459,10 +483,10 @@ export function ActivityRail({
                                         unread={unreadThreadIds.has(thread.id)}
                                         compact
                                         onDeleteThread={onDeleteThread}
-                                        onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
+                                        onMenuOpenChange={handleThreadMenuOpenChange}
                                         onRenameThread={onRenameThread}
                                         onRestoreThread={onRestoreThread}
-                                        onSelectThread={selectionMode ? (isThreadInScope(thread) ? () => toggleThreadSelection(thread) : () => {}) : onSelectThread}
+                                        onSelectThread={handleRowSelect}
                                         onTogglePinThread={onTogglePinThread}
                                         onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
                                       />
@@ -522,10 +546,10 @@ export function ActivityRail({
                           thread={thread}
                           unread={unreadThreadIds.has(thread.id)}
                           onDeleteThread={onDeleteThread}
-                          onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
+                          onMenuOpenChange={handleThreadMenuOpenChange}
                           onRenameThread={onRenameThread}
                           onRestoreThread={onRestoreThread}
-                          onSelectThread={selectionMode ? (isThreadInScope(thread) ? () => toggleThreadSelection(thread) : () => {}) : onSelectThread}
+                          onSelectThread={handleRowSelect}
                           onTogglePinThread={onTogglePinThread}
                           onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
                         />

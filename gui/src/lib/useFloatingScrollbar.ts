@@ -48,7 +48,15 @@ export function useFloatingScrollbar() {
     const maxTop = clientHeight - INSET * 2 - height;
     const top = canScroll ? INSET + (scrollTop / (scrollHeight - clientHeight)) * maxTop : INSET;
 
-    setScrollbar({ height, top, visible: visible && canScroll });
+    // Skip the state write when nothing changed: this runs on every streaming
+    // push (via the auto-scroll settle callback), and an unconditional set
+    // with a fresh object literal forced a second commit per push.
+    const nextVisible = visible && canScroll;
+    setScrollbar((previous) => {
+      if (previous.height === height && previous.top === top && previous.visible === nextVisible)
+        return previous;
+      return { height, top, visible: nextVisible };
+    });
   }, []);
 
   const handleScroll = useCallback(() => {

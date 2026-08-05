@@ -1,6 +1,7 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import { CircleAlert, MoreHorizontal } from "lucide-react";
+import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { cn } from "../../lib/cn";
@@ -10,8 +11,13 @@ import { ThreadItemMenu } from "./ActivityRailMenus";
 /**
  * A single sidebar thread row: title, run/unread indicator, and actions menu.
  * When the sidebar is in selection mode, a checkbox replaces the run indicator.
+ *
+ * Memoized: the rail re-renders whenever any run/streaming status changes,
+ * but a row's props are all per-thread (stable callbacks receive the thread
+ * as an argument), so unchanged rows must not re-render — each row also
+ * subscribes to the agent-state cache via useCachedAgentState.
  */
-export function ThreadListItem({
+function ThreadListItemImpl({
   active,
   archived,
   compact,
@@ -49,7 +55,8 @@ export function ThreadListItem({
   thread: StoredThread;
   unread?: boolean;
   onDeleteThread: (thread: StoredThread) => void;
-  onMenuOpenChange: (open: boolean) => void;
+  /** Receives the row's thread so the rail can pass one stable callback to every row. */
+  onMenuOpenChange: (thread: StoredThread, open: boolean) => void;
   onRenameThread: (thread: StoredThread) => void;
   onRestoreThread: (thread: StoredThread) => void;
   onSelectThread: (thread: StoredThread) => void;
@@ -59,7 +66,7 @@ export function ThreadListItem({
   const { t } = useTranslation("layout");
   const menuRef = useDismissableLayer<HTMLDivElement>({
     enabled: menuOpen,
-    onDismiss: () => onMenuOpenChange(false),
+    onDismiss: () => onMenuOpenChange(thread, false),
   });
 
   // Agent session_name is authoritative; DB title is fallback.
@@ -92,7 +99,7 @@ export function ThreadListItem({
       // `...` button.
       onContextMenu={(event) => {
         event.preventDefault();
-        onMenuOpenChange(true);
+        onMenuOpenChange(thread, true);
       }}
     >
       {/* Full-row click target so the whole (highlighted) row selects the
@@ -167,7 +174,7 @@ export function ThreadListItem({
                 )}
                 onClick={(event) => {
                   event.stopPropagation();
-                  onMenuOpenChange(!menuOpen);
+                  onMenuOpenChange(thread, !menuOpen);
                 }}
                 title={t("activityRail.threadActions", { title: displayTitle })}
                 type="button"
@@ -181,7 +188,7 @@ export function ThreadListItem({
             <ThreadItemMenu
               archived={archived}
               pinned={thread.pinned}
-              onClose={() => onMenuOpenChange(false)}
+              onClose={() => onMenuOpenChange(thread, false)}
               onDelete={() => onDeleteThread(thread)}
               onRename={() => onRenameThread(thread)}
               onRestore={() => onRestoreThread(thread)}
@@ -192,6 +199,8 @@ export function ThreadListItem({
     </div>
   );
 }
+
+export const ThreadListItem = memo(ThreadListItemImpl);
 
 function ThreadRunIndicator({ status, unread }: { status?: ThreadRunInfo["status"]; unread?: boolean }) {
   const { t } = useTranslation("layout");
