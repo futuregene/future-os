@@ -96,6 +96,17 @@ fn map_broadcast_event(
     }
 }
 
+/// Proto string field → optional domain value: empty strings are "absent"
+/// (proto3 has no presence for plain scalars; the config-write sub-messages
+/// rely on this to mean "leave the field untouched").
+fn nonempty(value: String) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 #[tonic::async_trait]
 impl proto::future_agent_server::FutureAgent for FutureAgentService {
     type StreamEventsStream =
@@ -188,6 +199,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             level: cmd.level,
             mode: cmd.mode,
             custom_instructions: cmd.custom_instructions,
+            created_by: cmd.created_by,
+            source_meta: cmd.source_meta,
             enabled: cmd.enabled,
             command: cmd.command,
             session_id: cmd.session_id,
@@ -203,11 +216,43 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             requested_run_id: cmd.requested_run_id,
             client_request_id: cmd.client_request_id,
             busy_policy: cmd.busy_policy,
+            include_builtin_providers: cmd.include_builtin_providers,
             sandbox_policy: cmd
                 .sandbox_policy
                 .map(|policy| crate::sandbox::SandboxPolicy {
                     tier: crate::sandbox::SandboxTier::parse(&policy.tier),
                 }),
+            auth_update: cmd
+                .auth_update
+                .map(|update| crate::config::providers::AuthMutation {
+                    provider: update.provider,
+                    key: nonempty(update.key),
+                    clear_key: update.clear_key,
+                    base_url: nonempty(update.base_url),
+                    clear_base_url: update.clear_base_url,
+                    remove_entry: update.remove_entry,
+                    remove_platform_base_url: update.remove_platform_base_url,
+                }),
+            provider_config: cmd.provider_config.map(|config| {
+                crate::config::providers::ProviderUpsertSpec {
+                    id: config.id,
+                    name: nonempty(config.name),
+                    api: nonempty(config.api),
+                    base_url: nonempty(config.base_url),
+                    clear_base_url: config.clear_base_url,
+                    models: config
+                        .models
+                        .into_iter()
+                        .map(|model| crate::config::providers::ProviderModelSpec {
+                            id: model.id,
+                            name: model.name,
+                            modalities: model.modalities,
+                        })
+                        .collect(),
+                    create_only: config.create_only,
+                    api_key: nonempty(config.api_key),
+                }
+            }),
         };
 
         // The command dispatcher still contains legacy synchronous JSONL and

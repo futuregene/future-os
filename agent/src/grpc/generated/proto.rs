@@ -99,6 +99,33 @@ pub struct RpcCommand {
     /// model accepts image input; otherwise they degrade to a path reference.
     #[prost(message, repeated, tag = "151")]
     pub attachments: ::prost::alloc::vec::Vec<Attachment>,
+    /// When true, the list_models response additionally carries
+    /// `builtinProviders` — a summary of the agent's built-in provider catalog
+    /// (id, model count, base URL per provider) — so clients can render the
+    /// full catalog at runtime instead of compiling it in.
+    #[prost(bool, tag = "160")]
+    pub include_builtin_providers: bool,
+    /// Who created the session ("gui", "tui", "cli", a channel id...). The
+    /// agent defaults to "tui" when absent. Typed replacement for the legacy
+    /// practice of smuggling {"createdBy":...} JSON through
+    /// custom_instructions (which belongs to the compact command).
+    #[prost(string, tag = "161")]
+    pub created_by: ::prost::alloc::string::String,
+    /// Free-form JSON source metadata recorded with the session (e.g. the
+    /// GUI's thread/workspace context). Carried as a JSON string: the shape is
+    /// per-client data, not part of the typed contract.
+    #[prost(string, tag = "162")]
+    pub source_meta: ::prost::alloc::string::String,
+    /// ── set_auth ───────────────────────────────────────────────────────────
+    /// One auth.json entry mutation (typed sub-message, not JSON-in-string).
+    /// Read when type == "set_auth".
+    #[prost(message, optional, tag = "170")]
+    pub auth_update: ::core::option::Option<AuthUpdate>,
+    /// ── upsert_provider / delete_provider ──────────────────────────────────
+    /// A models.json `providers` entry (plus optional auth.json key). Read when
+    /// type == "upsert_provider" or "delete_provider" (the latter uses only `id`).
+    #[prost(message, optional, tag = "171")]
+    pub provider_config: ::core::option::Option<ProviderUpsert>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Attachment {
@@ -124,6 +151,70 @@ pub struct SandboxPolicy {
     /// "off" (unrestricted) | "manual" (approval required) | "sandbox" (macOS Seatbelt, macOS only).
     #[prost(string, tag = "7")]
     pub tier: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AuthUpdate {
+    /// Provider entry name (e.g. "future", "openai").
+    #[prost(string, tag = "1")]
+    pub provider: ::prost::alloc::string::String,
+    /// Non-empty: set the entry's "key" field.
+    #[prost(string, tag = "2")]
+    pub key: ::prost::alloc::string::String,
+    /// Remove the entry's "key" field (e.g. logout keeps base_url).
+    #[prost(bool, tag = "3")]
+    pub clear_key: bool,
+    /// Non-empty: set the entry's "base_url" field (auth.json field name).
+    #[prost(string, tag = "4")]
+    pub base_url: ::prost::alloc::string::String,
+    /// Remove the entry's "base_url" field.
+    #[prost(bool, tag = "5")]
+    pub clear_base_url: bool,
+    /// Remove the whole provider entry.
+    #[prost(bool, tag = "6")]
+    pub remove_entry: bool,
+    /// Remove the legacy "platform_base_url" field (environment switches pin
+    /// base_url and drop it so the resolved platform is unambiguous).
+    #[prost(bool, tag = "7")]
+    pub remove_platform_base_url: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProviderUpsert {
+    /// Provider id — the key in models.json `providers`.
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    /// Non-empty: set "name".
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    /// Non-empty: set "api" (e.g. "openai-completions").
+    #[prost(string, tag = "3")]
+    pub api: ::prost::alloc::string::String,
+    /// Non-empty: set the "baseUrl" override.
+    #[prost(string, tag = "4")]
+    pub base_url: ::prost::alloc::string::String,
+    /// Remove the "baseUrl" override; the entry is dropped if nothing remains.
+    #[prost(bool, tag = "5")]
+    pub clear_base_url: bool,
+    /// Non-empty: replace the "models" list.
+    #[prost(message, repeated, tag = "6")]
+    pub models: ::prost::alloc::vec::Vec<ProviderModel>,
+    /// Fail when the provider already exists (create mode; edits must not
+    /// silently overwrite an existing entry).
+    #[prost(bool, tag = "7")]
+    pub create_only: bool,
+    /// Non-empty: also store as this provider's auth.json "key".
+    #[prost(string, tag = "8")]
+    pub api_key: ::prost::alloc::string::String,
+}
+/// A model entry under a custom provider, persisted to models.json.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProviderModel {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    /// Input modalities, e.g. \["text"\] or \["text", "image"\].
+    #[prost(string, repeated, tag = "3")]
+    pub modalities: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
@@ -165,6 +256,9 @@ pub struct RpcResponse {
     #[prost(bool, tag = "4")]
     pub success: bool,
     /// JSON-serialised response payload.  Structure depends on the command.
+    /// The big read commands are contracted by the messages in the "Response
+    /// payload contracts" section below: list_sessions / get_state /
+    /// get_session_entries / get_events_since.
     #[prost(string, tag = "5")]
     pub data: ::prost::alloc::string::String,
     /// Error message when success is false.
@@ -261,6 +355,249 @@ pub struct SessionState {
     /// (cwd only), or "none" (read-only tools).
     #[prost(string, tag = "28")]
     pub permission_level: ::prost::alloc::string::String,
+    /// The agent process instance id (changes on every agent restart).
+    #[prost(string, tag = "29")]
+    pub agent_instance_id: ::prost::alloc::string::String,
+    /// Parent session id when this session was forked; empty otherwise.
+    #[prost(string, tag = "30")]
+    pub parent_session_id: ::prost::alloc::string::String,
+    /// Who created the session ("gui", "tui", "cli", a channel id...).
+    #[prost(string, tag = "31")]
+    pub created_by: ::prost::alloc::string::String,
+    /// Free-form JSON source metadata recorded at creation (see
+    /// RpcCommand.source_meta).
+    #[prost(string, tag = "32")]
+    pub source_meta: ::prost::alloc::string::String,
+    /// The currently executing run, absent when idle.
+    #[prost(message, optional, tag = "33")]
+    pub active_run: ::core::option::Option<RunStateSnapshot>,
+    /// Accepted runs queued behind the active one, in queue order.
+    #[prost(message, repeated, tag = "34")]
+    pub queued_runs: ::prost::alloc::vec::Vec<QueuedRunState>,
+    /// queued_runs.length (carried separately for clients that only poll it).
+    #[prost(int32, tag = "35")]
+    pub queued_count: i32,
+    /// Restart recovery: a run that began (journal run_started) but never
+    /// committed (no run_terminal) before the agent restarted.
+    #[prost(message, optional, tag = "36")]
+    pub interrupted_run: ::core::option::Option<RunStateSnapshot>,
+    /// Terminal journal content of the run named in the get_state request's
+    /// run_id, when present (RunTerminalInfo shape).
+    #[prost(message, optional, tag = "37")]
+    pub requested_run: ::core::option::Option<RunTerminalInfo>,
+    /// Recent terminal acknowledgements for lost-queued-run recovery.
+    #[prost(message, repeated, tag = "38")]
+    pub recent_terminal_acks: ::prost::alloc::vec::Vec<TerminalAck>,
+    /// Approval requests the session is parked on (full card payloads,
+    /// ApprovalRequestInfo shape) so a reconnecting client can rebuild its
+    /// approval UI.
+    #[prost(message, repeated, tag = "39")]
+    pub pending_approvals: ::prost::alloc::vec::Vec<ApprovalRequestInfo>,
+}
+/// A run's live state as surfaced by get_state (activeRun / interruptedRun).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RunStateSnapshot {
+    #[prost(string, tag = "1")]
+    pub run_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "2")]
+    pub epoch: i64,
+    #[prost(int64, tag = "3")]
+    pub run_sequence: i64,
+    /// Run phase ("running"...) or "interrupted_by_restart" for recovery.
+    #[prost(string, tag = "4")]
+    pub state: ::prost::alloc::string::String,
+    /// Last broadcast event idx (active runs only).
+    #[prost(int64, tag = "5")]
+    pub last_event_idx: i64,
+}
+/// An accepted run waiting in the session's queue.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueuedRunState {
+    #[prost(string, tag = "1")]
+    pub run_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "2")]
+    pub run_sequence: i64,
+    #[prost(string, tag = "3")]
+    pub client_request_id: ::prost::alloc::string::String,
+    /// Always "queued".
+    #[prost(string, tag = "4")]
+    pub state: ::prost::alloc::string::String,
+    #[prost(int32, tag = "5")]
+    pub queue_position: i32,
+    /// RFC3339 acceptance time.
+    #[prost(string, tag = "6")]
+    pub accepted_at: ::prost::alloc::string::String,
+    /// The user's prompt text, for queue display.
+    #[prost(string, tag = "7")]
+    pub display_text: ::prost::alloc::string::String,
+}
+/// Terminal journal content of one run (requestedRun). Keys mirror the
+/// on-disk run_terminal marker (snake_case).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RunTerminalInfo {
+    #[prost(string, tag = "1")]
+    pub run_id: ::prost::alloc::string::String,
+    /// "completed" | "failed" | "cancelled" | ...
+    #[prost(string, tag = "2")]
+    pub state: ::prost::alloc::string::String,
+    #[prost(int64, tag = "3")]
+    pub run_tokens: i64,
+    #[prost(int64, tag = "4")]
+    pub run_duration_ms: i64,
+    /// Present only on failure.
+    #[prost(string, tag = "5")]
+    pub error: ::prost::alloc::string::String,
+}
+/// A recent terminal acknowledgement for a queued run whose terminal state the
+/// client may have missed (e.g. across an agent restart).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TerminalAck {
+    #[prost(string, tag = "1")]
+    pub run_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "2")]
+    pub run_sequence: i64,
+    #[prost(string, tag = "3")]
+    pub client_request_id: ::prost::alloc::string::String,
+    /// "terminal" | "cancelled" | "failed".
+    #[prost(string, tag = "4")]
+    pub state: ::prost::alloc::string::String,
+    /// e.g. "superseded".
+    #[prost(string, tag = "5")]
+    pub reason: ::prost::alloc::string::String,
+}
+/// An approval_request card the session is parked on. Tool-specific extras
+/// (message, suggestions, ...) pass through alongside these fields.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApprovalRequestInfo {
+    #[prost(string, tag = "1")]
+    pub approval_request_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub tool_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub tool_id: ::prost::alloc::string::String,
+    /// "tool" | ...
+    #[prost(string, tag = "5")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub title: ::prost::alloc::string::String,
+    /// The tool call's arguments, JSON-serialised.
+    #[prost(string, tag = "7")]
+    pub action: ::prost::alloc::string::String,
+}
+/// One row of the list_sessions response.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SessionSummary {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    /// User-assigned session name (empty when unnamed).
+    #[prost(string, tag = "2")]
+    pub session_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub model: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub cwd: ::prost::alloc::string::String,
+    /// "YYYY-MM-DD HH:MM:SS" (local time).
+    #[prost(string, tag = "5")]
+    pub updated_at: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub parent_session_id: ::prost::alloc::string::String,
+    /// First user message, for list display.
+    #[prost(string, tag = "7")]
+    pub first_message: ::prost::alloc::string::String,
+    #[prost(int32, tag = "8")]
+    pub query_count: i32,
+    /// Whether the agent is streaming a response for this session right now.
+    #[prost(bool, tag = "9")]
+    pub is_streaming: bool,
+}
+/// One displayable entry of a session (get_session_entries). Field names match
+/// the on-disk JSONL schema; `content` is display text for message entries and
+/// the raw session_info JSON object for the session_info entry.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SessionEntry {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    /// "user" | "assistant" | "tool" (the entry's message role).
+    #[prost(string, tag = "2")]
+    pub role: ::prost::alloc::string::String,
+    /// Display text (message entries) or session_info JSON (session_info entry).
+    #[prost(string, tag = "3")]
+    pub content: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub name: ::prost::alloc::string::String,
+    /// Tool call arguments (JSON string), tool entries.
+    #[prost(string, tag = "5")]
+    pub tool_args: ::prost::alloc::string::String,
+    /// RFC3339.
+    #[prost(string, tag = "6")]
+    pub timestamp: ::prost::alloc::string::String,
+    /// Reasoning text, assistant entries (absent when empty).
+    #[prost(string, tag = "7")]
+    pub thinking: ::prost::alloc::string::String,
+    /// Structured per-entry metadata (e.g. user attachments), JSON.
+    #[prost(string, tag = "8")]
+    pub meta: ::prost::alloc::string::String,
+    /// Pending tool calls, assistant entries (JSON array of ToolCall).
+    #[prost(string, tag = "9")]
+    pub tool_calls: ::prost::alloc::string::String,
+    /// Output tokens of the run this reply concluded (footer display).
+    #[prost(int64, tag = "10")]
+    pub output_tokens: i64,
+    /// Wall-clock duration of that run in ms (footer display).
+    #[prost(int64, tag = "11")]
+    pub duration_ms: i64,
+}
+/// One event as replayed by get_events_since. Field names mirror the
+/// StreamEvent envelope.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReplayEvent {
+    #[prost(string, tag = "1")]
+    pub r#type: ::prost::alloc::string::String,
+    /// JSON-serialised event payload (see StreamEvent.data).
+    #[prost(string, tag = "2")]
+    pub data: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub run_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "4")]
+    pub idx: i64,
+    #[prost(string, tag = "5")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "6")]
+    pub epoch: i64,
+    #[prost(string, tag = "7")]
+    pub event_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "8")]
+    pub timestamp: ::prost::alloc::string::String,
+    #[prost(int64, tag = "9")]
+    pub session_idx: i64,
+    #[prost(int64, tag = "10")]
+    pub run_sequence: i64,
+}
+/// get_events_since response. When the requested cursor predates the replay
+/// ring, `projection` replaces the event tail with a compressed snapshot.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventsSince {
+    #[prost(string, tag = "1")]
+    pub run_id: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub events: ::prost::alloc::vec::Vec<ReplayEvent>,
+    /// True when `projection` carries a snapshot instead of a complete tail.
+    #[prost(bool, tag = "3")]
+    pub truncated: bool,
+    #[prost(message, optional, tag = "4")]
+    pub projection: ::core::option::Option<ProjectionSnapshot>,
+}
+/// A compressed projection of a run's events (coalesced deltas).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectionSnapshot {
+    #[prost(string, tag = "1")]
+    pub run_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "2")]
+    pub cursor: i64,
+    #[prost(message, repeated, tag = "3")]
+    pub events: ::prost::alloc::vec::Vec<ReplayEvent>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StreamRequest {
@@ -296,7 +633,8 @@ pub struct StreamEvent {
     ///    thinking_start / thinking_delta / thinking_end   reasoning stream
     ///    tool_start                   tool execution began  {tool_id, tool_name, tool_args}
     ///    tool_delta                   streaming tool-arg fragment {tool_id, text}
-    ///    tool_end                     tool execution finished {tool_id, text, error?}
+    ///    tool_end                     tool execution finished {tool_id, text, error?,
+    ///                                 exit_code?, is_soft_fail?, target_path?}
     ///    approval_request / approval_decision
     ///    usage                        token accounting
     ///    error                        run error
@@ -312,6 +650,10 @@ pub struct StreamEvent {
     ///    thinking_delta: {"text": "I need to..."}
     ///    tool_start:    {"tool_id": "...", "tool_name": "read"}
     ///    tool_end:      {"tool_id": "...", "text": "output..."}
+    ///                   plus structured semantics when applicable: shell results
+    ///                   carry exit_code (and is_soft_fail for a bare
+    ///                   grep/diff/cmp/test/findstr exit 1); write/edit carry
+    ///                   target_path. Consumers must not re-parse `text` for these.
     ///    tool_delta:    {"tool_id": "...", "text": "partial args..."}
     ///    approval_request: {"approval_request_id": "...", "tool_name": "shell", ...}
     ///    agent_start:   {"started_at_ms": 1750000000000}

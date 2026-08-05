@@ -8,6 +8,7 @@ import { useCopyState } from "../../components/ui/useCopyState";
 import { openPath } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { formatDateTime, formatMessageTimestamp } from "../../lib/date";
+import { formatNumber } from "../../lib/format";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useNow } from "../../lib/useNow";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
@@ -322,7 +323,7 @@ function CompactionDivider({ tokensBefore }: { tokensBefore?: number }) {
   const { t, i18n } = useTranslation("agent");
   const label = tokensBefore && tokensBefore > 0
     ? t("message.compactedTokens", {
-        formattedCount: new Intl.NumberFormat(i18n.language).format(tokensBefore),
+        formattedCount: formatNumber(tokensBefore, i18n.language),
       })
     : t("message.compacted");
   return (

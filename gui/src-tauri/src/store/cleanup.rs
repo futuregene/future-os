@@ -150,48 +150,66 @@ fn agent_terminal_settlement(
 use super::util::{count_workspace_files, loaded, now_millis};
 use super::{delete_thread, get_thread, get_workspace};
 
-/// Startup reconciliation: delete active threads whose agent base data
-/// (the session JSONL the agent writes under `~/.future/agent/sessions/`) has
-/// been removed out from under the GUI — e.g. via the TUI/CLI `delete_session`
-/// or a manual delete.
+/// Startup reconciliation: delete active threads whose agent session has been
+/// removed out from under the GUI — e.g. via the TUI/CLI `delete_session` or a
+/// manual delete. The authoritative source is the agent's FILENAME-ONLY session
+/// enumeration (`list_session_ids` RPC): ids are read from the session file
+/// names without touching file contents, so a session whose journal is
+/// momentarily unreadable or corrupt is still reported as live and is never
+/// mistaken for a deleted session. The GUI no longer probes `{id}.jsonl`
+/// filenames itself, so it stays correct regardless of how or where the agent
+/// persists sessions.
 ///
-/// The agent treats that JSONL as the source of truth for a conversation's
-/// context and reloads it on a cold start; the GUI keeps only a rendered mirror
-/// (text + events), which cannot losslessly rebuild the agent's native message
-/// structure (tool calls, tool results, thinking). So when the base file is gone
-/// there is no faithful recovery — we delete-to-match, hard-deleting the GUI
-/// thread so the two sides stay consistent instead of the model silently
-/// "forgetting" a conversation the UI still shows.
+/// The agent treats the session journal as the source of truth for a
+/// conversation's context and reloads it on a cold start; the GUI keeps only a
+/// rendered mirror (text + events), which cannot losslessly rebuild the agent's
+/// native message structure (tool calls, tool results, thinking). So when the
+/// session is gone there is no faithful recovery — we delete-to-match,
+/// hard-deleting the GUI thread so the two sides stay consistent instead of the
+/// model silently "forgetting" a conversation the UI still shows.
 ///
 /// Only threads with at least one `completed` run are considered: the agent
-/// persists the JSONL on the successful-run path *before* it signals
+/// persists the journal on the successful-run path *before* it signals
 /// completion, so a completed run proves base data was written at some point. A
-/// missing file then means external deletion, not a conversation that simply
-/// hasn't produced base data yet (which must never be deleted). Runs once at
-/// startup — mid-session the agent still holds the context in memory, so drift
-/// only surfaces on the next cold start. Returns the number of threads deleted.
-pub fn reconcile_orphan_sessions() -> Result<usize, crate::AppError> {
-    let Some(home) = crate::home_dir() else {
+/// missing session then means external deletion, not a conversation that simply
+/// hasn't produced base data yet (which must never be deleted).
+///
+/// An unreachable agent is ambiguous — the pass is skipped rather than
+/// treating unknown state as "everything was deleted". Runs once at startup,
+/// after the agent has had time to come up. Returns the number of threads
+/// deleted.
+pub async fn reconcile_orphan_sessions() -> Result<usize, crate::AppError> {
+    // The bundled agent may still be booting when this pass runs; retry
+    // briefly before concluding it is down.
+    let mut live_sessions: Option<HashSet<String>> = None;
+    for _ in 0..3 {
+        match crate::agent_bridge::list_agent_session_ids().await {
+            Ok(ids) => {
+                live_sessions = Some(ids);
+                break;
+            }
+            Err(crate::AppError::AgentUnavailable(_)) => {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            Err(error) => {
+                eprintln!("FutureOS: orphan-session reconcile skipped: {error}");
+                return Ok(0);
+            }
+        }
+    }
+    let Some(live_sessions) = live_sessions else {
+        eprintln!("FutureOS: orphan-session reconcile skipped: agent unreachable");
         return Ok(0);
     };
-    let sessions_dir = PathBuf::from(home)
-        .join(".future")
-        .join("agent")
-        .join("sessions");
-    // A missing directory is ambiguous (fresh install, or the agent has never
-    // run) — never treat that as "every conversation was deleted".
-    if !sessions_dir.exists() {
-        return Ok(0);
-    }
 
     let orphans = {
         let conn = connect()?;
-        orphan_thread_ids(&conn, &sessions_dir)?
+        orphan_thread_ids(&conn, &live_sessions)?
     };
     for thread_id in &orphans {
-        // Hard delete: the JSONL (source of truth) is already gone, so purge the
-        // GUI mirror and its child rows too. Also marks temp chat workspaces for
-        // cleanup.
+        // Hard delete: the agent's session (source of truth) is already gone,
+        // so purge the GUI mirror and its child rows too. Also marks temp chat
+        // workspaces for cleanup.
         delete_thread(thread_id)?;
     }
     Ok(orphans.len())
@@ -199,10 +217,10 @@ pub fn reconcile_orphan_sessions() -> Result<usize, crate::AppError> {
 
 /// Decide which active threads have lost their agent base data. Split out from
 /// the deletion so the (subtle) detection rules can be unit-tested against an
-/// in-memory DB and a temp sessions dir.
+/// in-memory DB and a fixture session set.
 fn orphan_thread_ids(
     conn: &Connection,
-    sessions_dir: &Path,
+    live_sessions: &HashSet<String>,
 ) -> Result<Vec<String>, crate::AppError> {
     // Thread ids that have produced base data (a completed run) at least once.
     let threads_with_base: HashSet<String> = {
@@ -233,7 +251,7 @@ fn orphan_thread_ids(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or(id.as_str());
-        if !sessions_dir.join(format!("{session_id}.jsonl")).exists() {
+        if !live_sessions.contains(session_id) {
             orphans.push(id);
         }
     }
@@ -532,45 +550,38 @@ mod tests {
         dir
     }
 
-    fn touch_session(dir: &Path, session_id: &str) {
-        std::fs::write(dir.join(format!("{session_id}.jsonl")), b"{}\n")
-            .expect("write session file");
-    }
-
     #[test]
-    fn orphans_are_only_threads_with_base_data_whose_jsonl_is_gone() {
+    fn orphans_are_only_threads_with_base_data_whose_session_is_gone() {
         let conn = test_conn();
-        let dir = temp_sessions_dir();
 
-        // A: completed run + JSONL present -> kept.
+        // The live session set as reported by the agent's list_sessions RPC.
+        let live_sessions: HashSet<String> =
+            ["A", "sessD"].into_iter().map(str::to_string).collect();
+
+        // A: completed run + session live -> kept.
         insert_thread(&conn, "A", None);
         insert_run(&conn, "rA", "A", "completed");
-        touch_session(&dir, "A");
 
-        // B: completed run + JSONL missing -> orphan.
+        // B: completed run + session gone -> orphan.
         insert_thread(&conn, "B", None);
         insert_run(&conn, "rB", "B", "completed");
 
-        // C: never completed a run (only failed) + JSONL missing -> kept
+        // C: never completed a run (only failed) + session gone -> kept
         // (never produced base data, must not be deleted).
         insert_thread(&conn, "C", None);
         insert_run(&conn, "rC", "C", "failed");
 
-        // D: agent_session_id set, JSONL stored under it -> kept.
+        // D: agent_session_id set, session live under it -> kept.
         insert_thread(&conn, "D", Some("sessD"));
         insert_run(&conn, "rD", "D", "completed");
-        touch_session(&dir, "sessD");
 
-        // E: agent_session_id set, its JSONL missing -> orphan (resolves by
+        // E: agent_session_id set, its session gone -> orphan (resolves by
         // agent_session_id, not thread id).
         insert_thread(&conn, "E", Some("sessE"));
         insert_run(&conn, "rE", "E", "completed");
-        touch_session(&dir, "E"); // decoy under the thread id must not save it
 
-        let mut orphans = orphan_thread_ids(&conn, &dir).expect("reconcile");
+        let mut orphans = orphan_thread_ids(&conn, &live_sessions).expect("reconcile");
         orphans.sort();
-
-        std::fs::remove_dir_all(&dir).ok();
         assert_eq!(orphans, vec!["B".to_string(), "E".to_string()]);
     }
 

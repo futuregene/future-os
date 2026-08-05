@@ -49,6 +49,33 @@ option java_package = "ai.proto";
 option java_multiple_files = true;
 
 // =============================================================================
+// Future Platform URL Resolution — shared contract
+// =============================================================================
+//
+// The agent and the GUI both resolve the Future platform URL from the shared
+// config (\`~/.future/agent/auth.json\`, \`future\` entry). The production and
+// test environments differ ONLY in the host. This block is the single source
+// of truth both implementations must follow:
+//
+//   Canonical hosts:
+//     production: https://future-os.cn
+//     test:       https://test.future-os.cn
+//
+//   Platform-root resolution (no \`/api\` suffix), in precedence order:
+//     1. future.base_url, with trailing "/" and "/api" stripped
+//        (the storage format every writer uses: \`{platform}/api\`)
+//     2. future.platform_base_url, with trailing "/" stripped (legacy field)
+//     3. the production host default
+//
+//   Derived forms (per consumer):
+//     model API base:    {platform}/api      (agent: \`{base}/v1/models\`, ...)
+//     model API display: {platform}/api/v1   (GUI Providers page)
+//     auth/account endpoints hang off the platform root itself
+//
+// Implementations: agent/src/models/future.rs and
+// gui/src-tauri/src/future_platform.rs — keep both aligned with this block.
+
+// =============================================================================
 // RPC Commands — sent by clients (TUI / channel bridge / CLI) to the agent
 // =============================================================================
 
@@ -177,6 +204,37 @@ message RpcCommand {
   // Images additionally carry base64 and are sent as image_url when the active
   // model accepts image input; otherwise they degrade to a path reference.
   repeated Attachment attachments = 151;
+
+  // ── list_models ────────────────────────────────────────────────────────
+
+  // When true, the list_models response additionally carries
+  // \`builtinProviders\` — a summary of the agent's built-in provider catalog
+  // (id, model count, base URL per provider) — so clients can render the
+  // full catalog at runtime instead of compiling it in.
+  bool include_builtin_providers = 160;
+
+  // ── new_session ───────────────────────────────────────────────────────
+
+  // Who created the session ("gui", "tui", "cli", a channel id...). The
+  // agent defaults to "tui" when absent. Typed replacement for the legacy
+  // practice of smuggling {"createdBy":...} JSON through
+  // custom_instructions (which belongs to the compact command).
+  string created_by = 161;
+
+  // Free-form JSON source metadata recorded with the session (e.g. the
+  // GUI's thread/workspace context). Carried as a JSON string: the shape is
+  // per-client data, not part of the typed contract.
+  string source_meta = 162;
+
+  // ── set_auth ───────────────────────────────────────────────────────────
+  // One auth.json entry mutation (typed sub-message, not JSON-in-string).
+  // Read when type == "set_auth".
+  AuthUpdate auth_update = 170;
+
+  // ── upsert_provider / delete_provider ──────────────────────────────────
+  // A models.json \`providers\` entry (plus optional auth.json key). Read when
+  // type == "upsert_provider" or "delete_provider" (the latter uses only \`id\`).
+  ProviderUpsert provider_config = 171;
 }
 
 // ── Attachment ───────────────────────────────────────────────────────────────
@@ -215,6 +273,71 @@ message SandboxPolicy {
   string tier = 7;
 }
 
+// ── AuthUpdate ───────────────────────────────────────────────────────────────
+// One mutation of an auth.json provider entry, applied by the agent (the sole
+// writer of its config files). After applying, the agent rebuilds its model
+// registry and refreshes every live session's credentials, so clients no
+// longer need a follow-up reload_auth round-trip.
+
+message AuthUpdate {
+  // Provider entry name (e.g. "future", "openai").
+  string provider = 1;
+
+  // Non-empty: set the entry's "key" field.
+  string key = 2;
+  // Remove the entry's "key" field (e.g. logout keeps base_url).
+  bool clear_key = 3;
+
+  // Non-empty: set the entry's "base_url" field (auth.json field name).
+  string base_url = 4;
+  // Remove the entry's "base_url" field.
+  bool clear_base_url = 5;
+
+  // Remove the whole provider entry.
+  bool remove_entry = 6;
+
+  // Remove the legacy "platform_base_url" field (environment switches pin
+  // base_url and drop it so the resolved platform is unambiguous).
+  bool remove_platform_base_url = 7;
+}
+
+// ── ProviderUpsert ───────────────────────────────────────────────────────────
+// Create/update a models.json \`providers\` entry, optionally storing the
+// provider's API key in auth.json in the same step. delete_provider also uses
+// this message (only \`id\` is read). Same agent-side refresh as AuthUpdate.
+
+message ProviderUpsert {
+  // Provider id — the key in models.json \`providers\`.
+  string id = 1;
+
+  // Non-empty: set "name".
+  string name = 2;
+  // Non-empty: set "api" (e.g. "openai-completions").
+  string api = 3;
+  // Non-empty: set the "baseUrl" override.
+  string base_url = 4;
+  // Remove the "baseUrl" override; the entry is dropped if nothing remains.
+  bool clear_base_url = 5;
+
+  // Non-empty: replace the "models" list.
+  repeated ProviderModel models = 6;
+
+  // Fail when the provider already exists (create mode; edits must not
+  // silently overwrite an existing entry).
+  bool create_only = 7;
+
+  // Non-empty: also store as this provider's auth.json "key".
+  string api_key = 8;
+}
+
+// A model entry under a custom provider, persisted to models.json.
+message ProviderModel {
+  string id = 1;
+  string name = 2;
+  // Input modalities, e.g. ["text"] or ["text", "image"].
+  repeated string modalities = 3;
+}
+
 // ── ImageContent ───────────────────────────────────────────────────────────
 
 message ImageContent {
@@ -251,6 +374,9 @@ message RpcResponse {
   bool success = 4;
 
   // JSON-serialised response payload.  Structure depends on the command.
+  // The big read commands are contracted by the messages in the "Response
+  // payload contracts" section below: list_sessions / get_state /
+  // get_session_entries / get_events_since.
   string data = 5;
 
   // Error message when success is false.
@@ -351,6 +477,213 @@ message SessionState {
   // Tool execution permission level: "all" (unrestricted), "workspace"
   // (cwd only), or "none" (read-only tools).
   string permission_level = 28;
+
+  // ── Full get_state payload (audit item 1) ──────────────────────────────
+  // Fields above are the original /status view. The fields below complete the
+  // contract of the get_state response \`data\` JSON (camelCase keys on the
+  // wire). Run/approval sub-objects are typed by the nested messages.
+
+  // The agent process instance id (changes on every agent restart).
+  string agent_instance_id = 29;
+
+  // Parent session id when this session was forked; empty otherwise.
+  string parent_session_id = 30;
+
+  // Who created the session ("gui", "tui", "cli", a channel id...).
+  string created_by = 31;
+
+  // Free-form JSON source metadata recorded at creation (see
+  // RpcCommand.source_meta).
+  string source_meta = 32;
+
+  // The currently executing run, absent when idle.
+  RunStateSnapshot active_run = 33;
+
+  // Accepted runs queued behind the active one, in queue order.
+  repeated QueuedRunState queued_runs = 34;
+
+  // queued_runs.length (carried separately for clients that only poll it).
+  int32 queued_count = 35;
+
+  // Restart recovery: a run that began (journal run_started) but never
+  // committed (no run_terminal) before the agent restarted.
+  RunStateSnapshot interrupted_run = 36;
+
+  // Terminal journal content of the run named in the get_state request's
+  // run_id, when present (RunTerminalInfo shape).
+  RunTerminalInfo requested_run = 37;
+
+  // Recent terminal acknowledgements for lost-queued-run recovery.
+  repeated TerminalAck recent_terminal_acks = 38;
+
+  // Approval requests the session is parked on (full card payloads,
+  // ApprovalRequestInfo shape) so a reconnecting client can rebuild its
+  // approval UI.
+  repeated ApprovalRequestInfo pending_approvals = 39;
+}
+
+// ── get_state sub-objects (audit item 1) ────────────────────────────────────
+// Wire note: get_state \`data\` is camelCase JSON. During the migration away
+// from the shadow contract the agent ALSO emits the legacy spellings
+// (\`session_name\`, snake_case TerminalAck keys) alongside the canonical ones;
+// new clients read canonical, pre-migration clients keep reading legacy.
+
+// A run's live state as surfaced by get_state (activeRun / interruptedRun).
+message RunStateSnapshot {
+  string run_id = 1;
+  int64 epoch = 2;
+  int64 run_sequence = 3;
+  // Run phase ("running"...) or "interrupted_by_restart" for recovery.
+  string state = 4;
+  // Last broadcast event idx (active runs only).
+  int64 last_event_idx = 5;
+}
+
+// An accepted run waiting in the session's queue.
+message QueuedRunState {
+  string run_id = 1;
+  int64 run_sequence = 2;
+  string client_request_id = 3;
+  // Always "queued".
+  string state = 4;
+  int32 queue_position = 5;
+  // RFC3339 acceptance time.
+  string accepted_at = 6;
+  // The user's prompt text, for queue display.
+  string display_text = 7;
+}
+
+// Terminal journal content of one run (requestedRun). Keys mirror the
+// on-disk run_terminal marker (snake_case).
+message RunTerminalInfo {
+  string run_id = 1;
+  // "completed" | "failed" | "cancelled" | ...
+  string state = 2;
+  int64 run_tokens = 3;
+  int64 run_duration_ms = 4;
+  // Present only on failure.
+  string error = 5;
+}
+
+// A recent terminal acknowledgement for a queued run whose terminal state the
+// client may have missed (e.g. across an agent restart).
+message TerminalAck {
+  string run_id = 1;
+  int64 run_sequence = 2;
+  string client_request_id = 3;
+  // "terminal" | "cancelled" | "failed".
+  string state = 4;
+  // e.g. "superseded".
+  string reason = 5;
+}
+
+// An approval_request card the session is parked on. Tool-specific extras
+// (message, suggestions, ...) pass through alongside these fields.
+message ApprovalRequestInfo {
+  string approval_request_id = 1;
+  string session_id = 2;
+  string tool_name = 3;
+  string tool_id = 4;
+  // "tool" | ...
+  string kind = 5;
+  string title = 6;
+  // The tool call's arguments, JSON-serialised.
+  string action = 7;
+}
+
+// =============================================================================
+// Response payload contracts (audit item 1)
+// =============================================================================
+//
+// RpcResponse.data is a JSON string. These messages define the canonical
+// shape of that JSON for the big read commands:
+//
+//   list_sessions        {"sessions": [SessionSummary, ...]}
+//   get_state            SessionState (see above)
+//   get_session_entries  {"entries": [SessionEntry, ...]}
+//   get_events_since     EventsSince
+//
+// Wire casing: list_sessions / get_state / get_events_since are camelCase
+// JSON; get_session_entries mirrors the on-disk entry schema (snake_case).
+// For one migration window the agent additionally emits legacy aliases for
+// the keys that changed spelling (list_sessions snake_case keys; get_state
+// \`session_name\` and snake_case TerminalAck keys) so pre-migration clients
+// keep working — new clients read the canonical keys only.
+
+// One row of the list_sessions response.
+message SessionSummary {
+  string id = 1;
+  // User-assigned session name (empty when unnamed).
+  string session_name = 2;
+  string model = 3;
+  string cwd = 4;
+  // "YYYY-MM-DD HH:MM:SS" (local time).
+  string updated_at = 5;
+  string parent_session_id = 6;
+  // First user message, for list display.
+  string first_message = 7;
+  int32 query_count = 8;
+  // Whether the agent is streaming a response for this session right now.
+  bool is_streaming = 9;
+}
+
+// One displayable entry of a session (get_session_entries). Field names match
+// the on-disk JSONL schema; \`content\` is display text for message entries and
+// the raw session_info JSON object for the session_info entry.
+message SessionEntry {
+  string id = 1;
+  // "user" | "assistant" | "tool" (the entry's message role).
+  string role = 2;
+  // Display text (message entries) or session_info JSON (session_info entry).
+  string content = 3;
+  string name = 4;
+  // Tool call arguments (JSON string), tool entries.
+  string tool_args = 5;
+  // RFC3339.
+  string timestamp = 6;
+  // Reasoning text, assistant entries (absent when empty).
+  string thinking = 7;
+  // Structured per-entry metadata (e.g. user attachments), JSON.
+  string meta = 8;
+  // Pending tool calls, assistant entries (JSON array of ToolCall).
+  string tool_calls = 9;
+  // Output tokens of the run this reply concluded (footer display).
+  int64 output_tokens = 10;
+  // Wall-clock duration of that run in ms (footer display).
+  int64 duration_ms = 11;
+}
+
+// One event as replayed by get_events_since. Field names mirror the
+// StreamEvent envelope.
+message ReplayEvent {
+  string type = 1;
+  // JSON-serialised event payload (see StreamEvent.data).
+  string data = 2;
+  string run_id = 3;
+  int64 idx = 4;
+  string session_id = 5;
+  int64 epoch = 6;
+  string event_id = 7;
+  string timestamp = 8;
+  int64 session_idx = 9;
+  int64 run_sequence = 10;
+}
+
+// get_events_since response. When the requested cursor predates the replay
+// ring, \`projection\` replaces the event tail with a compressed snapshot.
+message EventsSince {
+  string run_id = 1;
+  repeated ReplayEvent events = 2;
+  // True when \`projection\` carries a snapshot instead of a complete tail.
+  bool truncated = 3;
+  ProjectionSnapshot projection = 4;
+}
+
+// A compressed projection of a run's events (coalesced deltas).
+message ProjectionSnapshot {
+  string run_id = 1;
+  int64 cursor = 2;
+  repeated ReplayEvent events = 3;
 }
 
 // =============================================================================
@@ -402,7 +735,8 @@ message StreamEvent {
   //   thinking_start / thinking_delta / thinking_end   reasoning stream
   //   tool_start                   tool execution began  {tool_id, tool_name, tool_args}
   //   tool_delta                   streaming tool-arg fragment {tool_id, text}
-  //   tool_end                     tool execution finished {tool_id, text, error?}
+  //   tool_end                     tool execution finished {tool_id, text, error?,
+  //                                exit_code?, is_soft_fail?, target_path?}
   //   approval_request / approval_decision
   //   usage                        token accounting
   //   error                        run error
@@ -418,6 +752,10 @@ message StreamEvent {
   //   thinking_delta: {"text": "I need to..."}
   //   tool_start:    {"tool_id": "...", "tool_name": "read"}
   //   tool_end:      {"tool_id": "...", "text": "output..."}
+  //                  plus structured semantics when applicable: shell results
+  //                  carry exit_code (and is_soft_fail for a bare
+  //                  grep/diff/cmp/test/findstr exit 1); write/edit carry
+  //                  target_path. Consumers must not re-parse \`text\` for these.
   //   tool_delta:    {"tool_id": "...", "text": "partial args..."}
   //   approval_request: {"approval_request_id": "...", "tool_name": "shell", ...}
   //   agent_start:   {"started_at_ms": 1750000000000}
@@ -817,7 +1155,7 @@ export class RunClient {
   async newSession(cwd?: string): Promise<{ sessionId: string }> {
     return this.executeCommand("new_session", {
       cwd: cwd || process.cwd(),
-      customInstructions: JSON.stringify({ createdBy: "cli" }),
+      createdBy: "cli",
     }, undefined, 5) as Promise<{ sessionId: string }>;
   }
 

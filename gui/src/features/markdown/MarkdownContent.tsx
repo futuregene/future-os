@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { StoredFile } from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { LiveMarkdownProvider } from "./LiveMarkdownContext";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
@@ -31,7 +31,7 @@ interface MarkdownContentProps {
   live?: boolean;
 }
 
-export function MarkdownContent({ content, workspaceId, basePath, live }: MarkdownContentProps) {
+function MarkdownContentImpl({ content, workspaceId, basePath, live }: MarkdownContentProps) {
   const document = useMemo(() => parseFutureMarkdown(content), [content]);
   useFutureReferences(workspaceId, document.references);
 
@@ -44,6 +44,14 @@ export function MarkdownContent({ content, workspaceId, basePath, live }: Markdo
     return <PreviewMarkdownContext value={{ basePath }}>{body}</PreviewMarkdownContext>;
   return body;
 }
+
+/**
+ * Memoized: a streaming row re-renders on every push, but its already-final
+ * segments keep identical content/live props — without the memo their whole
+ * element tree was rebuilt and diffed on every push anyway (the parse cache
+ * only covered the remark step).
+ */
+export const MarkdownContent = memo(MarkdownContentImpl);
 
 function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined, key: string) {
   switch (node.type) {

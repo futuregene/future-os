@@ -844,8 +844,10 @@ fn parse_tool_start_payload(payload: Option<&str>) -> (String, String, Option<St
 
 /// Tool-call status from its `tool_end` payload. An explicit `error` is a
 /// failure; so is a shell command that exits non-zero — the agent returns that
-/// as a *successful* result with an `[exit: N]` footer on the last line of the output
-/// (no error field), so the text must be inspected. A bare grep/diff/test
+/// as a *successful* result (no error field). The agent reports the conclusion
+/// structured (`exit_code` + `is_soft_fail`) on the event; events without
+/// those (older agents, journal-synthesized imports) fall back to parsing the
+/// `[exit: N]` footer on the last line of the output. A bare grep/diff/test
 /// exiting 1 is a normal "no match / differs" signal, not a failure.
 fn tool_end_status(payload: Option<&str>, command: Option<&str>) -> String {
     let Some(payload) = payload else {
@@ -861,6 +863,25 @@ fn tool_end_status(payload: Option<&str>, command: Option<&str>) -> String {
         .is_some_and(|s| !s.is_empty());
     if has_error {
         return "failed".to_string();
+    }
+    if let Some(code) = v
+        .get("exit_code")
+        .or_else(|| v.get("exitCode"))
+        .and_then(|code| code.as_i64())
+    {
+        if code == 0 {
+            return "completed".to_string();
+        }
+        let soft_fail = v
+            .get("is_soft_fail")
+            .or_else(|| v.get("isSoftFail"))
+            .and_then(|flag| flag.as_bool())
+            .unwrap_or(false);
+        return if soft_fail {
+            "completed".to_string()
+        } else {
+            "failed".to_string()
+        };
     }
     let output = v
         .get("text")
@@ -1065,6 +1086,44 @@ mod tests {
             params![id, status],
         )
         .expect("insert run");
+    }
+
+    #[test]
+    fn tool_end_status_prefers_structured_exit_fields() {
+        // Structured fields from the agent win...
+        assert_eq!(
+            tool_end_status(Some(r#"{"exit_code": 0, "text": "[exit: 127]"}"#), None),
+            "completed"
+        );
+        assert_eq!(
+            tool_end_status(Some(r#"{"exit_code": 127, "text": "not found"}"#), None),
+            "failed"
+        );
+        // ...including the soft-fail conclusion for a bare grep exit 1.
+        assert_eq!(
+            tool_end_status(Some(r#"{"exit_code": 1, "is_soft_fail": true}"#), None),
+            "completed"
+        );
+        // An explicit error field still fails regardless of exit fields.
+        assert_eq!(
+            tool_end_status(Some(r#"{"exit_code": 0, "error": "boom"}"#), None),
+            "failed"
+        );
+        // Legacy events (no structured fields) fall back to the prose footer.
+        assert_eq!(
+            tool_end_status(
+                Some(r#"{"text": "no match\n[exit: 1]"}"#),
+                Some("grep foo bar")
+            ),
+            "completed"
+        );
+        assert_eq!(
+            tool_end_status(
+                Some(r#"{"text": "no match\n[exit: 1]"}"#),
+                Some("cargo build")
+            ),
+            "failed"
+        );
     }
 
     /// Seed the process-global event buffer directly (no disk writes) with

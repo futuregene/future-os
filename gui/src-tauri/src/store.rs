@@ -34,7 +34,8 @@ pub use artifacts::{
 pub use cleanup::{
     clear_finished_runs, get_thread_cleanup_summary, list_active_runs, list_interrupted_runs,
     reanimate_run, reconcile_orphan_chat_workspaces, reconcile_orphan_images,
-    reconcile_orphan_review_repos, settle_interrupted_run_from_agent, ActiveRun,
+    reconcile_orphan_review_repos, reconcile_orphan_sessions, settle_interrupted_run_from_agent,
+    ActiveRun,
 };
 pub use db::{app_images_root, future_dir, get_approval_request, get_run, thread_images_dir};
 pub use deletions::{
@@ -85,13 +86,9 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
     let conn = connect()?;
     apply_schema(&conn)?;
     drop(conn);
-    // Reconcile GUI threads against the agent's base data: a thread whose
-    // session JSONL was deleted externally (TUI/CLI/manual) is soft-deleted so
-    // the UI can't show a conversation the model has silently lost. Best-effort
-    // — a reconcile failure must never block app startup.
-    if let Err(error) = cleanup::reconcile_orphan_sessions() {
-        eprintln!("reconcile_orphan_sessions failed: {error}");
-    }
+    // Reconcile GUI threads against the agent's session list (orphan-session
+    // cleanup) runs later, off the launch path, once the agent is reachable —
+    // see store::reconcile_orphan_sessions.
     // Hard-delete any threads left in the legacy soft-deleted state (and their
     // orphaned child rows). delete_thread now hard-deletes, so this only clears
     // pre-existing rows. Best-effort — never block startup.

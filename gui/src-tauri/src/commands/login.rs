@@ -34,25 +34,24 @@ pub async fn poll_future_login(
         }
         let handle = app.clone();
         std::thread::spawn(move || agent_supervisor::ensure_agent_running(&handle));
-        // The new key is on disk, but a session the agent established while
-        // logged out cached an empty/stale key and the prompt path never
-        // re-reads auth.json. Push the fresh credential into live sessions so
-        // the user can prompt immediately without first toggling the model.
-        let _ = crate::agent_bridge::reload_agent_credentials().await;
+        // Credential persistence + live-session refresh now happen inside
+        // `future_login::poll` (RPC-first via set_auth, with a local-write +
+        // reload_auth fallback), so no separate refresh is needed here.
     }
     Ok(result)
 }
 
 #[tauri::command]
 pub async fn logout_future_provider() -> Result<ProvidersView, crate::AppError> {
-    auth_store::clear_future_key()?;
-    // Clearing auth.json only changes disk. The agent caches the resolved key
-    // inside each live session's provider and never re-reads auth.json on the
-    // prompt path, so without this the user could keep prompting with the stale
-    // key after logout (while the model list already shows logged-out). Refresh
-    // live sessions so logout takes effect immediately.
-    let _ = crate::agent_bridge::reload_agent_credentials().await;
-    agent_providers::list_agent_providers()
+    // RPC-first (audit item 2): the agent drops the key from its own auth.json
+    // and refreshes live sessions so the user can't keep prompting with the
+    // stale key after logout. Fallback for an unreachable/pre-item-2 agent:
+    // local file write + best-effort reload_auth (the legacy path).
+    if !crate::agent_bridge::config::future_logout().await? {
+        auth_store::clear_future_key()?;
+        let _ = crate::agent_bridge::reload_agent_credentials().await;
+    }
+    agent_providers::list_agent_providers().await
 }
 
 #[tauri::command]

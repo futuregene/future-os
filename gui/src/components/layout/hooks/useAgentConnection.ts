@@ -83,7 +83,12 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
       const nextModels = await loadAgentModelOptions();
       if (generation !== refreshGenRef.current)
         return;
-      setModelOptions(nextModels);
+      // Keep the old reference when the catalog is unchanged: a fresh array
+      // identity every 10s tick would flow AppShell → AgentThread → Composer
+      // and defeat the composer's memo once per poll.
+      setModelOptions(previous =>
+        JSON.stringify(previous) === JSON.stringify(nextModels) ? previous : nextModels,
+      );
       // Selection reconciliation lives in the visible-set effect below (so it
       // also reacts to models being enabled/disabled, not just catalog changes).
       // Agent is reachable. If there are no models, find out whether that's
@@ -105,12 +110,25 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
       }
       if (generation !== refreshGenRef.current)
         return;
-      setAgentConnection({
-        checkedAt: Date.now(),
-        error: null,
-        kind: null,
-        readiness,
-        status: "connected",
+      // Bail out when the result is unchanged: the poll ticks every 10s, and
+      // an unconditional set with a fresh object (checkedAt) re-rendered
+      // AppShell every tick even while the connection stayed identical.
+      setAgentConnection((previous) => {
+        if (
+          previous.status === "connected"
+          && previous.readiness === readiness
+          && previous.error == null
+          && previous.kind == null
+        ) {
+          return previous;
+        }
+        return {
+          checkedAt: Date.now(),
+          error: null,
+          kind: null,
+          readiness,
+          status: "connected",
+        };
       });
     }
     catch (error) {
@@ -122,11 +140,21 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
       // Keep the last good catalog: blanking it made every model id
       // unresolvable, which dropped the composer to the last-used/default
       // model and "off" thinking level until the next successful poll.
-      setAgentConnection({
-        checkedAt: Date.now(),
-        error: message,
-        kind: classifyAgentConnectionError(message),
-        status: "disconnected",
+      setAgentConnection((previous) => {
+        const kind = classifyAgentConnectionError(message);
+        if (
+          previous.status === "disconnected"
+          && previous.error === message
+          && previous.kind === kind
+        ) {
+          return previous;
+        }
+        return {
+          checkedAt: Date.now(),
+          error: message,
+          kind,
+          status: "disconnected",
+        };
       });
     }
   }, []);

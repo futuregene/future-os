@@ -1,8 +1,12 @@
 //! Strict, atomic, 0600 read/write for `~/.future/agent/auth.json`.
 //!
-//! This is the single write path for the agent auth file (FutureGene login,
-//! logout, and custom-provider API keys all route through it) so permissions
-//! and parse strictness stay consistent — see gui/ER.md §6.9.
+//! Since audit item 2 the PRIMARY write path is the agent itself (the GUI sends
+//! `set_auth` over gRPC and the agent writes its own file — see
+//! `agent_bridge/config.rs`). This module remains the read path for the GUI and
+//! the LOCAL FALLBACK writer for an unreachable or pre-item-2 agent, so it keeps
+//! the same strict/atomic/0600 semantics as before. FutureGene login, logout,
+//! and custom-provider API keys all still route through it in fallback — see
+//! gui/ER.md §6.9.
 //!
 //! Read semantics: a missing file is an empty object; a corrupt file or a
 //! non-object root is an error (never silently dropped, so a write can't clobber
@@ -106,19 +110,6 @@ pub(crate) fn remove_provider_key(id: &str) -> Result<bool, AppError> {
 }
 
 /// Remove a provider's whole auth entry (used when a custom provider is deleted).
-/// Returns whether an entry was present.
-pub(crate) fn remove_provider_entry(id: &str) -> Result<bool, AppError> {
-    let path = auth_json_path()?;
-    config_io::with_config_lock(&path, || {
-        let mut auth = read()?;
-        let removed = auth.remove(id).is_some();
-        if removed {
-            write(&auth)?;
-        }
-        Ok(removed)
-    })
-}
-
 /// FutureGene login: store the device-flow API key and pin `base_url` under the
 /// `future` entry. Mirrors the CLI's `saveAuth` (which writes
 /// `base_url = {platform}/api`) so a GUI login and a CLI login leave identical
@@ -320,9 +311,18 @@ mod tests {
     fn remove_provider_entry_drops_whole_entry() {
         let _home = HomeGuard::new("delete");
         set_provider_key("dashscope", "k").unwrap();
-        assert!(remove_provider_entry("dashscope").unwrap());
+        let path = auth_json_path().unwrap();
+        config_io::with_config_lock(&path, || {
+            let mut auth = read()?;
+            let removed = auth.remove("dashscope").is_some();
+            assert!(removed);
+            if removed {
+                write(&auth)?;
+            }
+            Ok(removed)
+        })
+        .unwrap();
         assert!(read().unwrap().get("dashscope").is_none());
-        assert!(!remove_provider_entry("dashscope").unwrap());
     }
 
     #[cfg(unix)]

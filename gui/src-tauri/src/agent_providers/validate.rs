@@ -21,6 +21,31 @@ pub(super) const MODEL_NAME_MAX_LEN: usize = 60;
 pub(super) const MAX_MODELS: usize = 100;
 pub(super) const ALLOWED_APIS: [&str; 3] = ["openai-completions", "openai-responses", "anthropic"];
 
+/// A validated model entry of a custom provider. Serialized to the models.json
+/// `modalities` shape at write time ([`model_json_values`]) and mapped 1:1 to
+/// the agent's `ProviderModel` proto message for the RPC write path.
+#[derive(Debug, Clone)]
+pub(super) struct ValidatedModel {
+    pub(super) id: String,
+    pub(super) name: String,
+    /// Input modalities, e.g. `["text"]` or `["text", "image"]`.
+    pub(super) modalities: Vec<String>,
+}
+
+/// Serialize validated models to the models.json entry shape.
+pub(super) fn model_json_values(models: &[ValidatedModel]) -> Vec<Value> {
+    models
+        .iter()
+        .map(|model| {
+            json!({
+                "id": model.id,
+                "name": model.name,
+                "modalities": model.modalities,
+            })
+        })
+        .collect()
+}
+
 /// A custom-provider request with every field validated and normalized, ready
 /// for the locked models.json read-modify-write in
 /// [`super::write::upsert_custom_provider`].
@@ -32,8 +57,8 @@ pub(super) struct ValidatedCustomProvider {
     /// Present only when a non-empty key was supplied (trimmed); otherwise the
     /// existing key is left untouched.
     pub(super) api_key: Option<String>,
-    /// Models serialized to the models.json `modalities` shape.
-    pub(super) model_values: Vec<Value>,
+    /// Validated model entries (see [`ValidatedModel`]).
+    pub(super) models: Vec<ValidatedModel>,
     /// Carried through: true when creating a new provider (vs editing).
     pub(super) create: bool,
 }
@@ -133,7 +158,7 @@ pub(super) fn validate_custom_provider(
 
     // Models: validate ids/names, dedupe within the provider, cap the count.
     let mut seen_model_ids = std::collections::HashSet::new();
-    let mut model_values: Vec<Value> = Vec::new();
+    let mut models: Vec<ValidatedModel> = Vec::new();
     for model in &input.models {
         let model_id = model.id.trim();
         if model_id.is_empty() {
@@ -166,19 +191,20 @@ pub(super) fn validate_custom_provider(
             }
             model_name
         };
-        // Text is always supported; image is opt-in. Persist as `modalities` so
-        // the agent's models.json loader maps it to the model's input modalities.
-        let mut modalities = vec![Value::String("text".to_string())];
+        // Text is always supported; image is opt-in. Persisted as `modalities`
+        // so the agent's models.json loader maps it to the model's input
+        // modalities.
+        let mut modalities = vec!["text".to_string()];
         if model.supports_images {
-            modalities.push(Value::String("image".to_string()));
+            modalities.push("image".to_string());
         }
-        model_values.push(json!({
-            "id": model_id,
-            "name": model_name,
-            "modalities": modalities,
-        }));
+        models.push(ValidatedModel {
+            id: model_id.to_string(),
+            name: model_name.to_string(),
+            modalities,
+        });
     }
-    if model_values.len() > MAX_MODELS {
+    if models.len() > MAX_MODELS {
         return Err(format!("Number of models cannot exceed {MAX_MODELS}.").into());
     }
 
@@ -188,7 +214,7 @@ pub(super) fn validate_custom_provider(
         api,
         base_url,
         api_key: api_key.map(str::to_string),
-        model_values,
+        models,
         create: input.create,
     })
 }

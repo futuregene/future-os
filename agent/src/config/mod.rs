@@ -1,5 +1,7 @@
 //! Settings management — reads/writes settings.json
 
+pub mod providers;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;

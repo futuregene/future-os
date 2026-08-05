@@ -101,11 +101,19 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// so two concurrent writers never collide on the temp path — then `rename`s it
 /// over the target. `owner_only` applies `0600` on unix (used for `auth.json`).
 pub fn write_json_atomic(path: &Path, value: &Value, owner_only: bool) -> Result<(), AppError> {
+    let serialized = format!("{}\n", serde_json::to_string_pretty(value)?);
+    write_bytes_atomic(path, serialized.as_bytes(), owner_only)
+}
+
+/// Low-level atomic write of raw bytes (temp-file + `rename`, same guarantees as
+/// [`write_json_atomic`]). Shared by the JSON writer and by transactional
+/// rollback, which restores the *exact* original bytes rather than a
+/// re-serialization that could reorder or reformat them.
+pub fn write_bytes_atomic(path: &Path, bytes: &[u8], owner_only: bool) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let serialized = format!("{}\n", serde_json::to_string_pretty(value)?);
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let file_name = path
         .file_name()
@@ -123,7 +131,7 @@ pub fn write_json_atomic(path: &Path, value: &Value, owner_only: bool) -> Result
         } else {
             std::fs::File::create(&tmp)?
         };
-        file.write_all(serialized.as_bytes())?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&tmp, path)?;
         if owner_only {
@@ -138,6 +146,36 @@ pub fn write_json_atomic(path: &Path, value: &Value, owner_only: bool) -> Result
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+/// Capture a file's exact pre-mutation bytes for transactional rollback.
+/// `Ok(None)` means the file did not exist (rollback must delete, not empty,
+/// it). Any OTHER read error (permission, transient I/O) surfaces as `Err` —
+/// it must never be confused with "did not exist", which would make rollback
+/// DELETE an existing file.
+pub fn snapshot_file(path: &Path) -> Result<Option<Vec<u8>>, AppError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Best-effort restore of a snapshot taken by [`snapshot_file`]. Used only on
+/// the error path, so a failed restore is logged to stderr rather than
+/// shadowing the original error being returned to the caller.
+pub fn restore_file(path: &Path, snapshot: Option<&[u8]>, owner_only: bool) {
+    let result = match snapshot {
+        Some(bytes) => write_bytes_atomic(path, bytes, owner_only),
+        None => std::fs::remove_file(path).map_err(AppError::from),
+    };
+    if let Err(error) = result {
+        // A NotFound remove just means the file was never created — fine.
+        eprintln!(
+            "FutureOS: config rollback could not restore {}: {error}",
+            path.display()
+        );
+    }
 }
 
 #[cfg(unix)]

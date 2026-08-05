@@ -11,7 +11,9 @@ use serde_json::Value;
 use crate::auth_store::FUTURE_PROVIDER_ID;
 
 /// Future platform root (no `/api`); auth/account endpoints hang off this and
-/// the model API base is derived as `{platform}/api/v1`.
+/// the model API base is derived as `{platform}/api/v1`. Production host — the
+/// production and test environments differ only in the host; see the shared
+/// contract in `proto/future.proto` ("Future Platform URL Resolution").
 pub(crate) const DEFAULT_FUTURE_PLATFORM_URL: &str = "https://future-os.cn";
 
 /// Selectable FutureGene environments. Mirrors the CLI's `auth login --url`
@@ -20,11 +22,13 @@ pub(crate) const DEFAULT_FUTURE_PLATFORM_URL: &str = "https://future-os.cn";
 pub(crate) const PRODUCTION_PLATFORM_URL: &str = DEFAULT_FUTURE_PLATFORM_URL;
 pub(crate) const TEST_PLATFORM_URL: &str = "https://test.future-os.cn";
 
-/// Resolve the Future **platform** root (no `/api`), mirroring the CLI's
-/// `getPlatformUrl()` precedence (see `cli/src/utils/platform.ts`):
-///   1. `future.platform_base_url`
-///   2. `future.base_url` with a trailing `/api` stripped (the CLI writes
-///      `base_url = {platform}/api`)
+/// Resolve the Future **platform** root (no `/api`), following the shared
+/// contract in `proto/future.proto` ("Future Platform URL Resolution") — keep
+/// aligned with the agent implementation (`agent/src/models/future.rs`):
+///   1. `future.base_url` with a trailing `/api` stripped (the storage format
+///      every writer uses — the CLI's `saveAuth` and this app's login /
+///      environment switch all write `base_url = {platform}/api`)
+///   2. `future.platform_base_url` (legacy field)
 ///   3. [`DEFAULT_FUTURE_PLATFORM_URL`]
 ///
 /// Auth/account endpoints live here (`{platform}/client/v1/...`); the model API
@@ -33,13 +37,21 @@ pub(crate) fn resolve_future_platform_url(auth: &Value) -> String {
     let Some(future) = auth.get(FUTURE_PROVIDER_ID) else {
         return DEFAULT_FUTURE_PLATFORM_URL.to_string();
     };
-    if let Some(platform_url) = future.get("platform_base_url").and_then(Value::as_str) {
-        return platform_url.trim_end_matches('/').to_string();
-    }
-    if let Some(base_url) = future.get("base_url").and_then(Value::as_str) {
+    if let Some(base_url) = future
+        .get("base_url")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
         let trimmed = base_url.trim_end_matches('/');
         let platform = trimmed.strip_suffix("/api").unwrap_or(trimmed);
         return platform.trim_end_matches('/').to_string();
+    }
+    if let Some(platform_url) = future
+        .get("platform_base_url")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        return platform_url.trim_end_matches('/').to_string();
     }
     DEFAULT_FUTURE_PLATFORM_URL.to_string()
 }
@@ -61,6 +73,10 @@ pub(crate) fn current_platform_url() -> String {
 
 /// Apply the environment policy for this build channel at startup (called once
 /// before the agent is spawned, so the agent reads the right `base_url`).
+///
+/// Deliberately a direct `auth_store` write (not the RPC-first path of audit
+/// item 2): it runs BEFORE the agent exists, so there is no agent to ask — the
+/// agent simply reads the result at boot.
 ///
 /// Release builds are production-locked: if the resolved platform is anything
 /// other than production (e.g. a stale test `base_url` from a prior dev build
@@ -127,7 +143,22 @@ mod tests {
     }
 
     #[test]
-    fn platform_url_prefers_platform_base_url() {
+    fn base_url_wins_over_platform_base_url() {
+        // Same precedence as the agent (proto/future.proto contract): the stored
+        // `base_url` beats a stale `platform_base_url`.
+        let auth = json!({ "future": {
+            "base_url": "https://future-os.cn/api",
+            "platform_base_url": "https://stale.example.com",
+        } });
+        assert_eq!(resolve_future_platform_url(&auth), "https://future-os.cn");
+        assert_eq!(
+            resolve_future_base_url(&auth),
+            "https://future-os.cn/api/v1"
+        );
+    }
+
+    #[test]
+    fn platform_base_url_is_the_legacy_fallback() {
         let auth = json!({ "future": { "platform_base_url": "https://staging.example.com/" } });
         assert_eq!(
             resolve_future_platform_url(&auth),
