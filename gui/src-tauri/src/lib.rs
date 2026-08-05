@@ -258,7 +258,19 @@ fn coalesce_runtime_updates(
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let current = entry.get_mut();
                 let reset_projection = current.reset_projection || next.reset_projection;
-                if next.revision > current.revision {
+                // A terminal status is final for its run, but the abort path
+                // emits it (run-row CAS) while the collector is still draining
+                // the stream — so the trailing "finalizing" push can carry a
+                // HIGHER revision. A plain max-revision dedup would keep
+                // "finalizing" and silently drop the terminal push, leaving
+                // the sidebar spinning until the next reconciliation pass.
+                // Terminal beats non-terminal regardless of revision; between
+                // equal terminality the newer revision wins as before.
+                let next_terminal = is_terminal_run_status(&next.status);
+                let current_terminal = is_terminal_run_status(&current.status);
+                let next_wins = (next_terminal && !current_terminal)
+                    || (next_terminal == current_terminal && next.revision > current.revision);
+                if next_wins {
                     next.reset_projection = reset_projection;
                     *current = next;
                 } else {
@@ -273,6 +285,12 @@ fn coalesce_runtime_updates(
     // revision order before the frontend reduces them into thread-level state.
     updates.sort_unstable_by_key(|update| update.revision);
     updates
+}
+
+/// Run statuses after which a run can never produce work again. Must match the
+/// reducer's terminal set in `useThreadStore.reduceThreadRunStatus`.
+fn is_terminal_run_status(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "cancelled")
 }
 
 /// Coalesce token-heavy run updates into a single UI notification per run
@@ -767,5 +785,29 @@ mod runtime_update_tests {
                 update("run-new", 4, "completed", true),
             ]
         );
+    }
+
+    #[test]
+    fn coalescing_keeps_terminal_over_later_non_terminal_push() {
+        // Abort race: the run-row CAS emits the terminal push while the
+        // collector is still draining, so its trailing "finalizing" carries a
+        // higher revision. The terminal push must survive the dedup — dropping
+        // it strands the sidebar spinner until the next reconciliation pass.
+        let updates = coalesce_runtime_updates(
+            update("run-1", 1, "cancelled", false),
+            [update("run-1", 2, "finalizing", false)],
+        );
+
+        assert_eq!(updates, vec![update("run-1", 1, "cancelled", false)]);
+    }
+
+    #[test]
+    fn coalescing_keeps_newer_revision_among_non_terminal_pushes() {
+        let updates = coalesce_runtime_updates(
+            update("run-1", 1, "running", false),
+            [update("run-1", 2, "finalizing", false)],
+        );
+
+        assert_eq!(updates, vec![update("run-1", 2, "finalizing", false)]);
     }
 }

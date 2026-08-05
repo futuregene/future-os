@@ -43,6 +43,54 @@ describe("reduceThreadRunStatus", () => {
       endedAt: 1234,
     });
   });
+
+  it("keeps the terminal status when the collector's trailing push arrives after the abort", () => {
+    const running = reduceThreadRunStatus({}, {
+      threadId: "thread-1",
+      runId: "run-1",
+      revision: 1,
+      status: "running",
+      resetProjection: false,
+    });
+    const cancelled = reduceThreadRunStatus(running, {
+      threadId: "thread-1",
+      runId: "run-1",
+      revision: 2,
+      status: "cancelled",
+      resetProjection: false,
+    }, 500);
+    // Abort race: the run row is already cancelled when the collector drains
+    // the stream and emits its trailing "finalizing" with a HIGHER revision.
+    const afterTrailing = reduceThreadRunStatus(cancelled, {
+      threadId: "thread-1",
+      runId: "run-1",
+      revision: 3,
+      status: "finalizing",
+      resetProjection: false,
+    });
+
+    expect(afterTrailing).toBe(cancelled);
+    expect(afterTrailing["thread-1"]).toMatchObject({ status: "cancelled", endedAt: 500 });
+  });
+
+  it("lets a new run replace a terminal entry on the same thread", () => {
+    const cancelled = reduceThreadRunStatus({}, {
+      threadId: "thread-1",
+      runId: "run-1",
+      revision: 2,
+      status: "cancelled",
+      resetProjection: false,
+    });
+    const nextRun = reduceThreadRunStatus(cancelled, {
+      threadId: "thread-1",
+      runId: "run-2",
+      revision: 3,
+      status: "running",
+      resetProjection: false,
+    });
+
+    expect(nextRun["thread-1"]).toMatchObject({ runId: "run-2", status: "running", endedAt: null });
+  });
 });
 
 describe("reduceThreadRunStatus streaming bail-out", () => {
