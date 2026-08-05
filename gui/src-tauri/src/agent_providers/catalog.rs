@@ -1,57 +1,63 @@
-//! Built-in provider catalog derived from the agent's generated model list, plus
-//! the `models.json` / FutureGene-cache path helpers the Providers view needs.
+//! Built-in provider catalog fetched from the agent at runtime, plus the
+//! `models.json` / FutureGene-cache path helpers the Providers view needs.
+//!
+//! The catalog used to be compiled into the GUI via a `#[path]` include of the
+//! agent's generated model catalog — source-level coupling across the agent /
+//! GUI boundary. The agent is now the single source of truth: the catalog is
+//! fetched over the `list_models` RPC with `include_builtin_providers` set.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::auth_store::{agent_dir, FUTURE_PROVIDER_ID};
 use crate::config_io;
 
-// Depth note: this file lives at gui/src-tauri/src/agent_providers/, one level
-// deeper than the old flat module, so the include needs one extra `../`.
-#[path = "../../../../agent/src/models/builtin/mod.rs"]
-mod generated_model_catalog;
-
 #[derive(Debug, Clone)]
-pub(super) struct CatalogProviderSummary {
+pub(crate) struct CatalogProviderSummary {
     pub(super) name: String,
     pub(super) base_url: String,
     pub(super) model_count: usize,
 }
 
-/// Built-in providers summarized from the generated catalog, keyed by id.
+/// Built-in providers summarized from the agent's catalog, keyed by id.
 ///
-/// The generated catalog materializes ~900 models, and this is queried up to
-/// several times per command, so the derived map is built once and cached; each
-/// call returns a clone of the small (≈30-entry) summary map.
-pub(super) fn builtin_catalog_providers() -> BTreeMap<String, CatalogProviderSummary> {
-    static CACHE: OnceLock<BTreeMap<String, CatalogProviderSummary>> = OnceLock::new();
-    CACHE.get_or_init(build_builtin_catalog_providers).clone()
-}
-
-fn build_builtin_catalog_providers() -> BTreeMap<String, CatalogProviderSummary> {
-    let mut providers = BTreeMap::new();
-    for model in generated_model_catalog::init_builtin_models() {
-        if model.provider.is_empty() || model.provider == FUTURE_PROVIDER_ID {
-            continue;
-        }
-        let entry =
-            providers
-                .entry(model.provider.clone())
-                .or_insert_with(|| CatalogProviderSummary {
-                    name: provider_display_name(&model.provider),
-                    base_url: model.base_url.clone(),
-                    model_count: 0,
-                });
-        entry.model_count += 1;
-        if entry.base_url.is_empty() && !model.base_url.is_empty() {
-            entry.base_url = model.base_url;
+/// The result is cached for the process lifetime after the first successful
+/// fetch — the catalog only changes when the agent binary changes, so there is
+/// no need to re-request it on every Providers-page render or write-command
+/// validation. When the agent is unreachable and no fetch has succeeded yet,
+/// returns an empty map (the Providers page still shows the Future and custom
+/// providers; built-in key/URL edits are unavailable until the agent is back).
+pub(super) async fn builtin_catalog_providers() -> BTreeMap<String, CatalogProviderSummary> {
+    static CACHE: tokio::sync::OnceCell<BTreeMap<String, CatalogProviderSummary>> =
+        tokio::sync::OnceCell::const_new();
+    match CACHE
+        .get_or_try_init(|| async {
+            let catalog = crate::agent_bridge::list_builtin_providers().await?;
+            Ok::<_, crate::AppError>(
+                catalog
+                    .into_iter()
+                    .filter(|(id, _)| !id.is_empty() && id != FUTURE_PROVIDER_ID)
+                    .map(|(id, entry)| {
+                        let summary = CatalogProviderSummary {
+                            name: provider_display_name(&id),
+                            base_url: entry.base_url,
+                            model_count: entry.model_count,
+                        };
+                        (id, summary)
+                    })
+                    .collect(),
+            )
+        })
+        .await
+    {
+        Ok(catalog) => catalog.clone(),
+        Err(error) => {
+            eprintln!("FutureOS: built-in provider catalog unavailable from the agent: {error}");
+            BTreeMap::new()
         }
     }
-    providers
 }
 
 fn provider_display_name(id: &str) -> String {

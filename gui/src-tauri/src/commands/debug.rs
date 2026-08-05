@@ -88,6 +88,10 @@ pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Res
         ENV_TEST => TEST_PLATFORM_URL,
         other => return Err(AppError::Message(format!("Unknown environment: {other}"))),
     };
+    // Deliberately a direct `auth_store` write (not the RPC-first path of audit
+    // item 2): this is a sync command that immediately kills and restarts the
+    // agent, so there is nothing to RPC — the relaunched agent reads the new
+    // `base_url` from auth.json at startup.
     auth_store::set_future_base_url(&format!("{platform_url}/api"))?;
     agent_supervisor::shutdown_agent();
     app.restart()

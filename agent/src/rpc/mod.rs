@@ -2,6 +2,7 @@
 
 mod approval;
 mod commands;
+pub(crate) mod payloads;
 mod prompt_helpers;
 mod protocol;
 mod session;
@@ -162,9 +163,11 @@ impl AppState {
     }
 
     /// Refresh the in-memory API key of every live session from auth.json.
-    /// Invoked (via the `reload_auth` command) when the GUI changes credentials
-    /// out-of-band — FutureGene login/logout, custom-provider key edits — so no
-    /// running session keeps using a stale key. Sessions actively streaming are
+    /// Invoked by the `reload_auth` command and, since audit item 2, inline by
+    /// the config-write commands (`set_auth` / `upsert_provider` /
+    /// `delete_provider`) after the agent writes its own auth.json/models.json
+    /// — FutureGene login/logout, custom-provider key edits — so no running
+    /// session keeps using a stale key. Sessions actively streaming are
     /// skipped by `reload_credentials` and pick up the new key on their next
     /// `set_model`.
     ///
@@ -273,15 +276,16 @@ fn get_state_internal(
         .as_ref()
         .map(|s| s.parent_session_id.clone())
         .unwrap_or_default();
-    let active_run = sess.runtime.snapshot().map(|run| {
-        serde_json::json!({
-            "runId": run.run_id,
-            "epoch": run.epoch,
-            "runSequence": run.run_sequence,
-            "state": run.phase.as_str(),
-            "lastEventIdx": sess.broadcaster.last_idx(),
-        })
-    });
+    let active_run = sess
+        .runtime
+        .snapshot()
+        .map(|run| payloads::RunStateSnapshot {
+            run_id: run.run_id,
+            epoch: Some(run.epoch),
+            run_sequence: run.run_sequence,
+            state: run.phase.as_str().to_string(),
+            last_event_idx: Some(sess.broadcaster.last_idx()),
+        });
     let queued_runs = sess
         .scheduler
         .queued()
@@ -292,20 +296,32 @@ fn get_state_internal(
                 .payload
                 .get("message")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            serde_json::json!({
-                "runId": run.run_id,
-                "runSequence": run.run_sequence,
-                "clientRequestId": run.client_request_id,
-                "state": "queued",
-                "queuePosition": index + 1,
-                "acceptedAt": run.accepted_at,
-                "displayText": display_text,
-            })
+                .unwrap_or_default()
+                .to_string();
+            payloads::QueuedRunState {
+                run_id: run.run_id,
+                run_sequence: run.run_sequence,
+                client_request_id: run.client_request_id,
+                state: "queued".to_string(),
+                queue_position: index + 1,
+                accepted_at: run.accepted_at,
+                display_text,
+            }
         })
         .collect::<Vec<_>>();
     let queued_count = queued_runs.len();
-    let recent_terminal_acks = sess.scheduler.recent_terminal_acks();
+    let recent_terminal_acks = sess
+        .scheduler
+        .recent_terminal_acks()
+        .into_iter()
+        .map(|ack| payloads::TerminalAck {
+            run_id: ack.run_id,
+            run_sequence: ack.run_sequence,
+            client_request_id: ack.client_request_id,
+            state: ack.state,
+            reason: ack.reason,
+        })
+        .collect::<Vec<_>>();
     // Restart recovery: when no run is live but the journal still records a run
     // that began without committing (a run_started marker with no run_terminal),
     // the previous run was interrupted by a crash or agent restart. Surface it
@@ -314,11 +330,12 @@ fn get_state_internal(
         loaded
             .as_ref()
             .and_then(|s| crate::session::find_unterminated_run(&s.entries))
-            .map(|run_id| {
-                serde_json::json!({
-                    "runId": run_id,
-                    "state": crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
-                })
+            .map(|run_id| payloads::RunStateSnapshot {
+                run_id,
+                epoch: None,
+                run_sequence: None,
+                state: crate::session::RUN_STATE_INTERRUPTED_BY_RESTART.to_string(),
+                last_event_idx: None,
             })
     } else {
         None
@@ -336,44 +353,81 @@ fn get_state_internal(
     // event is only a notification.
     let pending_approvals = state.approval_gate.pending_for_session(&session_id);
 
-    Some(serde_json::json!({
-        "agentInstanceId": state.agent_instance_id,
-        "model": sess.model,
-        "imageSupport": image_support,
-        "thinkingLevel": sess.thinking_level,
-        "isStreaming": sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed),
-        "isCompacting": false,
-        "sessionFile": if session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String("".to_string()) },
-        "sessionId": if session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(session_id) },
-        "session_name": if sess.session_name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(sess.session_name.clone()) },
-        "explicitSession": state.explicit_session,
-        "autoCompactionEnabled": sess.auto_compaction,
-        "queryCount": query_count,
-        "version": crate::utils::VERSION,
-        "cwd": cwd,
-        "skills": state.welcome_skills.read().clone(),
-        "contextFiles": state.welcome_context.read().clone(),
-        "extensions": serde_json::Value::Null,
-        "contextWindow": context_window,
-        "contextTokens": context_tokens,
-        "contextPercent": context_percent,
-        "tokensIn": tokens_in,
-        "tokensOut": tokens_out,
-        "tokensCacheR": cache_r,
-        "tokensCacheW": cache_w,
-        "totalCost": total_cost,
-        "permissionLevel": sess.permission_level.clone(),
-        "parentSessionId": if parent_session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(parent_session_id) },
-        "createdBy": sess.created_by.clone(),
-        "sourceMeta": sess.source_meta.clone(),
-        "activeRun": active_run,
-        "queuedRuns": queued_runs,
-        "recentTerminalAcks": recent_terminal_acks,
-        "queuedCount": queued_count,
-        "interruptedRun": interrupted_run,
-        "requestedRun": requested_run,
-        "pendingApprovals": pending_approvals,
-    }))
+    // Typed payload (audit item 1): canonical camelCase keys from the
+    // GetStatePayload struct, plus legacy aliases for the spellings that
+    // pre-migration clients still read (`session_name`, snake_case ack keys).
+    let mut payload = serde_json::to_value(payloads::GetStatePayload {
+        agent_instance_id: state.agent_instance_id.clone(),
+        model: sess.model.clone(),
+        image_support,
+        thinking_level: sess.thinking_level.clone(),
+        is_streaming: sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed),
+        is_compacting: false,
+        session_file: if session_id.is_empty() {
+            None
+        } else {
+            Some(String::new())
+        },
+        session_id: if session_id.is_empty() {
+            None
+        } else {
+            Some(session_id.clone())
+        },
+        session_name: if sess.session_name.is_empty() {
+            None
+        } else {
+            Some(sess.session_name.clone())
+        },
+        explicit_session: state.explicit_session,
+        auto_compaction_enabled: sess.auto_compaction,
+        query_count,
+        version: crate::utils::VERSION.to_string(),
+        cwd,
+        skills: state.welcome_skills.read().clone(),
+        context_files: state.welcome_context.read().clone(),
+        extensions: None,
+        context_window,
+        context_tokens,
+        context_percent,
+        tokens_in,
+        tokens_out,
+        tokens_cache_r: cache_r,
+        tokens_cache_w: cache_w,
+        total_cost,
+        permission_level: sess.permission_level.clone(),
+        parent_session_id: if parent_session_id.is_empty() {
+            None
+        } else {
+            Some(parent_session_id)
+        },
+        created_by: sess.created_by.clone(),
+        source_meta: sess.source_meta.clone(),
+        active_run,
+        queued_runs,
+        recent_terminal_acks,
+        queued_count,
+        interrupted_run,
+        requested_run,
+        pending_approvals,
+    })
+    .unwrap_or_default();
+    payloads::inject_legacy_aliases(&mut payload, &[("sessionName", "session_name")]);
+    if let Some(acks) = payload
+        .get_mut("recentTerminalAcks")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for ack in acks {
+            payloads::inject_legacy_aliases(
+                ack,
+                &[
+                    ("runId", "run_id"),
+                    ("runSequence", "run_sequence"),
+                    ("clientRequestId", "client_request_id"),
+                ],
+            );
+        }
+    }
+    Some(payload)
 }
 
 /// Generate HTML representation of a session (matches Go exportSessionToHTML)

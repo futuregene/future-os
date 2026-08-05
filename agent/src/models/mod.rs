@@ -74,6 +74,19 @@ pub struct Cost {
     pub cache_write: f64,
 }
 
+/// Catalog summary of one built-in provider: how many models it has and its
+/// catalog base URL (no `models.json` overrides applied — clients merge those
+/// themselves, and need the raw catalog URL to detect placeholder URLs).
+/// Serialized into the `list_models` response when the client sets
+/// `include_builtin_providers`, so clients can fetch the catalog at runtime
+/// instead of compiling it in.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltinProviderSummary {
+    pub model_count: usize,
+    pub base_url: String,
+}
+
 /// Process-wide shared copy of the parsed built-in catalog.  The embedded
 /// models.json is ~1.9 MB; parsing it costs ~1.5 MB of fresh heap and
 /// several ms of CPU on every call, so parse once and share an `Arc`.
@@ -685,6 +698,34 @@ impl Registry {
         // Filter out hidden models from the list
         models.retain(|m| !m.hide);
         models
+    }
+
+    /// Summaries of the built-in provider catalog, keyed by provider id: model
+    /// count and the catalog base URL. The dynamic Future platform catalog is
+    /// excluded — clients present that provider separately. Serves the
+    /// `list_models` `include_builtin_providers` flag so clients can fetch the
+    /// catalog at runtime instead of compiling it in.
+    pub fn builtin_provider_summaries(
+        &self,
+    ) -> std::collections::BTreeMap<String, BuiltinProviderSummary> {
+        let mut summaries = std::collections::BTreeMap::new();
+        for model in self.builtin.iter() {
+            if model.hide || model.provider.is_empty() || model.provider == "future" {
+                continue;
+            }
+            let entry =
+                summaries
+                    .entry(model.provider.clone())
+                    .or_insert_with(|| BuiltinProviderSummary {
+                        model_count: 0,
+                        base_url: String::new(),
+                    });
+            entry.model_count += 1;
+            if entry.base_url.is_empty() && !model.base_url.is_empty() {
+                entry.base_url = model.base_url.clone();
+            }
+        }
+        summaries
     }
 
     /// Resolve a model ID to a Model (checks user first, then builtin)

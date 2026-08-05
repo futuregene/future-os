@@ -222,14 +222,12 @@ pub fn new_session_command(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> RpcCommand {
-    let custom_instructions = serde_json::json!({
-        "createdBy": created_by,
-        "sourceMeta": source_meta,
-    })
-    .to_string();
     RpcCommand {
         cwd,
-        custom_instructions,
+        // Typed provenance fields (proto created_by/source_meta) — no longer
+        // smuggled through custom_instructions, which belongs to compact.
+        created_by: created_by.to_string(),
+        source_meta: source_meta.to_string(),
         model_id: model_id.unwrap_or_default(),
         level: thinking_level.unwrap_or_default(),
         ..base_command("new_session", session_id)
@@ -369,6 +367,8 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         level: String::new(),
         mode: String::new(),
         custom_instructions: String::new(),
+        created_by: String::new(),
+        source_meta: String::new(),
         enabled: false,
         command: String::new(),
         session_id,
@@ -385,6 +385,19 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         client_request_id: String::new(),
         busy_policy: String::new(),
         sandbox_policy: None,
+        include_builtin_providers: false,
+        auth_update: None,
+        provider_config: None,
+    }
+}
+
+/// `list_models` variant that also asks for the agent's built-in provider
+/// catalog summary (`builtinProviders`), so the Providers page can source the
+/// catalog from the agent at runtime instead of compiling agent source in.
+pub(super) fn list_builtin_providers_command() -> RpcCommand {
+    RpcCommand {
+        include_builtin_providers: true,
+        ..base_command("list_models", String::new())
     }
 }
 

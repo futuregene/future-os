@@ -2,6 +2,7 @@ import type { AgentMessage } from "./agentThreadTypes";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 import { formatDuration } from "../../lib/date";
+import { formatNumber } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 
 interface MessageMetaProps {
@@ -35,7 +36,7 @@ export function MessageMeta({ message, visible }: MessageMetaProps) {
   const tokens = message.outputTokens ?? 0;
   const parts = [
     elapsedMs != null ? formatDuration(elapsedMs) : null,
-    tokens > 0 ? t("message.tokens", { count: tokens, formattedCount: new Intl.NumberFormat(i18n.language).format(tokens) }) : null,
+    tokens > 0 ? t("message.tokens", { count: tokens, formattedCount: formatNumber(tokens, i18n.language) }) : null,
   ].filter((part): part is string => !!part);
 
   if (parts.length === 0)

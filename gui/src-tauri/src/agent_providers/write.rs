@@ -1,27 +1,49 @@
 //! Mutating command paths for provider configuration: built-in API key / Base
-//! URL overrides and custom-provider upsert/delete. Each performs a strict,
-//! per-path-locked models.json read-modify-write, then returns the refreshed
-//! view. Also home to the two small models.json helpers the view shares.
+//! URL overrides and custom-provider upsert/delete.
+//!
+//! Each operation is RPC-first (audit item 2): the validated change is sent to
+//! the agent via `set_auth` / `upsert_provider` / `delete_provider`, and the
+//! agent writes its own auth.json/models.json and refreshes live sessions. The
+//! locked local read-modify-write remains as the fallback for an unreachable
+//! or pre-item-2 agent (then followed by the best-effort `reload_auth`). The
+//! synchronous `_with_catalog` cores are exactly that local path — validation
+//! plus file writes — which keeps the module tests agent-free.
+
+use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
+use crate::agent_bridge::config as agent_config;
 use crate::auth_store::FUTURE_PROVIDER_ID;
 use crate::config_io;
+use crate::AppError;
 
-use super::catalog::{builtin_catalog_providers, models_json_path};
+use super::catalog::{builtin_catalog_providers, models_json_path, CatalogProviderSummary};
 use super::validate::{
-    is_ascii_no_control, validate_custom_provider, ValidatedCustomProvider, API_KEY_MAX_LEN,
-    BASE_URL_MAX_LEN,
+    is_ascii_no_control, model_json_values, validate_custom_provider, ValidatedCustomProvider,
+    API_KEY_MAX_LEN, BASE_URL_MAX_LEN,
 };
 use super::{
-    list_agent_providers, ProvidersView, SetBuiltinProviderBaseUrlInput,
+    refresh_view_with_catalog, ProvidersView, SetBuiltinProviderBaseUrlInput,
     UpdateBuiltinProviderKeyInput, UpsertCustomProviderInput, BASE_URL_PLACEHOLDER,
     FUTURE_PROVIDER_NAME,
 };
 
-pub fn update_builtin_provider_key(
-    input: UpdateBuiltinProviderKeyInput,
-) -> Result<ProvidersView, crate::AppError> {
+/// Best-effort `reload_auth` after a LOCAL config write: the agent caches the
+/// resolved credentials per session, so the file change alone leaves live
+/// sessions on the old state. Not needed when the RPC write path was used —
+/// the agent refreshed itself.
+async fn reload_after_local_write() {
+    let _ = crate::agent_bridge::reload_agent_credentials().await;
+}
+
+// ── update_builtin_provider_key ─────────────────────────────────────────────
+
+/// Request-local validation for a built-in provider's API key change.
+fn validate_builtin_key_update<'a>(
+    input: &'a UpdateBuiltinProviderKeyInput,
+    catalog: &BTreeMap<String, CatalogProviderSummary>,
+) -> Result<(&'a str, Option<&'a str>), AppError> {
     let id = input.id.trim();
     if id.is_empty() {
         return Err("Provider id is required.".to_string().into());
@@ -29,7 +51,7 @@ pub fn update_builtin_provider_key(
     if id == FUTURE_PROVIDER_ID {
         return Err("FutureGene uses the sign-in flow.".to_string().into());
     }
-    if !builtin_catalog_providers().contains_key(id) {
+    if !catalog.contains_key(id) {
         return Err(format!("Unknown built-in provider: `{id}`.").into());
     }
 
@@ -45,34 +67,70 @@ pub fn update_builtin_provider_key(
         if !is_ascii_no_control(key) {
             return Err("API Key contains illegal characters.".into());
         }
+    }
+    Ok((id, api_key))
+}
+
+/// Local fallback: write the key straight to auth.json.
+fn apply_builtin_key_update_local(id: &str, api_key: Option<&str>) -> Result<(), AppError> {
+    if let Some(key) = api_key {
         crate::auth_store::set_provider_key(id, key)?;
     } else {
         crate::auth_store::remove_provider_key(id)?;
     }
-
-    list_agent_providers()
+    Ok(())
 }
 
-/// Set (or clear) a built-in provider's Base URL override in models.json. Used
-/// for catalog providers whose base URL is a placeholder (see
-/// [`BASE_URL_PLACEHOLDER`]); the agent applies it to that provider's models.
-pub fn set_builtin_provider_base_url(
-    input: SetBuiltinProviderBaseUrlInput,
-) -> Result<ProvidersView, crate::AppError> {
+pub async fn update_builtin_provider_key(
+    input: UpdateBuiltinProviderKeyInput,
+) -> Result<ProvidersView, AppError> {
+    let catalog = builtin_catalog_providers().await;
+    // Validate before the RPC so bad input never reaches the agent; the
+    // fallback core below re-validates from the same input.
+    let (id, api_key) = validate_builtin_key_update(&input, &catalog)?;
+    let applied = match api_key {
+        Some(key) => agent_config::set_provider_key(id, key).await?,
+        None => agent_config::clear_provider_key(id).await?,
+    };
+    if applied {
+        // The agent wrote auth.json and refreshed live sessions itself.
+        return refresh_view_with_catalog(&catalog);
+    }
+    let view = update_builtin_provider_key_with_catalog(input, &catalog)?;
+    reload_after_local_write().await;
+    Ok(view)
+}
+
+pub(super) fn update_builtin_provider_key_with_catalog(
+    input: UpdateBuiltinProviderKeyInput,
+    catalog: &BTreeMap<String, CatalogProviderSummary>,
+) -> Result<ProvidersView, AppError> {
+    let (id, api_key) = validate_builtin_key_update(&input, catalog)?;
+    apply_builtin_key_update_local(id, api_key)?;
+    refresh_view_with_catalog(catalog)
+}
+
+// ── set_builtin_provider_base_url ───────────────────────────────────────────
+
+/// Request-local validation for a built-in provider's Base URL override.
+fn validate_builtin_base_url_update<'a>(
+    input: &'a SetBuiltinProviderBaseUrlInput,
+    catalog: &BTreeMap<String, CatalogProviderSummary>,
+) -> Result<(&'a str, &'a str), AppError> {
     let id = input.id.trim();
     if id.is_empty() {
         return Err("Provider id is required.".to_string().into());
     }
     if id == FUTURE_PROVIDER_ID {
-        return Err("FutureGene's address is managed by the sign-in flow.".into());
+        return Err("FutureGene's address is managed by the sign-in flow."
+            .to_string()
+            .into());
     }
-    if !builtin_catalog_providers().contains_key(id) {
+    if !catalog.contains_key(id) {
         return Err(format!("Unknown built-in provider: `{id}`.").into());
     }
 
     let base_url = input.base_url.trim();
-    // Validate the address before touching the file (it doesn't depend on the
-    // current contents), so the locked read-modify-write below stays minimal.
     if !base_url.is_empty() {
         if base_url.len() > BASE_URL_MAX_LEN {
             return Err("Base URL is too long.".into());
@@ -88,7 +146,12 @@ pub fn set_builtin_provider_base_url(
             .into());
         }
     }
+    Ok((id, base_url))
+}
 
+/// Local fallback: strict, per-path-locked models.json read-modify-write of
+/// the `baseUrl` override.
+fn apply_builtin_base_url_local(id: &str, base_url: &str) -> Result<(), AppError> {
     let models_path = models_json_path()?;
     config_io::with_config_lock(&models_path, || {
         let mut models_doc = config_io::read_json_object(&models_path)?;
@@ -123,24 +186,103 @@ pub fn set_builtin_provider_base_url(
             providers.insert(id.to_string(), Value::Object(provider));
         }
         config_io::write_json_atomic(&models_path, &models_doc, false)
-    })?;
-
-    list_agent_providers()
+    })
 }
 
-pub fn upsert_custom_provider(
-    input: UpsertCustomProviderInput,
-) -> Result<ProvidersView, crate::AppError> {
-    let ValidatedCustomProvider {
-        id,
-        name,
-        api,
-        base_url,
-        api_key,
-        model_values,
-        create,
-    } = validate_custom_provider(input)?;
+/// Set (or clear) a built-in provider's Base URL override in models.json. Used
+/// for catalog providers whose base URL is a placeholder (see
+/// [`BASE_URL_PLACEHOLDER`]); the agent applies it to that provider's models.
+pub async fn set_builtin_provider_base_url(
+    input: SetBuiltinProviderBaseUrlInput,
+) -> Result<ProvidersView, AppError> {
+    let catalog = builtin_catalog_providers().await;
+    let (id, base_url) = validate_builtin_base_url_update(&input, &catalog)?;
+    let applied = agent_config::set_builtin_provider_base_url(id, base_url).await?;
+    if applied {
+        return refresh_view_with_catalog(&catalog);
+    }
+    let view = set_builtin_provider_base_url_with_catalog(input, &catalog)?;
+    reload_after_local_write().await;
+    Ok(view)
+}
 
+pub(super) fn set_builtin_provider_base_url_with_catalog(
+    input: SetBuiltinProviderBaseUrlInput,
+    catalog: &BTreeMap<String, CatalogProviderSummary>,
+) -> Result<ProvidersView, AppError> {
+    let (id, base_url) = validate_builtin_base_url_update(&input, catalog)?;
+    apply_builtin_base_url_local(id, base_url)?;
+    refresh_view_with_catalog(catalog)
+}
+
+// ── upsert_custom_provider ──────────────────────────────────────────────────
+
+/// Catalog-only checks (independent of the file state): reserved ids in create
+/// mode and name collisions with built-in providers. File-state checks (id/name
+/// uniqueness among existing entries) run inside the locked write — locally in
+/// [`apply_upsert_local`], on the agent side in `apply_provider_upsert`.
+fn validate_upsert_against_catalog(
+    validated: &ValidatedCustomProvider,
+    catalog: &BTreeMap<String, CatalogProviderSummary>,
+) -> Result<(), AppError> {
+    if validated.create && catalog.contains_key(&validated.id) {
+        return Err(format!(
+            "Provider ID `{}` is reserved for a built-in provider.",
+            validated.id
+        )
+        .into());
+    }
+    // Names must be unique (case-insensitive) across the built-in and other
+    // custom providers, so the list and model grouping stay unambiguous.
+    let normalized_name = validated.name.to_lowercase();
+    if normalized_name == FUTURE_PROVIDER_NAME.to_lowercase() {
+        return Err(format!(
+            "Provider name `{}` conflicts with a built-in provider.",
+            validated.name
+        )
+        .into());
+    }
+    let builtin_name_taken = catalog.iter().any(|(builtin_id, provider)| {
+        builtin_id != &validated.id && provider.name.trim().to_lowercase() == normalized_name
+    });
+    if builtin_name_taken {
+        return Err(format!(
+            "Provider name `{}` conflicts with a built-in provider.",
+            validated.name
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The `upsert_provider` RPC payload for a validated custom provider.
+fn provider_upsert_message(
+    validated: &ValidatedCustomProvider,
+) -> crate::agent_proto::ProviderUpsert {
+    crate::agent_proto::ProviderUpsert {
+        id: validated.id.clone(),
+        name: validated.name.clone(),
+        api: validated.api.clone(),
+        base_url: validated.base_url.clone(),
+        models: validated
+            .models
+            .iter()
+            .map(|model| crate::agent_proto::ProviderModel {
+                id: model.id.clone(),
+                name: model.name.clone(),
+                modalities: model.modalities.clone(),
+            })
+            .collect(),
+        create_only: validated.create,
+        api_key: validated.api_key.clone().unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
+/// Local fallback: locked models.json read-modify-write (with the file-state
+/// uniqueness checks) plus the auth.json key write, mirroring the agent's
+/// `upsert_provider_files` ordering and rollback.
+fn apply_upsert_local(validated: &ValidatedCustomProvider) -> Result<(), AppError> {
     let models_path = models_json_path()?;
     config_io::with_config_lock(&models_path, || {
         let mut models_doc = config_io::read_json_object(&models_path)?;
@@ -155,31 +297,12 @@ pub fn upsert_custom_provider(
             .ok_or_else(|| "models.json `providers` is not an object.".to_string())?;
 
         // Reject creating a provider whose id already exists (silent overwrite).
-        if create && providers.contains_key(&id) {
-            return Err(format!("Provider ID `{id}` already exists.").into());
+        if validated.create && providers.contains_key(&validated.id) {
+            return Err(format!("Provider ID `{}` already exists.", validated.id).into());
         }
-        let builtin_catalog = builtin_catalog_providers();
-        if create && builtin_catalog.contains_key(&id) {
-            return Err(format!("Provider ID `{id}` is reserved for a built-in provider.").into());
-        }
-        // Names must be unique (case-insensitive) across the built-in and other
-        // custom providers, so the list and model grouping stay unambiguous.
-        let normalized_name = name.to_lowercase();
-        if normalized_name == FUTURE_PROVIDER_NAME.to_lowercase() {
-            return Err(
-                format!("Provider name `{name}` conflicts with a built-in provider.").into(),
-            );
-        }
-        let builtin_name_taken = builtin_catalog.iter().any(|(builtin_id, provider)| {
-            builtin_id != &id && provider.name.trim().to_lowercase() == normalized_name
-        });
-        if builtin_name_taken {
-            return Err(
-                format!("Provider name `{name}` conflicts with a built-in provider.").into(),
-            );
-        }
+        let normalized_name = validated.name.to_lowercase();
         let name_taken = providers.iter().any(|(other_id, config)| {
-            other_id != &id
+            other_id != &validated.id
                 && config
                     .get("name")
                     .and_then(Value::as_str)
@@ -189,60 +312,102 @@ pub fn upsert_custom_provider(
                     == normalized_name
         });
         if name_taken {
-            return Err(format!("Provider name `{name}` already exists.").into());
+            return Err(format!("Provider name `{}` already exists.", validated.name).into());
         }
 
         // Preserve any fields the GUI does not manage (e.g. `compat`).
         let mut provider = providers
-            .get(&id)
+            .get(&validated.id)
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        provider.insert("name".to_string(), Value::String(name.clone()));
-        provider.insert("api".to_string(), Value::String(api.clone()));
-        provider.insert("baseUrl".to_string(), Value::String(base_url.clone()));
-        provider.insert("models".to_string(), Value::Array(model_values.clone()));
+        provider.insert("name".to_string(), Value::String(validated.name.clone()));
+        provider.insert("api".to_string(), Value::String(validated.api.clone()));
+        provider.insert(
+            "baseUrl".to_string(),
+            Value::String(validated.base_url.clone()),
+        );
+        provider.insert(
+            "models".to_string(),
+            Value::Array(model_json_values(&validated.models)),
+        );
         // Write the API key first: if it fails we abort before persisting the
         // provider, avoiding a saved provider with a missing key while returning Err.
-        let provider_existed = providers.contains_key(&id);
-        if let Some(key) = api_key.as_deref() {
-            crate::auth_store::set_provider_key(&id, key)?;
+        let provider_existed = providers.contains_key(&validated.id);
+        if let Some(key) = validated.api_key.as_deref() {
+            crate::auth_store::set_provider_key(&validated.id, key)?;
         }
 
-        providers.insert(id.clone(), Value::Object(provider));
+        providers.insert(validated.id.clone(), Value::Object(provider));
         if let Err(error) = config_io::write_json_atomic(&models_path, &models_doc, false) {
             // The models.json write failed after the key landed. For a brand-new
             // provider that key is now orphaned (no provider entry references it),
             // so roll it back to keep auth.json from accumulating dangling
             // credentials. For an existing provider the prior (still-intact)
             // entry references the key, so leave it in place.
-            if !provider_existed && api_key.is_some() {
-                let _ = crate::auth_store::remove_provider_entry(&id);
+            if !provider_existed && validated.api_key.is_some() {
+                let _ = crate::auth_store::remove_provider_entry(&validated.id);
             }
             return Err(error);
         }
         Ok(())
-    })?;
-
-    list_agent_providers()
+    })
 }
 
-pub fn delete_custom_provider(id: String) -> Result<ProvidersView, crate::AppError> {
+pub async fn upsert_custom_provider(
+    input: UpsertCustomProviderInput,
+) -> Result<ProvidersView, AppError> {
+    let catalog = builtin_catalog_providers().await;
+    // Validate before the RPC so bad input never reaches the agent. `input` is
+    // cloned because validation consumes it while the fallback core below also
+    // needs it.
+    let validated = validate_custom_provider(input.clone())?;
+    validate_upsert_against_catalog(&validated, &catalog)?;
+    let applied = agent_config::upsert_provider(provider_upsert_message(&validated)).await?;
+    if applied {
+        // The agent wrote models.json/auth.json and refreshed live sessions.
+        return refresh_view_with_catalog(&catalog);
+    }
+    let view = upsert_custom_provider_with_catalog(input, &catalog)?;
+    reload_after_local_write().await;
+    Ok(view)
+}
+
+pub(super) fn upsert_custom_provider_with_catalog(
+    input: UpsertCustomProviderInput,
+    catalog: &BTreeMap<String, CatalogProviderSummary>,
+) -> Result<ProvidersView, AppError> {
+    let validated = validate_custom_provider(input)?;
+    validate_upsert_against_catalog(&validated, catalog)?;
+    apply_upsert_local(&validated)?;
+    refresh_view_with_catalog(catalog)
+}
+
+// ── delete_custom_provider ──────────────────────────────────────────────────
+
+/// Request-local guards: only custom providers may be removed — guard the
+/// built-in FutureGene (whose key is the user's sign-in) and every catalog
+/// provider, so a stray id can't wipe login/override state the UI never offers
+/// to delete.
+fn validate_delete_id(
+    id: &str,
+    catalog: &BTreeMap<String, CatalogProviderSummary>,
+) -> Result<String, AppError> {
     let id = id.trim().to_string();
     if id.is_empty() {
         return Err("Provider id is required.".to_string().into());
     }
-    // this deletes the provider's models.json entry *and* its auth.json
-    // credentials. Only custom providers may be removed — guard the built-in
-    // FutureGene (whose key is the user's sign-in) and every catalog provider, so
-    // a stray id can't wipe login/override state the UI never offers to delete.
     if id == FUTURE_PROVIDER_ID {
         return Err("FutureGene is a built-in provider and cannot be deleted.".into());
     }
-    if builtin_catalog_providers().contains_key(&id) {
+    if catalog.contains_key(&id) {
         return Err(format!("`{id}` is a built-in provider and cannot be deleted.").into());
     }
+    Ok(id)
+}
 
+/// Local fallback: remove the models.json entry AND the auth.json credentials.
+fn apply_delete_local(id: &str) -> Result<(), AppError> {
     let models_path = models_json_path()?;
     config_io::with_config_lock(&models_path, || {
         let mut models_doc = config_io::read_json_object(&models_path)?;
@@ -250,17 +415,40 @@ pub fn delete_custom_provider(id: String) -> Result<ProvidersView, crate::AppErr
             .get_mut("providers")
             .and_then(Value::as_object_mut)
         {
-            if providers.remove(&id).is_some() {
+            if providers.remove(id).is_some() {
                 config_io::write_json_atomic(&models_path, &models_doc, false)?;
             }
         }
         Ok(())
     })?;
 
-    crate::auth_store::remove_provider_entry(&id)?;
-
-    list_agent_providers()
+    crate::auth_store::remove_provider_entry(id)?;
+    Ok(())
 }
+
+pub async fn delete_custom_provider(id: String) -> Result<ProvidersView, AppError> {
+    let catalog = builtin_catalog_providers().await;
+    let id = validate_delete_id(&id, &catalog)?;
+    let applied = agent_config::delete_provider(&id).await?;
+    if applied {
+        // The agent removed its models.json + auth.json entries and refreshed.
+        return refresh_view_with_catalog(&catalog);
+    }
+    let view = delete_custom_provider_with_catalog(id, &catalog)?;
+    reload_after_local_write().await;
+    Ok(view)
+}
+
+pub(super) fn delete_custom_provider_with_catalog(
+    id: String,
+    catalog: &BTreeMap<String, CatalogProviderSummary>,
+) -> Result<ProvidersView, AppError> {
+    let id = validate_delete_id(&id, catalog)?;
+    apply_delete_local(&id)?;
+    refresh_view_with_catalog(catalog)
+}
+
+// ── shared models.json view helpers ─────────────────────────────────────────
 
 /// True when a models.json provider entry only carries overrides (Base URL) for
 /// a built-in provider, i.e. it defines no `name`, `api`, or explicit `models`.

@@ -260,16 +260,14 @@ export function installAgentEventListener() {
 
       // ── Content events: forward to the active AgentThread via a
       //     window custom event so the message list updates in real-time.
+      //     Only the types the consumer handles (useThreadMessages) are
+      //     forwarded — dispatching every text/thinking/tool delta fired a
+      //     window CustomEvent per token with no listener doing anything
+      //     with it; those deltas reach the view through the run-event
+      //     projection path instead.
       case "user_message":
-      case "text_chunk":
       case "agent_start":
       case "agent_end":
-      case "thinking_start":
-      case "thinking_delta":
-      case "thinking_end":
-      case "tool_start":
-      case "tool_delta":
-      case "tool_end":
         if (!threadId)
           return;
         window.dispatchEvent(new CustomEvent("future:agent-event", {

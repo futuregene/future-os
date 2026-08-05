@@ -9,18 +9,22 @@ use tokio::sync::Semaphore;
 
 use super::client::{
     connect_agent, get_session_entries_command, get_state_command, list_sessions_command,
-    set_session_name_command,
+    map_rpc_error, set_session_name_command, RpcResponseExt,
 };
 use crate::store;
 
 // ─── agent RPC types ────────────────────────────────────────────────────────
 
 /// Lightweight session summary from the agent's `list_sessions` RPC.
+///
+/// Field casing (audit item 1): the canonical wire keys are camelCase; the
+/// `alias` entries keep reading the legacy snake_case spellings emitted by
+/// pre-item-1 agents (and still emitted as aliases by newer ones).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionSummary {
     pub id: String,
-    #[serde(default, rename = "session_name")]
+    #[serde(default, rename = "sessionName", alias = "session_name")]
     pub name: Option<String>,
     // Tolerate a missing/null cwd (e.g. channel sessions) — an empty cwd is
     // routed to a chat workspace by `thread_mode`, not dropped.
@@ -28,13 +32,13 @@ pub struct AgentSessionSummary {
     pub cwd: String,
     #[serde(default)]
     pub model: String,
-    #[serde(default, rename = "first_message")]
+    #[serde(default, alias = "first_message")]
     pub first_message: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "parent_session_id")]
     #[allow(dead_code)]
     pub parent_session_id: String,
     /// Whether the agent is currently streaming a response for this session.
-    #[serde(default, rename = "is_streaming")]
+    #[serde(default, alias = "is_streaming")]
     #[allow(dead_code)]
     pub is_streaming: bool,
 }
@@ -94,6 +98,40 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
         }
     }
     sessions
+}
+
+/// The set of session ids the agent currently knows about, with transport
+/// failures surfaced as `Err` instead of an empty list. Consumed by the
+/// orphan-thread cleanup, which must distinguish "agent unreachable" (skip,
+/// delete nothing) from "agent has no sessions" — an ambiguous empty list
+/// could nuke every thread on a transient failure.
+pub(crate) async fn list_agent_session_ids(
+) -> Result<std::collections::HashSet<String>, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(list_sessions_command())
+        .await
+        .map_err(|status| map_rpc_error("list_sessions", status))?
+        .into_inner()
+        .ok_or_rpc_error("list_sessions rejected")?;
+    let value: serde_json::Value = serde_json::from_str(&response.data)
+        .map_err(|error| format!("list_sessions parse: {error}"))?;
+    let mut ids = std::collections::HashSet::new();
+    for entry in value
+        .get("sessions")
+        .and_then(|sessions| sessions.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if let Some(id) = entry
+            .get("id")
+            .and_then(|value| value.as_str())
+            .filter(|id| !id.is_empty())
+        {
+            ids.insert(id.to_string());
+        }
+    }
+    Ok(ids)
 }
 
 /// Fetch the full entry list for a session. Returns empty on any failure.
@@ -448,8 +486,11 @@ pub(crate) async fn import_streaming_session(session_id: &str) -> Result<(), cra
         serde_json::from_str(&response.data).map_err(|e| format!("get_state parse: {e}"))?;
     let summary = AgentSessionSummary {
         id: session_id.to_string(),
+        // get_state emits canonical `sessionName` plus the legacy `session_name`
+        // alias (audit item 1); prefer canonical, tolerate pre-item-1 agents.
         name: state
-            .get("session_name")
+            .get("sessionName")
+            .or_else(|| state.get("session_name"))
             .and_then(|value| value.as_str())
             .map(str::to_string),
         cwd: state
@@ -567,6 +608,36 @@ mod tests {
         );
         assert_eq!(summary.cwd, "/Users/test/my-project");
         assert_eq!(summary.model, "deepseek-v4-pro");
+        assert!(summary.is_streaming);
+    }
+
+    /// Audit item 1: the canonical casing of list_sessions rows is camelCase;
+    /// the struct must parse it directly (the snake_case variant above covers
+    /// pre-item-1 agents).
+    #[test]
+    fn agent_session_summary_parses_canonical_camel_case() {
+        let raw = serde_json::json!({
+            "id": "abc123",
+            "sessionName": "fix the login bug",
+            "model": "deepseek-v4-pro",
+            "cwd": "/Users/test/my-project",
+            "updatedAt": "2026-07-21 10:00:00",
+            "parentSessionId": "parent-1",
+            "firstMessage": "please fix the login bug on the homepage",
+            "queryCount": 5,
+            "isStreaming": true,
+        });
+
+        let summary: AgentSessionSummary =
+            serde_json::from_value(raw).expect("should parse canonical list_sessions JSON");
+
+        assert_eq!(summary.id, "abc123");
+        assert_eq!(summary.name.as_deref(), Some("fix the login bug"));
+        assert_eq!(
+            summary.first_message.as_deref(),
+            Some("please fix the login bug on the homepage")
+        );
+        assert_eq!(summary.parent_session_id, "parent-1");
         assert!(summary.is_streaming);
     }
 

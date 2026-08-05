@@ -1,8 +1,12 @@
 //! Strict, atomic, 0600 read/write for `~/.future/agent/auth.json`.
 //!
-//! This is the single write path for the agent auth file (FutureGene login,
-//! logout, and custom-provider API keys all route through it) so permissions
-//! and parse strictness stay consistent — see gui/ER.md §6.9.
+//! Since audit item 2 the PRIMARY write path is the agent itself (the GUI sends
+//! `set_auth` over gRPC and the agent writes its own file — see
+//! `agent_bridge/config.rs`). This module remains the read path for the GUI and
+//! the LOCAL FALLBACK writer for an unreachable or pre-item-2 agent, so it keeps
+//! the same strict/atomic/0600 semantics as before. FutureGene login, logout,
+//! and custom-provider API keys all still route through it in fallback — see
+//! gui/ER.md §6.9.
 //!
 //! Read semantics: a missing file is an empty object; a corrupt file or a
 //! non-object root is an error (never silently dropped, so a write can't clobber

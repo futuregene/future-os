@@ -48,12 +48,28 @@ export function reduceThreadRunStatus(
   if (current?.revision !== undefined && update.revision <= current.revision)
     return previous;
   const terminal = ["completed", "failed", "cancelled"].includes(update.status);
+  const status = terminal ? update.status as ThreadRunInfo["status"] : "running";
+  // Bail out when the projection's meaning is unchanged. During streaming the
+  // revision climbs on every coalesced push (~25/s) while status/runId/endedAt
+  // stay constant — returning a fresh object each time re-rendered the whole
+  // AppShell tree at push frequency (H2). The stored revision not advancing
+  // during skipped pushes is safe: pushes don't duplicate, and the comparison
+  // is idempotent, so a genuinely different status still lands. A duplicate
+  // terminal push keeps the first observed endedAt (the truthful one).
+  if (
+    current
+    && current.status === status
+    && current.runId === update.runId
+    && (terminal ? current.endedAt !== null : current.endedAt === null)
+  ) {
+    return previous;
+  }
   return {
     ...previous,
     [update.threadId]: {
       runId: update.runId,
       revision: update.revision,
-      status: terminal ? update.status as ThreadRunInfo["status"] : "running",
+      status,
       endedAt: terminal ? endedAt : null,
     },
   };
@@ -61,6 +77,17 @@ export function reduceThreadRunStatus(
 
 function streamingStatuses(threadIds: string[]): ThreadStreamingStatuses {
   return Object.fromEntries(threadIds.map(threadId => [threadId, true]));
+}
+
+/**
+ * Same-set guard for streaming statuses: while any thread streams, the push
+ * repeats the unchanged id set at push frequency — writing a fresh object each
+ * time re-rendered AppShell (and with it the whole rail) for nothing.
+ */
+function mergeStreamingStatuses(previous: ThreadStreamingStatuses, threadIds: string[]): ThreadStreamingStatuses {
+  if (threadIds.length === Object.keys(previous).length && threadIds.every(threadId => previous[threadId]))
+    return previous;
+  return streamingStatuses(threadIds);
 }
 
 export interface ThreadStore {
@@ -274,7 +301,7 @@ export function useThreadStore(): ThreadStore {
         return;
       lastRevision = event.payload.revision;
       sawPush = true;
-      setThreadStreamingStatuses(streamingStatuses(event.payload.threadIds));
+      setThreadStreamingStatuses(previous => mergeStreamingStatuses(previous, event.payload.threadIds));
     });
     void unlisten.then(async () => {
       // Register first, then read the initial snapshot. If a newer push arrives
@@ -282,7 +309,7 @@ export function useThreadStore(): ThreadStore {
       // reverting to stale cross-client status.
       const threadIds = await listStreamingThreadIds();
       if (!cancelled && !sawPush)
-        setThreadStreamingStatuses(streamingStatuses(threadIds));
+        setThreadStreamingStatuses(previous => mergeStreamingStatuses(previous, threadIds));
     });
     return () => {
       cancelled = true;

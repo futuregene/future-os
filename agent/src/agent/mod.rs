@@ -239,14 +239,23 @@ impl Loop {
                 }
             }
 
-            // Broadcast tool_end
+            // Broadcast tool_end — with structured semantics (exit code,
+            // soft-fail, target path) so consumers don't re-parse the output
+            // prose.
             if let Some(ref cb) = tool_event_cb {
+                let semantics =
+                    crate::tools::tool_end_semantics(&tool_name, &tc.function.arguments, &result);
+                let payload = match &semantics {
+                    serde_json::Value::Object(object) if !object.is_empty() => Some(semantics),
+                    _ => None,
+                };
                 cb(StreamEvent {
                     event_type: "tool_end".to_string(),
                     text: result.clone(),
                     tool_name: tool_name.clone(),
                     tool_id: tc.id.clone(),
                     error_text: err_str.clone().unwrap_or_default(),
+                    payload,
                     ..Default::default()
                 });
             }

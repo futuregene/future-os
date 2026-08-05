@@ -3,8 +3,9 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
+import type { ComposerSendPayload } from "./Composer";
 import { ArrowDown, History } from "lucide-react";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { forkThread } from "../../integrations/storage/threadStore";
@@ -96,6 +97,14 @@ export function AgentThread({
     onThreadActivity,
   });
 
+  // Mirror the message list so stable callbacks (handleFork/handleRetryRun)
+  // can read the latest messages without depending on the array itself — the
+  // array changes identity on every streaming push, and listing it as a dep
+  // recreated the callbacks each push, defeating MessageBlock's memo for the
+  // whole visible window (and re-subscribing the recover-run effect).
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
   const {
     scrollRef,
     scrollbar,
@@ -145,9 +154,19 @@ export function AgentThread({
 
   // A run is in flight while its assistant bubble is still streaming; the agent
   // rejects a concurrent prompt, so the composer is disabled until it settles.
-  const isSending = messages.some(
-    message => message.role === "assistant" && message.status === "streaming",
-  );
+  // The streaming bubble always belongs to the trailing turn (after the last
+  // user message), so scan backwards only until the first user message instead
+  // of the whole list — this runs on every streaming push.
+  let isSending = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role === "user")
+      break;
+    if (message.role === "assistant" && message.status === "streaming") {
+      isSending = true;
+      break;
+    }
+  }
 
   const handleRetryMessage = useCallback((_message: AgentMessage, source: AgentMessage) => {
     void handleSend({
@@ -171,10 +190,14 @@ export function AgentThread({
     });
   }, [handleSend]);
 
+  // Reads messages through messagesRef so this callback stays stable across
+  // streaming pushes — it's a dep of the recover-run subscription below, and
+  // depending on `messages` re-subscribed the listener on every push (M6).
   const handleRetryRun = useCallback((runId: string, triggerMessageId?: string | null) => {
+    const current = messagesRef.current;
     const source = triggerMessageId
-      ? messages.find(message => message.id === triggerMessageId && message.role === "user")
-      : previousUserForRun(messages, runId);
+      ? current.find(message => message.id === triggerMessageId && message.role === "user")
+      : previousUserForRun(current, runId);
     if (!source)
       return;
 
@@ -182,7 +205,7 @@ export function AgentThread({
       attachments: source.attachments ?? [],
       content: source.content,
     });
-  }, [handleSend, messages]);
+  }, [handleSend]);
 
   useEffect(() => onFutureEvent("recover-run", (detail) => {
     if (detail.action === "retry") {
@@ -192,15 +215,20 @@ export function AgentThread({
     void handleContinueRun(detail.runId);
   }), [handleContinueRun, handleRetryRun]);
 
+  // Reads messages through messagesRef (not a dep): `messages` changes
+  // identity on every streaming push, and this callback is passed to every
+  // MessageBlock — recreating it each push defeated the list's only memo
+  // boundary and re-rendered every visible finalized row (H1).
   const handleFork = useCallback(async (aiMessage: AgentMessage) => {
-    if (!thread || !messages.length)
+    const current = messagesRef.current;
+    if (!thread || !current.length)
       return;
     // Find the user message that triggered this AI response.
-    const aiIndex = messages.indexOf(aiMessage);
+    const aiIndex = current.indexOf(aiMessage);
     let userMessage: AgentMessage | undefined;
     for (let i = aiIndex - 1; i >= 0; i--) {
-      if (messages[i]!.role === "user") {
-        userMessage = messages[i]!;
+      if (current[i]!.role === "user") {
+        userMessage = current[i]!;
         break;
       }
     }
@@ -208,7 +236,7 @@ export function AgentThread({
       return;
     // 0-based ordinal among user messages — the fork point, robust to two
     // identical prompts (content is only a fallback on the backend).
-    const userMessageIndex = messages
+    const userMessageIndex = current
       .filter(message => message.role === "user")
       .indexOf(userMessage);
     try {
@@ -218,7 +246,17 @@ export function AgentThread({
     catch (error) {
       emitFutureEvent("toast", { message: t("message.forkFailed", { message: errorMessage(error) }), tone: "error" });
     }
-  }, [thread, messages, onForked, t]);
+  }, [thread, onForked, t]);
+
+  // Stable wrappers for the memoized Composer: inline arrows here would be
+  // fresh on every render (and AgentThread renders on every streaming push),
+  // which would defeat the memo outright.
+  const handleComposerAbort = useCallback(() => {
+    void handleAbort();
+  }, [handleAbort]);
+  const handleComposerSend = useCallback((payload: ComposerSendPayload) => {
+    void handleSend(payload);
+  }, [handleSend]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
@@ -326,8 +364,8 @@ export function AgentThread({
               approvalTier={approvalTier}
               onChangeApprovalTier={onChangeApprovalTier}
               sending={isSending}
-              onAbort={() => void handleAbort()}
-              onSend={payload => void handleSend(payload)}
+              onAbort={handleComposerAbort}
+              onSend={handleComposerSend}
               workspaceId={thread?.workspaceId}
               draftKey={thread?.id}
             />

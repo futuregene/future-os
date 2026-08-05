@@ -225,4 +225,33 @@ describe("entriesToMessages", () => {
       ["assistant", "answer"],
     ]);
   });
+
+  it("derives stable ids from entry ids across re-projections", () => {
+    // A run settle / thread switch re-projects the same JSONL; if message and
+    // segment ids change between projections, React remounts the whole window.
+    const entries: SessionEntry[] = [
+      { id: "c1", role: "user", content: "[Context compaction: summarized]", timestamp: "2026-07-01T09:00:00+08:00" },
+      { id: "u1", role: "user", content: "hi", timestamp: "2026-07-01T10:00:00+08:00" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "",
+        thinking: "hm",
+        timestamp: "2026-07-01T10:00:03+08:00",
+        tool_calls: [
+          { id: "call_00_read", function: { name: "read", arguments: JSON.stringify({ path: "a.ts" }) } },
+        ],
+      },
+      { id: "t1", role: "tool", name: "read", content: "ok", timestamp: "2026-07-01T10:00:04+08:00" },
+      { id: "a2", role: "assistant", content: "done", timestamp: "2026-07-01T10:00:05+08:00" },
+    ];
+
+    const first = entriesToMessages(entries);
+    const second = entriesToMessages(entries);
+
+    expect(second.map(m => m.id)).toEqual(first.map(m => m.id));
+    expect(second.map(m => m.segments?.map(s => s.id))).toEqual(first.map(m => m.segments?.map(s => s.id)));
+    // Ids are derived from the entry ids, not timestamps/sequences.
+    expect(first.map(m => m.id)).toEqual(["m_c1", "m_u1", "m_a2"]);
+  });
 });

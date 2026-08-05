@@ -6,7 +6,7 @@ import type { MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, TriangleAlert, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { localizedModelDescription, modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
@@ -95,7 +95,7 @@ interface ComposerProps {
   onDragStateChange?: (state: ComposerDragState) => void;
 }
 
-export function Composer({
+function ComposerImpl({
   onSend,
   className,
   disabled,
@@ -702,3 +702,11 @@ export function Composer({
     </form>
   );
 }
+
+/**
+ * Memoized: AgentThread re-renders on every streaming push, and the composer
+ * subtree (MentionEditor, the three select menus, attachment list) is
+ * unaffected by those pushes — with stable props (AgentThread passes
+ * useCallback-wrapped onAbort/onSend) it must not re-render at all.
+ */
+export const Composer = memo(ComposerImpl);

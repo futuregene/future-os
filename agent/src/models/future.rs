@@ -14,8 +14,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::{Cost, Model};
 
-/// Default Future API base URL (platform URL + /api)
-const DEFAULT_FUTURE_BASE_URL: &str = "https://future-os.cn/api";
+/// Default Future platform host (production environment). The production and
+/// test environments differ only in the host — see the shared contract below.
+const DEFAULT_FUTURE_PLATFORM_URL: &str = "https://future-os.cn";
 
 /// After a refresh attempt, don't re-hit the network for this long. `Registry::new()`
 /// rebuilds on the startup path and on every RPC, so without this backoff each
@@ -104,30 +105,49 @@ struct FutureModelsCache {
     models: Vec<Model>,
 }
 
-/// Resolve Future provider base URL from auth.json or default
-pub(super) fn resolve_future_base_url() -> String {
+/// Resolve the Future **platform root** (no `/api`) from `auth.json`,
+/// following the shared contract in `proto/future.proto` ("Future Platform URL
+/// Resolution") — keep aligned with the GUI implementation in
+/// `gui/src-tauri/src/future_platform.rs`:
+///   1. `future.base_url`, with a trailing `/api` stripped (the storage format
+///      every writer uses: `base_url = {platform}/api`)
+///   2. `future.platform_base_url` (legacy field)
+///   3. [`DEFAULT_FUTURE_PLATFORM_URL`]
+fn platform_url_from_auth(auth: &serde_json::Value) -> Option<String> {
+    let future = auth.get("future")?;
+    if let Some(base_url) = future
+        .get("base_url")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        let trimmed = base_url.trim_end_matches('/');
+        let platform = trimmed.strip_suffix("/api").unwrap_or(trimmed);
+        return Some(platform.trim_end_matches('/').to_string());
+    }
+    future
+        .get("platform_base_url")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(|url| url.trim_end_matches('/').to_string())
+}
+
+fn resolve_future_platform_url() -> String {
     // Try to read base_url or platform_base_url from auth.json
     let auth_path = dirs::home_dir()
         .map(|h| h.join(".future/agent/auth.json"))
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/auth.json"));
 
-    if let Ok(contents) = std::fs::read_to_string(&auth_path) {
-        if let Ok(auth) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&contents) {
-            if let Some(future) = auth.get("future") {
-                // legacy: explicit base_url in auth.json
-                if let Some(base_url) = future.get("base_url").and_then(|v| v.as_str()) {
-                    return base_url.trim_end_matches('/').to_string();
-                }
-                // new: derive from platform_base_url
-                if let Some(platform_url) = future.get("platform_base_url").and_then(|v| v.as_str())
-                {
-                    return format!("{}/api", platform_url.trim_end_matches('/'));
-                }
-            }
-        }
-    }
+    std::fs::read_to_string(&auth_path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+        .and_then(|auth| platform_url_from_auth(&auth))
+        .unwrap_or_else(|| DEFAULT_FUTURE_PLATFORM_URL.to_string())
+}
 
-    DEFAULT_FUTURE_BASE_URL.to_string()
+/// Resolve Future provider model-API base URL from auth.json or default:
+/// `{platform}/api` (model endpoints hang off it as `{base}/v1/...`).
+pub(super) fn resolve_future_base_url() -> String {
+    format!("{}/api", resolve_future_platform_url())
 }
 
 /// Response format from Future server /v1/models endpoint
@@ -638,7 +658,70 @@ mod tests {
         assert!(!compat.contains_key("maxTokensField"));
     }
 
-    // ─── resolve_future_base_url ───────────────────────────────────────────
+    // ─── platform_url_from_auth (shared URL contract) ─────────────────────
+
+    fn auth_with(future: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "future": future })
+    }
+
+    #[test]
+    fn platform_url_defaults_when_absent() {
+        assert_eq!(platform_url_from_auth(&serde_json::json!({})), None);
+        assert_eq!(
+            platform_url_from_auth(&auth_with(serde_json::json!({}))),
+            None
+        );
+    }
+
+    #[test]
+    fn platform_url_strips_trailing_api_from_base_url() {
+        // Writers store `base_url = {platform}/api`; the platform is that minus /api.
+        let auth = auth_with(serde_json::json!({ "base_url": "https://future-os.cn/api" }));
+        assert_eq!(
+            platform_url_from_auth(&auth).as_deref(),
+            Some("https://future-os.cn")
+        );
+
+        let trailing = auth_with(serde_json::json!({ "base_url": "https://future-os.cn/api/" }));
+        assert_eq!(
+            platform_url_from_auth(&trailing).as_deref(),
+            Some("https://future-os.cn")
+        );
+    }
+
+    #[test]
+    fn base_url_wins_over_platform_base_url() {
+        // Same precedence as the GUI (proto/future.proto contract): the stored
+        // `base_url` beats a stale `platform_base_url`.
+        let auth = auth_with(serde_json::json!({
+            "base_url": "https://future-os.cn/api",
+            "platform_base_url": "https://stale.example.com",
+        }));
+        assert_eq!(
+            platform_url_from_auth(&auth).as_deref(),
+            Some("https://future-os.cn")
+        );
+    }
+
+    #[test]
+    fn platform_base_url_is_the_legacy_fallback() {
+        let auth =
+            auth_with(serde_json::json!({ "platform_base_url": "https://staging.example.com/" }));
+        assert_eq!(
+            platform_url_from_auth(&auth).as_deref(),
+            Some("https://staging.example.com")
+        );
+    }
+
+    #[test]
+    fn base_url_without_api_suffix_is_used_as_platform() {
+        // A bare host (no /api) is treated as the platform root verbatim.
+        let auth = auth_with(serde_json::json!({ "base_url": "https://custom.example.com" }));
+        assert_eq!(
+            platform_url_from_auth(&auth).as_deref(),
+            Some("https://custom.example.com")
+        );
+    }
 
     #[test]
     fn resolve_future_base_url_returns_default() {
@@ -647,6 +730,7 @@ mod tests {
         let url = resolve_future_base_url();
         assert!(!url.is_empty());
         assert!(url.starts_with("https://"));
+        assert!(url.ends_with("/api"));
     }
 
     // ─── convert_future_model (via public interface) ───────────────────────

@@ -258,7 +258,16 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         // Only report success after the key is durably written. Pin `base_url`
         // to the resolved platform (`{platform}/api`), exactly as the CLI does,
         // so a GUI login and a CLI login leave identical `auth.json` state.
-        crate::auth_store::set_future_login(key.trim(), &format!("{platform}/api"))?;
+        // RPC-first (audit item 2): the agent writes its own auth.json and
+        // refreshes live sessions. An unreachable or pre-item-2 agent falls
+        // back to the local file write plus the best-effort reload_auth, so a
+        // login during agent startup still lands (the agent reads auth.json at
+        // boot anyway).
+        let base_url = format!("{platform}/api");
+        if !crate::agent_bridge::config::future_login(key.trim(), &base_url).await? {
+            crate::auth_store::set_future_login(key.trim(), &base_url)?;
+            let _ = crate::agent_bridge::reload_agent_credentials().await;
+        }
         return Ok(FutureLoginPoll::of("authorized"));
     }
 

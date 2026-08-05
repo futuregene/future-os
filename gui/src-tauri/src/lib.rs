@@ -556,6 +556,14 @@ pub fn run() {
                 rt.block_on(async {
                     // Give the agent a few seconds to come up; then test.
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    // Delete threads whose agent session was removed externally
+                    // (TUI/CLI/manual) — detected via the agent's session list,
+                    // never file probing. Runs first so run reconciliation below
+                    // doesn't query sessions that no longer exist. Self-gates on
+                    // agent reachability (skips when the agent is down).
+                    if let Err(error) = store::reconcile_orphan_sessions().await {
+                        eprintln!("FutureOS orphan-session reconcile failed: {error}");
+                    }
                     // Rows produced by older startup convergence builds are
                     // terminal locally (`cancelled/interrupted`) and therefore
                     // outside the active-run watchdog. Reconcile that legacy

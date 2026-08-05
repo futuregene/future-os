@@ -1,8 +1,12 @@
 //! Model catalogue lookup: asks the agent for its available models.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
-use super::client::{base_command, connect_agent, map_rpc_error, RpcResponseExt};
+use super::client::{
+    base_command, connect_agent, list_builtin_providers_command, map_rpc_error, RpcResponseExt,
+};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,4 +54,40 @@ pub async fn list_agent_models() -> Result<Vec<AgentModelOption>, crate::AppErro
     let parsed = serde_json::from_str::<AgentModelsResponse>(&response.data)
         .map_err(|error| format!("Future Agent returned invalid model data: {error}"))?;
     Ok(parsed.models)
+}
+
+/// One built-in provider as summarized by the agent's `list_models` response
+/// (`builtinProviders` section): how many catalog models it has and its
+/// catalog base URL (no models.json overrides applied).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltinProviderCatalogEntry {
+    pub model_count: usize,
+    pub base_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuiltinProvidersResponse {
+    #[serde(default)]
+    builtin_providers: BTreeMap<String, BuiltinProviderCatalogEntry>,
+}
+
+/// Fetch the agent's built-in provider catalog via `list_models` with
+/// `include_builtin_providers` set. This is the runtime replacement for the
+/// former compile-time `#[path]` include of the agent's generated catalog —
+/// the agent is the single source of the catalog.
+pub async fn list_builtin_providers(
+) -> Result<BTreeMap<String, BuiltinProviderCatalogEntry>, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(list_builtin_providers_command())
+        .await
+        .map_err(|status| map_rpc_error("Unable to load the built-in provider catalog", status))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the provider catalog request.")?;
+
+    let parsed = serde_json::from_str::<BuiltinProvidersResponse>(&response.data)
+        .map_err(|error| format!("Future Agent returned invalid provider catalog data: {error}"))?;
+    Ok(parsed.builtin_providers)
 }

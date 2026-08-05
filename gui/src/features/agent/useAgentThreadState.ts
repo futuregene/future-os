@@ -57,6 +57,13 @@ export function useAgentThreadState({
     messagesGenRef,
   } = useThreadMessages({ threadId, workspaceId, workspacePath, agentSessionId: thread?.agentSessionId });
 
+  // Mirror the message list so handleAbort can read the latest streaming
+  // bubble without depending on `messages` — the array changes identity on
+  // every streaming push, and handleAbort feeds the memoized Composer, so a
+  // fresh identity per push would defeat the memo.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
   // The run this thread is currently executing, if any. Runs stream server-side
   // and persist their events regardless of which thread is in the foreground, so
   // this is the anchor for re-attaching a live preview to a conversation that was
@@ -154,7 +161,7 @@ export function useAgentThreadState({
       return;
     const runId
       = activeRunIdOf(recentRun)
-        ?? messages.find(message => message.role === "assistant" && message.status === "streaming")?.runId ?? null;
+        ?? messagesRef.current.find(message => message.role === "assistant" && message.status === "streaming")?.runId ?? null;
     if (!runId)
       return;
     try {
@@ -165,7 +172,7 @@ export function useAgentThreadState({
     }
     await refreshRecentRun(threadId, workspaceId);
     onThreadActivity();
-  }, [messages, onThreadActivity, recentRun, refreshRecentRun, workspaceId, threadId]);
+  }, [onThreadActivity, recentRun, refreshRecentRun, workspaceId, threadId]);
 
   useEffect(() => {
     if (!thread || loadingThread || loadingStore || !pendingPrompt)

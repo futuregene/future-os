@@ -28,7 +28,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         return get_agent_info_response(state, id);
     }
     if cmd_type == "list_models" {
-        return list_models_response(id, &state.model_registry.read());
+        return list_models_response(
+            id,
+            &state.model_registry.read(),
+            cmd.include_builtin_providers,
+        );
     }
 
     // Credential refresh operates on every session, not one — handle it before
@@ -38,9 +42,23 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         // removed providers and models.json edits become visible to every
         // session — set_model now resolves against this cache instead of
         // constructing a fresh Registry per call.
-        *state.model_registry.write() = crate::models::Registry::new();
-        state.reload_all_credentials();
+        refresh_registry_and_credentials(state);
         return RpcResponse::ok(id, "reload_auth", serde_json::json!({}));
+    }
+
+    // ── Config writes (audit item 2): the agent is the sole writer of
+    // auth.json / models.json. Each mutation is applied through the agent's
+    // own config layer and followed by the same registry rebuild + credential
+    // refresh `reload_auth` performs, so clients no longer patch files
+    // out-of-band and then paper over the stale in-memory state.
+    if cmd_type == "set_auth" {
+        return cmd_set_auth(state, id, &cmd);
+    }
+    if cmd_type == "upsert_provider" {
+        return cmd_upsert_provider(state, id, &cmd);
+    }
+    if cmd_type == "delete_provider" {
+        return cmd_delete_provider(state, id, &cmd);
     }
 
     // Dedicated post-login initialization: synchronously fetch the Future
@@ -470,52 +488,30 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // A cursor older than the replay ring returns a complete compressed
             // projection instead of a knowingly incomplete event tail.
             let truncated = projection.is_some();
-            let events: Vec<serde_json::Value> = events
-                .into_iter()
-                .map(|e| {
-                    serde_json::json!({
-                        "type": e.event_type,
-                        "data": e.data,
-                        "runId": e.run_id,
-                        "idx": e.idx,
-                        "sessionId": e.session_id,
-                        "epoch": e.epoch,
-                        "eventId": e.event_id,
-                        "timestamp": e.timestamp,
-                        "sessionIdx": e.session_idx,
-                        "runSequence": e.run_sequence,
-                    })
-                })
-                .collect();
-            let projection = projection.map(|snapshot| {
-                serde_json::json!({
-                    "runId": snapshot.run_id,
-                    "cursor": snapshot.cursor,
-                    "events": snapshot.events.into_iter().map(|event| {
-                        serde_json::json!({
-                            "type": event.event_type,
-                            "data": event.data,
-                            "runId": event.run_id,
-                            "idx": event.idx,
-                            "sessionId": event.session_id,
-                            "epoch": event.epoch,
-                            "eventId": event.event_id,
-                            "timestamp": event.timestamp,
-                            "sessionIdx": event.session_idx,
-                            "runSequence": event.run_sequence,
-                        })
-                    }).collect::<Vec<_>>(),
-                })
+            // Typed payload (audit item 1): ReplayEventPayload / EventsSincePayload.
+            let events = events
+                .iter()
+                .map(crate::rpc::payloads::replay_event_payload)
+                .collect::<Vec<_>>();
+            let projection = projection.map(|snapshot| crate::rpc::payloads::ProjectionPayload {
+                run_id: snapshot.run_id,
+                cursor: snapshot.cursor,
+                events: snapshot
+                    .events
+                    .iter()
+                    .map(crate::rpc::payloads::replay_event_payload)
+                    .collect(),
             });
+            let payload = crate::rpc::payloads::EventsSincePayload {
+                run_id,
+                events,
+                truncated,
+                projection,
+            };
             RpcResponse::ok(
                 id,
                 "get_events_since",
-                serde_json::json!({
-                    "runId": run_id,
-                    "events": events,
-                    "truncated": truncated,
-                    "projection": projection,
-                }),
+                serde_json::to_value(payload).unwrap_or_default(),
             )
         }
         "get_session_events_since" => {
@@ -902,7 +898,11 @@ fn get_agent_info_response(state: &AppState, id: &str) -> String {
     )
 }
 
-fn list_models_response(id: &str, registry: &crate::models::Registry) -> String {
+fn list_models_response(
+    id: &str,
+    registry: &crate::models::Registry,
+    include_builtin_providers: bool,
+) -> String {
     let auth = crate::AuthStore::load();
 
     // Always return all available models.  Scoping / defaults are client-side.
@@ -953,14 +953,100 @@ fn list_models_response(id: &str, registry: &crate::models::Registry) -> String 
         })
         .collect();
 
+    let mut payload = serde_json::json!({
+        "models": payload_models,
+        "defaultModel": effective_default,
+        "isScoped": false,
+    });
+    if include_builtin_providers {
+        // Catalog summaries so clients (GUI Providers page) can fetch the
+        // built-in catalog at runtime instead of compiling agent source in.
+        payload["builtinProviders"] = serde_json::to_value(registry.builtin_provider_summaries())
+            .unwrap_or_else(|_| serde_json::json!({}));
+    }
+    RpcResponse::ok(id, "list_models", payload)
+}
+
+/// Rebuild the shared model registry so provider/models.json changes become
+/// visible to every session, then refresh each live session's cached
+/// credentials. Shared by `reload_auth` and the config-write commands, which
+/// apply it inline so clients need no follow-up refresh round-trip.
+fn refresh_registry_and_credentials(state: &AppState) {
+    *state.model_registry.write() = crate::models::Registry::new();
+    state.reload_all_credentials();
+}
+
+/// Apply one auth.json mutation and refresh live state (see dispatch comment).
+fn cmd_set_auth(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
+    let Some(mutation) = cmd.auth_update.as_ref() else {
+        return RpcResponse::build_fail(id, "set_auth", "missing auth_update payload");
+    };
+    if mutation.provider.trim().is_empty() {
+        return RpcResponse::build_fail(id, "set_auth", "auth_update.provider is empty");
+    }
+    let carries_change = mutation.key.is_some()
+        || mutation.base_url.is_some()
+        || mutation.clear_key
+        || mutation.clear_base_url
+        || mutation.remove_entry
+        || mutation.remove_platform_base_url;
+    if !carries_change {
+        return RpcResponse::build_fail(id, "set_auth", "auth_update carries no change");
+    }
+    if let Err(error) = crate::config::providers::mutate_auth(mutation) {
+        return RpcResponse::build_fail(id, "set_auth", &error);
+    }
+    refresh_registry_and_credentials(state);
     RpcResponse::ok(
         id,
-        "list_models",
-        serde_json::json!({
-            "models": payload_models,
-            "defaultModel": effective_default,
-            "isScoped": false,
-        }),
+        "set_auth",
+        serde_json::json!({ "provider": mutation.provider }),
+    )
+}
+
+/// Create/update a models.json provider (plus optional auth.json key) and
+/// refresh live state (see dispatch comment).
+fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
+    let Some(spec) = cmd.provider_config.as_ref() else {
+        return RpcResponse::build_fail(id, "upsert_provider", "missing provider_config payload");
+    };
+    if spec.id.trim().is_empty() {
+        return RpcResponse::build_fail(id, "upsert_provider", "provider_config.id is empty");
+    }
+    let carries_change = spec.name.is_some()
+        || spec.api.is_some()
+        || spec.base_url.is_some()
+        || spec.clear_base_url
+        || !spec.models.is_empty()
+        || spec.api_key.is_some();
+    if !carries_change {
+        return RpcResponse::build_fail(id, "upsert_provider", "provider_config carries no change");
+    }
+    if let Err(error) = crate::config::providers::upsert_provider(spec) {
+        return RpcResponse::build_fail(id, "upsert_provider", &error);
+    }
+    refresh_registry_and_credentials(state);
+    RpcResponse::ok(id, "upsert_provider", serde_json::json!({ "id": spec.id }))
+}
+
+/// Remove a provider's models.json entry AND auth.json entry, then refresh
+/// live state (see dispatch comment).
+fn cmd_delete_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
+    let Some(spec) = cmd.provider_config.as_ref() else {
+        return RpcResponse::build_fail(id, "delete_provider", "missing provider_config payload");
+    };
+    let provider_id = spec.id.trim();
+    if provider_id.is_empty() {
+        return RpcResponse::build_fail(id, "delete_provider", "provider_config.id is empty");
+    }
+    if let Err(error) = crate::config::providers::delete_provider(provider_id) {
+        return RpcResponse::build_fail(id, "delete_provider", &error);
+    }
+    refresh_registry_and_credentials(state);
+    RpcResponse::ok(
+        id,
+        "delete_provider",
+        serde_json::json!({ "id": provider_id }),
     )
 }
 
@@ -997,22 +1083,37 @@ fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
             .collect()
     };
 
+    // Typed payload (audit item 1): canonical camelCase keys, with snake_case
+    // legacy aliases alongside so pre-migration clients keep working.
     let sessions: Vec<serde_json::Value> = summaries
         .into_iter()
         .filter(|s| cwd_filter.is_empty() || s.cwd == cwd_filter)
         .map(|s| {
             let is_streaming = active_flags.get(&s.id).copied().unwrap_or(false);
-            serde_json::json!({
-                "id": s.id,
-                "session_name": s.name,
-                "model": s.model,
-                "cwd": s.cwd,
-                "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-                "parent_session_id": s.parent_session_id,
-                "first_message": s.first_message,
-                "query_count": s.query_count,
-                "is_streaming": is_streaming,
+            let mut value = serde_json::to_value(crate::rpc::payloads::SessionSummaryPayload {
+                id: s.id,
+                session_name: s.name,
+                model: s.model,
+                cwd: s.cwd,
+                updated_at: s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                parent_session_id: s.parent_session_id,
+                first_message: s.first_message,
+                query_count: s.query_count,
+                is_streaming,
             })
+            .unwrap_or_default();
+            crate::rpc::payloads::inject_legacy_aliases(
+                &mut value,
+                &[
+                    ("sessionName", "session_name"),
+                    ("updatedAt", "updated_at"),
+                    ("parentSessionId", "parent_session_id"),
+                    ("firstMessage", "first_message"),
+                    ("queryCount", "query_count"),
+                    ("isStreaming", "is_streaming"),
+                ],
+            );
+            value
         })
         .collect();
     RpcResponse::ok(
@@ -1297,17 +1398,26 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         new_sess.set_auto_retry(settings.retry_enabled());
     }
 
-    // Default created_by to "tui" for sessions created without
-    // explicit source info (e.g. TUI, channels). GUI passes
-    // custom_instructions with createdBy: "gui".
+    // Default created_by to "tui" for sessions created without explicit
+    // source info (e.g. TUI, channels); clients pass their identity via the
+    // typed created_by field.
     new_sess.created_by = "tui".to_string();
     if !cmd.parent_session.is_empty() {
         new_sess.parent_session_id = cmd.parent_session.clone();
     }
 
-    // Parse source metadata from custom_instructions (JSON).
-    // Client passes {"createdBy":"gui","sourceMeta":{...}}.
-    if !cmd.custom_instructions.is_empty() {
+    // Session provenance: typed created_by/source_meta fields first.
+    if !cmd.created_by.is_empty() {
+        new_sess.created_by = cmd.created_by.clone();
+    }
+    if !cmd.source_meta.is_empty() {
+        if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&cmd.source_meta) {
+            new_sess.source_meta = meta;
+        }
+    }
+    // Legacy fallback: old clients smuggle {"createdBy":...,"sourceMeta":...}
+    // JSON through custom_instructions (which belongs to the compact command).
+    if new_sess.created_by == "tui" && !cmd.custom_instructions.is_empty() {
         if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&cmd.custom_instructions) {
             if let Some(src) = meta
                 .get("createdBy")
@@ -1316,8 +1426,10 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
             {
                 new_sess.created_by = src.to_string();
             }
-            if let Some(m) = meta.get("sourceMeta").or_else(|| meta.get("meta")) {
-                new_sess.source_meta = m.clone();
+            if new_sess.source_meta.is_null() {
+                if let Some(m) = meta.get("sourceMeta").or_else(|| meta.get("meta")) {
+                    new_sess.source_meta = m.clone();
+                }
             }
         }
     }
@@ -1478,28 +1590,34 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                         content_text
                     };
 
-                    let mut entry = serde_json::json!({
-                        "id": e.id,
-                        "role": e.role,
-                        "content": full_content,
-                        "name": e.name,
-                        "tool_args": e.tool_args,
-                        "timestamp": e.timestamp.to_rfc3339(),
-                    });
+                    // Typed payload (audit item 1): SessionEntryPayload mirrors
+                    // the on-disk entry schema (snake_case keys).
+                    let mut payload = crate::rpc::payloads::SessionEntryPayload {
+                        id: e.id.clone(),
+                        role: e.role.clone(),
+                        content: serde_json::Value::String(full_content),
+                        name: e.name.clone(),
+                        tool_args: e.tool_args.clone(),
+                        timestamp: e.timestamp.to_rfc3339(),
+                        thinking: None,
+                        meta: None,
+                        tool_calls: None,
+                        output_tokens: None,
+                        duration_ms: None,
+                    };
                     // Include thinking and tool_calls for the new agent-based
                     // message display (entryProjection.ts).
                     if !e.thinking.is_empty() {
-                        entry["thinking"] = serde_json::Value::String(e.thinking.clone());
+                        payload.thinking = Some(e.thinking.clone());
                     }
                     // Structured per-entry metadata (e.g. user attachments with
                     // their cached thumbnails) so the GUI can rebuild attachment
                     // chips after reload — the JSONL is the only message source.
                     if let Some(ref meta) = e.meta {
-                        entry["meta"] = meta.clone();
+                        payload.meta = Some(meta.clone());
                     }
                     if !e.tool_calls.is_empty() {
-                        entry["tool_calls"] =
-                            serde_json::to_value(&e.tool_calls).unwrap_or(serde_json::Value::Null);
+                        payload.tool_calls = serde_json::to_value(&e.tool_calls).ok();
                     }
                     // Surface this reply's output tokens + duration on the final
                     // assistant entry of each run (bound from the run_terminal
@@ -1509,30 +1627,25 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     if e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT {
                         if let Some((tokens, duration)) = run_stats.get(&e.id) {
                             if *tokens > 0 {
-                                entry["output_tokens"] = serde_json::json!(*tokens);
+                                payload.output_tokens = Some(*tokens);
                             }
                             if *duration > 0 {
-                                entry["duration_ms"] = serde_json::json!(*duration);
+                                payload.duration_ms = Some(*duration);
                             }
                         }
                     }
-                    // Per-reply metadata for the GUI's message footer
-                    // ("time · N tokens"); set on the final assistant
-                    // entry of each run.
-                    // Run stats are in content JSON (run_tokens / run_duration_ms)
                     // For session_info entries, include the original content
-                    // JSON (session_name, cwd, parent_session_id, …) and the
-                    // model / thinking_level struct fields so callers can
+                    // JSON (session_name, cwd, parent_session_id, …) so callers can
                     // read fork metadata without a second RPC.
                     if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
                         // Use the authoritative (last) snapshot's content so the
                         // single emitted session_info reflects current metadata,
                         // not the stale values from session creation.
                         if let Some(ref content) = authoritative_info {
-                            entry["content"] = content.clone();
+                            payload.content = content.clone();
                         }
                     }
-                    entry
+                    serde_json::to_value(&payload).unwrap_or_default()
                 })
                 .collect()
         })
@@ -1971,6 +2084,189 @@ mod tests {
 
     fn parse_response(json: &str) -> serde_json::Value {
         serde_json::from_str(json).unwrap()
+    }
+
+    // ── Config-write commands (set_auth / upsert_provider / delete_provider) ──
+    // Success paths write auth.json/models.json under $HOME, so they run under
+    // a redirected HOME. The guard is process-global (HOME is global) and
+    // serialized on TEST_HOME_LOCK so parallel tests never observe each other's
+    // redirection.
+
+    static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct TestHome {
+        previous_home: Option<std::ffi::OsString>,
+        previous_userprofile: Option<std::ffi::OsString>,
+        dir: tempfile::TempDir,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestHome {
+        fn new() -> Self {
+            let guard = TEST_HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let previous_home = std::env::var_os("HOME");
+            let previous_userprofile = std::env::var_os("USERPROFILE");
+            let dir = tempfile::tempdir().expect("tempdir");
+            std::env::set_var("HOME", dir.path());
+            std::env::set_var("USERPROFILE", dir.path());
+            Self {
+                previous_home,
+                previous_userprofile,
+                dir,
+                _guard: guard,
+            }
+        }
+
+        fn auth_path(&self) -> std::path::PathBuf {
+            self.dir.path().join(".future/agent/auth.json")
+        }
+
+        fn models_path(&self) -> std::path::PathBuf {
+            self.dir.path().join(".future/agent/models.json")
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            match &self.previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.previous_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+    }
+
+    fn read_json(path: &std::path::Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn set_auth_rejects_missing_payload_provider_and_noop() {
+        let state = make_app_state();
+
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("set_auth")));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("auth_update"));
+
+        let mut cmd = make_cmd("set_auth");
+        cmd.auth_update = Some(crate::config::providers::AuthMutation {
+            provider: "  ".to_string(),
+            key: Some("k".to_string()),
+            ..Default::default()
+        });
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("provider"));
+
+        let mut cmd = make_cmd("set_auth");
+        cmd.auth_update = Some(crate::config::providers::AuthMutation {
+            provider: "future".to_string(),
+            ..Default::default()
+        });
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("no change"));
+    }
+
+    #[test]
+    fn set_auth_writes_auth_json_and_reports_success() {
+        let home = TestHome::new();
+        let state = make_app_state();
+
+        let mut cmd = make_cmd("set_auth");
+        cmd.auth_update = Some(crate::config::providers::AuthMutation {
+            provider: "future".to_string(),
+            key: Some("k1".to_string()),
+            base_url: Some("https://future-os.cn/api".to_string()),
+            ..Default::default()
+        });
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["provider"], "future");
+
+        let stored = read_json(&home.auth_path());
+        assert_eq!(stored["future"]["key"], "k1");
+        assert_eq!(stored["future"]["base_url"], "https://future-os.cn/api");
+        assert_eq!(stored["future"]["type"], "api_key");
+    }
+
+    #[test]
+    fn upsert_provider_writes_both_files_and_delete_removes_them() {
+        let home = TestHome::new();
+        let state = make_app_state();
+
+        let mut cmd = make_cmd("upsert_provider");
+        cmd.provider_config = Some(crate::config::providers::ProviderUpsertSpec {
+            id: "myprov".to_string(),
+            name: Some("My Provider".to_string()),
+            api: Some("anthropic".to_string()),
+            base_url: Some("https://api.example.com".to_string()),
+            api_key: Some("sk-key".to_string()),
+            models: vec![crate::config::providers::ProviderModelSpec {
+                id: "m1".to_string(),
+                name: "Model One".to_string(),
+                modalities: vec!["text".to_string()],
+            }],
+            ..Default::default()
+        });
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+
+        let models = read_json(&home.models_path());
+        assert_eq!(models["providers"]["myprov"]["name"], "My Provider");
+        assert_eq!(models["providers"]["myprov"]["models"][0]["id"], "m1");
+        let auth = read_json(&home.auth_path());
+        assert_eq!(auth["myprov"]["key"], "sk-key");
+
+        // create mode must reject the now-existing id
+        let mut cmd = make_cmd("upsert_provider");
+        cmd.provider_config = Some(crate::config::providers::ProviderUpsertSpec {
+            id: "myprov".to_string(),
+            name: Some("Other".to_string()),
+            create_only: true,
+            ..Default::default()
+        });
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("already exists"));
+
+        // delete removes the models.json entry and the auth entry
+        let mut cmd = make_cmd("delete_provider");
+        cmd.provider_config = Some(crate::config::providers::ProviderUpsertSpec {
+            id: "myprov".to_string(),
+            ..Default::default()
+        });
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+
+        let models = read_json(&home.models_path());
+        assert!(models["providers"].get("myprov").is_none());
+        let auth = read_json(&home.auth_path());
+        assert!(auth.get("myprov").is_none());
+    }
+
+    #[test]
+    fn provider_commands_reject_missing_payload_and_empty_id() {
+        let state = make_app_state();
+
+        for cmd_type in ["upsert_provider", "delete_provider"] {
+            let resp = parse_response(&handle_command_internal(&state, make_cmd(cmd_type)));
+            assert_eq!(resp["success"], false, "{cmd_type} without payload");
+
+            let mut cmd = make_cmd(cmd_type);
+            cmd.provider_config = Some(crate::config::providers::ProviderUpsertSpec {
+                id: " ".to_string(),
+                name: Some("x".to_string()),
+                ..Default::default()
+            });
+            let resp = parse_response(&handle_command_internal(&state, cmd));
+            assert_eq!(resp["success"], false, "{cmd_type} with empty id");
+        }
     }
 
     #[test]
@@ -2794,6 +3090,73 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert!(resp["data"]["sessions"].is_array());
+    }
+
+    /// Audit item 1 contract: list_sessions rows carry canonical camelCase
+    /// keys AND the legacy snake_case spellings, with identical values, so
+    /// pre-migration clients keep working.
+    #[test]
+    fn list_sessions_emits_canonical_and_legacy_keys() {
+        let state = make_app_state();
+        // list_sessions reads persisted session summaries, so persist one —
+        // the summary fields come from the session_info entry.
+        let mut session = crate::session::Session::new("/tmp", "mock", "");
+        session.name = "My session".to_string();
+        session
+            .entries
+            .push(crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": "/tmp", "model": "mock", "session_name": "My session"}),
+                "mock".to_string(),
+                "low".to_string(),
+            ));
+        session.entries.push(crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("hello"),
+        ));
+        state.session_manager.save(&session).unwrap();
+
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("list_sessions")));
+        assert_eq!(resp["success"], true);
+        let sessions = resp["data"]["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 1);
+        let entry = &sessions[0];
+        assert!(!entry["id"].as_str().unwrap().is_empty());
+        assert_eq!(entry["sessionName"], "My session");
+        assert_eq!(entry["firstMessage"], "hello");
+        for (canonical, legacy) in [
+            ("sessionName", "session_name"),
+            ("updatedAt", "updated_at"),
+            ("parentSessionId", "parent_session_id"),
+            ("firstMessage", "first_message"),
+            ("queryCount", "query_count"),
+            ("isStreaming", "is_streaming"),
+        ] {
+            assert!(entry.get(canonical).is_some(), "missing `{canonical}`");
+            assert_eq!(
+                entry.get(canonical),
+                entry.get(legacy),
+                "`{canonical}` and `{legacy}` must carry the same value"
+            );
+        }
+    }
+
+    /// Audit item 1 contract: get_state carries canonical camelCase keys; the
+    /// one key whose spelling changed (`sessionName`) is additionally emitted
+    /// under its legacy `session_name` name for pre-migration clients.
+    #[test]
+    fn get_state_emits_canonical_and_legacy_session_name() {
+        let state = make_app_state();
+        state.sessions.read()["default"]
+            .write()
+            .set_session_name("My session");
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("get_state")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["sessionName"], "My session");
+        assert_eq!(resp["data"]["session_name"], "My session");
+        // Spot-check canonical camelCase keys around it.
+        assert!(resp["data"].get("agentInstanceId").is_some());
+        assert!(resp["data"].get("autoCompactionEnabled").is_some());
+        assert!(resp["data"].get("queuedCount").is_some());
     }
 
     #[test]
