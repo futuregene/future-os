@@ -44,7 +44,6 @@
     "ios": "npm run gen-version && expo run:ios",
     "ios:device": "npm run gen-version && expo run:ios --device",
     "prebuild:ios": "npm run gen-version && expo prebuild --platform ios",
-    "eas:build": "npm run gen-version && eas build",
     "typecheck": "npm run gen-version && tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",

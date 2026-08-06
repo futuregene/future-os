@@ -42,7 +42,7 @@ make run-mobile-android
 ```
 
 Expo 会在本地生成被 `.gitignore` 忽略的 `mobile/android/`，然后编译并安装
-debug APK。本阶段没有 CI、Action、EAS Build 或自动发布。
+debug APK。
 
 首次启动后：
 
@@ -117,28 +117,31 @@ npm run ios:device
 
 免费 Apple ID 即可真机调试；提交 App Store 需要付费 Apple Developer 账号。
 
-### EAS 云构建与分发
+### GitHub Action TestFlight 分发
 
-`eas.json` 定义了 development / preview / production 三个 profile。首次使用前：
+主分发路径用 GitHub Action（`.github/workflows/build-ios-testflight.yml`），
+手动触发，构建签名 `.ipa` 并上传 TestFlight：
 
-```bash
-npx eas login
-npx eas build:configure   # 生成 eas.json 并关联 EAS 项目
-```
+1. 在 GitHub 仓库 Settings → Secrets 配置：
+   - `IOS_DIST_CERT_P12_BASE64` / `IOS_DIST_CERT_P12_PWD` — iOS Distribution
+     证书（.p12，Apple Developer 后台生成，base64 编码）
+   - `IOS_PROVISIONING_PROFILE_BASE64` — App Store provisioning profile
+   - `APPLE_TESTFLIGHT_API_KEY` / `APPLE_TESTFLIGHT_API_KEY_ID` /
+     `APPLE_TESTFLIGHT_API_ISSUER` — 独立 App Store Connect API Key
+     （在 appstoreconnect.apple.com → 用户与访问 → 密钥生成，需 App Store
+     Connect 权限；与 macOS 公证用的 `APPLE_API_KEY_*` 分开）
+   - 复用现有 `OSS_*` secrets（上传 IPA 到 `dl.future-os.cn`）
+2. Actions → Build iOS TestFlight → Run workflow。
+3. 构建用 `0.0.<提交数>` 作为 TestFlight 版本号（纯数字，TestFlight 要求），
+   提交数同时作为 CFBundleVersion。
+4. 上传成功后，登录 App Store Connect → TestFlight → 添加外部测试者。
+   首次外部测试需苹果 Beta 审核（约 1-2 天）。
+5. 测试者手机装 TestFlight App → 接受邀请 → 安装 FutureOS。
 
-Development build（本地开发 + 调试）：
-
-```bash
-npx eas build --platform ios --profile development
-```
-
-Preview / TestFlight 分发：
-
-```bash
-npx eas build --platform ios --profile preview
-```
-
-正式发布使用 production profile 并通过 `eas submit` 上传 App Store。
+> 版本号机制：测试包（dev）版本为 `0.0.<提交数>[-<hash>]`，第一位 `0` 即
+> 测试包；正式版从 `1.0.0` 起，打 `vX.Y.Z` tag 触发 release。iOS 测试包
+> 去掉 `-<hash>` 后缀以通过 TestFlight 校验，但版本号仍是 `0.0.x`，判定规则
+> 不变。
 
 ### iOS 平台注意
 

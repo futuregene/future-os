@@ -8,12 +8,23 @@ function futureVersion(): string {
   }).trim();
 }
 
+function gitCommitCount(): string {
+  return execFileSync("git", ["rev-list", "--count", "HEAD"], {
+    cwd: __dirname,
+    encoding: "utf8",
+  }).trim();
+}
+
 const version = futureVersion();
 const bundleVersion = version.split(/[-+]/)[0];
+// Store build numbers must be monotonic integers. CI injects FUTURE_BUILD_NUMBER
+// (the git commit count); local builds derive it the same way. TestFlight/app
+// stores reject the `-<hash>` suffix, so this stays a plain number.
+const buildNumber = process.env.FUTURE_BUILD_NUMBER || gitCommitCount();
 
 const config: ExpoConfig = {
   name: "FutureOS",
-  slug: "future-os-mobile",
+  slug: "futureos",
   scheme: "futureos",
   version,
   orientation: "portrait",
@@ -52,7 +63,7 @@ const config: ExpoConfig = {
   ],
   ios: {
     bundleIdentifier: "cn.futureos.mobile",
-    buildNumber: "1",
+    buildNumber,
     supportsTablet: true,
     config: {
       usesNonExemptEncryption: false,
@@ -60,7 +71,7 @@ const config: ExpoConfig = {
   },
   android: {
     package: "cn.futureos.mobile",
-    versionCode: 1,
+    versionCode: Number.parseInt(buildNumber, 10),
     adaptiveIcon: {
       backgroundColor: "#0f172a",
       foregroundImage: "../gui/src-tauri/icons/icon.png",
