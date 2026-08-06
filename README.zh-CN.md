@@ -20,7 +20,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应�
 | 类别 | 说明 |
 |---|---|
 | **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI)、飞书机器人、钉钉机器人——一个 Agent，无处不在 |
-| **模型灵活** | 内置 1000+ 模型，覆盖 100+ Provider（[目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
+| **模型灵活** | 内置 3800+ 模型，覆盖 140+ Provider（[目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
 | **流式输出与思考链** | 实时 token 流式传输，可折叠的思考链展示；可配置思考深度（off ↔ xhigh） |
 | **工具执行** | read, write, edit, shell，带审批控制和沙箱保护（关闭 / 手动 / macOS Seatbelt） |
 | **会话持久化** | JSONL 格式存储，支持 fork、clone、树形导航和问答计数（[使用](docs/wiki/zh/Using-FutureOS.md)） |
@@ -111,6 +111,11 @@ future-tui        # 终端界面
 | `/name [n]` | 设置会话名称 |
 | `/status` | 会话状态、token 用量、费用 |
 | `/stop` | 中断当前生成 |
+| `/cwd` | 切换工作目录 |
+| `/approve` | 批准待执行的工具调用 |
+| `/reject` | 拒绝待执行的工具调用 |
+| `/cancel <run-id>` | 取消排队中的运行 |
+| `/reload` | 重新加载技能与上下文 |
 
 ### 键盘快捷键（TUI）
 
