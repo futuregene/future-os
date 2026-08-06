@@ -17,6 +17,7 @@ path = "src/lib.rs"
 dhat-heap = ["dep:dhat"]
 
 [dependencies]
+future-rpc = { path = "../future-rpc" }
 tokio.workspace = true
 parking_lot.workspace = true
 serde.workspace = true

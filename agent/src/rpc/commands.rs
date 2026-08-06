@@ -492,7 +492,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // Typed payload (audit item 1): ReplayEventPayload / EventsSincePayload.
             let events = events
                 .iter()
-                .map(crate::rpc::payloads::replay_event_payload)
+                .map(crate::rpc::replay_event_payload)
                 .collect::<Vec<_>>();
             let projection = projection.map(|snapshot| crate::rpc::payloads::ProjectionPayload {
                 run_id: snapshot.run_id,
@@ -500,7 +500,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 events: snapshot
                     .events
                     .iter()
-                    .map(crate::rpc::payloads::replay_event_payload)
+                    .map(crate::rpc::replay_event_payload)
                     .collect(),
             });
             let payload = crate::rpc::payloads::EventsSincePayload {

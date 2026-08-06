@@ -828,6 +828,7 @@ dependencies = [
  "dhat",
  "dirs 5.0.1",
  "fd-lock",
+ "future-rpc",
  "futures",
  "futures-util",
  "image",

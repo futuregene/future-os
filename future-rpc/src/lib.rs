@@ -15,6 +15,8 @@ pub mod proto {
     include!("generated/proto.rs");
 }
 
+pub mod payloads;
+
 #[cfg(test)]
 mod tests {
     use super::proto::{RpcResponse, StreamEvent};
