@@ -8,8 +8,10 @@
 pub mod account;
 pub mod agent;
 pub mod auth;
+pub mod browser_tools;
 pub mod doctor;
 pub mod init;
+pub mod mcp;
 pub mod models;
 pub mod run;
 pub mod session;

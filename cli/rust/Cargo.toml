@@ -24,6 +24,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 chrono = { workspace = true, features = ["clock"] }
 dirs = "5"
+base64.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

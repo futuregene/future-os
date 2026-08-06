@@ -29,11 +29,14 @@
 #             the stdout bytes, and the stderr PREFIX are compared. The
 #             rpc.rs module doc documents this accepted divergence.
 #
-# Excluded from the corpus (documented, pending P2): the `run`, `tools
-# <cmd>`, `skills <cmd>`, and `mcp` command bodies are still stubs in the
-# Rust port ("not implemented yet in the Rust CLI (P2)") — the TS CLI
-# implements them, so byte parity there is a P2 deliverable. Their dispatch
-# predicates and help texts ARE covered here.
+# Excluded from the corpus (documented, pending P3): the `browser` tool's
+# session-based commands (tabs/open/snapshot/click/type/press/screenshot/
+# scroll/console) and the Safari start path — the Rust browser backend is a
+# P3 deliverable, so those `tools call browser …` cases are not diffed. The
+# browser catalog/describe surface, `browser start`/`status`, and the arg
+# validation paths ARE covered. `future run` against a live agent (real
+# prompt execution) is likewise not diffed; its local-only paths and the
+# dead-agent transport error ARE covered below.
 #
 # Notes:
 #   - Rebuilds BOTH CLIs with FUTURE_VERSION=0.0.0-diff+local so `--version`
@@ -291,6 +294,42 @@ prep_agentdown() {  # fake home; gRPC points at a dead port
   case_grpc="127.0.0.1:1"
 }
 
+prep_skills() {  # mock mode "skills": small catalog + download zips
+  case_home="$(fake_home skills)"
+  write_auth "$case_home" "{\"future\": {\"type\": \"api_key\", \"key\": \"test-key-123\", \"base_url\": \"http://127.0.0.1:$MOCK_PORT/api\"}}"
+  case_path="/usr/bin:/bin:/usr/sbin:/sbin"
+  case_grpc=""
+}
+
+# skills:installed — future-test-a@0.5.0 + community-x@0.9.0 pre-installed so
+# the INSTALLED column and the update path render real data. Re-created fresh
+# before EACH binary run (stateful scenario, like logout).
+prep_skills_installed() {
+  case_home="$(fake_home skillsinst)"
+  write_auth "$case_home" "{\"future\": {\"type\": \"api_key\", \"key\": \"test-key-123\", \"base_url\": \"http://127.0.0.1:$MOCK_PORT/api\"}}"
+  case_path="/usr/bin:/bin:/usr/sbin:/sbin"
+  case_grpc=""
+}
+
+reset_skills_installed_fixture() {
+  rm -rf "$case_home/.future/agent/skills"
+  mkdir -p "$case_home/.future/agent/skills/future-test-a" "$case_home/.future/agent/skills/community-x"
+  cat > "$case_home/.future/agent/skills/future-test-a/SKILL.md" <<'EOF'
+---
+name: Test A
+version: 0.5.0
+---
+# Test A skill
+EOF
+  cat > "$case_home/.future/agent/skills/community-x/SKILL.md" <<'EOF'
+---
+name: Community X
+version: 0.9.0
+---
+# Community X skill
+EOF
+}
+
 # ── case runner ────────────────────────────────────────────────────────────
 
 export_case_env() {
@@ -323,12 +362,20 @@ run_case() {
     ln -sf "$TS_CLI" "$case_home/.future/bin/future"
   elif [[ "$scenario" == "logout" ]]; then
     write_auth "$case_home" '{"future": {"type": "api_key", "key": "test-key-123", "base_url": "https://future-os.cn/api"}}'
+  elif [[ "$scenario" == "skills" ]]; then
+    rm -rf "$case_home/.future/agent/skills"
+  elif [[ "$scenario" == "skills:installed" ]]; then
+    reset_skills_installed_fixture
   fi
   ts_code=$("$TS_CLI" "$@" >"$ts_out" 2>"$ts_err"; echo $?)
   if [[ "$scenario" == "init:linked" ]]; then
     ln -sf "$RUST_CLI" "$case_home/.future/bin/future"
   elif [[ "$scenario" == "logout" ]]; then
     write_auth "$case_home" '{"future": {"type": "api_key", "key": "test-key-123", "base_url": "https://future-os.cn/api"}}'
+  elif [[ "$scenario" == "skills" ]]; then
+    rm -rf "$case_home/.future/agent/skills"
+  elif [[ "$scenario" == "skills:installed" ]]; then
+    reset_skills_installed_fixture
   fi
   ru_code=$("$RUST_CLI" "$@" >"$ru_out" 2>"$ru_err"; echo $?)
 
@@ -425,6 +472,8 @@ add_case() {
       agent)         prep_agent ;;
       doctor)        prep_doctor ;;
       agentdown)     prep_agentdown ;;
+      skills)        prep_skills ;;
+      skills:installed) prep_skills_installed ;;
       *) err "unknown scenario $scenario"; exit 2 ;;
     esac
     case "$scenario" in
@@ -434,6 +483,9 @@ add_case() {
       http:errors)
         MOCK2_PID=$(start_mock "$MOCK2_PORT" errors)
         wait_port "$MOCK2_PORT" || { err "mock server on $MOCK2_PORT did not start"; exit 2; } ;;
+      skills | skills:installed)
+        MOCK_PID=$(start_mock "$MOCK_PORT" skills)
+        wait_port "$MOCK_PORT" || { err "mock server on $MOCK_PORT did not start"; exit 2; } ;;
     esac
   fi
   run_case "$scenario" "$mode" "$@"
@@ -488,6 +540,16 @@ add_case static exact session -h
 add_case static exact session bogus
 add_case static exact session bogus sess-1
 
+# run — local-only paths (no gRPC reachable in the static scenario)
+add_case static exact run --help
+add_case static exact run -h
+add_case static exact run                 # no prompt -> exit 1
+add_case static exact run --thinking bogus hi
+add_case static exact run --mode xml hi
+add_case static exact run --permission everywhere hi
+add_case static exact run --bogus-flag hi
+add_case static exact run @/nonexistent/file-xyz hi
+
 # home:no auth.json — pure local behavior, no network
 add_case home:none exact auth status
 add_case home:none exact auth credential
@@ -516,6 +578,27 @@ add_case http exact account balance
 add_case http exact account balance --json
 add_case http exact auth login --url http://127.0.0.1:$MOCK_PORT
 add_case http exact auth login --url=http://127.0.0.1:$MOCK_PORT
+
+# http — tools list/describe/call against the mock MCP server
+add_case http exact tools list
+add_case http exact tools list --json
+add_case http exact tools describe search_paper
+add_case http exact tools describe browser
+add_case http exact tools describe image_edit
+add_case http exact tools describe mock_special
+add_case http exact tools describe nope
+add_case http exact tools describe
+add_case http exact tools describe --help
+add_case http exact tools call --help
+add_case http exact tools call search_paper --queries '["x"]'
+add_case http exact tools call web_search --query test
+add_case http exact tools call mock_special --foo bar
+add_case http exact tools call mock_error --x 1
+add_case http exact tools call browser
+add_case http exact tools call search_paper
+add_case http exact tools call search_paper --queries notarray
+add_case http exact tools call search_paper --queries '["a"]' --n 99
+add_case http exact tools call web_search --query x --timeout -5
 
 # http:errors — account endpoints answer 401 {"error": "bad key"}
 add_case http:errors exact account profile
@@ -548,8 +631,28 @@ add_case agent exact session list --json
 # doctor — fully controlled environment
 add_case doctor exact doctor
 
+# skills — catalog with two future-* builtins + one community skill; the
+# skills dir is reset before each binary run so every case starts clean
+add_case skills exact skills list
+add_case skills exact skills install future-test-a
+add_case skills exact skills install nonexistent
+add_case skills exact skills install future-test-b --version v2.1.0
+add_case skills exact skills install
+add_case skills exact skills install-builtin
+add_case skills exact skills uninstall community-x
+add_case skills exact skills uninstall nope
+add_case skills exact skills update
+
+# skills:installed — fixture (future-test-a@0.5.0 + community-x@0.9.0)
+# re-created before each binary run
+add_case skills:installed exact skills list
+add_case skills:installed exact skills update
+add_case skills:installed exact skills install-builtin
+add_case skills:installed exact skills uninstall community-x
+
 # agentdown — smoke test: dead gRPC port, normalized comparison
 add_case agentdown agentdown agent status
+add_case agentdown agentdown run "hello agent"
 
 # ── summary ────────────────────────────────────────────────────────────────
 

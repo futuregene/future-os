@@ -51,13 +51,255 @@ pub fn is_skills_command(command: Option<&str>) -> bool {
     )
 }
 
-/// `skills(command, args)` (P2 — command bodies ported then).
-pub async fn skills(command: &str, _args: &[String], _out: &Output) -> Result<(), String> {
-    Err(not_implemented(&format!("skills {command}")))
+/// `skills(command, args)` — port of the skills.ts command body (P2).
+pub async fn skills(command: &str, args: &[String], out: &Output) -> Result<(), String> {
+    match command {
+        "list" => {
+            list_skills(out).await;
+        }
+        "install-builtin" => {
+            install_builtin_skills(out).await;
+            // One notification per command, not per skill.
+            crate::rpc::notify_agent_refresh_skills().await;
+        }
+        "update" => {
+            update_skills(out).await?;
+            crate::rpc::notify_agent_refresh_skills().await;
+        }
+        "install" => {
+            let name = args.first().map(String::as_str);
+            let Some(name) = name else {
+                // No name given — install all builtin skills.
+                install_builtin_skills(out).await;
+                crate::rpc::notify_agent_refresh_skills().await;
+                return Ok(());
+            };
+            let version_idx = args.iter().position(|a| a == "--version");
+            let mut version = version_idx.and_then(|i| args.get(i + 1)).cloned();
+            // Strip leading "v" if the user provided it (e.g. "v1.0" → "1.0")
+            // to avoid a double "v" in output.
+            if let Some(v) = &version {
+                if let Some(stripped) = v.strip_prefix('v') {
+                    version = Some(stripped.to_string());
+                }
+            }
+            install_skill(name, version.as_deref(), out).await?;
+            crate::rpc::notify_agent_refresh_skills().await;
+        }
+        "uninstall" => {
+            let Some(name) = args.first().map(String::as_str) else {
+                out.log_err(&format!("Usage: future skills {command} <skill-name>"));
+                out.set_exit_code(1);
+                return Ok(());
+            };
+            uninstall_skill(name, out).await?;
+            crate::rpc::notify_agent_refresh_skills().await;
+        }
+        _ => unreachable!("is_skills_command guards the dispatch"),
+    }
+    Ok(())
 }
 
-fn not_implemented(what: &str) -> String {
-    format!("`future {what}` is not implemented yet in the Rust CLI (P2)")
+// ── list / update / uninstall (P2 command bodies) ──────────────────────────
+
+/// `listSkills()` — catalog table with installed versions.
+async fn list_skills(out: &Output) {
+    let platform_url = get_platform_url(None).await;
+
+    let skills: Vec<SkillInfo> = match fetch_skills(&platform_url).await {
+        Ok(skills) => skills,
+        Err(err) => {
+            out.log_err(&format!(
+                "Failed to fetch skills from {platform_url}/client/v1/skills"
+            ));
+            out.log_err(&err);
+            out.set_exit_code(1);
+            return;
+        }
+    };
+
+    if skills.is_empty() {
+        out.log("No skills available.");
+        return;
+    }
+
+    // Check which skills are installed.
+    let mut installed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(skills_dir()).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(ver) =
+                read_skill_md_version(&skills_dir().join(&name).join("SKILL.md")).await
+            {
+                installed.insert(name, ver);
+            }
+        }
+    }
+
+    let id_width = skills
+        .iter()
+        .map(|s| s.id.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(12, 36);
+    let ver_width = skills
+        .iter()
+        .map(|s| {
+            let v = match &s.latest_version {
+                Some(v) => format!("v{v}"),
+                None => "—".to_string(),
+            };
+            v.chars().count()
+        })
+        .max()
+        .unwrap_or(0)
+        .max(10);
+    let inst_width = skills
+        .iter()
+        .map(|s| {
+            let marker = match installed.get(&s.id) {
+                Some(v) => format!("v{v}"),
+                None => "—".to_string(),
+            };
+            marker.chars().count()
+        })
+        .max()
+        .unwrap_or(0)
+        .max(9);
+    const DESC_MAX: usize = 48;
+    let desc_width = skills
+        .iter()
+        .map(|s| s.description.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(12, DESC_MAX);
+
+    out.log(&format!(
+        "  {} {} {} DESCRIPTION",
+        pad("NAME", id_width),
+        pad("LATEST", ver_width),
+        pad("INSTALLED", inst_width)
+    ));
+    out.log(&format!(
+        "  {} {} {} {}",
+        "—".repeat(id_width),
+        "—".repeat(ver_width),
+        "—".repeat(inst_width),
+        "—".repeat(desc_width)
+    ));
+
+    for s in &skills {
+        let marker = match installed.get(&s.id) {
+            Some(v) => format!("v{v}"),
+            None => "—".to_string(),
+        };
+        let ver = match &s.latest_version {
+            Some(v) => format!("v{v}"),
+            None => "—".to_string(),
+        };
+        let desc: String = if s.description.chars().count() > DESC_MAX {
+            let mut d: String = s.description.chars().take(DESC_MAX - 1).collect();
+            d.push('…');
+            d
+        } else {
+            s.description.clone()
+        };
+        out.log(&format!(
+            "  {} {} {} {}",
+            pad(&s.id, id_width),
+            pad(&ver, ver_width),
+            pad(&marker, inst_width),
+            pad(&desc, desc_width)
+        ));
+    }
+    out.log(&format!(
+        "\n{} skills available. Use \"future skills install <name>\" to install.",
+        skills.len()
+    ));
+}
+
+/// `padEnd(s, width)` — JS padEnd (pad only when shorter; count chars).
+fn pad(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(width - len))
+    }
+}
+
+/// `updateSkills()` — upgrade all installed skills to their latest versions.
+/// A catalog fetch failure propagates (the dispatch `catch` prints it and
+/// exits 1), matching the TS `fetchSkills` throw path.
+async fn update_skills(out: &Output) -> Result<(), String> {
+    let platform_url = get_platform_url(None).await;
+    out.log(&format!("Fetching skill catalog from {platform_url}..."));
+    let skills: Vec<SkillInfo> = fetch_skills(&platform_url).await?;
+    if skills.is_empty() {
+        out.log("No skills available.");
+        return Ok(());
+    }
+
+    let installed = get_installed_skill_ids().await;
+    if installed.is_empty() {
+        out.log("No skills installed.");
+        return Ok(());
+    }
+
+    let mut updated = 0usize;
+    let mut up_to_date = 0usize;
+
+    for skill in &skills {
+        if !installed.contains(&skill.id) {
+            continue;
+        }
+        let Some(latest) = &skill.latest_version else {
+            continue;
+        };
+        let skill_md_path = skills_dir().join(&skill.id).join("SKILL.md");
+        let local_ver = read_skill_md_version(&skill_md_path).await;
+        if local_ver.is_none() || local_ver.as_deref() == Some(latest.as_str()) {
+            up_to_date += 1;
+            continue;
+        }
+
+        out.log(&format!(
+            "  {}: {} → {}",
+            skill.id,
+            local_ver.unwrap_or_default(),
+            latest
+        ));
+        match install_skill(&skill.id, Some(latest.as_str()), out).await {
+            Ok(()) => updated += 1,
+            Err(err) => out.log_err(&format!("  Failed: {err}")),
+        }
+    }
+
+    if updated == 0 {
+        out.log(&format!("{up_to_date} skill(s) already up to date."));
+    } else {
+        out.log(&format!(
+            "Updated {updated} skill(s), {up_to_date} already up to date."
+        ));
+    }
+    Ok(())
+}
+
+/// `uninstallSkill(skillId)` — remove an installed skill.
+async fn uninstall_skill(skill_id: &str, out: &Output) -> Result<(), String> {
+    let dest = skills_dir().join(skill_id);
+    if tokio::fs::metadata(&dest).await.is_err() {
+        out.log(&format!("Skill \"{skill_id}\" is not installed."));
+        return Ok(());
+    }
+    tokio::fs::remove_dir_all(&dest)
+        .await
+        .map_err(|e| e.to_string())?;
+    out.log(&format!(
+        "Uninstalled skill \"{skill_id}\" from {}.",
+        skills_dir().display()
+    ));
+    Ok(())
 }
 
 // ── Remote API ─────────────────────────────────────────────────────────────
@@ -201,7 +443,7 @@ pub async fn install_builtin_skills(out: &Output) {
             out.log(&format!("  Skipping {} — no version available.", skill.id));
             continue;
         };
-        if let Err(err) = install_skill(&skill.id, version, out).await {
+        if let Err(err) = install_skill(&skill.id, Some(version.as_str()), out).await {
             out.log_err(&format!("  Failed to install {}: {err}", skill.id));
         }
     }
@@ -209,19 +451,49 @@ pub async fn install_builtin_skills(out: &Output) {
     out.log(&format!("Done. {} skills installed.", to_install.len()));
 }
 
-/// `installSkill(skillId, version)` — download, unzip, flatten, print result.
+/// `installSkill(skillId, version?)` — download, unzip, flatten, print result.
 ///
-/// Download failures print the raw error, set `process.exitCode = 1` and
+/// With no version the latest is looked up from the catalog; metadata and
+/// download failures print the raw error, set `process.exitCode = 1` and
 /// return normally (TS behavior); write/unzip/flatten failures throw and are
 /// reported by the caller with the `  Failed to install …` prefix.
-async fn install_skill(skill_id: &str, version: &str, out: &Output) -> Result<(), String> {
+async fn install_skill(skill_id: &str, version: Option<&str>, out: &Output) -> Result<(), String> {
     let platform_url = get_platform_url(None).await;
+    let version = match version {
+        Some(v) => v.to_string(),
+        None => {
+            // `installSkill(skillId)` without a version: look up the latest
+            // from the catalog. Failures print + set exitCode 1 and return
+            // normally (TS behavior).
+            let skills = match fetch_skills(&platform_url).await {
+                Ok(skills) => skills,
+                Err(err) => {
+                    out.log_err("Failed to fetch skill metadata.");
+                    out.log_err(&err);
+                    out.set_exit_code(1);
+                    return Ok(());
+                }
+            };
+            let Some(skill_meta) = skills.iter().find(|s| s.id == skill_id) else {
+                out.log_err(&format!("Skill \"{skill_id}\" not found in catalog."));
+                out.log_err("Run \"future skills list\" to see available skills.");
+                out.set_exit_code(1);
+                return Ok(());
+            };
+            let Some(latest) = &skill_meta.latest_version else {
+                out.log_err(&format!("Skill \"{skill_id}\" has no versions available."));
+                out.set_exit_code(1);
+                return Ok(());
+            };
+            latest.clone()
+        }
+    };
     let dest = skills_dir().join(skill_id);
     let is_update = tokio::fs::metadata(&dest).await.is_ok();
 
     out.log(&format!("Downloading {skill_id} v{version}..."));
     let tmp_zip = std::env::temp_dir().join(format!("future-skill-{skill_id}-{version}.zip"));
-    let zip_bytes = match download_skill_zip(&platform_url, skill_id, version).await {
+    let zip_bytes = match download_skill_zip(&platform_url, skill_id, &version).await {
         Ok(bytes) => bytes,
         Err(err) => {
             out.log_err(&err);
