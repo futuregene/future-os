@@ -218,7 +218,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 
 ## E. 遗留 / 超出本 todo 范围（建议后继核验）
 
-- **GUI 功能声明**（wiki Using-FutureOS/Settings/Skills/Quick-Start：批准机制、批准模式三态、11 个内置技能表、4 图/25MiB、Artifacts、Runs/Review）——本 todo 未覆盖，需对照 gui/ 源码（gui/src-tauri commands + gui/src React）。
+- **GUI 功能声明**（wiki Using-FutureOS/Settings/Skills/Quick-Start + Home 的 Artifacts 提及）—— ✅ 已核验（todo_cab9a84ced24，2026-08-06），见 §G。发现并修正 6 项：Artifacts 面板已停用（→Files 视图）、右栏视图表、内置技能表（3 个不存在技能 → 实际 14 个）、Settings General 缺 Auto-upgrade skills、FutureGene「Connect」→「Sign in」、内置 provider「Set key/Update key」→「Configure」。
 - **X10 架构审计时效 —— ✅ 已裁决（todo_41f779819879）**：architecture-audit 判定为**时点快照，标注历史，不逐行重核**。审计文档与首批修复同批入库（commit `306cf05f`，2026-08-06）：报告 01 H2/H3/H4、报告 04 H1/H2/H4 已在同一 commit 修复（代码注释直接引用审计编号，如 auth_store.rs「audit item 2」、useThreadStore.ts「(H2)」）；仍成立的高危项为报告 01 H1/H5、报告 04 H3。file:line 已漂移（报告 02 引用文件多处移动、报告 03 行数增长、报告 01 proto 行号失效），README.md 顶部已加时效性说明并逐条标注 ✅。后续如需更新审计，应基于当前工作树重跑调查而非修订旧行号。
 - **docs/dist/*.txt —— ✅ 已核验（todo_41f779819879）**：6 个发布包内附说明为**活文档**（build.yml / build-windows-portable.ps1 / build-windows-signed.yml 打包时逐字复制进 dmg/zip/tar.gz），全部声明与当前源码一致（二进制名 `futureos`/`future-agent`/`future` 三件套与 build.yml 装配步骤完全吻合；macOS「未公证」与 FAQ/B8 口径一致；WebView2/WebKitGTK 运行时要求正确）。**无需修改**；`-en.txt` 为参考译文（打包只用 zh `.txt`）。后继 todo 可跳过。
 - **X8 沙箱术语**：README「off / manual / macOS Seatbelt」vs wiki「Manual / Sandboxed (macOS only) / Unrestricted」——属 GUI 核验面。
@@ -264,3 +264,49 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 - 声明→源码逐条比对；源码依据均含 file:line（见各条目「依据」列）。
 - CLI 移除历史经 `git show eed93369` 确认（2026-07-16，删除 agent.ts/channel.ts/gui.ts/tui.ts 共 665 行）。
 - 生成文件 Models.md 数字以文件头为准（3826/143），未重跑 `make generate-models`（需网络）。
+
+---
+
+## G. GUI 核验结果（todo_cab9a84ced24，2026-08-06）
+
+> 对照 gui/src-tauri（Rust commands）+ gui/src（React）核验 wiki 四个 GUI 页面（Using-FutureOS / Settings / Skills / Quick-Start）+ Home 页的 Artifacts 提及。en/zh 成对修改，标题结构保持对齐。
+
+### G1. 已修正（6 项）
+
+| 条目 | 修正内容 | 源码依据 |
+|---|---|---|
+| Artifacts 面板已停用 | Using-FutureOS / Quick-Start / Home en+zh：删除「Chat 右栏 = Runs + Artifacts」「Artifacts 收集产出（预览/复制/导出/上传）」等描述，改为 **Files** 视图（每个会话都有 Files 标签：Chat=临时会话文件夹，Workspace=项目文件夹；可预览/系统打开/从目录树附加到对话） | ContextPanel.tsx L34-57：Artifacts 标签从 fileTabs/gitTabs 注释掉（commit 9756a7b2，2026-07-14「hide the Artifacts tab pending a decision on its purpose」）；chat=files+runs，workspace=files+runs+review；`isFutureReferenceType()` 恒 false → futureos:// 应用对象引用全部失效（parseFutureMarkdown.ts L427-438） |
+| 右栏视图表/三栏描述 | 「Runs / Review / Artifacts」→「Files / Runs / Review」；Chat vs Workspace 表右栏改为 Files+Runs / Files+Runs+Review | 同上 |
+| Skills 内置技能表 | 删除 3 个不存在的技能（Hand-drawn posters、Hand-drawn slides、Subagent），改为实际 **14 个**内置技能：Account/Browser/Database lookup/Deep research/Document/Experimental design/Image/Paper/Peer review/Scientific writing/Skill creator/Slides/Software install/Web | 在线目录 `/client/v1/skills`（2026-08-06 实拉 test.future-os.cn，139 技能中 14 个 `future-*`）；repo `skills/builtin/` 同名 14 目录；`future init`/install-builtin 按 `future-` 前缀过滤（cli/src/commands/skills.ts L246） |
+| Settings General 缺「Auto-upgrade skills」 | 补上：应用每次打开时静默升级已装技能到最新版（默认开） | GeneralPage.tsx autoUpgradeSkills Switch；app_settings.rs `unwrap_or(true)`（注意结构体注释写「Off by default」与实现不符——代码侧小问题） |
+| FutureGene 按钮名 | 「Click **Connect**」→「Click **Sign in**」；删掉不存在的「Sign in again」（登录态只有 Sign out） | ProvidersPage.tsx：connect 按钮 = t("providers.connect") = "Sign in"（settings.json）；触发 show-onboarding（设备码 OAuth） |
+| 内置 provider 按钮名 | 「Set key / Update key」→「**Configure**」（点开对话框标题为 Set <provider> key） | ProvidersPage.tsx t("providers.set") = "Configure"；keyDialogTitle = "Set {{provider}} key" |
+
+### G2. 核验无误（供后继跳过，不再重查）
+
+| 核验面 | 结论 |
+|---|---|
+| 批准机制 | ✓ 触发面：文件读写 / shell 命令 / workspace 外写入（agent/src/rpc/approval.rs approval_shape：file_read/file_write/outside_workspace_write/shell_command/sandbox_escalation；删除文件经 shell `rm` 审批，GUI ActionDetails 的 deletes 分支为防御性渲染）；卡片无超时（GUI 无 timeout，agent 侧 pending 审批跨重启保留）；Allow once / Deny / Allow in this workspace-chat（规则路径可编辑；secret 文件不出规则按钮 save_suggestion=None）；Cmd/Ctrl+Enter 批准、Esc 拒绝（规则编辑器开着则先关）（ApprovalPrompt.tsx） |
+| 批准模式三态 | ✓ manual/sandbox/off 与 i18n 文案逐字一致：Manual=读写前询问、只读命令自动跑；Sandboxed=仅 macOS（GeneralPage `isMacOS` 才渲染选项）、命令入 macOS 沙箱、文件操作仍询问；Unrestricted=不询问不沙箱一切照跑；默认 off（app_settings.rs normalize_tier + read 默认） |
+| 输入框 | ✓ 模型选择器 + 思考级别 + 盾牌（批准模式，ShieldCheck/Off/Question 三态图标）+ 回形针/粘贴/拖拽附件 + 流式时发送键变停止键（Composer.tsx） |
+| 4 图 / 25MiB | ✓ MAX_IMAGES_PER_TURN=4、READ_SOURCE_MAX_BYTES=25*1024*1024、非图片文件不限额（attachments.ts L11-19）；后端 MAX_ATTACHMENT_IMAGE_BYTES=25*1024*1024（commands/files.rs L114） |
+| 左栏结构 | ✓ New Chat / Models(设置快捷入口) / Skills / Workspaces(每项可展开会话、可折叠、+ 新建) / Chats / Settings 在底部；左栏可折叠（ActivityRail.tsx；layout.json） |
+| Runs 面板 | ✓ 卡片显示真实命令（shell 行逐字）、工具状态、running/finished 计数；Inspect / Terminate / Clear finished（RunsPanel.tsx + runs.json） |
+| Review 面板 | ✓ 文件列表 + 改动类型(added/modified/deleted/renamed) + 逐文件 diff；git workspace 才有「Last run changes」视图切换（非 git 只显示 last-run 单视图）；默认视图由后端 capabilities.defaultView 定（ReviewPanel.tsx + review.json） |
+| 会话菜单 | ✓ 重命名 / 置顶(取消) / 删除（ThreadListItem.tsx + layout.json rename/pin/delete） |
+| Settings 页签 | ✓ 发布构建仅 General/Providers/Models/Account/Check for updates/About/Reset；Remote、Environment 为 devOnly（SettingsDialog.tsx NAV_GROUPS + `devOnly`）——文档不提及二者正确 |
+| FutureGene 授权流 | ✓ 设备码 OAuth：浏览器授权，未自动打开时显示验证码(user_code) + 可复制链接(verification_uri_complete)（future_login.rs） |
+| 自定义 provider | ✓ Name(可选)/Provider ID(小写字母数字`-`_，长度+模式校验)/API type(OpenAI Completions|Responses|Anthropic)/Base URL(http/https 校验)/API Key/Models；ID 唯一性检查（CustomProviderDialog.tsx + settings.json 校验文案 idPattern/idLength/baseUrlInvalid） |
+| Models 页 | ✓ 按 provider 分组、搜索（模型名或 provider 名）、可见性开关→隐藏模型从选择器移除（ModelsPage.tsx hiddenModels + providerNames） |
+| 更新 / 账户 / 重置 | ✓ 检查更新→下载→安装→重启（UpdatePage + install_app_update/restart_after_app_update）；账户页资料+余额+充值（AccountPage + useFutureAccount）；重置=清除本地数据并重启（ResetPage clear_app_data） |
+| Skills 页 | ✓ Installed/All 两标签、分类下拉+搜索+结果计数+清除过滤、Install/Uninstall(二次确认)/Upgrade/Upgrade all；首次无已装技能自动切 All；「All 需要联网」正确（SkillsView.tsx + skillsClient） |
+
+### G3. 变更清单（本 todo，一次提交）
+
+| 文件（en+zh 成对，10 个） | 内容 |
+|---|---|
+| Using-FutureOS | Artifacts→Files（三栏描述、Chat vs Workspace 表、Artifacts 小节整体替换） |
+| Quick-Start | 第 5 步「最多三种视图」重写为 Files/Runs(+Review)；FutureGene「Connect」→「Sign in」 |
+| Skills | 内置技能表 11 项 → 实际 14 项（删 3 个不存在的，补 6 个漏掉的，Slides 名称订正） |
+| Settings | General 补 Auto-upgrade skills；FutureGene「Connect」→「Sign in」（删 Sign in again）；内置 provider「Set key/Update key」→「Configure」 |
+| Home | 「generated outputs (Artifacts)」→ Files/Runs/Review 表述 |

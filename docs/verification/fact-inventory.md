@@ -182,7 +182,7 @@ L159-167 状态布局、L171-173 安装。**无内容差异**。
 |---|---|---|
 | EH1 | 定位：desktop AI agent workbench，可看可核对 agent 工作 | L1-4 |
 | EH2 | 三步开始：Installation / Quick-Start / Using-FutureOS（wiki 内链 `[[...]]`） | L14-19 |
-| EH3 | 你能做什么：流式思考/工具调用；Chat 或绑定文件夹 Workspace；风险操作前暂停批准；右侧 Runs/Review/Artifacts；Skills 自动使用 | L23-29 |
+| EH3 | 你能做什么：流式思考/工具调用；Chat 或绑定文件夹 Workspace；风险操作前暂停批准；右侧 Files/Runs/Review（✅ 2026-08-06 由 Artifacts 改）；Skills 自动使用 | L23-29 |
 | EH4 | 底部：**runs on macOS and Windows** | L40 |
 
 ### Installation.md（77 行）
@@ -201,32 +201,32 @@ L159-167 状态布局、L171-173 安装。**无内容差异**。
 ### Quick-Start.md（71 行）
 | # | 声明 | 位置 |
 |---|---|---|
-| EQ1 | 登录流程：齿轮图标 → Providers → Built-in → FutureGene → Connect → 浏览器授权（不自动开则用验证码+可复制链接） | L9-19 |
+| EQ1 | 登录流程：齿轮图标 → Providers → Built-in → FutureGene → **Sign in**（✅ 原「Connect」，按钮实际文案为 Sign in）→ 浏览器授权（不自动开则用验证码+可复制链接） | L9-19 |
 | EQ2 | New Chat vs Workspace 对比表 | L24-35 |
 | EQ3 | 发送：流式回复、工具活动展示、风险操作暂停批准；**每消息最多 4 张图片（25 MiB each），其他文件不限数量**；回形针/拖拽/粘贴 | L38-48 |
 | EQ4 | 模型选择器在输入框内，旁边有 thinking level 控制；Settings → Models 管理 | L50-56 |
-| EQ5 | 右侧面板三视图：Runs（真实命令、可停止/清理）、Review（Workspace 文件改动/统计/diff）、Artifacts（Chat 产出） | L58-66 |
+| EQ5 | 右侧面板：每个会话 Files + Runs；Workspace 另有 Review（✅ 2026-08-06 重写，Artifacts 已停用） | L58-66 |
 
 ### Using-FutureOS.md（91 行）
 | # | 声明 | 位置 |
 |---|---|---|
-| EU1 | 三栏布局：左导航（New Chat、Models 快捷入口、Skills、Workspaces、Chats、Settings，可折叠）；中对话区（流式回复/计划/工具活动/命令预览/错误/批准卡片，输入框固定底部）；右上下文面板（Runs/Review/Artifacts，可折叠） | L6-18 |
-| EU2 | Chat vs Workspace 表：Chat 右栏显示 Runs+Artifacts；Workspace 显示 Runs+Review；每个会话独立 | L22-34 |
+| EU1 | 三栏布局：左导航（New Chat、Models 快捷入口、Skills、Workspaces、Chats、Settings，可折叠）；中对话区（流式回复/计划/工具活动/命令预览/错误/批准卡片，输入框固定底部）；右上下文面板（Files/Runs/Review，✅ 原 Runs/Review/Artifacts，可折叠） | L6-18 |
+| EU2 | Chat vs Workspace 表：Chat 右栏显示 Files+Runs（✅ 原 Runs+Artifacts）；Workspace 显示 Files+Runs+Review；每个会话独立 | L22-34 |
 | EU3 | 重命名/置顶/删除会话（左栏菜单） | L36-37 |
 | EU4 | 对话：Enter 发送、Shift+Enter 换行；逐会话切模型；附件限制同 EQ3；流式时发送按钮变停止 | L39-46 |
 | EU5 | **批准机制**：读写文件/跑 shell/删除/写 workspace 之外 → 停止 + 批准卡片 + **不超时**；Allow once / Deny / Allow in this workspace or chat（可编辑路径规则）；**键盘 Cmd/Ctrl+Enter 批准、Esc 拒绝** | L48-64 |
 | EU6 | **批准模式**：Manual（读写文件前询问，只读命令自动跑）/ **Sandboxed（macOS only）** / Unrestricted；可在 Settings → General 或输入框盾牌控件设置 | L66-72 |
 | EU7 | Runs：卡片显示真实命令/状态/计数；Inspect/Terminate/Clear finished | L76-81 |
 | EU8 | Review：文件列表、类型（added/modified/deleted/renamed）、逐文件 diff；版本控制下可切「Last run changes」 | L83-85 |
-| EU9 | Artifacts：预览/复制/导出/打开原始文件；可自行上传 | L87-89 |
+| EU9 | Files：每个会话展示工作区文件（Workspace=项目文件夹，Chat=临时会话文件夹）；预览/系统打开/从目录树附加到对话（✅ 2026-08-06 替换原 Artifacts 小节） | L87-89 |
 
 ### Settings.md（82 行）
 | # | 声明 | 位置 |
 |---|---|---|
 | ES1 | 入口：左下齿轮；左栏 Models 快捷入口 | L3 |
 | ES2 | 设置页：General / Providers / Models + **Check for updates / Reset** | L5 |
-| ES3 | General：Language、Approval mode（Manual/Sandboxed[macOS only]/Unrestricted）、Show thinking process | L9-18 |
-| ES4 | Providers：FutureGene 内置 Connect（验证码+链接；Sign in again/Sign out）；**其他内置 provider（DeepSeek/OpenAI/Anthropic/Google 等）点 Set key/Update key**；More providers 展开完整列表 | L22-32 |
+| ES3 | General：Language、Approval mode（Manual/Sandboxed[macOS only]/Unrestricted）、Show thinking process、**Auto-upgrade skills**（✅ 2026-08-06 补，应用打开时静默升级已装技能） | L9-18 |
+| ES4 | Providers：FutureGene 内置 **Sign in**（✅ 原 Connect；验证码+链接；登录态只有 Sign out，无 Sign in again）；**其他内置 provider（DeepSeek/OpenAI/Anthropic/Google 等）点 Configure**（✅ 原 Set key/Update key，对话框标题 Set <provider> key）；More providers 展开完整列表 | L22-32 |
 | ES5 | 自定义 provider 字段：Name（可选）、Provider ID（小写字母/数字/-/_）、**API type = OpenAI Completions / OpenAI Responses / Anthropic**、Base URL、API Key、Models（可带显示名）；校验 + id 唯一；Edit/Remove | L34-45 |
 | ES6 | Models：按 provider 分组、搜索、可见性开关；输入框选择器同源并显示 provider | L48-54 |
 | ES7 | Check for updates：检查并下载对应系统安装包 | L57-59 |
@@ -237,7 +237,7 @@ L159-167 状态布局、L171-173 安装。**无内容差异**。
 |---|---|---|
 | ESK1 | Skills = 能力包，安装且相关时自动使用；左栏 Skills 入口 | L3-6 |
 | ESK2 | 两标签：Installed / All（All 需联网）；分类下拉 + 搜索；Install/Uninstall | L9-14 |
-| ESK3 | **11 个内置技能表**：Account、Web、Paper、Deep research、Document、Image、Browser、Hand-drawn posters、Hand-drawn slides、Subagent、Skill creator | L18-30 |
+| ESK3 | **14 个内置技能表**（✅ 2026-08-06 修正，原 11 项含 3 个不存在的 Hand-drawn posters/Hand-drawn slides/Subagent）：Account、Browser、Database lookup、Deep research、Document、Experimental design、Image、Paper、Peer review、Scientific writing、Skill creator、Slides、Software install、Web | L18-30 |
 | ESK4 | 使用方式：无需手动调用，描述任务即可 | L38-44 |
 
 ### CLI.md（127 行）
@@ -257,7 +257,7 @@ L159-167 状态布局、L171-173 安装。**无内容差异**。
 | EF2 | macOS 打不开：右键打开两次；已损坏 → `xattr -dr com.apple.quarantine /Applications/FutureOS.app` | L10-15 |
 | EF3 | SmartScreen：More info → Run anyway | L18-19 |
 | EF4 | Windows 没反应：装 WebView2 Evergreen；便携版同文件夹；zip 解除锁定 | L21-28 |
-| EF5 | 用不了模型/未登录：Settings → Providers → FutureGene → Connect | L30-32 |
+| EF5 | 用不了模型/未登录：Settings → Providers → FutureGene → **Sign in**（✅ 原 Connect） | L30-32 |
 | EF6 | 切模型：输入框选择器 / Settings → Models | L34-35 |
 | EF7 | agent 停下询问 = 批准机制（不超时）：Allow once/Deny/允许本项目 | L37-39 |
 | EF8 | 数据位置：~/.future / C:\Users\<you>\.future | L41-45 |
@@ -417,8 +417,8 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 | # | 观察 | 状态 |
 |---|---|---|
 | H11 | Feishu 权限 scope 表：wiki 列 6 行（含 contact:user.base:read），旧草案疑「5 个」——以实际 wiki 页为准（wiki 页核验属 todo_bcf715c7cc0e） | 开放 |
-| H14 | 读文件是否要求批准：Using-FutureOS 批准机制写「read or write a file」需批准，而 Manual 模式又写「read-only commands run automatically」——内部一致性属 GUI 核验面（见 errors-outdated-missing.md §E） | 开放（GUI 面） |
-| H15 | wiki-prompt §7 引用的 GUI 源文件（ActivityRail.tsx featureItems、SettingsDialog.tsx、Composer.tsx）与审计报告 02/03 行号需交叉确认存在 | 开放（GUI 面） |
+| H14 | 读文件是否要求批准：Using-FutureOS 批准机制写「read or write a file」需批准，而 Manual 模式又写「read-only commands run automatically」——内部一致性属 GUI 核验面（见 errors-outdated-missing.md §E） | ✅ 已解决（todo_cab9a84ced24）：**一致，无矛盾**——file read 工具访问触发 file_read 审批（approval.rs），而 Manual 模式下「read-only commands」指**只读 shell 命令**自动放行（shell_auto_allow 分类），两者对象不同 |
+| H15 | wiki-prompt §7 引用的 GUI 源文件（ActivityRail.tsx featureItems、SettingsDialog.tsx、Composer.tsx）与审计报告 02/03 行号需交叉确认存在 | ✅ 已解决（todo_cab9a84ced24）：三文件均存在——ActivityRail.tsx featureItems 为空数组（Research 已移除，PRODUCT.md §4.9）、SettingsDialog.tsx devOnly 机制（Remote/Environment 仅 dev）、Composer.tsx 盾牌/模型/思考级别/停止钮 |
 
 ### 14b. 「缺失文档/章节」候选（供 todo_9bb2c6dd1c38 参考）
 

@@ -16,6 +16,7 @@
   - **Sandboxed(沙箱,仅 macOS)** —— 命令在 macOS 沙箱内运行;文件操作仍会询问。
   - **Unrestricted(不受限)** —— 不询问、不沙箱,一切照跑。
 - **Show thinking process(显示思考过程)** —— 在对话里显示或隐藏模型的推理过程。
+- **Auto-upgrade skills(技能自动升级)** —— 每次应用打开时,静默把已安装技能升级到最新版本。
 
 批准机制的实际用法见 [[使用 FutureOS|Using-FutureOS]]。
 
@@ -29,11 +30,11 @@ provider 就是你的模型来源。
 
 FutureGene 是内置 provider。使用步骤:
 
-1. 点 **Connect**。
+1. 点 **Sign in**。
 2. 在浏览器里授权。若没自动打开,使用应用里显示的**验证码**和**可复制链接**。
-3. 连接后,你随时可以**重新登录(Sign in again)**或**登出(Sign out)**。
+3. 连接后,你随时可以**登出(Sign out)**。
 
-列表里还有其他内置 provider(如 DeepSeek、OpenAI、Anthropic、Google 等)——点 **Set key** / **Update key** 可为它们填入你自己的 API key。用 **More providers** 可展开完整列表。
+列表里还有其他内置 provider(如 DeepSeek、OpenAI、Anthropic、Google 等)——点 **Configure** 可为它们填入或更新自己的 API key。用 **More providers** 可展开完整列表。
 
 ### 自定义 provider
 
