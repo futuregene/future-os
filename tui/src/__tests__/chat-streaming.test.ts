@@ -165,4 +165,34 @@ describe("ChatArea streaming render", () => {
     (chat as any).rerender();
     expect(chat.renderAll(W)).toEqual(eagerLines(full, false));
   });
+
+  test("duplicate tool_start for the same id merges into a single bubble", () => {
+    const chat = new ChatArea(W);
+    chat.render(W);
+    // The agent emits tool_start twice per call: the provider stream first
+    // (toolcall_start — args still empty → would render as a bare "shell"
+    // line), then execution with the finalized arguments. Both must collapse
+    // into one line showing the command.
+    chat.addToolStart("call_1", "shell", "");
+    chat.addToolStart("call_1", "shell", '{"command":"cd /tmp"}');
+    const msgs = (chat as any).messages as ChatMessage[];
+    expect(msgs.filter((m) => m.role === "tool")).toHaveLength(1);
+    const lines = chat.renderAll(W).filter((line) => line.trim());
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("$");
+    expect(lines[0]).toContain("cd /tmp");
+  });
+
+  test("distinct tool ids still render separate bubbles", () => {
+    const chat = new ChatArea(W);
+    chat.render(W);
+    chat.addToolStart("call_1", "shell", '{"command":"cd /tmp"}');
+    chat.addToolStart("call_2", "read", '{"path":"/etc/hosts"}');
+    const msgs = (chat as any).messages as ChatMessage[];
+    expect(msgs.filter((m) => m.role === "tool")).toHaveLength(2);
+    const lines = chat.renderAll(W).filter((line) => line.trim());
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("$");
+    expect(lines[1]).toContain("read");
+  });
 });

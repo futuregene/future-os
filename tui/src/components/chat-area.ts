@@ -238,6 +238,20 @@ export class ChatArea implements Component {
   // ─── Tool call management ───────────────────────────────────────
 
   addToolStart(toolId: string, toolName: string, toolArgs?: string): void {
+    // The agent emits tool_start twice for the same call: once from the
+    // provider stream (toolcall_start — arguments may still be empty, which
+    // rendered as a bare tool-name line) and once when execution actually
+    // begins with the finalized arguments. Update the existing bubble instead
+    // of appending a second one, so a tool call renders as a single line.
+    const existingIdx = toolId ? this.findToolIndex(toolId) : -1;
+    if (existingIdx >= 0) {
+      const existing = this.messages[existingIdx];
+      if (toolName) existing.name = toolName;
+      if (toolArgs) (existing as { toolArgs?: string }).toolArgs = toolArgs;
+      this.rerenderMessage(existingIdx);
+      if (this.autoScroll) this.scrollToBottom();
+      return;
+    }
     const msg: ChatMessage = {
       id: crypto.randomUUID(),
       role: "tool",
