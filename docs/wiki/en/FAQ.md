@@ -27,7 +27,7 @@ That's **SmartScreen**. Click **More info → Run anyway**.
 
 ### I can't use any model / I'm not signed in
 
-Open **Settings → Providers → FutureGene → Connect** to sign in, or add your own provider. See [[Settings]].
+Open **Settings → Providers → FutureGene → Sign in** to sign in, or add your own provider. See [[Settings]].
 
 ### How do I switch models?
 

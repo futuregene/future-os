@@ -50,6 +50,8 @@ GUI 白名单硬编码于 `observer.rs:71-81`（`FORWARDED_EVENTS`）。
 | agent 进程生命周期 | GUI spawn/kill sidecar | agent_supervisor.rs:59-86, 241 | 固定端口 127.0.0.1:50051（client.rs:26-28） |
 | webview 原始文件读取 | GUI 可读 agent sessions/settings 原始字节（仅 auth.json/models.json 拉黑） | commands/files.rs:48-80, 655-667（测试显式放行 `agent/sessions/s.jsonl`、`agent/settings.json`） | — |
 
+> ⚠️ 本表为审计时点（2026-08-05）状态：第 1/2 行（auth.json/models.json 写）与第 7 行（`#[path]` include）已在 commit `306cf05f` 修复——配置写改由 agent 经 `set_auth`/`upsert_provider`/`delete_provider` RPC 自持，`#[path]` 改走 `list_models` RPC；第 5 行（`{id}.jsonl` 探测）同批改走 `list_session_ids` RPC。详见对应 H2/H3/H4 条目与 README 时效性说明。
+
 ---
 
 ## 2. 耦合 / 坏味道清单（按严重度）
@@ -63,13 +65,13 @@ GUI 白名单硬编码于 `observer.rs:71-81`（`FORWARDED_EVENTS`）。
 - 同理 `list_sessions` / `list_models` / `get_session_entries` / `get_events_since` 的载荷全是 stringly JSON（agent/src/rpc/commands.rs:1000-1022, 931-964, 1481-1536, 473-519）。
 - **为何是问题**：proto 丧失了契约功能；任何 agent 端 JSON 键改名都不会有编译期保护，只能靠 GUI 的多别名兜底（见 M4）掩盖漂移。
 
-**H2. GUI 直接写 agent 拥有的配置文件（auth.json / models.json）**
+**H2. GUI 直接写 agent 拥有的配置文件（auth.json / models.json）** —— ✅ **已修复（commit `306cf05f`）**：改由 agent 通过 `set_auth` / `upsert_provider` / `delete_provider` RPC 自行写盘；GUI 本地 read-modify-write 降级为 agent 不可达时的 fallback（`auth_store.rs` / `agent_providers/write.rs` 头部注释均声明「RPC-first (audit item 2)」）。下述描述为修复前状态。
 - auth_store.rs:1 注释自述："Strict, atomic, 0600 read/write for `~/.future/agent/auth.json`"、"single write path for the agent auth file"。写入逻辑：auth_store.rs:84-149（set_provider_key / set_future_login / set_future_base_url / remove_provider_entry）。
 - models.json 的 read-modify-write：agent_providers/write.rs:92-126（baseUrl 覆盖）、131-228（自定义 provider upsert）、230-263（删除）。
 - 一致性靠事后补一刀 RPC：`reload_auth`（mod.rs:310-335，注释明确说明 agent 内存缓存 key、不 reload 会"退出登录后仍可继续回答"）。
 - **为何是问题**：agent 的核心配置被两个进程按各自实现的格式解析/写回（agent 侧 auth/mod.rs、models/mod.rs 各有一套解析），没有 schema、没有跨进程锁（config_io.rs 的 `with_config_lock` 只是 GUI 进程内锁），并发写（如 CLI 登录 + GUI 登录）可能互相覆盖。
 
-**H3. GUI 编译期直接 `include` agent 源码**
+**H3. GUI 编译期直接 `include` agent 源码** —— ✅ **已修复（commit `306cf05f`）**：`#[path]` include 已移除，内置 provider 目录改经 `list_models` RPC（`include_builtin_providers`）运行时获取，GUI 不再保留独立 id→name 映射（`agent_providers/catalog.rs` 头部注释）。下述代码为修复前状态。
 - agent_providers/catalog.rs:13-16：
   ```rust
   #[path = "../../../../agent/src/models/builtin/mod.rs"]
@@ -77,7 +79,7 @@ GUI 白名单硬编码于 `observer.rs:71-81`（`FORWARDED_EVENTS`）。
   ```
 - **为何是问题**：这是源码级耦合——agent 改动该文件（或其 `include_str!("models.json")` 数据）会直接改变 GUI 二进制的行为，而两边可独立构建/发版；等于把"共享领域数据"用文件系统路径硬连接，完全绕过任何契约。
 
-**H4. GUI 依赖 agent 会话文件布局（文件名约定）**
+**H4. GUI 依赖 agent 会话文件布局（文件名约定）** —— ✅ **已修复（commit `306cf05f`）**：`reconcile_orphan_sessions` 改走 `list_session_ids` RPC 的「仅文件名」枚举，不再自行构造 `~/.future/agent/sessions/` 路径或探测 `{id}.jsonl`（`store/cleanup.rs` 头部注释：「The GUI no longer probes `{id}.jsonl` filenames itself」）。下述描述为修复前状态。
 - store/cleanup.rs:173-198 `reconcile_orphan_sessions`：直接构造 `~/.future/agent/sessions/` 路径（177-180），并按 `{session_id}.jsonl` 探测文件存在性（236），据此**硬删除 GUI 线程**。
 - **为何是问题**：扁平目录 + `{id}.jsonl` 命名是 agent 的存储内部实现（agent/src/session/ Manager）；agent 一旦迁移存储（分片、子目录、改扩展名），GUI 会静默误判"所有会话被外部删除"并删库。且该信息完全可以通过 RPC（如 `list_sessions` 差集）获得。
 
@@ -160,9 +162,9 @@ GUI 白名单硬编码于 `observer.rs:71-81`（`FORWARDED_EVENTS`）。
 **最强证据（按说服力排序）：**
 
 1. **`RpcResponse.data` / `StreamEvent.data` 全为 JSON 字符串，proto 的 `SessionState` 消息无人使用**；真实 get_state 载荷（agent/src/rpc/mod.rs:339-376）携带 `activeRun` / `interruptedRun` / `requestedRun` / `pendingApprovals` 等 proto 中不存在的键——GUI 的崩溃恢复、watchdog、审批重建全部构建在这套影子 JSON 上（mod.rs:739-944, approval.rs:120-218）。
-2. **GUI 是 agent auth.json 的"唯一写入者"**（auth_store.rs:1-5 自述），并直接 RMW models.json（write.rs）、读取 agent 的模型缓存文件（catalog.rs:108-122）——agent 配置域被 GUI 旁路接管，一致性靠 `reload_auth` 事后通知。
-3. **`#[path = "../../../../agent/src/models/builtin/mod.rs"]`**（catalog.rs:15）——GUI 二进制物理编译 agent 源码，任何"契约"讨论在此失效。
-4. **cleanup.rs:177-180, 236**：GUI 按 `{session_id}.jsonl` 命名约定探测 agent 会话文件存在性，并据此删除自己的线程——对 agent 存储布局的直接依赖。
+2. **GUI 是 agent auth.json 的"唯一写入者"**（auth_store.rs:1-5 自述），并直接 RMW models.json（write.rs）、读取 agent 的模型缓存文件（catalog.rs:108-122）——agent 配置域被 GUI 旁路接管，一致性靠 `reload_auth` 事后通知。⚠️ 修复前状态：commit `306cf05f` 起 GUI 改为 RPC-first（`set_auth`/`upsert_provider`/`delete_provider`），本地写仅作 fallback。
+3. **`#[path = "../../../../agent/src/models/builtin/mod.rs"]`**（catalog.rs:15）——GUI 二进制物理编译 agent 源码，任何"契约"讨论在此失效。⚠️ 修复前状态：commit `306cf05f` 起内置目录改经 `list_models` RPC 运行时获取。
+4. **cleanup.rs:177-180, 236**：GUI 按 `{session_id}.jsonl` 命名约定探测 agent 会话文件存在性，并据此删除自己的线程——对 agent 存储布局的直接依赖。⚠️ 修复前状态：commit `306cf05f` 起改走 `list_session_ids` RPC。
 5. **persist.rs:270-280, 353-359**：GUI 解析 agent 工具的展示文案（"Written to …"）与 `[exit: N]` 尾行格式，注释直接点名 agent 内部函数 `tools::run_write` / `tools::run_shell`——连"输出散文"都成了事实契约。
 
 ---
@@ -178,10 +180,10 @@ GUI 白名单硬编码于 `observer.rs:71-81`（`FORWARDED_EVENTS`）。
 
 ## 6. 修复方向建议（按优先级）
 
-1. **给影子 JSON 契约上类型**：把 `RpcResponse.data` / `StreamEvent.data` 从裸 `string` 演进为 `oneof` typed 消息，或至少把 get_state / list_sessions / get_session_entries / get_events_since 的载荷定义为 proto message。这是消除最多下游解析代码（GUI 的 8+ 处逐键解析、多别名兜底）的单点杠杆。
-2. **收敛配置写路径**：GUI 不再直接写 auth.json / models.json，改为调用 agent 新增的 `set_auth` / `upsert_provider` / `delete_provider` RPC；`reload_auth` 从事后补救变成不再需要。
-3. **消除 `#[path]` 编译期耦合**：内置模型目录要么走 `list_models` RPC 运行时获取，要么抽成独立 crate 由两边共同依赖。
-4. **用 RPC 替代文件探测**：cleanup.rs 的孤儿会话判定改用 `list_sessions` 差集，不再依赖 `{id}.jsonl` 文件名约定。
+1. **给影子 JSON 契约上类型**：把 `RpcResponse.data` / `StreamEvent.data` 从裸 `string` 演进为 `oneof` typed 消息，或至少把 get_state / list_sessions / get_session_entries / get_events_since 的载荷定义为 proto message。这是消除最多下游解析代码（GUI 的 8+ 处逐键解析、多别名兜底）的单点杠杆。⚠️ 截至 2026-08-06 **未修复**（对应 H1）。
+2. **收敛配置写路径**：GUI 不再直接写 auth.json / models.json，改为调用 agent 新增的 `set_auth` / `upsert_provider` / `delete_provider` RPC；`reload_auth` 从事后补救变成不再需要。✅ **已实施（commit `306cf05f`）**（对应 H2）。
+3. **消除 `#[path]` 编译期耦合**：内置模型目录要么走 `list_models` RPC 运行时获取，要么抽成独立 crate 由两边共同依赖。✅ **已实施（commit `306cf05f`）**：改走 `list_models` RPC（对应 H3）。
+4. **用 RPC 替代文件探测**：cleanup.rs 的孤儿会话判定改用 `list_sessions` 差集，不再依赖 `{id}.jsonl` 文件名约定。✅ **已实施（commit `306cf05f`）**：改走 `list_session_ids` RPC（对应 H4）。
 5. **给 `new_session` 加 typed 字段**：`created_by` / `source_meta` 独立字段，停止占用 `custom_instructions`。
 6. **统一 Future URL 解析**：两侧优先级对齐，或只在 agent 侧解析、GUI 只消费结果。
 7. **把工具语义结论放进事件**：`tool_end` 携带 `exit_code` / `is_soft_fail` / `target_path` 等结构化字段，GUI 不再解析输出散文。

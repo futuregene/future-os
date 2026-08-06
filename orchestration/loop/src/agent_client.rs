@@ -269,7 +269,9 @@ impl AgentClient {
                     if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
                         summary.text.push_str(text);
                         if summary.text.len() > 8_000 {
-                            summary.text.truncate(8_000);
+                            // truncate at a UTF-8 char boundary — str::truncate panics mid-char
+                            let boundary = summary.text.floor_char_boundary(8_000);
+                            summary.text.truncate(boundary);
                         }
                     }
                 }
