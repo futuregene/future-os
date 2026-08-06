@@ -1380,12 +1380,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
+name = "future-rpc"
+version = "0.0.0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "serde",
+ "serde_json",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "futureos"
 version = "0.0.0"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
  "chrono",
+ "future-rpc",
  "futures",
  "fuzzy-matcher",
  "ignore",
@@ -1408,7 +1421,6 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tonic",
- "tonic-build",
  "windows",
  "zip 8.6.0",
 ]

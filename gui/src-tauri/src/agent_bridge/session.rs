@@ -43,21 +43,20 @@ pub(super) async fn ensure_agent_session(
             .into_inner();
 
         if response.success {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&response.data) {
-                let active_id = value
-                    .get("sessionId")
-                    .and_then(|id| id.as_str())
-                    .unwrap_or_default();
-                let active_cwd = value
-                    .get("cwd")
-                    .and_then(|cwd| cwd.as_str())
-                    .unwrap_or_default();
-                if active_id == session_id && active_cwd == cwd {
-                    return Ok(EnsuredSession {
-                        session_id: session_id.to_string(),
-                        recreated: false,
-                    });
-                }
+            let value = future_rpc::decode::response_data(&response);
+            let active_id = value
+                .get("sessionId")
+                .and_then(|id| id.as_str())
+                .unwrap_or_default();
+            let active_cwd = value
+                .get("cwd")
+                .and_then(|cwd| cwd.as_str())
+                .unwrap_or_default();
+            if active_id == session_id && active_cwd == cwd {
+                return Ok(EnsuredSession {
+                    session_id: session_id.to_string(),
+                    recreated: false,
+                });
             }
         }
     }
@@ -173,9 +172,9 @@ pub async fn fork_agent_session(
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the session-entries request.")?;
 
-    let entries: Vec<serde_json::Value> = serde_json::from_str::<serde_json::Value>(&response.data)
-        .ok()
-        .and_then(|v| v.get("entries").cloned())
+    let entries: Vec<serde_json::Value> = future_rpc::decode::response_data(&response)
+        .get("entries")
+        .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
 

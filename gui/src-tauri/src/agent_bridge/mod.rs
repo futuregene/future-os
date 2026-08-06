@@ -135,7 +135,7 @@ pub async fn get_events_since(
     if response.data.is_empty() {
         Ok(serde_json::json!({ "events": [] }))
     } else {
-        Ok(serde_json::from_str(&response.data)?)
+        Ok(future_rpc::decode::response_data(&response))
     }
 }
 
@@ -158,7 +158,7 @@ pub async fn get_session_messages(
     if response.data.is_empty() {
         Ok(serde_json::json!({ "messages": [] }))
     } else {
-        Ok(serde_json::from_str(&response.data)?)
+        Ok(future_rpc::decode::response_data(&response))
     }
 }
 
@@ -177,7 +177,7 @@ pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value
     if response.data.is_empty() {
         Ok(serde_json::json!({ "entries": [] }))
     } else {
-        Ok(serde_json::from_str(&response.data)?)
+        Ok(future_rpc::decode::response_data(&response))
     }
 }
 
@@ -195,7 +195,7 @@ pub async fn get_session_state(session_id: String) -> Result<serde_json::Value, 
     if response.data.is_empty() {
         Ok(serde_json::json!({}))
     } else {
-        Ok(serde_json::from_str(&response.data)?)
+        Ok(future_rpc::decode::response_data(&response))
     }
 }
 
@@ -211,7 +211,7 @@ pub async fn get_available_models() -> Result<serde_json::Value, crate::AppError
     if response.data.is_empty() {
         Ok(serde_json::json!({ "models": [] }))
     } else {
-        Ok(serde_json::from_str(&response.data)?)
+        Ok(future_rpc::decode::response_data(&response))
     }
 }
 
@@ -372,7 +372,7 @@ pub async fn sync_future_models() -> Result<SyncFutureModelsResult, crate::AppEr
         .map_err(|status| map_rpc_error("Unable to sync Future Agent models", status))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the model sync.")?;
-    serde_json::from_str::<SyncFutureModelsResult>(&response.data)
+    serde_json::from_value::<SyncFutureModelsResult>(future_rpc::decode::response_data(&response))
         .map_err(|error| format!("Future Agent returned invalid sync result: {error}").into())
 }
 
@@ -583,10 +583,7 @@ async fn agent_prompt_inner(
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the prompt.")?;
 
-    let prompt_ack: serde_json::Value =
-        serde_json::from_str(&prompt_response.data).map_err(|error| {
-            format!("Future Agent returned an invalid prompt acknowledgement: {error}")
-        })?;
+    let prompt_ack: serde_json::Value = future_rpc::decode::response_data(&prompt_response);
     let canonical_run_id = prompt_ack
         .get("run_id")
         .and_then(|value| value.as_str())
@@ -768,7 +765,7 @@ async fn check_and_reanimate_run(
         );
         return Ok(());
     }
-    let state_value = serde_json::from_str::<serde_json::Value>(&state.data).unwrap_or_default();
+    let state_value = future_rpc::decode::response_data(&state);
     let is_streaming = state_value
         .get("isStreaming")
         .and_then(|s| s.as_bool())
@@ -859,7 +856,7 @@ async fn reconcile_run_gone(
         .map_err(|e| format!("reconcile get_state: {e}"))?
         .into_inner();
     let state_value = if state.success {
-        serde_json::from_str::<serde_json::Value>(&state.data).unwrap_or_default()
+        future_rpc::decode::response_data(&state)
     } else {
         serde_json::Value::Null
     };
@@ -1057,7 +1054,7 @@ async fn reconcile_active_run_once(
         // convergence settles genuinely dead rows on the next launch.
         return Ok(());
     }
-    let state_value = serde_json::from_str::<serde_json::Value>(&state.data).unwrap_or_default();
+    let state_value = future_rpc::decode::response_data(&state);
     match plan_active_run_reconciliation(&state_value, canonical_run_id, age_secs) {
         ActiveRunAction::Skip => Ok(()),
         ActiveRunAction::Attach => {
@@ -1182,8 +1179,7 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .await
         .map_err(|e| format!("get_state: {e}"))?
         .into_inner();
-    let state_value =
-        serde_json::from_str::<serde_json::Value>(&state.data).map_err(|e| e.to_string())?;
+    let state_value = future_rpc::decode::response_data(&state);
     let canonical_run_id = state_value
         .get("activeRun")
         .and_then(|run| run.get("runId"))
@@ -1345,5 +1341,86 @@ mod watchdog_tests {
             WATCHDOG_ORPHAN_SECS,
         );
         assert_eq!(action, ActiveRunAction::SettleOrphaned);
+    }
+}
+
+#[cfg(test)]
+mod wire_decode_tests {
+    use future_rpc::proto;
+
+    fn rpc_response(command: &str, data: &str) -> proto::RpcResponse {
+        proto::RpcResponse {
+            id: "req".to_string(),
+            r#type: "response".to_string(),
+            command: command.to_string(),
+            success: true,
+            data: data.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The dual-write guarantee as seen from the GUI: a response carrying BOTH
+    /// the typed payload and the JSON string decodes to exactly the JSON, so
+    /// deep reads behave identically against old and new agents.
+    #[test]
+    fn typed_and_data_decode_to_the_same_value() {
+        let data = r#"{"models":[{"id":"m","label":"M","provider":"p","supportsImages":false,"thinkingLevel":"off","contextWindow":1,"isDefault":true,"description":null,"descriptionEn":null,"recommended":false}],"defaultModel":"m","isScoped":false}"#;
+        let payload = future_rpc::encode::response_payload("list_models", &data_value(data))
+            .expect("list_models encodes");
+        let mut resp = rpc_response("list_models", data);
+        resp.payload = Some(payload);
+        assert_eq!(
+            future_rpc::decode::response_data(&resp),
+            data_value(data),
+            "typed decode must match the dual-written JSON"
+        );
+    }
+
+    /// Old agent (no typed payload) still decodes through the JSON fallback.
+    #[test]
+    fn data_only_falls_back_to_json() {
+        let data = r#"{"sessionId":"s1"}"#;
+        let resp = rpc_response("get_state", data);
+        assert_eq!(future_rpc::decode::response_data(&resp), data_value(data));
+    }
+
+    /// Event byte-stability during the migration window: while the agent
+    /// dual-writes `data`, the canonical event payload is the original string
+    /// verbatim — persistence and the NATS mirror must not drift.
+    #[test]
+    fn event_payload_prefers_dual_written_data() {
+        let data = r#"{"type":"tool_end","tool_id":"c1","text":"ok"}"#.to_string();
+        let payload = future_rpc::encode::event_payload("tool_end", &data);
+        let event = proto::StreamEvent {
+            r#type: "tool_end".to_string(),
+            data: data.clone(),
+            payload,
+            ..Default::default()
+        };
+        assert_eq!(future_rpc::decode::event_data_json(&event), data);
+    }
+
+    /// Once `data` is retired, the typed payload reconstructs the canonical
+    /// shape (the wire JSON minus the redundant injected `type` key).
+    #[test]
+    fn typed_event_reconstructs_without_data() {
+        let data = r#"{"type":"tool_end","tool_id":"c1","text":"ok"}"#;
+        let payload = future_rpc::encode::event_payload("tool_end", data).expect("encodes");
+        let event = proto::StreamEvent {
+            r#type: "tool_end".to_string(),
+            data: String::new(),
+            payload: Some(payload),
+            ..Default::default()
+        };
+        let reconstructed: serde_json::Value =
+            serde_json::from_str(&future_rpc::decode::event_data_json(&event)).unwrap();
+        assert_eq!(
+            reconstructed,
+            serde_json::json!({ "text": "ok", "tool_id": "c1" })
+        );
+    }
+
+    fn data_value(data: &str) -> serde_json::Value {
+        serde_json::from_str(data).unwrap()
     }
 }
