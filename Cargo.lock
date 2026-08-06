@@ -894,6 +894,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-rpc"
+version = "0.0.0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "serde",
+ "serde_json",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
