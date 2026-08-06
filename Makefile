@@ -189,6 +189,12 @@ build-mobile-android:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run android
 
+# iOS native projects are generated locally by Expo (mobile/ios is gitignored).
+# This target prebuilds and launches the app on the iOS simulator.
+build-mobile-ios:
+	$(call npm-install-if-needed,mobile)
+	cd mobile && npm run ios
+
 # ─── Test ───────────────────────────────────────────────────────────────────
 
 test: test-agent test-channels test-cli test-tui test-gui test-gui-rust test-mobile
@@ -299,6 +305,10 @@ endif
 run-mobile-android:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run android:device
+
+run-mobile-ios:
+	$(call npm-install-if-needed,mobile)
+	cd mobile && npm run ios
 
 package-gui: install-gui
 	node scripts/version.mjs --set-bundle
@@ -435,6 +445,7 @@ help:
 	@echo "  build-gui          Build React/Tauri GUI frontend"
 	@echo "  build-channels      Build channel bridge"
 	@echo "  build-mobile-android Generate, build, and install the Android app"
+	@echo "  build-mobile-ios     Generate, build, and install the iOS app (requires Xcode)"
 	@echo "  check-mobile       Typecheck, lint, format-check, and test mobile"
 	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
@@ -444,6 +455,7 @@ help:
 	@echo "  run-cli            Run CLI in dev mode"
 	@echo "  run-gui            Run GUI in dev mode"
 	@echo "  run-mobile-android Run the Android app on a selected device"
+	@echo "  run-mobile-ios     Run the iOS app on the simulator (requires Xcode)"
 	@echo "  run-channels        Run channel bridge directly (debug build)"
 	@echo "  package-gui        Package GUI desktop bundles"
 	@echo "  profile-agent      CPU profile: build + 90s bench, write flamegraph SVG"
