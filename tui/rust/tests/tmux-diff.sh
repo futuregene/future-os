@@ -64,9 +64,9 @@ mkdir -p "$TS_HOME" "$RUST_HOME"
 TS_OUT="$WORK/ts.out"
 RUST_OUT="$WORK/rust.out"
 if [ "$KEEP" -eq 0 ]; then
-  trap 'tmux kill-session -t "$SESSION" 2>/dev/null || true; rm -rf "$WORK"' EXIT
+  trap 'tmux kill-session -t "$SESSION" 2>/dev/null || true; kill "${MOCK_A_PID:-}" "${MOCK_B_PID:-}" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 else
-  trap 'tmux kill-session -t "$SESSION" 2>/dev/null || true; echo "kept $WORK"' EXIT
+  trap 'tmux kill-session -t "$SESSION" 2>/dev/null || true; kill "${MOCK_A_PID:-}" "${MOCK_B_PID:-}" 2>/dev/null || true; echo "kept $WORK"' EXIT
 fi
 
 echo "== TUI screen consistency: TS vs Rust (tmux) =="
