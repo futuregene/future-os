@@ -131,14 +131,15 @@ Rule of thumb: if "X must finish before Y can start", add `--blocks X` to Y.
    (`kind: "todo_added"` events carry the full `todo` object).
 2. **Verify the wiring after creation.** Run `future-loop status --goal G` and
    confirm each dependent todo's `blocks` is set. An empty `--blocks` never
-   errors — only a status check catches it. **`todo update` CANNOT change
-   `--blocks`** (verified in `orchestration/loop/src/main.rs` `todo_update()`:
-   only `--goal/--todo-id/--text/--status/--evidence/--note/--priority/
-   --resume-when` are accepted; an unknown flag like `--blocks` is silently
-   ignored). If the chain is wrong the only clean repair is to recreate the
-   goal: `future-loop goal delete --goal G --force` (delete is IRREVERSIBLE
-   and refuses without `--force`) → `goal init` → re-add all todos in
-   dependency order, capturing each id from the add output.
+   errors — only a status check catches it. **Repair in place with
+   `todo update --blocks`** (supported since the 2026-08 loop update):
+   `future-loop todo update --goal G --todo-id T --blocks a,b` REPLACES the
+   blocking set, and `--blocks ""` clears it; an update without `--blocks`
+   leaves the set untouched. Older `future-loop` binaries (before that
+   update) silently ignored `--blocks` — for those, the only repair was to
+   recreate the goal: `future-loop goal delete --goal G --force` (delete is
+   IRREVERSIBLE and refuses without `--force`) → `goal init` → re-add all
+   todos in dependency order, capturing each id from the add output.
 3. **Chain the FINAL validation todo too.** The run loop schedules any open,
    unblocked todo — priority alone does NOT order execution. The last
    acceptance/validation todo MUST `--blocks` all implementation todos;
@@ -248,7 +249,8 @@ After each `run`, before starting the next step:
    plan yourself, no user confirmation for routine replans:
    - `todo add` — new steps discovered by the completed step;
    - `todo supersede --reason "..."` — steps that are now obsolete;
-   - `todo update` — fix a step's text/priority;
+   - `todo update` — fix a step's text/priority/blocks (`--blocks a,b` replaces
+  the blocking set, `--blocks ""` clears it);
    - `todo archive` — tidy completed work.
 3. **Check whether the plan still holds** — `future-loop status --goal <goal-id>`:
    does the remaining todo list still make sense given what this step revealed?
