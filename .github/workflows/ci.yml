@@ -109,6 +109,14 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.0
 
+      # Node 24 for the TS embedded-proto freshness step below (the generator
+      # runs under Node 24's native type stripping). The runner's preinstalled
+      # node is too old to parse the TypeScript source.
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
