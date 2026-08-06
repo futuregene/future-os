@@ -15,8 +15,6 @@
 
 FutureOS gives you a unified AI agent experience across a terminal UI (TUI),
 desktop app (GUI), CLI, Feishu, and DingTalk — on macOS, Linux, and Windows.
-The Rust backend handles LLM orchestration, tool execution, and persistent
-sessions; TypeScript frontends and a Tauri desktop app connect over gRPC.
 Write code, run research, manage files — from the terminal, from a chat app,
 or from a native desktop window.
 
