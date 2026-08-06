@@ -88,6 +88,17 @@ jobs:
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           cp "$profile" "$HOME/Library/MobileDevice/Provisioning Profiles/"
 
+          # Extract the profile's display name (from its embedded plist) so the
+          # archive step can select it via PROVISIONING_PROFILE_SPECIFIER.
+          profile_name="$(security cms -D -i "$profile" 2>/dev/null \
+            | plutil -extract Name raw - 2>/dev/null || true)"
+          if [[ -z "$profile_name" ]]; then
+            echo "Could not read provisioning profile name from: $profile" >&2
+            exit 1
+          fi
+          echo "PROVISIONING_PROFILE=$profile_name" >> "$GITHUB_ENV"
+          echo "Provisioning profile: $profile_name"
+
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
@@ -150,18 +161,27 @@ jobs:
           FUTURE_VERSION: ${{ needs.version.outputs.version }}
           FUTURE_BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
           DEVELOPMENT_TEAM: ${{ env.DEVELOPMENT_TEAM }}
+          SIGNING_IDENTITY: ${{ env.SIGNING_IDENTITY }}
+          PROVISIONING_PROFILE: ${{ env.PROVISIONING_PROFILE }}
         run: |
           set -euo pipefail
           : "${DEVELOPMENT_TEAM:?DEVELOPMENT_TEAM is required}"
+          : "${SIGNING_IDENTITY:?SIGNING_IDENTITY is required}"
+          : "${PROVISIONING_PROFILE:?PROVISIONING_PROFILE is required}"
 
+          # Manual signing with the imported Distribution certificate and the
+          # App Store profile copied into ~/Library/MobileDevice. Automatic
+          # signing is not usable on CI (it requires an Apple account in
+          # Xcode's Accounts settings).
           xcodebuild -workspace FutureOS.xcworkspace \
             -scheme FutureOS \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/FutureOS.xcarchive" \
-            -allowProvisioningUpdates \
-            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+            CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE" \
             archive
 
           export_options="$RUNNER_TEMP/ExportOptions.plist"
