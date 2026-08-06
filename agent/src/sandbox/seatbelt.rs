@@ -149,9 +149,27 @@ mod tests {
 
     #[test]
     fn credential_reads_denied_in_profile() {
-        let p = build_profile(&enabled_sandbox());
+        // Capture + canonicalize home ONCE (rule bases are canonicalized
+        // during resolution — /var -> /private/var on macOS must not split
+        // the assertion path from the guard). Immune to other tests mutating
+        // $HOME concurrently (TestHome in rpc::commands).
+        let home = crate::sandbox::paths::canonicalize_lenient(&dirs::home_dir().unwrap());
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let ws = std::env::temp_dir().join(format!("futureos-seatbelt-{stamp}"));
+        std::fs::create_dir_all(&ws).unwrap();
+        let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(&ws, &home);
+        let s = ResolvedSandbox {
+            tier: crate::sandbox::SandboxTier::Sandbox,
+            available: crate::sandbox::platform_sandbox_available(),
+            workspace: rules.workspace.clone(),
+            rules,
+        };
+        let p = build_profile(&s);
         // Built-in .ssh ask → compiled as deny file-read*.
-        let ssh = dirs::home_dir().unwrap().join(".ssh");
+        let ssh = home.join(".ssh");
         assert!(p.contains(&format!("(deny file-read* (subpath \"{}\"", ssh.display())));
     }
 

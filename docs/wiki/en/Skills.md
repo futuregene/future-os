@@ -19,21 +19,24 @@ Use the **category** dropdown and the **search** box to find a skill. Each skill
 
 ## Built-in skills
 
-The catalogue is updated over time, so the exact list you see may differ from the table below. Common built-in skills include:
+The catalogue is updated over time, so the exact list you see may differ from the table below. The current built-in skills are:
 
 | Skill | What it does |
 |---|---|
-| **Account** | Your account profile, balance, and top-ups. |
-| **Web** | Searches the public web and reads full pages. |
-| **Paper** | Finds papers (PubMed / ArXiv / DOI) and retrieves full text. |
-| **Deep research** | Cross-checks many sources and writes a cited report. |
-| **Document** | Turns PDF and Word files into structured text. |
+| **Account** | Your FutureOS account: profile, credit balance, and recharge. |
+| **Browser** | Drives a local web browser: open pages, click, type, and screenshot. |
+| **Database lookup** | Queries public databases (PubChem, UniProt, Ensembl, PDB, NCBI, and more) for reproducible lookups. |
+| **Deep research** | End-to-end research: gathers and cross-checks many sources, writes a cited report. |
+| **Document** | Turns PDF and Word files into structured Markdown. |
+| **Experimental design** | Designs experiments and research protocols before data collection. |
 | **Image** | Generates, edits, and analyzes images — including reading text in an image. |
-| **Browser** | Drives a web browser: open pages, click, type, and screenshot. |
-| **Hand-drawn posters** | Creates hand-drawn, portrait-style infographic posters. |
-| **Hand-drawn slides** | Creates hand-drawn sketch slides and assembles them into a PDF. |
-| **Subagent** | Runs several tasks in parallel. |
-| **Skill creator** | Helps you build a new skill. |
+| **Paper** | Finds papers (PubMed / ArXiv / DOI) and retrieves full text. |
+| **Peer review** | Structured manuscript/grant review with a checklist-based evaluation. |
+| **Scientific writing** | Writes scientific manuscripts in full paragraphs (IMRAD structure, citations). |
+| **Skill creator** | Helps you build a new custom skill. |
+| **Slides** | Creates presentation slides from a Markdown report. |
+| **Software install** | Installs or updates lightweight software and command-line tools. |
+| **Web** | Searches the public web and reads full pages. |
 
 > The exact set of available skills, their names, and their categories come from the online catalogue — check the **All** tab in the app for what's currently offered.
 

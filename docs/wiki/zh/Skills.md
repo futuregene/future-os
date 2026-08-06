@@ -19,21 +19,24 @@ Skills 页有两个标签:
 
 ## 内置技能
 
-目录会不定期更新,你看到的实际列表可能与下表略有不同。常见的内置技能包括:
+目录会不定期更新,你看到的实际列表可能与下表略有不同。当前的内置技能包括:
 
 | 技能 | 用途 |
 |---|---|
-| **Account** | 你的账户资料、余额与充值。 |
-| **Web** | 搜索公网并读取全文。 |
-| **Paper** | 检索文献(PubMed / ArXiv / DOI)并获取全文。 |
-| **Deep research** | 多源交叉核对,产出带引用的报告。 |
-| **Document** | 把 PDF / Word 文件转成结构化文本。 |
+| **Account** | 你的 FutureOS 账户:资料、余额与充值。 |
+| **Browser** | 驱动本地网页浏览器:开页、点击、输入、截图。 |
+| **Database lookup** | 查询公共数据库(PubChem、UniProt、Ensembl、PDB、NCBI 等),可复现地检索。 |
+| **Deep research** | 端到端研究:多源收集并交叉核对,产出带引用的报告。 |
+| **Document** | 把 PDF / Word 文件转成结构化 Markdown。 |
+| **Experimental design** | 在数据收集前设计实验与研究方案。 |
 | **Image** | 生成、编辑和分析图像——包括读取图中文字。 |
-| **Browser** | 驱动网页浏览器:开页、点击、输入、截图。 |
-| **Hand-drawn posters** | 生成手绘竖版信息图海报。 |
-| **Hand-drawn slides** | 生成手绘草图幻灯并合成 PDF。 |
-| **Subagent** | 并行运行多个任务。 |
-| **Skill creator** | 帮你制作新技能。 |
+| **Paper** | 检索文献(PubMed / ArXiv / DOI)并获取全文。 |
+| **Peer review** | 基于清单的结构化稿件/基金评审。 |
+| **Scientific writing** | 以完整段落撰写科学论文(IMRAD 结构、引用)。 |
+| **Skill creator** | 帮你制作新的自定义技能。 |
+| **Slides** | 根据 Markdown 报告生成演示幻灯片。 |
+| **Software install** | 安装或更新轻量软件与命令行工具。 |
+| **Web** | 搜索公网并读取全文。 |
 
 > 实际可用的技能、名称和分类都来自在线目录——以应用里 **All(全部)** 标签当前提供的为准。
 

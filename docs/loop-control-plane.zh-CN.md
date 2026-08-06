@@ -55,7 +55,7 @@ agent 执行一个回合（gRPC）→ 写入证据 + 交接 + 下一个 todo
 
 - 能力框架：provider 生命周期（declared → installed → enabled → ready）、可查询 catalog、能力门禁（run / ask-owner / repair-bridge / skip）、按能力注册的命令钩子。
 - 扩展：声明式 manifest + install / enable / disable / rollback（保留修订版本）+ readiness doctor——v1 为声明式，绝不执行扩展代码。
-- Identity 范围的多 agent：agent 范围边界、lane 推荐、supervisor 提案/回执事件、任务租约、带交付契约的交接文档、todo 依赖图、注意力队列 / operator inbox。
+- Identity 范围的多 agent：agent 范围边界、lane 推荐、supervisor 提案/回执事件、任务租约、带交付契约的交接文档、todo 依赖图、注意力队列 / operator inbox——由 `agent` 命令组驱动（见[多 agent 工作流](#多-agent-工作流)）。
 
 ### 评估与诊断
 
@@ -65,12 +65,12 @@ agent 执行一个回合（gRPC）→ 写入证据 + 交接 + 下一个 todo
 ## CLI 一览
 
 ```text
-goal          goal 生命周期（init / cancel / delete），status
+goal          goal 生命周期（init / cancel / delete）· status · models · diagnose
 todo          add | claim | complete | supersede | update | archive
               gate resolve · replan ack · lease · task-graph
 agent         onboard · scope · lane · supervisor
 capability    list | propose | commands · catalog · 按能力钩子
-extension     install | enable | disable | rollback | status | capabilities
+extension     install | upgrade | enable | disable | rollback | status | capabilities
 ops           version · doctor · history · turn · todo-event · evidence-log
               backup · authority · profile · quota · scheduler · store
               backfill · privacy · runs · heartbeat-prompt · worker-bridge
@@ -80,7 +80,7 @@ handoff       handoff [--write]
 benchmark     protocol | run | ledger
 replay        record | run · corpus build | run
 canary        smoke [--profile ...]
-cli           registry [--json]
+cli           registry [--json] [--include-experimental]
 ```
 
 不带参数运行 `future-loop` 查看完整分组帮助。
@@ -104,6 +104,85 @@ future-loop todo add --goal <id> --text "write report" --priority P0 \
   --blocks <collect-todo-id> --verify "test -f report.md"
 future-loop status --goal <id>
 future-loop run --goal <id> --model future/deepseek-v4-flash --max-turns 1
+```
+
+## 多 agent 工作流
+
+`agent` 命令组用于建模由多个 agent 共享的目标。每个 agent 以 `--agent-id`
+标识、界定自己的工作范围，并通过交接文档移交——这样 supervisor（或人）
+就能判断谁负责什么、下一个 agent 需要知道什么。
+
+> 下面的命令都是**扁平顶层命令**——`future-loop` 把 `agent`、`scope`、
+> `lane`、`supervisor`、`handoff`、`task-graph`、`attention`、`inbox` 全部
+> 在顶层分发。帮助输出里的 `agent` / `todo` / `work-items` 分组只是展示用
+> 分组。
+
+### 1. 注册 agent（登记 + 能力声明）
+
+```bash
+# 仅注册（quota --agent-id 的前置条件）
+future-loop agent --goal <id> --agent-id codex
+
+# 注册并声明能力（能力门禁的输入）
+future-loop agent onboard --goal <id> --agent-id codex --capability shell,github
+```
+
+`onboard` 会记录一条带能力声明的 `AgentOnboarded` 事件。
+
+### 2. 范围与 lane
+
+```bash
+# identity 范围边界：该 agent 可见/可认领的 todos，以及属于他人（边界外）的认领
+future-loop scope --goal <id> --agent-id codex [--exclude docs,build]
+
+# 该 agent 的紧凑 lane 推荐（分类 + 建议动作）
+future-loop lane --goal <id> --agent-id codex
+```
+
+frontier 输出列出 `visible agent todos`、`claimed by self`、`other agent
+claims`、`open user gates` 与 `unclaimed advancement` 计数；`lane` 汇总该
+agent 的进展范围与建议的下一步动作。
+
+### 3. Supervisor 决策
+
+```bash
+# 提案一个决策：observe（默认）或 execute（带能力）
+future-loop supervisor propose --goal <id> --agent-id super --decision-id d1 \
+  --target-agent-id codex --kind execute --capabilities shell --summary "run tests"
+
+# 记录宿主的回执（executed | failed | rejected）
+future-loop supervisor receipt --goal <id> --decision-id d1 \
+  --receipt-id r1 --adapter-id host --outcome executed
+
+# 以 JSON 投影全部 supervisor 事件
+future-loop supervisor events --goal <id>
+```
+
+### 4. 交接
+
+```bash
+# 打印交付契约（降级模式 + 摘要）与交接文档
+future-loop handoff --goal <id>
+
+# 同时写入 .future/loop/goals/<id>/HANDOFF.md
+future-loop handoff --goal <id> --write
+```
+
+交付契约由 run 历史推导（新的在前）；交接文档渲染为 markdown，下一个
+agent 无需重读整个账本即可接续上下文。
+
+### 5. 协调
+
+```bash
+# todo 依赖图（拓扑序；有环则 fail closed）
+future-loop task-graph --goal <id>
+
+# 单个目标或全部目标的注意力队列
+future-loop attention --goal <id>
+future-loop attention --all
+
+# operator inbox 紧急度投影
+future-loop inbox --project .
 ```
 
 ## 状态布局

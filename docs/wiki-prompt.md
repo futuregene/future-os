@@ -79,11 +79,15 @@ docs/wiki/
 | `Settings.md` | 设置 | 设置各页(重点 General / Providers / Models);内置 FutureGene 登录、自定义 provider、模型可见性 |
 | `Skills.md` | 技能 | 内置技能包一览及使用方式 |
 | `CLI.md` | 命令行工具(`future`) | 可选的高级命令行工具:位置、运行、命令组 |
+| `Feishu.md` | 飞书集成 | 把 FutureOS 接入飞书(Lark):机器人、渠道桥(`future-channel`)、斜杠命令、配置 |
+| `DingTalk.md` | 钉钉集成 | 把 FutureOS 接入钉钉:机器人、渠道桥(`future-channel`)、斜杠命令、配置 |
 | `FAQ.md` | 常见问题与排错 | 常见问题速查 |
 | `_Sidebar.md` | — | 左侧导航 |
 | `_Footer.md` | — | 页脚(下载、反馈问题链接) |
 
 > 这是**最小页面集**。若在代码里发现本清单未列、但确已发布给用户的小功能,就近补进最相关的现有页面(一般不新开页面),并在生成后的偏差报告里说明(见第 9 节)。
+>
+> **不要生成 `Models.md`**:它由 `make generate-models` 自动生成(`scripts/generate_models.py` 写入 `docs/wiki/{en,zh}/Models.md`),不在手工编写范围内,也不要写进侧边栏。
 
 ### 侧边栏结构(去掉 TUI)
 
@@ -102,6 +106,10 @@ docs/wiki/
 
 **命令行(进阶)/ Command line (advanced)**
 - CLI (future) → CLI
+
+**集成 / Integrations**
+- 飞书 / Feishu → Feishu
+- 钉钉 / DingTalk → DingTalk
 
 **帮助 / Help**
 - FAQ
@@ -125,7 +133,7 @@ docs/wiki/
   - macOS:`.dmg` 磁盘镜像
   - Windows:安装包(`.exe`),或便携版 `.zip`
 - 说明命令行工具 `future` **随每个下载包附带**(安装包与便携包都有,装在应用旁边),详见 CLI 页。
-- **首次启动**:正式发布的 macOS / Windows 安装包均已签名，macOS 同时完成 Apple 公证。
+- **首次启动**:**以随包附带的 `docs/dist/readme-*.txt` 为准**——当前发布包 macOS **未做 Apple 公证**(首次双击可能被 Gatekeeper 拦下,属正常,右键打开或按下方步骤即可),Windows 安装包/便携包未做代码签名(SmartScreen 可能提示,见 FAQ)。(仓库另有签名/公证的发布流水线,若 Releases 下载页提供的是签名版则按实际措辞;措辞与 FAQ 页保持一致。)
   - **macOS**:把 FutureOS 拖进"应用程序"后正常启动。
   - **Windows**:安装版跑 `.exe`;便携版解压整个文件夹后双击 `FutureOS.exe`(便携版需把 `FutureOS.exe` 和 `future-agent.exe` 放在同一文件夹)。若遇 SmartScreen 信誉提示，应核对发布者和官方来源。需要 **Microsoft Edge WebView2 Runtime**(Win10 近期版与 Win11 一般已内置,缺失则从微软官网装 Evergreen 版)。
 - **登录**:首次使用需联网并在应用内登录,详见快速开始。
@@ -152,7 +160,7 @@ docs/wiki/
 
 ### Settings
 **代码入口(先读再写):** `gui/src/features/settings/SettingsDialog.tsx`(页面构成)、`gui/src/features/settings/GeneralPage.tsx`、`gui/src/features/settings/ProvidersPage.tsx` + `CustomProviderDialog.tsx`、`gui/src/features/settings/ModelsPage.tsx`、`gui/src/features/settings/FutureLoginDialog.tsx`。**以此确认实际有哪几个设置页、每页真实字段**。
-- 从左下齿轮进入;New Chat 下还有 Models 快捷入口。**页面数量与名称以 `SettingsDialog.tsx` 为准**(除 General / Providers / Models 外通常还有"检查更新""重置"等用户可见页;开发版专用页不写)。重点讲下面三页。
+- 从左下齿轮进入;New Chat 下还有 Models 快捷入口。**页面数量与名称以 `SettingsDialog.tsx` 为准**:用户可见页为 General(通用)、Account(账号)、Update(检查更新)、About(关于)、Providers(提供商)、Models(模型)、Reset(重置);Remote(远程)与 Environment(环境)是开发版专用页,不写。重点讲下面三页。
 - **General**:桌面级选项。以代码里的真实标签为准,通常含:**界面语言(Language)**、**批准模式(Approval mode:手动 / 沙盒[仅 macOS] / 无限制)**、**是否显示思考过程(Show thinking)**。
 - **Providers**:
   - **FutureGene(内置)**:Connect 登录流程(浏览器授权 / 验证码 + 链接);连接后可重新登录或登出。
@@ -171,18 +179,34 @@ docs/wiki/
   - > ⚠️ 命令名统一为 **`future`**:发布产物的二进制名(见 `tauri.conf.json` 的 sidecar、`docs/dist/readme-*.txt`、应用内文案)与开发期 npm link 装的命令一致,都是 `future`。全文一律用 `future`,不要写成 `future-cli`。
 - **位置**:
   - macOS(`.dmg`):应用内 `/Applications/FutureOS.app/Contents/MacOS/future`
-  - Windows(**便携** `.zip`):解压文件夹里的 `future.exe`
-  - 注明:Windows 上命令行工具在**便携包**里,普通安装版只含应用和 agent。
-- **运行**:在含二进制的文件夹开终端;`--help` 查看;可加入 PATH 或做别名(给 macOS 别名示例)。
-- **agent 必须在运行**:每条命令都要连 FutureOS agent;开着桌面应用则已在运行,否则 `future agent start`。
-- **命令组**(以 `cli/src/index.ts` 实际分发为准;去掉 tui 组):
-  - `auth`:登录/登出/状态(`login` / `status` / `logout`)
-  - `agent`:启停后台 agent(`start` / `stop` / `restart` / `status`)
-  - `run`:发一次性 prompt 并打印回答(给示例:直接问、`--model`、`@文件`、管道输入;说明 `@<path>` 包含文件、常用选项 `--model`(支持 `model:thinking`)、`--thinking`、`--continue`/`-c`、`--cwd`、`--mode json`、`--no-session`)
-  - `tools`:列出与调用工具(`tools list`、`tools call <name> --args '<json>'`、`--output`、`--stdin`;文件路径参数自动转换)
-  - `skills`:管理技能包(`list` / `install` / `uninstall`;**没有 `update`**,子命令以代码为准)
-  - `channel`:聊天渠道桥接(进阶,一句带过)
-- **小贴士**:macOS 首次被拦 → 先右键打开应用清除拦截;"Connection refused" → agent 没运行,`future agent start` 或打开桌面应用。
+  - Windows(安装版与**便携** `.zip` 都带):`future.exe`(便携版解压后与 `FutureOS.exe`、`future-agent.exe` 同目录)
+- **运行**:在含二进制的文件夹开终端;`--help` 查看;可加入 PATH 或做别名(给 macOS 别名示例);首次使用可先跑 `future init` 安装内置技能。
+- **agent 必须在运行**:每条命令都要连 FutureOS agent;开着桌面应用则已在运行。**CLI 本身不能启动 agent**(`agent` 组只有 `status`),未运行时先打开桌面应用(它会自动拉起后台 agent),或手动运行 `future-agent`。
+- **命令组**(以 `cli/src/index.ts` 实际分发为准;无 `tui` 组,也无 `channel` 组):
+  - `init`:安装内置技能;macOS/Linux 上还会把 `future` 链接进 `~/.future/bin` 并提示加入 PATH
+  - `auth`:登录/登出/状态/取凭据(`login` / `status` / `credential` / `logout`;`credential` 输出 API key 供脚本使用)
+  - `account`:账户资料与额度(`profile` / `balance`)
+  - `run`:发一次性 prompt 并打印回答(给示例:直接问、`--model`、`@文件`、管道输入;说明 `@<path>` 包含文件、常用选项 `--model`(支持 `model:thinking`,如 `sonnet:high`)、`--thinking <level>`、`--continue`/`-c`、`--fork <entry-id>`、`--session <id>`、`--no-session`、`--permission <level>`、`--mode json`、`--cwd <dir>`)
+  - `tools`:列出/查看/调用工具(`tools list [--json]`、`tools describe <name>`、`tools call <name>`;参数用 `--key value`,复杂工具可用 `--args '<json>'`;部分工具另有 `--input <path>`、`--output <path>`、`--stdin` 等旗标)
+  - `skills`:管理技能包(`list` / `install [<name>]` / `install-builtin` / `uninstall <name>` / `update`)
+  - `models`:列出可用模型(`models [--json]`)
+  - `agent`:仅查看运行状态(`agent status [--json]`;**没有** `start`/`stop`,CLI 不能启停 agent)
+  - `session`:列出/查看/重命名/删除会话
+  - `doctor`:环境诊断
+- **小贴士**:macOS 首次被拦 → 先右键打开应用清除拦截;"Connection refused" → agent 没运行,先打开桌面应用(或手动运行 `future-agent`)。
+
+### Feishu
+**代码入口(先读再写):** `channels/src/feishu/bridge.rs`(消息处理与斜杠命令)、`channels/src/feishu/feishu_ws.rs`(WebSocket 长连接/心跳)、`channels/src/main.rs` + `channels/src/config.rs`(`~/.future/channels/config.json` 读取与启动)。**命令名、斜杠命令、配置项一律以代码为准。**
+- 定位:通过**渠道桥**把 FutureOS 接入飞书(Lark),在飞书聊天里和 agent 对话。渠道桥是独立服务(二进制 `future-channel`),**没有 `future channel` 命令**;启动/停止直接运行 `future-channel`(或 `make run-channels`),agent 需在运行(开着桌面应用即可)。
+- 配置:首次运行自动在 `~/.future/channels/config.json` 生成默认配置,按需填入飞书应用的 App ID / App Secret 等并启用对应渠道。
+- 消息经 WebSocket(open.feishu.cn)推送,回复通过 CardKit 卡片流式更新;未知斜杠命令转发给 agent 当普通消息。
+- 斜杠命令(本地处理):`/new` `/status` `/stop` `/model` `/models` `/compact` `/effort` `/cwd` `/help`。
+
+### DingTalk
+**代码入口(先读再写):** `channels/src/dingtalk/bridge.rs`(消息处理与斜杠命令)、`channels/src/main.rs` + `channels/src/config.rs`(启动与配置)。**命令名、斜杠命令、配置项一律以代码为准。**
+- 定位:通过**渠道桥**把 FutureOS 接入钉钉,在钉钉聊天里和 agent 对话。渠道桥是独立服务(二进制 `future-channel`),**没有 `future channel` 命令**;启动/停止直接运行 `future-channel`(或 `make run-channels`),agent 需在运行。
+- 配置:`~/.future/channels/config.json`(同上)。
+- 斜杠命令与飞书一致(本地处理,9 个);未知斜杠命令转发给 agent 当普通消息。
 
 ### FAQ
 **代码入口(先读再写):** `gui/src-tauri/tauri.conf.json`(安装/签名相关)、`gui/src/features/settings/FutureLoginDialog.tsx` + `ProvidersPage.tsx`(登录问题)、`gui/src/features/agent/ApprovalPrompt.tsx`(批准)、`cli/src/commands/agent.ts`("连接被拒"/agent 未运行)、`CLAUDE.md`(数据位置)。
