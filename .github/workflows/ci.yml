@@ -78,11 +78,13 @@ jobs:
             cli:
               - 'cli/**'
               - 'future-rpc/ts/**'
+              - 'future-rpc/proto/**'
               - 'package.json'
               - 'package-lock.json'
             tui:
               - 'tui/**'
               - 'future-rpc/ts/**'
+              - 'future-rpc/proto/**'
               - 'package.json'
               - 'package-lock.json'
             mobile:
@@ -157,16 +159,19 @@ jobs:
         if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings
 
-      # The generated wire code (future-rpc proto.rs, channels feishu_ws.rs) is
-      # checked in; guard against proto edits that skip `make generate-proto`.
+      # The generated wire code (future-rpc proto.rs, channels feishu_ws.rs) and
+      # the TS embedded proto (future-rpc/ts/src/proto.ts) are checked in;
+      # guard against proto edits that skip `make generate-proto`.
       # Output is deterministic for pinned prost/tonic-build, so a regenerate
-      # on the same source must be a no-op.
+      # on the same source must be a no-op. The TS generator uses only Node
+      # builtins (no deps) and runs under Node 24's native type stripping.
       - name: proto codegen is fresh
         if: needs.changes.outputs.rust_workspace == 'true'
         run: |
           (cd future-rpc/rust && REGENERATE_PROTO=1 cargo build)
           (cd channels && REGENERATE_PROTO=1 cargo build)
-          git diff --exit-code future-rpc/rust/src/generated/proto.rs channels/src/generated/
+          (cd future-rpc/ts && node scripts/generate-proto.ts)
+          git diff --exit-code future-rpc/rust/src/generated/proto.rs channels/src/generated/ future-rpc/ts/src/proto.ts
 
       # ── GUI Tauri backend ──
       - name: rustfmt (GUI backend)
