@@ -106,7 +106,7 @@ struct FutureModelsCache {
 }
 
 /// Resolve the Future **platform root** (no `/api`) from `auth.json`,
-/// following the shared contract in `proto/future.proto` ("Future Platform URL
+/// following the shared contract in `future-rpc/proto/future.proto` ("Future Platform URL
 /// Resolution") — keep aligned with the GUI implementation in
 /// `gui/src-tauri/src/future_platform.rs`:
 ///   1. `future.base_url`, with a trailing `/api` stripped (the storage format
@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn base_url_wins_over_platform_base_url() {
-        // Same precedence as the GUI (proto/future.proto contract): the stored
+        // Same precedence as the GUI (future-rpc/proto/future.proto contract): the stored
         // `base_url` beats a stale `platform_base_url`.
         let auth = auth_with(serde_json::json!({
             "base_url": "https://future-os.cn/api",

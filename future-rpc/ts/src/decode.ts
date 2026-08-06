@@ -3,11 +3,15 @@
  *
  * Migration semantics (mirrors the Rust `future_rpc::decode`): the agent
  * dual-writes the typed `payload` oneof alongside the JSON `data` string.
- * During the migration window these helpers decode `data` first — the TS
- * clients were written against its camelCase/number shape, and proto-loader
- * surfaces proto `int64` as String, so switching to the typed object first
- * would change number semantics. When the agent retires `data`, the typed
- * `payload` fallback below takes over automatically.
+ * These helpers decode `data` first — the TS clients were written against its
+ * camelCase/number shape, and proto-loader surfaces proto `int64` as String,
+ * so switching to the typed object first would change number semantics.
+ *
+ * The typed `payload` fallback below is best-effort: it returns the raw
+ * proto-loader object, NOT a normalized shape matching the JSON `data`
+ * semantics. The TS clients are transitional and expected to be replaced by
+ * Rust implementations, so no full typed normalization is planned here. The
+ * `data` dual-write must NOT be retired until the TS clients are replaced.
  */
 
 /** Minimal shape of the proto-loader `RpcResponse` object we decode. */

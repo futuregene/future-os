@@ -5,7 +5,7 @@
 //! its built-in catalog) and API keys from `~/.future/agent/auth.json`. The
 //! built-in "FutureGene" provider is dynamic (its base URL is resolved from
 //! the `future` entry in `auth.json` — legacy `base_url` first, then
-//! `platform_base_url`, per the shared contract in `proto/future.proto` —
+//! `platform_base_url`, per the shared contract in `future-rpc/proto/future.proto` —
 //! defaulting to the Future API host) and is
 //! presented read-only; user-defined providers live under
 //! `models.json.providers` and are fully editable here.

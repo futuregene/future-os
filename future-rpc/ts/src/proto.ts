@@ -3,7 +3,7 @@
  * identically to how the TUI/CLI have always loaded it (camelCase fields,
  * int64 as String, enums as String, defaults filled, oneofs exposed).
  *
- * The EMBEDDED_PROTO constant below is regenerated from `proto/future.proto`
+ * The EMBEDDED_PROTO constant below is regenerated from `future-rpc/proto/future.proto`
  * by `scripts/generate-proto.ts` — do not edit it by hand. The regeneration
  * anchors on the EMBEDDED_PROTO declaration and the __EMBEDDED_PROTO_END__
  * marker that follows it, so proto comments containing backticks or
@@ -1185,7 +1185,7 @@ export const PROTO_LOADER_OPTIONS = {
 /**
  * Resolve a readable path to future.proto:
  *   1. `FUTURE_PROTO_PATH` env override;
- *   2. the repo's `proto/future.proto` (development checkouts);
+ *   2. the repo's `future-rpc/proto/future.proto` (development checkouts);
  *   3. a temp file materialised from `EMBEDDED_PROTO` (standalone binaries).
  */
 export function resolveProtoPath(): string {
@@ -1193,9 +1193,10 @@ export function resolveProtoPath(): string {
     return process.env.FUTURE_PROTO_PATH;
   }
   const here = path.dirname(fileURLToPath(import.meta.url));
-  // dist/proto.js → repo root is three levels up in a checkout; the
-  // candidate list tolerates both dev (src) and built (dist) layouts.
-  for (const up of [3, 4, 5]) {
+  // src/proto.ts → future-rpc/ts/src; dist/proto.js → future-rpc/ts/dist.
+  // Two levels up lands on future-rpc/, where proto/ lives; the range
+  // tolerates both dev (src) and built (dist) layouts.
+  for (const up of [2, 3, 4]) {
     const candidate = path.resolve(here, ...Array(up).fill(".."), "proto", "future.proto");
     if (fs.existsSync(candidate)) {
       return candidate;

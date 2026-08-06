@@ -1,7 +1,7 @@
 /**
  * Shared RPC payload types for the TS clients (TUI / CLI).
  * Merged superset of the former tui/cli `rpc/types.ts`; mirrors the Rust
- * `future_rpc` payload structs and `proto/future.proto`.
+ * `future_rpc` payload structs and `future-rpc/proto/future.proto`.
  */
 
 // ============================================================================

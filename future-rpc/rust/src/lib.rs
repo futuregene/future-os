@@ -1,7 +1,7 @@
 //! future-rpc — the wire contract between FutureAgent and its clients.
 //!
 //! This crate is the single owner of:
-//! - the generated proto code (`proto` module, from `proto/future.proto`),
+//! - the generated proto code (`proto` module, from `future-rpc/proto/future.proto`),
 //!   emitting both tonic server and client modules;
 //! - (incoming batches) the payload structs and the encode/decode layer for
 //!   the typed `RpcResponse.payload` / `StreamEvent.payload` oneofs and the

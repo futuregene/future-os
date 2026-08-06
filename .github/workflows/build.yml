@@ -65,8 +65,8 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: |
+            package-lock.json
             gui/package-lock.json
-            cli/package-lock.json
 
       # Bun compiles the CLI into a standalone single-file binary
       # (bun build --compile). The TUI is not packaged here (local test only).

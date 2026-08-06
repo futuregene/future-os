@@ -292,12 +292,10 @@ fmt-mobile:
 run-agent:
 	cd agent && cargo run -- --verbose --log-file
 
-run-tui:
-	$(call npm-install-if-needed,tui)
+run-tui: node-workspace
 	cd tui && npm run gen-version && npm run dev
 
-run-cli:
-	$(call npm-install-if-needed,cli)
+run-cli: node-workspace
 	cd cli && npm run gen-version && npm run dev
 
 run-gui: build-gui
