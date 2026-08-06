@@ -19,14 +19,15 @@ FutureOS 提供统一的 AI Agent 终端体验，并支持命令行（CLI）。R
 
 | 类别 | 说明 |
 |---|---|
-| **Loop 控制面** | `future-loop`：持久化目标/todos/门禁/监控、quota should-run 内核、事件溯源状态、验证器、扩展与多 agent（[指南](docs/loop-control-plane.zh-CN.md)）——基于 [loopx](https://github.com/huangruiteng/loopx) 的 Rust 改写版，针对 FutureOS 做了定制 |
+| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI)、飞书机器人、钉钉机器人——一个 Agent，无处不在 |
 | **模型灵活** | 内置 1000+ 模型，覆盖 100+ Provider（[目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
 | **流式输出与思考链** | 实时 token 流式传输，可折叠的思考链展示；可配置思考深度（off ↔ xhigh） |
-| **工具执行** | read, write, edit, shell，带审批控制和沙箱保护（关闭 / 手动 / macOS Seatbelt）；上下文超 90% 自动压缩 |
-| **终端界面 (TUI)** | 差异渲染、Markdown、Kitty 图片协议、/ 命令、完整键盘控制 |
+| **工具执行** | read, write, edit, shell，带审批控制和沙箱保护（关闭 / 手动 / macOS Seatbelt） |
 | **会话持久化** | JSONL 格式存储，支持 fork、clone、树形导航和问答计数（[使用](docs/wiki/zh/Using-FutureOS.md)） |
 | **技能系统** | 可插拔的 YAML 定义 Skill 包，从多目录自动发现（[指南](docs/wiki/zh/Skills.md)） |
 | **自动压缩与重试** | 上下文自动压缩；上下文超长时指数退避自动重试 |
+| **Loop 控制面** | `future-loop`：持久化目标/todos/门禁/监控、quota should-run 内核、事件溯源状态、验证器、扩展与多 agent（[指南](docs/loop-control-plane.zh-CN.md)）——基于 [loopx](https://github.com/huangruiteng/loopx) 的 Rust 改写版，针对 FutureOS 做了定制 |
+| **Rust 核心** | Agent、渠道桥与 loop 控制面均用 Rust 编写——高性能、内存安全 |
 
 ## 快速开始
 

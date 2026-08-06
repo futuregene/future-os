@@ -22,14 +22,15 @@ code, run research, manage files — all from the terminal.
 
 | Category | Details |
 |---|---|
-| **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) — a Rust rewrite of the [loopx](https://github.com/huangruiteng/loopx) control plane, customized for FutureOS |
+| **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), CLI, Feishu bot, DingTalk bot — one agent, everywhere |
 | **Model Flexibility** | 1000+ built-in models across 100+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Streaming & Thinking** | Real-time token streaming with collapsible reasoning-content blocks; configurable thinking levels (off ↔ xhigh) |
-| **Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt); auto-compaction at 90% context |
-| **Terminal UI (TUI)** | Differential rendering, markdown, Kitty image protocol, /commands, full keyboard control |
+| **Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt) |
 | **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking ([using](docs/wiki/en/Using-FutureOS.md)) |
 | **Skills System** | Pluggable YAML-defined skill bundles discovered from multiple directories ([guide](docs/wiki/en/Skills.md)) |
 | **Compaction & Retry** | Automatic context compaction; exponential-backoff retry on context-length errors |
+| **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) — a Rust rewrite of the [loopx](https://github.com/huangruiteng/loopx) control plane, customized for FutureOS |
+| **Rust Core** | Agent, channel bridge, and loop control plane are written in Rust — high performance with memory safety |
 
 ## Quick Start
 
