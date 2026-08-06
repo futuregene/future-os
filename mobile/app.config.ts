@@ -51,7 +51,7 @@ const config: ExpoConfig = {
     ],
   ],
   ios: {
-    bundleIdentifier: "cn.future_os.mobile",
+    bundleIdentifier: "cn.futureos.mobile",
     buildNumber: "1",
     supportsTablet: true,
     config: {
@@ -59,7 +59,7 @@ const config: ExpoConfig = {
     },
   },
   android: {
-    package: "cn.future_os.mobile",
+    package: "cn.futureos.mobile",
     versionCode: 1,
     adaptiveIcon: {
       backgroundColor: "#0f172a",
