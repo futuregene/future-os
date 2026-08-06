@@ -82,6 +82,7 @@ export class App extends Container {
     { value: "/tree", label: "/tree", description: "session tree" },
     { value: "/name", label: "/name", description: "set session name" },
     { value: "/scoped-models", label: "/scoped-models", description: "configure model scope" },
+    { value: "/compact", label: "/compact", description: "compress conversation context" },
     { value: "/reload", label: "/reload", description: "reload skills + context" },
     { value: "/help", label: "/help", description: "show help" },
   ];
