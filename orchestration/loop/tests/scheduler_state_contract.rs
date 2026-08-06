@@ -9,7 +9,7 @@ use future_loop::scheduler::state::*;
 use future_loop::store::Store;
 
 fn tmp_root(tag: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("loopx-sched-test-{tag}-{}", uuid_like()));
+    let dir = std::env::temp_dir().join(format!("future-loop-sched-test-{tag}-{}", uuid_like()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.to_string_lossy().into_owned()
 }
@@ -52,7 +52,7 @@ fn bootstrap_state(goal_dir: &Path) -> SchedulerState {
 
 // ── rrule recurrence + cadence classes ─────────────────────────────────────
 #[test]
-fn rrule_helpers_match_loopx_contract() {
+fn rrule_helpers_match_future_loop_contract() {
     assert_eq!(rrule_for_minutes(15), "FREQ=MINUTELY;INTERVAL=15");
     assert_eq!(
         normalize_scheduler_rrule("RRULE:FREQ=MINUTELY;INTERVAL=30"),
@@ -90,7 +90,7 @@ fn progression_walks_monitor_wait_sequence() {
     assert_eq!(r2, "FREQ=MINUTELY;INTERVAL=30");
     let r3 = apply_next_progression(&mut state, 1_784_000_200).unwrap();
     assert_eq!(r3, "FREQ=MINUTELY;INTERVAL=60");
-    // Wrap: [15, 30, 60] → back to 15 (LoopX modulo progression).
+    // Wrap: [15, 30, 60] → back to 15 (reference modulo progression).
     let r1 = apply_next_progression(&mut state, 1_784_000_300).unwrap();
     assert_eq!(r1, "FREQ=MINUTELY;INTERVAL=15");
 }

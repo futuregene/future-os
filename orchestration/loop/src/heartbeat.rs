@@ -12,7 +12,10 @@ use crate::state::Goal;
 /// Render a host-facing heartbeat prompt (markdown).
 pub fn render_heartbeat_prompt(goal: &Goal, packet: &ShouldRunPacket) -> String {
     let mut out = String::new();
-    out.push_str(&format!("# LoopX Heartbeat Packet — {}\n\n", goal.goal_id));
+    out.push_str(&format!(
+        "# reference Heartbeat Packet — {}\n\n",
+        goal.goal_id
+    ));
     out.push_str(&format!("- objective: {}\n", goal.objective));
     out.push_str(&format!(
         "- decision: `{}` / mode: `{}`\n",

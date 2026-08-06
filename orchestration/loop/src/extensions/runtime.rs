@@ -1,9 +1,9 @@
-//! Extension runtime (G-21) — LoopX `extensions/runtime.py`, natively.
+//! Extension runtime (G-21) — reference `extensions/runtime.py`, natively.
 //!
 //! Lifecycle: `install → enable → (doctor-verified) → ready`, with
 //! `disable`, `rollback`, and `status`. State persists in a JSON state file
 //! (`extensions/state.json` under the runtime root) with the LoopX
-//! `loopx_extension_state_v0` schema. Every install/upgrade keeps a bounded
+//! `future_loop_extension_state_v0` schema. Every install/upgrade keeps a bounded
 //! revision history (`MAX_REVISIONS = 5`) so rollback always has a target.
 //!
 //! v1 is declarative: install validates the manifest + doctor readiness and
@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 use super::manifest::{ExtensionManifest, LOOPX_EXTENSION_API_VERSION};
 use super::readiness::{extension_doctor, DoctorStatus};
 
-pub const EXTENSION_STATE_SCHEMA_VERSION: &str = "loopx_extension_state_v0";
-pub const EXTENSION_OPERATION_SCHEMA_VERSION: &str = "loopx_extension_operation_v0";
-/// LoopX MAX_REVISIONS.
+pub const EXTENSION_STATE_SCHEMA_VERSION: &str = "future_loop_extension_state_v0";
+pub const EXTENSION_OPERATION_SCHEMA_VERSION: &str = "future_loop_extension_operation_v0";
+/// reference MAX_REVISIONS.
 pub const MAX_REVISIONS: usize = 5;
 
 /// Default extension state file under a runtime root.
@@ -38,7 +38,7 @@ pub struct ExtensionRevision {
     pub manifest: ExtensionManifest,
 }
 
-/// One installed extension entry (LoopX runtime state entry).
+/// One installed extension entry (reference runtime state entry).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionEntry {
     pub id: String,
@@ -85,7 +85,7 @@ impl ExtensionState {
     }
 }
 
-/// The operation result (LoopX runtime operation return shape).
+/// The operation result (reference runtime operation return shape).
 #[derive(Debug, Clone, Serialize)]
 pub struct ExtensionOperation {
     pub ok: bool,
@@ -111,7 +111,9 @@ fn read_state(path: &Path) -> Result<ExtensionState, String> {
         .map_err(|e| format!("extension runtime state is unreadable: {e}"))?;
     let state: ExtensionState = serde_json::from_str(&text)
         .map_err(|e| format!("extension runtime state is unreadable: {e}"))?;
-    if state.schema_version != EXTENSION_STATE_SCHEMA_VERSION {
+    if state.schema_version != EXTENSION_STATE_SCHEMA_VERSION
+        && state.schema_version != "loopx_extension_state_v0"
+    {
         return Err(format!(
             "extension runtime state must use {EXTENSION_STATE_SCHEMA_VERSION}"
         ));
@@ -130,7 +132,7 @@ fn write_state(path: &Path, state: &ExtensionState) -> Result<(), String> {
 }
 
 /// Revision = first 16 hex chars of the SHA-256 of the canonical manifest
-/// (LoopX `_revision`).
+/// (reference `_revision`).
 pub fn manifest_revision(manifest: &ExtensionManifest) -> String {
     let serialized = serde_json::to_string(manifest).unwrap_or_default();
     let digest = crate::store::content_digest(serialized.as_bytes());
@@ -138,7 +140,7 @@ pub fn manifest_revision(manifest: &ExtensionManifest) -> String {
 }
 
 /// Retain a bounded revision history, always keeping the required rollback
-/// revision when it would otherwise fall off (LoopX `_retain_revisions`).
+/// revision when it would otherwise fall off (reference `_retain_revisions`).
 fn retain_revisions(
     revisions: Vec<ExtensionRevision>,
     new_revision: ExtensionRevision,
@@ -354,7 +356,7 @@ pub fn disable_extension(
 }
 
 /// `loopx extension rollback --id X [--execute]` — swap active/rollback
-/// revisions (LoopX rollback_extension).
+/// revisions (reference rollback_extension).
 pub fn rollback_extension(
     extension_id: &str,
     state_file: &Path,
@@ -451,7 +453,7 @@ pub fn extension_status(
 }
 
 /// Compose declared manifests with installed runtime lifecycle state
-/// (LoopX extension_catalog_entries).
+/// (reference extension_catalog_entries).
 #[derive(Debug, Clone, Serialize)]
 pub struct ExtensionCatalogEntry {
     pub id: String,
@@ -513,7 +515,7 @@ mod tests {
 
     fn tmp_file(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "loopx-p3-ext-{tag}-{}",
+            "future-loop-p3-ext-{tag}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -528,7 +530,7 @@ mod tests {
             "schema_version": crate::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
             "id": id,
             "version": version,
-            "requires_loopx_api": ">=1",
+            "requires_future_loop_api": ">=1",
             "permissions": ["shell"],
             "runtime": {
                 "protocol": "command_json_v0",

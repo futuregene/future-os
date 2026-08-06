@@ -10,7 +10,7 @@ use future_loop::state::{Goal, Todo};
 
 fn tmp_root(tag: &str) -> String {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p2-privacy-{tag}-{}",
+        "future-loop-p2-privacy-{tag}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

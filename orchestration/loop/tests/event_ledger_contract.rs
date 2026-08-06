@@ -10,7 +10,7 @@ use future_loop::store::{Event, Store};
 
 fn tmp_root(tag: &str) -> String {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p2-events-{tag}-{}",
+        "future-loop-p2-events-{tag}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -131,8 +131,8 @@ fn backfill_append_is_idempotent_with_provenance() {
     open_goal(&mut store, "g1");
 
     let md = "## Agent Todo\n\n\
-        - [ ] [P1] Run the check\n  <!-- loopx:todo todo_id=todo_abc status=open updated_at=2026-08-05T12:00:00+00:00 -->\n\
-        - [x] Ship it\n  <!-- loopx:todo todo_id=todo_def status=done no_followup=true evidence=ok completed_at=2026-08-05T13:00:00+00:00 updated_at=2026-08-05T13:00:00+00:00 -->\n";
+        - [ ] [P1] Run the check\n  <!-- future-loop:todo todo_id=todo_abc status=open updated_at=2026-08-05T12:00:00+00:00 -->\n\
+        - [x] Ship it\n  <!-- future-loop:todo todo_id=todo_def status=done no_followup=true evidence=ok completed_at=2026-08-05T13:00:00+00:00 updated_at=2026-08-05T13:00:00+00:00 -->\n";
     let outcome = backfill_todo_events(md, "g1", PrivacyLevel::LocalPrivate).unwrap();
     assert_eq!(outcome.todo_count, 2);
 

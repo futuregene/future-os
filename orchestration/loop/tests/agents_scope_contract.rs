@@ -12,7 +12,7 @@ use future_loop::store::{Event, Store};
 
 fn tmp_root(tag: &str) -> String {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p3-agents-{tag}-{}",
+        "future-loop-p3-agents-{tag}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

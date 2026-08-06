@@ -1,4 +1,4 @@
-//! Benchmark loop protocol (G-18) — LoopX `benchmark_core/loop_protocol.py`
+//! Benchmark loop protocol (G-18) — reference `benchmark_core/loop_protocol.py`
 //! (689 lines), the minimal deterministic core.
 //!
 //! The contract answers: which route is being benchmarked, under which
@@ -8,46 +8,48 @@
 //! blind-loop budget of 5; routes that cannot support the strict treatment
 //! claim carry a `claim_blocker`.
 
-/// Loop protocol schema versions (LoopX constants).
+/// Loop protocol schema versions (reference constants).
 pub const BENCHMARK_LOOP_PROTOCOL_SCHEMA_VERSION: &str = "benchmark_loop_protocol_v0";
 pub const BENCHMARK_PRODUCT_MODE_COMPARISON_SCHEMA_VERSION: &str =
     "benchmark_product_mode_comparison_v0";
 
-/// Protocol ids (LoopX `MAX5_BLIND_LOOP_NO_FEEDBACK_PROTOCOL_ID` etc).
+/// Protocol ids (reference `MAX5_BLIND_LOOP_NO_FEEDBACK_PROTOCOL_ID` etc).
 pub const MAX5_BLIND_LOOP_NO_FEEDBACK_PROTOCOL_ID: &str = "max5_blind_loop_no_feedback";
 pub const PRODUCT_MODE_MAX5_NO_FEEDBACK_PROTOCOL_ID: &str = "product_mode_max5_no_feedback";
 pub const PACKET_ONLY_OBSERVATION_PROTOCOL_ID: &str = "packet_only_observation";
 
-/// Default blind-loop round budget (LoopX BLIND_LOOP_DEFAULT_MAX_ROUNDS).
+/// Default blind-loop round budget (reference BLIND_LOOP_DEFAULT_MAX_ROUNDS).
 pub const BLIND_LOOP_DEFAULT_MAX_ROUNDS: u32 = 5;
 
-/// Known routes (LoopX constants).
+/// Known routes (reference constants).
 pub const CODEX_ACP_BLIND_LOOP_BASELINE_ROUTE: &str = "codex-acp-blind-loop-baseline";
 pub const CODEX_CLI_GOAL_BASELINE_ROUTE: &str = "codex-cli-goal-baseline";
 pub const RAW_CODEX_AUTONOMOUS_MAX5_ROUTE: &str = "raw-codex-autonomous-max5";
-pub const LOOPX_PRODUCT_MODE_ROUTE: &str = "loopx-product-mode";
-pub const LOOPX_GOAL_START_PRODUCT_MODE_ROUTE: &str = "loopx-goal-start-product-mode";
-pub const LOOPX_TURN_AGENT_CLI_ROUTE: &str = "loopx-turn-agent-cli";
+pub const LOOPX_PRODUCT_MODE_ROUTE: &str = "future-loop-product-mode";
+pub const LOOPX_GOAL_START_PRODUCT_MODE_ROUTE: &str = "future-loop-goal-start-product-mode";
+pub const LOOPX_TURN_AGENT_CLI_ROUTE: &str = "future-loop-turn-agent-cli";
 pub const CODEX_APP_SERVER_GOAL_BASELINE_ROUTE: &str = "codex-app-server-goal-baseline";
-pub const LOOPX_PACKET_ONLY_OBSERVATION_ROUTE: &str = "loopx-packet-only-observation";
+pub const LOOPX_PACKET_ONLY_OBSERVATION_ROUTE: &str = "future-loop-packet-only-observation";
 
 /// Routes that pre-date the product-mode controller and are invalid for a
-/// strict comparison claim (LoopX LEGACY_NONPRODUCT_PROMPT_POLLING_ROUTES).
-pub const LEGACY_NONPRODUCT_PROMPT_POLLING_ROUTES: &[&str] =
-    &["loopx-blind-loop-treatment", "loopx-prompt-polling-test"];
+/// strict comparison claim (reference LEGACY_NONPRODUCT_PROMPT_POLLING_ROUTES).
+pub const LEGACY_NONPRODUCT_PROMPT_POLLING_ROUTES: &[&str] = &[
+    "future-loop-blind-loop-treatment",
+    "future-loop-prompt-polling-test",
+];
 
 /// Blind-loop routes: no official feedback is forwarded during the loop.
 pub fn blind_loop_routes() -> &'static [&'static str] {
     &[
         CODEX_ACP_BLIND_LOOP_BASELINE_ROUTE,
         CODEX_CLI_GOAL_BASELINE_ROUTE,
-        "loopx-blind-loop-treatment",
-        "loopx-prompt-polling-test",
+        "future-loop-blind-loop-treatment",
+        "future-loop-prompt-polling-test",
     ]
 }
 
-/// Product-mode routes: the LoopX state/todo/replan CLI surface is the agent
-/// surface (LoopX PRODUCT_MODE_ROUTES).
+/// Product-mode routes: the reference state/todo/replan CLI surface is the agent
+/// surface (reference PRODUCT_MODE_ROUTES).
 pub fn product_mode_routes() -> &'static [&'static str] {
     &[
         RAW_CODEX_AUTONOMOUS_MAX5_ROUTE,
@@ -79,7 +81,7 @@ pub struct BenchmarkLoopContract {
 }
 
 impl BenchmarkLoopContract {
-    /// Render as the LoopX `as_dict()` surface (schema-versioned).
+    /// Render as the reference `as_dict()` surface (schema-versioned).
     pub fn as_dict(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
@@ -89,7 +91,7 @@ fn route_in(routes: &[&str], route: &str) -> bool {
     routes.contains(&route)
 }
 
-/// Build the loop contract for a route (LoopX `build_benchmark_loop_contract`).
+/// Build the loop contract for a route (reference `build_benchmark_loop_contract`).
 /// `max_rounds` defaults to the blind-loop budget; a positive non-default
 /// budget resolves to `custom_or_legacy_loop` unless a protocol is given.
 pub fn build_benchmark_loop_contract(
@@ -144,7 +146,7 @@ pub fn build_benchmark_loop_contract(
 
 /// The product-mode main-table comparison contract: baseline arm (raw codex
 /// autonomous max5) vs treatment arm (loopx product mode), with the policy
-/// gate LoopX requires before a headline comparison is allowed.
+/// gate reference requires before a headline comparison is allowed.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProductModeComparisonContract {
     pub schema_version: String,
@@ -158,7 +160,7 @@ pub struct ProductModeComparisonContract {
 }
 
 /// Build the skillsbench product-mode main-table comparison contract
-/// (LoopX `build_product_mode_main_table_comparison_contract`, minimal).
+/// (reference `build_product_mode_main_table_comparison_contract`, minimal).
 pub fn build_product_mode_main_table_comparison_contract(
     benchmark_id: &str,
     max_rounds: Option<u32>,
@@ -191,14 +193,14 @@ pub fn build_product_mode_main_table_comparison_contract(
         },
     );
     let treatment_arm_id = if treatment_route == LOOPX_GOAL_START_PRODUCT_MODE_ROUTE {
-        "loopx_goal_start_product_mode"
+        "future_loop_goal_start_product_mode"
     } else {
-        "loopx_product_mode"
+        "future_loop_product_mode"
     };
     let treatment_agent_surface = if treatment_route == LOOPX_GOAL_START_PRODUCT_MODE_ROUTE {
-        "loopx_goal_start_plan_todo_lifecycle_cli"
+        "future_loop_goal_start_plan_todo_lifecycle_cli"
     } else {
-        "loopx_state_todo_replan_cli"
+        "future_loop_state_todo_replan_cli"
     };
     ProductModeComparisonContract {
         schema_version: BENCHMARK_PRODUCT_MODE_COMPARISON_SCHEMA_VERSION.to_string(),
@@ -210,16 +212,16 @@ pub fn build_product_mode_main_table_comparison_contract(
             "route": baseline_route,
             "arm_id": "raw_codex_autonomous_max5",
             "contract": baseline.as_dict(),
-            "loopx_cli_allowed": false,
+            "future_loop_cli_allowed": false,
             "agent_surface": "raw_codex_autonomous",
         }),
         treatment_arm: serde_json::json!({
             "route": treatment_route,
             "arm_id": treatment_arm_id,
             "contract": treatment.as_dict(),
-            "loopx_state_todo_replan_cli_required": true,
-            "case_local_loopx_state_required": true,
-            "loopx_cli_required": true,
+            "future_loop_state_todo_replan_cli_required": true,
+            "case_local_future_loop_state_required": true,
+            "future_loop_cli_required": true,
             "agent_surface": treatment_agent_surface,
         }),
         policy_gate: serde_json::json!({
@@ -276,7 +278,7 @@ mod tests {
 
     #[test]
     fn legacy_nonproduct_route_is_blocked_for_comparison() {
-        let c = build_benchmark_loop_contract("loopx-blind-loop-treatment", None, None);
+        let c = build_benchmark_loop_contract("future-loop-blind-loop-treatment", None, None);
         assert_eq!(
             c.claim_blocker,
             "historical_nonproduct_invalid_for_comparison"
@@ -315,10 +317,10 @@ mod tests {
         assert_eq!(c.comparison_id, "skillsbench_product_mode_main_table_v0");
         assert_eq!(c.policy_gate["headline_metrics"][0], "best_score");
         assert_eq!(c.baseline_arm["route"], RAW_CODEX_AUTONOMOUS_MAX5_ROUTE);
-        assert_eq!(c.treatment_arm["arm_id"], "loopx_product_mode");
+        assert_eq!(c.treatment_arm["arm_id"], "future_loop_product_mode");
         assert_eq!(
             c.treatment_arm["agent_surface"],
-            "loopx_state_todo_replan_cli"
+            "future_loop_state_todo_replan_cli"
         );
         // goal-start variant
         let c2 = build_product_mode_main_table_comparison_contract(
@@ -327,10 +329,13 @@ mod tests {
             RAW_CODEX_AUTONOMOUS_MAX5_ROUTE,
             LOOPX_GOAL_START_PRODUCT_MODE_ROUTE,
         );
-        assert_eq!(c2.treatment_arm["arm_id"], "loopx_goal_start_product_mode");
+        assert_eq!(
+            c2.treatment_arm["arm_id"],
+            "future_loop_goal_start_product_mode"
+        );
         assert_eq!(
             c2.treatment_arm["agent_surface"],
-            "loopx_goal_start_plan_todo_lifecycle_cli"
+            "future_loop_goal_start_plan_todo_lifecycle_cli"
         );
     }
 }

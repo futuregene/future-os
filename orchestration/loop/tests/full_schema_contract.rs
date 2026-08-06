@@ -9,7 +9,7 @@ use future_loop::state::{Goal, Todo, TodoRole, TodoStatus};
 use future_loop::store::{Event, Store};
 
 fn tmp_root(tag: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("loopx-schema-full-{tag}-{}", nano()));
+    let dir = std::env::temp_dir().join(format!("future-loop-schema-full-{tag}-{}", nano()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.to_string_lossy().into_owned()
 }
@@ -23,7 +23,7 @@ fn nano() -> u128 {
 
 // ── Full todo_item_v0 field surface ────────────────────────────────────────
 #[test]
-fn todo_exposes_all_loopx_fields() {
+fn todo_exposes_all_future_loop_fields() {
     let mut goal = Goal::new("g", "objective", "/tmp");
     goal.add(
         Todo::advancement("t1", "Run the benchmark")

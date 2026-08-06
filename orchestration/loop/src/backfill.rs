@@ -1,5 +1,5 @@
 //! Markdown backfill (G-3) — reconstruct idempotent append-only events from
-//! an ACTIVE_GOAL_STATE.md workbench, mirroring LoopX
+//! an ACTIVE_GOAL_STATE.md workbench, mirroring the reference
 //! `backfill_todo_events_from_markdown` (`event_sourced_state.py`): todo
 //! records carry `source_ref` / `source_section` / `source_line` provenance
 //! and backfill ids `backfill-<suffix>-<digest>` so re-running the backfill
@@ -44,7 +44,7 @@ pub struct MarkdownTodoRecord {
     pub global_gate: bool,
 }
 
-/// URL-decode the subset LoopX uses in anchors (%20 → ' ', %2B → '+').
+/// URL-decode the subset reference uses in anchors (%20 → ' ', %2B → '+').
 fn url_decode(value: &str) -> String {
     value.replace("%20", " ").replace("%2B", "+")
 }
@@ -73,7 +73,7 @@ fn status_from_marker(marker: &str) -> String {
 }
 
 /// Parse `key=value` pairs from a metadata line. Handles both the full
-/// `<!-- loopx:todo ... -->` anchor and bare `key=value` continuations.
+/// `<!-- future-loop:todo ... -->` anchor and bare `key=value` continuations.
 fn parse_metadata(line: &str) -> Vec<(String, String)> {
     let text = line
         .trim()
@@ -97,7 +97,7 @@ pub fn parse_markdown_todos(state_text: &str) -> Vec<MarkdownTodoRecord> {
     let mut role: Option<String> = None;
     let mut source_section: Option<String> = None;
     // Index of the record currently receiving metadata/continuation updates
-    // (LoopX appends the record dict at creation and mutates it in place).
+    // (reference appends the record dict at creation and mutates it in place).
     let mut current: Option<usize> = None;
     let mut role_indexes = std::collections::HashMap::<String, u32>::new();
 
@@ -192,7 +192,7 @@ pub fn parse_markdown_todos(state_text: &str) -> Vec<MarkdownTodoRecord> {
     records
 }
 
-/// Backfill event id (LoopX `_backfill_event_id`): sha-style digest over
+/// Backfill event id (reference `_backfill_event_id`): sha-style digest over
 /// `goal|todo|suffix`, prefixed `backfill-<suffix>-`.
 pub fn backfill_event_id(goal_id: &str, todo_id: &str, suffix: &str) -> String {
     let digest = content_digest(format!("{goal_id}|{todo_id}|{suffix}").as_bytes());
@@ -427,10 +427,10 @@ mod tests {
 
     const SAMPLE: &str = "---\nstatus: active\n---\n\n# Active Goal State\n\n\
         ## Agent Todo\n\n\
-        - [ ] [P1] Run the check\n  <!-- loopx:todo todo_id=todo_abc123 status=open action_kind=shell updated_at=2026-08-05T12:00:00+00:00 -->\n\
-        - [x] Ship the artifact\n  <!-- loopx:todo todo_id=todo_def456 status=done no_followup=true evidence=done%20well completed_at=2026-08-05T13:00:00+00:00 updated_at=2026-08-05T13:00:00+00:00 -->\n\n\
+        - [ ] [P1] Run the check\n  <!-- future-loop:todo todo_id=todo_abc123 status=open action_kind=shell updated_at=2026-08-05T12:00:00+00:00 -->\n\
+        - [x] Ship the artifact\n  <!-- future-loop:todo todo_id=todo_def456 status=done no_followup=true evidence=done%20well completed_at=2026-08-05T13:00:00+00:00 updated_at=2026-08-05T13:00:00+00:00 -->\n\n\
         ## User Todo / Owner Review Reading Queue\n\n\
-        - [ ] Decide the scope\n  <!-- loopx:todo todo_id=todo_ghi789 status=open task_class=user_gate updated_at=2026-08-05T12:30:00+00:00 -->\n";
+        - [ ] Decide the scope\n  <!-- future-loop:todo todo_id=todo_ghi789 status=open task_class=user_gate updated_at=2026-08-05T12:30:00+00:00 -->\n";
 
     #[test]
     fn parses_records_with_roles_and_anchors() {
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn public_safe_backfill_redacts_private_text() {
-        let md = "## Agent Todo\n\n- [ ] touch /Users/geilige/secret\n  <!-- loopx:todo todo_id=todo_x status=open -->\n";
+        let md = "## Agent Todo\n\n- [ ] touch /Users/geilige/secret\n  <!-- future-loop:todo todo_id=todo_x status=open -->\n";
         let public = backfill_todo_events(md, "g1", PrivacyLevel::PublicSafe).unwrap();
         match &public.events[0].event {
             Event::TodoAdded { todo, .. } => {

@@ -9,7 +9,7 @@ use future_loop::state::{Goal, Todo};
 use future_loop::store::{projection_gap, Event, Store};
 
 fn tmp_root(tag: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("loopx-store-test-{tag}-{}", uuid_like()));
+    let dir = std::env::temp_dir().join(format!("future-loop-store-test-{tag}-{}", uuid_like()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.to_string_lossy().into_owned()
 }

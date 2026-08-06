@@ -10,7 +10,7 @@ use future_loop::work_items::task_lease::{self, LeaseOp, LeaseStatus};
 
 fn tmp_root(tag: &str) -> String {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p2-lease-{tag}-{}",
+        "future-loop-p2-lease-{tag}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

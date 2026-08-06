@@ -100,7 +100,7 @@ fn delivery_contract_modes_and_streaks() {
 fn handoff_writes_to_projection_dir() {
     let goal = goal_with(vec![]);
     let project = std::env::temp_dir().join(format!(
-        "loopx-p3-handoff-{}",
+        "future-loop-p3-handoff-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

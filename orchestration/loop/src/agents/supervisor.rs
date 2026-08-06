@@ -1,10 +1,10 @@
-//! Supervisor (G-16) — LoopX `control_plane/agents/supervisor_events.py` +
+//! Supervisor (G-16) — reference `control_plane/agents/supervisor_events.py` +
 //! `supervisor.py`, natively (minimal set). The supervisor proposes bounded
 //! decisions for target agents; hosts record execution receipts. Both land
 //! as ledger events (`SupervisorProposed` / `SupervisorReceiptRecorded`) and
 //! are read back through a projection — the goal state itself is untouched.
 //!
-//! Receipt rules (LoopX normalize_supervisor_receipt):
+//! Receipt rules (reference normalize_supervisor_receipt):
 //! - a receipt must reference a recorded proposal (`decision_id`);
 //! - `observe` decisions never accept host execution receipts;
 //! - an `executed` receipt requires the host capabilities the decision
@@ -16,7 +16,7 @@ use crate::store::{Event, Store};
 pub const SUPERVISOR_RECEIPT_SCHEMA_VERSION: &str = "supervisor_host_receipt_v1";
 pub const SUPERVISOR_EVENT_PROJECTION_SCHEMA_VERSION: &str = "supervisor_event_projection_v0";
 
-/// Supervisor decision kinds (LoopX supervisor decisions).
+/// Supervisor decision kinds (reference supervisor decisions).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorDecisionKind {
     Observe,
@@ -32,7 +32,7 @@ impl SupervisorDecisionKind {
     }
 }
 
-/// A normalized supervisor decision (LoopX normalize_supervisor_decision).
+/// A normalized supervisor decision (reference normalize_supervisor_decision).
 #[derive(Debug, Clone)]
 pub struct SupervisorDecision {
     pub decision_id: String,
@@ -70,7 +70,7 @@ impl SupervisorDecision {
     }
 }
 
-/// Receipt outcomes (LoopX SupervisorReceiptOutcome).
+/// Receipt outcomes (reference SupervisorReceiptOutcome).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorReceiptOutcome {
     Executed,
@@ -308,7 +308,7 @@ mod tests {
 
     fn tmp_root(tag: &str) -> String {
         let dir = std::env::temp_dir().join(format!(
-            "loopx-p3-supervisor-{tag}-{}",
+            "future-loop-p3-supervisor-{tag}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

@@ -18,12 +18,12 @@ use serde_json::json;
 
 use crate::state::{Goal, TaskClass, Todo, TodoStatus};
 
-/// LoopX URL-encodes spaces (%20) in anchor values.
+/// reference URL-encodes spaces (%20) in anchor values.
 fn url_encode(s: &str) -> String {
     s.replace(' ', "%20").replace('+', "%2B")
 }
 
-/// RFC3339-ish timestamp matching LoopX (e.g. 2026-08-05T11:03:14+08:00).
+/// RFC3339-ish timestamp matching reference (e.g. 2026-08-05T11:03:14+08:00).
 pub fn rfc3339(ts: u64) -> String {
     use chrono::{Local, TimeZone};
     let dt = Local
@@ -33,9 +33,9 @@ pub fn rfc3339(ts: u64) -> String {
     dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
 }
 
-/// Map our TaskClass to the LoopX task_class value (already equal via serde,
+/// Map our TaskClass to the reference task_class value (already equal via serde,
 /// but keep the mapping explicit here).
-pub fn loopx_task_class(c: TaskClass) -> &'static str {
+pub fn future_loop_task_class(c: TaskClass) -> &'static str {
     match c {
         TaskClass::Advancement => "advancement_task",
         TaskClass::UserGate => "user_gate",
@@ -45,7 +45,7 @@ pub fn loopx_task_class(c: TaskClass) -> &'static str {
     }
 }
 
-pub fn loopx_status(s: TodoStatus) -> &'static str {
+pub fn future_loop_status(s: TodoStatus) -> &'static str {
     match s {
         TodoStatus::Open => "open",
         TodoStatus::Done => "done",
@@ -192,7 +192,7 @@ pub fn render_active_state(goal: &Goal) -> String {
         "- Do not optimize for activity if no useful artifact or decision can be produced.\n\n",
     );
 
-    // Todos, split by role (LoopX sections).
+    // Todos, split by role (reference sections).
     let user_todos: Vec<&Todo> = goal
         .todos
         .iter()
@@ -220,7 +220,7 @@ pub fn render_active_state(goal: &Goal) -> String {
         goal.next_action.as_deref().unwrap_or(next_default)
     ));
     out.push_str("## Recent User Feedback\n\n");
-    out.push_str("- Initialized by `loopx bootstrap`.\n\n");
+    out.push_str("- Initialized by `future-loop bootstrap`.\n\n");
     out.push_str("## Progress Ledger\n\n");
     if goal.history.is_empty() {
         out.push_str("- Created the initial goal state and registry connection.\n");
@@ -240,7 +240,7 @@ pub fn render_active_state(goal: &Goal) -> String {
     out
 }
 
-/// One todo bullet with the LoopX `<!-- loopx:todo ... -->` anchor.
+/// One todo bullet with the reference `<!-- future-loop:todo ... -->` anchor.
 fn todo_line(t: &Todo, _history: &[crate::state::RunRecord]) -> String {
     let is_default_advancement = t.class == TaskClass::Advancement && t.action_kind.is_none();
     // LoopX: deferred todos render with a "-" checkbox; done with "x".
@@ -253,18 +253,18 @@ fn todo_line(t: &Todo, _history: &[crate::state::RunRecord]) -> String {
     };
     let mut line = if is_default_advancement {
         format!(
-            "- [{checkbox}] {}\n  <!-- loopx:todo todo_id={} status={}",
+            "- [{checkbox}] {}\n  <!-- future-loop:todo todo_id={} status={}",
             t.text,
             t.id,
-            loopx_status(t.status),
+            future_loop_status(t.status),
         )
     } else {
         format!(
-            "- [{checkbox}] {}\n  <!-- loopx:todo todo_id={} status={} task_class={}",
+            "- [{checkbox}] {}\n  <!-- future-loop:todo todo_id={} status={} task_class={}",
             t.text,
             t.id,
-            loopx_status(t.status),
-            loopx_task_class(t.class),
+            future_loop_status(t.status),
+            future_loop_task_class(t.class),
         )
     };
     if let Some(ak) = &t.action_kind {
@@ -301,7 +301,7 @@ fn todo_line(t: &Todo, _history: &[crate::state::RunRecord]) -> String {
         line.push_str(" no_followup=true");
     }
     if t.status == TodoStatus::Done {
-        // LoopX completed anchors carry URL-encoded evidence + completed_at.
+        // reference completed anchors carry URL-encoded evidence + completed_at.
         if let Some(ev) = t.evidence.as_deref().filter(|e| !e.is_empty()) {
             line.push_str(&format!(" evidence={}", url_encode(ev)));
         }
@@ -313,7 +313,7 @@ fn todo_line(t: &Todo, _history: &[crate::state::RunRecord]) -> String {
         }
     }
     line.push_str(" updated_at=");
-    // LoopX encodes only '+' -> %2B; colons stay literal.
+    // reference encodes only '+' -> %2B; colons stay literal.
     let ts = rfc3339(t.updated_at).replace('+', "%2B");
     line.push_str(&ts);
     line.push_str(" -->\n");

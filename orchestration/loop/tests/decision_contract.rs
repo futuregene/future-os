@@ -1,5 +1,5 @@
 //! Contract tests for the decision kernel — migrated from the prototype and
-//! extended with the contracts learned from the live LoopX (completion
+//! extended with the contracts learned from the live reference (completion
 //! closure intent, succession replan obligation, validated terminal).
 //!
 //! Deterministic: state fixtures in, typed ShouldRunPacket out. No gRPC, no
@@ -285,7 +285,7 @@ fn packet_has_three_channels_and_auxiliary_contracts() {
     let p = decide(&goal, now());
     assert_eq!(
         p.interaction_contract.schema_version,
-        "loopx_interaction_contract_v0"
+        "future_loop_interaction_contract_v0"
     );
     assert!(p.interaction_contract.agent_channel.must_attempt);
     assert!(!p.interaction_contract.agent_channel.quiet_noop_allowed);

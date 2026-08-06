@@ -10,7 +10,7 @@ use future_loop::runtime::stale_latest_run;
 
 fn tmp_root(tag: &str) -> String {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p2-runs-{tag}-{}",
+        "future-loop-p2-runs-{tag}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

@@ -1,6 +1,6 @@
 //! `loopx` — FutureOS loop control plane CLI.
 //!
-//! Commands (mirror the LoopX core tick, implemented natively):
+//! Commands (mirror the reference core tick, implemented natively):
 //!   goal init    — create a durable goal (registry + event ledger)
 //!   todo add     — add an agent/user/gate/monitor todo
 //!   todo claim   — claim a todo (owner identity)
@@ -703,7 +703,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     }
     todo.goal_bound = goal_bound;
     todo.global_gate = global_gate;
-    // LoopX rule: user_gate + global_gate implies goal_bound=true.
+    // reference rule: user_gate + global_gate implies goal_bound=true.
     if todo.global_gate && todo.class == future_loop::state::TaskClass::UserGate {
         todo.goal_bound = true;
     }
@@ -728,7 +728,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             _ => future_loop::state::Priority::P1,
         };
         todo.priority = pr;
-        // LoopX convention: todo text carries the [P0]/[P1]/[P2] prefix.
+        // reference convention: todo text carries the [P0]/[P1]/[P2] prefix.
         let tag = format!("[{pr}] ");
         if !todo.text.starts_with(&tag) {
             todo.text = format!("{tag}{}", todo.text);
@@ -907,7 +907,7 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    // LoopX completion contract: a completed advancement todo must declare
+    // reference completion contract: a completed advancement todo must declare
     // closure intent — successor OR no-follow-up; silent completion is rejected.
     let t = goal
         .todo(&todo_id)
@@ -1353,7 +1353,7 @@ fn quota_usage(store: &Store, args: &[String]) -> Result<()> {
     if !all {
         bail!("quota usage requires --goal G or --all");
     }
-    // Aggregate across every registered goal (LoopX run_history projection).
+    // Aggregate across every registered goal (reference run_history projection).
     let rows: Vec<(&str, Vec<future_loop::state::RunRecord>)> = store
         .registry()
         .iter()
@@ -1542,7 +1542,7 @@ fn scheduler_show(store: &Store, args: &[String]) -> Result<()> {
 /// `loopx scheduler record-host-failure --goal G --agent-id A
 /// --target-rrule "FREQ=MINUTELY;INTERVAL=15" --observed-rrule "..."
 /// --failure-kind host_stale_rrule` — merge a host-update failure into the
-/// retained cache (bounded, TTL'd; LoopX scheduler state).
+/// retained cache (bounded, TTL'd; reference scheduler state).
 fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
     let mut target_rrule = None;
     let mut observed_rrule = None;
@@ -1586,7 +1586,7 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
         }
         None => {
             // No state yet: bootstrap from the observed rrule so the failure
-            // has a home (LoopX tolerates a state-less failure record by
+            // has a home (reference tolerates a state-less failure record by
             // keeping the failure list on the next build).
             let identity = st::identity_signature(&goal_id, &agent, surface);
             st::build_scheduler_state(
@@ -2412,7 +2412,7 @@ fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
 }
 
 /// `loopx heartbeat-prompt --goal G [--agent-id A]` — render the per-turn
-/// re-entry packet for a host executor (LoopX heartbeat contract).
+/// re-entry packet for a host executor (reference heartbeat contract).
 fn cmd_heartbeat(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
@@ -3314,7 +3314,7 @@ async fn cmd_benchmark_run(store: &Store, args: &[String]) -> Result<()> {
     let benchmark_id = benchmark_id.ok_or_else(|| anyhow::anyhow!("--benchmark-id required"))?;
     let case_id = case_id.ok_or_else(|| anyhow::anyhow!("--case-id required"))?;
     let task = task.ok_or_else(|| anyhow::anyhow!("--task required"))?;
-    let route = route.unwrap_or_else(|| "loopx-product-mode".to_string());
+    let route = route.unwrap_or_else(|| "future-loop-product-mode".to_string());
     let mut case = future_loop::benchmark::qualification::QualificationCase::new(
         &benchmark_id,
         &case_id,
@@ -3325,10 +3325,10 @@ async fn cmd_benchmark_run(store: &Store, args: &[String]) -> Result<()> {
     if let Some(arm) = arm_id {
         case.arm_id = arm;
     } else {
-        case.arm_id = if route == "loopx-goal-start-product-mode" {
-            "loopx_goal_start_product_mode".to_string()
+        case.arm_id = if route == "future-loop-goal-start-product-mode" {
+            "future_loop_goal_start_product_mode".to_string()
         } else {
-            "loopx_product_mode".to_string()
+            "future_loop_product_mode".to_string()
         };
     }
     case.expected_evidence = expected_evidence;
@@ -3681,7 +3681,7 @@ fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
     println!("  public_safe_decision_replay_v0 (G-19)");
     println!("  model_behavior_corpus_v0 (G-19)");
     println!("  canary_smoke_run_v0 (G-20)");
-    println!("  loopx_turn_envelope_v0 (G-9)");
+    println!("  future_loop_turn_envelope_v0 (G-9)");
     println!("  scheduler_arbitration_v0 (G-2/G-11)");
     let _ = store;
     let _ = args;

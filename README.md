@@ -27,7 +27,7 @@ FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, a
 | **Compaction & Retry** | Automatic context compaction; exponential-backoff retry on context-length errors |
 | **Channel Bridge** | Feishu (Lark) and DingTalk bots — markdown streaming, slash commands, session management via chat |
 | **Skills System** | Pluggable YAML-defined skill bundles discovered from multiple directories |
-| **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) |
+| **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) — a Rust rewrite of the [loopx](https://github.com/huangruiteng/loopx) control plane, customized for FutureOS |
 | **Cross-Platform** | macOS, Linux, Windows (GUI via Tauri + WebView2) |
 
 ## Quick Start

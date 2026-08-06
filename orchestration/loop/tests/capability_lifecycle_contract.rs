@@ -8,11 +8,11 @@ use future_loop::capabilities::catalog::CapabilityCatalog;
 use future_loop::capabilities::lifecycle::{CapabilityProvider, ProviderLifecycle, ProviderStage};
 
 #[test]
-fn builtin_catalog_has_15_records_with_loopx_statuses() {
+fn builtin_catalog_has_15_records_with_future_loop_statuses() {
     let catalog = CapabilityCatalog::with_builtin();
     assert_eq!(catalog.records(false).len(), 15);
     assert_eq!(catalog.providers().len(), 1);
-    // LoopX catalog status alignment.
+    // reference catalog status alignment.
     assert_eq!(catalog.get("issue_fix").unwrap().status, "active-preview");
     assert_eq!(catalog.get("auto_research").unwrap().status, "experimental");
     assert_eq!(
@@ -41,7 +41,7 @@ fn builtin_catalog_has_15_records_with_loopx_statuses() {
 fn catalog_is_queryable_by_status_stage_provider() {
     let catalog = CapabilityCatalog::with_builtin();
     let record = catalog.get("issue_fix").unwrap();
-    assert_eq!(record.provider_id, "loopx-core");
+    assert_eq!(record.provider_id, "future-loop-core");
     assert_eq!(record.origin, "builtin");
     assert_eq!(record.stage, 0);
     assert!(record.is_public());
@@ -51,7 +51,7 @@ fn catalog_is_queryable_by_status_stage_provider() {
         catalog.provider_lifecycle_for("issue_fix").unwrap().stage(),
         ProviderStage::Ready
     );
-    // Every public record carries the LoopX required fields.
+    // Every public record carries the reference required fields.
     for record in catalog.records(false) {
         assert!(
             !record.user_value.trim().is_empty(),

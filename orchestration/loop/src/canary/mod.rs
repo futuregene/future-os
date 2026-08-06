@@ -1,4 +1,4 @@
-//! Canary smoke (G-20) — LoopX `canary/` minimal: smoke-suite profiles +
+//! Canary smoke (G-20) — reference `canary/` minimal: smoke-suite profiles +
 //! deterministic health checks over the control plane, bound to the release
 //! flow (`canary smoke --profile release-gate`). Low priority per the plan;
 //! the checks are the same deterministic surfaces the contract tests cover,
@@ -15,7 +15,7 @@ use crate::store::Store;
 
 pub const CANARY_SMOKE_RUN_SCHEMA_VERSION: &str = "canary_smoke_run_v0";
 
-/// A smoke-suite profile (LoopX SMOKE_SUITE_PROFILE_MANIFEST entries).
+/// A smoke-suite profile (reference SMOKE_SUITE_PROFILE_MANIFEST entries).
 #[derive(Debug, Clone, Serialize)]
 pub struct SmokeProfile {
     pub id: String,
@@ -37,7 +37,7 @@ pub fn smoke_suite_profiles() -> Vec<SmokeProfile> {
                 "todo".to_string(),
                 "status".to_string(),
             ],
-            description: "LoopX runtime/control-plane contracts without benchmark adapters."
+            description: "reference runtime/control-plane contracts without benchmark adapters."
                 .to_string(),
         },
         SmokeProfile {
@@ -452,8 +452,10 @@ mod tests {
     use super::*;
 
     fn tmp_store(tag: &str) -> Store {
-        let root =
-            std::env::temp_dir().join(format!("loopx-canary-{tag}-{}", crate::state::now_epoch()));
+        let root = std::env::temp_dir().join(format!(
+            "future-loop-canary-{tag}-{}",
+            crate::state::now_epoch()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         Store::open(&root.to_string_lossy()).unwrap()
     }

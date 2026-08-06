@@ -29,7 +29,7 @@ fn contract(
     quiet_noop_allowed: bool,
 ) -> InteractionContract {
     InteractionContract {
-        schema_version: "loopx_interaction_contract_v0".to_string(),
+        schema_version: "future_loop_interaction_contract_v0".to_string(),
         mode,
         user_channel: UserChannel {
             action_required: user_required,
@@ -54,7 +54,7 @@ fn contract(
     }
 }
 
-// ── The 9 dispositions, value-aligned with LoopX ───────────────────────────
+// ── The 9 dispositions, value-aligned with reference ───────────────────────────
 #[test]
 fn disposition_enum_values_align_with_loopx() {
     let pairs = [
@@ -79,7 +79,7 @@ fn disposition_enum_values_align_with_loopx() {
         assert_eq!(
             serde_json::to_value(disposition).unwrap(),
             serde_json::json!(expected),
-            "serialized disposition must match LoopX string"
+            "serialized disposition must match reference string"
         );
     }
 }
@@ -99,7 +99,7 @@ fn schema_version_is_scheduler_arbitration_v0() {
     assert!(arbitration.consistency_error().is_none());
 }
 
-// ── Classifier matrix: all 9 dispositions reachable (LoopX classify) ───────
+// ── Classifier matrix: all 9 dispositions reachable (reference classify) ───────
 #[test]
 fn classifier_covers_all_nine_dispositions() {
     // terminal_no_followup → TERMINAL_STOP (reason_code = mode)
@@ -278,7 +278,7 @@ fn quiet_noop_conflict_fails_closed() {
 #[test]
 fn schema_version_mismatch_fails_closed() {
     let mut c = contract(TurnMode::BoundedDelivery, false, true, true, false);
-    c.schema_version = "loopx_interaction_contract_v1".to_string();
+    c.schema_version = "future_loop_interaction_contract_v1".to_string();
     let arbitration = build_scheduler_arbitration(&c, &[]);
     assert!(!arbitration.ok());
     assert_eq!(

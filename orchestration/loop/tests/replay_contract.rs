@@ -78,7 +78,7 @@ fn public_safety_reduction_blocks_secrets_and_paths() {
 #[test]
 fn replay_file_round_trip() {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p4-replay-{}",
+        "future-loop-p4-replay-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -211,7 +211,7 @@ fn ablation_of_unknown_path_fails_closed_at_build() {
 #[test]
 fn corpus_file_round_trip() {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p4-corpus-{}",
+        "future-loop-p4-corpus-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

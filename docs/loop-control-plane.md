@@ -11,6 +11,11 @@ monitors, evidence, and completion are persisted outside the chat, and a
 deterministic kernel decides what should happen next — one bounded turn at a
 time.
 
+> `future-loop` is a Rust rewrite of the
+> [loopx](https://github.com/huangruiteng/loopx) control plane, adapted and
+> extended for FutureOS (project-local state, gRPC executor bridge, quota
+> kernel, extensions & multi-agent).
+
 ```
 objective / issue / project
    │

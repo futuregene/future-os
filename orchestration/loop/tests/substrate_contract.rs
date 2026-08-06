@@ -8,7 +8,7 @@ use future_loop::state::{boundary_scan_leaks, Authority, Goal, Todo};
 use future_loop::store::{Event, Store};
 
 fn tmp_root(tag: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("loopx-p1-{tag}-{}", nano()));
+    let dir = std::env::temp_dir().join(format!("future-loop-p1-{tag}-{}", nano()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.to_string_lossy().into_owned()
 }

@@ -27,7 +27,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 | **自动压缩与重试** | 上下文自动压缩；上下文超长时指数退避自动重试 |
 | **Channel Bridge** | 飞书和钉钉机器人——markdown 流式输出、斜杠命令、通过聊天管理会话 |
 | **技能系统** | 可插拔的 YAML 定义 Skill 包，从多目录自动发现 |
-| **Loop 控制面** | `future-loop`：持久化目标/todos/门禁/监控、quota should-run 内核、事件溯源状态、验证器、扩展与多 agent（[指南](docs/loop-control-plane.zh-CN.md)） |
+| **Loop 控制面** | `future-loop`：持久化目标/todos/门禁/监控、quota should-run 内核、事件溯源状态、验证器、扩展与多 agent（[指南](docs/loop-control-plane.zh-CN.md)）——基于 [loopx](https://github.com/huangruiteng/loopx) 的 Rust 改写版，针对 FutureOS 做了定制 |
 | **跨平台** | macOS、Linux、Windows（GUI 基于 Tauri + WebView2） |
 
 ## 快速开始

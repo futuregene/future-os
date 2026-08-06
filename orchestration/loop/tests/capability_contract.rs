@@ -106,7 +106,7 @@ fn capability_gate_hides_todo_from_agents_without_capability() {
 // ── P2: agent profiles persist through the ledger ──────────────────────────
 #[test]
 fn agent_profiles_survive_replay() {
-    let root = std::env::temp_dir().join(format!("loopx-p3-{}", nano()));
+    let root = std::env::temp_dir().join(format!("future-loop-p3-{}", nano()));
     std::fs::create_dir_all(&root).unwrap();
     let mut store = future_loop::store::Store::open(&root.to_string_lossy()).unwrap();
     let g = Goal::new("g1", "objective", "/tmp");

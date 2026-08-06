@@ -1,9 +1,9 @@
-//! Benchmark run ledger (G-18) — LoopX `benchmark_ledger.py` (3.8k lines),
+//! Benchmark run ledger (G-18) — reference `benchmark_ledger.py` (3.8k lines),
 //! the minimal compaction core: a content-addressed run entry + a durable
 //! JSONL store with idempotent append (same identity → same run_id, re-append
 //! is a no-op — mirroring the G-3 event-ledger idempotency).
 //!
-//! The entry keeps the LoopX headline surface: identity, round-reward trace
+//! The entry keeps the reference headline surface: identity, round-reward trace
 //! compaction (first success / best / final / declared-done), score + pass
 //! status, failure class/scope, and the agent model under test.
 
@@ -17,7 +17,7 @@ use crate::store::content_digest;
 pub const BENCHMARK_RUN_LEDGER_SCHEMA_VERSION: &str = "benchmark_run_ledger_v0";
 
 /// One round of a benchmark run: reward 1.0 when the verifier passed the
-/// round, 0.0 otherwise (LoopX round_reward_trace records).
+/// round, 0.0 otherwise (reference round_reward_trace records).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RoundRewardRecord {
     pub agent_round: u32,
@@ -25,7 +25,7 @@ pub struct RoundRewardRecord {
     pub reward: f64,
 }
 
-/// Compact round-reward trace (LoopX `round_reward_trace`).
+/// Compact round-reward trace (reference `round_reward_trace`).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RoundRewardTrace {
     pub records: Vec<RoundRewardRecord>,
@@ -44,7 +44,7 @@ pub struct RoundRewardTrace {
 
 impl RoundRewardTrace {
     /// Build a trace from per-round records, deriving the headline fields
-    /// (LoopX `_round_reward_best_stats` + `first_success_round` scan).
+    /// (reference `_round_reward_best_stats` + `first_success_round` scan).
     pub fn from_records(records: Vec<RoundRewardRecord>, max_rounds_budget: u32) -> Self {
         let first_success_round = records.iter().find(|r| r.passed).map(|r| r.agent_round);
         let best = records
@@ -72,7 +72,7 @@ impl RoundRewardTrace {
         }
     }
 
-    /// Mark the agent's declared-done round (LoopX `declared_done_round` /
+    /// Mark the agent's declared-done round (reference `declared_done_round` /
     /// `declared_done_score`).
     pub fn with_declared_done(mut self, round: u32, score: f64) -> Self {
         self.declared_done_round = Some(round);
@@ -82,7 +82,7 @@ impl RoundRewardTrace {
     }
 }
 
-/// The normalized raw run fed to the ledger builder (LoopX `benchmark_run`).
+/// The normalized raw run fed to the ledger builder (reference `benchmark_run`).
 #[derive(Debug, Clone, Default)]
 pub struct BenchmarkRun {
     pub benchmark_id: String,
@@ -99,7 +99,7 @@ pub struct BenchmarkRun {
     pub notes: String,
 }
 
-/// One ledger entry (LoopX `build_benchmark_run_ledger_entry` minimal).
+/// One ledger entry (reference `build_benchmark_run_ledger_entry` minimal).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BenchmarkLedgerEntry {
     pub schema_version: String,
@@ -121,7 +121,7 @@ pub struct BenchmarkLedgerEntry {
     pub declared_done_round: Option<u32>,
     pub declared_done_score: Option<f64>,
     pub agent_declared_done: bool,
-    /// Best-round reward as the headline score (LoopX headline metrics).
+    /// Best-round reward as the headline score (reference headline metrics).
     pub score: f64,
     pub passed: bool,
     pub failure_class: String,
@@ -141,7 +141,7 @@ fn compact_text(value: &str, limit: usize) -> String {
 
 /// Content-derived run identity: `bench-<12 hex>` over
 /// benchmark_id|case_id|arm_id|route|job_name. `recorded_at` is deliberately
-/// excluded so re-ingesting the same run is idempotent (LoopX sha1 identity).
+/// excluded so re-ingesting the same run is idempotent (reference sha1 identity).
 pub fn derive_benchmark_run_id(run: &BenchmarkRun) -> String {
     let identity = [
         run.benchmark_id.as_str(),
@@ -154,7 +154,7 @@ pub fn derive_benchmark_run_id(run: &BenchmarkRun) -> String {
     format!("bench-{}", &content_digest(identity.as_bytes())[..12])
 }
 
-/// Failure classification (LoopX `_failure_class` minimal set):
+/// Failure classification (reference `_failure_class` minimal set):
 /// `success` / `case_failure` / `budget_exhausted` / `runner_error` /
 /// `unknown`.
 pub fn classify_failure(run: &BenchmarkRun) -> (String, String) {
@@ -289,7 +289,7 @@ impl BenchmarkLedger {
             .collect()
     }
 
-    /// Headline aggregate over matching entries (LoopX current aggregate).
+    /// Headline aggregate over matching entries (reference current aggregate).
     pub fn aggregate(&self, benchmark_id: Option<&str>) -> serde_json::Value {
         let matched = match benchmark_id {
             Some(b) => self.query(Some(b), None, None),
@@ -339,8 +339,8 @@ mod tests {
         BenchmarkRun {
             benchmark_id: "skillsbench@1.1".to_string(),
             case_ids: vec!["case-42".to_string()],
-            arm_id: "loopx_product_mode".to_string(),
-            route: "loopx-product-mode".to_string(),
+            arm_id: "future_loop_product_mode".to_string(),
+            route: "future-loop-product-mode".to_string(),
             mode: "product".to_string(),
             agent_model: "future/deepseek-v4-flash".to_string(),
             job_name: "job-1".to_string(),
@@ -437,8 +437,10 @@ mod tests {
 
     #[test]
     fn ledger_append_is_idempotent_and_persists() {
-        let dir =
-            std::env::temp_dir().join(format!("loopx-bench-ledger-{}", crate::state::now_epoch()));
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-bench-ledger-{}",
+            crate::state::now_epoch()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let mut ledger = BenchmarkLedger::open(&dir).unwrap();
         let entry = build_benchmark_run_ledger_entry(&sample_run(), 1);
@@ -458,9 +460,10 @@ mod tests {
 
     #[test]
     fn query_and_aggregate() {
-        let mut ledger = BenchmarkLedger::open(
-            &std::env::temp_dir().join(format!("loopx-bench-agg-{}", crate::state::now_epoch())),
-        )
+        let mut ledger = BenchmarkLedger::open(&std::env::temp_dir().join(format!(
+            "future-loop-bench-agg-{}",
+            crate::state::now_epoch()
+        )))
         .unwrap();
         ledger
             .append(build_benchmark_run_ledger_entry(&sample_run(), 1))

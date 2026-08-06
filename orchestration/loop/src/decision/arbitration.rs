@@ -4,7 +4,7 @@
 //! G-2 + G-11: the 9 scheduler dispositions plus the consistency validation
 //! that fails closed to `CONSISTENCY_REPAIR` when the final contract is
 //! structurally inconsistent. Lower-level quota fields never participate in
-//! branch selection (LoopX rule): only the final interaction contract's
+//! branch selection (reference rule): only the final interaction contract's
 //! schema / mode / channels decide.
 //!
 //! Rollout (refactor plan §5.1 trade-off): **observe-only first** — every
@@ -25,10 +25,10 @@ use serde::Serialize;
 
 use crate::contract::{InteractionContract, ShouldRunPacket, TurnMode};
 
-/// LoopX scheduler-arbitration record schema version.
+/// reference scheduler-arbitration record schema version.
 pub const SCHEDULER_ARBITRATION_SCHEMA_VERSION: &str = "scheduler_arbitration_v0";
 
-/// Fail-closed repair action (LoopX `consistency_error.repair_action`).
+/// Fail-closed repair action (reference `consistency_error.repair_action`).
 pub const CONSISTENCY_REPAIR_ACTION: &str =
     "rebuild interaction_contract from the current quota decision, then rerun \
      quota before applying scheduler cadence";
@@ -79,7 +79,7 @@ impl SchedulerDisposition {
 }
 
 /// The arbitration record: disposition + reason_code + contract mode + any
-/// structural errors (LoopX `SchedulerArbitration`).
+/// structural errors (reference `SchedulerArbitration`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SchedulerArbitration {
     pub disposition: SchedulerDisposition,
@@ -95,7 +95,7 @@ impl SchedulerArbitration {
     }
 
     /// The fail-closed repair payload, present only when inconsistent
-    /// (LoopX `consistency_error()`).
+    /// (reference `consistency_error()`).
     pub fn consistency_error(&self) -> Option<serde_json::Value> {
         if self.ok() {
             return None;
@@ -110,9 +110,9 @@ impl SchedulerArbitration {
     }
 }
 
-/// Map our typed turn mode onto the LoopX interaction-contract mode string
+/// Map our typed turn mode onto the reference interaction-contract mode string
 /// the classifier branches on.
-fn loopx_mode(mode: TurnMode) -> &'static str {
+fn future_loop_mode(mode: TurnMode) -> &'static str {
     match mode {
         TurnMode::BoundedDelivery => "bounded_delivery",
         TurnMode::AskUser => "user_gate",
@@ -123,7 +123,7 @@ fn loopx_mode(mode: TurnMode) -> &'static str {
     }
 }
 
-/// LoopX `_classify_disposition`: branch order is normative and preserved.
+/// reference `_classify_disposition`: branch order is normative and preserved.
 pub fn classify_disposition(
     mode: &str,
     user_required: bool,
@@ -187,9 +187,9 @@ pub fn classify_disposition(
 
 /// Derive scheduler authority from the final interaction contract. Structural
 /// contradictions inside the contract fail closed to `CONSISTENCY_REPAIR`
-/// (LoopX `build_scheduler_arbitration`). The typed contract guarantees
+/// (reference `build_scheduler_arbitration`). The typed contract guarantees
 /// channel presence and boolean typing (LoopX's dict-level missing/bool-type
-/// checks are compile-time here); the remaining checks mirror LoopX exactly.
+/// checks are compile-time here); the remaining checks mirror reference exactly.
 pub fn build_scheduler_arbitration(
     contract: &InteractionContract,
     agent_scope_frontier_actions: &[&str],
@@ -200,7 +200,7 @@ pub fn build_scheduler_arbitration(
         errors.push("interaction_contract.schema_version_mismatch".to_string());
     }
 
-    let mode = loopx_mode(contract.mode);
+    let mode = future_loop_mode(contract.mode);
     let user_required = contract.user_channel.action_required;
     let must_attempt = contract.agent_channel.must_attempt;
     let delivery_allowed = contract.agent_channel.delivery_allowed;

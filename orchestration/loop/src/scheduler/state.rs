@@ -1,7 +1,7 @@
 //! Scheduler state machine (G-10) — rrule recurrence + progression + host
 //! update failures, persisted across decision cycles.
 //!
-//! Mirrors LoopX `control_plane/scheduler/state.py` (354 lines): the state
+//! Mirrors reference `control_plane/scheduler/state.py` (354 lines): the state
 //! machine that turns a cadence class into a concrete MINUTELY rrule, walks
 //! a `progression_minutes` backoff sequence across cycles, and retains host
 //! update failures (target vs observed rrule drift) with a bounded cache.
@@ -9,11 +9,11 @@
 //! Scope trade-off (refactor plan §5.2 G-10): only the cadence-class subset
 //! `once` / `hourly` / `daily` / `weekly` is implemented plus counter-based
 //! progression — no full RFC5545 recur semantics or free-text rrule parsing
-//! beyond `FREQ=MINUTELY;INTERVAL=N` (which is what LoopX itself emits).
+//! beyond `FREQ=MINUTELY;INTERVAL=N` (which is what reference itself emits).
 //!
 //! Persistence: one JSON file per (goal, agent, surface, state-key) under
 //! `<store-root>/goals/<goal_id>/scheduler-state/<agent>/<surface>/<hash>.json`,
-//! written atomically (tmp + rename, like LoopX `write_scheduler_state`).
+//! written atomically (tmp + rename, like reference `write_scheduler_state`).
 //! `store.rs` backup/restore carries the `scheduler-state` directory so a
 //! restore does not silently reset progression (P1 risk: replay/backup
 //! interaction).
@@ -25,25 +25,25 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// File schema version (LoopX `SCHEDULER_STATE_SCHEMA_VERSION`).
-pub const SCHEDULER_STATE_SCHEMA_VERSION: &str = "loopx_scheduler_state_v0";
+/// File schema version (reference `SCHEDULER_STATE_SCHEMA_VERSION`).
+pub const SCHEDULER_STATE_SCHEMA_VERSION: &str = "future_loop_scheduler_state_v0";
 /// Host-update-failure record schema version (LoopX).
 pub const SCHEDULER_HOST_UPDATE_FAILURE_SCHEMA_VERSION: &str = "scheduler_host_update_failure_v0";
 /// Bounded cache of retained failures (LoopX).
 pub const SCHEDULER_HOST_UPDATE_FAILURE_CACHE_LIMIT: usize = 4;
 /// Retention TTL for host update failures (LoopX: 24h).
 pub const SCHEDULER_HOST_UPDATE_FAILURE_TTL_SECS: u64 = 24 * 60 * 60;
-/// Default surface (LoopX `CODEX_APP_SURFACE`).
+/// Default surface (reference `CODEX_APP_SURFACE`).
 pub const CODEX_APP_SURFACE: &str = "codex_app";
-/// Default state key (LoopX `CODEX_APP_STATEFUL_BACKOFF_STATE_KEY`).
+/// Default state key (reference `CODEX_APP_STATEFUL_BACKOFF_STATE_KEY`).
 pub const CODEX_APP_STATEFUL_BACKOFF_STATE_KEY: &str = "scheduler_hint.codex_app.stateful_backoff";
-/// Stateful-backoff payload schema (LoopX `CODEX_APP_STATEFUL_BACKOFF_SCHEMA_VERSION`).
+/// Stateful-backoff payload schema (reference `CODEX_APP_STATEFUL_BACKOFF_SCHEMA_VERSION`).
 pub const CODEX_APP_STATEFUL_BACKOFF_SCHEMA_VERSION: &str = "codex_app_stateful_backoff_v0";
 /// Default monitor-wait backoff progression in minutes (LoopX
 /// `MONITOR_WAIT_PROGRESSION_MINUTES = [15, 30, 60]`).
 pub const MONITOR_WAIT_PROGRESSION_MINUTES: &[i64] = &[15, 30, 60];
 
-/// Build `FREQ=MINUTELY;INTERVAL=N` (LoopX `rrule_for_minutes`).
+/// Build `FREQ=MINUTELY;INTERVAL=N` (reference `rrule_for_minutes`).
 pub fn rrule_for_minutes(minutes: i64) -> String {
     format!("FREQ=MINUTELY;INTERVAL={}", minutes.max(1))
 }
@@ -81,7 +81,7 @@ pub fn scheduler_rrule_interval_minutes(value: &str) -> Option<i64> {
 /// Map a cadence class onto a MINUTELY rrule for the supported subset
 /// (`once` / `hourly` / `daily` / `weekly`). Recurring classes return
 /// `Some(rrule)`; `once` and non-recurring classes return `None` (single
-/// execution, no cross-cycle recurrence — LoopX `once` semantics).
+/// execution, no cross-cycle recurrence — reference `once` semantics).
 pub fn rrule_for_cadence_class(cadence_class: &str) -> Option<String> {
     match normalize_scheduler_rrule(cadence_class)
         .to_ascii_lowercase()
@@ -97,7 +97,7 @@ pub fn rrule_for_cadence_class(cadence_class: &str) -> Option<String> {
     }
 }
 
-/// Human label for a minutes interval (LoopX scheduler display).
+/// Human label for a minutes interval (reference scheduler display).
 pub fn cadence_label(minutes: i64) -> String {
     match minutes {
         m if m % (7 * 24 * 60) == 0 => format!("{}w", m / (7 * 24 * 60)),
@@ -108,7 +108,7 @@ pub fn cadence_label(minutes: i64) -> String {
 }
 
 /// Parse a monitor cadence interval string (`15m`, `1h`, `2d`, `30s`) into
-/// seconds — LoopX `monitor_cadence_delta` (MONITOR_CADENCE_PATTERN).
+/// seconds — reference `monitor_cadence_delta` (MONITOR_CADENCE_PATTERN).
 /// Returns `None` for unparsable or empty values. Cadence classes map
 /// through [`rrule_for_cadence_class`].
 pub fn monitor_cadence_secs(value: &str) -> Option<u64> {
@@ -138,7 +138,7 @@ pub fn monitor_cadence_secs(value: &str) -> Option<u64> {
 
 // ── Host update failures ───────────────────────────────────────────────────
 
-/// A recorded host-update failure (LoopX `scheduler_host_update_failure_v0`):
+/// A recorded host-update failure (reference `scheduler_host_update_failure_v0`):
 /// the control plane asked the host to switch to `target_rrule` but observed
 /// `observed_host_rrule` instead. Retained for a bounded TTL so the next tick
 /// can suppress a redundant update and surface drift diagnostics.
@@ -194,7 +194,7 @@ pub fn normalize_host_update_failure(value: &serde_json::Value) -> Option<HostUp
 }
 
 /// Dedup by (target, observed) pair, keep the latest, cap at the cache limit
-/// (LoopX `normalize_scheduler_host_update_failures`).
+/// (reference `normalize_scheduler_host_update_failures`).
 pub fn normalize_host_update_failures(value: &[serde_json::Value]) -> Vec<HostUpdateFailure> {
     let mut normalized: Vec<HostUpdateFailure> = vec![];
     for candidate in value {
@@ -215,7 +215,7 @@ pub fn normalize_host_update_failures(value: &[serde_json::Value]) -> Vec<HostUp
 }
 
 /// Keep failures inside the TTL (and matching an expected observed rrule,
-/// when given) — LoopX `retained_scheduler_host_update_failures`.
+/// when given) — reference `retained_scheduler_host_update_failures`.
 pub fn retained_host_update_failures(
     failures: &[HostUpdateFailure],
     now_epoch: u64,
@@ -241,7 +241,7 @@ pub fn retained_host_update_failures(
 }
 
 /// Merge one failure into an existing list: retain (TTL + pair dedup) then
-/// append — LoopX `merge_scheduler_host_update_failure`. A re-recorded
+/// append — reference `merge_scheduler_host_update_failure`. A re-recorded
 /// (target, observed) pair replaces the previous record (latest wins).
 pub fn merge_host_update_failure(
     failures: &[HostUpdateFailure],
@@ -252,7 +252,7 @@ pub fn merge_host_update_failure(
         retained_host_update_failures(failures, now_epoch, Some(&failure.observed_host_rrule));
     let mut combined: Vec<HostUpdateFailure> = retained;
     combined.push(failure);
-    // Dedup by pair, keeping the LATEST occurrence (LoopX normalize appends
+    // Dedup by pair, keeping the LATEST occurrence (reference normalize appends
     // after removing the old pair).
     let mut seen = std::collections::HashSet::new();
     let mut result: Vec<HostUpdateFailure> = Vec::with_capacity(combined.len());
@@ -265,7 +265,7 @@ pub fn merge_host_update_failure(
     result
 }
 
-/// Best-effort parse of a LoopX ISO-8601 timestamp (`failed_at`) to epoch.
+/// Best-effort parse of a reference ISO-8601 timestamp (`failed_at`) to epoch.
 pub fn parse_epoch(iso: &str) -> Option<u64> {
     chrono::DateTime::parse_from_rfc3339(iso)
         .ok()
@@ -275,7 +275,7 @@ pub fn parse_epoch(iso: &str) -> Option<u64> {
 // ── Scheduler state ────────────────────────────────────────────────────────
 
 /// The persisted scheduler state machine record (LoopX
-/// `loopx_scheduler_state_v0`): scope identity, progression cursor, the last
+/// `future_loop_scheduler_state_v0`): scope identity, progression cursor, the last
 /// applied rrule, and retained host update failures.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SchedulerState {
@@ -304,7 +304,9 @@ pub fn normalize_scheduler_state(
     surface: &str,
     state_key: &str,
 ) -> Option<SchedulerState> {
-    if state.schema_version != SCHEDULER_STATE_SCHEMA_VERSION {
+    if state.schema_version != SCHEDULER_STATE_SCHEMA_VERSION
+        && state.schema_version != "loopx_scheduler_state_v0"
+    {
         return None;
     }
     if state.goal_id != goal_id || state.agent_id != agent_id {
@@ -325,7 +327,7 @@ pub fn normalize_scheduler_state(
     Some(state.clone())
 }
 
-/// Build a validated scheduler state (LoopX `build_scheduler_state`).
+/// Build a validated scheduler state (reference `build_scheduler_state`).
 #[allow(clippy::too_many_arguments)]
 pub fn build_scheduler_state(
     goal_id: &str,
@@ -359,7 +361,7 @@ pub fn build_scheduler_state(
     })
 }
 
-/// Stable digest (LoopX `_stable_digest`): FNV-1a over the joined parts,
+/// Stable digest (reference `_stable_digest`): FNV-1a over the joined parts,
 /// hex-encoded to `length` chars. Deterministic across processes and
 /// restarts — the identity anchor for persisted state.
 pub fn stable_digest(parts: &[&str], length: usize) -> String {
@@ -379,7 +381,7 @@ pub fn identity_signature(goal_id: &str, agent_id: &str, surface: &str) -> Strin
 }
 
 /// Reset token: stable digest of the cadence action + identity + profile
-/// (LoopX `reset_token`, 16 hex chars). When the cadence action or identity
+/// (reference `reset_token`, 16 hex chars). When the cadence action or identity
 /// changes, the token changes and the host must reset progression to the
 /// initial interval.
 pub fn reset_token(action: &str, identity_sig: &str, initial_rrule: &str) -> String {
@@ -430,7 +432,7 @@ pub fn apply_next_progression(state: &mut SchedulerState, now_epoch: u64) -> Opt
 
 // ── Persistence ────────────────────────────────────────────────────────────
 
-/// Path for one scheduler state file (LoopX `scheduler_state_path`, rooted
+/// Path for one scheduler state file (reference `scheduler_state_path`, rooted
 /// at the store's goal directory): the state-key hash keeps distinct state
 /// machines (e.g. future scheduler hint kinds) from colliding.
 pub fn scheduler_state_path(
@@ -447,7 +449,7 @@ pub fn scheduler_state_path(
         .join(format!("{state_hash}.json"))
 }
 
-/// Sanitize a path segment (LoopX `_safe_segment`).
+/// Sanitize a path segment (reference `_safe_segment`).
 fn safe_segment(value: &str) -> String {
     let cleaned: String = value
         .chars()

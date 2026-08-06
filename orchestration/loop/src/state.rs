@@ -9,7 +9,7 @@
 use std::time::{Duration, SystemTime};
 
 /// Priority (LoopX: P0/P1/P2 — the decision kernel sorts the frontier by
-/// priority before anything else). Serialized with the EXACT LoopX values.
+/// priority before anything else). Serialized with the EXACT reference values.
 #[derive(
     Debug,
     Clone,
@@ -47,7 +47,7 @@ impl std::fmt::Display for Priority {
 }
 
 /// Task class — LoopX's six-way todo taxonomy. Serialized with the EXACT
-/// LoopX values (advancement_task / continuous_monitor / user_gate /
+/// reference values (advancement_task / continuous_monitor / user_gate /
 /// user_action / blocker). The Kanban "column" is a projection of these axes,
 /// never a single stored string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -71,8 +71,8 @@ pub enum TaskClass {
     Blocker,
 }
 
-/// Lifecycle status — LoopX values open/done/blocked/deferred, plus our
-/// superseded extension (LoopX performs supersede as an operation; keeping it
+/// Lifecycle status — reference values open/done/blocked/deferred, plus our
+/// superseded extension (reference performs supersede as an operation; keeping it
 /// as a status preserves our event-sourced replay).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TodoStatus {
@@ -81,7 +81,7 @@ pub enum TodoStatus {
     #[serde(rename = "done")]
     Done,
     /// Superseded: a better route was discovered; the todo is no longer
-    /// runnable and must not block closure (LoopX 0623 `supersede`).
+    /// runnable and must not block closure (reference 0623 `supersede`).
     #[serde(rename = "superseded")]
     Superseded,
     /// Deferred: held until `resume_when`; due deferred todos return to Open
@@ -123,9 +123,9 @@ pub struct Todo {
     /// Monitor only: consecutive no-change polls (per-monitor counter).
     pub consecutive_no_change: u32,
     /// Monitor only (G-12): the external target this monitor observes
-    /// (LoopX `monitor_target` — e.g. an endpoint / file / URL).
+    /// (reference `monitor_target` — e.g. an endpoint / file / URL).
     pub monitor_target: Option<String>,
-    /// Monitor only (G-12): the poll policy. LoopX vocabulary:
+    /// Monitor only (G-12): the poll policy. reference vocabulary:
     /// `material_transition_only` | `read_only_observation_then_no_spend_if_unchanged`.
     pub monitor_policy: Option<String>,
     /// Monitor only (G-12): recurrence cadence — cadence class
@@ -144,11 +144,11 @@ pub struct Todo {
     pub no_follow_up: bool,
     /// Completion evidence (LoopX: recorded on the todo at complete time).
     pub evidence: Option<String>,
-    /// Claim/lease (LoopX task-lease): which agent lane owns this slice and
+    /// Claim/lease (reference task-lease): which agent lane owns this slice and
     /// when the lease expires. Expired leases return the todo to the frontier.
     pub claimed_by: Option<String>,
     pub lease_expires_at: Option<u64>,
-    /// Capability required to run this todo (LoopX capability gate: a todo is
+    /// Capability required to run this todo (reference capability gate: a todo is
     /// runnable only for agents declaring the capability).
     pub required_capability: Option<String>,
     /// Gate scope flags (LoopX: goal_bound / global_gate — set by bootstrap
@@ -184,7 +184,7 @@ pub fn default_max_validation_attempts() -> u32 {
 }
 
 /// Role (LoopX: role — agent vs user; orthogonal to task_class).
-/// Serialized with the EXACT LoopX values ("agent" / "user").
+/// Serialized with the EXACT reference values ("agent" / "user").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TodoRole {
     #[serde(rename = "agent")]
@@ -366,7 +366,7 @@ impl Todo {
         self
     }
 
-    /// Declare gate scope (LoopX bootstrap sets goal_bound/global_gate).
+    /// Declare gate scope (reference bootstrap sets goal_bound/global_gate).
     pub fn with_gate_scope(mut self, goal_bound: bool, global_gate: bool) -> Self {
         self.goal_bound = goal_bound;
         self.global_gate = global_gate;
@@ -446,7 +446,7 @@ impl Todo {
     }
 }
 
-// ── Task validation (the reference: loopx_turn_task_validation_v0) ────────
+// ── Task validation (the reference: future_loop_turn_task_validation_v0) ────────
 
 pub const MAX_VALIDATION_SCHEMA_VERSION: &str = "future_loop_turn_task_validation_v0";
 

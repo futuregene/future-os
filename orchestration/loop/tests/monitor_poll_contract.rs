@@ -9,7 +9,7 @@ use future_loop::state::{Goal, Todo, TodoStatus};
 use future_loop::store::{Event, Store};
 
 fn tmp_root(tag: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("loopx-monitor-test-{tag}-{}", uuid_like()));
+    let dir = std::env::temp_dir().join(format!("future-loop-monitor-test-{tag}-{}", uuid_like()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.to_string_lossy().into_owned()
 }
@@ -225,7 +225,7 @@ fn no_change_polls_never_enter_the_spend_ledger() {
 // ── G-12: monitor metadata renders into the compat projection anchor ───────
 #[test]
 fn compat_projection_carries_monitor_metadata() {
-    let dir = std::env::temp_dir().join(format!("loopx-monitor-compat-{}", uuid_like()));
+    let dir = std::env::temp_dir().join(format!("future-loop-monitor-compat-{}", uuid_like()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut goal = Goal::new("g1", "objective", dir.to_str().unwrap());
     goal.add(Todo::monitor_with(

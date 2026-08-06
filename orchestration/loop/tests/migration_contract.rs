@@ -8,7 +8,7 @@ use future_loop::store::{Event, Store};
 
 fn tmp_root(tag: &str) -> String {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p2-migration-{tag}-{}",
+        "future-loop-p2-migration-{tag}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
