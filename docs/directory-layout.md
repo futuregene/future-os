@@ -20,7 +20,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── settings.json          # defaultModel, defaultThinkingLevel, … (see tui.md)
 │   ├── keybindings.json       # optional keybinding overrides
 │   ├── debug.log              # TUI runtime log
-│   └── crash.log              # TUI crash log
+│   └── write.log              # raw screen-write log (PI_TUI_WRITE_LOG=1 only)
 ├── app/                       # the desktop GUI (FutureOS app)
 │   ├── app.db                 # SQLite database (threads, runs, approvals, …)
 │   ├── images/                # per-thread image tree (thumb/ + origin/)
@@ -63,8 +63,8 @@ asking you to edit it and restart.
 Owned by `future-tui`. `settings.json` persists client-side settings
 (`defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
 `enabledModelIds`); optional keybinding overrides go in `keybindings.json`;
-`debug.log` / `crash.log` hold runtime and crash logs. See
-[tui.md](tui.md).
+`debug.log` is the always-written runtime log, and `write.log` records raw
+screen writes when `PI_TUI_WRITE_LOG=1`. See [tui.md](tui.md).
 
 ## `~/.future/app/` — desktop GUI
 

@@ -19,7 +19,7 @@ FutureOS 的所有用户状态都存放在 `~/.future/` 下（Windows 为
 │   ├── settings.json          # defaultModel、defaultThinkingLevel 等（见 tui.zh-CN.md）
 │   ├── keybindings.json       # 可选按键绑定覆盖
 │   ├── debug.log              # TUI 运行日志
-│   └── crash.log              # TUI 崩溃日志
+│   └── write.log              # 原始屏幕写入日志（仅 PI_TUI_WRITE_LOG=1）
 ├── app/                       # 桌面 GUI（FutureOS App）
 │   ├── app.db                 # SQLite 数据库（会话线程、run、审批等）
 │   ├── images/                # 每线程图片树（thumb/ + origin/）
@@ -58,8 +58,9 @@ FutureOS 的所有用户状态都存放在 `~/.future/` 下（Windows 为
 
 归 `future-tui` 所有。`settings.json` 持久化客户端侧设置（`defaultModel`、
 `defaultThinkingLevel`、`defaultPermissionLevel`、`enabledModelIds`）；
-可选的按键绑定覆盖放在 `keybindings.json`；`debug.log` / `crash.log`
-保存运行与崩溃日志。见 [tui.zh-CN.md](tui.zh-CN.md)。
+可选的按键绑定覆盖放在 `keybindings.json`；`debug.log` 为始终写入的
+运行日志，设置 `PI_TUI_WRITE_LOG=1` 时 `write.log` 记录原始屏幕写入。
+见 [tui.zh-CN.md](tui.zh-CN.md)。
 
 ## `~/.future/app/` — 桌面 GUI
 

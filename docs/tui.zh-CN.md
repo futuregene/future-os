@@ -60,7 +60,8 @@ future-tui        # 终端 2：终端界面
 TUI 把客户端侧设置持久化到 `~/.future/tui/settings.json`（如 `defaultModel`、
 `defaultThinkingLevel`、`defaultPermissionLevel`、`enabledModelIds`）。可选
 的用户键位覆盖可放在 `~/.future/tui/keybindings.json`。日志：
-`~/.future/tui/debug.log`（运行日志）与 `crash.log`。
+`~/.future/tui/debug.log`（运行日志，始终写入）；设置 `PI_TUI_WRITE_LOG=1`
+时，原始屏幕写入还会记录到 `~/.future/tui/write.log`。
 
 ## 排障
 

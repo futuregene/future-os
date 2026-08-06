@@ -64,7 +64,8 @@ The TUI persists client-side settings to `~/.future/tui/settings.json`
 (e.g. `defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
 `enabledModelIds`). Optional user keybinding overrides can be placed at
 `~/.future/tui/keybindings.json`. Logs: `~/.future/tui/debug.log` (runtime
-log) and `crash.log`.
+log, always written); with `PI_TUI_WRITE_LOG=1`, raw screen writes are
+additionally logged to `~/.future/tui/write.log`.
 
 ## Troubleshooting
 
