@@ -11,6 +11,7 @@ export {
   PROTO_LOADER_OPTIONS,
   resolveProtoPath,
   loadAgentProto,
+  loadGrpcAgentProto,
 } from "./proto.js";
 export { responseData, streamEventData } from "./decode.js";
 export type { DecodableResponse, DecodableEvent } from "./decode.js";

@@ -3,13 +3,17 @@
  * identically to how the TUI/CLI have always loaded it (camelCase fields,
  * int64 as String, enums as String, defaults filled, oneofs exposed).
  *
- * `EMBEDDED_PROTO` is regenerated from `proto/future.proto` by
- * `scripts/generate-proto.ts` — do not edit it by hand.
+ * The EMBEDDED_PROTO constant below is regenerated from `proto/future.proto`
+ * by `scripts/generate-proto.ts` — do not edit it by hand. The regeneration
+ * anchors on the EMBEDDED_PROTO declaration and the __EMBEDDED_PROTO_END__
+ * marker that follows it, so proto comments containing backticks or
+ * semicolons cannot corrupt the template literal.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 
 // The wire schema, embedded so standalone binaries need no external file.
@@ -1164,233 +1168,8 @@ message ProjectedRunEvent {
   // so projection snapshots and live frames decode through one path.
   EventPayload payload = 20;
 }
-`; new clients read the typed payload and fall back to \`data\`
-// when it is absent (old agent). Fields marked \`optional\` preserve the
-// null-vs-absent semantics of the JSON shape.
-//
-// Wire casing: list_sessions / get_state / get_events_since are camelCase
-// JSON; get_session_entries mirrors the on-disk entry schema (snake_case).
-// For one migration window the agent additionally emits legacy aliases for
-// the keys that changed spelling (list_sessions snake_case keys; get_state
-// \`session_name\` and snake_case TerminalAck keys) so pre-migration clients
-// keep working — new clients read the canonical keys only.
-
-// One row of the list_sessions response.
-message SessionSummary {
-  string id = 1;
-  // User-assigned session name; unset when unnamed (JSON null on the wire).
-  optional string session_name = 2;
-  string model = 3;
-  string cwd = 4;
-  // "YYYY-MM-DD HH:MM:SS" (local time).
-  string updated_at = 5;
-  string parent_session_id = 6;
-  // First user message, for list display; unset when absent (JSON null).
-  optional string first_message = 7;
-  int32 query_count = 8;
-  // Whether the agent is streaming a response for this session right now.
-  bool is_streaming = 9;
-}
-
-// One displayable entry of a session (get_session_entries). Field names match
-// the on-disk JSONL schema. Like all payload-contract messages this is
-// documentation of JSON packed into a string, not a wire type — several fields
-// below are declared \`string\` but carry *serialized JSON* (an object/array) as
-// their value; consumers must JSON-parse them. This is called out per field
-// rather than pretending the shape is a scalar string.
-message SessionEntry {
-  string id = 1;
-  // "user" | "assistant" | "tool" (the entry's message role).
-  string role = 2;
-  // Display text for message entries; the RAW session_info JSON object
-  // serialized to a string for the session_info entry — a \`string\` here that is
-  // NOT plain text in that case (see content_is_object).
-  string content = 3;
-  string name = 4;
-  // Tool call arguments, tool entries. Serialized JSON object (a JSON string).
-  string tool_args = 5;
-  // RFC3339.
-  string timestamp = 6;
-  // Reasoning text, assistant entries (absent when empty).
-  optional string thinking = 7;
-  // Structured per-entry metadata (e.g. user attachments). Serialized JSON
-  // object in a string, not a scalar; absent when the entry has none.
-  optional string meta = 8;
-  // Pending tool calls, assistant entries. Serialized JSON array of ToolCall;
-  // absent when the entry has none.
-  optional string tool_calls = 9;
-  // Output tokens of the run this reply concluded (footer display).
-  optional int64 output_tokens = 10;
-  // Wall-clock duration of that run in ms (footer display).
-  optional int64 duration_ms = 11;
-  // Discriminator for \`content\`: true when the original JSON value was an
-  // object (the session_info entry) and the string carries serialized JSON;
-  // false when it is plain display text. Lets decoders re-inflate \`content\`
-  // into the exact original JSON value.
-  bool content_is_object = 12;
-}
-
-// One event as replayed by get_events_since. Field names mirror the
-// StreamEvent envelope.
-message ReplayEvent {
-  string type = 1;
-  // JSON-serialised event payload (see StreamEvent.data).
-  string data = 2;
-  string run_id = 3;
-  int64 idx = 4;
-  string session_id = 5;
-  int64 epoch = 6;
-  string event_id = 7;
-  string timestamp = 8;
-  int64 session_idx = 9;
-  int64 run_sequence = 10;
-
-  // Typed event payload; see StreamEvent.payload. Kept in sync with \`data\`
-  // so replayed events decode through the same path as live ones.
-  EventPayload payload = 20;
-}
-
-// get_events_since response. When the requested cursor predates the replay
-// ring, \`projection\` replaces the event tail with a compressed snapshot.
-message EventsSince {
-  string run_id = 1;
-  repeated ReplayEvent events = 2;
-  // True when \`projection\` carries a snapshot instead of a complete tail.
-  bool truncated = 3;
-  ProjectionSnapshot projection = 4;
-}
-
-// A compressed projection of a run's events (coalesced deltas).
-message ProjectionSnapshot {
-  string run_id = 1;
-  int64 cursor = 2;
-  repeated ReplayEvent events = 3;
-}
-
-// =============================================================================
-// gRPC Service Definition
-// =============================================================================
-
-service FutureAgent {
-  // Unary RPC: send a command, get a response.
-  // Used by the TUI and channel bridge for all non-streaming operations
-  // (prompt, get_state, new_session, abort, set_model, etc.).
-  rpc ExecuteCommand(RpcCommand) returns (RpcResponse);
-
-  // Server-side streaming RPC: subscribe to agent events.
-  // The TUI uses this for real-time text/tool/thinking updates.
-  rpc StreamEvents(StreamRequest) returns (stream StreamEvent);
-}
-
-// ── StreamRequest ───────────────────────────────────────────────────────────
-
-message StreamRequest {
-  // Optional list of event types to receive.  Empty = all events.
-  // Valid types: "ping", "agent_start", "agent_end", "text_chunk",
-  // "thinking_start", "thinking_delta", "thinking_end", "tool_start",
-  // "tool_delta", "tool_end", "approval_request", "error", "stop".
-  repeated string event_types = 1;
-
-  // Scope events to a specific session.  Required so the agent
-  // knows which session's broadcaster to subscribe to.
-  string session_id = 2;
-
-  // Atomic resume parameters. When atomic_attach is true, the server registers
-  // the receiver and snapshots buffered events under the journal's same lock.
-  string run_id = 3;
-  int64 after_idx = 4;
-  bool atomic_attach = 5;
-}
-
-// ── StreamEvent ─────────────────────────────────────────────────────────────
-
-message StreamEvent {
-  // Event type string (see StreamRequest.event_types).
-  //
-  // Canonical vocabulary (all clients key off these):
-  //   agent_start / agent_end      run lifecycle (agent_start carries the run's
-  //                                started_at_ms; agent_end carries error/usage/
-  //                                duration_ms — the authoritative run totals)
-  //   user_message                 the user's prompt message
-  //   text_chunk                   assistant text token (the projected token stream)
-  //   thinking_start / thinking_delta / thinking_end   reasoning stream
-  //   tool_start                   tool execution began  {tool_id, tool_name, tool_args}
-  //   tool_delta                   streaming tool-arg fragment {tool_id, text}
-  //   tool_end                     tool execution finished {tool_id, text, error?,
-  //                                exit_code?, is_soft_fail?, target_path?}
-  //   approval_request / approval_decision
-  //   usage                        token accounting
-  //   error                        run error
-  //   tool_sandboxed / persistence_error / compaction_end   sideband signals
-  //
-  // Provider-specific aliases are normalized inside the Agent and never cross
-  // this RPC boundary.
-  string type = 1;
-
-  // JSON-serialised event payload.  Structure depends on the event type.
-  // Examples:
-  //   text_chunk:    {"text": "Hello"}
-  //   thinking_delta: {"text": "I need to..."}
-  //   tool_start:    {"tool_id": "...", "tool_name": "read"}
-  //   tool_end:      {"tool_id": "...", "text": "output..."}
-  //                  plus structured semantics when applicable: shell results
-  //                  carry exit_code (and is_soft_fail for a bare
-  //                  grep/diff/cmp/test/findstr exit 1); write/edit carry
-  //                  target_path. Consumers must not re-parse \`text\` for these.
-  //   tool_delta:    {"tool_id": "...", "text": "partial args..."}
-  //   approval_request: {"approval_request_id": "...", "tool_name": "shell", ...}
-  //   agent_start:   {"started_at_ms": 1750000000000}
-  //   agent_end:     {"error": "...", "usage": {"output_tokens": N}, "duration_ms": N}
-  //                  (error present only on failure)
-  string data = 2;
-
-  // P1: client-side ordering/dedup. run_id is unique per user run (assigned once
-  // at the is_streaming false→true edge); idx is monotonic within a run.
-  string run_id = 3;
-  int64 idx = 4;
-
-  // When true, this frame replaces the consumer's local projection through
-  // snapshot_cursor. It is returned by atomic AttachRun when the requested
-  // cursor predates the bounded replay ring.
-  bool projection_snapshot = 5;
-  repeated ProjectedRunEvent snapshot_events = 6;
-  int64 snapshot_cursor = 7;
-
-  // Canonical run identity (P1 envelope). session_id scopes the event to its
-  // conversation; epoch is the run's monotonic generation within the session
-  // (a run accepted after an abort/restart gets a higher epoch). Together with
-  // run_id + idx these let any consumer route, dedup and detect gaps without
-  // external context.
-  string session_id = 8;
-  int64 epoch = 9;
-  string event_id = 10;
-  string timestamp = 11;
-  // Monotonic ordering identity for session-scoped events (settings, name,
-  // cwd, config). It is independent of any run's idx.
-  int64 session_idx = 12;
-  // Monotonic ordering identity across runs in this session.
-  int64 run_sequence = 13;
-
-  // Typed event payload (typed-RPC migration). Absent on old agents and for
-  // pass-through event types — consumers MUST fall back to the JSON \`data\`
-  // string when unset. Dual-written with \`data\` during the migration window.
-  // Field numbers 14-19 are reserved for future envelope fields.
-  EventPayload payload = 20;
-}
-
-// A compressed semantic event contained in a projection snapshot. Its idx is
-// the latest source cursor folded into this event, preserving chronological
-// ordering while allowing adjacent token deltas to be coalesced.
-message ProjectedRunEvent {
-  string type = 1;
-  string data = 2;
-  int64 idx = 3;
-
-  // Typed event payload; see StreamEvent.payload. Kept in sync with \`data\`
-  // so projection snapshots and live frames decode through one path.
-  EventPayload payload = 20;
-}
 `;
+// __EMBEDDED_PROTO_END__
 
 /** Loader options shared by every TS client (kept identical to the Rust-side
  * JSON conventions: camelCase, int64→String, enum→String, defaults, oneofs). */
@@ -1413,7 +1192,7 @@ export function resolveProtoPath(): string {
     return process.env.FUTURE_PROTO_PATH;
   }
   const here = path.dirname(fileURLToPath(import.meta.url));
-  // dist/rpc/proto.js → repo root is three levels up in a checkout; the
+  // dist/proto.js → repo root is three levels up in a checkout; the
   // candidate list tolerates both dev (src) and built (dist) layouts.
   for (const up of [3, 4, 5]) {
     const candidate = path.resolve(here, ...Array(up).fill(".."), "proto", "future.proto");
@@ -1434,4 +1213,17 @@ export function resolveProtoPath(): string {
  */
 export function loadAgentProto(): protoLoader.PackageDefinition {
   return protoLoader.loadSync(resolveProtoPath(), PROTO_LOADER_OPTIONS);
+}
+
+/**
+ * Load the proto and register it with grpc-js, returning the `proto`
+ * namespace (service constructors such as `FutureAgent`). This is the
+ * drop-in replacement for each client's former local
+ * `grpc.loadPackageDefinition(protoLoader.loadSync(...)).proto`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function loadGrpcAgentProto(): any {
+  const loaded = grpc.loadPackageDefinition(loadAgentProto());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (loaded as any).proto;
 }

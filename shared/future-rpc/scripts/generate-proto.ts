@@ -21,15 +21,19 @@ const proto = fs
   .replace(/\$\{/g, "\\${");
 
 let client = fs.readFileSync(target, "utf-8");
+// Anchor on the opening marker and the explicit end marker (not a bare "`;"),
+// so proto comments containing backticks/semicolons can't corrupt the literal.
 const startMarker = "export const EMBEDDED_PROTO = `";
+const endMarker = "// __EMBEDDED_PROTO_END__";
 const startIdx = client.indexOf(startMarker);
-const endIdx = client.indexOf("`;", startIdx + startMarker.length);
+const endIdx = client.indexOf(endMarker, startIdx);
 
 if (startIdx === -1 || endIdx === -1) {
-  console.error(`Could not find EMBEDDED_PROTO in ${target}`);
+  console.error(`Could not find EMBEDDED_PROTO markers in ${target}`);
   process.exit(1);
 }
 
-client = client.slice(0, startIdx + startMarker.length) + proto + client.slice(endIdx);
+client =
+  client.slice(0, startIdx + startMarker.length) + proto + "`;\n" + client.slice(endIdx);
 fs.writeFileSync(target, client);
 console.log(`Embedded proto updated in ${target}`);
