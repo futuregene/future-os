@@ -46,12 +46,17 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-TS_CLI="$ROOT/cli/dist/future"
+TS_CLI_BUILT="$ROOT/cli/dist/future"
 DIFF_VERSION="0.0.0-diff+local"
 WORK="$(mktemp -d /tmp/cli-diff.XXXXXX)"
-# The Rust CLI is run from a COPY so its executable dir has no future-agent
-# sibling — `future init` reports the sibling when present, and the TS CLI
-# (cli/dist) has none. Equal layouts are required for byte-identical output.
+# Both CLIs are run from COPIES under $WORK so that (a) neither executable
+# dir has a future-agent sibling (`future init` reports the sibling when
+# present; the TS cli/dist has none) and (b) a concurrent rebuild of
+# $ROOT/cli/dist/future or target/debug/future (e.g. the loop harness's
+# post-commit build, which regenerates version.generated.ts with the leaked
+# FUTURE_VERSION) cannot clobber the binaries mid-corpus. Equal layouts are
+# required for byte-identical output.
+TS_CLI="$WORK/ts-bin/future"
 RUST_CLI="$WORK/rust-bin/future"
 RUST_CLI_BUILT="$ROOT/target/debug/future"
 
@@ -110,6 +115,8 @@ build_ts() {
      FUTURE_VERSION="$DIFF_VERSION" npm run build >/dev/null && \
      FUTURE_VERSION="$DIFF_VERSION" bun build --compile dist/index.js --outfile dist/future >/dev/null 2>&1) \
     || { err "TS CLI build failed (need node/npm/bun + npm install in cli/)"; exit 2; }
+  mkdir -p "$(dirname "$TS_CLI")"
+  cp "$TS_CLI_BUILT" "$TS_CLI"
 }
 
 build_rust() {
@@ -117,9 +124,21 @@ build_rust() {
   (cd "$ROOT" && FUTURE_VERSION="$DIFF_VERSION" \
      rustup run 1.97.0 cargo build -p cli-rust >/dev/null 2>&1) \
     || { err "Rust CLI build failed"; exit 2; }
-  # Copy to an isolated dir WITHOUT a future-agent sibling (see RUST_CLI).
+  # Copy to an isolated dir WITHOUT a future-agent sibling (see TS_CLI).
   mkdir -p "$(dirname "$RUST_CLI")"
   cp "$RUST_CLI_BUILT" "$RUST_CLI"
+}
+
+# Both binaries must bake the pinned version; anything else means a stale or
+# clobbered build (e.g. a concurrent gen-version with the leaked FUTURE_VERSION)
+# and would fail every --version case with a misleading diff.
+sanity_version() {
+  local bin="$1" v
+  v="$("$bin" --version 2>/dev/null | head -1)"
+  if [[ "$v" != "future v$DIFF_VERSION" ]]; then
+    err "$bin --version printed '$v' — expected 'future v$DIFF_VERSION'; stale/clobbered build?"
+    exit 2
+  fi
 }
 
 # ── scenario state (set up per group, torn down on group change) ───────────
@@ -369,6 +388,8 @@ show_diff() {
 
 build_ts
 build_rust
+sanity_version "$TS_CLI"
+sanity_version "$RUST_CLI"
 
 MOCK_PORT="$(free_port)"
 MOCK2_PORT="$(free_port)"
