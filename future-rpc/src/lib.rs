@@ -25,6 +25,7 @@ pub mod payloads_ext;
 
 pub mod decode;
 pub mod encode;
+pub mod events;
 
 #[cfg(test)]
 mod parity;

@@ -8,6 +8,7 @@ name = "future-channel"
 path = "src/main.rs"
 
 [dependencies]
+future-rpc = { path = "../future-rpc" }
 tonic.workspace = true
 prost.workspace = true
 tokio.workspace = true
@@ -32,5 +33,4 @@ url = "2"
 async-trait.workspace = true
 
 [build-dependencies]
-tonic-build.workspace = true
 prost-build.workspace = true

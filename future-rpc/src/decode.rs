@@ -272,7 +272,7 @@ pub(crate) fn session_state_from_proto(state: &proto::SessionState) -> GetStateP
 
 /// Re-inflate a serialized-JSON carrier field into the original JSON value.
 /// Empty strings decode to `Value::Null` (the wire uses them for null/absent).
-fn inflate_json_value(raw: &str) -> Value {
+pub(crate) fn inflate_json_value(raw: &str) -> Value {
     if raw.is_empty() {
         return Value::Null;
     }

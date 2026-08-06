@@ -1,32 +1,26 @@
 // build.rs — Proto code generation for FutureChannel.
 //
-// Proto code generation happens via `make generate-proto`, NOT here.
-// The generated files (src/generated/*.rs) are checked into git so normal
-// builds never need protoc.
+// The agent gRPC contract (future.proto) is generated once in the future-rpc
+// crate; this crate consumes it via that dependency. Only the Feishu
+// WebSocket frame codec (feishu_ws.proto) is generated here.
+//
+// Code generation happens via `make generate-proto`, NOT on normal builds:
+// the generated file (src/generated/feishu_ws.rs) is checked into git, so
+// protoc is never required to compile the channel bridge.
 
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=REGENERATE_PROTO");
-    // Proto regeneration is opt-in via `make generate-proto` (sets the
+    // Regeneration is opt-in via `make generate-proto` (sets the
     // REGENERATE_PROTO env var).  Skip it on normal builds so protoc is
     // never required to compile the channel bridge.
     if std::env::var("REGENERATE_PROTO").is_err() {
         return Ok(());
     }
 
-    let proto_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("proto");
     let feishu_proto_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto");
     let generated_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/generated");
-
-    // Compile future.proto for gRPC client
-    tonic_build::configure()
-        .build_server(false)
-        .build_client(true)
-        .out_dir(&generated_dir)
-        .compile_protos(&[proto_dir.join("future.proto")], &[proto_dir])?;
 
     // Compile feishu_ws.proto for WebSocket frames
     prost_build::Config::new()
