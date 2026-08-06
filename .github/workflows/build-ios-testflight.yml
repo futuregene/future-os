@@ -160,7 +160,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/FutureOS.xcarchive" \
             -allowProvisioningUpdates \
-            -automaticCodeSigning \
+            CODE_SIGN_STYLE=Automatic \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
             archive
 
