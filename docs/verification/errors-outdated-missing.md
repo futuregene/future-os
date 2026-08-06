@@ -78,6 +78,8 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 
 → 已改为「3800+ models across 140+ providers」（en）/「内置 3800+ 模型，覆盖 140+ Provider」（zh）。
 
+> **README 全量复核（2026-08-06，todo_5d852f73fcb6 收尾）**：除 B3/C1 外，README 其余声明逐条对照源码全部无误——沙箱三档（off/manual/sandbox「macOS Seatbelt, macOS only」与 proto 注释完全一致）、JSONL 会话 + fork/clone/tree + query-count（agent/src/session/mod.rs）、YAML frontmatter 技能多目录发现（agent/src/skills/mod.rs APP_SKILLS_DIR + AGENTS_SKILLS_DIR）、自动压缩 + 上下文超长指数退避重试（agent/src/agent/run_loop.rs `is_retryable_size_error` → 压缩后重试，`delay_ms = 2000 * (1 << (retry_attempt-1))`；llm/mod.rs L299 `context_length_exceeded`）、`future auth login` 设备码 + 自动同步模型列表（cli/src/commands/auth.ts saveAuth + agent sync_future_models RPC）、future-agent:50051 / future-tui 二进制名、8 个快捷键、全部内部链接与 banner 均存在。**README en/zh 无需再改，后继 todo 可跳过。**
+
 ### B4. wiki-prompt 页面清单无 Feishu/DingTalk/Integrations
 
 | 声明 | 位置 | 依据 |
