@@ -167,8 +167,10 @@ mod tests {
         // assertion from guard). Immune to other tests mutating $HOME
         // concurrently (TestHome in rpc::commands).
         let home = crate::sandbox::paths::canonicalize_lenient(&dirs::home_dir().unwrap());
-        let rules =
-            crate::sandbox::rules::RuleSet::resolve_isolated_with_home(std::path::Path::new(&ws), &home);
+        let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(
+            std::path::Path::new(&ws),
+            &home,
+        );
         let sandbox = ResolvedSandbox {
             tier: SandboxTier::Manual,
             available: crate::sandbox::platform_sandbox_available(),
