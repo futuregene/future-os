@@ -172,7 +172,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 
 → 已补 5 个实现命令入 README（en/zh），现列 17/19；`/export`/`/import` 为 stub 未列入。
 
-> 顺带（代码侧观察，非文档）：TUI help-screen（help-screen.ts）只列 10 个命令、漏 /status /stop /cwd /approve /reject /cancel /reload /compact（其中 /compact 在 help 有、自动补全清单反而没有）——建议一并补齐 help 与补全清单一致性。
+> 顺带（代码侧观察，非文档）：TUI help-screen（help-screen.ts）只列 10 个命令、漏 /status /stop /cwd /approve /reject /cancel /reload /compact（其中 /compact 在 help 有、自动补全清单反而没有）——✅ **已修复**（commit 042a7d07，todo_b98a9381ad9e）：help-screen 现列全部 17 个实现命令，自动补全清单补上 /compact，两处与 dispatch/README 一致。
 
 ### C2. wiki CLI.md 缺命令组
 
@@ -222,7 +222,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 - **X10 架构审计时效 —— ✅ 已裁决（todo_41f779819879）**：architecture-audit 判定为**时点快照，标注历史，不逐行重核**。审计文档与首批修复同批入库（commit `306cf05f`，2026-08-06）：报告 01 H2/H3/H4、报告 04 H1/H2/H4 已在同一 commit 修复（代码注释直接引用审计编号，如 auth_store.rs「audit item 2」、useThreadStore.ts「(H2)」）；仍成立的高危项为报告 01 H1/H5、报告 04 H3。file:line 已漂移（报告 02 引用文件多处移动、报告 03 行数增长、报告 01 proto 行号失效），README.md 顶部已加时效性说明并逐条标注 ✅。后续如需更新审计，应基于当前工作树重跑调查而非修订旧行号。
 - **docs/dist/*.txt —— ✅ 已核验（todo_41f779819879）**：6 个发布包内附说明为**活文档**（build.yml / build-windows-portable.ps1 / build-windows-signed.yml 打包时逐字复制进 dmg/zip/tar.gz），全部声明与当前源码一致（二进制名 `futureos`/`future-agent`/`future` 三件套与 build.yml 装配步骤完全吻合；macOS「未公证」与 FAQ/B8 口径一致；WebView2/WebKitGTK 运行时要求正确）。**无需修改**；`-en.txt` 为参考译文（打包只用 zh `.txt`）。后继 todo 可跳过。
 - **X8 沙箱术语**：README「off / manual / macOS Seatbelt」vs wiki「Manual / Sandboxed (macOS only) / Unrestricted」——属 GUI 核验面。
-- TUI help-screen / 自动补全清单与实现命令集不一致（代码侧小问题，见 C1 备注）。
+- TUI help-screen / 自动补全清单与实现命令集不一致（代码侧小问题，见 C1 备注）—— ✅ 已修复（commit 042a7d07，todo_b98a9381ad9e）。
 
 ---
 
@@ -257,7 +257,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 | 950039f1 | **缺失文档补齐（C3/I-1..I-7）**：docs/README（索引）、tui、directory-layout、channels-config、loop-control-plane 多 agent 章节 |
 | a2b7105c | tui/directory-layout en/zh：crash.log 事实修正 → write.log（PI_TUI_WRITE_LOG=1 才写），4 个文件 |
 
-遗留（见 §E）：GUI 功能声明核验（Using-FutureOS/Settings/Skills/Quick-Start 页面内容）、TUI help-screen 与补全清单不一致（代码侧小问题）。
+遗留（见 §E）：GUI 功能声明核验（Using-FutureOS/Settings/Skills/Quick-Start 页面内容，✅ 已核验 todo_cab9a84ced24）、TUI help-screen 与补全清单不一致（✅ 已修复 commit 042a7d07，todo_b98a9381ad9e）。
 
 ## 附：核验方法
 
@@ -278,7 +278,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 | Artifacts 面板已停用 | Using-FutureOS / Quick-Start / Home en+zh：删除「Chat 右栏 = Runs + Artifacts」「Artifacts 收集产出（预览/复制/导出/上传）」等描述，改为 **Files** 视图（每个会话都有 Files 标签：Chat=临时会话文件夹，Workspace=项目文件夹；可预览/系统打开/从目录树附加到对话） | ContextPanel.tsx L34-57：Artifacts 标签从 fileTabs/gitTabs 注释掉（commit 9756a7b2，2026-07-14「hide the Artifacts tab pending a decision on its purpose」）；chat=files+runs，workspace=files+runs+review；`isFutureReferenceType()` 恒 false → futureos:// 应用对象引用全部失效（parseFutureMarkdown.ts L427-438） |
 | 右栏视图表/三栏描述 | 「Runs / Review / Artifacts」→「Files / Runs / Review」；Chat vs Workspace 表右栏改为 Files+Runs / Files+Runs+Review | 同上 |
 | Skills 内置技能表 | 删除 3 个不存在的技能（Hand-drawn posters、Hand-drawn slides、Subagent），改为实际 **14 个**内置技能：Account/Browser/Database lookup/Deep research/Document/Experimental design/Image/Paper/Peer review/Scientific writing/Skill creator/Slides/Software install/Web | 在线目录 `/client/v1/skills`（2026-08-06 实拉 test.future-os.cn，139 技能中 14 个 `future-*`）；repo `skills/builtin/` 同名 14 目录；`future init`/install-builtin 按 `future-` 前缀过滤（cli/src/commands/skills.ts L246） |
-| Settings General 缺「Auto-upgrade skills」 | 补上：应用每次打开时静默升级已装技能到最新版（默认开） | GeneralPage.tsx autoUpgradeSkills Switch；app_settings.rs `unwrap_or(true)`（注意结构体注释写「Off by default」与实现不符——代码侧小问题） |
+| Settings General 缺「Auto-upgrade skills」 | 补上：应用每次打开时静默升级已装技能到最新版（默认开） | GeneralPage.tsx autoUpgradeSkills Switch；app_settings.rs `unwrap_or(true)`（结构体注释原写「Off by default」与实现不符，**已修正为 On by default**，commit 042a7d07） |
 | FutureGene 按钮名 | 「Click **Connect**」→「Click **Sign in**」；删掉不存在的「Sign in again」（登录态只有 Sign out） | ProvidersPage.tsx：connect 按钮 = t("providers.connect") = "Sign in"（settings.json）；触发 show-onboarding（设备码 OAuth） |
 | 内置 provider 按钮名 | 「Set key / Update key」→「**Configure**」（点开对话框标题为 Set <provider> key） | ProvidersPage.tsx t("providers.set") = "Configure"；keyDialogTitle = "Set {{provider}} key" |
 
