@@ -1,5 +1,5 @@
 //! Usage summary (G-7) — 24h/7d quota usage totals + per-goal rows, mirroring
-//! LoopX `control_plane/quota/usage_summary.py` (`build_usage_summary`).
+//! reference `control_plane/quota/usage_summary.py` (`build_usage_summary`).
 //!
 //! The summary is a read-only projection over the run-history ledger (the
 //! `spend_source` stamped by [`crate::quota::slot_accounting`]). It is what
@@ -9,7 +9,7 @@
 use crate::quota::slot_accounting::{account_history, slot_spend, SlotSpendSource};
 use crate::state::RunRecord;
 
-/// Proxy note (LoopX `USAGE_PROXY_NOTE`): the summary derives from the run
+/// Proxy note (reference `USAGE_PROXY_NOTE`): the summary derives from the run
 /// ledger and excludes token counts and raw thread logs.
 pub const USAGE_PROXY_NOTE: &str = "run-history proxy; excludes token counts and raw thread logs";
 

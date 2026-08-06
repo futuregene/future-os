@@ -1,6 +1,6 @@
 //! The typed decision protocol — what `quota should-run` emits.
 //!
-//! Mirrors LoopX's `loopx_interaction_contract_v0`: a versioned packet with
+//! Mirrors LoopX's `future_loop_interaction_contract_v0`: a versioned packet with
 //! three channels (user / agent / CLI), plus the auxiliary contracts the
 //! host consumes (work lane, execution obligation, automation liveness,
 //! scheduler hint, quota). All structs serialize to JSON so the packet can
@@ -10,9 +10,9 @@ use serde::Serialize;
 
 use crate::decision::arbitration::SchedulerArbitration;
 
-/// LoopX interaction-contract schema version the arbitration layer validates
+/// reference interaction-contract schema version the arbitration layer validates
 /// against (LoopX: `INTERACTION_CONTRACT_SCHEMA_VERSION`).
-pub const INTERACTION_CONTRACT_SCHEMA_VERSION: &str = "loopx_interaction_contract_v0";
+pub const INTERACTION_CONTRACT_SCHEMA_VERSION: &str = "future_loop_interaction_contract_v0";
 
 /// Closed set of turn modes (LoopX: `interaction_contract.mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -104,7 +104,7 @@ pub struct AutomationLiveness {
     pub pause_allowed: bool,
     pub action: String,
     pub reason: String,
-    /// LoopX pause policy: pause/delete only after a bounded self-repair or
+    /// reference pause policy: pause/delete only after a bounded self-repair or
     /// replan path is itself stuck for more eligible turns.
     pub pause_policy: String,
 }
@@ -179,7 +179,7 @@ pub struct TerminalClosure {
     pub source: String,
 }
 
-/// LoopX rollout-event envelope carried on quota packets.
+/// reference rollout-event envelope carried on quota packets.
 #[derive(Debug, Clone, Serialize)]
 pub struct RolloutEvent {
     pub schema_version: String,
@@ -189,7 +189,7 @@ pub struct RolloutEvent {
     pub status: String,
 }
 
-/// The full packet emitted by the decision kernel (LoopX `should_run`).
+/// The full packet emitted by the decision kernel (reference `should_run`).
 /// Field set mirrors LoopX's top-level keys (mode/state/status/waiting_on/
 /// source/recommended_action/rollout_event + the auxiliary contracts).
 #[derive(Debug, Clone, Serialize)]
@@ -238,7 +238,7 @@ pub struct ShouldRunPacket {
     pub replan_ack: ReplanAckSnapshot,
     pub authority: AuthoritySnapshot,
     pub boundary: BoundarySnapshot,
-    /// LoopX field name for the frontier projection (aliased for parity).
+    /// reference field name for the frontier projection (aliased for parity).
     #[serde(rename = "goal_frontier_projection")]
     pub frontier_projection: FrontierProjection,
     pub agent_todo_summary: Option<crate::state::TodoSummary>,

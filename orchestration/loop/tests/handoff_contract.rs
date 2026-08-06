@@ -100,7 +100,7 @@ fn delivery_contract_modes_and_streaks() {
 fn handoff_writes_to_projection_dir() {
     let goal = goal_with(vec![]);
     let project = std::env::temp_dir().join(format!(
-        "loopx-p3-handoff-{}",
+        "future-loop-p3-handoff-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -108,8 +108,8 @@ fn handoff_writes_to_projection_dir() {
     ));
     std::fs::create_dir_all(&project).unwrap();
     let handoff = build_project_handoff(&goal, None);
-    write_project_handoff(&project.to_string_lossy(), &goal, &handoff).unwrap();
-    let path = project.join(".codex/goals/g1/HANDOFF.md");
+    write_project_handoff(&project.join(".future/loop/goals/g1"), &goal, &handoff).unwrap();
+    let path = project.join(".future/loop/goals/g1/HANDOFF.md");
     assert!(path.exists());
     let content = std::fs::read_to_string(path).unwrap();
     assert!(content.contains("# Project Handoff"));

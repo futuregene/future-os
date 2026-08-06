@@ -1,4 +1,4 @@
-//! Worker bridge — the LoopX custom-runner contract over stdio.
+//! Worker bridge — the reference custom-runner contract over stdio.
 //!
 //! A worker (external process/script) connects to the control plane: each
 //! tick the bridge emits the typed packet as one JSON line on stdout, the

@@ -43,7 +43,7 @@ pub const MODEL_BEHAVIOR_SIGNAL_FIELDS: &[&str] = &[
 ];
 
 /// Semantic contract dimensions that must be complete for grading
-/// (LoopX MODEL_BEHAVIOR_SEMANTIC_CONTRACT_FIELDS).
+/// (reference MODEL_BEHAVIOR_SEMANTIC_CONTRACT_FIELDS).
 pub const MODEL_BEHAVIOR_SEMANTIC_CONTRACT_FIELDS: &[&str] =
     &["schema_header", "instruction", "completion_contract"];
 
@@ -238,7 +238,7 @@ pub struct RetainedPacket {
 }
 
 /// Build an in-memory corpus from a base packet + perturbation sources
-/// (LoopX `build_model_behavior_corpus`). Callers must not persist the raw
+/// (reference `build_model_behavior_corpus`). Callers must not persist the raw
 /// packets.
 pub fn build_model_behavior_corpus(
     base_packet: &ShouldRunPacket,
@@ -341,7 +341,7 @@ pub fn extract_behavior_signals(packet: &serde_json::Value) -> serde_json::Value
 }
 
 /// The model-behavior actor: produces an arm response from the rendered
-/// request (LoopX ModelBehaviorActor). The stub is deterministic; an LLM
+/// request (reference ModelBehaviorActor). The stub is deterministic; an LLM
 /// actor parses the same behavior-signal schema from its output.
 pub trait ModelBehaviorActor {
     fn id(&self) -> &str;
@@ -361,7 +361,7 @@ impl ModelBehaviorActor for StubActor {
     }
 }
 
-/// One pair-qualification run (LoopX run_model_behavior_qualification_pair).
+/// One pair-qualification run (reference run_model_behavior_qualification_pair).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairResult {
     pub status: String, // evaluated | fail_closed | actor_failed
@@ -378,7 +378,7 @@ pub struct PairResult {
 }
 
 /// Run one full/candidate pair through the actor with the given arm order
-/// (LoopX `run_model_behavior_qualification_pair`, minimal). An arm whose
+/// (reference `run_model_behavior_qualification_pair`, minimal). An arm whose
 /// packet fails the hard-invariant gate is fail_closed (the expected outcome
 /// for candidate ablations).
 pub fn run_model_behavior_qualification_pair(
@@ -482,7 +482,7 @@ pub fn run_model_behavior_qualification_pair(
 }
 
 /// Semantic-contract checks over a rendered request: schema header,
-/// instruction, completion contract (LoopX MODEL_BEHAVIOR_SEMANTIC_CONTRACT
+/// instruction, completion contract (reference MODEL_BEHAVIOR_SEMANTIC_CONTRACT
 /// dimensions).
 pub fn semantic_contract_checks(request: &str) -> Vec<(&'static str, bool)> {
     vec![
@@ -547,7 +547,7 @@ pub struct CaseOutcome {
     pub runs: Vec<serde_json::Value>,
 }
 
-/// Corpus run result (LoopX MODEL_BEHAVIOR_CORPUS_RESULT_SCHEMA_VERSION).
+/// Corpus run result (reference MODEL_BEHAVIOR_CORPUS_RESULT_SCHEMA_VERSION).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorpusResult {
     pub schema_version: String,
@@ -562,7 +562,7 @@ pub struct CorpusResult {
     pub persistence_boundary: serde_json::Value,
 }
 
-/// Run a corpus against an actor (LoopX `run_model_behavior_corpus`).
+/// Run a corpus against an actor (reference `run_model_behavior_corpus`).
 /// `repeats` must be between 2 and 20; arm order is shuffled per repeat with
 /// a seeded RNG so runs are reproducible.
 pub fn run_model_behavior_corpus(
@@ -844,7 +844,8 @@ mod tests {
             &[],
         )
         .unwrap();
-        let dir = std::env::temp_dir().join(format!("loopx-corpus-{}", crate::state::now_epoch()));
+        let dir =
+            std::env::temp_dir().join(format!("future-loop-corpus-{}", crate::state::now_epoch()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("corpus.json");
         corpus.save(&path).unwrap();

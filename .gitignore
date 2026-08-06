@@ -69,3 +69,4 @@ channel/
 .codex/
 .future/loop/
 gui/node_modules
+FUTURE.md

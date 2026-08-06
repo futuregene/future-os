@@ -1,6 +1,6 @@
 //! Turn envelope (G-9) — the per-turn prompt assembly, expanded from the P0
 //! ~30-line `compose_turn_message` into an envelope: instruction + context +
-//! evidence + decision summary (LoopX `control_plane/quota/turn_envelope.py`,
+//! evidence + decision summary (reference `control_plane/quota/turn_envelope.py`,
 //! 796 lines — we implement the minimal deterministic core the host needs).
 //!
 //! The envelope is a plain-text prompt for a policy-free agent: one bounded
@@ -13,8 +13,8 @@ use crate::contract::ShouldRunPacket;
 use crate::decision::truncate;
 use crate::state::{Goal, RunRecord, Todo, TodoStatus};
 
-/// Envelope schema version (LoopX `TURN_ENVELOPE_SCHEMA_VERSION`).
-pub const TURN_ENVELOPE_SCHEMA_VERSION: &str = "loopx_turn_envelope_v0";
+/// Envelope schema version (reference `TURN_ENVELOPE_SCHEMA_VERSION`).
+pub const TURN_ENVELOPE_SCHEMA_VERSION: &str = "future_loop_turn_envelope_v0";
 
 /// Compose the per-turn packet: todo + resolved gate decisions + prior
 /// evidence (+ decision summary when available).

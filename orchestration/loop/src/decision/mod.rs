@@ -63,7 +63,7 @@ pub use crate::quota::slot_accounting::QUOTA_ALLOWED_SLOTS;
 pub use crate::state::now_epoch;
 
 /// should-run decision compiler. Pure: injectable clock, no I/O.
-/// `agent_id`: when present, must be a registered peer (LoopX fail-closed:
+/// `agent_id`: when present, must be a registered peer (reference fail-closed:
 /// unregistered identity ⇒ `automation_prompt_upgrade_required`, no delivery).
 pub fn decide(goal: &Goal, now: SystemTime) -> ShouldRunPacket {
     decide_for(goal, now, None)
@@ -407,7 +407,7 @@ fn packet(
             _ => reason.to_string(),
         },
         rollout_event: Some(RolloutEvent {
-            schema_version: "loopx_rollout_event_v0".to_string(),
+            schema_version: "future_loop_rollout_event_v0".to_string(),
             event_id: uuid::Uuid::new_v4().simple().to_string(),
             event_kind: "quota_should_run".to_string(),
             recorded_at: crate::compat::rfc3339(crate::state::now_epoch()),
@@ -432,7 +432,7 @@ fn packet(
                 "role": "agent",
                 "priority": todo.map(|t| t.priority.to_string()).unwrap_or_default(),
                 "status": "open",
-                "task_class": todo.map(|t| crate::compat::loopx_task_class(t.class)).unwrap_or(""),
+                "task_class": todo.map(|t| crate::compat::future_loop_task_class(t.class)).unwrap_or(""),
                 "action_kind": todo.and_then(|t| t.action_kind.clone()).unwrap_or_default(),
                 "text": todo.map(|t| t.text.clone()).unwrap_or_default(),
                 "agent_id": "",

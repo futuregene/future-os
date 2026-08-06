@@ -30,12 +30,12 @@ const SCHEMA_FILE: &str = "schema.json";
 // ── Event ledger ───────────────────────────────────────────────────────────
 
 /// Current event-store schema version (G-6). Bumped whenever the event
-/// surface changes shape; legacy ledgers carry `loopx_event_store_v0` and
+/// surface changes shape; legacy ledgers carry `future_loop_event_store_v0` and
 /// are migrated through [`crate::migration::migration_steps`] on read.
-pub const EVENT_STORE_SCHEMA_VERSION: &str = "loopx_event_store_v1";
+pub const EVENT_STORE_SCHEMA_VERSION: &str = "future_loop_event_store_v1";
 /// The pre-G-3 ledger schema (plain `{"kind": ...}` lines, no event ids).
-pub const LEGACY_EVENT_STORE_SCHEMA_VERSION: &str = "loopx_event_store_v0";
-/// Producer tag for ordinary kernel appends (LoopX default producer).
+pub const LEGACY_EVENT_STORE_SCHEMA_VERSION: &str = "future_loop_event_store_v0";
+/// Producer tag for ordinary kernel appends (reference default producer).
 pub const DEFAULT_EVENT_PRODUCER: &str = "loopx.event_sourced_state";
 
 /// The persisted ledger line (G-3): the event plus its content-derived id
@@ -253,7 +253,7 @@ pub enum Event {
         no_change_count: u32,
         ts: u64,
     },
-    /// G-3: a quota slot was spent (LoopX QUOTA_SPENT). Recorded alongside
+    /// G-3: a quota slot was spent (reference QUOTA_SPENT). Recorded alongside
     /// the run ledger; `source` mirrors the slot-accounting spend source
     /// (`run` / `agent` / `heartbeat`) and `slots` the count spent (1 per
     /// bounded turn; monitor no-change polls never spend).
@@ -309,7 +309,7 @@ pub enum Event {
         ts: u64,
     },
     /// G-16: a host execution receipt recorded against a supervisor proposal
-    /// (LoopX SUPERVISOR_RECEIPT_RECORDED). An `executed` receipt requires an
+    /// (reference SUPERVISOR_RECEIPT_RECORDED). An `executed` receipt requires an
     /// authority ref (validated by the supervisor domain before append).
     SupervisorReceiptRecorded {
         goal_id: String,
@@ -428,7 +428,7 @@ impl Store {
 
     /// Append an event with a content-derived id (G-3). Returns the event id.
     /// Idempotent: appending an event whose content already exists under the
-    /// same id is a no-op (LoopX AppendOnlyStateEventStore.append); appending
+    /// same id is a no-op (reference AppendOnlyStateEventStore.append); appending
     /// the same id with DIFFERENT content fails closed with a conflict.
     pub fn append(&mut self, event: Event) -> Result<String> {
         self.append_with_meta(event, None, None, None, None, None, None)
@@ -509,10 +509,16 @@ impl Store {
         let path = self.goal_dir(goal_id).join(SCHEMA_FILE);
         let text = fs::read_to_string(path).ok()?;
         let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-        value
+        let raw = value
             .get("event_store_schema_version")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .and_then(|v| v.as_str())?;
+        // Normalize the pre-rename schema tokens (legacy goals stamped with
+        // `loopx_event_store_v0/v1` load transparently).
+        Some(match raw {
+            "loopx_event_store_v1" => EVENT_STORE_SCHEMA_VERSION.to_string(),
+            "loopx_event_store_v0" => LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string(),
+            other => other.to_string(),
+        })
     }
 
     fn ensure_schema_stamp(&self, goal_id: &str) -> Result<()> {
@@ -686,7 +692,7 @@ fn append_locked(path: PathBuf, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Append one event line under the advisory lock with G-3 idempotency +
-/// conflict detection (LoopX `AppendOnlyStateEventStore.append` →
+/// conflict detection (reference `AppendOnlyStateEventStore.append` →
 /// `StateEventConflictError`): the same event id with identical content is
 /// skipped (idempotent replay/backfill re-run); the same id with different
 /// content fails closed.
@@ -846,7 +852,41 @@ fn load_registry(root: &Path) -> Result<Vec<RegistryEntry>> {
         return Ok(vec![]);
     }
     let text = fs::read_to_string(&path)?;
-    serde_json::from_str(&text).context("parse registry")
+    // Dual format: the native array, or the reference-compatible map
+    // {"goals":[...]} written by earlier productized builds (fields id/repo
+    // map onto goal_id/cwd).
+    let v: serde_json::Value = serde_json::from_str(&text).context("parse registry")?;
+    let items: Vec<serde_json::Value> = match &v {
+        serde_json::Value::Array(a) => a.clone(),
+        serde_json::Value::Object(m) => m
+            .get("goals")
+            .and_then(|g| g.as_array())
+            .cloned()
+            .unwrap_or_default(),
+        _ => bail!("registry is neither an array nor a {{goals:[...]}} object"),
+    };
+    items
+        .into_iter()
+        .map(|g| {
+            let obj = g
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("registry entry is not an object"))?;
+            let str_of = |k: &str, alt: &str| -> String {
+                obj.get(k)
+                    .or_else(|| obj.get(alt))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            Ok(RegistryEntry {
+                goal_id: str_of("goal_id", "id"),
+                objective: str_of("objective", "objective"),
+                cwd: str_of("cwd", "repo"),
+                status: str_of("status", "status"),
+                created_at: obj.get("created_at").and_then(|x| x.as_u64()).unwrap_or(0),
+            })
+        })
+        .collect()
 }
 
 /// Copy a directory tree when present (used for the scheduler-state dir in
@@ -1105,7 +1145,7 @@ fn apply(goal: &mut Goal, event: Event) {
 
 // ── Projection gap check ───────────────────────────────────────────────────
 
-/// LoopX `state_projection_gap_warning`: an executable Next Action with no
+/// reference `state_projection_gap_warning`: an executable Next Action with no
 /// open agent todo (or a user-wait Next Action with no open user gate) means
 /// the active-state projection drifted from the todo frontier. The kernel
 /// should emit a self-repair obligation until the projection is re-synced.

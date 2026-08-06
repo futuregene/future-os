@@ -1,6 +1,6 @@
 //! Scheduler subdomain (G-10) — the rrule recurrence state machine.
 //!
-//! LoopX `control_plane/scheduler/` (4,178 lines across 15 files) keeps a
+//! reference `control_plane/scheduler/` (4,178 lines across 15 files) keeps a
 //! persistent scheduler state per (goal, agent): rrule recurrence,
 //! progression backoff, reset tokens, identity signatures, and host update
 //! failures. This module implements the minimal state machine (G-10) as a

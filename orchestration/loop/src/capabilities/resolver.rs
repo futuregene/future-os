@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::extensions::runtime::{extension_catalog_entries, ExtensionCatalogEntry};
 
 /// Resolve exactly one ready extension implementing `capability_id` with
-/// `protocol` (LoopX resolve_capability_extension_id).
+/// `protocol` (reference resolve_capability_extension_id).
 pub fn resolve_capability_extension_id(
     state_file: &Path,
     capability_id: &str,
@@ -58,7 +58,7 @@ mod tests {
 
     fn tmp_state(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "loopx-p3-resolve-{tag}-{}",
+            "future-loop-p3-resolve-{tag}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -73,7 +73,7 @@ mod tests {
             "schema_version": crate::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
             "id": id,
             "version": "1.0.0",
-            "requires_loopx_api": ">=1",
+            "requires_future_loop_api": ">=1",
             "permissions": ["shell"],
             "runtime": {
                 "protocol": "command_json_v0",

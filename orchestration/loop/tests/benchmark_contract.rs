@@ -24,7 +24,7 @@ use future_loop::benchmark::qualification::{run_qualification_case, Qualificatio
 
 fn tmp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p4-bench-{tag}-{}",
+        "future-loop-p4-bench-{tag}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -70,7 +70,7 @@ fn product_mode_comparison_contract_is_arms_and_gate() {
     );
     assert_eq!(c.comparison_id, "skillsbench_product_mode_main_table_v0");
     assert_eq!(c.baseline_arm["route"], "raw-codex-autonomous-max5");
-    assert_eq!(c.treatment_arm["arm_id"], "loopx_product_mode");
+    assert_eq!(c.treatment_arm["arm_id"], "future_loop_product_mode");
     assert!(c.policy_gate["same_benchmark_and_case_required"]
         .as_bool()
         .unwrap());
@@ -83,7 +83,7 @@ fn sample_run() -> BenchmarkRun {
     BenchmarkRun {
         benchmark_id: "skillsbench@1.1".to_string(),
         case_ids: vec!["case-42".to_string()],
-        arm_id: "loopx_product_mode".to_string(),
+        arm_id: "future_loop_product_mode".to_string(),
         route: LOOPX_PRODUCT_MODE_ROUTE.to_string(),
         mode: "product".to_string(),
         agent_model: "future/deepseek-v4-flash".to_string(),

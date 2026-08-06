@@ -34,7 +34,7 @@ pub const MAX_REPAIR_ATTEMPTS: u32 = 1;
 pub const QUOTA_ALLOWED_SLOTS: u64 = 1440;
 
 /// should-run decision compiler. Pure: injectable clock, no I/O.
-/// `agent_id`: when present, must be a registered peer (LoopX fail-closed:
+/// `agent_id`: when present, must be a registered peer (reference fail-closed:
 /// unregistered identity ⇒ `automation_prompt_upgrade_required`, no delivery).
 pub fn legacy_decide(goal: &Goal, now: SystemTime) -> ShouldRunPacket {
     legacy_decide_for(goal, now, None)
@@ -76,7 +76,7 @@ pub fn legacy_decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -
     let gates: Vec<&Todo> = goal.open_gates().collect();
     let user_actions: Vec<&Todo> = goal.open_of(future_loop::state::TaskClass::UserAction).collect();
     let mut runnable: Vec<&Todo> = goal.runnable_advancement_for(agent_id).collect();
-    // Priority sort: P0 before P1 before P2 (LoopX sorts the frontier).
+    // Priority sort: P0 before P1 before P2 (reference sorts the frontier).
     runnable.sort_by_key(|t| t.priority);
 
     if !gates.is_empty() {
@@ -440,7 +440,7 @@ fn legacy_packet(
             _ => reason.to_string(),
         },
         rollout_event: Some(RolloutEvent {
-            schema_version: "loopx_rollout_event_v0".to_string(),
+            schema_version: "future_loop_rollout_event_v0".to_string(),
             event_id: uuid::Uuid::new_v4().simple().to_string(),
             event_kind: "quota_should_run".to_string(),
             recorded_at: future_loop::compat::rfc3339(future_loop::state::now_epoch()),
@@ -465,7 +465,7 @@ fn legacy_packet(
                 "role": "agent",
                 "priority": todo.map(|t| t.priority.to_string()).unwrap_or_default(),
                 "status": "open",
-                "task_class": todo.map(|t| future_loop::compat::loopx_task_class(t.class)).unwrap_or(""),
+                "task_class": todo.map(|t| future_loop::compat::future_loop_task_class(t.class)).unwrap_or(""),
                 "action_kind": todo.and_then(|t| t.action_kind.clone()).unwrap_or_default(),
                 "text": todo.map(|t| t.text.clone()).unwrap_or_default(),
                 "agent_id": "",
@@ -485,7 +485,7 @@ fn legacy_packet(
         active_state_next_action: goal.next_action.clone(),
         latest_run_recommended_action: goal.next_action.clone(),
         interaction_contract: InteractionContract {
-            schema_version: "loopx_interaction_contract_v0".to_string(),
+            schema_version: "future_loop_interaction_contract_v0".to_string(),
             mode,
             user_channel: user_channel.clone(),
             agent_channel: agent_channel.clone(),

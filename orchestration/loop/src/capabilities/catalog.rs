@@ -1,32 +1,32 @@
-//! Capability catalog (G-23) — LoopX `capabilities/catalog.py`, natively.
+//! Capability catalog (G-23) — reference `capabilities/catalog.py`, natively.
 //!
 //! The catalog is the queryable metadata surface for every capability:
 //! per-capability `commands` (CLI commands + purpose), `packets`
 //! (schema_version + module), `status` (active-preview / experimental /
 //! compatibility-facade), the Stage boundary, the owning provider, and the
-//! user-facing value/next-step strings LoopX requires on every public record.
+//! user-facing value/next-step strings reference requires on every public record.
 //!
-//! All 14 domain packs ship with their LoopX catalog status; the 15th
+//! All 14 domain packs ship with their reference catalog status; the 15th
 //! capability (`pr_review_queue`) is registered as `experimental` per the P3
-//! plan (the LoopX package exists; our rule version is a placeholder).
+//! plan (the reference package exists; our rule version is a placeholder).
 
 use std::collections::BTreeMap;
 
 use super::lifecycle::{CapabilityProvider, ProviderLifecycle};
 
-/// LoopX catalog status values.
+/// reference catalog status values.
 pub const CAPABILITY_STATUS_ACTIVE_PREVIEW: &str = "active-preview";
 pub const CAPABILITY_STATUS_EXPERIMENTAL: &str = "experimental";
 pub const CAPABILITY_STATUS_COMPATIBILITY_FACADE: &str = "compatibility-facade";
 
-/// A CLI command a capability registers (LoopX catalog `commands` entries).
+/// A CLI command a capability registers (reference catalog `commands` entries).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CapabilityCommand {
     pub name: String,
     pub purpose: String,
 }
 
-/// A typed packet a capability emits (LoopX catalog `packets`:
+/// A typed packet a capability emits (reference catalog `packets`:
 /// schema_version + module).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CapabilityPacket {
@@ -34,7 +34,7 @@ pub struct CapabilityPacket {
     pub module: String,
 }
 
-/// One capability record (LoopX registry.py REQUIRED_CAPABILITY_FIELDS +
+/// One capability record (reference registry.py REQUIRED_CAPABILITY_FIELDS +
 /// REQUIRED_PUBLIC_CAPABILITY_FIELDS + catalog metadata).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CapabilityRecord {
@@ -52,7 +52,7 @@ pub struct CapabilityRecord {
 }
 
 impl CapabilityRecord {
-    /// A public capability requires the LoopX public anchor fields.
+    /// A public capability requires the reference public anchor fields.
     pub fn is_public(&self) -> bool {
         self.visibility == "public"
     }
@@ -86,7 +86,7 @@ impl CapabilityCatalog {
     }
 
     /// Register a capability record (validates provider existence + origin
-    /// match + duplicate id, mirroring LoopX registry.py register_capability).
+    /// match + duplicate id, mirroring the reference registry.py register_capability).
     pub fn register_capability(&mut self, record: CapabilityRecord) -> Result<(), String> {
         if record.id.trim().is_empty() {
             return Err("capability requires a non-empty id".into());
@@ -142,7 +142,7 @@ impl CapabilityCatalog {
         self.records.get(id)
     }
 
-    /// Public capability ids (LoopX capability_ids()).
+    /// Public capability ids (reference capability_ids()).
     pub fn capability_ids(&self, include_internal: bool) -> Vec<&str> {
         self.records
             .values()
@@ -192,10 +192,10 @@ impl CapabilityCatalog {
 
     /// Build the shipped catalog: the 14 domain packs (with their LoopX
     /// catalog status) + pr_review_queue (15th, experimental) under the
-    /// builtin `loopx-core` provider.
+    /// builtin `future-loop-core` provider.
     pub fn with_builtin() -> Self {
         let mut catalog = Self::new();
-        let core = CapabilityProvider::builtin("loopx-core");
+        let core = CapabilityProvider::builtin("future-loop-core");
         catalog
             .register_provider(core)
             .expect("builtin provider registers once");
@@ -206,7 +206,7 @@ impl CapabilityCatalog {
                 title: title.to_string(),
                 status: status.to_string(),
                 stage: 0,
-                provider_id: "loopx-core".to_string(),
+                provider_id: "future-loop-core".to_string(),
                 origin: "builtin".to_string(),
                 visibility: "public".to_string(),
                 user_value: user_value.to_string(),
@@ -237,8 +237,8 @@ fn packet(schema_version: &str, module: &str) -> CapabilityPacket {
 }
 
 /// The shipped records: (id, title, status, user_value, next_real_step,
-/// commands, packets). Command names mirror the LoopX catalog entry commands
-/// (kebab-case CLI surface); packets carry the LoopX schema_version + module.
+/// commands, packets). Command names mirror the reference catalog entry commands
+/// (kebab-case CLI surface); packets carry the reference schema_version + module.
 #[allow(clippy::type_complexity)]
 fn builtin_records() -> Vec<(
     &'static str,
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(catalog.providers().len(), 1);
         let issue_fix = catalog.get("issue_fix").unwrap();
         assert_eq!(issue_fix.status, CAPABILITY_STATUS_ACTIVE_PREVIEW);
-        assert_eq!(issue_fix.provider_id, "loopx-core");
+        assert_eq!(issue_fix.provider_id, "future-loop-core");
         assert_eq!(
             catalog.provider_lifecycle_for("issue_fix").unwrap().stage(),
             crate::capabilities::lifecycle::ProviderStage::Ready

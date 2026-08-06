@@ -1,4 +1,4 @@
-//! Decision replay (G-19) — LoopX `control_plane/testing/decision_replay.py`
+//! Decision replay (G-19) — reference `control_plane/testing/decision_replay.py`
 //! (268 lines), natively: record a REAL kernel decision as a public-safe
 //! reduced case, then replay the decision kernel against the reconstructed
 //! state and diff the outcome. This is the LLM-side complement to the
@@ -31,7 +31,7 @@ pub const BANNED_KEYS: &[&str] = &[
     "verifier_output",
 ];
 
-/// Compact todo fields (LoopX _TODO_FIELDS; `decision` is our additive field
+/// Compact todo fields (reference _TODO_FIELDS; `decision` is our additive field
 /// so closed gate decisions replay deterministically).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompactTodo {
@@ -54,7 +54,7 @@ pub struct CompactTodo {
     pub decision: Option<String>,
 }
 
-/// The reduced decision fields (LoopX decision block).
+/// The reduced decision fields (reference decision block).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DecisionFields {
     pub should_run: bool,
@@ -92,7 +92,7 @@ pub struct AgentChannelCase {
     pub quiet_noop_allowed: Option<bool>,
 }
 
-/// Expected kernel outputs recorded at capture time (LoopX expected block).
+/// Expected kernel outputs recorded at capture time (reference expected block).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExpectedCase {
     pub scheduler_action: String,
@@ -392,7 +392,7 @@ pub fn goal_from_case(case: &DecisionCase) -> Goal {
     goal
 }
 
-/// Per-field replay comparison (LoopX diff semantics, natively).
+/// Per-field replay comparison (reference diff semantics, natively).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayComparison {
     pub case_id: String,
@@ -697,7 +697,8 @@ mod tests {
 
     #[test]
     fn replay_file_round_trip() {
-        let dir = std::env::temp_dir().join(format!("loopx-replay-{}", crate::state::now_epoch()));
+        let dir =
+            std::env::temp_dir().join(format!("future-loop-replay-{}", crate::state::now_epoch()));
         std::fs::create_dir_all(&dir).unwrap();
         let goal = sample_goal();
         let packet = crate::decision::decide(&goal, std::time::SystemTime::now());

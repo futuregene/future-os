@@ -1,4 +1,4 @@
-//! Benchmark adapter (G-18) — LoopX `benchmark_core/adapter.py` protocol,
+//! Benchmark adapter (G-18) — reference `benchmark_core/adapter.py` protocol,
 //! with the adapter that reuses our gRPC direct-drive channel.
 //!
 //! The adapter contract is transport-neutral: preflight → launch → observe →
@@ -21,7 +21,7 @@ use super::ledger::{
 };
 use crate::agent_client::AgentClient;
 
-/// Adapter-neutral request for a benchmark case run (LoopX BenchmarkRequest).
+/// Adapter-neutral request for a benchmark case run (reference BenchmarkRequest).
 #[derive(Debug, Clone)]
 pub struct BenchmarkRequest {
     pub benchmark_id: String,
@@ -32,7 +32,7 @@ pub struct BenchmarkRequest {
     /// The case task/prompt the agent receives each round.
     pub task: String,
     /// Optional verifier expectation — the round evidence must contain this
-    /// substring to count as passed (LoopX verifier_reward semantics).
+    /// substring to count as passed (reference verifier_reward semantics).
     pub expected_evidence: Option<String>,
     pub metadata: serde_json::Value,
 }
@@ -107,7 +107,7 @@ pub struct LedgerUpdate {
     pub entry: Option<BenchmarkLedgerEntry>,
 }
 
-/// The minimal control-plane adapter interface (LoopX BenchmarkAdapter).
+/// The minimal control-plane adapter interface (reference BenchmarkAdapter).
 pub trait BenchmarkAdapter {
     fn id(&self) -> &str;
     fn preflight(&mut self, request: &BenchmarkRequest) -> Result<PreflightResult>;
@@ -538,14 +538,16 @@ mod tests {
 
     #[test]
     fn scripted_round_classification_and_ledger() {
-        let dir =
-            std::env::temp_dir().join(format!("loopx-bench-adapter-{}", crate::state::now_epoch()));
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-bench-adapter-{}",
+            crate::state::now_epoch()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let mut adapter = ScriptedAdapter::new(vec!["completed".to_string()]);
         let request = BenchmarkRequest::new(
             "skillsbench@1.1",
             "case-1",
-            "loopx-product-mode",
+            "future-loop-product-mode",
             "implement fizzbuzz",
         );
         let pre = adapter.preflight(&request).unwrap();
@@ -568,7 +570,7 @@ mod tests {
     #[test]
     fn scripted_runner_error_classifies_fail_closed() {
         let mut adapter = ScriptedAdapter::new(vec!["error".to_string()]);
-        let request = BenchmarkRequest::new("b", "c", "loopx-product-mode", "task");
+        let request = BenchmarkRequest::new("b", "c", "future-loop-product-mode", "task");
         let (classification, _) = run_round(&mut adapter, &request, None, 1).unwrap();
         assert_eq!(classification.decision, "runner_error");
         assert!(!classification.passed);
@@ -577,7 +579,7 @@ mod tests {
     #[test]
     fn expected_evidence_gates_pass() {
         let mut adapter = ScriptedAdapter::new(vec!["completed".to_string()]);
-        let mut request = BenchmarkRequest::new("b", "c", "loopx-product-mode", "task");
+        let mut request = BenchmarkRequest::new("b", "c", "future-loop-product-mode", "task");
         request.expected_evidence = Some("missing-marker".to_string());
         let (classification, _) = run_round(&mut adapter, &request, None, 1).unwrap();
         assert!(!classification.passed, "evidence gate must fail closed");

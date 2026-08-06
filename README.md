@@ -13,47 +13,33 @@
 
 > A local-first AI agent workspace — terminal, desktop, messaging platforms, all through one backend.
 
-FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, and DingTalk. The Rust backend handles LLM orchestration, tool execution, and persistent sessions. TypeScript frontends and a Tauri/React desktop app connect over gRPC. Write code, run research, manage files — from the terminal, from a chat app, or from a native desktop window.
+FutureOS gives you a unified AI agent experience across a terminal UI (TUI),
+desktop app (GUI), CLI, Feishu, and DingTalk — on macOS, Linux, and Windows.
+Write code, run research, manage files — from the terminal, from a chat app,
+or from a native desktop window.
 
 ## Features
 
 | Category | Details |
 |---|---|
-| **Multi-Interface** | Terminal UI (TUI), Desktop app (GUI), CLI, Feishu bot, DingTalk bot — one agent, everywhere |
-| **Model Flexibility** | 1000+ built-in models across 100+ providers ([full catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
+| **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), CLI, Feishu bot, DingTalk bot — one agent, everywhere |
+| **Model Flexibility** | 1000+ built-in models across 100+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Streaming & Thinking** | Real-time token streaming with collapsible reasoning-content blocks; configurable thinking levels (off ↔ xhigh) |
-| **Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt); auto-compaction at 90% context |
-| **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking |
+| **Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt) |
+| **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking ([using](docs/wiki/en/Using-FutureOS.md)) |
+| **Skills System** | Pluggable YAML-defined skill bundles discovered from multiple directories ([guide](docs/wiki/en/Skills.md)) |
 | **Compaction & Retry** | Automatic context compaction; exponential-backoff retry on context-length errors |
-| **Channel Bridge** | Feishu (Lark) and DingTalk bots — markdown streaming, slash commands, session management via chat |
-| **Skills System** | Pluggable YAML-defined skill bundles discovered from multiple directories |
-| **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) |
-| **Cross-Platform** | macOS, Linux, Windows (GUI via Tauri + WebView2) |
+| **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) — a Rust rewrite of the [loopx](https://github.com/huangruiteng/loopx) control plane, customized for FutureOS |
+| **Rust Core** | Agent, channel bridge, and loop control plane are written in Rust — high performance with memory safety |
 
 ## Quick Start
 
-### Prerequisites
+### Install
 
-Required on every platform for a full build (agent + TUI + CLI + GUI):
-
-- **Rust** 1.97+ (pinned via `rust-toolchain.toml`)
-- **Node.js** 24+ (see `.nvmrc`)
-- **Bun** — required, not optional: the TUI build and CLI/GUI packaging use `bun build`
-- Optional: **Python 3** — only for `make generate-models`
-- Optional: **protoc** (Protocol Buffers compiler) — only for `make generate-proto`; generated code is checked in so normal builds don't need it
-
-### Build & install
-
-Full platform-by-platform build & install steps (macOS / Linux / Windows,
-GUI packaging, install targets, the `future-loop` control plane) live in the
-dedicated **[Build & Install](docs/build-and-install.md)** guide. In short:
-
-```bash
-git clone https://github.com/futuregene/future-os.git
-cd future-os
-make install        # build everything, install to ~/.local/bin (or /opt/homebrew/bin on macOS)
-make install-nogui  # terminal stack only (skip the Tauri GUI)
-```
+Install FutureOS from the prebuilt installers or package scripts — no source
+build required. Step-by-step installation for every platform (macOS / Linux /
+Windows, desktop app, the `future-loop` control plane) is in the
+**[Build & Install](docs/build-and-install.md)** guide.
 
 ### Configure a model
 
@@ -97,64 +83,39 @@ For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a
 }
 ```
 
-### Install skills (optional)
-
-FutureOS includes a set of curated skills — specialized instructions for common tasks like deep research, browser automation, document processing, and more. These are maintained in the [future-skills](https://github.com/futuregene/future-skills) repository and are our recommended defaults.
-
-```bash
-make install-skills                          # symlink from the bundled skills/ submodule
-# or install from the platform catalog:
-future skills install                        # install all future-* skills (~13)
-future init                                  # install skills and, on macOS/Linux, link local commands
-```
-
-> Skills are symlinked into `~/.future/agent/skills/` where the agent discovers them automatically. Use `future skills list` to see available skills and `future skills update` to upgrade.
-> On macOS and Linux, `future init` also links `future` and, when present, its sibling `future-agent` into `~/.future/bin/`; add that directory to `PATH` if desired.
-
 ### Run the agent
 
-Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`:
-
-| Mode | Command | Use when |
-|---|---|---|
-| **Foreground** | `make run-agent` | Builds and runs agent in terminal. Logs to stdout. Stop with Ctrl-C. |
-| **Foreground** | `future-agent`  | Runs pre-built agent. Logs to stdout. Stop with Ctrl-C. |
-
-Then launch a client:
+The terminal and CLI clients are thin gRPC clients. **The agent must be running
+first**, listening on `127.0.0.1:50051`:
 
 ```bash
-future-tui           # terminal, after make install
-future-gui           # desktop, after make install
-# or in dev mode (builds first):
-make run-tui         # terminal
-make run-gui         # desktop
+future-agent      # start the agent in the terminal (logs to stdout; Ctrl-C to stop)
+```
+
+Then launch the terminal UI:
+
+```bash
+future-tui        # terminal UI
 ```
 
 > A client that exits with a connection / gRPC error almost always means the agent isn't running yet — see [Troubleshooting](#troubleshooting).
-
-### CLI Quick Start
-
-```bash
-future run "Write a Python sort function"    # one-shot prompt
-future-tui                                   # open the TUI
-future-gui                                   # launch the desktop app
-future-channel                               # start the channel bridge
-future --help                                # full command list
-```
 
 ### Essential Slash Commands (TUI)
 
 | Command | Purpose |
 |---|---|
 | `/help` | Show all commands and shortcuts |
-| `/model <id>` | Switch model (e.g. `deepseek-v4-pro`) |
-| `/status` | Session state, token usage, cost |
-| `/sessions` | Browse and switch sessions |
+| `/model [name]` | Select / switch model |
 | `/new` | Start a new session |
-| `/stop` | Abort current generation |
+| `/sessions` | Browse and switch sessions |
 | `/compact` | Compress conversation context |
 | `/scoped-models` | Configure model enable/disable list |
+| `/clone` | Clone the current session |
+| `/fork` | Fork the current session |
 | `/tree` | Session tree with fork/clone hierarchy |
+| `/name [n]` | Set the session name |
+| `/status` | Session state, token usage, cost |
+| `/stop` | Abort current generation |
 
 ### Keyboard Shortcuts (TUI)
 
@@ -164,95 +125,18 @@ future --help                                # full command list
 | `ctrl+t` | Cycle thinking level |
 | `ctrl+r` | Browse sessions |
 | `ctrl+c` | Interrupt / exit |
-| `↑↓` | Scroll chat / navigate lists |
-| `Tab` | Autocomplete |
-
-## Loop Control Plane
-
-FutureOS ships a native **loop control plane** (`future-loop`) for long-running
-agent work: turn a conversation into a durable goal, break it into todos with
-dependency chains and human gates, attach independent validators, and let a
-deterministic quota kernel decide the next bounded turn. Highlights:
-
-- Durable goals / todos / gates / monitors with a completion contract
-- Deterministic should-run decision kernel + scheduler arbitration
-- Quota slot accounting & usage summaries; event-sourced state with replay
-- Independent validation (`todo add --verify ...`), extensions & multi-agent
-- Benchmark / decision-replay / canary evaluation tooling
-
-Start in any agent conversation with `/future-loop <objective>`, then check
-progress anytime with `future-loop status`. See the
-**[Loop Control Plane guide](docs/loop-control-plane.md)** for the full
-capability walkthrough and CLI reference.
-
-## Architecture
-
-```
-                         ┌──────────────────────────┐
-                         │   Rust Agent (gRPC)      │
-                         │   LLM · tools · session  │
-                         │   127.0.0.1:50051        │
-                         └──────────┬───────────────┘
-                                    │
-        ┌───────────────┬───────────┴───────────┬───────────────┐
-        │               │                       │               │
- TypeScript TUI   Tauri/React GUI       TypeScript CLI   Channel Bridge
- (terminal, bun) (desktop, WebView)     auth · MCP      Feishu · DingTalk
-        │                                                       │
- Loop Control Plane (future-loop) ──────────────────────────────┘
- durable goals/todos/gates · quota kernel · gRPC executor bridge
-```
-
-All clients connect to the agent independently over gRPC — no client depends on another.
-
-- **Agent** (`agent/`) — Rust, tokio, tonic. LLM client (OpenAI-compatible HTTP+SSE), tool execution, session JSONL persistence, gRPC server.
-- **TUI** (`tui/`) — TypeScript, bun. Differential rendering, markdown, Kitty image protocol, 14 UI components.
-- **GUI** (`gui/`) — Tauri 2 + React + TypeScript. Three-panel layout (nav / chat / context), approval prompts, skill browser, settings.
-- **CLI** (`cli/`) — TypeScript. Auth (device-flow OAuth), one-shot prompts (`run`), MCP tool calls, skills management, environment diagnostics (`doctor`).
-- **Channel Bridge** (`channels/`) — Rust. Feishu (pbbp2 WebSocket + CardKit streaming) and DingTalk (Stream Mode).
-- **Loop Control Plane** (`orchestration/loop/`) — Rust (`future-loop`). Durable goal/todo/gate state, quota should-run kernel, event ledger + replay, gRPC executor bridge. See [Loop Control Plane guide](docs/loop-control-plane.md).
-
-## Configuration
-
-All config under `~/.future/`:
-
-| Path | Component | Purpose |
-|---|---|---|
-| `agent/settings.json` | Agent | Compaction, retry, max turns per prompt, default model & permission level |
-| `agent/auth.json` | Agent | API keys by provider (FutureOS + custom) |
-| `agent/models.json` | Agent | Custom model overrides (base URL, API key, compat) |
-| `agent/sessions/` | Agent | JSONL session files |
-| `tui/settings.json` | TUI | Default model, thinking level, enabled model IDs |
-| `app/app.db` | GUI | SQLite — threads, runs, artifacts, approvals, settings |
-| `channels/config.json` | Channels | Agent gRPC address, Feishu/DingTalk credentials |
-
-## Development
-
-```bash
-make build    # build all components (no system install)
-make lint     # lint all (agent + channels + TUI + CLI + GUI)
-make fmt      # cargo fmt (agent + channels)
-make test     # cargo test (agent)
-make clean    # remove build artifacts + installed binaries
-```
-
-### Proto
-
-The canonical API is `proto/future.proto`. Generated Rust/TS code is checked into the repo — normal builds don't touch it. After editing a `.proto` file, regenerate:
-
-```bash
-make generate-proto          # agent + channels + TUI
-```
+| `tab` | Autocomplete |
+| `enter` | Submit / accept |
+| `escape` | Close popup |
+| `↑↓` | Scroll / navigate lists |
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Client exits with a connection / gRPC error | The agent isn't running. Start it (`future-agent` or `make run-agent`) and check nothing else holds the port: `lsof -i :50051`. |
+| Client exits with a connection / gRPC error | The agent isn't running. Start it (`future-agent`) and check nothing else holds the port: `lsof -i :50051`. |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future auth login`, or add a provider to `models.json` — see [Configure a model](#configure-a-model). |
-| GUI can't find the agent binary | `make install-gui` copies the agent sidecar using your host target triple. If your triple differs from the auto-detected one, copy it manually: `cp target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`. |
-| Build fails with "unable to find linker 'mold'" | Install mold: `sudo apt install mold` (Linux x86_64 only). ARM Linux doesn't need it. |
-| GUI build fails on Linux (webkit / gtk errors) | Install the Tauri system dependencies — see [Linux setup](#linux-debianubuntu). |
+| Build / install problems | See [Build & Install](docs/build-and-install.md) (platform toolchains, linker, GUI packaging). |
 
 ## License
 

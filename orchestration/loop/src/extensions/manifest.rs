@@ -1,24 +1,24 @@
-//! Extension manifest (G-21) — LoopX `extensions/manifest.py`, natively.
+//! Extension manifest (G-21) — reference `extensions/manifest.py`, natively.
 //!
 //! v1 is DECLARATIVE ONLY (security tradeoff from the P3 plan): a manifest
 //! declares the extension's provider record, the capabilities it `provides`
 //! and the capability implementations it `implements`. No native code is
 //! loaded (no dlopen / subprocess execution of extension code) — that is the
-//! P4 process-runtime concern. LoopX reads TOML manifests; this Rust-native
-//! implementation reads the same schema as JSON (`loopx_extension_manifest_v0`),
+//! P4 process-runtime concern. reference reads TOML manifests; this Rust-native
+//! implementation reads the same schema as JSON (`future_loop_extension_manifest_v0`),
 //! keeping the field names and validation rules identical.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const EXTENSION_MANIFEST_SCHEMA_VERSION: &str = "loopx_extension_manifest_v0";
-/// LoopX LOOPX_EXTENSION_API_VERSION.
+pub const EXTENSION_MANIFEST_SCHEMA_VERSION: &str = "future_loop_extension_manifest_v0";
+/// reference LOOPX_EXTENSION_API_VERSION.
 pub const LOOPX_EXTENSION_API_VERSION: u32 = 1;
-/// The versioned lower-snake protocol token (LoopX _PROTOCOL_RE).
+/// The versioned lower-snake protocol token (reference _PROTOCOL_RE).
 pub const PROTOCOL_TOKEN_RE: &str = "^[a-z][a-z0-9_]{0,63}_v\\d+$";
 
-/// A capability a manifest provides (LoopX manifest `[[provides]]`).
+/// A capability a manifest provides (reference manifest `[[provides]]`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestProvidedCapability {
     pub id: String,
@@ -26,14 +26,14 @@ pub struct ManifestProvidedCapability {
     pub visibility: String,
 }
 
-/// A capability implementation a manifest implements (LoopX `[[implements]]`).
+/// A capability implementation a manifest implements (reference `[[implements]]`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestImplementation {
     pub capability_id: String,
     pub protocol: String,
 }
 
-/// Declarative runtime contract (LoopX `_runtime_contract`). v1 validates the
+/// Declarative runtime contract (reference `_runtime_contract`). v1 validates the
 /// contract shape + permissions; the executable entrypoint is resolved by the
 /// readiness doctor (no code is executed by the manifest loader).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,7 +48,7 @@ pub struct ManifestRuntime {
     pub timeout_seconds: u32,
 }
 
-/// A parsed extension manifest (LoopX `load_extension_manifest` return shape).
+/// A parsed extension manifest (reference `load_extension_manifest` return shape).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionManifest {
     pub schema_version: String,
@@ -67,7 +67,7 @@ pub struct ManifestProvider {
     pub enabled: bool,
     pub ready: bool,
     pub version: String,
-    pub requires_loopx_api: String,
+    pub requires_future_loop_api: String,
     pub permissions: Vec<String>,
 }
 
@@ -100,16 +100,18 @@ fn string_list(value: &serde_json::Value, key: &str, context: &str) -> Result<Ve
     Ok(out)
 }
 
-/// LoopX `_require_compatible_loopx_api`: clauses like `>=1,<2` compared
+/// reference `_require_compatible_future_loop_api`: clauses like `>=1,<2` compared
 /// against the runtime API version. Fail closed on incompatible requirements.
-pub fn require_compatible_loopx_api(requirement: &str) -> Result<(), String> {
+pub fn require_compatible_future_loop_api(requirement: &str) -> Result<(), String> {
     let clauses: Vec<&str> = requirement
         .split(',')
         .map(|c| c.trim())
         .filter(|c| !c.is_empty())
         .collect();
     if clauses.is_empty() {
-        return Err(format!("invalid `requires_loopx_api` `{requirement}`"));
+        return Err(format!(
+            "invalid `requires_future_loop_api` `{requirement}`"
+        ));
     }
     for clause in clauses {
         let (op, num) = if let Some(rest) = clause.strip_prefix(">=") {
@@ -128,7 +130,7 @@ pub fn require_compatible_loopx_api(requirement: &str) -> Result<(), String> {
         let wanted: u32 = num
             .trim()
             .parse()
-            .map_err(|_| format!("invalid `requires_loopx_api` clause `{clause}`"))?;
+            .map_err(|_| format!("invalid `requires_future_loop_api` clause `{clause}`"))?;
         let ok = match op {
             ">=" => LOOPX_EXTENSION_API_VERSION >= wanted,
             "<=" => LOOPX_EXTENSION_API_VERSION <= wanted,
@@ -138,7 +140,7 @@ pub fn require_compatible_loopx_api(requirement: &str) -> Result<(), String> {
         };
         if !ok {
             return Err(format!(
-                "manifest requires LoopX extension API `{requirement}`, but this runtime provides `{LOOPX_EXTENSION_API_VERSION}`"
+                "manifest requires reference extension API `{requirement}`, but this runtime provides `{LOOPX_EXTENSION_API_VERSION}`"
             ));
         }
     }
@@ -198,15 +200,17 @@ pub fn validate_manifest_value(
         return Err(format!("{context} must contain a JSON object"));
     }
     let schema_version = required_string(raw, "schema_version", context)?;
-    if schema_version != EXTENSION_MANIFEST_SCHEMA_VERSION {
+    if schema_version != EXTENSION_MANIFEST_SCHEMA_VERSION
+        && schema_version != "loopx_extension_manifest_v0"
+    {
         return Err(format!(
             "{context} has unsupported schema_version `{schema_version}`; expected `{EXTENSION_MANIFEST_SCHEMA_VERSION}`"
         ));
     }
     let extension_id = required_string(raw, "id", context)?;
     let version = required_string(raw, "version", context)?;
-    let requires_loopx_api = required_string(raw, "requires_loopx_api", context)?;
-    require_compatible_loopx_api(&requires_loopx_api)?;
+    let requires_future_loop_api = required_string(raw, "requires_future_loop_api", context)?;
+    require_compatible_future_loop_api(&requires_future_loop_api)?;
     let permissions = string_list(raw, "permissions", context)?;
 
     // Runtime contract (optional).
@@ -345,7 +349,7 @@ pub fn validate_manifest_value(
             enabled: false,
             ready: false,
             version,
-            requires_loopx_api,
+            requires_future_loop_api,
             permissions,
         },
         capabilities,
@@ -362,7 +366,7 @@ pub fn write_example_manifest(root: &Path, extension_id: &str) -> PathBuf {
         "schema_version": EXTENSION_MANIFEST_SCHEMA_VERSION,
         "id": extension_id,
         "version": "1.0.0",
-        "requires_loopx_api": ">=1",
+        "requires_future_loop_api": ">=1",
         "permissions": ["shell"],
         "runtime": {
             "protocol": "command_json_v0",
@@ -399,7 +403,7 @@ mod tests {
             "schema_version": EXTENSION_MANIFEST_SCHEMA_VERSION,
             "id": "ext-demo",
             "version": "1.0.0",
-            "requires_loopx_api": ">=1,<3",
+            "requires_future_loop_api": ">=1,<3",
             "permissions": ["shell", "network"],
             "runtime": {
                 "protocol": "command_json_v0",
@@ -429,7 +433,7 @@ mod tests {
     #[test]
     fn incompatible_api_fails_closed() {
         let mut m = valid_manifest();
-        m["requires_loopx_api"] = serde_json::json!(">=99");
+        m["requires_future_loop_api"] = serde_json::json!(">=99");
         assert!(validate_manifest_value(&m, "test").is_err());
     }
 

@@ -8,7 +8,7 @@ use future_loop::work_items::task_graph::{build_task_graph, predecessors_of, suc
 
 fn tmp_root(tag: &str) -> String {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p3-taskgraph-{tag}-{}",
+        "future-loop-p3-taskgraph-{tag}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

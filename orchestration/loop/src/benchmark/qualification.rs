@@ -1,10 +1,10 @@
 //! Qualification scenario (G-18) — the single-scenario closed loop: preflight
 //! → rounds (launch/observe/classify) → round-reward trace → ledger append →
-//! headline metrics. LoopX `benchmarks/qualification/` + `benchmark_core/
+//! headline metrics. reference `benchmarks/qualification/` + `benchmark_core/
 //! rounds.py` minimal core.
 //!
 //! The loop is deliberately small and deterministic: stop on first pass
-//! (LoopX `stop_on_reward_one`), stop on the round budget, count every round
+//! (reference `stop_on_reward_one`), stop on the round budget, count every round
 //! in the trace, and let the ledger classify the outcome.
 
 use std::path::Path;
@@ -33,8 +33,8 @@ impl QualificationCase {
         Self {
             benchmark_id: benchmark_id.to_string(),
             case_id: case_id.to_string(),
-            route: "loopx-product-mode".to_string(),
-            arm_id: "loopx_product_mode".to_string(),
+            route: "future-loop-product-mode".to_string(),
+            arm_id: "future_loop_product_mode".to_string(),
             task: task.to_string(),
             max_rounds,
             expected_evidence: None,
@@ -55,7 +55,7 @@ impl QualificationCase {
     }
 }
 
-/// Headline metrics (LoopX product-mode policy gate headline_metrics).
+/// Headline metrics (reference product-mode policy gate headline_metrics).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HeadlineMetrics {
     pub best_score: f64,
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn ledger_dir_records_entries_and_is_idempotent() {
-        let dir = std::env::temp_dir().join(format!("loopx-bench-qual-{}", now_epoch()));
+        let dir = std::env::temp_dir().join(format!("future-loop-bench-qual-{}", now_epoch()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut adapter = ScriptedAdapter::new(vec!["completed".to_string()]);
         let case = QualificationCase::new("b", "c", "task", 5);

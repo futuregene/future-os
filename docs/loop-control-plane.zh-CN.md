@@ -4,6 +4,8 @@
 
 FutureOS 在 `orchestration/loop` 内置了原生 loop 控制面，提供 `future-loop` CLI 与 `/future-loop` agent 技能。它把一段对话变成一个持久、可复盘、可长期运行的目标：目标、todos、人工门禁、监控、证据与完成状态都持久化在聊天之外，由确定性内核决定下一步该做什么——一次一个回合。
 
+> `future-loop` 是基于 [loopx](https://github.com/huangruiteng/loopx) 的 Rust 改写版，针对 FutureOS 做了适配与扩展（项目本地状态、gRPC 执行桥、quota 内核、扩展与多 agent）。
+
 ```
 objective / issue / project
    │

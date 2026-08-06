@@ -1,4 +1,4 @@
-//! Extension readiness (G-21) — LoopX `extensions/readiness.py`, natively.
+//! Extension readiness (G-21) — reference `extensions/readiness.py`, natively.
 //!
 //! v1 readiness is DECLARATIVE: the doctor resolves the declared runtime
 //! entrypoint (a PATH-resolvable command or a `python3 -m <module>` pair) and
@@ -13,9 +13,9 @@ use serde::Serialize;
 
 use super::manifest::ManifestRuntime;
 
-pub const EXTENSION_DOCTOR_SCHEMA_VERSION: &str = "loopx_extension_doctor_v0";
+pub const EXTENSION_DOCTOR_SCHEMA_VERSION: &str = "future_loop_extension_doctor_v0";
 
-/// LoopX extension_doctor status values.
+/// reference extension_doctor status values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoctorStatus {
     Ready,
@@ -37,7 +37,7 @@ impl DoctorStatus {
     }
 }
 
-/// The resolved runtime entrypoint (LoopX ResolvedRuntimeEntrypoint).
+/// The resolved runtime entrypoint (reference ResolvedRuntimeEntrypoint).
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedRuntimeEntrypoint {
     pub argv_prefix: Vec<String>,
@@ -63,7 +63,7 @@ fn which(command: &str) -> Option<PathBuf> {
 }
 
 /// A stable identity for a resolved entrypoint: absolute path + content
-/// digest prefix (LoopX `_file_identity` digest).
+/// digest prefix (reference `_file_identity` digest).
 fn file_identity(path: &std::path::Path) -> Option<String> {
     let abs = path.canonicalize().ok()?;
     let content = std::fs::read(&abs).ok()?;
@@ -96,7 +96,7 @@ pub fn resolve_runtime_entrypoint(runtime: &ManifestRuntime) -> Option<ResolvedR
     None
 }
 
-/// Doctor report for one manifest (LoopX extension_doctor).
+/// Doctor report for one manifest (reference extension_doctor).
 #[derive(Debug, Clone, Serialize)]
 pub struct DoctorReport {
     pub schema_version: String,
@@ -221,7 +221,7 @@ mod tests {
             "schema_version": crate::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
             "id": "ext-readiness",
             "version": "1.0.0",
-            "requires_loopx_api": ">=1",
+            "requires_future_loop_api": ">=1",
             "permissions": ["shell"],
             "runtime": runtime,
             "provides": [{"id": "ext-readiness_cap", "kind": "domain_rule", "visibility": "public"}],
@@ -258,7 +258,7 @@ mod tests {
             "schema_version": crate::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
             "id": "ext-decl",
             "version": "1.0.0",
-            "requires_loopx_api": ">=1",
+            "requires_future_loop_api": ">=1",
             "permissions": [],
             "provides": [{"id": "ext-decl_cap", "kind": "domain_rule", "visibility": "public"}]
         });

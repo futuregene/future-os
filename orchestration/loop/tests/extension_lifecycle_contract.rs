@@ -14,7 +14,7 @@ use future_loop::extensions::runtime::{
 
 fn tmp_state(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p3-ext-contract-{tag}-{}",
+        "future-loop-p3-ext-contract-{tag}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -29,7 +29,7 @@ fn manifest(id: &str, version: &str, entrypoint: &str) -> ExtensionManifest {
         "schema_version": future_loop::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
         "id": id,
         "version": version,
-        "requires_loopx_api": ">=1,<3",
+        "requires_future_loop_api": ">=1,<3",
         "permissions": ["shell"],
         "runtime": {
             "protocol": "command_json_v0",
@@ -101,17 +101,17 @@ fn upgrade_retains_bounded_revisions_and_rollback() {
 
 /// ── API compatibility fails closed ────────────────────────────────────────
 #[test]
-fn incompatible_loopx_api_is_rejected() {
+fn incompatible_future_loop_api_is_rejected() {
     let mut raw = serde_json::json!({
         "schema_version": future_loop::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
         "id": "ext-bad",
         "version": "1.0.0",
-        "requires_loopx_api": ">=99",
+        "requires_future_loop_api": ">=99",
         "permissions": [],
         "provides": [{"id": "c", "kind": "domain_rule", "visibility": "public"}]
     });
     assert!(validate_manifest_value(&raw, "test").is_err());
-    raw["requires_loopx_api"] = serde_json::json!(">=1,<2");
+    raw["requires_future_loop_api"] = serde_json::json!(">=1,<2");
     assert!(validate_manifest_value(&raw, "test").is_ok());
 }
 
@@ -131,7 +131,7 @@ fn doctor_readiness_gates_lifecycle() {
         "schema_version": future_loop::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
         "id": "ext-decl",
         "version": "1.0.0",
-        "requires_loopx_api": ">=1",
+        "requires_future_loop_api": ">=1",
         "permissions": [],
         "provides": [{"id": "ext-decl_cap", "kind": "domain_rule", "visibility": "public"}]
     });
@@ -172,7 +172,7 @@ fn resolve_ambiguous_implementations_fails_closed() {
         "schema_version": future_loop::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
         "id": "ext-f1",
         "version": "1.0.0",
-        "requires_loopx_api": ">=1",
+        "requires_future_loop_api": ">=1",
         "permissions": ["shell"],
         "runtime": {"protocol": "command_json_v0", "entrypoint": "sh", "args": [], "doctor_args": ["-c", "true"], "required_permissions": ["shell"], "timeout_seconds": 30},
         "provides": [{"id": "shared_cap", "kind": "domain_rule", "visibility": "public"}],

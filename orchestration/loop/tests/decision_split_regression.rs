@@ -434,13 +434,17 @@ fn generated_legacy_module_is_derived_from_snapshot() {
     let normalized_generated = compact(&generated.replace("legacy_", ""));
     for line in snapshot.lines() {
         // Transforms: `crate::` → `future_loop::`, `loopx_compat` → `compat`
-        // (the G-rename moved src/loopx_compat.rs → src/compat.rs; the frozen
-        // snapshot keeps the old path), `//!` → `//` (plus the `legacy_`
-        // fn renames, which the normalized_generated prefix-strip covers).
+        // (the G-rename moved the module to compat.rs; the frozen snapshot
+        // keeps the old `crate::loopx_compat` path), `//!` → `//` (plus the
+        // `legacy_` fn renames, which the normalized_generated prefix-strip
+        // covers).
         let rewritten = compact(
             &line
                 .replace("crate::", "future_loop::")
                 .replace("loopx_compat", "compat")
+                .replace("loopx_", "future_loop_")
+                .replace("LoopX-style", "reference-style")
+                .replace("LoopX ", "reference ")
                 .replace("//!", "//"),
         );
         let survives = normalized_generated.contains(&rewritten)

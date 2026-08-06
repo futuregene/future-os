@@ -14,7 +14,7 @@ fn bin() -> &'static str {
 
 fn tmp_root(tag: &str) -> String {
     let dir = std::env::temp_dir().join(format!(
-        "loopx-p3-cli-{tag}-{}",
+        "future-loop-p3-cli-{tag}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -183,7 +183,7 @@ fn extension_install_status_loop_via_cli() {
     let root = tmp_root("ext");
     let manifest = {
         let dir = std::env::temp_dir().join(format!(
-            "loopx-p3-cli-ext-manifest-{}",
+            "future-loop-p3-cli-ext-manifest-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -192,10 +192,10 @@ fn extension_install_status_loop_via_cli() {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("ext.json");
         let m = serde_json::json!({
-            "schema_version": "loopx_extension_manifest_v0",
+            "schema_version": "future_loop_extension_manifest_v0",
             "id": "ext-cli",
             "version": "1.0.0",
-            "requires_loopx_api": ">=1",
+            "requires_future_loop_api": ">=1",
             "permissions": ["shell"],
             "runtime": {
                 "protocol": "command_json_v0",
@@ -257,7 +257,7 @@ fn catalog_query_via_cli() {
     assert!(out.contains("active-preview"));
     let (out, _, _) = run(&root, &["catalog", "--name", "issue_fix"]);
     assert!(out.contains("status   : active-preview"));
-    assert!(out.contains("provider : loopx-core [builtin]"));
+    assert!(out.contains("provider : future-loop-core [builtin]"));
 }
 
 /// ── P3: agent scope / supervisor / handoff / task-graph / attention ─────
@@ -335,7 +335,7 @@ fn p3_multi_agent_and_work_item_commands() {
         .lines()
         .flat_map(|l| l.split_whitespace())
         .filter_map(|w| w.strip_suffix("=open").map(|s| s.to_string()))
-        .filter(|s| s.starts_with("todo-"))
+        .filter(|s| s.starts_with("todo_"))
         .collect();
     assert!(ids.len() >= 3, "status shows todos: {out}");
     let (t_a, t_b) = (&ids[0], &ids[1]);
@@ -534,7 +534,7 @@ fn two_agent_sessions_hold_disjoint_frontiers() {
         .lines()
         .flat_map(|l| l.split_whitespace())
         .filter_map(|w| w.strip_suffix("=open").map(|s| s.to_string()))
-        .filter(|s| s.starts_with("todo-"))
+        .filter(|s| s.starts_with("todo_"))
         .collect();
     run(
         &root,
@@ -635,11 +635,11 @@ fn p4_diagnostics_commands() {
         .lines()
         .flat_map(|l| l.split_whitespace())
         .filter_map(|w| w.strip_suffix("=open").map(|s| s.to_string()))
-        .find(|s| s.starts_with("todo-"))
+        .find(|s| s.starts_with("todo_"))
         .unwrap();
     let (out, err, code) = run(&root, &["turn", "--goal", "g1", "--todo-id", &todo]);
     assert_eq!(code, 0, "turn: {err}");
-    assert!(out.contains("loopx_turn_envelope_v0"), "turn: {out}");
+    assert!(out.contains("future_loop_turn_envelope_v0"), "turn: {out}");
     assert!(out.contains("Complete the todo and report what you did and observed."));
 
     // todo-event + evidence-log after completion with evidence.
@@ -676,7 +676,12 @@ fn p4_benchmark_closed_loop_via_cli() {
     let root = tmp_root("p4bench");
     let (out, err, code) = run(
         &root,
-        &["benchmark", "protocol", "--route", "loopx-product-mode"],
+        &[
+            "benchmark",
+            "protocol",
+            "--route",
+            "future-loop-product-mode",
+        ],
     );
     assert_eq!(code, 0, "protocol: {err}");
     assert!(out.contains("protocol_id  : product_mode_max5_no_feedback"));

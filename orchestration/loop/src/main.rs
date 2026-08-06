@@ -1,6 +1,6 @@
 //! `loopx` — FutureOS loop control plane CLI.
 //!
-//! Commands (mirror the LoopX core tick, implemented natively):
+//! Commands (mirror the reference core tick, implemented natively):
 //!   goal init    — create a durable goal (registry + event ledger)
 //!   todo add     — add an agent/user/gate/monitor todo
 //!   todo claim   — claim a todo (owner identity)
@@ -22,33 +22,13 @@ use future_loop::executor::{execute_turn, writeback};
 use future_loop::state::{now_epoch, Goal, RunRecord, TaskClass, Todo, TodoStatus};
 use future_loop::store::{Event, Store};
 
-/// Runtime root for LoopX-compatible run history (default ~/.codex/loopx,
-/// overridable via FUTURE_LOOP_RUNTIME — matches LoopX's DEFAULT_RUNTIME_ROOT).
-fn runtime_root() -> String {
-    std::env::var("FUTURE_LOOP_RUNTIME").unwrap_or_else(|_| {
-        format!(
-            "{}/.codex/loopx",
-            std::env::var("HOME").unwrap_or_else(|_| ".".into())
-        )
-    })
-}
-
-/// Materialize the LoopX-compatible on-disk projection for one goal:
-/// GOAL.md + .loopx/registry.json + .codex/goals/<id>/ACTIVE_GOAL_STATE.md.
+/// Materialize the project-local active-state projection for one goal:
+/// `<cwd>/.future/loop/goals/<id>/ACTIVE_GOAL_STATE.md`.
 fn sync_compat(store: &Store, goal_id: &str) -> Result<()> {
     let Some(goal) = store.replay(goal_id)? else {
         return Ok(());
     };
-    // GOAL.md is written only when a goal doc is provided (--goal-doc);
-    // the projection reads its existence for the Authority Sources section.
-    let goals: Vec<Goal> = store
-        .registry()
-        .iter()
-        .filter_map(|e| store.replay(&e.goal_id).ok().flatten())
-        .collect();
-    let goal_refs: Vec<&Goal> = goals.iter().collect();
-    future_loop::compat::write_registry(&goal.cwd, &goal_refs, &runtime_root())?;
-    future_loop::compat::write_active_state(&goal.cwd, &goal)?;
+    future_loop::compat::write_active_state(&store.goal_dir(goal_id), &goal)?;
     Ok(())
 }
 
@@ -69,25 +49,27 @@ fn refresh_next_action(store: &Store, goal_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Project-local state root: `<cwd>/.future/loop/` (run future-loop from the
+/// project dir, or override with FUTURE_LOOP_ROOT). All goal state stays
+/// inside the project.
 fn root_dir() -> String {
     std::env::var("FUTURE_LOOP_ROOT").unwrap_or_else(|_| {
         format!(
             "{}/.future/loop",
-            std::env::var("HOME").unwrap_or_else(|_| ".".into())
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".into())
         )
     })
 }
 
 fn gen_id(prefix: &str) -> String {
+    // Loop-style ids: <prefix>_<12hex> (underscore, no dash) — matches the
+    // reference format and pre-existing goal/todo ids.
     format!(
-        "{}-{}",
+        "{}_{}",
         prefix,
-        uuid::Uuid::new_v4()
-            .simple()
-            .to_string()
-            .chars()
-            .take(10)
-            .collect::<String>()
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
     )
 }
 
@@ -128,6 +110,8 @@ async fn main() -> Result<()> {
         "worker-bridge" => cmd_worker_bridge(&mut store, &args[1..]).await,
         "serve-status" => cmd_serve_status(&store, &args[1..]),
         "capability" => cmd_capability(&store, &args[1..]),
+        "models" => cmd_models(&args[1..]).await,
+        "diagnose" => cmd_diagnose(&store, &args[1..]),
         "run" => cmd_run(&mut store, &args[1..]).await,
         // ── P3 commands ──────────────────────────────────────────────────
         "extension" => cmd_extension(&store, &args[1..]),
@@ -178,6 +162,18 @@ fn build_cli_registry() -> CommandRegistry {
         "status",
         "project the active state",
         "status [--goal G]",
+    );
+    r.command(
+        goal,
+        "models",
+        "list models available from the agent",
+        "models [--format json]",
+    );
+    r.command(
+        goal,
+        "diagnose",
+        "per-goal diagnostic surface (decision / gaps / runs)",
+        "diagnose --goal G [--format json]",
     );
 
     let todo = r.group("todo", "todo work graph");
@@ -535,11 +531,11 @@ fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
             format!("{doc}\n"),
         );
     }
-    // LoopX bootstrap auto-adds an onboarding-connection-validation todo.
+    // Bootstrap auto-adds an onboarding-connection-validation todo.
     let onboarding = Todo::advancement(
         &gen_id("todo"),
-        "[P1] Run `future-loop check` against the project registry and record the \
-         first project-specific adapter signal or an explicit no-follow-up rationale.",
+        "[P1] Run `future-loop status` for this goal and record the goal \
+         count as evidence, or declare an explicit no-follow-up rationale.",
     )
     .at_priority(future_loop::state::Priority::P1)
     .with_action_kind("onboarding_connection_validation");
@@ -707,7 +703,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     }
     todo.goal_bound = goal_bound;
     todo.global_gate = global_gate;
-    // LoopX rule: user_gate + global_gate implies goal_bound=true.
+    // reference rule: user_gate + global_gate implies goal_bound=true.
     if todo.global_gate && todo.class == future_loop::state::TaskClass::UserGate {
         todo.goal_bound = true;
     }
@@ -732,7 +728,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             _ => future_loop::state::Priority::P1,
         };
         todo.priority = pr;
-        // LoopX convention: todo text carries the [P0]/[P1]/[P2] prefix.
+        // reference convention: todo text carries the [P0]/[P1]/[P2] prefix.
         let tag = format!("[{pr}] ");
         if !todo.text.starts_with(&tag) {
             todo.text = format!("{tag}{}", todo.text);
@@ -911,7 +907,7 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    // LoopX completion contract: a completed advancement todo must declare
+    // reference completion contract: a completed advancement todo must declare
     // closure intent — successor OR no-follow-up; silent completion is rejected.
     let t = goal
         .todo(&todo_id)
@@ -1357,7 +1353,7 @@ fn quota_usage(store: &Store, args: &[String]) -> Result<()> {
     if !all {
         bail!("quota usage requires --goal G or --all");
     }
-    // Aggregate across every registered goal (LoopX run_history projection).
+    // Aggregate across every registered goal (reference run_history projection).
     let rows: Vec<(&str, Vec<future_loop::state::RunRecord>)> = store
         .registry()
         .iter()
@@ -1546,7 +1542,7 @@ fn scheduler_show(store: &Store, args: &[String]) -> Result<()> {
 /// `loopx scheduler record-host-failure --goal G --agent-id A
 /// --target-rrule "FREQ=MINUTELY;INTERVAL=15" --observed-rrule "..."
 /// --failure-kind host_stale_rrule` — merge a host-update failure into the
-/// retained cache (bounded, TTL'd; LoopX scheduler state).
+/// retained cache (bounded, TTL'd; reference scheduler state).
 fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
     let mut target_rrule = None;
     let mut observed_rrule = None;
@@ -1590,7 +1586,7 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
         }
         None => {
             // No state yet: bootstrap from the observed rrule so the failure
-            // has a home (LoopX tolerates a state-less failure record by
+            // has a home (reference tolerates a state-less failure record by
             // keeping the failure list on the next build).
             let identity = st::identity_signature(&goal_id, &agent, surface);
             st::build_scheduler_state(
@@ -1632,6 +1628,44 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
 }
 
 // ── run (one bounded gRPC turn + writeback) ────────────────────────────────
+
+/// `future-loop models [--format json]` — list models available from the
+/// agent (auth.json / models.json merged with the built-in catalog).
+async fn cmd_models(args: &[String]) -> Result<()> {
+    let json = args.iter().any(|a| a == "--format" || a == "--json");
+    let mut client = future_loop::agent_client::AgentClient::connect("127.0.0.1:50051").await?;
+    let data = client.list_models().await?;
+    let models = data["models"].as_array().cloned().unwrap_or_default();
+    let default_model = data["defaultModel"].as_str().unwrap_or("");
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
+    println!("Available models (default: {}):", default_model);
+    for m in &models {
+        let id = m["id"].as_str().unwrap_or("");
+        let provider = m["provider"].as_str().unwrap_or("");
+        let label = m["label"].as_str().unwrap_or(id);
+        let full = if provider.is_empty() {
+            id.to_string()
+        } else {
+            format!("{provider}/{id}")
+        };
+        let thinking = m["thinkingLevel"].as_str().unwrap_or("off");
+        let ctx = m["contextWindow"].as_i64().unwrap_or(0);
+        let recommended = m["recommended"].as_bool().unwrap_or(false);
+        let is_default = m["isDefault"].as_bool().unwrap_or(false);
+        let mut flags = String::new();
+        if is_default {
+            flags.push_str(" [default]");
+        }
+        if recommended {
+            flags.push_str(" [recommended]");
+        }
+        println!("- {full}  {label}  thinking={thinking} ctx={ctx}{flags}");
+    }
+    Ok(())
+}
 
 async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
@@ -1804,7 +1838,8 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         );
         writeback(&mut g, &record, monitor_changed, completion);
         store.append_run(&goal_id, &record)?;
-        let _ = future_loop::compat::write_run(&runtime_root(), &goal_id, &record);
+        // Project-local per-run mirror (runs/ under the goal state dir).
+        let _ = future_loop::compat::write_run(&store.goal_dir(&goal_id), &goal_id, &record);
         store.append(Event::RunRecorded {
             goal_id: goal_id.clone(),
             record: record.clone(),
@@ -2248,7 +2283,7 @@ fn cmd_runs(store: &Store, args: &[String]) -> Result<()> {
     store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let root = runtime_root();
+    let root = store.root_path();
     use future_loop::runtime as rt;
 
     match sub {
@@ -2377,7 +2412,7 @@ fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
 }
 
 /// `loopx heartbeat-prompt --goal G [--agent-id A]` — render the per-turn
-/// re-entry packet for a host executor (LoopX heartbeat contract).
+/// re-entry packet for a host executor (reference heartbeat contract).
 fn cmd_heartbeat(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
@@ -2947,10 +2982,14 @@ fn cmd_handoff(store: &Store, args: &[String]) -> Result<()> {
         contract.as_ref().map(|c| c.summary.as_str()),
     );
     if write {
-        future_loop::handoff::project_handoff::write_project_handoff(&goal.cwd, &goal, &handoff)
-            .map_err(|e| anyhow::anyhow!("write handoff: {e}"))?;
+        future_loop::handoff::project_handoff::write_project_handoff(
+            &store.goal_dir(&goal_id),
+            &goal,
+            &handoff,
+        )
+        .map_err(|e| anyhow::anyhow!("write handoff: {e}"))?;
         println!(
-            "handoff written to .codex/goals/{}/HANDOFF.md",
+            "handoff written to .future/loop/goals/{}/HANDOFF.md",
             goal.goal_id
         );
     } else {
@@ -3190,7 +3229,7 @@ fn cmd_benchmark_protocol(store: &Store, args: &[String]) -> Result<()> {
 
 /// `loopx benchmark ledger [--benchmark-id X] [--case-id Y] [--json]
 /// [--dir DIR]` — query the benchmark run ledger (default dir:
-/// `<FUTURE_LOOP_RUNTIME>/benchmarks`).
+/// `<cwd>/.future/loop/benchmarks`).
 fn cmd_benchmark_ledger(store: &Store, args: &[String]) -> Result<()> {
     let mut benchmark_id = None;
     let mut case_id = None;
@@ -3203,7 +3242,7 @@ fn cmd_benchmark_ledger(store: &Store, args: &[String]) -> Result<()> {
         "--dir" => dir = Some(v),
         _ => {}
     });
-    let dir = dir.unwrap_or_else(|| format!("{}/benchmarks", runtime_root()));
+    let dir = dir.unwrap_or_else(|| format!("{}/benchmarks", store.root_path()));
     let dir = std::path::PathBuf::from(&dir);
     std::fs::create_dir_all(&dir).ok();
     let ledger = future_loop::benchmark::ledger::BenchmarkLedger::open(&dir)?;
@@ -3275,7 +3314,7 @@ async fn cmd_benchmark_run(store: &Store, args: &[String]) -> Result<()> {
     let benchmark_id = benchmark_id.ok_or_else(|| anyhow::anyhow!("--benchmark-id required"))?;
     let case_id = case_id.ok_or_else(|| anyhow::anyhow!("--case-id required"))?;
     let task = task.ok_or_else(|| anyhow::anyhow!("--task required"))?;
-    let route = route.unwrap_or_else(|| "loopx-product-mode".to_string());
+    let route = route.unwrap_or_else(|| "future-loop-product-mode".to_string());
     let mut case = future_loop::benchmark::qualification::QualificationCase::new(
         &benchmark_id,
         &case_id,
@@ -3286,10 +3325,10 @@ async fn cmd_benchmark_run(store: &Store, args: &[String]) -> Result<()> {
     if let Some(arm) = arm_id {
         case.arm_id = arm;
     } else {
-        case.arm_id = if route == "loopx-goal-start-product-mode" {
-            "loopx_goal_start_product_mode".to_string()
+        case.arm_id = if route == "future-loop-goal-start-product-mode" {
+            "future_loop_goal_start_product_mode".to_string()
         } else {
-            "loopx_product_mode".to_string()
+            "future_loop_product_mode".to_string()
         };
     }
     case.expected_evidence = expected_evidence;
@@ -3642,10 +3681,84 @@ fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
     println!("  public_safe_decision_replay_v0 (G-19)");
     println!("  model_behavior_corpus_v0 (G-19)");
     println!("  canary_smoke_run_v0 (G-20)");
-    println!("  loopx_turn_envelope_v0 (G-9)");
+    println!("  future_loop_turn_envelope_v0 (G-9)");
     println!("  scheduler_arbitration_v0 (G-2/G-11)");
     let _ = store;
     let _ = args;
+    Ok(())
+}
+
+/// `future-loop diagnose --goal G [--format json]` — per-goal diagnostic
+/// surface: current decision, open todos/gates, projection gaps, closure
+/// status, and recent run evidence.
+fn cmd_diagnose(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut format_json = false;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--format" => format_json = v == "json",
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let packet = decide_for(&goal, SystemTime::now(), None);
+    if format_json {
+        let diag = serde_json::json!({
+            "goal_id": goal.goal_id,
+            "objective": goal.objective,
+            "status": goal.status,
+            "decision": packet.decision,
+            "mode": packet.interaction_contract.mode.as_str(),
+            "reason": packet.reason,
+            "open_todos": goal.todos.iter().filter(|t| t.status == TodoStatus::Open).count(),
+            "open_gates": goal.open_gates().count(),
+            "projection_gap": future_loop::store::projection_gap(&goal),
+            "terminal": goal.terminal_closure().is_some(),
+            "runs": goal.history.len(),
+            "recent_evidence": goal.history.iter().rev().take(3).map(|r| serde_json::json!({
+                "turn": r.turn, "todo": r.todo_id, "state": r.terminal_state,
+                "tools": r.tools, "cost": r.cost_delta, "evidence": future_loop::decision::truncate(&r.evidence, 200),
+            })).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&diag)?);
+        return Ok(());
+    }
+    println!("== diagnose {goal_id} ==");
+    println!("objective : {}", goal.objective);
+    println!(
+        "status    : {} | terminal: {}",
+        goal.status,
+        goal.terminal_closure().is_some()
+    );
+    println!(
+        "decision  : {} / {} | {}",
+        packet.decision,
+        packet.interaction_contract.mode.as_str(),
+        packet.reason
+    );
+    println!(
+        "todos     : {} open / {} gates",
+        goal.todos
+            .iter()
+            .filter(|t| t.status == TodoStatus::Open)
+            .count(),
+        goal.open_gates().count()
+    );
+    if let Some(gap) = future_loop::store::projection_gap(&goal) {
+        println!("gap       : {gap}");
+    }
+    for r in goal.history.iter().rev().take(3) {
+        println!(
+            "run       : #{} todo={} state={} cost=¥{:.4} tools=[{}]",
+            r.turn,
+            r.todo_id,
+            r.terminal_state,
+            r.cost_delta,
+            r.tools.join(", ")
+        );
+    }
     Ok(())
 }
 
