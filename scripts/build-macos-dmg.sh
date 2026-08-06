@@ -171,11 +171,11 @@ fi
 if [[ "$SKIP_DEPS" != true ]]; then
   echo "==> Installing npm dependencies (gui, npm workspace)"
   (cd gui && npm ci)
-  npm ci  # root workspace: shared/future-rpc + tui + cli
+  npm ci  # root workspace: future-rpc/ts + tui + cli
 fi
 
 echo "==> Building shared RPC package (@future-os/rpc)"
-(cd shared/future-rpc && npm run build)
+(cd future-rpc/ts && npm run build)
 
 echo "==> Building agent (release)"
 cargo build --release --manifest-path agent/Cargo.toml

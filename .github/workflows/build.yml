@@ -159,7 +159,7 @@ jobs:
       # The CLI (and TUI) import @future-os/rpc; its dist must exist before
       # their TypeScript compiles. Build it explicitly on fresh runners.
       - name: Build shared RPC package
-        working-directory: shared/future-rpc
+        working-directory: future-rpc/ts
         run: npm run build
 
       # Windows Defender real-time scanning inspects every intermediate file the

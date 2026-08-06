@@ -147,7 +147,7 @@ define npm-install-if-needed
 endef
 endif
 
-# npm workspace (shared/future-rpc + tui + cli): deps hoist to the repo-root
+# npm workspace (future-rpc/ts + tui + cli): deps hoist to the repo-root
 # node_modules and a single root package-lock.json. Installs only when the
 # manifest/lockfile is newer than the install stamp, then builds the shared
 # wire-contract package so tui/cli can compile against its dist output.
@@ -155,16 +155,16 @@ endif
 ifeq ($(OS),windows)
 node-workspace:
 	@npm install --silent
-	@cd shared/future-rpc && npm run build --silent
+	@cd future-rpc/ts && npm run build --silent
 else
 node-workspace:
 	@if [ ! -f "node_modules/.package-lock.json" ] || [ "package.json" -nt "node_modules/.package-lock.json" ] || [ "package-lock.json" -nt "node_modules/.package-lock.json" ]; then \
 		echo "  npm install (workspace)"; \
 		npm install; \
 	fi
-	@if [ ! -f "shared/future-rpc/dist/index.js" ] || [ -n "$$(find shared/future-rpc/src -name '*.ts' -newer shared/future-rpc/dist/index.js 2>/dev/null)" ]; then \
-		echo "  build shared/future-rpc"; \
-		cd shared/future-rpc && npm run build; \
+	@if [ ! -f "future-rpc/ts/dist/index.js" ] || [ -n "$$(find future-rpc/ts/src -name '*.ts' -newer future-rpc/ts/dist/index.js 2>/dev/null)" ]; then \
+		echo "  build future-rpc/ts"; \
+		cd future-rpc/ts && npm run build; \
 	fi
 endif
 
@@ -419,9 +419,9 @@ generate-models:
 	python3 scripts/generate_models.py
 
 generate-proto:
-	cd future-rpc && REGENERATE_PROTO=1 cargo build
+	cd future-rpc/rust && REGENERATE_PROTO=1 cargo build
 	cd channels && REGENERATE_PROTO=1 cargo build
-	cd shared/future-rpc && bun run scripts/generate-proto.ts
+	cd future-rpc/ts && bun run scripts/generate-proto.ts
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
 
@@ -429,7 +429,7 @@ clean:
 ifeq ($(OS),windows)
 	@if exist target rmdir /s /q target
 	@if exist node_modules rmdir /s /q node_modules
-	@if exist shared\future-rpc\dist rmdir /s /q shared\future-rpc\dist
+	@if exist future-rpc\ts\dist rmdir /s /q future-rpc\ts\dist
 	@if exist tui\dist rmdir /s /q tui\dist
 	@if exist tui\node_modules rmdir /s /q tui\node_modules
 	@if exist tui\future-tui del /q tui\future-tui
@@ -448,7 +448,7 @@ ifeq ($(OS),windows)
 	@if exist "$(PREFIX)\future-channel$(EXE_SUFFIX)" del /q "$(PREFIX)\future-channel$(EXE_SUFFIX)"
 else
 	rm -rf target
-	rm -rf node_modules shared/future-rpc/dist
+	rm -rf node_modules future-rpc/ts/dist
 	rm -rf tui/dist tui/node_modules
 	rm -f tui/future-tui tui/src/version.generated.ts
 	rm -rf cli/dist cli/node_modules

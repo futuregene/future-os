@@ -166,7 +166,7 @@ jobs:
       # The CLI imports @future-os/rpc; its dist must exist before the CLI's
       # TypeScript compiles. Build it explicitly on fresh runners.
       - name: Build shared RPC package
-        working-directory: shared/future-rpc
+        working-directory: future-rpc/ts
         run: npm run build
 
       - name: Build bundled agent

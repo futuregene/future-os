@@ -60,29 +60,29 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain.toml'
-              - 'proto/**'
+              - 'future-rpc/proto/**'
+              - 'future-rpc/rust/**'
               - 'agent/**'
               - 'channels/**'
-              - 'future-rpc/**'
             gui_tauri:
               - 'gui/src-tauri/**'
               - '.cargo/**'
               - 'rust-toolchain.toml'
               # The GUI backend path-depends on future-rpc; changes there must
               # revalidate the GUI backend too.
-              - 'future-rpc/**'
-              - 'proto/**'
+              - 'future-rpc/rust/**'
+              - 'future-rpc/proto/**'
             gui_frontend:
               - 'gui/**'
               - '!gui/src-tauri/**'
             cli:
               - 'cli/**'
-              - 'shared/future-rpc/**'
+              - 'future-rpc/ts/**'
               - 'package.json'
               - 'package-lock.json'
             tui:
               - 'tui/**'
-              - 'shared/future-rpc/**'
+              - 'future-rpc/ts/**'
               - 'package.json'
               - 'package-lock.json'
             mobile:
@@ -164,9 +164,9 @@ jobs:
       - name: proto codegen is fresh
         if: needs.changes.outputs.rust_workspace == 'true'
         run: |
-          (cd future-rpc && REGENERATE_PROTO=1 cargo build)
+          (cd future-rpc/rust && REGENERATE_PROTO=1 cargo build)
           (cd channels && REGENERATE_PROTO=1 cargo build)
-          git diff --exit-code future-rpc/src/generated/proto.rs channels/src/generated/
+          git diff --exit-code future-rpc/rust/src/generated/proto.rs channels/src/generated/
 
       # ── GUI Tauri backend ──
       - name: rustfmt (GUI backend)
@@ -373,7 +373,7 @@ jobs:
         with:
           bun-version: latest
 
-      # npm workspace: a single root `npm ci` installs shared/future-rpc, tui
+      # npm workspace: a single root `npm ci` installs future-rpc/ts, tui
       # and cli (hoisted). postinstall also runs gen-version
       # (version.generated.ts is gitignored and required by tsc).
       - name: Install dependencies
@@ -381,7 +381,7 @@ jobs:
 
       # The CLI compiles against the shared wire-contract package's dist.
       - name: Build shared wire-contract package
-        working-directory: shared/future-rpc
+        working-directory: future-rpc/ts
         run: npm run build
 
       - name: Typecheck
@@ -414,14 +414,14 @@ jobs:
         with:
           bun-version: latest
 
-      # npm workspace: a single root `npm ci` installs shared/future-rpc, tui
+      # npm workspace: a single root `npm ci` installs future-rpc/ts, tui
       # and cli (hoisted).
       - name: Install dependencies
         run: npm ci
 
       # The TUI compiles against the shared wire-contract package's dist.
       - name: Build shared wire-contract package
-        working-directory: shared/future-rpc
+        working-directory: future-rpc/ts
         run: npm run build
 
       - name: Typecheck

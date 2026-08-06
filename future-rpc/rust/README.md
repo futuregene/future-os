@@ -4,12 +4,12 @@ Wire contract between FutureAgent and its clients (TUI / CLI / channel
 bridge / GUI backend).
 
 This crate is the **single owner** of the generated proto code for
-`proto/future.proto` (both tonic server and client modules) and of the
+`../proto/future.proto` (both tonic server and client modules) and of the
 typed-RPC payload contract: the shared payload structs plus the encode/decode
 layer. The per-crate generated copies that used to live in `agent/`,
 `channels/` and `gui/src-tauri/` have been retired onto this crate; the
 TypeScript clients share the same contract through the sibling npm package
-`shared/future-rpc` (`@future-os/rpc`).
+`future-rpc/ts` (`@future-os/rpc`).
 
 ## Typed payloads + dual-write
 
@@ -47,7 +47,7 @@ freshness gate that regenerates and fails on any diff.
 ## Contract rules
 
 - Proto field numbers are stable and MUST NOT be reused (see the header of
-  `proto/future.proto`). Typed payload `oneof` members are append-only.
+  `../proto/future.proto`). Typed payload `oneof` members are append-only.
 - Typed payloads attach to their host messages (`RpcResponse`, `StreamEvent`,
   `ProjectedRunEvent`, `ReplayEvent`) at field number 20; the JSON `data`
   field stays dual-written during the migration window.

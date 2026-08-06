@@ -4,7 +4,7 @@
   "private": true,
   "description": "FutureOS npm workspace root. Members: the shared agent wire-contract package and the TS clients that consume it. GUI and mobile keep their own installs (separate toolchains).",
   "workspaces": [
-    "shared/future-rpc",
+    "future-rpc/ts",
     "tui",
     "cli"
   ],

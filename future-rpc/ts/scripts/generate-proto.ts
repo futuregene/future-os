@@ -1,7 +1,7 @@
 /**
- * Reads proto/future.proto and embeds its content into this package's
- * src/proto.ts (the EMBEDDED_PROTO constant) — the single source the TUI and
- * CLI consume once they adopt @future-os/rpc.
+ * Reads future-rpc/proto/future.proto and embeds its content into this
+ * package's src/proto.ts (the EMBEDDED_PROTO constant) — the single source
+ * the TUI and CLI consume once they adopt @future-os/rpc.
  *
  * Run: bun run scripts/generate-proto.ts   (or `make generate-proto`)
  */
@@ -10,8 +10,8 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// shared/future-rpc/scripts → repo root is two levels up.
-const protoPath = path.resolve(__dirname, "..", "..", "..", "proto", "future.proto");
+// future-rpc/ts/scripts → future-rpc/proto is two levels up.
+const protoPath = path.resolve(__dirname, "..", "..", "proto", "future.proto");
 const target = path.resolve(__dirname, "..", "src", "proto.ts");
 
 const proto = fs

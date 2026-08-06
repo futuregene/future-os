@@ -25,7 +25,7 @@ gui/src-tauri/binaries/
 tui/dist/
 cli/dist/
 gui/dist/
-shared/*/dist/
+future-rpc/ts/dist/
 gui/.vite/
 mobile/.expo/
 mobile/android/
