@@ -25,8 +25,5 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0"
-  },
-  "allowScripts": {
-    "protobufjs@7.6.4": true
   }
 }

@@ -15,6 +15,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@future-os/rpc": "0.0.0",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.1",
     "long": "^5.3.2",
@@ -24,8 +25,5 @@
     "@rslint/tsgo": "^0.5.2",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0"
-  },
-  "allowScripts": {
-    "protobufjs@7.6.4": true
   }
 }

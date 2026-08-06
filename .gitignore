@@ -30,8 +30,7 @@ gui/.vite/
 mobile/.expo/
 mobile/android/
 mobile/ios/
-*/node_modules/
-shared/*/node_modules/
+node_modules/
 
 # Build-time generated version modules (see scripts/version.mjs)
 tui/src/version.generated.ts

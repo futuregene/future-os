@@ -1,0 +1,16 @@
+{
+  "name": "future-os",
+  "version": "0.0.0",
+  "private": true,
+  "description": "FutureOS npm workspace root. Members: the shared agent wire-contract package and the TS clients that consume it. GUI and mobile keep their own installs (separate toolchains).",
+  "workspaces": [
+    "shared/future-rpc",
+    "tui",
+    "cli"
+  ],
+  "allowScripts": {
+    "protobufjs@7.6.5": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true
+  }
+}
