@@ -21,7 +21,7 @@ The command-line tool `future` ships **inside every download** — it sits next 
 
 ## First launch
 
-Formal macOS and Windows installers are signed, and the macOS build is also notarized by Apple.
+The repository's official **signed-release pipeline** signs the macOS and Windows installers, and notarizes the macOS build with Apple. Note that the builds you download today are **unsigned and not notarized** — expect the first-launch warnings described in the [[FAQ]].
 
 ### macOS
 

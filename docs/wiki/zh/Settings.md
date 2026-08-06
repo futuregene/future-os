@@ -2,7 +2,7 @@
 
 从窗口左下角的**齿轮图标**进入设置。左栏里还有一个 **Models** 快捷入口,可直接跳到 Models 页。
 
-日常最常用的是 **General**、**Providers**、**Models** 三个页面。此外还有**检查更新(Check for updates)**和**重置(Reset)**页面。
+日常最常用的是 **General**、**Providers**、**Models** 三个页面。此外还有**账户(Account)**、**检查更新(Check for updates)**、**关于(About)**和**重置(Reset)**页面。
 
 ---
 
@@ -66,6 +66,18 @@ Models 页按 **provider 分组**列出所有可用模型:
 ## 检查更新(Check for updates)
 
 检查是否有新版本的 FutureOS,并下载对应系统的安装包。如何应用更新见 [[安装 FutureOS|Installation]]。
+
+---
+
+## 账户(Account)
+
+显示已登录的 FutureGene 账户信息（资料与余额），并可登出。
+
+---
+
+## 关于(About)
+
+显示应用版本、平台与相关发布信息。
 
 ---
 

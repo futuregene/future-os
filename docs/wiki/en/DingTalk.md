@@ -19,7 +19,7 @@ The bridge uses **DingTalk Stream Mode** — no public callback URL needed. It o
 
 1. A **DingTalk developer account** at [open.dingtalk.com](https://open.dingtalk.com).
 2. A **DingTalk app** with Stream Mode enabled.
-3. The FutureOS agent already running (`make run-agent` or `future agent start`).
+3. The FutureOS agent already running (`make run-agent`, or just open the desktop app — it starts the agent automatically).
 
 ---
 
@@ -86,18 +86,11 @@ Edit `~/.future/channels/config.json`:
 
 ```bash
 # Build and run the channel bridge
-make build-channels-release
-./target/release/future-channels
+make build-channels
+./target/release/future-channel
 ```
 
-Or manage it as a service:
-
-```bash
-future channel start    # macOS launchctl / Linux systemd
-future channel status   # check status
-future channel stop     # stop
-future channel restart  # restart
-```
+The bridge is a **standalone service** — there is no `future channel` CLI command, and the desktop app doesn't manage it. Run the `future-channel` binary directly (or via `make run-channels`) whenever you want the DingTalk bridge up.
 
 The bridge loads `~/.future/channels/config.json` on startup. If the file doesn't exist, a template is created and the bridge exits — edit the template and restart.
 
@@ -119,7 +112,7 @@ In any DingTalk chat with the bot, use these commands:
 | `/cwd <path>` | Set working directory |
 | `/help` | Show available commands |
 
-All slash commands are handled locally by the bridge without hitting the agent. Any unrecognized command is forwarded to the agent as a normal prompt.
+Commands like `/new`, `/status`, `/stop`, `/model`, `/models`, `/effort`, `/compact`, `/cwd`, and `/help` are handled locally by the bridge without hitting the agent. Any unrecognized command is forwarded to the agent as a normal prompt.
 
 ---
 
@@ -148,7 +141,7 @@ All slash commands are handled locally by the bridge without hitting the agent. 
 
 ### Bot doesn't respond
 
-1. Check that the bridge is running: `future channel status`
+1. Check that the bridge is running: the `future-channel` process should be up (`ps aux | grep future-channel` on macOS/Linux, Task Manager on Windows)
 2. Check that `dingtalk.enabled` is `true` in `config.json`
 3. Verify the `client_id` and `client_secret` are correct.
 4. Check the bridge logs for Stream Mode connection errors.
@@ -167,4 +160,4 @@ DingTalk markdown requires double line breaks (`\n\n`) for paragraph separation.
 
 - [[Feishu Integration|Feishu]] — connect FutureOS to Feishu/Lark.
 - [[Settings]] — configure FutureOS settings and providers.
-- [[CLI (future-cli)|CLI]] — command-line tools for service management.
+- [[CLI (future)|CLI]] — the optional command-line tool.

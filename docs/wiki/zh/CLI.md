@@ -13,9 +13,9 @@ FutureOS 附带一个**可选的**命令行工具,叫 `future`。它随每个下
 | 系统 | 位置 |
 |---|---|
 | **macOS**(`.dmg`) | 应用内:`/Applications/FutureOS.app/Contents/MacOS/future` |
-| **Windows**(便携 `.zip`) | 解压文件夹里的 `future.exe` |
+| **Windows**(安装版或便携 `.zip`) | 应用目录里的 `future.exe` |
 
-> 在 Windows 上,命令行工具在**便携包**里。普通安装版只含应用和它的后台服务,不含单独的 `future.exe`。
+CLI **随每个下载包一起附带** —— 安装版和便携版里都有,就装在应用旁边。
 
 ---
 
@@ -35,31 +35,36 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 ### agent 必须在运行
 
-每条命令都要连接 FutureOS 的 agent(后台服务)。如果**桌面应用已打开**,agent 就已经在运行。否则先启动它:
+大部分命令都要连接 FutureOS 的 agent(后台服务)。如果**桌面应用已打开**,agent 就已经在运行。否则,直接运行 `future-agent` 二进制来启动 agent(或打开桌面应用,它会自动拉起 agent)。
 
-```bash
-future agent start
-```
+> CLI **不能**启动或停止 agent——`future agent` 只能查看状态。
 
 ---
 
 ## 命令组
 
+### `init` —— 首次初始化
+
+```bash
+future init
+```
+
+安装所有内置技能。在 macOS 和 Linux 上,还会把 `future`(若存在,连同 `future-agent`)链接到 `~/.future/bin/`,并提示 PATH 配置。
+
 ### `auth` —— 登录与登出
 
 ```bash
-future auth login     # 通过浏览器登录
-future auth status    # 查看是否已登录
-future auth logout    # 登出
+future auth login       # 通过浏览器登录(设备码流程)
+future auth status      # 查看是否已登录
+future auth credential  # 输出 API key 与端点,供脚本使用
+future auth logout      # 登出
 ```
 
-### `agent` —— 管理后台 agent
+### `account` —— 账户信息
 
 ```bash
-future agent start
-future agent stop
-future agent restart
-future agent status
+future account profile  # 邮箱、用户 ID、验证状态、创建日期
+future account balance  # 余额(--json 输出机器可读结果)
 ```
 
 ### `run` —— 发一次性 prompt 并打印回答
@@ -76,6 +81,9 @@ future run "介绍一下这个项目"
 | `--thinking <level>` | 思考级别:`off`、`minimal`、`low`、`medium`、`high`、`xhigh`。 |
 | `@<path>` | 把某个文件的内容包含进 prompt。 |
 | `--continue`、`-c` | 继续最近的会话。 |
+| `--session <id>` | 连接指定 ID 的已有会话。 |
+| `--fork <entry-id>` | 从当前会话的某个条目分叉出新会话。 |
+| `--permission <level>` | 文件访问权限:`all`、`workspace`(仅工作区+临时目录)、`none`(工作区外只读)。 |
 | `--cwd <dir>` | 设置工作目录。 |
 | `--mode json` | 以 JSON 而非文本打印回答。 |
 | `--no-session` | 本次不保存为会话。 |
@@ -88,10 +96,21 @@ future run @README.md "总结这个文件"
 echo "一些文本" | future run "把这段文本整理一下"
 ```
 
+### `skills` —— 管理能力包
+
+```bash
+future skills list             # 列出目录中的技能(已装 + 可用)
+future skills install <name>   # 安装指定技能
+future skills install-builtin  # 安装全部内置 future-* 技能
+future skills uninstall <name> # 卸载已安装的技能
+future skills update           # 升级所有已安装技能
+```
+
 ### `tools` —— 列出与调用工具
 
 ```bash
 future tools list
+future tools describe <name>
 future tools call <name> --args '<json>'
 future tools call <name> --stdin
 future tools call <name> --args '<json>' --output result.png
@@ -99,24 +118,46 @@ future tools call <name> --args '<json>' --output result.png
 
 当工具需要文件内容时,文件路径参数会被自动转换。
 
-### `skills` —— 管理能力包
+### `models` —— 列出可用模型
 
 ```bash
-future skills list
-future skills install <name>
-future skills uninstall <name>
+future models            # 列出运行中 agent 的模型
+future models --json     # 机器可读输出
 ```
 
-### `channel` —— 聊天渠道桥接(进阶)
+### `agent` —— 查看后台 agent
 
-把外部聊天平台桥接到 agent(`start` / `stop` / `restart` / `status`)。大多数人用不到。
+```bash
+future agent status      # agent 版本 + 已加载技能数
+```
+
+`status` 是 `agent` 组唯一的子命令——启停 agent 不通过 CLI 完成。
+
+### `session` —— 管理会话
+
+```bash
+future session list
+future session info <id>
+future session rename <id> <name>
+future session delete <id>
+```
+
+会话数据保存在 `~/.future/agent/sessions/`。
+
+### `doctor` —— 环境诊断
+
+```bash
+future doctor
+```
+
+一次检查登录状态、组件安装、agent 连通性、配置、provider/模型、会话与技能。
 
 ---
 
 ## 小贴士
 
 - **macOS 首次被拦?** 先用右键 →「打开」把 FutureOS 应用打开一次以清除拦截,之后命令行工具也能运行。
-- **提示「Connection refused」?** 说明 agent 没运行。执行 `future agent start`,或直接打开桌面应用。
+- **提示「Connection refused」?** 说明 agent 没运行。打开桌面应用,或直接运行 `future-agent`。
 
 ---
 

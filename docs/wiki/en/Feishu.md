@@ -19,7 +19,7 @@ The bridge opens a long-lived WebSocket connection to Feishu. When someone sends
 
 1. A **Feishu developer account** at [open.feishu.cn](https://open.feishu.cn) (or [open.larksuite.com](https://open.larksuite.com) for Lark).
 2. A **Feishu app** with bot capability enabled.
-3. The FutureOS agent already running (`make run-agent` or `future agent start`).
+3. The FutureOS agent already running (`make run-agent`, or just open the desktop app — it starts the agent automatically).
 
 ---
 
@@ -134,18 +134,11 @@ Control who can talk to your bot:
 
 ```bash
 # Build and run the channel bridge
-make build-channels-release
-./target/release/future-channels
+make build-channels
+./target/release/future-channel
 ```
 
-Or manage it as a service:
-
-```bash
-future channel start    # macOS launchctl / Linux systemd
-future channel status   # check status
-future channel stop     # stop
-future channel restart  # restart
-```
+The bridge is a **standalone service** — there is no `future channel` CLI command, and the desktop app doesn't manage it. Run the `future-channel` binary directly (or via `make run-channels`) whenever you want the Feishu bridge up.
 
 The bridge loads `~/.future/channels/config.json` on startup. If the file doesn't exist, a template is created and the bridge exits — edit the template and restart.
 
@@ -182,14 +175,14 @@ Commands like `/new`, `/status`, `/model`, `/models`, `/effort`, `/compact`, `/c
 
 ### Bot doesn't respond
 
-1. Check that the bridge is running: `future channel status`
+1. Check that the bridge is running: the `future-channel` process should be up (`ps aux | grep future-channel` on macOS/Linux, Task Manager on Windows)
 2. Check that `feishu.enabled` is `true` in `config.json`
 3. Check the DM/group policy — the bot may be denying access. Look for the denial message with your open_id or chat_id.
 4. Check the bridge logs for WebSocket connection errors.
 
-### Bridge reconnects every ~6 minutes
+### Bridge reconnects automatically
 
-This is expected Feishu WebSocket behavior. The bridge sends a keepalive ping every 30 seconds and reconnects automatically on timeout. Reconnection is transparent — sessions are preserved.
+This is expected Feishu WebSocket behavior. The bridge sends a keepalive ping every 30 seconds and, if the connection drops, reconnects after about 5 seconds. Reconnection is transparent — sessions are preserved.
 
 ### Images aren't working
 
@@ -201,4 +194,4 @@ Ensure `im:resource` permission is granted. Check that images are under the `max
 
 - [[DingTalk Integration|DingTalk]] — connect FutureOS to DingTalk.
 - [[Settings]] — configure FutureOS settings and providers.
-- [[CLI (future-cli)|CLI]] — command-line tools for service management.
+- [[CLI (future)|CLI]] — the optional command-line tool.

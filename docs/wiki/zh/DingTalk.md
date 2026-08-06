@@ -19,7 +19,7 @@ Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebS
 
 1. **钉钉开发者账号**：[open.dingtalk.com](https://open.dingtalk.com)。
 2. 已创建并启用 Stream Mode 的**钉钉应用**。
-3. FutureOS Agent 已运行（`make run-agent` 或 `future agent start`）。
+3. FutureOS Agent 已运行（`make run-agent`，或直接打开桌面应用——它会自动拉起 agent）。
 
 ---
 
@@ -86,18 +86,11 @@ Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebS
 
 ```bash
 # 构建并运行 Channel Bridge
-make build-channels-release
-./target/release/future-channels
+make build-channels
+./target/release/future-channel
 ```
 
-或作为系统服务管理：
-
-```bash
-future channel start    # macOS launchctl / Linux systemd
-future channel status   # 查看状态
-future channel stop     # 停止
-future channel restart  # 重启
-```
+Bridge 是**独立服务**——没有 `future channel` CLI 命令，桌面应用也不管理它。需要钉钉桥接时，直接运行 `future-channel` 二进制即可（或通过 `make run-channels`）。
 
 Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在，会自动创建模板并退出——编辑模板后重新启动即可。
 
@@ -119,7 +112,7 @@ Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在�
 | `/cwd <path>` | 设置工作目录 |
 | `/help` | 显示可用命令 |
 
-所有斜杠命令均由 Bridge 本地处理，不经过 Agent。无法识别的命令会作为普通消息转发给 Agent。
+`/new`、`/status`、`/stop`、`/model`、`/models`、`/effort`、`/compact`、`/cwd`、`/help` 等命令由 Bridge 本地处理，不经过 Agent。无法识别的命令会作为普通消息转发给 Agent。
 
 ---
 
@@ -148,7 +141,7 @@ Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在�
 
 ### 机器人不回复
 
-1. 检查 Bridge 是否运行：`future channel status`
+1. 检查 Bridge 是否运行：`future-channel` 进程应存在（macOS/Linux 用 `ps aux | grep future-channel`，Windows 用任务管理器）
 2. 检查 `config.json` 中 `dingtalk.enabled` 是否为 `true`
 3. 确认 `client_id` 和 `client_secret` 正确无误。
 4. 查看 Bridge 日志中的 Stream Mode 连接错误。
@@ -167,4 +160,4 @@ Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在�
 
 - [[飞书集成|Feishu]] —— 将 FutureOS 接入飞书/Lark。
 - [[设置|Settings]] —— 配置 FutureOS 设置和 Provider。
-- [[命令行工具(future-cli)|CLI]] —— 服务管理的命令行工具。
+- [[命令行工具(future)|CLI]] —— 可选的命令行工具。

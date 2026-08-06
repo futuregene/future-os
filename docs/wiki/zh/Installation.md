@@ -21,7 +21,7 @@ FutureOS 运行于 **macOS 和 Windows**。本页介绍下载、首次启动、�
 
 ## 首次启动
 
-正式发布的 macOS 与 Windows 安装包均经过签名，macOS 版本同时经过 Apple 公证。
+仓库的官方**签名发布流水线**会对 macOS 与 Windows 安装包签名，并对 macOS 构建做 Apple 公证。请注意：当前下载的版本**未签名、未公证**——首次启动时出现警告属正常，见 [[常见问题|FAQ]]。
 
 ### macOS
 

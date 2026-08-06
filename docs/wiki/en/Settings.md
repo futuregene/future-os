@@ -2,7 +2,7 @@
 
 Open Settings from the **gear icon** at the bottom-left of the window. There's also a **Models** shortcut in the left panel that jumps straight to the Models page.
 
-The settings you'll use day-to-day are **General**, **Providers**, and **Models**. There are also **Check for updates** and **Reset** pages.
+The settings you'll use day-to-day are **General**, **Providers**, and **Models**. There are also **Account**, **Check for updates**, **About**, and **Reset** pages.
 
 ---
 
@@ -66,6 +66,18 @@ The model selector in the input box draws from the same list and shows which pro
 ## Check for updates
 
 Check whether a newer version of FutureOS is available and download the installer for your system. See [[Install FutureOS|Installation]] for how to apply an update.
+
+---
+
+## Account
+
+Shows your signed-in FutureGene account (profile and credit balance) and lets you sign out.
+
+---
+
+## About
+
+Shows the app version, platform, and related release information.
 
 ---
 

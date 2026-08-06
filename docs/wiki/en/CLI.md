@@ -13,9 +13,9 @@ The tool travels with the app:
 | System | Location |
 |---|---|
 | **macOS** (`.dmg`) | Inside the app: `/Applications/FutureOS.app/Contents/MacOS/future` |
-| **Windows** (portable `.zip`) | `future.exe` in the unzipped folder |
+| **Windows** (installer or portable `.zip`) | `future.exe` in the app folder |
 
-> On Windows, the command-line tool is in the **portable** package. The regular installer version contains the app and its background service, not a separate `future.exe`.
+The CLI ships in **every** download — both the installer and the portable package include it, sitting next to the app.
 
 ---
 
@@ -35,31 +35,36 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 ### The agent must be running
 
-Every command connects to the FutureOS agent (the background service). If the **desktop app is open**, the agent is already running. Otherwise, start it first:
+Most commands connect to the FutureOS agent (the background service). If the **desktop app is open**, the agent is already running. Otherwise, start the agent by running the `future-agent` binary directly (or by opening the desktop app, which starts it automatically).
 
-```bash
-future agent start
-```
+> The CLI **can't** start or stop the agent — `future agent` only reports its status.
 
 ---
 
 ## Command groups
 
+### `init` — first-time setup
+
+```bash
+future init
+```
+
+Installs all built-in skills. On macOS and Linux, also links `future` (and `future-agent` when available) into `~/.future/bin/` and prints a PATH setup hint.
+
 ### `auth` — sign in and out
 
 ```bash
-future auth login     # sign in via your browser
-future auth status    # show whether you're signed in
-future auth logout    # sign out
+future auth login       # sign in via your browser (device-code flow)
+future auth status      # show whether you're signed in
+future auth credential  # print the API key + endpoint for shell scripts
+future auth logout      # sign out
 ```
 
-### `agent` — manage the background agent
+### `account` — your account
 
 ```bash
-future agent start
-future agent stop
-future agent restart
-future agent status
+future account profile  # email, user ID, verification status, creation date
+future account balance  # credit balance (--json for machine output)
 ```
 
 ### `run` — send a one-off prompt and print the answer
@@ -76,6 +81,9 @@ Useful options and forms:
 | `--thinking <level>` | Thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
 | `@<path>` | Include a file's contents in the prompt. |
 | `--continue`, `-c` | Continue the most recent session. |
+| `--session <id>` | Connect to an existing session by ID. |
+| `--fork <entry-id>` | Fork a new session from a specific entry in the current session. |
+| `--permission <level>` | File access: `all`, `workspace` (workspace + temp only), or `none` (read-only outside workspace). |
 | `--cwd <dir>` | Set the working directory. |
 | `--mode json` | Print the answer as JSON instead of text. |
 | `--no-session` | Don't save this exchange as a session. |
@@ -88,10 +96,21 @@ future run @README.md "Summarize this file"
 echo "some text" | future run "Clean up this text"
 ```
 
+### `skills` — manage capability packs
+
+```bash
+future skills list             # list catalog skills (installed + available)
+future skills install <name>   # install a specific skill
+future skills install-builtin  # install all built-in future-* skills
+future skills uninstall <name> # remove an installed skill
+future skills update           # upgrade all installed skills
+```
+
 ### `tools` — list and call tools
 
 ```bash
 future tools list
+future tools describe <name>
 future tools call <name> --args '<json>'
 future tools call <name> --stdin
 future tools call <name> --args '<json>' --output result.png
@@ -99,24 +118,46 @@ future tools call <name> --args '<json>' --output result.png
 
 File-path arguments are converted automatically where a tool expects file content.
 
-### `skills` — manage capability packs
+### `models` — list available models
 
 ```bash
-future skills list
-future skills install <name>
-future skills uninstall <name>
+future models            # list models from the running agent
+future models --json     # machine-readable output
 ```
 
-### `channel` — chat platform bridge (advanced)
+### `agent` — check the background agent
 
-Bridges external chat platforms to the agent (`start` / `stop` / `restart` / `status`). Most people won't need this.
+```bash
+future agent status      # agent version + number of loaded skills
+```
+
+`status` is the only `agent` subcommand — starting or stopping the agent isn't done from the CLI.
+
+### `session` — manage sessions
+
+```bash
+future session list
+future session info <id>
+future session rename <id> <name>
+future session delete <id>
+```
+
+Session data lives in `~/.future/agent/sessions/`.
+
+### `doctor` — environment diagnostics
+
+```bash
+future doctor
+```
+
+Checks login status, component installation, agent connectivity, configuration, providers/models, sessions, and skills in one pass.
 
 ---
 
 ## Tips
 
 - **macOS blocked it the first time?** Open the FutureOS app once via right-click → **Open** to clear the block, then the CLI runs too.
-- **"Connection refused"?** The agent isn't running. Run `future agent start`, or just open the desktop app.
+- **"Connection refused"?** The agent isn't running. Open the desktop app, or run `future-agent` directly.
 
 ---
 
