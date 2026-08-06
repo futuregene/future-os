@@ -170,6 +170,14 @@ future-loop run --goal <goal-id> --model <confirmed-model> \
   --thinking-level <confirmed-thinking> --max-turns 1
 ```
 
+> **Long turns vs. shell timeouts**: a single `run --max-turns 1` turn often
+> takes several minutes — the ~120s default timeout of typical shell tools is
+> usually NOT enough. Run **blocking** with an explicit longer timeout on the
+> shell call (e.g. `timeout: 1800`), and poll `future-loop status` between
+> turns. Avoid backgrounding the run (nohup/&): it hides progress, risks
+> overlapping turns, and the kernel expects one run at a time. If a blocking
+> run is interrupted, check `status` before re-running to see what completed.
+
 After each `run`, before starting the next step:
 1. Report what was done (which todo, cost, new status).
 2. **Check whether the plan still holds** — `future-loop status --goal <goal-id>`:
