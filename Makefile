@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars
+.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills install-loop fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -35,9 +35,9 @@ endif
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
-install: install-agent install-tui install-cli install-gui install-channels install-skills
+install: install-agent install-tui install-cli install-gui install-channels install-skills install-loop
 
-install-nogui: install-agent install-tui install-cli install-channels install-skills
+install-nogui: install-agent install-tui install-cli install-channels install-skills install-loop
 
 uninstall:
 ifeq ($(OS),windows)
@@ -122,6 +122,9 @@ else
 	done
 	@echo "Linked built-in skills to ~/.future/agent/skills/"
 endif
+
+install-loop:
+	bash scripts/install-future-loop.sh $(if $(RELEASE),--release,)
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 
