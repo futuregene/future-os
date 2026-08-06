@@ -1,4 +1,4 @@
-# future-tui Rust port — Research & Architecture (P0)
+# future-tui Rust port — Research & Architecture (P0/P1)
 
 Goal (goal_6b1065901442): translate `tui/` (TypeScript, run by bun/node) 1:1 into a
 Rust crate at `tui/rust/` — identical UI rendering, key handling, interaction,
@@ -152,9 +152,30 @@ Caveats recorded for the markdown phase:
   existed), `theme`, and the terminal size/env fallback (env writes guarded by
   a global `ENV_LOCK` mutex, same pattern as `cli/rust/src/test_env.rs`).
   Raw-mode/signal tests require a tty → skipped unless `stdin` is a tty.
-- **P1+:** component render tests (`components.test.ts`, `footer.test.ts`,
-  `input-bugs.test.ts`, `display-fixes.test.ts`, `chat-streaming.test.ts`,
-  `help-screen.test.ts`) once components are ported.
+- **P1 (done):** component layer ported — `tui.rs` (Component/Container/
+  Focusable + overlay layout math), `components/input` (UTF-16 cursor
+  semantics, bracketed paste), `components/autocomplete` (manager + slash/
+  file-path/attachment providers + popup), `components/select_list`,
+  `components/scoped_models_selector`, `components/footer`, `help_screen`
+  (`renderHelp`), `keybindings`, `rpc/types` (`ModelInfo`). Tests ported from
+  `input-bugs.test.ts`, `footer.test.ts`, `help-screen.test.ts`,
+  `components.test.ts` + the AutocompletePopup/`setValue` cases from
+  `display-fixes.test.ts`; new tests for keybindings (no TS test existed),
+  overlay layout, and popup rendering. **237 tests total** (was 96), clippy
+  `-D warnings` + fmt clean.
+- **P1 render parity verified 2026-08-07:** drove TS (bun) and the Rust
+  crate with identical inputs and byte-compared the rendered lines — 13/13
+  render groups identical (Input ×3, Footer ×1, help-screen ×2 widths,
+  SelectList ×3, ScopedModelsSelector ×3, AutocompletePopup ×2).
+- **P1 gotchas:** (1) `String + String` no longer compiles on 1.97 (std only
+  keeps `Add<&str>`) — every `+` chain borrows the right operand; (2) the
+  input `renderCursorInLine` cursor-past-end case needs a clamped
+  `afterCursorStart` (JS `slice` clamps, Rust panics); (3) `Box<dyn FnMut>`
+  is `'static` — test callbacks capture via `Rc<Cell/RefCell>`; (4) TS
+  `handleInput` drops paste text after the close marker in the same chunk —
+  parity test asserts the drop; (5) the debounce/AbortSignal in
+  `AutocompleteManager` is event-loop machinery — the sync port runs queries
+  immediately (app loop will drive the 20ms debounce).
 - **Render diff:** drive TS (bun) and Rust renderers with identical inputs and
   byte-compare the produced lines (like `cli/rust/tests/diff-ts-rust.sh`).
 - **tmux screen consistency:** run both binaries under `tmux` with a fixed

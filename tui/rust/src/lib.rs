@@ -14,12 +14,26 @@
 //!   - `terminal`     — self-implemented POSIX terminal backend
 //!   - `help`         — verbatim `--help` text (index.ts `printHelp`)
 //!   - `version`      — build-injected version (scripts/version.mjs)
+//!
+//! P1 modules (components layer, ported 1:1 from `tui/src/components/*.ts` +
+//! `tui/src/tui.ts` + `tui/src/help-screen.ts` + `tui/src/keybindings.ts`):
+//!   - `tui`              — Component architecture, constants, overlay layout
+//!   - `components`       — input / autocomplete / select-list /
+//!     scoped-models-selector / footer
+//!   - `help_screen`      — `renderHelp` card
+//!   - `keybindings`      — KeybindingManager
+//!   - `rpc`              — RPC types (ModelInfo for the selector)
 
+pub mod components;
 pub mod help;
+pub mod help_screen;
+pub mod keybindings;
 pub mod keys;
+pub mod rpc;
 pub mod stdin_buffer;
 pub mod terminal;
 pub mod theme;
+pub mod tui;
 pub mod utils;
 pub mod version;
 

@@ -244,6 +244,9 @@ lint-tui:
 	cd tui && npm run gen-version && npx tsc --noEmit
 	rustup run 1.97.0 cargo clippy -p tui-rust --all-targets -- -D warnings
 
+lint-tui-rust:
+	rustup run 1.97.0 cargo clippy -p tui-rust --all-targets -- -D warnings
+
 lint-cli:
 	cd cli && npm run gen-version && npx tsc --noEmit
 
