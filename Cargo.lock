@@ -3280,12 +3280,19 @@ name = "tui-rust"
 version = "0.0.0"
 dependencies = [
  "base64",
+ "chrono",
+ "dirs 5.0.1",
  "libc",
  "parking_lot",
+ "prost",
  "pulldown-cmark",
  "regex",
+ "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tonic",
+ "tonic-build",
  "unicode-segmentation",
  "uuid",
 ]

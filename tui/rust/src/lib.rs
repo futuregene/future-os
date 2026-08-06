@@ -23,10 +23,22 @@
 //!   - `help_screen`      — `renderHelp` card
 //!   - `keybindings`      — KeybindingManager
 //!   - `rpc`              — RPC types (ModelInfo for the selector)
+//!
+//! P3 modules (app layer, ported 1:1 from `tui/src/app.ts` +
+//! `tui/src/index.ts` + `tui/src/rpc/grpc-client.ts`):
+//!   - `rpc`              — full types + tonic `GrpcClient`
+//!   - `app`              — the App (session orchestration, slash commands,
+//!     overlays, diff-based render pipeline)
+//!   - `index`            — CLI arg parsing / print mode / list-models /
+//!     interactive wiring (`main.rs` calls `index::run`)
+//!   - `generated`        — checked-in prost codegen (proto/future.proto)
 
+pub mod app;
 pub mod components;
+pub mod generated;
 pub mod help;
 pub mod help_screen;
+pub mod index;
 pub mod keybindings;
 pub mod keys;
 pub mod rpc;

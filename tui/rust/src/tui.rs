@@ -57,6 +57,27 @@ pub trait Component: std::any::Any {
 
     /// Downcast support (mirrors TS duck-typing like `"focused" in component`).
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Mutable downcast support — used by the app layer to flip the `focused`
+    /// flag on boxed overlay components (mirrors TS `component.focused = true`).
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
+/// Set/clear the `focused` flag on a component, mirroring the TS
+/// `isFocusable(component)` guard + `component.focused = ...` assignment.
+/// Only the focusable components (Input, ScopedModelsSelector) are affected.
+pub fn set_component_focused(component: &mut dyn Component, focused: bool) {
+    if let Some(input) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::input::Input>()
+    {
+        input.focused = focused;
+    } else if let Some(sel) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::scoped_models_selector::ScopedModelsSelector>(
+    ) {
+        sel.focused = focused;
+    }
 }
 
 /// Components that can receive keyboard focus (port of the TS `Focusable`
@@ -125,6 +146,10 @@ impl Component for Container {
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 }
@@ -407,6 +432,9 @@ mod tests {
                 vec![self.0.clone()]
             }
             fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
                 self
             }
         }

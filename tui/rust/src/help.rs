@@ -62,7 +62,8 @@ Examples:
   node dist/index.js --tools read,shell -p \"Review this code\"
 
   # JSON output mode
-  node dist/index.js --mode json -p \"What is 2+2?\""
+  node dist/index.js --mode json -p \"What is 2+2?\"
+"
 }
 
 #[cfg(test)]
@@ -86,7 +87,7 @@ mod tests {
         // (P4), which prints help_text() + "\n" and compares.
         let h = help_text();
         assert!(h.starts_with("future-tui TUI\n"));
-        assert!(h.ends_with("What is 2+2?\""));
+        assert!(h.ends_with("What is 2+2?\"\n"));
         assert_eq!(h.lines().count(), 58);
     }
 }

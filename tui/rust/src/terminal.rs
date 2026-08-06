@@ -217,6 +217,10 @@ pub struct Terminal {
     write_lock: Arc<Mutex<()>>,
     progress_stop: Option<Arc<AtomicBool>>,
     progress_thread: Option<std::thread::JoinHandle<()>>,
+    /// SIGINT/SIGTERM callback (set before `start`; invoked on the reader
+    /// thread in place of the default restore-and-re-raise).
+    #[allow(clippy::type_complexity)]
+    exit_signal_cb: Arc<Mutex<Option<Box<dyn FnMut() + Send + 'static>>>>,
 }
 
 impl Default for Terminal {
@@ -242,7 +246,17 @@ impl Terminal {
             write_lock: Arc::new(Mutex::new(())),
             progress_stop: None,
             progress_thread: None,
+            exit_signal_cb: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Install a callback invoked from the reader thread when SIGINT/SIGTERM
+    /// arrives (instead of the default restore-and-re-raise). The app uses it
+    /// to run its graceful `stop()` and exit — the TS equivalent of
+    /// `process.on("SIGINT", ...)`. The terminal is NOT restored here; the
+    /// callback must arrange for `stop()` (or the exit path) to do so.
+    pub fn set_exit_signal_callback(&mut self, cb: Option<Box<dyn FnMut() + Send + 'static>>) {
+        *self.exit_signal_cb.lock() = cb;
     }
 
     /// Enter the alternate screen, raw mode, bracketed paste; install signal
@@ -321,6 +335,7 @@ impl Terminal {
         let write_lock = self.write_lock.clone();
         let size = self.size.clone();
         let orig_termios = orig;
+        let exit_signal_cb = self.exit_signal_cb.clone();
         let mut on_input = on_input;
         let mut on_resize = on_resize;
 
@@ -424,6 +439,18 @@ impl Terminal {
                                     on_resize();
                                 }
                                 sig if TERM_SIGNALS.contains(&sig) => {
+                                    // If the app installed an exit-signal
+                                    // callback (graceful stop path), invoke
+                                    // it instead of the failsafe restore. The
+                                    // terminal is restored by the app's
+                                    // `stop()` (TS `process.on("SIGINT")`).
+                                    let mut cb = exit_signal_cb.lock();
+                                    if let Some(cb_fn) = cb.as_mut() {
+                                        cb_fn();
+                                        drop(cb);
+                                        continue;
+                                    }
+                                    drop(cb);
                                     // Failsafe restore (the TS exitHandler
                                     // equivalent), then die with the signal's
                                     // default disposition for a proper status.

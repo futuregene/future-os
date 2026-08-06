@@ -2,7 +2,7 @@
 name = "tui-rust"
 version = "0.0.0"
 edition = "2021"
-description = "Rust port of the TypeScript future-tui — 1:1 behavior (rendering, key handling, interaction, help text) with a self-implemented terminal backend"
+description = "Rust port of the TypeScript future-tui — 1:1 behavior (UI rendering, key handling, interaction, args, help text) with a self-implemented terminal backend"
 license = "MIT"
 
 [[bin]]
@@ -21,7 +21,16 @@ pulldown-cmark = "0.13"
 base64.workspace = true
 uuid.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
+serde.workspace = true
 parking_lot.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+prost.workspace = true
+chrono = { workspace = true, features = ["clock"] }
+dirs = "5"
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true

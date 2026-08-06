@@ -106,6 +106,12 @@ impl AutocompleteManager {
         self.query(&text, cursor_pos);
     }
 
+    /// Install the items callback (app layer: popup show/hide + render).
+    #[allow(clippy::type_complexity)]
+    pub fn set_on_items(&mut self, cb: Box<dyn FnMut(&[AutocompleteItem])>) {
+        self.on_items = Some(cb);
+    }
+
     fn run_query(&mut self, text: &str, cursor_pos: usize) {
         // Try each provider in registration order
         for provider in &mut self.providers {
@@ -662,6 +668,10 @@ impl Component for AutocompletePopup {
     fn invalidate(&mut self) {}
 
     fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 }
