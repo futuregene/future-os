@@ -1469,6 +1469,24 @@ mod tests {
     // ─── submit / history dedup ───────────────────────────────────────
 
     #[test]
+    fn set_value_moves_cursor_to_end_by_default() {
+        let mut input = make_input();
+        input.insert_text("/mo");
+        input.set_value("/model", None);
+        // Typing after setValue must append at the end, not mid-word
+        input.insert_text(" x");
+        assert_eq!(input.get_value(), "/model x");
+    }
+
+    #[test]
+    fn set_value_honours_explicit_cursor_position() {
+        let mut input = make_input();
+        input.set_value("hello world", Some(5));
+        input.insert_text("!");
+        assert_eq!(input.get_value(), "hello! world");
+    }
+
+    #[test]
     fn enter_adds_to_history_and_clears_index() {
         use std::cell::RefCell;
         use std::rc::Rc;
