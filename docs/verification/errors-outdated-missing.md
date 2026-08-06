@@ -205,7 +205,8 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 ## E. 遗留 / 超出本 todo 范围（建议后继核验）
 
 - **GUI 功能声明**（wiki Using-FutureOS/Settings/Skills/Quick-Start：批准机制、批准模式三态、11 个内置技能表、4 图/25MiB、Artifacts、Runs/Review）——本 todo 未覆盖，需对照 gui/ 源码（gui/src-tauri commands + gui/src React）。
-- **X10 架构审计时效**：architecture-audit 基准 dev@8aa82925（2026-08-05）与当前源码的 file:line 漂移情况。
+- **X10 架构审计时效 —— ✅ 已裁决（todo_41f779819879）**：architecture-audit 判定为**时点快照，标注历史，不逐行重核**。审计文档与首批修复同批入库（commit `306cf05f`，2026-08-06）：报告 01 H2/H3/H4、报告 04 H1/H2/H4 已在同一 commit 修复（代码注释直接引用审计编号，如 auth_store.rs「audit item 2」、useThreadStore.ts「(H2)」）；仍成立的高危项为报告 01 H1/H5、报告 04 H3。file:line 已漂移（报告 02 引用文件多处移动、报告 03 行数增长、报告 01 proto 行号失效），README.md 顶部已加时效性说明并逐条标注 ✅。后续如需更新审计，应基于当前工作树重跑调查而非修订旧行号。
+- **docs/dist/*.txt —— ✅ 已核验（todo_41f779819879）**：6 个发布包内附说明为**活文档**（build.yml / build-windows-portable.ps1 / build-windows-signed.yml 打包时逐字复制进 dmg/zip/tar.gz），全部声明与当前源码一致（二进制名 `futureos`/`future-agent`/`future` 三件套与 build.yml 装配步骤完全吻合；macOS「未公证」与 FAQ/B8 口径一致；WebView2/WebKitGTK 运行时要求正确）。**无需修改**；`-en.txt` 为参考译文（打包只用 zh `.txt`）。后继 todo 可跳过。
 - **X8 沙箱术语**：README「off / manual / macOS Seatbelt」vs wiki「Manual / Sandboxed (macOS only) / Unrestricted」——属 GUI 核验面。
 - TUI help-screen / 自动补全清单与实现命令集不一致（代码侧小问题，见 C1 备注）。
 

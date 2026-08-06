@@ -336,9 +336,11 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 
 ## 10. docs/architecture-audit/（4 份审计 + README，2026-08-05 生成）
 
+> ⚠️ **时点快照，已标注历史（2026-08-06，todo_41f779819879）**：审计基准 dev @ 8aa82925（2026-08-05）；文档与首批修复同批入库（commit `306cf05f`）——报告 01 H2/H3/H4、报告 04 H1/H2/H4 已在该 commit 修复；仍成立高危项为报告 01 H1/H5、报告 04 H3。各报告相关条目已标 ✅；README 顶部时效性说明详述 file:line 漂移与修复清单。
+
 | # | 声明 | 位置 |
 |---|---|---|
-| A0 | 审计基准：`dev @ 8aa82925`（2026-08-05）；调查在工作树 `8164b8e1` 进行，两树内容一致（diff 为空）；报告 file:line 在当前 dev 可用 | audit/README.md L8-9 |
+| A0 | 审计基准：`dev @ 8aa82925`（2026-08-05）；调查在工作树 `8164b8e1` 进行，两树内容一致（diff 为空）；报告 file:line 在**审计时点**（2026-08-05）可用——⚠️ 2026-08-06 起已漂移（见本表顶部警示） | audit/README.md L8-9 |
 | A0b | 四报告主题与一句话结论表 | audit/README.md L5-7 |
 | A1 | 报告 01 结论：agent ↔ gui_rust 边界**泄漏且双向**：影子 JSON 契约 + 7 条文件系统旁路 + 编译期源码 include（`#[path]`）；H1-H5 / M1-M7 / L1-L5 详情 | audit/01 L1-7, L15-119 |
 | A1b | 报告 01 最强证据：RpcResponse.data/StreamEvent.data 为 JSON 字符串（proto:220/392）；get_state 返回 ~35 键 ad-hoc JSON（agent/src/rpc/mod.rs:339-376）；GUI 写 auth.json/models.json（auth_store.rs:84-149、write.rs:92-258）；`#[path="../../../../agent/src/models/builtin/mod.rs"]`（catalog.rs:15-16）；cleanup.rs:173-241 探测 `{id}.jsonl` | audit/01 L32-54, L143-152 |
@@ -350,6 +352,8 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 ---
 
 ## 11. docs/dist/*.txt（发布包内附说明，6 个）
+
+> ✅ **已核验（2026-08-06，todo_41f779819879）**：全部声明与当前源码一致，**无需修改**。这些文件是活文档——build.yml（macOS dmg / Windows portable / Linux portable）与 scripts/build-windows-portable.ps1、build-windows-signed.yml 打包时逐字复制为各包内 `Readme.txt`（`-en.txt` 为参考译文，打包只用 zh `.txt`）。二进制三件套（`futureos`/`FutureOS.exe` + `future-agent`/`future-agent.exe` + `future`/`future.exe`）与 build.yml 装配步骤逐条吻合（L239-301）；macOS「not Apple-notarised」与 FAQ/B8 口径一致；WebView2/WebKitGTK 运行时要求与 Tauri 默认一致；`~/.future` / `C:\Users\<用户名>\.future` 数据目录正确。
 
 | # | 声明 | 位置 |
 |---|---|---|
@@ -376,6 +380,7 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 | X8 | **沙箱术语** | README「sandbox tiers (off / manual / macOS Seatbelt)」（R9）；wiki「Manual / Sandboxed (macOS only) / Unrestricted」（EU6/ES3）；wiki-prompt W10「手动 / 沙盒[仅 macOS] / 无限制」 | §1/§8/§7 |
 | X9 | **思考级别集合** | README「off ↔ xhigh」；wiki CLI.md `--thinking` 列 off/minimal/low/medium/high/xhigh（EC5）；README 未列全级别 | §1/§8 |
 | X10 | **architecture-audit 时效** | 审计基准 dev @ 8aa82925（2026-08-05）与当前工作树关系需核验；若源码已变，file:line 可能失效 | §10-A0 |
+| — | **X10 已裁决（2026-08-06，todo_41f779819879）** | 审计为**时点快照**：文档与首批修复同批入库（commit `306cf05f`）——报告 01 H2/H3/H4、报告 04 H1/H2/H4 已在该 commit 修复（代码注释引用审计编号）；仍成立高危项：报告 01 H1/H5、报告 04 H3。file:line 已漂移，README 顶部已加时效性说明并逐条标注 ✅（详见 errors-outdated-missing.md §E） | |
 | X11 | **loop CLI 命令面** | loop-control-plane.md L15 CLI 一览 vs 实际 `future-loop --help`（本轮已见 goal/todo/ops/cli 等组在跑，完整命令面需核验） | §5 |
 | — | **X11 已裁决（2026-08-06，todo_63c718c2a3d5）** | 与 `build_cli_registry()`（main.rs L176-471）逐一比对：goal 组缺 `models`/`diagnose`、extension 缺 `upgrade`、`cli registry` 缺 `--include-experimental`，已修正 en/zh 两份 CLI 一览（B9 详录）。其余全部一致 | |
 | X12 | **`future init` 行为** | build-and-install B14：`future init` = 安装技能 + macOS/Linux 链接本地命令；需核验 cli 源码 | §3 |
