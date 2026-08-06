@@ -256,8 +256,13 @@ pub struct RpcResponse {
     #[prost(bool, tag = "4")]
     pub success: bool,
     /// JSON-serialised response payload.  Structure depends on the command.
-    /// The big read commands are documented (not enforced on the wire) by the
-    /// "Response payload contracts" section below: list_sessions / get_state /
+    /// TRANSITIONAL (typed-RPC migration): for commands that carry a typed
+    /// `payload`, this string is dual-written with identical semantics so
+    /// pre-migration clients keep working; new clients read `payload` and fall
+    /// back to `data` when it is absent. Commands without a ResponsePayload
+    /// member (trivial acks, get_messages, ...) are served through this field
+    /// only. The big read commands are documented by the "Response payload
+    /// contracts" section below: list_sessions / get_state /
     /// get_session_entries / get_events_since.
     #[prost(string, tag = "5")]
     pub data: ::prost::alloc::string::String,
@@ -271,6 +276,471 @@ pub struct RpcResponse {
     /// Optional JSON-serialised structured error details.
     #[prost(string, tag = "8")]
     pub error_data: ::prost::alloc::string::String,
+    /// Typed response payload (typed-RPC migration). Absent on old agents and
+    /// for commands that have no typed member yet — clients MUST fall back to
+    /// the JSON `data` string when unset. Field numbers 9-19 are reserved for
+    /// future envelope fields; payload kinds are allocated in ResponsePayload.
+    #[prost(message, optional, tag = "20")]
+    pub payload: ::core::option::Option<ResponsePayload>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ResponsePayload {
+    #[prost(
+        oneof = "response_payload::Kind",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
+    )]
+    pub kind: ::core::option::Option<response_payload::Kind>,
+}
+/// Nested message and enum types in `ResponsePayload`.
+pub mod response_payload {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Kind {
+        #[prost(message, tag = "1")]
+        GetState(super::SessionState),
+        #[prost(message, tag = "2")]
+        ListSessions(super::ListSessionsResponse),
+        #[prost(message, tag = "3")]
+        GetSessionEntries(super::SessionEntriesResponse),
+        #[prost(message, tag = "4")]
+        GetEventsSince(super::EventsSince),
+        #[prost(message, tag = "5")]
+        Prompt(super::PromptAck),
+        #[prost(message, tag = "6")]
+        ListModels(super::ListModelsResponse),
+        #[prost(message, tag = "7")]
+        GetAgentInfo(super::AgentInfo),
+        #[prost(message, tag = "8")]
+        GetCommands(super::CommandsResponse),
+        #[prost(message, tag = "9")]
+        Compact(super::CompactResult),
+        #[prost(message, tag = "10")]
+        Shell(super::ShellResult),
+        #[prost(message, tag = "11")]
+        CycleModel(super::CycleModelResult),
+        #[prost(message, tag = "12")]
+        SyncFutureModels(super::SyncFutureModelsResult),
+        #[prost(message, tag = "13")]
+        RefreshSkills(super::RefreshSkillsResult),
+        #[prost(message, tag = "14")]
+        GetSessionEventsSince(super::SessionEventsSinceResponse),
+        #[prost(message, tag = "15")]
+        GetSessionStats(super::SessionStatsResponse),
+        #[prost(message, tag = "16")]
+        GetRuntimeMetrics(super::RuntimeMetricsResponse),
+    }
+}
+/// list_sessions response wrapper.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListSessionsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub sessions: ::prost::alloc::vec::Vec<SessionSummary>,
+}
+/// get_session_entries response wrapper.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SessionEntriesResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub entries: ::prost::alloc::vec::Vec<SessionEntry>,
+}
+/// Acknowledgement of an accepted prompt command. Field names mirror the
+/// on-disk/wire JSON spelling (snake_case).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PromptAck {
+    #[prost(string, tag = "1")]
+    pub run_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub run_epoch: u64,
+    /// "existing" | "running" | "queued".
+    #[prost(string, tag = "3")]
+    pub accepted_state: ::prost::alloc::string::String,
+    /// Absent until the session scheduler allocates them (queued runs).
+    #[prost(uint64, optional, tag = "4")]
+    pub run_sequence: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub queue_position: ::core::option::Option<u64>,
+}
+/// list_models response.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListModelsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub models: ::prost::alloc::vec::Vec<ModelEntry>,
+    #[prost(string, tag = "2")]
+    pub default_model: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub is_scoped: bool,
+    /// Built-in provider catalog summary, keyed by provider id; present only
+    /// when the command set include_builtin_providers.
+    #[prost(map = "string, message", tag = "4")]
+    pub builtin_providers: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        BuiltinProvider,
+    >,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ModelEntry {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub label: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub provider: ::prost::alloc::string::String,
+    #[prost(bool, tag = "4")]
+    pub supports_images: bool,
+    /// Default thinking level for the model ("high" for reasoning models,
+    /// "off" otherwise).
+    #[prost(string, tag = "5")]
+    pub thinking_level: ::prost::alloc::string::String,
+    #[prost(int64, tag = "6")]
+    pub context_window: i64,
+    #[prost(bool, tag = "7")]
+    pub is_default: bool,
+    #[prost(string, tag = "8")]
+    pub description: ::prost::alloc::string::String,
+    #[prost(string, tag = "9")]
+    pub description_en: ::prost::alloc::string::String,
+    #[prost(bool, tag = "10")]
+    pub recommended: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BuiltinProvider {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub model_count: u64,
+    #[prost(string, tag = "3")]
+    pub base_url: ::prost::alloc::string::String,
+}
+/// get_agent_info response.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentInfo {
+    #[prost(string, tag = "1")]
+    pub version: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub agent_instance_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub skills_count: u64,
+}
+/// get_commands response.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CommandsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub commands: ::prost::alloc::vec::Vec<Command>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Command {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub description: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub name_zh: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub description_zh: ::prost::alloc::string::String,
+    /// Origin of the command, e.g. "skill".
+    #[prost(string, tag = "5")]
+    pub source: ::prost::alloc::string::String,
+}
+/// compact response.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompactResult {
+    #[prost(int64, tag = "1")]
+    pub tokens_before: i64,
+    #[prost(int64, tag = "2")]
+    pub tokens_after: i64,
+    #[prost(string, tag = "3")]
+    pub summary: ::prost::alloc::string::String,
+    #[prost(int64, tag = "4")]
+    pub messages_removed: i64,
+}
+/// shell response.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ShellResult {
+    #[prost(string, tag = "1")]
+    pub output: ::prost::alloc::string::String,
+    #[prost(int32, tag = "2")]
+    pub exit_code: i32,
+}
+/// cycle_model response.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CycleModelResult {
+    #[prost(string, tag = "1")]
+    pub model: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub thinking_level: ::prost::alloc::string::String,
+    /// Absent on the empty-catalog edge case (matches the JSON shape).
+    #[prost(bool, optional, tag = "3")]
+    pub is_scoped: ::core::option::Option<bool>,
+}
+/// sync_future_models response.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct SyncFutureModelsResult {
+    #[prost(bool, tag = "1")]
+    pub synced: bool,
+    #[prost(uint64, tag = "2")]
+    pub model_count: u64,
+}
+/// refresh_skills response. Field names mirror the wire JSON spelling
+/// (snake_case).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RefreshSkillsResult {
+    #[prost(uint64, tag = "1")]
+    pub skills_count: u64,
+    #[prost(string, repeated, tag = "2")]
+    pub skills: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(bool, tag = "3")]
+    pub refreshed: bool,
+}
+/// get_session_events_since response.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SessionEventsSinceResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub events: ::prost::alloc::vec::Vec<SessionEventRecord>,
+}
+/// One session-scoped event as replayed by get_session_events_since. The
+/// `data` string carries the event's JSON payload (see StreamEvent.data).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SessionEventRecord {
+    #[prost(string, tag = "1")]
+    pub r#type: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub data: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "4")]
+    pub session_idx: i64,
+    #[prost(string, tag = "5")]
+    pub event_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub timestamp: ::prost::alloc::string::String,
+}
+/// get_session_stats response.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SessionStatsResponse {
+    #[prost(string, tag = "1")]
+    pub session_file: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub user_messages: u64,
+    #[prost(uint64, tag = "4")]
+    pub assistant_messages: u64,
+    #[prost(uint64, tag = "5")]
+    pub tool_calls: u64,
+    #[prost(uint64, tag = "6")]
+    pub tool_results: u64,
+    #[prost(uint64, tag = "7")]
+    pub total_messages: u64,
+    #[prost(message, optional, tag = "8")]
+    pub tokens: ::core::option::Option<StatsTokens>,
+    #[prost(double, tag = "9")]
+    pub cost: f64,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct StatsTokens {
+    #[prost(int64, tag = "1")]
+    pub input: i64,
+    #[prost(int64, tag = "2")]
+    pub output: i64,
+    #[prost(int64, tag = "3")]
+    pub cache_read: i64,
+    #[prost(int64, tag = "4")]
+    pub total: i64,
+}
+/// get_runtime_metrics response.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RuntimeMetricsResponse {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub active_run_gauge: u64,
+    #[prost(uint64, tag = "3")]
+    pub stale_epoch_drops: u64,
+    #[prost(uint64, tag = "4")]
+    pub persistence_degraded: u64,
+    #[prost(uint64, tag = "5")]
+    pub broadcast_lag: u64,
+    #[prost(uint64, tag = "6")]
+    pub ring_truncations: u64,
+    /// Absent when no run snapshot exists.
+    #[prost(string, optional, tag = "7")]
+    pub active_run_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, tag = "8")]
+    pub queued_runs: u64,
+    #[prost(uint64, tag = "9")]
+    pub queued_bytes: u64,
+    #[prost(bool, tag = "10")]
+    pub event_journal_healthy: bool,
+    /// Absent when the journal is healthy.
+    #[prost(string, optional, tag = "11")]
+    pub event_journal_error: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventPayload {
+    #[prost(
+        oneof = "event_payload::Kind",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
+    )]
+    pub kind: ::core::option::Option<event_payload::Kind>,
+}
+/// Nested message and enum types in `EventPayload`.
+pub mod event_payload {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Kind {
+        #[prost(message, tag = "1")]
+        TextChunk(super::TextChunk),
+        #[prost(message, tag = "2")]
+        ThinkingStart(super::ThinkingStart),
+        #[prost(message, tag = "3")]
+        ThinkingDelta(super::ThinkingDelta),
+        #[prost(message, tag = "4")]
+        ThinkingEnd(super::ThinkingEnd),
+        #[prost(message, tag = "5")]
+        AgentStart(super::AgentStart),
+        #[prost(message, tag = "6")]
+        AgentEnd(super::AgentEnd),
+        #[prost(message, tag = "7")]
+        ToolStart(super::ToolStart),
+        #[prost(message, tag = "8")]
+        ToolDelta(super::ToolDelta),
+        #[prost(message, tag = "9")]
+        ToolEnd(super::ToolEnd),
+        #[prost(message, tag = "10")]
+        ApprovalRequest(super::ApprovalRequestInfo),
+        #[prost(message, tag = "11")]
+        ApprovalDecision(super::ApprovalDecisionEvent),
+        #[prost(message, tag = "12")]
+        Usage(super::UsageEvent),
+        #[prost(message, tag = "13")]
+        Error(super::ErrorEvent),
+        #[prost(message, tag = "14")]
+        UserMessage(super::UserMessageEvent),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TextChunk {
+    #[prost(string, tag = "1")]
+    pub text: ::prost::alloc::string::String,
+}
+/// No payload fields today; the message exists so the event type is typed.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct ThinkingStart {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ThinkingDelta {
+    #[prost(string, tag = "1")]
+    pub text: ::prost::alloc::string::String,
+}
+/// No payload fields today.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct ThinkingEnd {}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct AgentStart {
+    /// Wall-clock run start (ms since epoch) for anchoring elapsed timers.
+    #[prost(uint64, tag = "1")]
+    pub started_at_ms: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentEnd {
+    /// Terminal state ("completed", "cancelled", "error", ...); absent on the
+    /// early task-spawn failure path.
+    #[prost(string, optional, tag = "1")]
+    pub state: ::core::option::Option<::prost::alloc::string::String>,
+    /// Present only on failure.
+    #[prost(string, optional, tag = "2")]
+    pub error: ::core::option::Option<::prost::alloc::string::String>,
+    /// Present when the run measured a duration.
+    #[prost(uint64, optional, tag = "3")]
+    pub duration_ms: ::core::option::Option<u64>,
+    /// The run's output-token total (JSON shape: usage.output_tokens).
+    #[prost(uint64, optional, tag = "4")]
+    pub output_tokens: ::core::option::Option<u64>,
+    /// "incomplete" when the stream was truncated.
+    #[prost(string, optional, tag = "5")]
+    pub reason: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ToolStart {
+    #[prost(string, tag = "1")]
+    pub tool_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub tool_name: ::prost::alloc::string::String,
+    /// Tool-call arguments, JSON-serialised (object or JSON-encoded string,
+    /// mirroring the wire).
+    #[prost(string, tag = "3")]
+    pub tool_args: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ToolDelta {
+    #[prost(string, tag = "1")]
+    pub tool_id: ::prost::alloc::string::String,
+    /// Streaming tool-argument fragment.
+    #[prost(string, tag = "2")]
+    pub text: ::prost::alloc::string::String,
+    /// Tool-call index within the assistant message, when > 0.
+    #[prost(int32, optional, tag = "3")]
+    pub tc_index: ::core::option::Option<i32>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ToolEnd {
+    #[prost(string, tag = "1")]
+    pub tool_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub tool_name: ::prost::alloc::string::String,
+    /// Tool output text.
+    #[prost(string, tag = "3")]
+    pub text: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "4")]
+    pub error: ::core::option::Option<::prost::alloc::string::String>,
+    /// Structured semantics (consumers must not re-parse `text` for these):
+    /// shell results carry exit_code (+ is_soft_fail for bare grep/diff/cmp/
+    /// test/findstr exit 1); write/edit carry target_path.
+    #[prost(int32, optional, tag = "5")]
+    pub exit_code: ::core::option::Option<i32>,
+    #[prost(bool, optional, tag = "6")]
+    pub is_soft_fail: ::core::option::Option<bool>,
+    #[prost(string, optional, tag = "7")]
+    pub target_path: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApprovalDecisionEvent {
+    #[prost(string, tag = "1")]
+    pub approval_request_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub tool_id: ::prost::alloc::string::String,
+    /// "approved" | "rejected" | "cancelled".
+    #[prost(string, tag = "3")]
+    pub status: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub note: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct UsageEvent {
+    #[prost(message, optional, tag = "1")]
+    pub usage: ::core::option::Option<UsageInfo>,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct UsageInfo {
+    #[prost(int64, tag = "1")]
+    pub prompt_tokens: i64,
+    #[prost(int64, tag = "2")]
+    pub completion_tokens: i64,
+    #[prost(int64, tag = "3")]
+    pub total_tokens: i64,
+    #[prost(int64, optional, tag = "4")]
+    pub cache_read_tokens: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "5")]
+    pub cache_write_tokens: ::core::option::Option<i64>,
+    /// Provider-reported cost, when present.
+    #[prost(double, optional, tag = "6")]
+    pub credit_cost: ::core::option::Option<f64>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ErrorEvent {
+    #[prost(string, tag = "1")]
+    pub error: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UserMessageEvent {
+    #[prost(string, tag = "1")]
+    pub text: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SessionState {
@@ -400,16 +870,19 @@ pub struct SessionState {
 pub struct RunStateSnapshot {
     #[prost(string, tag = "1")]
     pub run_id: ::prost::alloc::string::String,
-    #[prost(int64, tag = "2")]
-    pub epoch: i64,
-    #[prost(int64, tag = "3")]
-    pub run_sequence: i64,
+    /// Absent when the epoch is unknown (interrupted-run recovery).
+    #[prost(int64, optional, tag = "2")]
+    pub epoch: ::core::option::Option<i64>,
+    /// Absent when the run sequence is unknown (interrupted-run recovery);
+    /// JSON null on the wire maps to unset.
+    #[prost(int64, optional, tag = "3")]
+    pub run_sequence: ::core::option::Option<i64>,
     /// Run phase ("running"...) or "interrupted_by_restart" for recovery.
     #[prost(string, tag = "4")]
     pub state: ::prost::alloc::string::String,
     /// Last broadcast event idx (active runs only).
-    #[prost(int64, tag = "5")]
-    pub last_event_idx: i64,
+    #[prost(int64, optional, tag = "5")]
+    pub last_event_idx: ::core::option::Option<i64>,
 }
 /// An accepted run waiting in the session's queue.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -446,8 +919,8 @@ pub struct RunTerminalInfo {
     #[prost(int64, tag = "4")]
     pub run_duration_ms: i64,
     /// Present only on failure.
-    #[prost(string, tag = "5")]
-    pub error: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "5")]
+    pub error: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// A recent terminal acknowledgement for a queued run whose terminal state the
 /// client may have missed (e.g. across an agent restart).
@@ -483,18 +956,40 @@ pub struct ApprovalRequestInfo {
     pub kind: ::prost::alloc::string::String,
     #[prost(string, tag = "6")]
     pub title: ::prost::alloc::string::String,
-    /// The tool call's arguments, JSON-serialised.
+    /// The structured action payload, JSON-serialised.
     #[prost(string, tag = "7")]
     pub action: ::prost::alloc::string::String,
+    /// Card fields added by the typed-RPC migration (the approval_request event
+    /// and get_state pendingApprovals carry the full card).
+    #[prost(string, tag = "8")]
+    pub risk_level: ::prost::alloc::string::String,
+    #[prost(string, tag = "9")]
+    pub summary: ::prost::alloc::string::String,
+    /// The requested action, JSON-serialised (object on the wire).
+    #[prost(string, tag = "10")]
+    pub requested_action: ::prost::alloc::string::String,
+    /// Sandbox boundary payload, JSON-serialised; empty when null on the wire.
+    #[prost(string, tag = "11")]
+    pub sandbox_boundary: ::prost::alloc::string::String,
+    /// Suggested persisted rule, JSON-serialised; unset when the card carries
+    /// JSON null (kinds that should not persist a rule).
+    #[prost(string, optional, tag = "12")]
+    pub save_suggestion: ::core::option::Option<::prost::alloc::string::String>,
+    /// Who must review ("user").
+    #[prost(string, tag = "13")]
+    pub reviewer: ::prost::alloc::string::String,
+    /// JSON catch-all for tool-specific fields not modelled above.
+    #[prost(string, tag = "14")]
+    pub extras: ::prost::alloc::string::String,
 }
 /// One row of the list_sessions response.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SessionSummary {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
-    /// User-assigned session name (empty when unnamed).
-    #[prost(string, tag = "2")]
-    pub session_name: ::prost::alloc::string::String,
+    /// User-assigned session name; unset when unnamed (JSON null on the wire).
+    #[prost(string, optional, tag = "2")]
+    pub session_name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, tag = "3")]
     pub model: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
@@ -504,9 +999,9 @@ pub struct SessionSummary {
     pub updated_at: ::prost::alloc::string::String,
     #[prost(string, tag = "6")]
     pub parent_session_id: ::prost::alloc::string::String,
-    /// First user message, for list display.
-    #[prost(string, tag = "7")]
-    pub first_message: ::prost::alloc::string::String,
+    /// First user message, for list display; unset when absent (JSON null).
+    #[prost(string, optional, tag = "7")]
+    pub first_message: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(int32, tag = "8")]
     pub query_count: i32,
     /// Whether the agent is streaming a response for this session right now.
@@ -528,7 +1023,7 @@ pub struct SessionEntry {
     pub role: ::prost::alloc::string::String,
     /// Display text for message entries; the RAW session_info JSON object
     /// serialized to a string for the session_info entry — a `string` here that is
-    /// NOT plain text in that case.
+    /// NOT plain text in that case (see content_is_object).
     #[prost(string, tag = "3")]
     pub content: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
@@ -540,21 +1035,28 @@ pub struct SessionEntry {
     #[prost(string, tag = "6")]
     pub timestamp: ::prost::alloc::string::String,
     /// Reasoning text, assistant entries (absent when empty).
-    #[prost(string, tag = "7")]
-    pub thinking: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "7")]
+    pub thinking: ::core::option::Option<::prost::alloc::string::String>,
     /// Structured per-entry metadata (e.g. user attachments). Serialized JSON
-    /// object in a string, not a scalar.
-    #[prost(string, tag = "8")]
-    pub meta: ::prost::alloc::string::String,
-    /// Pending tool calls, assistant entries. Serialized JSON array of ToolCall.
-    #[prost(string, tag = "9")]
-    pub tool_calls: ::prost::alloc::string::String,
+    /// object in a string, not a scalar; absent when the entry has none.
+    #[prost(string, optional, tag = "8")]
+    pub meta: ::core::option::Option<::prost::alloc::string::String>,
+    /// Pending tool calls, assistant entries. Serialized JSON array of ToolCall;
+    /// absent when the entry has none.
+    #[prost(string, optional, tag = "9")]
+    pub tool_calls: ::core::option::Option<::prost::alloc::string::String>,
     /// Output tokens of the run this reply concluded (footer display).
-    #[prost(int64, tag = "10")]
-    pub output_tokens: i64,
+    #[prost(int64, optional, tag = "10")]
+    pub output_tokens: ::core::option::Option<i64>,
     /// Wall-clock duration of that run in ms (footer display).
-    #[prost(int64, tag = "11")]
-    pub duration_ms: i64,
+    #[prost(int64, optional, tag = "11")]
+    pub duration_ms: ::core::option::Option<i64>,
+    /// Discriminator for `content`: true when the original JSON value was an
+    /// object (the session_info entry) and the string carries serialized JSON;
+    /// false when it is plain display text. Lets decoders re-inflate `content`
+    /// into the exact original JSON value.
+    #[prost(bool, tag = "12")]
+    pub content_is_object: bool,
 }
 /// One event as replayed by get_events_since. Field names mirror the
 /// StreamEvent envelope.
@@ -581,6 +1083,10 @@ pub struct ReplayEvent {
     pub session_idx: i64,
     #[prost(int64, tag = "10")]
     pub run_sequence: i64,
+    /// Typed event payload; see StreamEvent.payload. Kept in sync with `data`
+    /// so replayed events decode through the same path as live ones.
+    #[prost(message, optional, tag = "20")]
+    pub payload: ::core::option::Option<EventPayload>,
 }
 /// get_events_since response. When the requested cursor predates the replay
 /// ring, `projection` replaces the event tail with a compressed snapshot.
@@ -703,6 +1209,12 @@ pub struct StreamEvent {
     /// Monotonic ordering identity across runs in this session.
     #[prost(int64, tag = "13")]
     pub run_sequence: i64,
+    /// Typed event payload (typed-RPC migration). Absent on old agents and for
+    /// pass-through event types — consumers MUST fall back to the JSON `data`
+    /// string when unset. Dual-written with `data` during the migration window.
+    /// Field numbers 14-19 are reserved for future envelope fields.
+    #[prost(message, optional, tag = "20")]
+    pub payload: ::core::option::Option<EventPayload>,
 }
 /// A compressed semantic event contained in a projection snapshot. Its idx is
 /// the latest source cursor folded into this event, preserving chronological
@@ -715,6 +1227,10 @@ pub struct ProjectedRunEvent {
     pub data: ::prost::alloc::string::String,
     #[prost(int64, tag = "3")]
     pub idx: i64,
+    /// Typed event payload; see StreamEvent.payload. Kept in sync with `data`
+    /// so projection snapshots and live frames decode through one path.
+    #[prost(message, optional, tag = "20")]
+    pub payload: ::core::option::Option<EventPayload>,
 }
 /// Generated client implementations.
 pub mod future_agent_client {

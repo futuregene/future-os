@@ -340,8 +340,13 @@ message RpcResponse {
   bool success = 4;
 
   // JSON-serialised response payload.  Structure depends on the command.
-  // The big read commands are documented (not enforced on the wire) by the
-  // "Response payload contracts" section below: list_sessions / get_state /
+  // TRANSITIONAL (typed-RPC migration): for commands that carry a typed
+  // `payload`, this string is dual-written with identical semantics so
+  // pre-migration clients keep working; new clients read `payload` and fall
+  // back to `data` when it is absent. Commands without a ResponsePayload
+  // member (trivial acks, get_messages, ...) are served through this field
+  // only. The big read commands are documented by the "Response payload
+  // contracts" section below: list_sessions / get_state /
   // get_session_entries / get_events_since.
   string data = 5;
 
@@ -354,6 +359,327 @@ message RpcResponse {
 
   // Optional JSON-serialised structured error details.
   string error_data = 8;
+
+  // Typed response payload (typed-RPC migration). Absent on old agents and
+  // for commands that have no typed member yet — clients MUST fall back to
+  // the JSON `data` string when unset. Field numbers 9-19 are reserved for
+  // future envelope fields; payload kinds are allocated in ResponsePayload.
+  ResponsePayload payload = 20;
+}
+
+// ── Typed response payloads ─────────────────────────────────────────────────
+// Wire contract for RpcResponse.payload. Each member is the typed form of one
+// command's response; member allocation is append-only (never reuse numbers).
+// Members whose JSON shape was previously only documented ("Response payload
+// contracts" section) now travel the wire for real. Commands not listed here
+// stay on the JSON `data` string during the migration window.
+
+message ResponsePayload {
+  oneof kind {
+    SessionState get_state = 1;
+    ListSessionsResponse list_sessions = 2;
+    SessionEntriesResponse get_session_entries = 3;
+    EventsSince get_events_since = 4;
+    PromptAck prompt = 5;
+    ListModelsResponse list_models = 6;
+    AgentInfo get_agent_info = 7;
+    CommandsResponse get_commands = 8;
+    CompactResult compact = 9;
+    ShellResult shell = 10;
+    CycleModelResult cycle_model = 11;
+    SyncFutureModelsResult sync_future_models = 12;
+    RefreshSkillsResult refresh_skills = 13;
+    SessionEventsSinceResponse get_session_events_since = 14;
+    SessionStatsResponse get_session_stats = 15;
+    RuntimeMetricsResponse get_runtime_metrics = 16;
+  }
+}
+
+// list_sessions response wrapper.
+message ListSessionsResponse {
+  repeated SessionSummary sessions = 1;
+}
+
+// get_session_entries response wrapper.
+message SessionEntriesResponse {
+  repeated SessionEntry entries = 1;
+}
+
+// Acknowledgement of an accepted prompt command. Field names mirror the
+// on-disk/wire JSON spelling (snake_case).
+message PromptAck {
+  string run_id = 1;
+  uint64 run_epoch = 2;
+  // "existing" | "running" | "queued".
+  string accepted_state = 3;
+  // Absent until the session scheduler allocates them (queued runs).
+  optional uint64 run_sequence = 4;
+  optional uint64 queue_position = 5;
+}
+
+// list_models response.
+message ListModelsResponse {
+  repeated ModelEntry models = 1;
+  string default_model = 2;
+  bool is_scoped = 3;
+  // Built-in provider catalog summary, keyed by provider id; present only
+  // when the command set include_builtin_providers.
+  map<string, BuiltinProvider> builtin_providers = 4;
+}
+
+message ModelEntry {
+  string id = 1;
+  string label = 2;
+  string provider = 3;
+  bool supports_images = 4;
+  // Default thinking level for the model ("high" for reasoning models,
+  // "off" otherwise).
+  string thinking_level = 5;
+  int64 context_window = 6;
+  bool is_default = 7;
+  string description = 8;
+  string description_en = 9;
+  bool recommended = 10;
+}
+
+message BuiltinProvider {
+  string name = 1;
+  uint64 model_count = 2;
+  string base_url = 3;
+}
+
+// get_agent_info response.
+message AgentInfo {
+  string version = 1;
+  string agent_instance_id = 2;
+  uint64 skills_count = 3;
+}
+
+// get_commands response.
+message CommandsResponse {
+  repeated Command commands = 1;
+}
+
+message Command {
+  string name = 1;
+  string description = 2;
+  string name_zh = 3;
+  string description_zh = 4;
+  // Origin of the command, e.g. "skill".
+  string source = 5;
+}
+
+// compact response.
+message CompactResult {
+  int64 tokens_before = 1;
+  int64 tokens_after = 2;
+  string summary = 3;
+  int64 messages_removed = 4;
+}
+
+// shell response.
+message ShellResult {
+  string output = 1;
+  int32 exit_code = 2;
+}
+
+// cycle_model response.
+message CycleModelResult {
+  string model = 1;
+  string thinking_level = 2;
+  // Absent on the empty-catalog edge case (matches the JSON shape).
+  optional bool is_scoped = 3;
+}
+
+// sync_future_models response.
+message SyncFutureModelsResult {
+  bool synced = 1;
+  uint64 model_count = 2;
+}
+
+// refresh_skills response. Field names mirror the wire JSON spelling
+  // (snake_case).
+message RefreshSkillsResult {
+  uint64 skills_count = 1;
+  repeated string skills = 2;
+  bool refreshed = 3;
+}
+
+// get_session_events_since response.
+message SessionEventsSinceResponse {
+  repeated SessionEventRecord events = 1;
+}
+
+// One session-scoped event as replayed by get_session_events_since. The
+// `data` string carries the event's JSON payload (see StreamEvent.data).
+message SessionEventRecord {
+  string type = 1;
+  string data = 2;
+  string session_id = 3;
+  int64 session_idx = 4;
+  string event_id = 5;
+  string timestamp = 6;
+}
+
+// get_session_stats response.
+message SessionStatsResponse {
+  string session_file = 1;
+  string session_id = 2;
+  uint64 user_messages = 3;
+  uint64 assistant_messages = 4;
+  uint64 tool_calls = 5;
+  uint64 tool_results = 6;
+  uint64 total_messages = 7;
+  StatsTokens tokens = 8;
+  double cost = 9;
+}
+
+message StatsTokens {
+  int64 input = 1;
+  int64 output = 2;
+  int64 cache_read = 3;
+  int64 total = 4;
+}
+
+// get_runtime_metrics response.
+message RuntimeMetricsResponse {
+  string session_id = 1;
+  uint64 active_run_gauge = 2;
+  uint64 stale_epoch_drops = 3;
+  uint64 persistence_degraded = 4;
+  uint64 broadcast_lag = 5;
+  uint64 ring_truncations = 6;
+  // Absent when no run snapshot exists.
+  optional string active_run_id = 7;
+  uint64 queued_runs = 8;
+  uint64 queued_bytes = 9;
+  bool event_journal_healthy = 10;
+  // Absent when the journal is healthy.
+  optional string event_journal_error = 11;
+}
+
+// ── Typed event payloads ────────────────────────────────────────────────────
+// Wire contract for the `payload` field shared by StreamEvent,
+// ProjectedRunEvent and ReplayEvent. One member per semantically parsed event
+// type; pass-through events (settings changes, ping, ...) stay on the JSON
+// `data` string. Member allocation is append-only.
+
+message EventPayload {
+  oneof kind {
+    TextChunk text_chunk = 1;
+    ThinkingStart thinking_start = 2;
+    ThinkingDelta thinking_delta = 3;
+    ThinkingEnd thinking_end = 4;
+    AgentStart agent_start = 5;
+    AgentEnd agent_end = 6;
+    ToolStart tool_start = 7;
+    ToolDelta tool_delta = 8;
+    ToolEnd tool_end = 9;
+    ApprovalRequestInfo approval_request = 10;
+    ApprovalDecisionEvent approval_decision = 11;
+    UsageEvent usage = 12;
+    ErrorEvent error = 13;
+    UserMessageEvent user_message = 14;
+  }
+}
+
+message TextChunk {
+  string text = 1;
+}
+
+message ThinkingStart {
+  // No payload fields today; the message exists so the event type is typed.
+}
+
+message ThinkingDelta {
+  string text = 1;
+}
+
+message ThinkingEnd {
+  // No payload fields today.
+}
+
+message AgentStart {
+  // Wall-clock run start (ms since epoch) for anchoring elapsed timers.
+  uint64 started_at_ms = 1;
+}
+
+message AgentEnd {
+  // Terminal state ("completed", "cancelled", "error", ...); absent on the
+  // early task-spawn failure path.
+  optional string state = 1;
+  // Present only on failure.
+  optional string error = 2;
+  // Present when the run measured a duration.
+  optional uint64 duration_ms = 3;
+  // The run's output-token total (JSON shape: usage.output_tokens).
+  optional uint64 output_tokens = 4;
+  // "incomplete" when the stream was truncated.
+  optional string reason = 5;
+}
+
+message ToolStart {
+  string tool_id = 1;
+  string tool_name = 2;
+  // Tool-call arguments, JSON-serialised (object or JSON-encoded string,
+  // mirroring the wire).
+  string tool_args = 3;
+}
+
+message ToolDelta {
+  string tool_id = 1;
+  // Streaming tool-argument fragment.
+  string text = 2;
+  // Tool-call index within the assistant message, when > 0.
+  optional int32 tc_index = 3;
+}
+
+message ToolEnd {
+  string tool_id = 1;
+  string tool_name = 2;
+  // Tool output text.
+  string text = 3;
+  optional string error = 4;
+  // Structured semantics (consumers must not re-parse `text` for these):
+  // shell results carry exit_code (+ is_soft_fail for bare grep/diff/cmp/
+  // test/findstr exit 1); write/edit carry target_path.
+  optional int32 exit_code = 5;
+  optional bool is_soft_fail = 6;
+  optional string target_path = 7;
+}
+
+// An approval_request card travels as ApprovalRequestInfo (see above): the
+// same message backs get_state pendingApprovals, so the full card shape is
+// modelled once.
+
+message ApprovalDecisionEvent {
+  string approval_request_id = 1;
+  string tool_id = 2;
+  // "approved" | "rejected" | "cancelled".
+  string status = 3;
+  string note = 4;
+}
+
+message UsageEvent {
+  UsageInfo usage = 1;
+}
+
+message UsageInfo {
+  int64 prompt_tokens = 1;
+  int64 completion_tokens = 2;
+  int64 total_tokens = 3;
+  optional int64 cache_read_tokens = 4;
+  optional int64 cache_write_tokens = 5;
+  // Provider-reported cost, when present.
+  optional double credit_cost = 6;
+}
+
+message ErrorEvent {
+  string error = 1;
+}
+
+message UserMessageEvent {
+  string text = 1;
 }
 
 // =============================================================================
@@ -444,11 +770,13 @@ message SessionState {
   // (cwd only), or "none" (read-only tools).
   string permission_level = 28;
 
-  // ── Full get_state payload (transitional documentation) ────────────────
+  // ── Full get_state payload ─────────────────────────────────────────────
   // Fields above are the original /status view. The fields below complete the
-  // documented shape of the get_state response `data` JSON (camelCase keys on
-  // the wire). Run/approval sub-objects are typed by the nested messages; the
-  // whole document is still packed into a JSON string, not a typed response.
+  // get_state response shape (camelCase keys on the wire). Run/approval
+  // sub-objects are typed by the nested messages. Since the typed-RPC
+  // migration the whole SessionState travels the wire as
+  // ResponsePayload.get_state; the JSON `data` string is dual-written during
+  // the migration window.
 
   // The agent process instance id (changes on every agent restart).
   string agent_instance_id = 29;
@@ -490,22 +818,26 @@ message SessionState {
   repeated ApprovalRequestInfo pending_approvals = 39;
 }
 
-// ── get_state sub-objects (transitional documentation) ────────────────────
-// Wire note: get_state `data` is camelCase JSON (packed into a string). During
-// the migration away from the shadow contract the agent ALSO emits the legacy
+// ── get_state sub-objects ───────────────────────────────────────────────────
+// Wire note: these travel both as typed sub-messages of SessionState
+// (ResponsePayload.get_state) and, during the migration window, inside the
+// dual-written camelCase JSON `data`. The agent ALSO emits the legacy
 // spellings (`session_name`, snake_case TerminalAck keys) alongside the
-// canonical ones; new clients read canonical, pre-migration clients keep
-// reading legacy.
+// canonical ones in the JSON; new clients read canonical, pre-migration
+// clients keep reading legacy.
 
 // A run's live state as surfaced by get_state (activeRun / interruptedRun).
 message RunStateSnapshot {
   string run_id = 1;
-  int64 epoch = 2;
-  int64 run_sequence = 3;
+  // Absent when the epoch is unknown (interrupted-run recovery).
+  optional int64 epoch = 2;
+  // Absent when the run sequence is unknown (interrupted-run recovery);
+  // JSON null on the wire maps to unset.
+  optional int64 run_sequence = 3;
   // Run phase ("running"...) or "interrupted_by_restart" for recovery.
   string state = 4;
   // Last broadcast event idx (active runs only).
-  int64 last_event_idx = 5;
+  optional int64 last_event_idx = 5;
 }
 
 // An accepted run waiting in the session's queue.
@@ -531,7 +863,7 @@ message RunTerminalInfo {
   int64 run_tokens = 3;
   int64 run_duration_ms = 4;
   // Present only on failure.
-  string error = 5;
+  optional string error = 5;
 }
 
 // A recent terminal acknowledgement for a queued run whose terminal state the
@@ -556,28 +888,42 @@ message ApprovalRequestInfo {
   // "tool" | ...
   string kind = 5;
   string title = 6;
-  // The tool call's arguments, JSON-serialised.
+  // The structured action payload, JSON-serialised.
   string action = 7;
+  // Card fields added by the typed-RPC migration (the approval_request event
+  // and get_state pendingApprovals carry the full card).
+  string risk_level = 8;
+  string summary = 9;
+  // The requested action, JSON-serialised (object on the wire).
+  string requested_action = 10;
+  // Sandbox boundary payload, JSON-serialised; empty when null on the wire.
+  string sandbox_boundary = 11;
+  // Suggested persisted rule, JSON-serialised; unset when the card carries
+  // JSON null (kinds that should not persist a rule).
+  optional string save_suggestion = 12;
+  // Who must review ("user").
+  string reviewer = 13;
+  // JSON catch-all for tool-specific fields not modelled above.
+  string extras = 14;
 }
 
 // =============================================================================
-// Response payload contracts — transitional JSON-in-string documentation
+// Response payload contracts — the four big read commands
 // =============================================================================
 //
-// RpcResponse.data is still a JSON string on the wire (no response oneof /
-// typed fields), so the messages below do NOT deserialize directly from the
-// transport — they document the canonical shape of the JSON that the agent
-// serializes into that string, generated by its Rust payload structs. This is a
-// deliberate transitional state: it centralizes payload construction on the
-// agent side, but clients must still JSON-parse `data` and cannot rely on
-// generated typed accessors yet.
+// These messages serve double duty. (1) They are the canonical shape of the
+// JSON the agent serializes into RpcResponse.data for the big read commands,
+// produced by its Rust payload structs (future-rpc `payloads`). (2) Since the
+// typed-RPC migration they ALSO travel the wire for real, as members of
+// RpcResponse.payload (see ResponsePayload): get_state -> SessionState,
+// list_sessions -> ListSessionsResponse{sessions: SessionSummary[]},
+// get_session_entries -> SessionEntriesResponse{entries: SessionEntry[]},
+// get_events_since -> EventsSince.
 //
-// Documented commands:
-//
-//   list_sessions        {"sessions": [SessionSummary, ...]}
-//   get_state            SessionState (see above)
-//   get_session_entries  {"entries": [SessionEntry, ...]}
-//   get_events_since     EventsSince
+// During the migration window the agent dual-writes both the typed payload and
+// the JSON `data`; new clients read the typed payload and fall back to `data`
+// when it is absent (old agent). Fields marked `optional` preserve the
+// null-vs-absent semantics of the JSON shape.
 //
 // Wire casing: list_sessions / get_state / get_events_since are camelCase
 // JSON; get_session_entries mirrors the on-disk entry schema (snake_case).
@@ -589,15 +935,15 @@ message ApprovalRequestInfo {
 // One row of the list_sessions response.
 message SessionSummary {
   string id = 1;
-  // User-assigned session name (empty when unnamed).
-  string session_name = 2;
+  // User-assigned session name; unset when unnamed (JSON null on the wire).
+  optional string session_name = 2;
   string model = 3;
   string cwd = 4;
   // "YYYY-MM-DD HH:MM:SS" (local time).
   string updated_at = 5;
   string parent_session_id = 6;
-  // First user message, for list display.
-  string first_message = 7;
+  // First user message, for list display; unset when absent (JSON null).
+  optional string first_message = 7;
   int32 query_count = 8;
   // Whether the agent is streaming a response for this session right now.
   bool is_streaming = 9;
@@ -615,7 +961,7 @@ message SessionEntry {
   string role = 2;
   // Display text for message entries; the RAW session_info JSON object
   // serialized to a string for the session_info entry — a `string` here that is
-  // NOT plain text in that case.
+  // NOT plain text in that case (see content_is_object).
   string content = 3;
   string name = 4;
   // Tool call arguments, tool entries. Serialized JSON object (a JSON string).
@@ -623,16 +969,22 @@ message SessionEntry {
   // RFC3339.
   string timestamp = 6;
   // Reasoning text, assistant entries (absent when empty).
-  string thinking = 7;
+  optional string thinking = 7;
   // Structured per-entry metadata (e.g. user attachments). Serialized JSON
-  // object in a string, not a scalar.
-  string meta = 8;
-  // Pending tool calls, assistant entries. Serialized JSON array of ToolCall.
-  string tool_calls = 9;
+  // object in a string, not a scalar; absent when the entry has none.
+  optional string meta = 8;
+  // Pending tool calls, assistant entries. Serialized JSON array of ToolCall;
+  // absent when the entry has none.
+  optional string tool_calls = 9;
   // Output tokens of the run this reply concluded (footer display).
-  int64 output_tokens = 10;
+  optional int64 output_tokens = 10;
   // Wall-clock duration of that run in ms (footer display).
-  int64 duration_ms = 11;
+  optional int64 duration_ms = 11;
+  // Discriminator for `content`: true when the original JSON value was an
+  // object (the session_info entry) and the string carries serialized JSON;
+  // false when it is plain display text. Lets decoders re-inflate `content`
+  // into the exact original JSON value.
+  bool content_is_object = 12;
 }
 
 // One event as replayed by get_events_since. Field names mirror the
@@ -649,6 +1001,10 @@ message ReplayEvent {
   string timestamp = 8;
   int64 session_idx = 9;
   int64 run_sequence = 10;
+
+  // Typed event payload; see StreamEvent.payload. Kept in sync with `data`
+  // so replayed events decode through the same path as live ones.
+  EventPayload payload = 20;
 }
 
 // get_events_since response. When the requested cursor predates the replay
@@ -771,6 +1127,12 @@ message StreamEvent {
   int64 session_idx = 12;
   // Monotonic ordering identity across runs in this session.
   int64 run_sequence = 13;
+
+  // Typed event payload (typed-RPC migration). Absent on old agents and for
+  // pass-through event types — consumers MUST fall back to the JSON `data`
+  // string when unset. Dual-written with `data` during the migration window.
+  // Field numbers 14-19 are reserved for future envelope fields.
+  EventPayload payload = 20;
 }
 
 // A compressed semantic event contained in a projection snapshot. Its idx is
@@ -780,4 +1142,8 @@ message ProjectedRunEvent {
   string type = 1;
   string data = 2;
   int64 idx = 3;
+
+  // Typed event payload; see StreamEvent.payload. Kept in sync with `data`
+  // so projection snapshots and live frames decode through one path.
+  EventPayload payload = 20;
 }
