@@ -742,7 +742,19 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
 
             // Subscribe until the stream ends, errors, the 5 s first-data
             // watchdog fires, or the session changes.
-            let connected = subscribe_stream(&inner, &session).await;
+            match subscribe_stream(&inner, &session).await {
+                StreamExit::Poked => {
+                    // Silent resubscribe (session change / connectEvents):
+                    // like TS, the cancelled stale stream never notifies
+                    // false and `connected` stays true. Loop back to the top
+                    // to subscribe with the current session immediately.
+                    if inner.stop.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    continue;
+                }
+                StreamExit::Lost => {}
+            }
             if inner.stop.load(Ordering::SeqCst) {
                 return;
             }
@@ -756,7 +768,6 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
             if was_connected {
                 let _ = inner.conn_tx.send(false);
             }
-            let _ = connected; // the TS "connected" edge only matters for call()
 
             // Reconnect poll: tryConnect every 1 s (the TS reconnect loop —
             // polling via unary RPC instead of blindly re-subscribing, since a
@@ -793,18 +804,30 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
     });
 }
 
-/// Subscribe to the session's event stream; returns true if at least one
-/// event was delivered (the TS `connected` edge). Loops until the stream
-/// ends, errors, the 5 s first-data watchdog fires, the session changes, or
-/// a poke arrives.
-async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> bool {
+/// Why a stream subscription returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamExit {
+    /// The stream ended / errored / the 5 s first-data watchdog fired —
+    /// the connection is genuinely lost and the reconnect poll must run.
+    Lost,
+    /// A poke arrived (session change / explicit `connectEvents`) — the TS
+    /// `connectEvents()` cancels the old call and ignores its stale
+    /// end/error handlers (`this.streamCall !== call` guard), so this is a
+    /// SILENT resubscribe: no false notification, `connected` stays true.
+    Poked,
+}
+
+/// Subscribe to the session's event stream. Loops until the stream ends,
+/// errors, the 5 s first-data watchdog fires, the session changes, or a
+/// poke arrives.
+async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
     let endpoint = match Endpoint::from_shared(format!("http://{}", inner.addr)) {
         Ok(e) => e,
-        Err(_) => return false,
+        Err(_) => return StreamExit::Lost,
     };
     let channel = match endpoint.connect().await {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => return StreamExit::Lost,
     };
     let mut client = FutureAgentClient::new(channel);
     let request = StreamRequest {
@@ -813,29 +836,32 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> bool {
     };
     let mut stream = match client.stream_events(request).await {
         Ok(resp) => resp.into_inner(),
-        Err(_) => return false,
+        Err(_) => return StreamExit::Lost,
     };
 
     let mut connected = false;
+    // TS: the connect watchdog is armed ONCE at subscribe time and cleared
+    // on the FIRST data event (`if (connectWatchdog) { clearTimeout(...) }`)
+    // — it is never re-armed. Long-term detection of a dead-but-open stream
+    // is the heartbeat's job (tryConnect unary every 10 s). Re-arming on
+    // every event would fire the watchdog on an idle stream (no events
+    // flowing) and flap the connection every 5 s. The select precondition
+    // below disables the arm once the first event has arrived.
     let watchdog = tokio::time::sleep(Duration::from_millis(CONNECT_WATCHDOG_MS));
     tokio::pin!(watchdog);
     loop {
-        // Session changed or stopped — exit so the caller resubscribes.
+        // Session changed — silent resubscribe (TS connectEvents semantics).
         if inner.state.lock().current_session_id != session {
-            return connected;
+            return StreamExit::Poked;
         }
         if inner.stop.load(Ordering::SeqCst) {
-            return connected;
+            return StreamExit::Lost;
         }
 
         tokio::select! {
             msg = stream.message() => {
                 match msg {
                     Ok(Some(event)) => {
-                        // Data arrived — restart the watchdog.
-                        watchdog
-                            .as_mut()
-                            .reset(tokio::time::Instant::now() + Duration::from_millis(CONNECT_WATCHDOG_MS));
                         let raw_data: Map<String, Value> = if event.data.is_empty() {
                             Map::new()
                         } else {
@@ -872,24 +898,27 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> bool {
                             let _ = inner.conn_tx.send(true);
                         }
                         if inner.event_tx.send(agent_event).is_err() {
-                            return connected; // app gone
+                            return StreamExit::Lost; // app gone
                         }
                     }
-                    Ok(None) => return connected, // stream end
-                    Err(_) => return connected,   // stream error
+                    Ok(None) => return StreamExit::Lost, // stream end
+                    Err(_) => return StreamExit::Lost,   // stream error
                 }
             }
-            _ = &mut watchdog => {
-                // No data within 5 s — the channel is likely stuck. Cancel
-                // and let the caller run the tryConnect reconnect poll.
-                return connected;
+            _ = &mut watchdog, if !connected => {
+                // No data within 5 s of subscribing — the channel is likely
+                // stuck. Cancel and let the caller run the tryConnect
+                // reconnect poll. Disabled after the first event (TS clears
+                // the watchdog on first data and never re-arms it).
+                return StreamExit::Lost;
             }
             _ = inner.poke_notify.notified() => {
-                // Session change or explicit connect_events — resubscribe.
-                return connected;
+                // Session change or explicit connect_events — silent
+                // resubscribe (TS ignores the cancelled stale stream).
+                return StreamExit::Poked;
             }
             _ = inner.stop_notify.notified() => {
-                if inner.stop.load(Ordering::SeqCst) { return connected; }
+                if inner.stop.load(Ordering::SeqCst) { return StreamExit::Lost; }
             }
         }
     }
@@ -1042,5 +1071,168 @@ mod tests {
         assert_eq!(ack.run_id, "run-1");
         assert_eq!(ack.accepted_state, "queued");
         assert_eq!(ack.queue_position, Some(1));
+    }
+
+    // ─── Stream-manager integration tests (in-process mock agent) ────────
+    //
+    // These exercise `spawn_stream_manager` against a real tonic server so
+    // the reconnect / resubscribe / watchdog semantics are tested the way
+    // they run: over an actual gRPC stream.
+
+    use crate::generated::proto::future_agent_server::{FutureAgent, FutureAgentServer};
+    use crate::generated::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
+    use futures_util::stream;
+    use futures_util::StreamExt;
+    use std::net::TcpListener;
+    use std::pin::Pin;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+    use tonic::transport::Server;
+
+    /// Mock agent: `stream_events` emits ONE event then goes silent (idle
+    /// stream, never ends). `execute_command` answers unary calls.
+    #[derive(Clone)]
+    struct MockAgent {
+        /// Events to emit per stream subscription (first item sent, rest
+        /// held back until the test pokes the sender).
+        event_tx: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<StreamEvent>>>>,
+    }
+
+    #[tonic::async_trait]
+    impl FutureAgent for MockAgent {
+        async fn execute_command(
+            &self,
+            request: tonic::Request<RpcCommand>,
+        ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
+            let cmd = request.into_inner();
+            Ok(tonic::Response::new(RpcResponse {
+                id: cmd.id,
+                r#type: "response".into(),
+                command: cmd.r#type.clone(),
+                success: true,
+                data: "{}".into(),
+                error: String::new(),
+                error_code: String::new(),
+                error_data: String::new(),
+            }))
+        }
+
+        type StreamEventsStream =
+            Pin<Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>>;
+
+        async fn stream_events(
+            &self,
+            _request: tonic::Request<StreamRequest>,
+        ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+            let (tx, rx) = mpsc::unbounded_channel::<StreamEvent>();
+            *self.event_tx.lock().await = Some(tx);
+            // Push a first event so the client's `connected` edge fires.
+            let first = StreamEvent {
+                r#type: "ping".into(),
+                data: String::new(),
+                ..Default::default()
+            };
+            let stream = UnboundedReceiverStream::new(rx);
+            let stream = stream::once(async move { Ok(first) }).chain(stream.map(Ok));
+            Ok(tonic::Response::new(Box::pin(stream)))
+        }
+    }
+
+    /// Bind an ephemeral port, serve the mock agent, return (join handle, addr).
+    async fn spawn_mock_agent() -> (tokio::task::JoinHandle<()>, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // tonic binds the same port below
+        let agent = MockAgent {
+            event_tx: Arc::new(tokio::sync::Mutex::new(None)),
+        };
+        let handle = tokio::spawn(async move {
+            let _ = Server::builder()
+                .add_service(FutureAgentServer::new(agent))
+                .serve(addr)
+                .await;
+        });
+        // Give the server a moment to start listening.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        (handle, format!("127.0.0.1:{}", addr.port()))
+    }
+
+    /// Wait until `conn` reports connected (first stream data).
+    async fn wait_connected(conn: &mut watch::Receiver<bool>) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if conn.changed().await.is_err() {
+                    panic!("conn channel closed");
+                }
+                if *conn.borrow() {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("never connected");
+    }
+
+    /// Assert that no `false` (connection-lost) notification arrives within
+    /// `dur`.
+    async fn assert_no_disconnect(conn: &mut watch::Receiver<bool>, dur: Duration) {
+        let deadline = tokio::time::sleep(dur);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                changed = conn.changed() => {
+                    if changed.is_err() {
+                        panic!("conn channel closed");
+                    }
+                    if !*conn.borrow() {
+                        panic!("unexpected disconnect notification");
+                    }
+                }
+                _ = &mut deadline => break,
+            }
+        }
+    }
+
+    /// An idle stream (no events after the first) must NOT fire the 5 s
+    /// first-data watchdog — TS arms it once and clears it on the first data
+    /// event (`if (connectWatchdog) { clearTimeout(...) }`), never re-arms it.
+    /// A port that re-armed the watchdog on every event flapped the
+    /// connection every 5 s on an idle TUI (PTY smoke test found:
+    /// "Connection to agent lost — retrying every 1s..." right after the
+    /// welcome screen, before any input).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn idle_stream_does_not_flap_after_first_data() {
+        let (_server, addr) = spawn_mock_agent().await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("sess-1");
+        client.connect_events();
+
+        wait_connected(&mut conn).await;
+        // 6 s > 5 s watchdog: an idle stream must stay connected.
+        assert_no_disconnect(&mut conn, Duration::from_millis(6_200)).await;
+        assert!(client.is_connected());
+        client.disconnect();
+    }
+
+    /// `setCurrentSessionId` + `connectEvents` (session change) must be a
+    /// SILENT resubscribe: TS cancels the old stream and its stale end/error
+    /// handlers are ignored (`this.streamCall !== call`), so no false
+    /// notification and `connected` stays true. A poke-driven resubscribe
+    /// that notified false produced a spurious "Connection to agent lost"
+    /// on every /new during the PTY smoke test.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_change_resubscribes_silently() {
+        let (_server, addr) = spawn_mock_agent().await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("sess-1");
+        client.connect_events();
+
+        wait_connected(&mut conn).await;
+
+        // Session change → poke → silent resubscribe; must stay connected.
+        client.set_current_session_id("sess-2");
+        client.connect_events();
+        assert_no_disconnect(&mut conn, Duration::from_millis(1_500)).await;
+        assert!(client.is_connected());
+        client.disconnect();
     }
 }

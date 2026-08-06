@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let generated_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/generated");
 
     tonic_build::configure()
-        .build_server(false)
+        .build_server(true)
         .build_client(true)
         .out_dir(&generated_dir)
         .compile_protos(&[proto_dir.join("future.proto")], &[proto_dir])?;
