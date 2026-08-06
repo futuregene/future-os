@@ -7,6 +7,7 @@
 //! buffers (golden/diff tests comparing byte-for-byte against the TS CLI).
 
 use std::io::Write;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// A shared write sink for stdout. `Send` so it can be used across `.await`
@@ -15,6 +16,10 @@ use std::sync::{Arc, Mutex};
 pub struct Output {
     out: Arc<Mutex<Box<dyn Write + Send>>>,
     err: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Port of Node's `process.exitCode`: a command sets this (e.g. on a
+    /// non-fatal failure) and keeps running; the dispatch uses it as the
+    /// final exit code when it is larger than the command result.
+    exit_code: Arc<AtomicI32>,
 }
 
 /// `Write` adapter over `Arc<Mutex<Vec<u8>>>` for capture mode.
@@ -46,6 +51,7 @@ impl Output {
         Self {
             out: Arc::new(Mutex::new(Box::new(std::io::stdout()))),
             err: Arc::new(Mutex::new(Box::new(std::io::stderr()))),
+            exit_code: Arc::new(AtomicI32::new(0)),
         }
     }
 
@@ -56,8 +62,19 @@ impl Output {
         let output = Self {
             out: Arc::new(Mutex::new(Box::new(SharedBuf(out.clone())))),
             err: Arc::new(Mutex::new(Box::new(SharedBuf(err.clone())))),
+            exit_code: Arc::new(AtomicI32::new(0)),
         };
         (output, Captured { out, err })
+    }
+
+    /// `process.exitCode = code` equivalent.
+    pub fn set_exit_code(&self, code: i32) {
+        self.exit_code.store(code, Ordering::Relaxed);
+    }
+
+    /// Current `process.exitCode` value (0 when unset).
+    pub fn exit_code(&self) -> i32 {
+        self.exit_code.load(Ordering::Relaxed)
     }
 
     /// `console.log` equivalent: writes the line plus a trailing newline.

@@ -99,6 +99,8 @@ mod tests {
 
     #[tokio::test]
     async fn which_finds_shell() {
+        // `which` reads PATH — serialize against tests that repoint it.
+        let _guard = crate::test_env::lock_env().await;
         let found = which("sh").await;
         assert!(found.is_some(), "`which sh` should resolve on this host");
         assert!(found.as_deref().unwrap_or("").contains("sh"));
@@ -106,6 +108,7 @@ mod tests {
 
     #[tokio::test]
     async fn which_missing_returns_none() {
+        let _guard = crate::test_env::lock_env().await;
         assert!(which("definitely-not-a-real-binary-xyz").await.is_none());
     }
 

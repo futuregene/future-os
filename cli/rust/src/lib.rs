@@ -9,6 +9,9 @@ pub mod constants;
 pub mod generated;
 pub mod help;
 pub mod output;
+pub mod rpc;
+#[cfg(test)]
+pub mod test_env;
 pub mod types;
 pub mod utils;
 pub mod version;
@@ -16,6 +19,12 @@ pub mod version;
 pub use output::Output;
 
 use std::future::Future;
+
+/// Sentinel returned by commands that have already written their error output
+/// and only need to force exit code 1 — the port of `process.exit(1)` inside
+/// command bodies (agent/models/session). `catch` recognises it and skips the
+/// generic `console.error` step so nothing is double-printed.
+pub const HANDLED_EXIT: &str = "\u{0}handled-exit";
 
 /// Port of `cli/src/index.ts` `main()`.
 ///
@@ -252,18 +261,23 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 }
 
 /// Port of `main().catch(...)`: a rejected command promise becomes
-/// `console.error(error.message)` on stderr with exit code 1.
+/// `console.error(error.message)` on stderr with exit code 1. The final exit
+/// code is the max of the command result and any `process.exitCode` set
+/// during the run (`installBuiltinSkills` sets it on catalog failure and
+/// continues), exactly like Node.
 async fn catch<F>(out: &Output, fut: F) -> i32
 where
     F: Future<Output = Result<(), String>>,
 {
-    match fut.await {
+    let code = match fut.await {
         Ok(()) => 0,
+        Err(msg) if msg == HANDLED_EXIT => 1,
         Err(msg) => {
             out.log_err(&msg);
             1
         }
-    }
+    };
+    code.max(out.exit_code())
 }
 
 #[cfg(test)]
@@ -335,11 +349,17 @@ mod tests {
 
     #[tokio::test]
     async fn agent_dispatch_quirks() {
-        // `future agent` with no subcommand → status path.
+        let _guard = crate::test_env::lock_env().await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
+        // `future agent` with no subcommand → status path; agent unreachable
+        // → "Error: ..." on stderr with exit 1.
         let (code, stdout, stderr) = run(&["agent"]).await;
-        assert_eq!(code, 1); // stub not-implemented
+        assert_eq!(code, 1);
         assert_eq!(stdout, "");
-        assert!(stderr.contains("not implemented"));
+        assert!(stderr.starts_with("Error: "), "stderr: {stderr}");
 
         // `future agent --json` is an UNKNOWN command (matches TS dead-code).
         let (code, stdout, stderr) = run(&["agent", "--json"]).await;
@@ -352,16 +372,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auth_login_url_parsing_routes_to_stub() {
-        // All three forms reach the (stub) login command; no panic, exit 1.
+    async fn auth_login_url_parsing_reaches_login() {
+        // All three forms route into login; with an unreachable --url the
+        // device-code POST fails fast with a Network error and exit code 1.
         for args in [
-            &["auth", "login", "--url"][..],
-            &["auth", "login", "--url="][..],
-            &["auth", "login", "--url", "https://example.com"][..],
+            &["auth", "login", "--url", "http://127.0.0.1:1"][..],
+            &["auth", "login", "--url=http://127.0.0.1:1"][..],
+            &["auth", "login", "--url", "http://127.0.0.1:1", "extra"][..],
         ] {
             let (code, _, stderr) = run(args).await;
             assert_eq!(code, 1);
-            assert!(stderr.contains("auth login"));
+            assert!(
+                stderr.contains("Network error"),
+                "args={args:?} stderr={stderr:?}"
+            );
         }
     }
 

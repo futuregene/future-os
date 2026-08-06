@@ -45,32 +45,20 @@ mod tests {
 
     #[tokio::test]
     async fn override_wins() {
-        let dir = tempfile::tempdir().unwrap();
-        let saved = std::env::var_os("HOME");
-        std::env::set_var("HOME", dir.path());
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
         let explicit = get_platform_url(Some("https://example.com/")).await;
         // Empty override is falsy in JS — falls through to auth.json/default.
         let empty_override = get_platform_url(Some("")).await;
-        match saved {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
         assert_eq!(explicit, "https://example.com");
         assert_eq!(empty_override, DEFAULT_PLATFORM_URL);
     }
 
     #[tokio::test]
     async fn default_when_no_auth_file() {
-        // Point HOME at a temp dir so auth.json doesn't exist.
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path();
-        let saved = std::env::var_os("HOME");
-        std::env::set_var("HOME", home);
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
         let result = get_platform_url(None).await;
-        match saved {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
         assert_eq!(result, DEFAULT_PLATFORM_URL);
     }
 }
