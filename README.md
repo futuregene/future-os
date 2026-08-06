@@ -27,6 +27,7 @@ FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, a
 | **Compaction & Retry** | Automatic context compaction; exponential-backoff retry on context-length errors |
 | **Channel Bridge** | Feishu (Lark) and DingTalk bots — markdown streaming, slash commands, session management via chat |
 | **Skills System** | Pluggable YAML-defined skill bundles discovered from multiple directories |
+| **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) |
 | **Cross-Platform** | macOS, Linux, Windows (GUI via Tauri + WebView2) |
 
 ## Quick Start
@@ -41,120 +42,18 @@ Required on every platform for a full build (agent + TUI + CLI + GUI):
 - Optional: **Python 3** — only for `make generate-models`
 - Optional: **protoc** (Protocol Buffers compiler) — only for `make generate-proto`; generated code is checked in so normal builds don't need it
 
-### Platform setup and build
+### Build & install
+
+Full platform-by-platform build & install steps (macOS / Linux / Windows,
+GUI packaging, install targets, the `future-loop` control plane) live in the
+dedicated **[Build & Install](docs/build-and-install.md)** guide. In short:
 
 ```bash
 git clone https://github.com/futuregene/future-os.git
 cd future-os
-```
-
-#### macOS
-
-Install dependencies:
-
-```bash
-xcode-select --install                                            # system toolchain (Tauri)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
-brew install node oven-sh/bun/bun                                 # Node.js 24+ / Bun (nvm works too — see .nvmrc)
-brew install protobuf                                             # optional — only for make generate-proto
-```
-
-Build:
-
-```bash
-make install        # build everything, install to /opt/homebrew/bin
+make install        # build everything, install to ~/.local/bin (or /opt/homebrew/bin on macOS)
 make install-nogui  # terminal stack only (skip the Tauri GUI)
-make package-gui    # desktop bundle → .app + .dmg in gui/src-tauri/target/release/bundle/
-scripts/build-macos-dmg.sh  # local DMG; auto-signs when a Developer ID certificate is available
 ```
-
-`scripts/build-macos-dmg.sh` builds the agent and CLI sidecars together with the
-GUI. It automatically uses a single `Developer ID Application` identity from
-the macOS Keychain and writes a `*-sign.dmg`; if no unambiguous identity is
-available, it falls back to the normal DMG. Run it with `--help` for certificate
-selection, output-directory and Apple notarization options.
-
-#### Linux (Debian/Ubuntu)
-
-Install dependencies:
-
-```bash
-sudo apt update
-sudo apt install -y build-essential mold libssl-dev \
-  libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
-curl -fsSL https://bun.sh/install | bash                          # Bun
-# Node.js 24+ — `nvm install` reads the repo's .nvmrc
-sudo apt install -y protobuf-compiler                             # optional — only for make generate-proto
-```
-
-> `mold` is required on x86_64 — `.cargo/config.toml` passes `-fuse-ld=mold` to the linker. ARM Linux doesn't need it.
-
-Build:
-
-```bash
-make install        # build everything, install to /usr/local/bin (sudo)
-make install-nogui  # terminal stack only (skip the Tauri GUI)
-make package-gui    # desktop bundle → .deb in gui/src-tauri/target/release/bundle/
-```
-
-#### Windows
-
-Install the toolchain:
-
-1. **Visual Studio Build Tools** with the *Desktop development with C++* workload (MSVC + Windows SDK) — required by the Rust MSVC toolchain and Tauri. `winget install Microsoft.VisualStudio.2022.BuildTools`, then select the C++ workload in the installer (or install from [visualstudio.com](https://visualstudio.microsoft.com/downloads/)).
-2. **Rust**: `winget install Rustlang.Rustup` (host triple `x86_64-pc-windows-msvc`)
-3. **Node.js 24+**: `winget install OpenJS.NodeJS` or [nodejs.org](https://nodejs.org)
-4. **Bun**: `winget install Oven-sh.Bun` (or `powershell -c "irm bun.sh/install.ps1 | iex"`)
-5. **WebView2 Runtime**: ships with Windows 10/11 — a GUI *runtime* dependency, nothing to install on current systems
-
-No `make` needed — the PowerShell commands below mirror the make targets step for step. Run them from the repo root.
-
-**Terminal stack** — equivalent to `make install-nogui`:
-
-```powershell
-# Rust components: agent + channel bridge          (make build-agent / build-channels)
-cargo build --release --manifest-path agent/Cargo.toml
-cargo build --release --manifest-path channels/Cargo.toml
-
-# TypeScript components: TUI + CLI                 (make build-tui / build-cli)
-Push-Location tui; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future-tui.exe; Pop-Location
-Push-Location cli; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future.exe --external chromium-bidi; Pop-Location
-
-# Install to %USERPROFILE%\.future\bin             (the install-* copy steps)
-$bin = "$env:USERPROFILE\.future\bin"
-New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, tui\dist\future-tui.exe, cli\dist\future.exe $bin
-
-# Built-in skills — make install-skills uses symlinks; on Windows use the CLI instead
-& "$bin\future.exe" skills install
-```
-
-**Desktop app** — the GUI half of `make install` (run after the terminal stack block above, which produces the sidecars):
-
-```powershell
-# Stage agent + CLI as Tauri sidecars, named with the host triple
-$triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-New-Item -ItemType Directory -Force -Path gui\src-tauri\binaries | Out-Null
-Copy-Item target\release\future-agent.exe "gui\src-tauri\binaries\future-agent-$triple.exe"
-Copy-Item cli\dist\future.exe "gui\src-tauri\binaries\future-$triple.exe"
-
-# Build the app and install it as future-gui.exe   (make install-gui)
-Push-Location gui; npm install; npx tauri build --no-bundle; Pop-Location
-Copy-Item gui\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.future\bin\future-gui.exe"
-```
-
-**Installer package** — equivalent to `make package-gui`, once the sidecars are staged:
-
-```powershell
-node scripts\version.mjs --set-bundle
-Push-Location gui; npm run tauri:build; Pop-Location   # → NSIS setup .exe under gui\src-tauri\target\release\bundle\nsis\
-```
-
-Notes:
-
-- `scripts\start-gui-test.bat` runs the GUI in dev mode against a locally built agent.
-- The scripts under `scripts/` (`build-macos-dmg.sh`, `build-windows-portable.ps1`, `build-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI, agent, and CLI — not the TUI.
 
 ### Configure a model
 
@@ -268,6 +167,24 @@ future --help                                # full command list
 | `↑↓` | Scroll chat / navigate lists |
 | `Tab` | Autocomplete |
 
+## Loop Control Plane
+
+FutureOS ships a native **loop control plane** (`future-loop`) for long-running
+agent work: turn a conversation into a durable goal, break it into todos with
+dependency chains and human gates, attach independent validators, and let a
+deterministic quota kernel decide the next bounded turn. Highlights:
+
+- Durable goals / todos / gates / monitors with a completion contract
+- Deterministic should-run decision kernel + scheduler arbitration
+- Quota slot accounting & usage summaries; event-sourced state with replay
+- Independent validation (`todo add --verify ...`), extensions & multi-agent
+- Benchmark / decision-replay / canary evaluation tooling
+
+Start in any agent conversation with `/future-loop <objective>`, then check
+progress anytime with `future-loop status`. See the
+**[Loop Control Plane guide](docs/loop-control-plane.md)** for the full
+capability walkthrough and CLI reference.
+
 ## Architecture
 
 ```
@@ -281,6 +198,9 @@ future --help                                # full command list
         │               │                       │               │
  TypeScript TUI   Tauri/React GUI       TypeScript CLI   Channel Bridge
  (terminal, bun) (desktop, WebView)     auth · MCP      Feishu · DingTalk
+        │                                                       │
+ Loop Control Plane (future-loop) ──────────────────────────────┘
+ durable goals/todos/gates · quota kernel · gRPC executor bridge
 ```
 
 All clients connect to the agent independently over gRPC — no client depends on another.
@@ -290,6 +210,7 @@ All clients connect to the agent independently over gRPC — no client depends o
 - **GUI** (`gui/`) — Tauri 2 + React + TypeScript. Three-panel layout (nav / chat / context), approval prompts, skill browser, settings.
 - **CLI** (`cli/`) — TypeScript. Auth (device-flow OAuth), one-shot prompts (`run`), MCP tool calls, skills management, environment diagnostics (`doctor`).
 - **Channel Bridge** (`channels/`) — Rust. Feishu (pbbp2 WebSocket + CardKit streaming) and DingTalk (Stream Mode).
+- **Loop Control Plane** (`orchestration/loop/`) — Rust (`future-loop`). Durable goal/todo/gate state, quota should-run kernel, event ledger + replay, gRPC executor bridge. See [Loop Control Plane guide](docs/loop-control-plane.md).
 
 ## Configuration
 
