@@ -72,8 +72,14 @@ jobs:
               - '!gui/src-tauri/**'
             cli:
               - 'cli/**'
+              - 'shared/future-rpc/**'
+              - 'package.json'
+              - 'package-lock.json'
             tui:
               - 'tui/**'
+              - 'shared/future-rpc/**'
+              - 'package.json'
+              - 'package-lock.json'
             mobile:
               - 'mobile/**'
               - '!mobile/android/**'
@@ -355,18 +361,23 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: cli/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
-      # npm ci also runs postinstall → gen-version (version.generated.ts is
-      # gitignored and required by tsc).
+      # npm workspace: a single root `npm ci` installs shared/future-rpc, tui
+      # and cli (hoisted). postinstall also runs gen-version
+      # (version.generated.ts is gitignored and required by tsc).
       - name: Install dependencies
-        working-directory: cli
         run: npm ci
+
+      # The CLI compiles against the shared wire-contract package's dist.
+      - name: Build shared wire-contract package
+        working-directory: shared/future-rpc
+        run: npm run build
 
       - name: Typecheck
         working-directory: cli
@@ -391,16 +402,22 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: tui/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
+      # npm workspace: a single root `npm ci` installs shared/future-rpc, tui
+      # and cli (hoisted).
       - name: Install dependencies
-        working-directory: tui
         run: npm ci
+
+      # The TUI compiles against the shared wire-contract package's dist.
+      - name: Build shared wire-contract package
+        working-directory: shared/future-rpc
+        run: npm run build
 
       - name: Typecheck
         working-directory: tui

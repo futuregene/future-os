@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars
+.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars node-workspace
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -144,15 +144,34 @@ define npm-install-if-needed
 endef
 endif
 
+# npm workspace (shared/future-rpc + tui + cli): deps hoist to the repo-root
+# node_modules and a single root package-lock.json. Installs only when the
+# manifest/lockfile is newer than the install stamp, then builds the shared
+# wire-contract package so tui/cli can compile against its dist output.
+# (gui and mobile are not workspace members — they keep npm-install-if-needed.)
+ifeq ($(OS),windows)
+node-workspace:
+	@npm install --silent
+	@cd shared/future-rpc && npm run build --silent
+else
+node-workspace:
+	@if [ ! -f "node_modules/.package-lock.json" ] || [ "package.json" -nt "node_modules/.package-lock.json" ] || [ "package-lock.json" -nt "node_modules/.package-lock.json" ]; then \
+		echo "  npm install (workspace)"; \
+		npm install; \
+	fi
+	@if [ ! -f "shared/future-rpc/dist/index.js" ] || [ "shared/future-rpc/src/proto.ts" -nt "shared/future-rpc/dist/index.js" ]; then \
+		echo "  build shared/future-rpc"; \
+		cd shared/future-rpc && npm run build; \
+	fi
+endif
+
 build-agent:
 	cd agent && cargo build --release
 
-build-tui:
-	$(call npm-install-if-needed,tui)
+build-tui: node-workspace
 	cd tui && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
 
-build-cli:
-	$(call npm-install-if-needed,cli)
+build-cli: node-workspace
 	cd cli && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future
 
 # Internal: copy sidecar binaries (agent + CLI) into the Tauri resource dir.
@@ -199,12 +218,10 @@ test-agent:
 test-channels:
 	cd channels && cargo test
 
-test-cli:
-	$(call npm-install-if-needed,cli)
+test-cli: node-workspace
 	cd cli && npm test
 
-test-tui:
-	$(call npm-install-if-needed,tui)
+test-tui: node-workspace
 	cd tui && npm test
 
 test-gui:
@@ -228,10 +245,10 @@ lint-agent:
 lint-channels:
 	cd channels && cargo fmt --check && cargo clippy
 
-lint-tui:
+lint-tui: node-workspace
 	cd tui && npm run gen-version && npx tsc --noEmit
 
-lint-cli:
+lint-cli: node-workspace
 	cd cli && npm run gen-version && npx tsc --noEmit
 
 lint-gui:
