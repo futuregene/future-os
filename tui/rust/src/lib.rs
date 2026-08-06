@@ -32,6 +32,7 @@ pub mod keys;
 pub mod rpc;
 pub mod stdin_buffer;
 pub mod terminal;
+pub mod terminal_image;
 pub mod theme;
 pub mod tui;
 pub mod utils;

@@ -200,7 +200,7 @@ build-mobile-ios:
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent test-channels test-cli test-tui test-tui-rust test-gui test-gui-rust test-mobile
+test: test-agent test-channels test-cli test-tui test-tui-rust test-tui-diff test-gui test-gui-rust test-mobile
 
 test-agent:
 	cd agent && cargo test
@@ -218,6 +218,9 @@ test-tui:
 
 test-tui-rust:
 	rustup run 1.97.0 cargo test -p tui-rust
+
+test-tui-diff:
+	tui/rust/tests/diff-ts-rust.sh
 
 test-gui:
 	$(call npm-install-if-needed,gui)
@@ -459,6 +462,7 @@ help:
 	@echo "  check-mobile       Typecheck, lint, format-check, and test mobile"
 	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
 	@echo "  test-tui-rust      Run the Rust TUI port unit tests (cargo test -p tui-rust)"
+	@echo "  test-tui-diff      TS vs Rust render parity (byte-compare tui/rust/tests/diff-ts-rust.sh)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
 	@echo "  fmt                Format Rust and mobile code"
 	@echo "  run-agent          Run agent directly (debug build)"

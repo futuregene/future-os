@@ -49,6 +49,12 @@ pub trait Component: std::any::Any {
     fn handle_input(&mut self, _data: &str) {}
     fn invalidate(&mut self) {}
 
+    /// Port of the TS `wantsKeyRelease?: boolean` optional component field
+    /// (default false). Only consulted by the app layer (P3).
+    fn wants_key_release(&self) -> bool {
+        false
+    }
+
     /// Downcast support (mirrors TS duck-typing like `"focused" in component`).
     fn as_any(&self) -> &dyn std::any::Any;
 }
