@@ -11,16 +11,17 @@ export const PRODUCTION_PLATFORM_URL = "https://future-os.cn";
 // the test host (the production host has remote control disabled).
 export const PLATFORM_URL = IS_RELEASE ? PRODUCTION_PLATFORM_URL : DEVELOPMENT_PLATFORM_URL;
 
-/** NATS WebSocket scheme of an endpoint URL — `wss`, `ws`, or unrecognized. */
+/**
+ * NATS WebSocket scheme of an endpoint URL — `wss`, `ws`, or unrecognized.
+ * Deliberately a prefix check, not `new URL(...)`: scheme parsing must behave
+ * identically on Hermes (mobile) and V8/browsers (web test client), and engine
+ * URL parsers disagree on non-http(s) schemes.
+ */
 export function natsWsUrlScheme(url: string): "wss" | "ws" | "other" {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === "wss:") return "wss";
-    if (parsed.protocol === "ws:") return "ws";
-    return "other";
-  } catch {
-    return "other";
-  }
+  const lower = url.trim().toLowerCase();
+  if (lower.startsWith("wss://")) return "wss";
+  if (lower.startsWith("ws://")) return "ws";
+  return "other";
 }
 
 export function isExpectedClaimUrl(url: string): boolean {

@@ -22,7 +22,12 @@ interface RefreshResponse {
 // server now hands out `wss://` everywhere. Refuse a non-`wss://` endpoint
 // rather than silently degrade to cleartext.
 function assertSecureNatsUrl(url: string): void {
-  if (natsWsUrlScheme(url) !== "wss") throw new Error("nats_ws_not_tls");
+  if (natsWsUrlScheme(url) !== "wss") {
+    // Server address only (no secret) — surfaces what the platform handed
+    // out when a pairing is rejected, in Metro/Xcode consoles.
+    console.warn(`[remote] rejecting non-wss NATS endpoint: ${url}`);
+    throw new Error("nats_ws_not_tls");
+  }
 }
 
 async function responseJson<T>(response: Response): Promise<T> {

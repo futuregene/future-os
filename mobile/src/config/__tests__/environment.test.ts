@@ -4,6 +4,7 @@ describe("natsWsUrlScheme", () => {
   test("accepts wss:// endpoints", () => {
     expect(natsWsUrlScheme("wss://test.future-os.cn:9090")).toBe("wss");
     expect(natsWsUrlScheme("wss://nats.future-os.cn")).toBe("wss");
+    expect(natsWsUrlScheme("WSS://test.future-os.cn:9090")).toBe("wss");
   });
 
   test("recognizes ws:// as insecure", () => {
