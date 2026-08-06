@@ -36,6 +36,10 @@
 # ARE covered via the "browser" scenario (mock CDP endpoint + scripted
 # WebSocket). `browser start` against a non-reachable endpoint would spawn a
 # real Chrome (non-deterministic) — only the already_running path is diffed.
+# `browser status` against an unreachable endpoint reports Bun's transport
+# error text ("Unable to connect...") vs reqwest's wording — an accepted
+# transport divergence; the fixed-message ensureBrowser error is covered via
+# `snapshot --endpoint <unreachable>`.
 #
 # Notes:
 #   - Rebuilds BOTH CLIs with FUTURE_VERSION=0.0.0-diff+local so `--version`
@@ -701,7 +705,7 @@ add_case agentdown agentdown run "hello agent"
 # browser — mock CDP endpoint (mode "browser") with pre-seeded config + refs.
 # Every case resets config.json and the mock tab state per binary run.
 add_case browser exact tools call browser --command status
-add_case browser exact tools call browser --command status --endpoint http://127.0.0.1:1
+add_case browser exact tools call browser --command snapshot --endpoint http://127.0.0.1:1
 add_case browser exact tools call browser --command start --port $MOCK_PORT
 add_case browser exact tools call browser --command tabs
 add_case browser exact tools call browser --command tabs --action list
