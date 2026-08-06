@@ -126,10 +126,8 @@ npm run ios:device
    - `IOS_DIST_CERT_P12_BASE64` / `IOS_DIST_CERT_P12_PWD` — iOS Distribution
      证书（.p12，Apple Developer 后台生成，base64 编码）
    - `IOS_PROVISIONING_PROFILE_BASE64` — App Store provisioning profile
-   - `APPLE_TESTFLIGHT_API_KEY` / `APPLE_TESTFLIGHT_API_KEY_ID` /
-     `APPLE_TESTFLIGHT_API_ISSUER` — 独立 App Store Connect API Key
-     （在 appstoreconnect.apple.com → 用户与访问 → 密钥生成，需 App Store
-     Connect 权限；与 macOS 公证用的 `APPLE_API_KEY_*` 分开）
+   - 复用现有 `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER`（App
+     Store Connect API Key，与 macOS 公证共用；角色需为 App Manager 或以上）
    - 复用现有 `OSS_*` secrets（上传 IPA 到 `dl.future-os.cn`）
 2. Actions → Build iOS TestFlight → Run workflow。
 3. 构建用 `0.0.<提交数>` 作为 TestFlight 版本号（纯数字，TestFlight 要求），
