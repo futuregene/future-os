@@ -154,10 +154,11 @@ teardown_scenario() {
 
 start_mock() {  # $1 = port, $2 = mode -> echoes pid
   local port="$1" mode="${2:-ok}"
-  python3 "$ROOT/cli/rust/tests/mock-platform-server.py" "$port" "$mode" &
-  local pid=$!
-  wait_port "$port" || { err "mock server on $port did not start"; exit 2; }
-  echo "$pid"
+  # stdio redirected AWAY from the caller's pipe: a command substitution
+  # waits for EOF on its pipe, so a daemon that inherits it would hang the
+  # caller forever.
+  python3 "$ROOT/cli/rust/tests/mock-platform-server.py" "$port" "$mode" </dev/null >/dev/null 2>&1 &
+  echo $!
 }
 
 # ── scenario prep ──────────────────────────────────────────────────────────
@@ -407,9 +408,11 @@ add_case() {
     esac
     case "$scenario" in
       http | init:blocked | init:linked | doctor)
-        MOCK_PID="$(start_mock "$MOCK_PORT" ok)" ;;
+        MOCK_PID=$(start_mock "$MOCK_PORT" ok)
+        wait_port "$MOCK_PORT" || { err "mock server on $MOCK_PORT did not start"; exit 2; } ;;
       http:errors)
-        MOCK2_PID="$(start_mock "$MOCK2_PORT" errors)" ;;
+        MOCK2_PID=$(start_mock "$MOCK2_PORT" errors)
+        wait_port "$MOCK2_PORT" || { err "mock server on $MOCK2_PORT did not start"; exit 2; } ;;
     esac
   fi
   run_case "$scenario" "$mode" "$@"

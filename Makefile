@@ -200,7 +200,7 @@ build-mobile-ios:
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent test-channels test-cli test-tui test-gui test-gui-rust test-mobile
+test: test-agent test-channels test-cli test-cli-rust test-tui test-gui test-gui-rust test-mobile
 
 test-agent:
 	cd agent && cargo test
@@ -211,6 +211,12 @@ test-channels:
 test-cli:
 	$(call npm-install-if-needed,cli)
 	cd cli && npm test
+
+test-cli-rust:
+	rustup run 1.97.0 cargo test -p cli-rust
+
+test-cli-diff:
+	./cli/rust/tests/diff-ts-rust.sh
 
 test-tui:
 	$(call npm-install-if-needed,tui)
@@ -242,6 +248,7 @@ lint-tui:
 
 lint-cli:
 	cd cli && npm run gen-version && npx tsc --noEmit
+	rustup run 1.97.0 cargo clippy -p cli-rust --all-targets -- -D warnings
 
 lint-gui:
 	cd gui && npm run lint
@@ -452,6 +459,8 @@ help:
 	@echo "  build-mobile-ios     Generate, build, and install the iOS app (requires Xcode)"
 	@echo "  check-mobile       Typecheck, lint, format-check, and test mobile"
 	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
+	@echo "  test-cli-rust      Run the Rust CLI port unit tests (cargo test -p cli-rust)"
+	@echo "  test-cli-diff      Differential test: TS future vs Rust future, byte-identical output"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
 	@echo "  fmt                Format Rust and mobile code"
 	@echo "  run-agent          Run agent directly (debug build)"
