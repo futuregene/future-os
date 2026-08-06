@@ -180,14 +180,32 @@ future-loop run --goal <goal-id> --model <confirmed-model> \
 
 After each `run`, before starting the next step:
 1. Report what was done (which todo, cost, new status).
-2. **Check whether the plan still holds** — `future-loop status --goal <goal-id>`:
-   does the remaining todo list still make sense given what this step revealed?
-3. **Self-replan if needed — you are allowed to adjust the plan yourself via
-   the CLI, no user confirmation for routine replans**:
+2. **Reflect & improve — run a deliberate reflection pass (not just a status
+   check)**: before deciding what's next, step back and ask:
+   - **What did this turn reveal?** New facts, surprises, or assumptions that
+     turned out wrong (write them down — they are plan inputs, not noise).
+   - **Is the objective still right?** Does the goal text match what the work
+     has shown? Are the acceptance criteria still valid and testable?
+   - **Is the todo decomposition still optimal?** Too coarse → split into
+     smaller todos; too fine → merge; wrong order → reorder with `--blocks`;
+     missing a step → `todo add`; obsolete step → `todo supersede --reason`.
+   - **Is there a better path?** Would a different approach, tool, or
+     ordering reach the objective faster or with higher quality? Don't keep
+     a plan just because it was approved — the plan serves the objective.
+   - **New risks / dependencies?** Anything that now needs a human gate
+     (`--role user --class user_gate`), a monitor (`--class monitor`), or a
+     validation hook (`--verify`) to keep the goal on track?
+   - **Periodic deep re-plan** (every ~3–5 turns or at milestones): re-read
+     the objective and the full todo list, and rewrite the remaining plan as
+     if you were planning it fresh with everything you now know.
+   Apply the answers via the CLI immediately — you are allowed to adjust the
+   plan yourself, no user confirmation for routine replans:
    - `todo add` — new steps discovered by the completed step;
    - `todo supersede --reason "..."` — steps that are now obsolete;
    - `todo update` — fix a step's text/priority;
    - `todo archive` — tidy completed work.
+3. **Check whether the plan still holds** — `future-loop status --goal <goal-id>`:
+   does the remaining todo list still make sense given what this step revealed?
 4. Stop and ask the user ONLY when absolutely necessary (see step 7):
    risky/irreversible changes, decisions only the user can make, or you
    cannot determine the right adjustment.
