@@ -14,7 +14,7 @@ pub(crate) mod pairing;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 
@@ -25,6 +25,75 @@ const WEB_PORT: u16 = 8022;
 /// (logged) rather than blocking the agent event loop. The client recovers the
 /// gap via `get_events_since` backfill on its next reattach.
 const EVENT_QUEUE_CAPACITY: usize = 4096;
+
+/// Rate-limited drop reporting for the remote event mirror: one line when a
+/// drop episode starts, one per 10s while it persists, one on recovery — instead
+/// of the per-event line that flooded the terminal the moment the queue
+/// saturated (e.g. NATS offline). A dropped event is never data loss; the
+/// client heals the gap via `get_events_since` backfill.
+struct DropCounters {
+    /// An episode (queue full / NATS offline) is active until a successful enqueue.
+    dropping: AtomicBool,
+    /// Cumulative drops since the episode started; reset on recovery.
+    dropped: AtomicU64,
+    /// Epoch-ms of the last emitted drop line; gates the 10s periodic line.
+    last_report: AtomicU64,
+}
+
+impl DropCounters {
+    const fn new() -> Self {
+        Self {
+            dropping: AtomicBool::new(false),
+            dropped: AtomicU64::new(0),
+            last_report: AtomicU64::new(0),
+        }
+    }
+
+    /// Returns the line to print for a dropped event, or `None` when the episode
+    /// is already being reported at full cadence. Event-driven: called on the
+    /// hot path every event passes through, so it keeps reporting even while
+    /// the drain task is blocked on `publish().await` and can't reach its own
+    /// timer. `now` is injected so tests can advance time deterministically.
+    fn record_drop(
+        &self,
+        why: &str,
+        event_type: &str,
+        session_id: &str,
+        now: u64,
+    ) -> Option<String> {
+        let first = !self.dropping.swap(true, Ordering::Relaxed);
+        let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        let last = self.last_report.swap(now, Ordering::Relaxed);
+        if first {
+            Some(format!(
+                "remote: {why}; dropping {event_type} for {session_id} (backfill on reconnect heals the gap)"
+            ))
+        } else if total >= 10 && now.saturating_sub(last) >= 10_000 {
+            Some(format!(
+                "remote: {why}; dropped {total} events so far for {session_id}"
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// One-shot recovery line when a drop episode ends (the first event that
+    /// enqueues successfully). Returns `None` when no episode was active, and
+    /// resets the episode counters so the next episode starts fresh.
+    fn report_recovery(&self) -> Option<String> {
+        if self.dropping.swap(false, Ordering::Relaxed) {
+            let dropped = self.dropped.swap(0, Ordering::Relaxed);
+            self.last_report.store(0, Ordering::Relaxed);
+            Some(format!(
+                "remote: event publish recovered; dropped {dropped} events during the backlog"
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+static DROP_COUNTERS: DropCounters = DropCounters::new();
 
 /// Cap on a single event's serialized size. A huge event (e.g. a large tool
 /// result) would otherwise exceed the NATS 1MB user-JWT payload limit and be
@@ -438,15 +507,33 @@ pub fn publish_event(
     session_idx: i64,
     run_sequence: i64,
 ) {
-    let target = {
+    let Some((tx, pair_id, connected)) = ({
         let guard = STATE.lock().unwrap();
-        guard
-            .as_ref()
-            .map(|s| (s.event_tx.clone(), s.pair_id.clone()))
-    };
-    let Some((tx, pair_id)) = target else {
+        guard.as_ref().map(|s| {
+            (
+                s.event_tx.clone(),
+                s.pair_id.clone(),
+                s.client.connection_state() == async_nats::connection::State::Connected,
+            )
+        })
+    }) else {
         return;
     };
+    // NATS offline (server down / network out): publish would block until
+    // reconnect and queue events that can't be sent. Skip them here — the
+    // client recovers any gap via `get_events_since` backfill on its next
+    // reattach, same as a dropped event.
+    if !connected {
+        if let Some(line) = DROP_COUNTERS.record_drop(
+            "NATS not connected",
+            event_type,
+            session_id,
+            unix_timestamp_ms(),
+        ) {
+            eprintln!("{line}");
+        }
+        return;
+    }
     // Guard the NATS payload cap: an oversized event is published with a
     // truncated `data` marker (type/runId/idx preserved) rather than dropped,
     // so the client's dedup cursor doesn't get a permanent hole.
@@ -470,7 +557,21 @@ pub fn publish_event(
         payload,
     };
     if tx.try_send(event).is_err() {
-        eprintln!("remote: event publish queue full; dropping {event_type} for {session_id}");
+        if let Some(line) = DROP_COUNTERS.record_drop(
+            "event publish queue full",
+            event_type,
+            session_id,
+            unix_timestamp_ms(),
+        ) {
+            eprintln!("{line}");
+        }
+        return;
+    }
+    // A drop episode (queue full or NATS offline) has recovered: this event
+    // enqueued normally. Report once, with the episode's total. Best-effort —
+    // a burst racing across threads may miscount a line, never the flood.
+    if let Some(line) = DROP_COUNTERS.report_recovery() {
+        eprintln!("{line}");
     }
 }
 
@@ -562,6 +663,10 @@ fn cap_event_data(data: &str) -> std::borrow::Cow<'_, str> {
 /// refresh that swapped in a new queue): on refresh the old drain is NOT
 /// aborted — it keeps its client clone alive until its backlog is flushed,
 /// avoiding a mid-stream gap at the swap point.
+///
+/// Drop/backlog reporting happens in [`publish_event`], event-driven, since
+/// this loop can be blocked on `publish().await` (queue-backed NATS) and
+/// wouldn't reach its own timer while the backlog persists.
 fn spawn_event_publisher(
     client: async_nats::Client,
     mut rx: tokio::sync::mpsc::Receiver<EventPublish>,
@@ -904,6 +1009,13 @@ fn unix_timestamp() -> u64 {
         .unwrap_or_default()
 }
 
+fn unix_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 /// Cap on concurrent accepted web-client connections. Acquired BEFORE `accept`
 /// so a flood of idle sockets can't exhaust file descriptors (the accept loop
 /// blocks at capacity instead of parking unbounded tasks).
@@ -1037,6 +1149,45 @@ async fn handle_web_request(stream: &mut tokio::net::TcpStream, web_dir: &std::p
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    #[test]
+    fn drop_log_rate_limits_episodes() {
+        let counters = DropCounters::new();
+
+        // First drop logs the episode start; the next 8 are silent.
+        assert!(counters
+            .record_drop("queue full", "tool_delta", "s1", 1_000)
+            .is_some());
+        for i in 2..=9 {
+            let line = counters.record_drop("queue full", "tool_delta", "s1", 1_000 + i);
+            assert!(line.is_none(), "drop {i} should be rate-limited");
+        }
+
+        // 10s after the last line, the 10th drop reports a cumulative total.
+        let line = counters
+            .record_drop("queue full", "tool_delta", "s1", 12_000)
+            .expect("10th drop after 10s reports a total");
+        assert!(line.contains("dropped 10 events"), "got: {line}");
+    }
+
+    #[test]
+    fn drop_log_reports_recovery_and_resets() {
+        let counters = DropCounters::new();
+
+        counters.record_drop("NATS not connected", "tool_delta", "s1", 1_000);
+        let line = counters
+            .report_recovery()
+            .expect("recovery after an active episode reports");
+        assert!(line.contains("dropped 1 events"), "got: {line}");
+
+        // No episode active: recovery is silent and counters stay zero.
+        assert!(counters.report_recovery().is_none());
+
+        // The next episode starts fresh: the first drop logs again.
+        assert!(counters
+            .record_drop("queue full", "tool_delta", "s1", 2_000)
+            .is_some());
+    }
 
     #[test]
     fn nats_v2_event_keeps_every_v1_field_unchanged() {
