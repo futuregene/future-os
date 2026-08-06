@@ -117,19 +117,28 @@ future-loop todo add --goal <goal-id> --text "Copy the final deliverables to the
 
 Rule of thumb: if "X must finish before Y can start", add `--blocks X` to Y.
 
-**Todo-creation pitfalls (field-tested 2026-08, cli-rust-port goal).**
+**Todo-creation pitfalls (field-tested 2026-08, cli-rust-port + tui-rust-port goals).**
 
 1. **Capture todo ids from the `todo add` output itself.** The command prints
    the new id (`todo todo_xxx added ✔`) — that is the only reliable source.
-   There is NO `future-loop todo list` subcommand; piping
-   `--blocks $(future-loop todo list …)` fails SILENTLY (the substitution
-   yields an empty string, `--blocks` is accepted with no value, and the
-   dependency is quietly dropped). To look ids up afterwards, parse
-   `future-loop status --goal G` (`todos:` line lists `id=status`).
+   There is NO `future-loop todo list` subcommand, and `future-loop status`
+   has NO `--format json` flag (only `future-loop models` does) — piping
+   `--blocks $(future-loop status --format json …)` fails SILENTLY (the
+   substitution yields an empty string, `--blocks` is accepted with no value,
+   and the dependency is quietly dropped). To look ids up afterwards, parse
+   `future-loop status --goal G` (`todos:` line lists `id=status`), or read
+   the event ledger `<cwd>/.future/loop/goals/<id>/events.jsonl`
+   (`kind: "todo_added"` events carry the full `todo` object).
 2. **Verify the wiring after creation.** Run `future-loop status --goal G` and
    confirm each dependent todo's `blocks` is set. An empty `--blocks` never
-   errors — only a status check catches it. Repair with
-   `future-loop todo update --goal G --todo-id T --blocks <id>`.
+   errors — only a status check catches it. **`todo update` CANNOT change
+   `--blocks`** (verified in `orchestration/loop/src/main.rs` `todo_update()`:
+   only `--goal/--todo-id/--text/--status/--evidence/--note/--priority/
+   --resume-when` are accepted; an unknown flag like `--blocks` is silently
+   ignored). If the chain is wrong the only clean repair is to recreate the
+   goal: `future-loop goal delete --goal G --force` (delete is IRREVERSIBLE
+   and refuses without `--force`) → `goal init` → re-add all todos in
+   dependency order, capturing each id from the add output.
 3. **Chain the FINAL validation todo too.** The run loop schedules any open,
    unblocked todo — priority alone does NOT order execution. The last
    acceptance/validation todo MUST `--blocks` all implementation todos;
@@ -138,8 +147,21 @@ Rule of thumb: if "X must finish before Y can start", add `--blocks X` to Y.
    `complete --successor` back to the implementation todos).
 4. **`goal init` auto-creates an onboarding todo.** A fresh goal starts with
    one extra open todo ("Run `future-loop status` … record the goal count as
-   evidence"). Complete it with `--no-follow-up` during setup; don't mistake
-   it for a real work item.
+   evidence"). Complete it with `--no-follow-up` during setup (or at the end,
+   with the goal count as `--evidence`); don't mistake it for a real work
+   item — it does not block the chain but stays open until completed.
+5. **`goal delete` requires `--force` and is irreversible.** A mis-created
+   goal cannot be repaired in place — `future-loop goal delete --goal G`
+   refuses with "irreversible — pass --force". Passing `--force` removes the
+   registry entry + state, so recreate via `goal init` afterwards.
+6. **`registry.json` holds only goal summaries** (objective/cwd/status); todo
+   ids and their `blocks`/priority live in the event ledger
+   `<cwd>/.future/loop/goals/<id>/events.jsonl` — the reliable place to
+   re-derive ids after a botched creation.
+7. **Subcommand `--help` is NOT supported.** `future-loop todo update --help`
+   silently ignores the flag (and "updates" even a nonexistent `--todo-id`).
+   Check the exact flags in `orchestration/loop/src/main.rs`
+   (`todo_add`/`todo_update` `parse_pairs`) or in this skill instead.
 
 If the user asks for approval before a specific action, create a real gate:
 ```bash
