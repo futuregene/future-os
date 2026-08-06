@@ -10,9 +10,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `help()` from session.ts — printed to stdout.
-fn help(out: &Output) {
-    out.log(
-        "future session — manage agent sessions
+pub const SESSION_HELP: &str = "future session — manage agent sessions
 
 Usage:
   future session list [--json]                       List all sessions
@@ -20,8 +18,10 @@ Usage:
   future session rename <id> <name>                  Give a session a readable name
   future session delete <id>                         Delete a session
 
-Session data is stored at ~/.future/agent/sessions/",
-    );
+Session data is stored at ~/.future/agent/sessions/";
+
+fn help(out: &Output) {
+    out.log(SESSION_HELP);
 }
 
 /// `truncate(s, n)` — cut to n chars (last char replaced with "…").

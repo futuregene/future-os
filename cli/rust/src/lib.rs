@@ -390,6 +390,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn all_help_outputs_match_help_constants() {
+        // Golden: every --help/-h path must print exactly the ported help
+        // text (verified byte-identical against the TS CLI in the diff
+        // battery) on stdout with exit 0 and empty stderr.
+        let cases: &[(&[&str], &str)] = &[
+            (&["init", "--help"], help::INIT_HELP),
+            (&["init", "-h"], help::INIT_HELP),
+            (&["auth", "--help"], help::AUTH_GROUP_HELP),
+            (&["auth", "-h"], help::AUTH_GROUP_HELP),
+            (&["auth", "login", "--help"], help::AUTH_LOGIN_HELP),
+            (&["auth", "login", "-h"], help::AUTH_LOGIN_HELP),
+            (&["auth", "status", "--help"], help::AUTH_STATUS_HELP),
+            (
+                &["auth", "credential", "--help"],
+                help::AUTH_CREDENTIAL_HELP,
+            ),
+            (&["auth", "logout", "--help"], help::AUTH_LOGOUT_HELP),
+            (&["account", "--help"], help::ACCOUNT_GROUP_HELP),
+            (&["skills", "--help"], help::SKILLS_GROUP_HELP),
+            (&["tools", "--help"], help::TOOLS_GROUP_HELP),
+            (&["models", "--help"], help::MODELS_HELP),
+            (&["models", "-h"], help::MODELS_HELP),
+            (&["agent", "status", "--help"], help::AGENT_STATUS_HELP),
+            (&["session", "--help"], commands::session::SESSION_HELP),
+            (&["session", "-h"], commands::session::SESSION_HELP),
+        ];
+        for (args, expected) in cases {
+            let (code, stdout, stderr) = run(args).await;
+            assert_eq!(code, 0, "args {args:?}");
+            assert_eq!(stdout, format!("{expected}\n"), "args {args:?}");
+            assert_eq!(stderr, "", "args {args:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn tools_skills_account_predicates() {
         assert!(commands::tools::is_tools_command(Some("list")));
         assert!(!commands::tools::is_tools_command(Some("bogus")));

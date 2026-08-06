@@ -18,7 +18,9 @@ tokio.workspace = true
 tonic.workspace = true
 prost.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# preserve_order: JSON object key order must match the TS CLI's JS semantics
+# (JSON.parse preserves insertion order; serde_json's default BTreeMap sorts).
+serde_json = { workspace = true, features = ["preserve_order"] }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 chrono = { workspace = true, features = ["clock"] }
 dirs = "5"
