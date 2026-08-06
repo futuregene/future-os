@@ -168,7 +168,7 @@ and more. These are maintained in the
 ```bash
 make install-skills                          # symlink from the bundled skills/ submodule
 # or install from the platform catalog:
-future skills install                        # install all future-* skills (~13)
+future skills install                        # install all future-* skills (14)
 future init                                  # install skills and, on macOS/Linux, link local commands
 ```
 
@@ -179,8 +179,8 @@ future init                                  # install skills and, on macOS/Linu
 ## Verify
 
 ```bash
-make test        # cargo test (agent + loop control plane)
-make lint        # lint all (agent + channels + TUI + CLI + GUI)
+make test        # all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile
+make lint        # lint all: agent, channels, TUI, CLI, GUI (+stylelint), mobile
 ```
 
 ## Development (from source)
@@ -189,9 +189,9 @@ Source builds use the repo Makefile from the repo root:
 
 ```bash
 make build          # build all components (no system install)
-make lint           # lint all (agent + channels + TUI + CLI + GUI)
-make fmt            # cargo fmt (agent + channels)
-make test           # cargo test (agent)
+make lint           # lint all: agent, channels, TUI, CLI, GUI (+stylelint), mobile
+make fmt            # cargo fmt (agent + channels) + mobile formatting
+make test           # all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile
 make clean          # remove build artifacts + installed binaries
 ```
 
@@ -202,5 +202,5 @@ into the repo — normal builds don't touch it. After editing a `.proto` file,
 regenerate:
 
 ```bash
-make generate-proto          # agent + channels + TUI
+make generate-proto          # agent + channels + GUI (src-tauri) + TUI
 ```

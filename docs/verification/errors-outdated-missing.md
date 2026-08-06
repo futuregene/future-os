@@ -41,12 +41,14 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 |---|---|---|
 | 「Bridge reconnects every ~6 minutes」/「每 6 分钟左右重连」 | docs/wiki/en/Feishu.md L190；zh L191 | channels/src/feishu/feishu_ws.rs：`DEFAULT_PING_INTERVAL=30`（keepalive ping 30s，wiki 这句对）、`HEARTBEAT_TIMEOUT=120`；mod.rs 重连等待 **5s**（`Duration::from_secs(5)`）。全文无 6 分钟常量。建议改为「连接断开后 5s 自动重连；keepalive ping 每 30s」 |
 
-### A5. `make test` 并不跑 loop 控制面测试
+### A5. `make test` 并不跑 loop 控制面测试 —— ✅ 已修复（todo_cbbb063d2fd4）
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
 | `make test # cargo test (agent + loop control plane)`（zh：「agent + loop 控制面」） | docs/build-and-install.md L182；zh L168 | Makefile `test:` = test-agent + test-channels + test-cli + test-tui + test-gui + test-gui-rust + test-mobile（Makefile L203-229）。**没有 test-loop 目标**，loop 不在 make test 内 |
 | （同文件开发节）`make test # cargo test (agent)` | docs/build-and-install.md L194；zh L180 | 同上，实际 7 个套件 |
+
+→ 两处均改为「all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile」（zh 同）。`make clean`（删构建产物+已安装二进制）、`future init`（装技能+macOS/Linux 链接本地命令）、mold（仅 x86_64-linux）、loop 为 workspace 成员（Cargo.toml L17）等声明复核无误。
 
 ---
 
@@ -64,11 +66,13 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 | auth 缺 `credential` | docs/wiki/{en,zh}/CLI.md auth 段 |
 | 缺失整组：`session`、`models`、`account`、`init`、`doctor` | docs/wiki/{en,zh}/CLI.md |
 
-### B2. 「future skills install 约 13 个」→ 实际 14 个
+### B2. 「future skills install 约 13 个」→ 实际 14 个 —— ✅ 已修复（todo_cbbb063d2fd4）
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
 | `future skills install # install all future-* skills (~13)`（zh 同） | docs/build-and-install.md L171；zh L159 | skills/builtin/ 现含 **14** 个 future-* 技能（future-account/browser/database-lookup/deep-research/document/experimental-design/image/paper/peer-review/scientific-writing/skill-creator/slides/software-install/web） |
+
+→ 已改为「(14)」/「（14 个）」。另注：**`future skills update` 确实存在**（cli/src/commands/skills.ts L19/L48-49/L287-328 已实现 updateSkills）——build-and-install L165/zh L163 此声明正确，错误在 wiki-prompt W12/WE（说「没有 update」），留待 wiki-prompt todo 修正。
 
 ### B3. README 模型数量表述过时（低估）—— ✅ 已修复（commit b3b2e114，todo_5d852f73fcb6）
 
@@ -86,17 +90,21 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 |---|---|---|
 | 页面清单 10 页、侧边栏无 Integrations 分组 | docs/wiki-prompt.md W6-W7（L52-109）；en 对应 | 实际 wiki 有 Feishu.md、DingTalk.md，_Sidebar 含 Integrations 分组（docs/wiki/en/_Sidebar.md L4-20） |
 
-### B5. `make generate-proto` 覆盖范围少写一端
+### B5. `make generate-proto` 覆盖范围少写一端 —— ✅ 已修复（todo_cbbb063d2fd4）
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
 | 「make generate-proto（agent + channels + TUI）」 | docs/build-and-install.md L186-206（B17）；zh 对应 | 实际还包含 **gui/src-tauri**（Makefile L404-410：agent → channels → gui/src-tauri → tui） |
 
-### B6. `make lint` 范围少写两端
+→ 已改为「agent + channels + GUI (src-tauri) + TUI」（zh 同）。
+
+### B6. `make lint` 范围少写两端 —— ✅ 已修复（todo_cbbb063d2fd4）
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
 | 「lint all (agent + channels + TUI + CLI + GUI)」（zh 同） | docs/build-and-install.md L183, L192；zh L169, L178 | 实际 = lint-agent + lint-channels + lint-tui + lint-cli + lint-gui + **stylelint-gui** + **lint-mobile**（Makefile L232-253） |
+
+→ 已改为「agent, channels, TUI, CLI, GUI (+stylelint), mobile」（zh 同）。另补：`make fmt` 实际 = cargo fmt（agent+channels）+ fmt-mobile（Makefile L262-269），文档原「cargo fmt (agent + channels)」也已一并更新。
 
 ### B7. DingTalk 斜杠命令措辞不精确
 

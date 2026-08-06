@@ -156,7 +156,7 @@ FutureOS 内置一组精选技能——面向常见任务（深度研究、浏�
 ```bash
 make install-skills                          # 从内置 skills/ 子模块符号链接
 # 或从平台目录安装：
-future skills install                        # 安装全部 future-* 技能（约 13 个）
+future skills install                        # 安装全部 future-* 技能（14 个）
 future init                                  # 安装技能并在 macOS/Linux 上链接本地命令
 ```
 
@@ -165,8 +165,8 @@ future init                                  # 安装技能并在 macOS/Linux �
 ## 验证
 
 ```bash
-make test        # cargo test（agent + loop 控制面）
-make lint        # 全量 lint（agent + channels + TUI + CLI + GUI）
+make test        # 全部 7 个套件：agent、channels、CLI、TUI、GUI、GUI Rust、mobile
+make lint        # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylelint）、mobile
 ```
 
 ## 开发（源码方式）
@@ -175,9 +175,9 @@ make lint        # 全量 lint（agent + channels + TUI + CLI + GUI）
 
 ```bash
 make build          # 构建全部组件（不安装到系统）
-make lint           # 全量 lint（agent + channels + TUI + CLI + GUI）
-make fmt            # cargo fmt（agent + channels）
-make test           # cargo test（agent）
+make lint           # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylelint）、mobile
+make fmt            # cargo fmt（agent + channels）+ mobile 格式化
+make test           # 全部 7 个套件：agent、channels、CLI、TUI、GUI、GUI Rust、mobile
 make clean          # 清理构建产物与已安装二进制
 ```
 
@@ -186,5 +186,5 @@ make clean          # 清理构建产物与已安装二进制
 规范 API 是 `proto/future.proto`。生成的 Rust/TS 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
 
 ```bash
-make generate-proto          # agent + channels + TUI
+make generate-proto          # agent + channels + GUI（src-tauri）+ TUI
 ```

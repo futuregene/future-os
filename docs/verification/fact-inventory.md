@@ -369,7 +369,7 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 | X1 | **CLI 二进制名** | `future`：wiki-prompt.md W12（L171/L219）、README R3、wiki CLI.md EC1-EC2、_Sidebar ESB1、dist D4；`future-cli`：wiki-prompt-en.md WE3-WE5（L171/L219，且明确「never bare future」） | 见左 |
 | X2 | **CLI 名称在 wiki 内部也不一致** | wiki CLI.md/侧边栏用 `future`，但 Feishu.md/DingTalk.md 末尾 See also 用 `future-cli`（en L204/L170，zh L205/L170） | §8/§9 |
 | X3 | **macOS 公证状态** | 已公证：wiki Installation en L24 / zh L24、wiki-prompt W8；未公证：wiki FAQ en L9 / zh L9（「current build isn't notarized」）、dist readme-macos-en L8（「not Apple-notarised」） | §8/§9/§11 |
-| X4 | **skills 是否有 `update` 子命令** | 有：build-and-install.md B14（L165 `future skills update`）、zh-CN L163；没有：wiki-prompt W12（L183「**没有 update**」）、WE（L183「no `update`」） | §3/§7 |
+| X4 | **skills 是否有 `update` 子命令** | 有：build-and-install.md B14（L165 `future skills update`）、zh-CN L163；没有：wiki-prompt W12（L183「**没有 update**」）、WE（L183「no `update`」） | §3/§7 |\n| — | **X4 已裁决（2026-08-06，todo_cbbb063d2fd4）** | cli/src/commands/skills.ts L19/L48-49/L88/L287-328 已实现 `update`（updateSkills 真实执行升级）。**build-and-install 正确，wiki-prompt W12/WE 错误**——留待 wiki-prompt todo 修正 | |
 | X5 | **模型数量** | README「1000+ models / 100+ providers」（R2 L26）；Models.md「3826 models / 143 providers」（EM1 L3） | §1/§8 |
 | X6 | **wiki-prompt 页面清单 vs 实际 wiki** | prompt 清单 10 页无 Feishu/DingTalk、侧边栏无 Integrations（W6/W7）；实际 wiki 有 Feishu.md+DingTalk.md+Integrations 分组（ESB1） | §7/§8 |
 | X7 | **make 目标** | wiki Feishu/DingTalk 用 `make build-channels-release`（EFE9/EDT6）；Makefile 中无该目标（grep 0 命中）——疑似应为 `make build-channels` 或 release 变体，需核验 | §8；Makefile |
