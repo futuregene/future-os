@@ -846,7 +846,41 @@ fn load_registry(root: &Path) -> Result<Vec<RegistryEntry>> {
         return Ok(vec![]);
     }
     let text = fs::read_to_string(&path)?;
-    serde_json::from_str(&text).context("parse registry")
+    // Dual format: the native array, or the reference-compatible map
+    // {"goals":[...]} written by earlier productized builds (fields id/repo
+    // map onto goal_id/cwd).
+    let v: serde_json::Value = serde_json::from_str(&text).context("parse registry")?;
+    let items: Vec<serde_json::Value> = match &v {
+        serde_json::Value::Array(a) => a.clone(),
+        serde_json::Value::Object(m) => m
+            .get("goals")
+            .and_then(|g| g.as_array())
+            .cloned()
+            .unwrap_or_default(),
+        _ => bail!("registry is neither an array nor a {{goals:[...]}} object"),
+    };
+    items
+        .into_iter()
+        .map(|g| {
+            let obj = g
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("registry entry is not an object"))?;
+            let str_of = |k: &str, alt: &str| -> String {
+                obj.get(k)
+                    .or_else(|| obj.get(alt))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            Ok(RegistryEntry {
+                goal_id: str_of("goal_id", "id"),
+                objective: str_of("objective", "objective"),
+                cwd: str_of("cwd", "repo"),
+                status: str_of("status", "status"),
+                created_at: obj.get("created_at").and_then(|x| x.as_u64()).unwrap_or(0),
+            })
+        })
+        .collect()
 }
 
 /// Copy a directory tree when present (used for the scheduler-state dir in

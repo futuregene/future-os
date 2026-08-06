@@ -22,13 +22,16 @@ use future_loop::executor::{execute_turn, writeback};
 use future_loop::state::{now_epoch, Goal, RunRecord, TaskClass, Todo, TodoStatus};
 use future_loop::store::{Event, Store};
 
-/// Runtime root for LoopX-compatible run history (default ~/.codex/loopx,
-/// overridable via FUTURE_LOOP_RUNTIME — matches LoopX's DEFAULT_RUNTIME_ROOT).
+/// Runtime root for the reference-compatible run history (default
+/// `<cwd>/.codex/loopx`, overridable via FUTURE_LOOP_RUNTIME). Project-local:
+/// all loop state stays inside the project directory.
 fn runtime_root() -> String {
     std::env::var("FUTURE_LOOP_RUNTIME").unwrap_or_else(|_| {
         format!(
             "{}/.codex/loopx",
-            std::env::var("HOME").unwrap_or_else(|_| ".".into())
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".into())
         )
     })
 }
@@ -69,11 +72,16 @@ fn refresh_next_action(store: &Store, goal_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Project-local state root: `<cwd>/.future/loop/` (run future-loop from the
+/// project dir, or override with FUTURE_LOOP_ROOT). All goal state stays
+/// inside the project.
 fn root_dir() -> String {
     std::env::var("FUTURE_LOOP_ROOT").unwrap_or_else(|_| {
         format!(
             "{}/.future/loop",
-            std::env::var("HOME").unwrap_or_else(|_| ".".into())
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".into())
         )
     })
 }
