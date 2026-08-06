@@ -153,9 +153,14 @@ jobs:
         working-directory: gui
         run: npm ci
 
-      - name: Install npm dependencies (CLI)
-        working-directory: cli
+      - name: Install npm workspace (shared RPC + TUI + CLI)
         run: npm ci
+
+      # The CLI (and TUI) import @future-os/rpc; its dist must exist before
+      # their TypeScript compiles. Build it explicitly on fresh runners.
+      - name: Build shared RPC package
+        working-directory: shared/future-rpc
+        run: npm run build
 
       # Windows Defender real-time scanning inspects every intermediate file the
       # Rust compiler and linker emit — thousands of them — and is the single

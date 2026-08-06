@@ -162,7 +162,7 @@ node-workspace:
 		echo "  npm install (workspace)"; \
 		npm install; \
 	fi
-	@if [ ! -f "shared/future-rpc/dist/index.js" ] || [ "shared/future-rpc/src/proto.ts" -nt "shared/future-rpc/dist/index.js" ]; then \
+	@if [ ! -f "shared/future-rpc/dist/index.js" ] || [ -n "$$(find shared/future-rpc/src -name '*.ts' -newer shared/future-rpc/dist/index.js 2>/dev/null)" ]; then \
 		echo "  build shared/future-rpc"; \
 		cd shared/future-rpc && npm run build; \
 	fi
@@ -428,6 +428,8 @@ generate-proto:
 clean:
 ifeq ($(OS),windows)
 	@if exist target rmdir /s /q target
+	@if exist node_modules rmdir /s /q node_modules
+	@if exist shared\future-rpc\dist rmdir /s /q shared\future-rpc\dist
 	@if exist tui\dist rmdir /s /q tui\dist
 	@if exist tui\node_modules rmdir /s /q tui\node_modules
 	@if exist tui\future-tui del /q tui\future-tui
@@ -446,6 +448,7 @@ ifeq ($(OS),windows)
 	@if exist "$(PREFIX)\future-channel$(EXE_SUFFIX)" del /q "$(PREFIX)\future-channel$(EXE_SUFFIX)"
 else
 	rm -rf target
+	rm -rf node_modules shared/future-rpc/dist
 	rm -rf tui/dist tui/node_modules
 	rm -f tui/future-tui tui/src/version.generated.ts
 	rm -rf cli/dist cli/node_modules

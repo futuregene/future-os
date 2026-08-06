@@ -169,10 +169,13 @@ if [[ -n "$SIGNING_IDENTITY" ]]; then
 fi
 
 if [[ "$SKIP_DEPS" != true ]]; then
-  echo "==> Installing npm dependencies (gui, cli)"
+  echo "==> Installing npm dependencies (gui, npm workspace)"
   (cd gui && npm ci)
-  (cd cli && npm ci)
+  npm ci  # root workspace: shared/future-rpc + tui + cli
 fi
+
+echo "==> Building shared RPC package (@future-os/rpc)"
+(cd shared/future-rpc && npm run build)
 
 echo "==> Building agent (release)"
 cargo build --release --manifest-path agent/Cargo.toml

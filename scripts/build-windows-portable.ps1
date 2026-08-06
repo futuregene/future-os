@@ -126,10 +126,13 @@ if (-not $env:FUTURE_VERSION) {
 Write-Host "    version: $($env:FUTURE_VERSION)"
 
 if (-not $SkipDeps) {
-    Write-Host "==> Installing npm dependencies (gui, cli)" -ForegroundColor Cyan
+    Write-Host "==> Installing npm dependencies (gui, npm workspace)" -ForegroundColor Cyan
     Push-Location gui; try { Invoke-Native { npm ci } } finally { Pop-Location }
-    Push-Location cli; try { Invoke-Native { npm ci } } finally { Pop-Location }
+    Invoke-Native { npm ci }  # root workspace: shared/future-rpc + tui + cli
 }
+
+Write-Host "==> Building shared RPC package (@future-os/rpc)" -ForegroundColor Cyan
+Push-Location shared/future-rpc; try { Invoke-Native { npm run build } } finally { Pop-Location }
 
 Write-Host "==> Building agent (release)" -ForegroundColor Cyan
 Invoke-Native { cargo build --release --manifest-path agent/Cargo.toml }
