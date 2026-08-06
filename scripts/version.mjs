@@ -2,27 +2,32 @@
 // Single source of truth for FutureOS build versioning.
 //
 // Three cases, all keyed off "is this a release tag":
-//   - on a `vX.Y.Z` tag   → release, version = "X.Y.Z"
-//   - other online build   → dev,    version = "0.0.0-<short-git-hash>"
-//   - local build          → dev,    version = "0.0.0-<short-git-hash>+local"
-//                                     (…+local.dirty when the tree is dirty)
+//   - on a `vX.Y.Z` tag    → release, version = "X.Y.Z"   (X must be ≥ 1)
+//   - other online build   → dev,    version = "0.0.<commit-count>-<hash>"
+//   - local build          → dev,    version = "0.0.<commit-count>-<hash>+local"
+//                                      (…+local.dirty when the tree is dirty)
+//   - iOS TestFlight       → dev,    version = "0.0.<commit-count>"
+//                                      (plain number: TestFlight rejects suffixes;
+//                                      injected via FUTURE_VERSION by the workflow)
 //
-// The short commit hash alone pinpoints the code (`git show <hash>`) — no branch
-// name is encoded, which also keeps the string a valid SemVer with no
-// sanitisation (branch names can contain `/`, `_`, …). Local builds add `+local`
-// build metadata so they're never mistaken for the matching online build, and
-// `.dirty` when the working tree has uncommitted changes — a dirty local build
-// does NOT correspond to that commit, so the hash must not be trusted verbatim.
+// The commit count (git rev-list --count HEAD) makes the version monotonic
+// across builds; the short hash pinpoints the exact code (`git show <hash>`) and
+// keeps distinct branches from colliding on the same 0.0.<count>. Local builds
+// add `+local` build metadata so they're never mistaken for the matching online
+// build, and `.dirty` when the working tree has uncommitted changes — a dirty
+// local build does NOT correspond to that commit, so the hash must not be
+// trusted verbatim.
 //
 // The release/dev channel is DERIVED from the version string, not injected
-// separately: a plain `X.Y.Z` (no `-` suffix) is a release; anything carrying a
-// prerelease suffix (`-<hash>…`) is a dev build. This keeps the model to a single
-// injected value (FUTURE_VERSION) at the cost of one assumption:
+// separately: a version whose FIRST component is `0` is a dev build; anything
+// starting `1`+ is a release. This keeps the model to a single injected value
+// (FUTURE_VERSION) at the cost of one assumption:
 //
-//   ⚠️ Release versions must NEVER carry a `-` suffix. We intentionally do not
-//   ship prerelease tags (e.g. `v1.2.3-rc.1`) — such a tag WOULD be misread as a
-//   dev build. If prerelease releases are ever wanted, reintroduce an explicit
-//   channel here and in the Rust/TS helpers instead of parsing the version.
+//   ⚠️ Release versions must NEVER start with `0`. A `v0.x.y` tag would be
+//   misread as a dev build. The first public release is 1.0.0, so 0.* is
+//   reserved for dev builds forever. If 0.x releases are ever wanted, reintroduce
+//   an explicit channel here and in the Rust/TS helpers instead of parsing the
+//   version.
 //
 // Config files stay pinned at 0.0.0; the real version is injected at build time
 // from here (env FUTURE_VERSION → Rust build.rs, generated TS module, and the
@@ -44,15 +49,18 @@ export function resolveVersion() {
   if (tag) {
     return tag[1];
   }
-  // Dev build: 0.0.0-<short-hash>. The hash locates the exact code; no branch.
+  // Dev build: 0.0.<commit-count>-<hash>. The commit count is monotonic (build
+  // number for stores); the short hash locates the exact code and keeps branches
+  // from colliding on the same count.
+  const count = gitCommitCount();
   const hash = gitShortHash();
   // Online (CI) builds are reproducible from the pushed commit, so the hash
   // stands alone. Local builds add `+local` (and `.dirty` for an uncommitted
   // tree) so a tester's laptop build is never confused with the online one.
   if (process.env.GITHUB_ACTIONS || process.env.CI) {
-    return `0.0.0-${hash}`;
+    return `0.0.${count}-${hash}`;
   }
-  return `0.0.0-${hash}+local${gitDirty() ? ".dirty" : ""}`;
+  return `0.0.${count}-${hash}+local${gitDirty() ? ".dirty" : ""}`;
 }
 
 /** Short git hash, or "unknown" outside a git checkout (tarball build). */
@@ -64,6 +72,18 @@ function gitShortHash() {
   }
   catch {
     return "unknown";
+  }
+}
+
+/** Total commit count on HEAD, or 0 outside a git checkout. */
+function gitCommitCount() {
+  try {
+    return execSync("git rev-list --count HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim() || "0";
+  }
+  catch {
+    return "0";
   }
 }
 
@@ -79,9 +99,9 @@ function gitDirty() {
   }
 }
 
-/** A version is a release iff it carries no prerelease/build suffix. */
+/** A version is a release iff its first component is non-zero (0.* is dev). */
 export function isRelease(version) {
-  return !version.includes("-");
+  return !version.startsWith("0");
 }
 
 /** Bundle/installer version — plain semver core (NSIS rejects suffixes). */

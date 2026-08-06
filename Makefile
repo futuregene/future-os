@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars node-workspace
+.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills install-loop fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars node-workspace
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -35,9 +35,9 @@ endif
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
-install: install-agent install-tui install-cli install-gui install-channels install-skills
+install: install-agent install-tui install-cli install-gui install-channels install-skills install-loop
 
-install-nogui: install-agent install-tui install-cli install-channels install-skills
+install-nogui: install-agent install-tui install-cli install-channels install-skills install-loop
 
 uninstall:
 ifeq ($(OS),windows)
@@ -123,6 +123,9 @@ else
 	@echo "Linked built-in skills to ~/.future/agent/skills/"
 endif
 
+install-loop:
+	bash scripts/install-future-loop.sh $(if $(RELEASE),--release,)
+
 # ─── Build ──────────────────────────────────────────────────────────────────
 
 build: build-agent build-tui build-cli build-gui build-channels
@@ -207,6 +210,12 @@ build-channels:
 build-mobile-android:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run android
+
+# iOS native projects are generated locally by Expo (mobile/ios is gitignored).
+# This target prebuilds and launches the app on the iOS simulator.
+build-mobile-ios:
+	$(call npm-install-if-needed,mobile)
+	cd mobile && npm run ios
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
@@ -316,6 +325,10 @@ endif
 run-mobile-android:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run android:device
+
+run-mobile-ios:
+	$(call npm-install-if-needed,mobile)
+	cd mobile && npm run ios
 
 package-gui: install-gui
 	node scripts/version.mjs --set-bundle
@@ -451,6 +464,7 @@ help:
 	@echo "  build-gui          Build React/Tauri GUI frontend"
 	@echo "  build-channels      Build channel bridge"
 	@echo "  build-mobile-android Generate, build, and install the Android app"
+	@echo "  build-mobile-ios     Generate, build, and install the iOS app (requires Xcode)"
 	@echo "  check-mobile       Typecheck, lint, format-check, and test mobile"
 	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
@@ -460,6 +474,7 @@ help:
 	@echo "  run-cli            Run CLI in dev mode"
 	@echo "  run-gui            Run GUI in dev mode"
 	@echo "  run-mobile-android Run the Android app on a selected device"
+	@echo "  run-mobile-ios     Run the iOS app on the simulator (requires Xcode)"
 	@echo "  run-channels        Run channel bridge directly (debug build)"
 	@echo "  package-gui        Package GUI desktop bundles"
 	@echo "  profile-agent      CPU profile: build + 90s bench, write flamegraph SVG"

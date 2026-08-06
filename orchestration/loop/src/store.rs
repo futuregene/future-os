@@ -1,0 +1,1173 @@
+//! The state substrate — LoopX's durable bottom layer, natively implemented.
+//!
+//!   registry.json    — known goals (id, objective, cwd, status, authority)
+//!   <goal>/events.jsonl   — append-only event ledger (the canonical truth)
+//!   <goal>/runs.jsonl     — run history (spend ledger)
+//!   backups/<ts>/    — point-in-time snapshots (loopx backup / restore)
+//!
+//! Active state is a READ MODEL rebuilt by replaying the event ledger; the
+//! projection-gap check detects when the active-state Next Action drifts from
+//! the todo frontier (LoopX: state_projection_gap → self-repair). Appends are
+//! guarded by an advisory file lock so concurrent processes cannot interleave
+//! a line (LoopX: file_lock).
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{bail, Context, Result};
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
+
+use crate::state::{Goal, RunRecord, Todo};
+
+const REGISTRY_FILE: &str = "registry.json";
+const EVENTS_FILE: &str = "events.jsonl";
+const RUNS_FILE: &str = "runs.jsonl";
+const NEXT_ACTION_FILE: &str = "next_action.txt";
+const BACKUPS_DIR: &str = "backups";
+const SCHEMA_FILE: &str = "schema.json";
+
+// ── Event ledger ───────────────────────────────────────────────────────────
+
+/// Current event-store schema version (G-6). Bumped whenever the event
+/// surface changes shape; legacy ledgers carry `future_loop_event_store_v0` and
+/// are migrated through [`crate::migration::migration_steps`] on read.
+pub const EVENT_STORE_SCHEMA_VERSION: &str = "future_loop_event_store_v1";
+/// The pre-G-3 ledger schema (plain `{"kind": ...}` lines, no event ids).
+pub const LEGACY_EVENT_STORE_SCHEMA_VERSION: &str = "future_loop_event_store_v0";
+/// Producer tag for ordinary kernel appends (reference default producer).
+pub const DEFAULT_EVENT_PRODUCER: &str = "loopx.event_sourced_state";
+
+/// The persisted ledger line (G-3): the event plus its content-derived id
+/// and optional provenance. `#[serde(flatten)]` keeps the on-disk shape
+/// `{"event_id": "...", "kind": "...", ...}` — the `kind` tag merges into
+/// the same object, so legacy readers that ignore unknown fields still parse
+/// new lines and new readers default `event_id` for legacy lines.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredEvent {
+    #[serde(default)]
+    pub event_id: String,
+    #[serde(default)]
+    pub producer: Option<String>,
+    /// G-3 backfill provenance (source file / section / line).
+    #[serde(default)]
+    pub source_ref: Option<String>,
+    #[serde(default)]
+    pub source_section: Option<String>,
+    #[serde(default)]
+    pub source_line: Option<u64>,
+    /// G-4 privacy level of the event payload (`public_safe` /
+    /// `local_private` / `private_pointer`).
+    #[serde(default)]
+    pub privacy: Option<String>,
+    #[serde(flatten)]
+    pub event: Event,
+}
+
+impl StoredEvent {
+    /// The event id, falling back to a content-derived id for legacy lines
+    /// that predate G-3 (stable across replays once migrated).
+    pub fn effective_id(&self) -> String {
+        if self.event_id.is_empty() {
+            derive_event_id(&self.event)
+        } else {
+            self.event_id.clone()
+        }
+    }
+}
+
+/// FNV-1a 64-bit content digest (deterministic across processes and Rust
+/// versions — the identity anchor for event ids). 16 hex chars.
+pub fn content_digest(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Content-derived event id (G-3): `evt-<digest16>` over the canonical event
+/// JSON — identical events produce identical ids (idempotency), differing
+/// content under the same id is a conflict (StateEventConflictError).
+pub fn derive_event_id(event: &Event) -> String {
+    let json = serde_json::to_string(event).unwrap_or_default();
+    format!("evt-{}", &content_digest(json.as_bytes())[..16])
+}
+
+/// Same derivation over a raw ledger line (used by the migration path where
+/// the line has not been parsed into a typed [`Event`] yet).
+pub fn derive_event_id_from_value(value: &serde_json::Value) -> String {
+    let json = serde_json::to_string(value).unwrap_or_default();
+    format!("evt-{}", &content_digest(json.as_bytes())[..16])
+}
+
+/// Strip the envelope fields so fingerprints compare event CONTENT only
+/// (idempotent re-append must ignore producer/source/privacy differences).
+fn event_part(value: &serde_json::Value) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    if let Some(obj) = value.as_object() {
+        for (key, value) in obj {
+            if !matches!(
+                key.as_str(),
+                "event_id"
+                    | "producer"
+                    | "source_ref"
+                    | "source_section"
+                    | "source_line"
+                    | "privacy"
+            ) {
+                map.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
+/// Fingerprint of an event line (event content only).
+pub fn event_fingerprint(value: &serde_json::Value) -> String {
+    serde_json::to_string(&event_part(value)).unwrap_or_default()
+}
+
+// Variants carry whole todos/run records; the ledger is append-only JSONL so
+// the size difference is irrelevant at runtime.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Event {
+    GoalStarted {
+        goal_id: String,
+        ts: u64,
+    },
+    TodoAdded {
+        goal_id: String,
+        todo: Todo,
+        ts: u64,
+    },
+    TodoCompleted {
+        goal_id: String,
+        todo_id: String,
+        no_follow_up: bool,
+        successor_ids: Vec<String>,
+        evidence: Option<String>,
+        ts: u64,
+    },
+    TodoSuperseded {
+        goal_id: String,
+        todo_id: String,
+        ts: u64,
+    },
+    /// Field-level todo update (the reference: `todo update` — text / status /
+    /// evidence / note / priority / resume-when). Done must go through
+    /// `todo complete` (closure-intent contract).
+    TodoUpdated {
+        goal_id: String,
+        todo_id: String,
+        text: Option<String>,
+        status: Option<String>,
+        evidence: Option<String>,
+        note: Option<String>,
+        priority: Option<String>,
+        resume_when: Option<String>,
+        ts: u64,
+    },
+    /// Stop automation while retaining state (the reference: goal cancel).
+    GoalCancelled {
+        goal_id: String,
+        reason: String,
+        ts: u64,
+    },
+    GateResolved {
+        goal_id: String,
+        todo_id: String,
+        decision: String,
+        note: Option<String>,
+        ts: u64,
+    },
+    GapSatisfied {
+        goal_id: String,
+        gap_id: String,
+        ts: u64,
+    },
+    RunRecorded {
+        goal_id: String,
+        record: RunRecord,
+        ts: u64,
+    },
+    /// Claim/lease: an agent owns this slice until lease_expires_at.
+    TodoClaimed {
+        goal_id: String,
+        todo_id: String,
+        agent_id: String,
+        lease_expires_at: u64,
+        ts: u64,
+    },
+    /// Register an agent peer for the goal (LoopX: coordination.registered_agents).
+    AgentRegistered {
+        goal_id: String,
+        agent_id: String,
+        ts: u64,
+    },
+    /// Onboard an agent with declared capabilities (LoopX: agent_profiles).
+    AgentOnboarded {
+        goal_id: String,
+        agent_id: String,
+        capabilities: Vec<String>,
+        ts: u64,
+    },
+    /// Replan acknowledgment with frontier-delta kinds (vision patch /
+    /// no-follow-up / successor…). Clearing a replan obligation requires a
+    /// frontier-changing delta (LoopX: replan ACK contract).
+    ReplanAcked {
+        goal_id: String,
+        delta_kinds: Vec<String>,
+        ts: u64,
+    },
+    /// Execution profile update (outcome floor threshold, …).
+    ProfileSet {
+        goal_id: String,
+        outcome_floor_streak_threshold: u32,
+        ts: u64,
+    },
+    /// Authority declaration update (write scope + approval gates).
+    AuthoritySet {
+        goal_id: String,
+        write_scope: Vec<String>,
+        requires_approval: Vec<String>,
+        ts: u64,
+    },
+    /// Archive a todo (LoopX: archive_state "archived").
+    TodoArchived {
+        goal_id: String,
+        todo_id: String,
+        ts: u64,
+    },
+    /// G-8: a monitor poll was executed (decision-path writeback). `result`
+    /// is `changed` (material transition — monitor closes) or `no_change`
+    /// (unchanged — consecutive counter advances, no spend); `no_change_count`
+    /// is the resulting counter so replay is exact and idempotent.
+    MonitorPolled {
+        goal_id: String,
+        todo_id: String,
+        result: String,
+        no_change_count: u32,
+        ts: u64,
+    },
+    /// G-3: a quota slot was spent (reference QUOTA_SPENT). Recorded alongside
+    /// the run ledger; `source` mirrors the slot-accounting spend source
+    /// (`run` / `agent` / `heartbeat`) and `slots` the count spent (1 per
+    /// bounded turn; monitor no-change polls never spend).
+    QuotaSpent {
+        goal_id: String,
+        run_id: String,
+        todo_id: String,
+        source: String,
+        slots: u32,
+        ts: u64,
+    },
+    /// G-3: evidence attached to a todo independently of completion (LoopX
+    /// EVIDENCE_ATTACHED).
+    EvidenceAttached {
+        goal_id: String,
+        todo_id: String,
+        evidence: String,
+        ts: u64,
+    },
+    /// G-13: lease renewed by the current owner (extends `lease_expires_at`).
+    TodoRenewed {
+        goal_id: String,
+        todo_id: String,
+        agent_id: String,
+        lease_expires_at: u64,
+        ts: u64,
+    },
+    /// G-13: lease released early by its owner (claim cleared).
+    TodoReleased {
+        goal_id: String,
+        todo_id: String,
+        agent_id: String,
+        ts: u64,
+    },
+    /// G-13: lease expired without renewal (claim cleared; a steal re-claims
+    /// the slice via a fresh TodoClaimed).
+    TodoExpired {
+        goal_id: String,
+        todo_id: String,
+        ts: u64,
+    },
+    /// G-16: a supervisor proposed a decision for a target agent (LoopX
+    /// SUPERVISOR_PROPOSED). Projection-only — supervisor state is read from
+    /// the event log, not folded into goal state.
+    SupervisorProposed {
+        goal_id: String,
+        supervisor_agent_id: String,
+        decision_id: String,
+        decision_kind: String,
+        target_agent_id: String,
+        required_host_capabilities: Vec<String>,
+        decision: String,
+        ts: u64,
+    },
+    /// G-16: a host execution receipt recorded against a supervisor proposal
+    /// (reference SUPERVISOR_RECEIPT_RECORDED). An `executed` receipt requires an
+    /// authority ref (validated by the supervisor domain before append).
+    SupervisorReceiptRecorded {
+        goal_id: String,
+        decision_id: String,
+        receipt_id: String,
+        adapter_id: String,
+        outcome: String,
+        authority_ref: Option<String>,
+        rollback_ref: Option<String>,
+        ts: u64,
+    },
+}
+
+impl Event {
+    fn goal_id(&self) -> &str {
+        match self {
+            Event::GoalStarted { goal_id, .. }
+            | Event::TodoAdded { goal_id, .. }
+            | Event::TodoCompleted { goal_id, .. }
+            | Event::TodoSuperseded { goal_id, .. }
+            | Event::TodoUpdated { goal_id, .. }
+            | Event::GoalCancelled { goal_id, .. }
+            | Event::GateResolved { goal_id, .. }
+            | Event::GapSatisfied { goal_id, .. }
+            | Event::RunRecorded { goal_id, .. }
+            | Event::TodoClaimed { goal_id, .. }
+            | Event::AgentRegistered { goal_id, .. }
+            | Event::AgentOnboarded { goal_id, .. }
+            | Event::ReplanAcked { goal_id, .. }
+            | Event::ProfileSet { goal_id, .. }
+            | Event::AuthoritySet { goal_id, .. }
+            | Event::TodoArchived { goal_id, .. }
+            | Event::MonitorPolled { goal_id, .. }
+            | Event::QuotaSpent { goal_id, .. }
+            | Event::EvidenceAttached { goal_id, .. }
+            | Event::TodoRenewed { goal_id, .. }
+            | Event::TodoReleased { goal_id, .. }
+            | Event::TodoExpired { goal_id, .. }
+            | Event::SupervisorProposed { goal_id, .. }
+            | Event::SupervisorReceiptRecorded { goal_id, .. } => goal_id,
+        }
+    }
+}
+
+// ── Store ──────────────────────────────────────────────────────────────────
+
+pub struct Store {
+    root: PathBuf,
+    /// In-memory registry: goal_id → (objective, cwd).
+    registry: Vec<RegistryEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryEntry {
+    pub goal_id: String,
+    pub objective: String,
+    pub cwd: String,
+    pub status: String,
+    pub created_at: u64,
+}
+
+impl Store {
+    pub fn open(root: &str) -> Result<Self> {
+        let root = PathBuf::from(root);
+        fs::create_dir_all(&root)?;
+        let registry = load_registry(&root)?;
+        Ok(Self { root, registry })
+    }
+
+    pub fn goal_dir(&self, goal_id: &str) -> PathBuf {
+        self.root.join(format!("goals/{goal_id}"))
+    }
+
+    fn ensure_goal_dir(&self, goal_id: &str) -> Result<PathBuf> {
+        let dir = self.goal_dir(goal_id);
+        fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    // ── Registry ────────────────────────────────────────────────────────
+
+    pub fn registered(&self, goal_id: &str) -> bool {
+        self.registry.iter().any(|g| g.goal_id == goal_id)
+    }
+
+    pub fn register(&mut self, goal: &Goal) -> Result<()> {
+        if !self.registered(&goal.goal_id) {
+            self.registry.push(RegistryEntry {
+                goal_id: goal.goal_id.clone(),
+                objective: goal.objective.clone(),
+                cwd: goal.cwd.clone(),
+                status: "active".to_string(),
+                created_at: goal.created_at,
+            });
+            self.save_registry()?;
+        }
+        Ok(())
+    }
+
+    fn save_registry(&self) -> Result<()> {
+        let path = self.root.join(REGISTRY_FILE);
+        let json = serde_json::to_string_pretty(&self.registry)?;
+        fs::write(&path, json).context("write registry")?;
+        Ok(())
+    }
+
+    pub fn root_path(&self) -> String {
+        self.root.to_string_lossy().into_owned()
+    }
+
+    pub fn registry(&self) -> &[RegistryEntry] {
+        &self.registry
+    }
+
+    // ── Event ledger (canonical truth) ──────────────────────────────────
+
+    /// Append an event with a content-derived id (G-3). Returns the event id.
+    /// Idempotent: appending an event whose content already exists under the
+    /// same id is a no-op (reference AppendOnlyStateEventStore.append); appending
+    /// the same id with DIFFERENT content fails closed with a conflict.
+    pub fn append(&mut self, event: Event) -> Result<String> {
+        self.append_with_meta(event, None, None, None, None, None, None)
+    }
+
+    /// Append an event with optional explicit id + provenance (G-3 backfill
+    /// and G-4 privacy stamps). `event_id` is content-derived when None.
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_with_meta(
+        &mut self,
+        event: Event,
+        event_id: Option<String>,
+        producer: Option<String>,
+        source_ref: Option<String>,
+        source_section: Option<String>,
+        source_line: Option<u64>,
+        privacy: Option<String>,
+    ) -> Result<String> {
+        let goal_id = event.goal_id().to_string();
+        if !self.registered(&goal_id) {
+            bail!("goal `{goal_id}` is not registered — register before appending events");
+        }
+        let dir = self.ensure_goal_dir(&goal_id)?;
+        let event_id = event_id.unwrap_or_else(|| derive_event_id(&event));
+        let stored = StoredEvent {
+            event_id: event_id.clone(),
+            producer,
+            source_ref,
+            source_section,
+            source_line,
+            privacy,
+            event,
+        };
+        let line = format!("{}\n", serde_json::to_string(&stored)?);
+        append_event_locked(dir.join(EVENTS_FILE), &line, &event_id).context("append event")?;
+        self.ensure_schema_stamp(&goal_id)?;
+        Ok(event_id)
+    }
+
+    /// Read the raw ledger lines (no migration transforms) — for verification.
+    pub fn raw_ledger_lines(&self, goal_id: &str) -> Result<Vec<String>> {
+        let path = self.goal_dir(goal_id).join(EVENTS_FILE);
+        if !path.exists() {
+            return Ok(vec![]);
+        }
+        Ok(fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.to_string())
+            .collect())
+    }
+
+    /// The parsed ledger (G-3/G-6 read path): legacy lines are migrated
+    /// in-memory to the current schema and get a content-derived id.
+    pub fn events(&self, goal_id: &str) -> Result<Vec<StoredEvent>> {
+        let dir = self.goal_dir(goal_id);
+        let from = self
+            .goal_schema_version(goal_id)
+            .unwrap_or_else(|| LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string());
+        read_ledger(&dir, &from)
+    }
+
+    /// Verify the ledger for id/conflict integrity (G-3): duplicate event
+    /// ids with identical content are counted (idempotent duplicates); a
+    /// duplicate id with DIFFERENT content is a conflict (fail closed).
+    pub fn verify(&self, goal_id: &str) -> Result<LedgerReport> {
+        let dir = self.goal_dir(goal_id);
+        let schema = self
+            .goal_schema_version(goal_id)
+            .unwrap_or_else(|| LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string());
+        verify_ledger(&dir, goal_id, &schema)
+    }
+
+    // ── Schema stamp (G-6) ───────────────────────────────────────────────
+
+    pub fn goal_schema_version(&self, goal_id: &str) -> Option<String> {
+        let path = self.goal_dir(goal_id).join(SCHEMA_FILE);
+        let text = fs::read_to_string(path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let raw = value
+            .get("event_store_schema_version")
+            .and_then(|v| v.as_str())?;
+        // Normalize the pre-rename schema tokens (legacy goals stamped with
+        // `loopx_event_store_v0/v1` load transparently).
+        Some(match raw {
+            "loopx_event_store_v1" => EVENT_STORE_SCHEMA_VERSION.to_string(),
+            "loopx_event_store_v0" => LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string(),
+            other => other.to_string(),
+        })
+    }
+
+    fn ensure_schema_stamp(&self, goal_id: &str) -> Result<()> {
+        let dir = self.ensure_goal_dir(goal_id)?;
+        let path = dir.join(SCHEMA_FILE);
+        if path.exists() {
+            return Ok(());
+        }
+        let payload = serde_json::json!({
+            "event_store_schema_version": EVENT_STORE_SCHEMA_VERSION,
+            "created_at": crate::state::now_epoch(),
+        });
+        fs::write(path, serde_json::to_string_pretty(&payload)? + "\n")
+            .context("write schema stamp")?;
+        Ok(())
+    }
+
+    /// Rebuild active goal state by replaying the event ledger (LoopX:
+    /// canonical event/state → active state is a reconstructible read model).
+    pub fn replay(&self, goal_id: &str) -> Result<Option<Goal>> {
+        let Some(entry) = self.registry.iter().find(|g| g.goal_id == goal_id) else {
+            return Ok(None);
+        };
+        let path = self.goal_dir(goal_id).join(EVENTS_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let mut goal = Goal::new(goal_id, &entry.objective, &entry.cwd);
+        let from = self
+            .goal_schema_version(goal_id)
+            .unwrap_or_else(|| LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string());
+        let ledger = read_ledger(&self.goal_dir(goal_id), &from).context("read ledger")?;
+        for stored in ledger {
+            apply(&mut goal, stored.event);
+        }
+        // Restore Next Action (active-state field kept alongside the ledger).
+        let na_path = self.goal_dir(goal_id).join(NEXT_ACTION_FILE);
+        if na_path.exists() {
+            goal.next_action = Some(
+                fs::read_to_string(&na_path)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
+            );
+        }
+        // Restore run history.
+        let runs_path = self.goal_dir(goal_id).join(RUNS_FILE);
+        if runs_path.exists() {
+            let text = fs::read_to_string(&runs_path).unwrap_or_default();
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                if let Ok(r) = serde_json::from_str::<RunRecord>(line) {
+                    goal.history.push(r);
+                }
+            }
+        }
+        Ok(Some(goal))
+    }
+
+    // ── Active-state projections ────────────────────────────────────────
+
+    pub fn set_next_action(&self, goal_id: &str, next_action: &str) -> Result<()> {
+        let dir = self.ensure_goal_dir(goal_id)?;
+        fs::write(dir.join(NEXT_ACTION_FILE), next_action).context("write next_action")?;
+        Ok(())
+    }
+
+    pub fn append_run(&self, goal_id: &str, record: &RunRecord) -> Result<()> {
+        let dir = self.ensure_goal_dir(goal_id)?;
+        let mut line = serde_json::to_string(record)?;
+        line.push('\n');
+        append_locked(dir.join(RUNS_FILE), line.as_bytes()).context("append run")?;
+        Ok(())
+    }
+
+    // ── Backup / restore (LoopX: state_backup / state_migration SOP) ────
+
+    /// Snapshot one goal's state files into backups/<ts>/ (events + runs +
+    /// next_action + schema stamp + scheduler-state). Point-in-time restore
+    /// uses the same files. G-10: the scheduler state directory is included
+    /// so a restore does not silently reset progression (P1 risk:
+    /// replay/backup interaction). G-6: the schema stamp travels with the
+    /// backup so a restore rolls the schema version back in time with it.
+    pub fn backup_goal(&self, goal_id: &str) -> Result<String> {
+        let dir = self.goal_dir(goal_id);
+        if !dir.join(EVENTS_FILE).exists() {
+            bail!("goal {goal_id} has no state to back up");
+        }
+        let ts = crate::state::now_epoch();
+        let dest = self.root.join(BACKUPS_DIR).join(format!("{ts}-{goal_id}"));
+        fs::create_dir_all(&dest)?;
+        for file in [EVENTS_FILE, RUNS_FILE, NEXT_ACTION_FILE, SCHEMA_FILE] {
+            let src = dir.join(file);
+            if src.exists() {
+                fs::copy(&src, dest.join(file))?;
+            }
+        }
+        copy_dir_if_present(&dir.join("scheduler-state"), &dest.join("scheduler-state"))?;
+        // Registry snapshot (goal entry).
+        if let Some(entry) = self.registry.iter().find(|g| g.goal_id == goal_id) {
+            let json = serde_json::to_string_pretty(entry)?;
+            fs::write(dest.join("registry-entry.json"), json)?;
+        }
+        Ok(dest.to_string_lossy().into_owned())
+    }
+
+    /// Restore a goal from a backup directory (overwrites current state files).
+    pub fn restore_goal(&self, goal_id: &str, backup_dir: &str) -> Result<()> {
+        let src = PathBuf::from(backup_dir);
+        if !src.join(EVENTS_FILE).exists() {
+            bail!("backup at {backup_dir} has no events.jsonl");
+        }
+        let dest = self.ensure_goal_dir(goal_id)?;
+        for file in [EVENTS_FILE, RUNS_FILE, NEXT_ACTION_FILE, SCHEMA_FILE] {
+            let s = src.join(file);
+            if s.exists() {
+                fs::copy(&s, dest.join(file))?;
+            }
+        }
+        copy_dir_if_present(&src.join("scheduler-state"), &dest.join("scheduler-state"))?;
+        Ok(())
+    }
+
+    /// Remove a goal entirely: registry entry + per-goal state directory.
+    /// Irreversible — callers must gate with `--force`.
+    pub fn delete_goal(&mut self, goal_id: &str) -> Result<()> {
+        let before = self.registry.len();
+        self.registry.retain(|g| g.goal_id != goal_id);
+        if self.registry.len() == before {
+            bail!("goal `{goal_id}` not found in registry");
+        }
+        self.save_registry()?;
+        let dir = self.goal_dir(goal_id);
+        if dir.exists() {
+            fs::remove_dir_all(&dir)?;
+        }
+        Ok(())
+    }
+
+    pub fn backups(&self, goal_id: &str) -> Vec<String> {
+        let dir = self.root.join(BACKUPS_DIR);
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return vec![];
+        };
+        entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .ends_with(&format!("-{goal_id}"))
+            })
+            .map(|e| e.path().to_string_lossy().into_owned())
+            .collect()
+    }
+}
+
+/// Append under an advisory lock so concurrent processes cannot interleave
+/// a line in the middle of an event/run (LoopX: file_lock).
+fn append_locked(path: PathBuf, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    file.lock_exclusive()?;
+    let result = {
+        let mut f = &file;
+        f.write_all(bytes)
+    };
+    let _ = FileExt::unlock(&file);
+    result
+}
+
+/// Append one event line under the advisory lock with G-3 idempotency +
+/// conflict detection (reference `AppendOnlyStateEventStore.append` →
+/// `StateEventConflictError`): the same event id with identical content is
+/// skipped (idempotent replay/backfill re-run); the same id with different
+/// content fails closed.
+fn append_event_locked(path: PathBuf, line: &str, event_id: &str) -> Result<()> {
+    use std::io::Write;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(&path)?;
+    file.lock_exclusive()?;
+    let result = (|| -> Result<()> {
+        let existing = fs::read_to_string(&path).unwrap_or_default();
+        let new_value: serde_json::Value = serde_json::from_str(line).context("serialize event")?;
+        let new_fingerprint = event_fingerprint(&new_value);
+        for existing_line in existing.lines().filter(|l| !l.trim().is_empty()) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(existing_line) else {
+                continue;
+            };
+            let existing_id = value.get("event_id").and_then(|v| v.as_str()).unwrap_or("");
+            if existing_id != event_id {
+                continue;
+            }
+            if event_fingerprint(&value) == new_fingerprint {
+                // Idempotent re-append (same event content) — nothing to do.
+                return Ok(());
+            }
+            bail!("conflicting event_id `{event_id}` — same id, different content (StateEventConflictError)");
+        }
+        let mut f = &file;
+        f.write_all(line.as_bytes())?;
+        Ok(())
+    })();
+    let _ = FileExt::unlock(&file);
+    result
+}
+
+/// Read + parse the ledger, migrating legacy lines in-memory to the current
+/// schema (G-6 read path) and backfilling content-derived ids for lines that
+/// predate G-3. Identical duplicate ids are collapsed to the first occurrence
+/// (idempotent dedupe); conflicting duplicates fail closed.
+fn read_ledger(dir: &Path, from_schema: &str) -> Result<Vec<StoredEvent>> {
+    let path = dir.join(EVENTS_FILE);
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut out: Vec<StoredEvent> = vec![];
+    for (line_number, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(line).context(format!("parse event line {}", line_number + 1))?;
+        crate::migration::migrate_event_line(&mut value, from_schema, EVENT_STORE_SCHEMA_VERSION)
+            .context(format!("migrate event line {}", line_number + 1))?;
+        let stored: StoredEvent = serde_json::from_value(value)
+            .context(format!("parse event line {}", line_number + 1))?;
+        let id = stored.effective_id();
+        let fingerprint = event_fingerprint(
+            &serde_json::to_value(&stored.event).unwrap_or(serde_json::Value::Null),
+        );
+        if let Some(prior) = seen.get(&id) {
+            if prior != &fingerprint {
+                bail!(
+                    "conflicting event_id `{id}` at line {} (StateEventConflictError)",
+                    line_number + 1
+                );
+            }
+            continue; // identical duplicate — collapse
+        }
+        seen.insert(id, fingerprint);
+        out.push(stored);
+    }
+    Ok(out)
+}
+
+/// Ledger integrity report (G-3 `store verify`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LedgerReport {
+    pub goal_id: String,
+    pub schema_version: String,
+    pub total_events: usize,
+    pub unique_events: usize,
+    pub idempotent_duplicates: usize,
+    pub legacy_lines_without_id: usize,
+    pub conflicts: Vec<String>,
+    pub ok: bool,
+}
+
+/// Scan the ledger for duplicate ids / content conflicts (no migrations
+/// applied — raw lines).
+pub fn verify_ledger(dir: &Path, goal_id: &str, schema: &str) -> Result<LedgerReport> {
+    let path = dir.join(EVENTS_FILE);
+    if !path.exists() {
+        return Ok(LedgerReport {
+            goal_id: goal_id.to_string(),
+            schema_version: schema.to_string(),
+            total_events: 0,
+            unique_events: 0,
+            idempotent_duplicates: 0,
+            legacy_lines_without_id: 0,
+            conflicts: vec![],
+            ok: true,
+        });
+    }
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    let mut by_id: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut idempotent_duplicates = 0usize;
+    let mut legacy_lines_without_id = 0usize;
+    let mut conflicts: Vec<String> = vec![];
+    let mut total = 0usize;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        total += 1;
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            conflicts.push("unparsable line".to_string());
+            continue;
+        };
+        let raw_id = value
+            .get("event_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let id = if raw_id.is_empty() {
+            legacy_lines_without_id += 1;
+            derive_event_id_from_value(&value)
+        } else {
+            raw_id
+        };
+        let fingerprint = event_fingerprint(&value);
+        match by_id.get(&id) {
+            Some(prior) if prior == &fingerprint => idempotent_duplicates += 1,
+            Some(_) => {
+                if !conflicts.contains(&id) {
+                    conflicts.push(id.clone());
+                }
+            }
+            None => {
+                by_id.insert(id, fingerprint);
+            }
+        }
+    }
+    let ok = conflicts.is_empty();
+    Ok(LedgerReport {
+        goal_id: goal_id.to_string(),
+        schema_version: schema.to_string(),
+        total_events: total,
+        unique_events: by_id.len(),
+        idempotent_duplicates,
+        legacy_lines_without_id,
+        conflicts,
+        ok,
+    })
+}
+
+fn load_registry(root: &Path) -> Result<Vec<RegistryEntry>> {
+    let path = root.join(REGISTRY_FILE);
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let text = fs::read_to_string(&path)?;
+    // Dual format: the native array, or the reference-compatible map
+    // {"goals":[...]} written by earlier productized builds (fields id/repo
+    // map onto goal_id/cwd).
+    let v: serde_json::Value = serde_json::from_str(&text).context("parse registry")?;
+    let items: Vec<serde_json::Value> = match &v {
+        serde_json::Value::Array(a) => a.clone(),
+        serde_json::Value::Object(m) => m
+            .get("goals")
+            .and_then(|g| g.as_array())
+            .cloned()
+            .unwrap_or_default(),
+        _ => bail!("registry is neither an array nor a {{goals:[...]}} object"),
+    };
+    items
+        .into_iter()
+        .map(|g| {
+            let obj = g
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("registry entry is not an object"))?;
+            let str_of = |k: &str, alt: &str| -> String {
+                obj.get(k)
+                    .or_else(|| obj.get(alt))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            Ok(RegistryEntry {
+                goal_id: str_of("goal_id", "id"),
+                objective: str_of("objective", "objective"),
+                cwd: str_of("cwd", "repo"),
+                status: str_of("status", "status"),
+                created_at: obj.get("created_at").and_then(|x| x.as_u64()).unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
+/// Copy a directory tree when present (used for the scheduler-state dir in
+/// backup/restore — G-10).
+fn copy_dir_if_present(src: &Path, dest: &Path) -> Result<()> {
+    if !src.is_dir() {
+        return Ok(());
+    }
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_if_present(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+fn apply(goal: &mut Goal, event: Event) {
+    match event {
+        Event::GoalStarted { .. } => {}
+        Event::TodoAdded { todo, .. } => {
+            let mut t = todo;
+            // Assign the goal-relative index on replay too (identity/order).
+            if t.index == 0 {
+                goal.next_index += 1;
+                t.index = goal.next_index;
+            }
+            goal.todos.push(t);
+        }
+        Event::TodoCompleted {
+            todo_id,
+            no_follow_up,
+            successor_ids,
+            evidence,
+            ..
+        } => {
+            if let Some(t) = goal.todo_mut(&todo_id) {
+                t.complete(no_follow_up, successor_ids);
+                if let Some(e) = evidence {
+                    t.evidence = Some(e);
+                }
+            }
+        }
+        Event::TodoSuperseded { todo_id, .. } => goal.supersede(&todo_id),
+        Event::TodoUpdated {
+            todo_id,
+            text,
+            status,
+            evidence,
+            note,
+            priority,
+            resume_when,
+            ts,
+            ..
+        } => {
+            if let Some(t) = goal.todo_mut(&todo_id) {
+                if let Some(x) = text {
+                    t.text = x;
+                }
+                if let Some(x) = evidence {
+                    t.evidence = Some(x);
+                }
+                if let Some(x) = note {
+                    t.note = Some(x);
+                }
+                if let Some(p) = priority.as_deref() {
+                    t.priority = match p.to_uppercase().as_str() {
+                        "P0" => crate::state::Priority::P0,
+                        "P2" => crate::state::Priority::P2,
+                        _ => crate::state::Priority::P1,
+                    };
+                }
+                if let Some(rw) = resume_when {
+                    t.resume_when_text = Some(rw.clone());
+                    t.status = crate::state::TodoStatus::Deferred;
+                }
+                if let Some(st) = status.as_deref() {
+                    match st {
+                        "open" => t.status = crate::state::TodoStatus::Open,
+                        "blocked" => t.status = crate::state::TodoStatus::Blocked,
+                        "deferred" => t.status = crate::state::TodoStatus::Deferred,
+                        "superseded" => t.status = crate::state::TodoStatus::Superseded,
+                        _ => {}
+                    }
+                }
+                t.updated_at = ts;
+            }
+        }
+        Event::GoalCancelled { .. } => goal.status = "cancelled".to_string(),
+        Event::GateResolved {
+            goal_id: _,
+            todo_id,
+            decision,
+            note,
+            ts,
+        } => {
+            if let Some(t) = goal.todo_mut(&todo_id) {
+                // Gate resolution: done WITHOUT a no-follow-up marker (LoopX
+                // renders gate resolution without no_followup=).
+                t.status = crate::state::TodoStatus::Done;
+                t.decision = Some(decision);
+                t.completed_at = Some(ts);
+                t.updated_at = ts;
+                if let Some(n) = note {
+                    t.note = Some(n);
+                }
+            }
+        }
+        Event::GapSatisfied { gap_id, .. } => goal.satisfy_gap(&gap_id),
+        Event::RunRecorded { .. } => {} // run history is read from runs.jsonl
+        Event::TodoClaimed {
+            todo_id,
+            agent_id,
+            lease_expires_at,
+            ..
+        } => {
+            if let Some(t) = goal.todo_mut(&todo_id) {
+                t.claimed_by = Some(agent_id);
+                t.lease_expires_at = Some(lease_expires_at);
+            }
+        }
+        Event::AgentRegistered { agent_id, .. } => {
+            if !goal.registered_agents.iter().any(|a| a == &agent_id) {
+                goal.registered_agents.push(agent_id.clone());
+            }
+            goal.agent_profiles.retain(|p| p.id != agent_id);
+            goal.agent_profiles.push(crate::state::AgentProfile {
+                id: agent_id,
+                capabilities: vec![],
+            });
+        }
+        Event::AgentOnboarded {
+            agent_id,
+            capabilities,
+            ..
+        } => {
+            if !goal.registered_agents.iter().any(|a| a == &agent_id) {
+                goal.registered_agents.push(agent_id.clone());
+            }
+            goal.agent_profiles.retain(|p| p.id != agent_id);
+            goal.agent_profiles.push(crate::state::AgentProfile {
+                id: agent_id,
+                capabilities,
+            });
+        }
+        Event::ReplanAcked {
+            delta_kinds, ts, ..
+        } => {
+            goal.replan_ack = Some(crate::state::ReplanAck {
+                recorded: true,
+                delta_kinds,
+                at: ts,
+            });
+        }
+        Event::ProfileSet {
+            outcome_floor_streak_threshold,
+            ..
+        } => {
+            goal.execution_profile.outcome_floor_streak_threshold = outcome_floor_streak_threshold;
+        }
+        Event::AuthoritySet {
+            write_scope,
+            requires_approval,
+            ..
+        } => {
+            goal.authority.write_scope = write_scope;
+            goal.authority.requires_approval = requires_approval;
+        }
+        Event::TodoArchived { todo_id, .. } => goal.archive_todo(&todo_id),
+        Event::MonitorPolled {
+            todo_id,
+            result,
+            no_change_count,
+            ts,
+            ..
+        } => {
+            // Mirror executor::writeback monitor handling exactly, using the
+            // poll timestamp so replay is deterministic (not now()-relative).
+            if let Some(m) = goal.todo_mut(&todo_id) {
+                if result == "changed" {
+                    m.consecutive_no_change = 0;
+                    m.status = crate::state::TodoStatus::Done;
+                } else {
+                    m.consecutive_no_change = no_change_count;
+                    let backoff = crate::decision::monitor::MONITOR_NO_CHANGE_BACKOFF_SECS;
+                    m.resume_when = Some(
+                        std::time::SystemTime::UNIX_EPOCH
+                            + std::time::Duration::from_secs(ts + backoff),
+                    );
+                }
+                m.updated_at = ts;
+            }
+        }
+        Event::QuotaSpent { slots, .. } => {
+            goal.quota_spent_slots = goal.quota_spent_slots.saturating_add(slots);
+        }
+        Event::EvidenceAttached {
+            todo_id,
+            evidence,
+            ts,
+            ..
+        } => {
+            if let Some(t) = goal.todo_mut(&todo_id) {
+                t.evidence = Some(evidence);
+                t.updated_at = ts;
+            }
+        }
+        Event::TodoRenewed {
+            todo_id,
+            agent_id,
+            lease_expires_at,
+            ts,
+            ..
+        } => {
+            if let Some(t) = goal.todo_mut(&todo_id) {
+                if t.claimed_by.is_none() {
+                    t.claimed_by = Some(agent_id);
+                }
+                t.lease_expires_at = Some(lease_expires_at);
+                t.updated_at = ts;
+            }
+        }
+        Event::TodoReleased {
+            todo_id,
+            agent_id,
+            ts,
+            ..
+        } => {
+            if let Some(t) = goal.todo_mut(&todo_id) {
+                if t.claimed_by.as_deref() == Some(agent_id.as_str()) {
+                    t.claimed_by = None;
+                    t.lease_expires_at = None;
+                    t.updated_at = ts;
+                }
+            }
+        }
+        Event::TodoExpired { todo_id, ts, .. } => {
+            if let Some(t) = goal.todo_mut(&todo_id) {
+                if t.claimed_by.is_some() {
+                    t.claimed_by = None;
+                    t.lease_expires_at = None;
+                    t.updated_at = ts;
+                }
+            }
+        }
+        // G-16: supervisor events are projection-only (read from the event
+        // log by the supervisor domain; goal state is unchanged).
+        Event::SupervisorProposed { .. } | Event::SupervisorReceiptRecorded { .. } => {}
+    }
+}
+
+// ── Projection gap check ───────────────────────────────────────────────────
+
+/// reference `state_projection_gap_warning`: an executable Next Action with no
+/// open agent todo (or a user-wait Next Action with no open user gate) means
+/// the active-state projection drifted from the todo frontier. The kernel
+/// should emit a self-repair obligation until the projection is re-synced.
+pub fn projection_gap(goal: &Goal) -> Option<String> {
+    let next_action = goal
+        .next_action
+        .as_deref()
+        .filter(|na| !na.trim().is_empty())?;
+    if next_action.contains("complete; no further") {
+        return None;
+    }
+    let agent_open = goal.open_of(crate::state::TaskClass::Advancement).count();
+    let user_open = goal.open_gates().count();
+    if agent_open == 0 && !next_action.starts_with("[P1]") && !next_action.contains("waiting") {
+        return Some(format!(
+            "active-state Next Action `{next_action}` has no matching open agent todo"
+        ));
+    }
+    if user_open == 0 && next_action.to_lowercase().contains("decide") {
+        return Some(format!(
+            "active-state Next Action `{next_action}` waits on a decision with no open user gate"
+        ));
+    }
+    None
+}

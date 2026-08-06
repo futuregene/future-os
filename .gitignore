@@ -65,3 +65,9 @@ channel/
 # Profiling output (make profile-agent / profile-quick)
 /profile-results/
 /agent-profile.svg
+
+# loop control plane runtime state (never commit)
+.codex/
+.future/loop/
+gui/node_modules
+FUTURE.md
