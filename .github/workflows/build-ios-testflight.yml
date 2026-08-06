@@ -194,6 +194,11 @@ jobs:
             <key>uploadSymbols</key><true/>
             <key>compileBitcode</key><false/>
             <key>teamID</key><string>$DEVELOPMENT_TEAM</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>cn.futureos.mobile</key><string>$PROVISIONING_PROFILE</string>
+            </dict>
           </dict>
           </plist>
           PLIST
