@@ -12,6 +12,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
@@ -1200,7 +1201,11 @@ export function resolveProtoPath(): string {
       return candidate;
     }
   }
-  const tmpPath = path.join(os.tmpdir(), "future-proto-v0.4.0.proto");
+  // Standalone binary: materialise the embedded proto into a temp file whose
+  // name is derived from the content hash, so a binary whose embedded proto
+  // changed never reads a stale temp file left behind by an older build.
+  const hash = createHash("sha256").update(EMBEDDED_PROTO, "utf-8").digest("hex").slice(0, 16);
+  const tmpPath = path.join(os.tmpdir(), `future-proto-${hash}.proto`);
   if (!fs.existsSync(tmpPath)) {
     fs.writeFileSync(tmpPath, EMBEDDED_PROTO, "utf-8");
   }

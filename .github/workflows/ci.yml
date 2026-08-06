@@ -63,10 +63,15 @@ jobs:
               - 'proto/**'
               - 'agent/**'
               - 'channels/**'
+              - 'future-rpc/**'
             gui_tauri:
               - 'gui/src-tauri/**'
               - '.cargo/**'
               - 'rust-toolchain.toml'
+              # The GUI backend path-depends on future-rpc; changes there must
+              # revalidate the GUI backend too.
+              - 'future-rpc/**'
+              - 'proto/**'
             gui_frontend:
               - 'gui/**'
               - '!gui/src-tauri/**'

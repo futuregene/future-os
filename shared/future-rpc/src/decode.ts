@@ -31,6 +31,16 @@ function safeParse(text: string): unknown {
 }
 
 /**
+ * True when `data` carries a real JSON payload. proto-loader with
+ * `defaults: true` materializes an absent `data` string as `""`, so an empty
+ * string must be treated as "absent" — otherwise the typed `payload` fallback
+ * would never fire once the agent stops dual-writing.
+ */
+function hasData(data: unknown): boolean {
+  return typeof data === "string" ? data !== "" : data != null;
+}
+
+/**
  * Extract the typed oneof member from a wrapper message, if present.
  * proto-loader (oneofs:true) exposes the chosen member name on the oneof's
  * virtual property (`kind`) and the member value under that name.
@@ -55,7 +65,7 @@ function typedOneofMember(payload: unknown): unknown {
  */
 export function responseData(response: DecodableResponse): unknown {
   const data = response.data;
-  if (data != null) {
+  if (hasData(data)) {
     return typeof data === "string" ? safeParse(data) : data;
   }
   const typed = typedOneofMember(response.payload);
@@ -70,8 +80,8 @@ export function responseData(response: DecodableResponse): unknown {
  */
 export function streamEventData(event: DecodableEvent): Record<string, unknown> {
   let raw: unknown;
-  if (event.data != null) {
-    raw = typeof event.data === "string" ? (event.data === "" ? {} : safeParse(event.data)) : event.data;
+  if (hasData(event.data)) {
+    raw = typeof event.data === "string" ? safeParse(event.data) : event.data;
   } else {
     raw = typedOneofMember(event.payload) ?? {};
   }

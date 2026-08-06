@@ -16,13 +16,21 @@ describe("responseData", () => {
     expect(responseData({ data: "not json" })).toBe("not json");
   });
 
-  test("empty-string data stays empty (client parity)", () => {
+  test("empty-string data with no payload stays empty (client parity)", () => {
     expect(responseData({ data: "" })).toBe("");
   });
 
-  test("falls back to the typed oneof when data is absent", () => {
+  test("falls back to the typed oneof when data is undefined", () => {
     // proto-loader oneofs:true exposes the chosen member on `kind`.
     const resp = { payload: { kind: "getState", getState: { sessionId: "s1" } } };
+    expect(responseData(resp)).toEqual({ sessionId: "s1" });
+  });
+
+  test("typed fallback fires on empty-string data (real loader defaults:true)", () => {
+    // proto-loader with defaults:true materializes an ABSENT `data` as "" (not
+    // undefined). The typed fallback must fire on "" too, otherwise TUI/CLI
+    // would read "" once the agent stops dual-writing.
+    const resp = { data: "", payload: { kind: "getState", getState: { sessionId: "s1" } } };
     expect(responseData(resp)).toEqual({ sessionId: "s1" });
   });
 
@@ -37,13 +45,19 @@ describe("streamEventData", () => {
     expect(streamEventData(ev)).toEqual({ text: "hi" });
   });
 
-  test("empty data yields an empty fields object", () => {
+  test("empty data with no payload yields an empty fields object", () => {
     expect(streamEventData({ data: "" })).toEqual({});
   });
 
-  test("falls back to the typed oneof when data is absent", () => {
+  test("falls back to the typed oneof when data is undefined", () => {
     const ev = { payload: { kind: "toolEnd", toolEnd: { tool_id: "c1", text: "ok" } } };
     expect(streamEventData(ev)).toEqual({ tool_id: "c1", text: "ok" });
+  });
+
+  test("typed fallback fires on empty-string data (real loader defaults:true)", () => {
+    // proto-loader with defaults:true materializes an ABSENT `data` as "".
+    const ev = { data: "", payload: { kind: "textChunk", textChunk: { text: "hi" } } };
+    expect(streamEventData(ev)).toEqual({ text: "hi" });
   });
 
   test("non-object data yields an empty fields object", () => {
