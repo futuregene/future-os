@@ -1,6 +1,9 @@
 /**
- * Reads proto/future.proto and embeds its content into
- * both TUI and CLI grpc-client.ts files (the EMBEDDED_PROTO constants).
+ * Reads proto/future.proto and embeds its content into the CLI's
+ * grpc-client.ts (its EMBEDDED_PROTO constant). The TUI no longer embeds the
+ * proto — it loads it from the shared @future-os/rpc package, whose own
+ * EMBEDDED_PROTO is refreshed by shared/future-rpc/scripts/generate-proto.ts.
+ * Once the CLI also adopts @future-os/rpc this script is deleted.
  *
  * Run: bun run scripts/generate-proto.ts
  */
@@ -11,7 +14,6 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const protoPath = path.resolve(__dirname, "..", "..", "proto", "future.proto");
 const clientPaths = [
-  path.resolve(__dirname, "..", "src", "rpc", "grpc-client.ts"),
   path.resolve(__dirname, "..", "..", "cli", "src", "rpc", "grpc-client.ts"),
 ];
 
