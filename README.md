@@ -36,10 +36,28 @@ or from a native desktop window.
 
 ### Install
 
-Install FutureOS from the prebuilt installers or package scripts — no source
-build required. Step-by-step installation for every platform (macOS / Linux /
-Windows, desktop app, the `future-loop` control plane) is in the
-**[Build & Install](docs/build-and-install.md)** guide.
+One line, no source build required:
+
+**macOS** — installs the official signed app (arm64 / Intel auto-detected), then builds the `future-loop` control plane (CLI + skill) from source:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
+```
+
+**Windows** (PowerShell) — runs the signed installer silently:
+
+```powershell
+iex (irm https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.ps1)
+```
+
+**Linux** — no prebuilt binaries yet; the script bootstraps the toolchain (apt deps + Rust + Node 24 + Bun) and builds the terminal stack (agent, TUI, CLI, channels, loop) from source:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
+```
+
+Step-by-step installation for every platform (desktop app, toolchains, GUI
+packaging) is in the **[Build & Install](docs/build-and-install.md)** guide.
 
 ### Configure a model
 
