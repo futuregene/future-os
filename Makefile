@@ -408,7 +408,6 @@ generate-models:
 generate-proto:
 	cd future-rpc && REGENERATE_PROTO=1 cargo build
 	cd channels && REGENERATE_PROTO=1 cargo build
-	cd tui && npm run generate-proto
 	cd shared/future-rpc && bun run scripts/generate-proto.ts
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
@@ -467,7 +466,7 @@ help:
 	@echo "  profile-quick      CPU profile: run agent N secs (PROFILE_SECS=30)"
 	@echo "  profile-heap       Heap profile via dhat, write dhat report JSON"
 	@echo "  generate-models    Fetch model data, regenerate Rust catalog + wiki docs"
-	@echo "  generate-proto     Regenerate wire code: future-rpc (future.proto, all clients) + channels feishu_ws + TUI embedded proto"
+	@echo "  generate-proto     Regenerate wire code: future-rpc (future.proto, all TS clients) + channels feishu_ws"
 	@echo "  install            Build & install all components"
 	@echo "  install-nogui      Build & install terminal stack (skip GUI)"
 	@echo "  uninstall          Remove installed binaries from $(PREFIX)/"
