@@ -67,3 +67,64 @@ serialization (which drops a trailing `.0`) cannot diverge from serde_json.
   `tui/rust/src/components/markdown.rs`; not exercised by the corpus.
 - Live rendering that depends on timestamps / random ids (allocateImageId,
   newId) is excluded from the corpus — ids are supplied explicitly.
+
+---
+
+# tmux Screen Consistency (TS vs Rust, live app)
+
+End-to-end screen comparison of the **full interactive TUIs** running in real
+tmux panes against a deterministic mock gRPC agent. This is the P4 gate: the
+welcome banner, footer (incl. token/cache truthiness), status overlay, help
+card, model selector, sessions overlay, prompt reply and Ctrl+C exit parity.
+
+## Harness
+
+```bash
+make test-tui-tmux            # or: tui/rust/tests/tmux-diff.sh
+tui/rust/tests/tmux-diff.sh --record   # regenerate goldens from the TS pane
+tui/rust/tests/tmux-diff.sh --verbose  # show failing diffs
+tui/rust/tests/tmux-diff.sh --keep     # keep /tmp/future-tui-tmux-* artifacts
+```
+
+The harness starts **two mock agent instances** (`tui/rust/examples/mock_agent`,
+a deterministic `FutureAgent` gRPC server) on separate ports — one per TUI —
+then opens a tmux window (161x36 → two 80x36 panes) with the TS TUI
+(`bun run src/index.ts`) in pane 0 and the Rust TUI (`future-tui`) in pane 1,
+each connected to its own mock. Both panes are driven with identical
+keystrokes; at each scenario step both panes are captured with
+`capture-pane -p -e` and byte-compared:
+
+1. `welcome` — idle screen after connect
+2. `typed` — input line with text
+3. `reply` — submitted prompt + streamed markdown reply
+4. `status` — `/status` overlay (get_state + list_models)
+5. `help-overlay` / `help-closed` — `/help` card + Escape
+6. `model-overlay` / `model-closed` — `/model` selector + Escape
+7. `sessions-overlay` / `sessions-closed` — `/sessions` + Escape
+8. `ctrl-c` — both TUIs must exit with status 0
+
+**Golden tests**: `tui/rust/tests/golden/<scenario>.txt` records the TS pane's
+screen (the reference implementation). Verify mode checks BOTH panes against
+the golden byte-for-byte, so a divergence in the port OR a drift in the
+reference is caught. Regenerate with `--record` after an intentional change.
+
+## Determinism notes
+
+- Mock agent responses are fixed (session state, model list, sessions list,
+  streamed reply) so both TUIs render identical content.
+- The harness waits for the banner (`future-tui v`) on both panes before
+  capturing, and sleeps 1 s at each step for the 33 ms render scheduler.
+- Slash commands use a `submit_cmd` helper: type → wait for the 20 ms
+  autocomplete debounce → Enter (applies popup selection) → Enter (submits).
+  A single fast Enter would be consumed by the autocomplete popup.
+
+## Bugs the harness caught (all fixed)
+
+- **Footer token stats JS truthiness** — TS renders `↑/↓/R/W` token stats
+  only when the value is truthy (`if (this.data.tokensCacheR)`), so a zero
+  value is skipped. The port used `if let Some(n)` and rendered `R0 W0` for a
+  `Some(0)`; the P1 footer parity test had only used non-zero values.
+- **Status overlay session/model fallback** — TS renders
+  `**Session:** ${s.sessionId || "(none)"}` (either-or); the port always
+  appended ` or (none)`. Same for `**Model:**` with ` or (unknown)`.
+

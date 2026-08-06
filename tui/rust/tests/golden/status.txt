@@ -1,0 +1,36 @@
+[1m[38;5;151mfuture-tui[0m[38;5;245m v0.0.0-mock[39m
+
+[38;5;245mctrl+c interrupt · ctrl+p model · ctrl+t thinking · / commands[39m
+
+[38;5;245m[skills] future-web[39m
+
+[48;5;59m hello
+
+[49m Hello from the mock agent!
+
+ This is a [1mdeterministic[0m reply with [38;5;151mcode[39m and a [4m[38;5;117m]8;;https://example.com\link[0m]8;;\.
+
+ [38;5;245m**Model:** Mock Model (`mock-model`)[39m
+ [38;5;245m**Provider:** future[39m
+ [38;5;245m**Image support:** yes[39m
+ [38;5;245m**Context window:** 128K[39m
+ [38;5;245m**Session:** mock-session-1[39m
+ [38;5;245m**CWD:** /mock[39m
+ [38;5;245m**Thinking:** off[39m
+ [38;5;245m**Permission:** all
+[39m [38;5;245m**Queries:** 3[39m
+ [38;5;245m**Auto compaction:** off[39m
+ [38;5;245m**Streaming:** no[39m
+ [38;5;245m**Context:** 1234 / 128000 (1.0%)[39m
+ [38;5;245m**Tokens:** 100 in / 50 out[39m
+ [38;5;245m**Cost:** ¥0.0012[39m
+
+> [7m [0m
+[38;5;245m/mock  [38;5;252mmock-model[38;5;245m                                     [38;5;71m↑100 ↓50[38;5;245m  [38;5;71m¥0.001[38;5;245m  [38;5;71m1k[38;5;245m/128k[39m
+
+
+
+
+
+
+

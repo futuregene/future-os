@@ -1,0 +1,36 @@
+[1m[38;5;151mfuture-tui[0m[38;5;245m v0.0.0-mock[39m
+
+[38;5;245mctrl+c interrupt · ctrl+p model · ctrl+t thinking · / commands[39m
+
+[38;5;245m[skills] future-web[39m
+
+> hello[7m [0m
+[38;5;245m/mock  [38;5;252mmock-model[38;5;245m                                     [38;5;71m↑100 ↓50[38;5;245m  [38;5;71m¥0.001[38;5;245m  [38;5;71m1k[38;5;245m/128k[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

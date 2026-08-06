@@ -131,17 +131,27 @@ impl Component for Footer {
 
         // Token stats: ↑Xk ↓Xk
         let mut token_parts: Vec<String> = Vec::new();
+        // JS truthiness: `if (this.data.tokensIn)` — a 0 value is falsy and
+        // skipped. `if let Some` would render `↑0` for a Some(0).
         if let Some(n) = self.data.tokens_in {
-            token_parts.push(format!("↑{}", Self::fmt_tokens(n)));
+            if n > 0 {
+                token_parts.push(format!("↑{}", Self::fmt_tokens(n)));
+            }
         }
         if let Some(n) = self.data.tokens_out {
-            token_parts.push(format!("↓{}", Self::fmt_tokens(n)));
+            if n > 0 {
+                token_parts.push(format!("↓{}", Self::fmt_tokens(n)));
+            }
         }
         if let Some(n) = self.data.tokens_cache_r {
-            token_parts.push(format!("R{}", Self::fmt_tokens(n)));
+            if n > 0 {
+                token_parts.push(format!("R{}", Self::fmt_tokens(n)));
+            }
         }
         if let Some(n) = self.data.tokens_cache_w {
-            token_parts.push(format!("W{}", Self::fmt_tokens(n)));
+            if n > 0 {
+                token_parts.push(format!("W{}", Self::fmt_tokens(n)));
+            }
         }
         if !token_parts.is_empty() {
             right_parts.push(color_fg(TOKEN_FG, &token_parts.join(" ")));
@@ -507,5 +517,27 @@ mod tests {
         let text = strip_ansi_codes(&line);
         assert!(text.contains("R3k"));
         assert!(text.contains("W2k"));
+    }
+
+    /// JS truthiness: `if (this.data.tokensCacheR)` skips a zero value, so a
+    /// `Some(0)` must NOT render `R0`/`W0` (or `↑0`/`↓0`). The P4 tmux
+    /// harness caught the port rendering `R0 W0` where TS renders nothing.
+    #[test]
+    fn zero_token_stats_are_skipped_js_truthiness() {
+        let line = render_footer(
+            FooterData {
+                tokens_in: Some(0),
+                tokens_out: Some(0),
+                tokens_cache_r: Some(0),
+                tokens_cache_w: Some(0),
+                ..Default::default()
+            },
+            120,
+        );
+        let text = strip_ansi_codes(&line);
+        assert!(!text.contains("R0"));
+        assert!(!text.contains("W0"));
+        assert!(!text.contains("↑0"));
+        assert!(!text.contains("↓0"));
     }
 }

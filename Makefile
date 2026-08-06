@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills install-loop fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars
+.PHONY: version build build-agent build-tui build-tui-rust build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills install-loop fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -154,6 +154,9 @@ build-tui:
 	$(call npm-install-if-needed,tui)
 	cd tui && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
 
+build-tui-rust:
+	rustup run 1.97.0 cargo build -p tui-rust
+
 build-cli:
 	$(call npm-install-if-needed,cli)
 	cd cli && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future
@@ -200,7 +203,7 @@ build-mobile-ios:
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent test-channels test-cli test-tui test-tui-rust test-tui-diff test-gui test-gui-rust test-mobile
+test: test-agent test-channels test-cli test-tui test-tui-rust test-tui-diff test-tui-tmux test-gui test-gui-rust test-mobile
 
 test-agent:
 	cd agent && cargo test
@@ -221,6 +224,9 @@ test-tui-rust:
 
 test-tui-diff:
 	tui/rust/tests/diff-ts-rust.sh
+
+test-tui-tmux:
+	tui/rust/tests/tmux-diff.sh
 
 test-gui:
 	$(call npm-install-if-needed,gui)
@@ -454,6 +460,7 @@ help:
 	@echo "  build              Build agent, TUI, CLI, and GUI"
 	@echo "  build-agent        Build Rust agent"
 	@echo "  build-tui          Build standalone TUI binary"
+	@echo "  build-tui-rust     Build the Rust TUI port (future-tui + examples)"
 	@echo "  build-cli          Build TypeScript CLI"
 	@echo "  build-gui          Build React/Tauri GUI frontend"
 	@echo "  build-channels      Build channel bridge"
@@ -463,6 +470,7 @@ help:
 	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
 	@echo "  test-tui-rust      Run the Rust TUI port unit tests (cargo test -p tui-rust)"
 	@echo "  test-tui-diff      TS vs Rust render parity (byte-compare tui/rust/tests/diff-ts-rust.sh)"
+	@echo "  test-tui-tmux      TS vs Rust tmux screen consistency + goldens (tui/rust/tests/tmux-diff.sh)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
 	@echo "  fmt                Format Rust and mobile code"
 	@echo "  run-agent          Run agent directly (debug build)"

@@ -2884,19 +2884,19 @@ impl<T: TerminalIo> App<T> {
                 ),
             ],
             None => vec![format!(
-                "**Model:** {} or (unknown)",
-                s.model.as_deref().unwrap_or("")
+                "**Model:** {}",
+                s.model.as_deref().unwrap_or("(unknown)")
             )],
         };
         let lines = vec![
             model_info.join("\n"),
             String::new(),
             format!(
-                "**Session:** {} or (none)",
+                "**Session:** {}",
                 if s.session_id.is_empty() {
-                    "(none)"
+                    "(none)".to_string()
                 } else {
-                    &s.session_id
+                    s.session_id.clone()
                 }
             ),
             format!("**CWD:** {}", s.cwd.as_deref().unwrap_or("(none)")),
@@ -4254,6 +4254,38 @@ mod tests {
         assert_eq!(split_ws_js("a  b"), vec!["a", "b"]);
         assert_eq!(split_ws_js(""), vec![""]);
         assert_eq!(split_ws_js("status"), vec!["status"]);
+    }
+
+    /// `/status` lines must match the TS template verbatim — in particular
+    /// the JS `|| "(none)"` fallback: a present sessionId renders WITHOUT the
+    /// ` or (none)` suffix (the P4 tmux harness caught the port always
+    /// appending it), and the model fallback is `|| "(unknown)"` without an
+    /// ` or (unknown)` suffix either.
+    #[tokio::test]
+    async fn apply_status_session_and_model_fallbacks_match_ts() {
+        let (mut app, _rx) = make_app(120, 36);
+
+        // Session id present → `**Session:** mock-session-1` exactly.
+        let s = RpcSessionState {
+            session_id: "mock-session-1".into(),
+            model: Some("mock-model".into()),
+            ..Default::default()
+        };
+        app.apply_status(&s, &[]);
+        let last = app.chat.last_message().cloned().unwrap();
+        assert!(last.content.contains("**Session:** mock-session-1"));
+        assert!(!last.content.contains(" or (none)"));
+        assert!(last.content.contains("**Model:** mock-model"));
+        assert!(!last.content.contains(" or (unknown)"));
+
+        // No session id / no model → `(none)` / `(unknown)` stand alone.
+        let s2 = RpcSessionState::default();
+        app.apply_status(&s2, &[]);
+        let last = app.chat.last_message().cloned().unwrap();
+        assert!(last.content.contains("**Session:** (none)"));
+        assert!(!last.content.contains(" or (none)"));
+        assert!(last.content.contains("**Model:** (unknown)"));
+        assert!(!last.content.contains(" or (unknown)"));
     }
 
     #[test]
