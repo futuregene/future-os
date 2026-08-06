@@ -44,6 +44,15 @@ impl EnvGuard {
             saved: vec![("HOME", home)],
         }
     }
+
+    /// Remove `vars` for the duration of the guard; originals restored on drop.
+    pub fn remove(vars: &[&'static str]) -> Self {
+        let saved = vars.iter().map(|k| (*k, std::env::var_os(k))).collect();
+        for k in vars {
+            std::env::remove_var(k);
+        }
+        EnvGuard { saved }
+    }
 }
 
 impl Drop for EnvGuard {

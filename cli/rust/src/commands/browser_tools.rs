@@ -1,29 +1,30 @@
-//! Browser tool — port of `cli/src/commands/browser-tools.ts` (P2 scope).
+//! Browser tool — 1:1 port of `cli/src/commands/browser-tools.ts`.
 //!
-//! P2 ports the CLI-visible surface and the two commands that need no CDP
-//! WebSocket session: `start` (launch a Chromium browser with a remote
-//! debugging port) and `status` (probe `/json/version`). The session-based
-//! commands (`tabs` / `open` / `snapshot` / `click` / `type` / `press` /
-//! `screenshot` / `scroll` / `console`) and the Safari path land with the
-//! full browser subsystem (P3) and return a clear error meanwhile.
-//!
-//! Config state (`~/.future/agent/browser/config.json`) is ported from
-//! `cli/src/browser/browser-state.ts` including the v1 → v2 migration and
-//! runtime validation.
+//! Full surface: `start` / `status` plus the session-based commands
+//! (`tabs` / `open` / `snapshot` / `click` / `type` / `press` /
+//! `screenshot` / `scroll` / `console`) over the browser subsystem in
+//! `crate::browser` (P3).
 
+use crate::browser::backend::{
+    BrowserSession, BrowserSessionParams, CaptureScreenshotOptions, ClickOptions, EvaluateRequest,
+    OpenPageOptions, PressOptions, ResolvedTarget, TabsAction, TypeOptions,
+};
+use crate::browser::browser_state::{load_browser_config, save_browser_config};
+use crate::browser::chromium::chromium_endpoint::resolve_cdp_endpoint;
+use crate::browser::chromium::chromium_manager::{
+    endpoint_reachable, find_browser_launcher, resolve_port,
+};
+use crate::browser::safari::safari_manager::safari_start;
+use crate::browser::screenshot_writer::{browser_dir, resolve_screenshot_path, write_screenshot};
+use crate::browser::scripts::SNAPSHOT_FUNCTION_SOURCE;
+use crate::browser::selector::resolve_target;
+use crate::browser::types::{BrowserConfig, BrowserConnectionConfig, DEFAULT_TIMEOUTS};
 use crate::output::Output;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
-/// Browser directory — `~/.future/agent/browser` (honors `FUTURE_HOME`).
-fn browser_dir() -> PathBuf {
-    let future_home = std::env::var("FUTURE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".future"));
-    future_home.join("agent").join("browser")
-}
-
 const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:9222";
+const DEFAULT_PROFILE_DIR: &str = "profile";
 
 /// `BrowserToolEntry` — description/args/example for the catalog.
 pub struct BrowserToolEntry {
@@ -77,47 +78,50 @@ pub async fn call_browser_tool(
     match command.as_str() {
         "start" => browser_start(args).await,
         "status" => browser_status(args).await,
-        "tabs" | "open" | "snapshot" | "click" | "type" | "press" | "screenshot" | "scroll"
-        | "console" => Err(format!(
-            "browser tool command '{command}' is not yet ported in the Rust CLI (P3 — browser session automation)."
-        )),
+        "tabs" => with_session(args, |ctx| Box::pin(browser_tabs(ctx))).await,
+        "open" => with_session(args, |ctx| Box::pin(browser_open(ctx))).await,
+        "snapshot" => with_session(args, |ctx| Box::pin(browser_snapshot(ctx))).await,
+        "click" => with_session(args, |ctx| Box::pin(browser_click(ctx))).await,
+        "type" => with_session(args, |ctx| Box::pin(browser_type(ctx))).await,
+        "press" => with_session(args, |ctx| Box::pin(browser_press(ctx))).await,
+        "screenshot" => with_session(args, |ctx| Box::pin(browser_screenshot(ctx))).await,
+        "scroll" => with_session(args, |ctx| Box::pin(browser_scroll(ctx))).await,
+        "console" => with_session(args, |ctx| Box::pin(browser_console(ctx))).await,
         other => Err(format!(
             "Unknown browser command: \"{other}\". Use: start, status, tabs, open, snapshot, click, type, press, scroll, screenshot, console."
         )),
     }
 }
 
-// ── start ───────────────────────────────────────────────────────────────────
+// ── start ───────────────────────────────────────────────────────────
 
 async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, String> {
     let requested_port = number_arg(args, "port").unwrap_or(9222.0) as i64;
     let browser_arg = string_arg(args, "browser");
 
-    // Safari path — delegated to the browser subsystem (P3).
+    // Safari path — delegate to SafariManager.
     if browser_arg.as_deref() == Some("safari") {
-        return Err(
-            "browser tool command 'start' for Safari is not yet ported in the Rust CLI (P3)."
-                .to_string(),
-        );
+        return browser_start_safari(args, requested_port).await;
     }
 
     // Chrome/Edge/Chromium path
-    let port = resolve_browser_port(requested_port).await?;
+    let port = resolve_port(requested_port).await?;
     let endpoint = format!("http://127.0.0.1:{port}");
 
     if endpoint_reachable(&endpoint).await {
         let mut config = load_browser_config().await?;
-        let existing_endpoint = config.connection.endpoint.clone();
-        config.connection.protocol = "cdp".to_string();
-        config.connection.browser_kind = "chromium".to_string();
-        config.connection.endpoint = endpoint.clone();
+        let existing_endpoint = config.connection.endpoint().to_string();
+        config.connection = BrowserConnectionConfig::Cdp {
+            browser_kind: "chromium".to_string(),
+            endpoint: endpoint.clone(),
+        };
         save_browser_config(&config).await?;
-        let note = if existing_endpoint.is_empty() || existing_endpoint == endpoint {
-            "Browser is already running at this endpoint.".to_string()
-        } else {
+        let note = if !existing_endpoint.is_empty() && existing_endpoint != endpoint {
             format!(
                 "Browser endpoint was updated (was {existing_endpoint}). Subsequent commands will use this browser."
             )
+        } else {
+            "Browser is already running at this endpoint.".to_string()
         };
         return Ok(LocalToolResult {
             text: None,
@@ -131,17 +135,16 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
 
     let executable_path = string_arg(args, "executablePath");
     let launcher = find_browser_launcher(executable_path.as_deref());
-    let Some(launcher) = launcher else {
+    let Some((command, _kind)) = launcher else {
         return Err(
             "Could not find Chrome or Edge. Pass executablePath to browser with command=start."
                 .to_string(),
         );
     };
 
-    let default_profile = browser_dir().join("profile");
     let profile_dir = match string_arg(args, "profileDir") {
         Some(dir) => PathBuf::from(dir),
-        None if port == requested_port => default_profile,
+        None if port == requested_port => browser_dir().join(DEFAULT_PROFILE_DIR),
         None => browser_dir().join(format!("profile-{port}")),
     };
     let url = string_arg(args, "url").unwrap_or_else(|| "about:blank".to_string());
@@ -152,41 +155,25 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut chrome_args = vec![
+    let chrome_args = vec![
         format!("--remote-debugging-port={port}"),
         format!("--user-data-dir={}", profile_dir.display()),
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         url.clone(),
     ];
-    let mut browser_args = launcher.args.clone();
-    browser_args.append(&mut chrome_args);
 
     #[cfg(windows)]
     {
         // PowerShell Windows-shell launcher so Chrome does not inherit the
-        // agent's stdout handle (port of launchWindowsDetached).
-        let script = format!(
-            "Start-Process -FilePath '{}' -ArgumentList {} -WindowStyle Hidden",
-            launcher.command,
-            browser_args
-                .iter()
-                .map(|a| format!("'{}'", a.replace('\'', "''")))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        let _ = tokio::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        // agent's stdout handle (launchWindowsDetached).
+        crate::browser::windows_process::launch_windows_detached(&command, &chrome_args).await?;
     }
     #[cfg(not(windows))]
     {
         // `spawn(..., { detached: true, stdio: "ignore" })` + `child.unref()`.
-        let _ = tokio::process::Command::new(&launcher.command)
-            .args(&browser_args)
+        let _ = tokio::process::Command::new(&command)
+            .args(&chrome_args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -197,16 +184,17 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     while std::time::Instant::now() < deadline {
         if endpoint_reachable(&endpoint).await {
             let mut cfg = load_browser_config().await?;
-            cfg.connection.protocol = "cdp".to_string();
-            cfg.connection.browser_kind = "chromium".to_string();
-            cfg.connection.endpoint = endpoint.clone();
+            cfg.connection = BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: endpoint.clone(),
+            };
             cfg.active_url = Some(url);
             save_browser_config(&cfg).await?;
             return Ok(LocalToolResult {
                 text: None,
                 structured_content: Some(json!({
                     "endpoint": endpoint,
-                    "launcher": { "command": launcher.command, "args": launcher.args },
+                    "launcher": { "command": command, "args": Vec::<String>::new() },
                     "profileDir": profile_dir.display().to_string(),
                     "port": port,
                     "requestedPort": requested_port,
@@ -218,16 +206,17 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     }
 
     let mut cfg2 = load_browser_config().await?;
-    cfg2.connection.protocol = "cdp".to_string();
-    cfg2.connection.browser_kind = "chromium".to_string();
-    cfg2.connection.endpoint = endpoint.clone();
+    cfg2.connection = BrowserConnectionConfig::Cdp {
+        browser_kind: "chromium".to_string(),
+        endpoint: endpoint.clone(),
+    };
     cfg2.active_url = Some(url);
     save_browser_config(&cfg2).await?;
     Ok(LocalToolResult {
         text: None,
         structured_content: Some(json!({
             "endpoint": endpoint,
-            "launcher": { "command": launcher.command, "args": launcher.args },
+            "launcher": { "command": command, "args": Vec::<String>::new() },
             "profileDir": profile_dir.display().to_string(),
             "port": port,
             "requestedPort": requested_port,
@@ -237,7 +226,64 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     })
 }
 
-// ── status ──────────────────────────────────────────────────────────────────
+/// Safari start path (browser-tools.ts `if (browserArg === "safari")`).
+async fn browser_start_safari(
+    args: &Map<String, Value>,
+    requested_port: i64,
+) -> Result<LocalToolResult, String> {
+    let result = safari_start(requested_port, string_arg(args, "url").as_deref()).await;
+    match result {
+        Ok(result) => {
+            // Persist connection config.
+            if result.connection.protocol() == "webdriver" {
+                let mut config = load_browser_config().await?;
+                config.connection = result.connection.clone();
+                config.active_url = string_arg(args, "url");
+                save_browser_config(&config).await?;
+            }
+            Ok(LocalToolResult {
+                text: None,
+                structured_content: Some(json!({
+                    "endpoint": result.connection.endpoint(),
+                    "launcher": result.launcher,
+                    "port": result.port,
+                    "status": result.status,
+                    "browserKind": "safari",
+                })),
+            })
+        }
+        Err(e) => {
+            if is_permission_error(&e) {
+                Ok(LocalToolResult {
+                    text: None,
+                    structured_content: Some(json!({
+                        "status": "permission_required",
+                        "browserKind": "safari",
+                        "actionRequired": {
+                            "description": "Safari remote automation is not enabled. This is a one-time setup.",
+                            "steps": [
+                                "Open Terminal and run: safaridriver --enable",
+                                "You may be prompted for your password or to confirm in System Settings.",
+                            ],
+                            "command": "safaridriver --enable",
+                        },
+                    })),
+                })
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+fn is_permission_error(e: &str) -> bool {
+    // SafariManager.translateError → BrowserPermissionError. The message is
+    // "Safari remote automation is disabled." with code browser_permission_error.
+    // Detect via the marker we emit in safari_manager::permission_error().
+    e == "Safari remote automation is disabled."
+}
+
+// ── status ──────────────────────────────────────────────────────────
 
 async fn browser_status(args: &Map<String, Value>) -> Result<LocalToolResult, String> {
     let endpoint = endpoint_for(args).await;
@@ -278,498 +324,712 @@ async fn browser_status(args: &Map<String, Value>) -> Result<LocalToolResult, St
     }
 }
 
-// ── helpers ─────────────────────────────────────────────────────────────────
+// ── BrowserSession context ──────────────────────────────────────────
+
+struct SessionContext {
+    session: Box<dyn BrowserSession>,
+    config: BrowserConfig,
+    /// Cloned copy of the tool args for the command body (avoids borrowing
+    /// the caller's map across the HRTB closure boundary).
+    args: Map<String, Value>,
+}
+
+/// `createSession(config, endpoint)`.
+async fn create_session(
+    config: &BrowserConfig,
+    endpoint: &str,
+) -> Result<Box<dyn BrowserSession>, String> {
+    match &config.connection {
+        BrowserConnectionConfig::Cdp { browser_kind, .. } => {
+            // Refine browserKind from /json/version.
+            let mut browser_kind = browser_kind.clone();
+            if browser_kind == "chromium" {
+                let refined = resolve_cdp_endpoint(endpoint, 5_000).await;
+                if let Ok(info) = refined {
+                    browser_kind = info.browser_kind;
+                    // Atomically update config.
+                    if let Ok(fresh) = load_browser_config().await {
+                        if fresh.connection.protocol() == "cdp"
+                            && fresh.connection.browser_kind() == "chromium"
+                        {
+                            let mut updated = fresh;
+                            updated.connection = BrowserConnectionConfig::Cdp {
+                                browser_kind: browser_kind.clone(),
+                                endpoint: updated.connection.endpoint().to_string(),
+                            };
+                            let _ = save_browser_config(&updated).await;
+                        }
+                    }
+                }
+                // On error: keep "chromium".
+            }
+            crate::browser::create_default_session(BrowserSessionParams::Cdp {
+                browser_kind,
+                endpoint: endpoint.to_string(),
+                timeouts: DEFAULT_TIMEOUTS,
+                active_page_id: config.active_page_id.clone(),
+                init_tab_order: config.tab_order.clone(),
+            })
+        }
+        BrowserConnectionConfig::Webdriver { session_id, .. } => {
+            if session_id.is_empty() {
+                return Err("sessionId required for webdriver".to_string());
+            }
+            crate::browser::create_default_session(BrowserSessionParams::Webdriver {
+                endpoint: endpoint.to_string(),
+                session_id: session_id.clone(),
+                timeouts: DEFAULT_TIMEOUTS,
+                active_page_id: config.active_page_id.clone(),
+            })
+        }
+    }
+}
+
+type SessionCommand<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<LocalToolResult, String>> + Send + 'a>,
+>;
+
+/// `withSession(args, fn)` — `fn(ctx, args)` runs with a live session.
+async fn with_session<F>(args: &Map<String, Value>, f: F) -> Result<LocalToolResult, String>
+where
+    F: for<'a> FnOnce(&'a mut SessionContext) -> SessionCommand<'a>,
+{
+    let config = load_browser_config().await?;
+
+    let mut endpoint = ensure_browser(args).await?;
+    let session: Box<dyn BrowserSession> = match create_session(&config, &endpoint).await {
+        Ok(s) => s,
+        Err(error) => {
+            if string_arg(args, "endpoint").is_some() {
+                return Err(error);
+            }
+            // Auto-start and retry.
+            let fallback_port = (port_from_endpoint(&endpoint).unwrap_or(9222)) + 1;
+            let mut retry_args = args.clone();
+            retry_args.insert("port".to_string(), json!(fallback_port));
+            browser_start(&retry_args).await?;
+            endpoint =
+                wait_for_saved_endpoint(&format!("http://127.0.0.1:{fallback_port}"), 10_000)
+                    .await?;
+            create_session(&config, &endpoint).await?
+        }
+    };
+
+    let mut ctx = SessionContext {
+        session,
+        config,
+        args: args.clone(),
+    };
+    let result = f(&mut ctx).await;
+    ctx.session.disconnect().await.ok();
+    result
+}
+
+// ── Browser Tabs ────────────────────────────────────────────────────
+
+async fn browser_tabs(ctx: &mut SessionContext) -> Result<LocalToolResult, String> {
+    let action = string_arg(&ctx.args, "action").unwrap_or_else(|| "list".to_string());
+
+    if action == "list" {
+        let result = ctx.session.tabs(&TabsAction::List).await?;
+        let tabs = match result {
+            crate::browser::backend::InternalTabsResult::List { tabs } => tabs
+                .iter()
+                .map(|tab| {
+                    json!({
+                        "index": tab.index,
+                        "title": tab.title,
+                        "url": tab.url,
+                        "active": tab.active,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        return Ok(LocalToolResult {
+            text: None,
+            structured_content: Some(json!({
+                "tabs": tabs,
+                "tabCount": tabs.len(),
+            })),
+        });
+    }
+
+    if action == "new" {
+        let url = string_arg(&ctx.args, "url");
+        let result = ctx.session.tabs(&TabsAction::New { url }).await?;
+        let (page, index) = match result {
+            crate::browser::backend::InternalTabsResult::New { page, index } => (page, index),
+            _ => return Err("Unexpected tabs result".to_string()),
+        };
+        save_active_page(&page.url, Some(&page.page_id)).await?;
+        // Refresh full tab list so the response shape matches "list".
+        let tabs = list_tabs(ctx).await?;
+        return Ok(LocalToolResult {
+            text: None,
+            structured_content: Some(json!({
+                "tabs": tabs.0,
+                "tabCount": tabs.1,
+                "created": { "index": index, "url": page.url },
+            })),
+        });
+    }
+
+    let index = number_arg(&ctx.args, "index");
+    let Some(index) = index else {
+        return Err(format!(
+            "browser command tabs: action \"{action}\" requires a valid 0-based index."
+        ));
+    };
+    if index < 0.0 {
+        return Err(format!(
+            "browser command tabs: action \"{action}\" requires a valid 0-based index."
+        ));
+    }
+    let index = index as usize;
+
+    if action == "select" {
+        let result = ctx.session.tabs(&TabsAction::Select { index }).await?;
+        let page = match result {
+            crate::browser::backend::InternalTabsResult::Select { page } => page,
+            _ => return Err("Unexpected tabs result".to_string()),
+        };
+        save_active_page(&page.url, Some(&page.page_id)).await?;
+        let tabs = list_tabs(ctx).await?;
+        return Ok(LocalToolResult {
+            text: None,
+            structured_content: Some(json!({
+                "tabs": tabs.0,
+                "tabCount": tabs.1,
+                "selected": { "index": index, "url": page.url },
+            })),
+        });
+    }
+
+    if action == "close" {
+        let result = ctx.session.tabs(&TabsAction::Close { index }).await?;
+        let url = match result {
+            crate::browser::backend::InternalTabsResult::Close { url, .. } => url,
+            _ => return Err("Unexpected tabs result".to_string()),
+        };
+        let tabs = list_tabs(ctx).await?;
+        return Ok(LocalToolResult {
+            text: None,
+            structured_content: Some(json!({
+                "tabs": tabs.0,
+                "tabCount": tabs.1,
+                "closed": { "index": index, "url": url },
+            })),
+        });
+    }
+
+    Err(
+        "browser command tabs: action must be \"list\", \"new\", \"select\", or \"close\"."
+            .to_string(),
+    )
+}
+
+/// `(tabs, tabCount)` — the full tab list in the "list" shape.
+async fn list_tabs(ctx: &mut SessionContext) -> Result<(Vec<Value>, usize), String> {
+    let result = ctx.session.tabs(&TabsAction::List).await?;
+    let tabs = match result {
+        crate::browser::backend::InternalTabsResult::List { tabs } => tabs
+            .iter()
+            .map(|tab| {
+                json!({
+                    "index": tab.index,
+                    "title": tab.title,
+                    "url": tab.url,
+                    "active": tab.active,
+                })
+            })
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    let count = tabs.len();
+    Ok((tabs, count))
+}
+
+// ── Browser Open ────────────────────────────────────────────────────
+
+async fn browser_open(ctx: &mut SessionContext) -> Result<LocalToolResult, String> {
+    let url = string_arg(&ctx.args, "url")
+        .ok_or_else(|| "browser command open requires url.".to_string())?;
+    let page = ctx.session.open(&url, OpenPageOptions::default()).await?;
+    clear_refs().await?;
+    save_active_page(&page.url, Some(&page.page_id)).await?;
+    Ok(LocalToolResult {
+        text: None,
+        structured_content: Some(json!({
+            "title": page.title,
+            "url": page.url,
+        })),
+    })
+}
+
+// ── Browser Snapshot ────────────────────────────────────────────────
+
+async fn browser_snapshot(ctx: &mut SessionContext) -> Result<LocalToolResult, String> {
+    let limit = number_arg(&ctx.args, "limit").unwrap_or(80.0);
+    let snapshot: Value = ctx
+        .session
+        .evaluate(&EvaluateRequest::Function {
+            function_declaration: SNAPSHOT_FUNCTION_SOURCE.to_string(),
+            // JS serializes integral numbers without ".0" — match JSON.stringify.
+            arguments: vec![js_number(limit)],
+        })
+        .await?;
+
+    let title = snapshot
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let url = snapshot
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let items = snapshot
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut refs: Map<String, Value> = Map::new();
+    let mut lines: Vec<String> = Vec::new();
+    let mut elements: Vec<Value> = Vec::new();
+    for item in &items {
+        let r#ref = item
+            .get("ref")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let selector = item
+            .get("selector")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let role = item
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let disabled = item
+            .get("disabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let checked = item.get("checked").cloned();
+        let href = item.get("href").and_then(Value::as_str).map(str::to_string);
+
+        refs.insert(r#ref.clone(), Value::String(selector.clone()));
+
+        // state = [disabled?, checked?, href?].filter(Boolean).join(" ")
+        let mut state_parts: Vec<String> = Vec::new();
+        if disabled {
+            state_parts.push("disabled".to_string());
+        }
+        if let Some(c) = &checked {
+            if !c.is_null() {
+                state_parts.push(format!("checked={c}"));
+            }
+        }
+        if let Some(h) = &href {
+            if !h.is_empty() {
+                state_parts.push(format!("href={h}"));
+            }
+        }
+        let state = state_parts.join(" ");
+        let line = if state.is_empty() {
+            format!("- {role} \"{name}\" [ref={}]", r#ref)
+        } else {
+            format!("- {role} \"{name}\" [ref={}] {state}", r#ref)
+        };
+        lines.push(line);
+
+        // elements: item without selector, in TS key order.
+        let mut element = Map::new();
+        element.insert("ref".to_string(), json!(r#ref));
+        element.insert("role".to_string(), json!(role));
+        element.insert("name".to_string(), json!(name));
+        element.insert(
+            "tag".to_string(),
+            item.get("tag").cloned().unwrap_or(Value::Null),
+        );
+        element.insert("disabled".to_string(), json!(disabled));
+        element.insert("checked".to_string(), checked.unwrap_or(Value::Null));
+        element.insert(
+            "href".to_string(),
+            href.map(Value::String).unwrap_or(Value::Null),
+        );
+        elements.push(Value::Object(element));
+    }
+
+    save_refs_and_url(&refs, &url).await?;
+
+    let mut text_lines = Vec::new();
+    text_lines.push(format!("Page: {title}"));
+    text_lines.push(format!("URL: {url}"));
+    text_lines.push(String::new());
+    text_lines.extend(lines);
+
+    Ok(LocalToolResult {
+        text: Some(text_lines.join("\n")),
+        structured_content: Some(json!({
+            "title": title,
+            "url": url,
+            "elements": elements,
+        })),
+    })
+}
+
+// ── Browser Click ──────────────────────────────────────────────────
+
+async fn browser_click(ctx: &mut SessionContext) -> Result<LocalToolResult, String> {
+    let target = resolve_target_from_args(&ctx.args, &ctx.config)?;
+    let result = ctx.session.click(&target, ClickOptions::default()).await?;
+    save_active_page(&result.url, Some(&result.page_id)).await?;
+    Ok(LocalToolResult {
+        text: None,
+        structured_content: Some(json!({
+            "clicked": target.original,
+            "selector": target.selector,
+            "title": result.title,
+            "url": result.url,
+        })),
+    })
+}
+
+// ── Browser Type ───────────────────────────────────────────────────
+
+async fn browser_type(ctx: &mut SessionContext) -> Result<LocalToolResult, String> {
+    let text = string_arg(&ctx.args, "text")
+        .ok_or_else(|| "browser command type requires text.".to_string())?;
+    let target = resolve_target_from_args(&ctx.args, &ctx.config)?;
+    let clear = boolean_arg(&ctx.args, "clear").unwrap_or(true);
+    let submit = boolean_arg(&ctx.args, "submit").unwrap_or(false);
+    let result = ctx
+        .session
+        .r#type(
+            &target,
+            &text,
+            TypeOptions {
+                clear: Some(clear),
+                submit: Some(submit),
+                timeout_ms: None,
+            },
+        )
+        .await?;
+    Ok(LocalToolResult {
+        text: None,
+        structured_content: Some(json!({
+            "typed": target.original,
+            "selector": target.selector,
+            "submitted": result.submitted,
+        })),
+    })
+}
+
+// ── Browser Press ──────────────────────────────────────────────────
+
+async fn browser_press(ctx: &mut SessionContext) -> Result<LocalToolResult, String> {
+    let key = string_arg(&ctx.args, "key")
+        .ok_or_else(|| "browser command press requires key.".to_string())?;
+    let target = resolve_target_from_args_optional(&ctx.args, &ctx.config)?;
+    let result = ctx
+        .session
+        .press(&key, target.as_ref(), PressOptions::default())
+        .await?;
+    save_active_page(&result.url, Some(&result.page_id)).await?;
+    Ok(LocalToolResult {
+        text: None,
+        structured_content: Some(json!({
+            "key": key,
+            "title": result.title,
+            "url": result.url,
+        })),
+    })
+}
+
+// ── Browser Screenshot ─────────────────────────────────────────────
+
+async fn browser_screenshot(ctx: &mut SessionContext) -> Result<LocalToolResult, String> {
+    let explicit_path = string_arg(&ctx.args, "path").or_else(|| string_arg(&ctx.args, "output"));
+    let path = resolve_screenshot_path(explicit_path.as_deref());
+    let bytes = ctx
+        .session
+        .capture_screenshot(&CaptureScreenshotOptions {
+            full_page: boolean_arg(&ctx.args, "fullPage").unwrap_or(false),
+            format: "png",
+            quality: None,
+        })
+        .await?;
+    let written = write_screenshot(&bytes, &path).await?;
+    let title: String = ctx
+        .session
+        .evaluate(&EvaluateRequest::Expression {
+            expression: "document.title".to_string(),
+        })
+        .await
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .unwrap_or_default();
+    let url: String = ctx
+        .session
+        .evaluate(&EvaluateRequest::Expression {
+            expression: "location.href".to_string(),
+        })
+        .await
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .unwrap_or_default();
+    Ok(LocalToolResult {
+        text: None,
+        structured_content: Some(json!({
+            "path": written.path,
+            "filename": written.filename,
+            "title": title,
+            "url": url,
+        })),
+    })
+}
+
+// ── Browser Scroll ─────────────────────────────────────────────────
+
+async fn browser_scroll(ctx: &mut SessionContext) -> Result<LocalToolResult, String> {
+    let direction = string_arg(&ctx.args, "direction").unwrap_or_else(|| "down".to_string());
+    let amount = number_arg(&ctx.args, "amount").unwrap_or(300.0);
+    let target = string_arg(&ctx.args, "ref").or_else(|| string_arg(&ctx.args, "selector"));
+
+    let px = if direction == "down" || direction == "up" {
+        0.0
+    } else {
+        amount
+    };
+    let py = if direction == "down" {
+        amount
+    } else if direction == "up" {
+        -amount
+    } else {
+        0.0
+    };
+
+    if let Some(target) = &target {
+        // Scroll a specific element.
+        let resolved = resolve_target_from_args_optional(&ctx.args, &ctx.config)?;
+        let selector = resolved
+            .as_ref()
+            .map(|r| r.selector.clone())
+            .unwrap_or_else(|| target.clone());
+        ctx.session
+            .evaluate(&EvaluateRequest::Function {
+                function_declaration: "function(sel, x, y) { var el = document.querySelector(sel); if (el) el.scrollBy({ left: x, top: y, behavior: 'smooth' }); }".to_string(),
+                arguments: vec![json!(selector), json!(px), json!(py)],
+            })
+            .await?;
+    } else {
+        // Scroll the page.
+        ctx.session
+            .evaluate(&EvaluateRequest::Function {
+                function_declaration:
+                    "function(x, y) { window.scrollBy({ left: x, top: y, behavior: 'smooth' }); }"
+                        .to_string(),
+                arguments: vec![json!(px), json!(py)],
+            })
+            .await?;
+    }
+
+    let amount_out = js_number(amount);
+    Ok(LocalToolResult {
+        text: None,
+        structured_content: Some(json!({
+            "scrolled": {
+                "direction": direction,
+                "amount": amount_out,
+                "target": target.unwrap_or_else(|| "page".to_string()),
+            }
+        })),
+    })
+}
+
+// ── Browser Console ────────────────────────────────────────────────
+
+async fn browser_console(ctx: &mut SessionContext) -> Result<LocalToolResult, String> {
+    let level = string_arg(&ctx.args, "level");
+    let raw = ctx
+        .session
+        .evaluate(&EvaluateRequest::Expression {
+            expression: "(globalThis.__futureConsoleLogs) || []".to_string(),
+        })
+        .await?;
+
+    let logs: Vec<Value> = match raw {
+        Value::Array(items) => items
+            .into_iter()
+            .filter(|e| e.is_object())
+            .filter(|e| {
+                level
+                    .as_deref()
+                    .map(|l| e.get("level").and_then(Value::as_str) == Some(l))
+                    .unwrap_or(true)
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    let note = if logs.is_empty() {
+        Some("No buffered console messages. The hook captures messages after a Future browser tool has touched the page.".to_string())
+    } else {
+        None
+    };
+
+    let mut sc = Map::new();
+    sc.insert("logs".to_string(), Value::Array(logs));
+    if let Some(note) = note {
+        sc.insert("note".to_string(), Value::String(note));
+    }
+    Ok(LocalToolResult {
+        text: None,
+        structured_content: Some(Value::Object(sc)),
+    })
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+fn resolve_target_from_args(
+    args: &Map<String, Value>,
+    config: &BrowserConfig,
+) -> Result<ResolvedTarget, String> {
+    let input = string_arg(args, "selector")
+        .or_else(|| string_arg(args, "target"))
+        .or_else(|| string_arg(args, "ref"));
+    let Some(input) = input else {
+        return Err("Expected ref, selector, or target.".to_string());
+    };
+    resolve_target(Some(&input), config).map_err(|e| e.to_string())
+}
+
+fn resolve_target_from_args_optional(
+    args: &Map<String, Value>,
+    config: &BrowserConfig,
+) -> Result<Option<ResolvedTarget>, String> {
+    let input = string_arg(args, "selector")
+        .or_else(|| string_arg(args, "target"))
+        .or_else(|| string_arg(args, "ref"));
+    let Some(input) = input else {
+        return Ok(None);
+    };
+    // If it's a ref but optional, just use as selector (for press on page body).
+    match resolve_target(Some(&input), config) {
+        Ok(t) => Ok(Some(t)),
+        Err(_) => Ok(None),
+    }
+}
+
+async fn save_active_page(url: &str, page_id: Option<&str>) -> Result<(), String> {
+    let mut config = load_browser_config().await?;
+    config.active_url = Some(url.to_string());
+    if let Some(pid) = page_id {
+        config.active_page_id = Some(pid.to_string());
+    }
+    save_browser_config(&config).await.map_err(String::from)
+}
+
+async fn clear_refs() -> Result<(), String> {
+    let mut config = load_browser_config().await?;
+    config.refs = Some(Map::new());
+    save_browser_config(&config).await.map_err(String::from)
+}
+
+async fn save_refs_and_url(refs: &Map<String, Value>, url: &str) -> Result<(), String> {
+    let mut config = load_browser_config().await?;
+    config.refs = Some(refs.clone());
+    config.active_url = Some(url.to_string());
+    save_browser_config(&config).await.map_err(String::from)
+}
 
 async fn endpoint_for(args: &Map<String, Value>) -> String {
     let config = load_browser_config().await.unwrap_or_default();
     string_arg(args, "endpoint").unwrap_or_else(|| {
-        if config.connection.endpoint.is_empty() {
+        let endpoint = config.connection.endpoint();
+        if endpoint.is_empty() {
             DEFAULT_ENDPOINT.to_string()
         } else {
-            config.connection.endpoint
+            endpoint.to_string()
         }
     })
 }
 
-async fn endpoint_reachable(endpoint: &str) -> bool {
-    let client = reqwest::Client::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        client.get(format!("{endpoint}/json/version")).send(),
-    )
-    .await
-    .map(|r| r.map(|resp| resp.status().is_success()).unwrap_or(false))
-    .unwrap_or(false)
+fn port_from_endpoint(endpoint: &str) -> Option<i64> {
+    let stripped = endpoint
+        .strip_prefix("http://")
+        .or_else(|| endpoint.strip_prefix("https://"))?;
+    let stripped = stripped.trim_end_matches('/');
+    let (host, port) = stripped.rsplit_once(':')?;
+    if host.is_empty() {
+        return None;
+    }
+    port.parse::<i64>().ok().filter(|_| !port.is_empty())
 }
 
-async fn port_has_listener(port: i64) -> bool {
-    use tokio::io::AsyncWriteExt;
-    let mut socket = match tokio::net::TcpStream::connect(("127.0.0.1", port as u16)).await {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let _ = socket.shutdown().await;
-    true
-}
-
-/// `resolveBrowserPort` — use the requested port if free/reachable, else scan
-/// the next 49 ports for a free one.
-async fn resolve_browser_port(requested_port: i64) -> Result<i64, String> {
-    let endpoint = format!("http://127.0.0.1:{requested_port}");
+async fn ensure_browser(args: &Map<String, Value>) -> Result<String, String> {
+    let explicit_endpoint = string_arg(args, "endpoint");
+    let endpoint = endpoint_for(args).await;
     if endpoint_reachable(&endpoint).await {
-        return Ok(requested_port);
+        return Ok(endpoint);
     }
-    if !port_has_listener(requested_port).await {
-        return Ok(requested_port);
+
+    if let Some(explicit_endpoint) = explicit_endpoint {
+        return Err(format!(
+            "Local browser endpoint is not reachable: {explicit_endpoint}. Check the browser was started with a reachable remote debugging endpoint."
+        ));
     }
-    for port in requested_port + 1..requested_port + 50 {
-        if !port_has_listener(port).await {
-            return Ok(port);
+
+    browser_start(args).await?;
+    wait_for_saved_endpoint(DEFAULT_ENDPOINT, 10_000).await
+}
+
+async fn wait_for_saved_endpoint(
+    fallback_endpoint: &str,
+    timeout_ms: u64,
+) -> Result<String, String> {
+    let config = load_browser_config().await?;
+    let started_endpoint = {
+        let ep = config.connection.endpoint();
+        if ep.is_empty() {
+            fallback_endpoint.to_string()
+        } else {
+            ep.to_string()
         }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    while std::time::Instant::now() < deadline {
+        if endpoint_reachable(&started_endpoint).await {
+            return Ok(started_endpoint);
+        }
+        crate::utils::time::sleep(250).await;
     }
+
     Err(format!(
-        "No available browser debugging port found near {requested_port}."
+        "Local browser endpoint is not reachable after auto-start: {started_endpoint}."
     ))
 }
 
-/// Browser discovery — `findBrowser(executablePath?)` port.
-struct Launcher {
-    command: String,
-    args: Vec<String>,
-}
-
-fn find_browser_launcher(executable_path: Option<&str>) -> Option<Launcher> {
-    let exe = executable_path.map(|p| {
-        let kind = infer_kind(p);
-        (kind, p.to_string())
-    });
-    let found = exe.or_else(find_discovered);
-    found.map(|(_kind, path)| Launcher {
-        command: path,
-        args: Vec::new(),
-    })
-}
-
-fn infer_kind(path: &str) -> &'static str {
-    let lower = path.to_lowercase();
-    if lower.contains("edge") {
-        "edge"
-    } else if lower.contains("chromium") {
-        "chromium"
+/// JS-style number serialization: JSON.stringify(300) === "300" (not "300.0").
+fn js_number(v: f64) -> Value {
+    if v.fract() == 0.0 && v.abs() < 9_007_199_254_740_992.0 {
+        Value::Number(serde_json::Number::from(v as i64))
     } else {
-        "chrome"
+        serde_json::Number::from_f64(v)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
     }
 }
 
-fn find_discovered() -> Option<(&'static str, String)> {
-    #[cfg(target_os = "macos")]
-    {
-        const CANDIDATES: [(&str, &str); 3] = [
-            (
-                "chrome",
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            ),
-            (
-                "edge",
-                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-            ),
-            (
-                "chromium",
-                "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            ),
-        ];
-        for (kind, path) in CANDIDATES {
-            if std::path::Path::new(path).exists() {
-                return Some((kind, path.to_string()));
-            }
-        }
-        None
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let local = std::env::var("LOCALAPPDATA").ok();
-        let prog = std::env::var("PROGRAMFILES").ok();
-        let prog_x86 = std::env::var("PROGRAMFILES(X86)").ok();
-        let candidates = [
-            (
-                "chrome",
-                local.map(|p| format!("{p}\\Google\\Chrome\\Application\\chrome.exe")),
-            ),
-            (
-                "chrome",
-                prog.map(|p| format!("{p}\\Google\\Chrome\\Application\\chrome.exe")),
-            ),
-            (
-                "edge",
-                prog_x86.map(|p| format!("{p}\\Microsoft\\Edge\\Application\\msedge.exe")),
-            ),
-            (
-                "edge",
-                prog.map(|p| format!("{p}\\Microsoft\\Edge\\Application\\msedge.exe")),
-            ),
-        ];
-        for (kind, path) in candidates {
-            if let Some(path) = path {
-                if std::path::Path::new(&path).exists() {
-                    return Some((kind, path));
-                }
-            }
-        }
-        return None;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        const CANDIDATES: [(&str, &str); 4] = [
-            ("chrome", "/usr/bin/google-chrome"),
-            ("chrome", "/usr/bin/chromium-browser"),
-            ("chromium", "/usr/bin/chromium"),
-            ("edge", "/usr/bin/microsoft-edge"),
-        ];
-        for (kind, path) in CANDIDATES {
-            if std::path::Path::new(path).exists() {
-                return Some((kind, path.to_string()));
-            }
-        }
-        return None;
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        None
-    }
-}
-
-// ── config state (port of browser-state.ts) ─────────────────────────────────
-
-const CURRENT_CONFIG_VERSION: i64 = 2;
-
-#[derive(Debug, Clone)]
-pub struct BrowserConnection {
-    pub protocol: String,
-    pub browser_kind: String,
-    pub endpoint: String,
-    pub session_id: Option<String>,
-    pub driver_pid: Option<i64>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct BrowserConfig {
-    pub version: i64,
-    pub connection: BrowserConnection,
-    pub active_url: Option<String>,
-    pub active_page_id: Option<String>,
-    pub tab_order: Option<Vec<String>>,
-    pub refs: Option<Map<String, Value>>,
-    pub refs_page_id: Option<String>,
-    pub refs_url: Option<String>,
-}
-
-impl Default for BrowserConnection {
-    fn default() -> Self {
-        Self {
-            protocol: "cdp".to_string(),
-            browser_kind: "chromium".to_string(),
-            endpoint: DEFAULT_ENDPOINT.to_string(),
-            session_id: None,
-            driver_pid: None,
-        }
-    }
-}
-
-/// `defaultBrowserConfig()`.
-fn default_browser_config() -> BrowserConfig {
-    BrowserConfig {
-        version: CURRENT_CONFIG_VERSION,
-        connection: BrowserConnection::default(),
-        ..Default::default()
-    }
-}
-
-/// `loadBrowserConfig()`.
-pub async fn load_browser_config() -> Result<BrowserConfig, String> {
-    let config_file = browser_dir().join("config.json");
-    match tokio::fs::read_to_string(&config_file).await {
-        Ok(raw) => {
-            let parsed: Value = serde_json::from_str(&raw)
-                .map_err(|_| "Invalid browser config: not JSON".to_string())?;
-            parse_browser_config(&parsed)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(default_browser_config()),
-        Err(e) => Err(format!("Invalid browser config: {e}")),
-    }
-}
-
-/// `saveBrowserConfig(config)`.
-pub async fn save_browser_config(config: &BrowserConfig) -> Result<(), String> {
-    tokio::fs::create_dir_all(browser_dir())
-        .await
-        .map_err(|e| e.to_string())?;
-    let value = config_to_json(config);
-    let text = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
-    );
-    tokio::fs::write(browser_dir().join("config.json"), text)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Serialize the config in the exact key order the TS constructs it.
-fn config_to_json(config: &BrowserConfig) -> Value {
-    let mut obj = Map::new();
-    obj.insert("version".to_string(), json!(config.version));
-    let mut conn = Map::new();
-    conn.insert(
-        "protocol".to_string(),
-        Value::String(config.connection.protocol.clone()),
-    );
-    conn.insert(
-        "browserKind".to_string(),
-        Value::String(config.connection.browser_kind.clone()),
-    );
-    conn.insert(
-        "endpoint".to_string(),
-        Value::String(config.connection.endpoint.clone()),
-    );
-    if let Some(sid) = &config.connection.session_id {
-        conn.insert("sessionId".to_string(), Value::String(sid.clone()));
-    }
-    if let Some(pid) = config.connection.driver_pid {
-        conn.insert("driverPid".to_string(), json!(pid));
-    }
-    obj.insert("connection".to_string(), Value::Object(conn));
-    if let Some(v) = &config.active_url {
-        obj.insert("activeUrl".to_string(), Value::String(v.clone()));
-    }
-    if let Some(v) = &config.active_page_id {
-        obj.insert("activePageId".to_string(), Value::String(v.clone()));
-    }
-    if let Some(v) = &config.tab_order {
-        obj.insert(
-            "tabOrder".to_string(),
-            Value::Array(v.iter().map(|s| Value::String(s.clone())).collect()),
-        );
-    }
-    if let Some(v) = &config.refs {
-        obj.insert("refs".to_string(), Value::Object(v.clone()));
-    }
-    if let Some(v) = &config.refs_page_id {
-        obj.insert("refsPageId".to_string(), Value::String(v.clone()));
-    }
-    if let Some(v) = &config.refs_url {
-        obj.insert("refsUrl".to_string(), Value::String(v.clone()));
-    }
-    Value::Object(obj)
-}
-
-/// `parseBrowserConfig(raw)` with v1 migration and v2 validation.
-fn parse_browser_config(raw: &Value) -> Result<BrowserConfig, String> {
-    let Some(obj) = raw.as_object() else {
-        return Err("Invalid browser config: Browser config must be a JSON object".to_string());
-    };
-
-    let version = obj.get("version");
-    match version {
-        None => migrate_v1_config(obj),
-        Some(Value::Number(n)) if n.as_i64() == Some(1) => migrate_v1_config(obj),
-        Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v > CURRENT_CONFIG_VERSION) => {
-            Err(format!(
-                "Invalid browser config: Unsupported browser config version: {}. Expected ≤ {}.",
-                n, CURRENT_CONFIG_VERSION
-            ))
-        }
-        Some(Value::Number(n)) if n.as_i64() == Some(CURRENT_CONFIG_VERSION) => {
-            validate_v2_config(obj)
-        }
-        other => Err(format!(
-            "Invalid browser config: Unsupported browser config version: {}",
-            match other {
-                Some(Value::Null) => "null".to_string(),
-                Some(v) => v.to_string(),
-                None => "undefined".to_string(),
-            }
-        )),
-    }
-}
-
-fn migrate_v1_config(raw: &Map<String, Value>) -> Result<BrowserConfig, String> {
-    let endpoint_raw = match raw.get("endpoint") {
-        Some(Value::String(s)) if !s.trim().is_empty() => s.clone(),
-        _ => DEFAULT_ENDPOINT.to_string(),
-    };
-    if !endpoint_raw.starts_with("http://") && !endpoint_raw.starts_with("https://") {
-        return Err(format!(
-            "Invalid browser config: Invalid V1 endpoint: \"{endpoint_raw}\". Must be an http(s) URL."
-        ));
-    }
-    Ok(BrowserConfig {
-        version: CURRENT_CONFIG_VERSION,
-        connection: BrowserConnection {
-            protocol: "cdp".to_string(),
-            browser_kind: "chromium".to_string(),
-            endpoint: endpoint_raw,
-            ..Default::default()
-        },
-        active_url: optional_string(raw.get("activeUrl")),
-        refs: validate_refs_map(raw.get("refs"))?,
-        ..Default::default()
-    })
-}
-
-fn validate_v2_config(raw: &Map<String, Value>) -> Result<BrowserConfig, String> {
-    let conn = raw
-        .get("connection")
-        .and_then(Value::as_object)
-        .ok_or_else(|| {
-            "Invalid browser config: connection field is required in v2 config".to_string()
-        })?;
-
-    let protocol = validate_enum(conn.get("protocol"), &["cdp", "webdriver"], "protocol")?;
-    let endpoint = require_http_url(
-        require_non_empty_string(conn.get("endpoint"), "connection.endpoint")?,
-        "connection.endpoint",
-    )?;
-
-    let mut config = BrowserConfig {
-        version: CURRENT_CONFIG_VERSION,
-        active_url: optional_string(raw.get("activeUrl")),
-        active_page_id: optional_string(raw.get("activePageId")),
-        tab_order: validate_optional_string_array(raw.get("tabOrder"))?,
-        refs: validate_refs_map(raw.get("refs"))?,
-        refs_page_id: optional_string(raw.get("refsPageId")),
-        refs_url: optional_string(raw.get("refsUrl")),
-        ..Default::default()
-    };
-
-    if protocol == "cdp" {
-        config.connection = BrowserConnection {
-            protocol: "cdp".to_string(),
-            browser_kind: validate_enum(
-                conn.get("browserKind"),
-                &["chrome", "edge", "chromium"],
-                "browser kind",
-            )?,
-            endpoint,
-            ..Default::default()
-        };
-        return Ok(config);
-    }
-
-    // Early Safari builds read only the root-level WebDriver sessionId; recover
-    // only that historical missing-field shape (port of the TS behavior).
-    let browser_kind = validate_enum(conn.get("browserKind"), &["safari"], "browser kind")?;
-    if conn.get("sessionId").is_none() {
-        return Ok(default_browser_config());
-    }
-    config.connection = BrowserConnection {
-        protocol: "webdriver".to_string(),
-        browser_kind,
-        endpoint,
-        session_id: Some(require_non_empty_string(
-            conn.get("sessionId"),
-            "connection.sessionId",
-        )?),
-        driver_pid: optional_positive_integer(conn.get("driverPid"))?,
-    };
-    Ok(config)
-}
-
-fn require_non_empty_string(value: Option<&Value>, field: &str) -> Result<String, String> {
-    match value {
-        Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
-        _ => Err(format!(
-            "Invalid browser config: {field} must be a non-empty string"
-        )),
-    }
-}
-
-fn require_http_url(value: String, field: &str) -> Result<String, String> {
-    if value.starts_with("http://") || value.starts_with("https://") {
-        Ok(value)
-    } else {
-        Err(format!(
-            "Invalid browser config: {field} must be an http(s) URL, got: {}",
-            serde_json::to_string(&value).unwrap_or_default()
-        ))
-    }
-}
-
-fn optional_string(value: Option<&Value>) -> Option<String> {
-    match value {
-        Some(Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn optional_positive_integer(value: Option<&Value>) -> Result<Option<i64>, String> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v > 0) => Ok(n.as_i64()),
-        Some(_) => Err(format!(
-            "Invalid browser config: expected positive integer, got {}",
-            value.unwrap()
-        )),
-    }
-}
-
-fn validate_enum(value: Option<&Value>, allowed: &[&str], field: &str) -> Result<String, String> {
-    match value {
-        Some(Value::String(s)) if allowed.contains(&s.as_str()) => Ok(s.clone()),
-        other => Err(format!(
-            "Invalid browser config: Invalid {field}: \"{}\". Expected one of: {}",
-            other
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "undefined".to_string()),
-            allowed.join(", ")
-        )),
-    }
-}
-
-fn validate_optional_string_array(value: Option<&Value>) -> Result<Option<Vec<String>>, String> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Array(items)) => {
-            let mut out = Vec::new();
-            for item in items {
-                match item {
-                    Value::String(s) if !s.trim().is_empty() => out.push(s.clone()),
-                    _ => {
-                        return Err(
-                            "Invalid browser config: tabOrder must contain only non-empty strings"
-                                .to_string(),
-                        )
-                    }
-                }
-            }
-            Ok(Some(out))
-        }
-        Some(_) => Err("Invalid browser config: tabOrder must be an array of strings".to_string()),
-    }
-}
-
-fn validate_refs_map(value: Option<&Value>) -> Result<Option<Map<String, Value>>, String> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(map)) => {
-            for v in map.values() {
-                if !v.is_string() {
-                    return Err(format!(
-                        "Invalid browser config: refs[\"{}\"] must be a string selector",
-                        map.iter()
-                            .find(|(_, val)| !val.is_string())
-                            .map(|(k, _)| k.as_str())
-                            .unwrap_or("")
-                    ));
-                }
-            }
-            Ok(Some(map.clone()))
-        }
-        Some(_) => {
-            Err("Invalid browser config: refs must be a JSON object (string → string)".to_string())
-        }
-    }
-}
-
-// ── arg helpers ─────────────────────────────────────────────────────────────
+// ── arg helpers ─────────────────────────────────────────────────────
 
 fn string_arg(args: &Map<String, Value>, key: &str) -> Option<String> {
     match args.get(key) {
@@ -785,103 +1045,9 @@ fn number_arg(args: &Map<String, Value>, key: &str) -> Option<f64> {
     }
 }
 
-/// Used by the session-based commands (tabs/type/press/screenshot) in P3.
-#[allow(dead_code)]
 fn boolean_arg(args: &Map<String, Value>, key: &str) -> Option<bool> {
     match args.get(key) {
         Some(Value::Bool(b)) => Some(*b),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_config_shape() {
-        let config = default_browser_config();
-        let value = config_to_json(&config);
-        assert_eq!(
-            value,
-            json!({
-                "version": 2,
-                "connection": {
-                    "protocol": "cdp",
-                    "browserKind": "chromium",
-                    "endpoint": "http://127.0.0.1:9222",
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn v2_config_roundtrip() {
-        let raw = json!({
-            "version": 2,
-            "connection": {
-                "protocol": "cdp",
-                "browserKind": "chrome",
-                "endpoint": "http://127.0.0.1:9333",
-            },
-            "activeUrl": "https://example.com",
-            "refs": {"abc": "#button"},
-        });
-        let config = parse_browser_config(&raw).unwrap();
-        assert_eq!(config.connection.browser_kind, "chrome");
-        assert_eq!(config.active_url.as_deref(), Some("https://example.com"));
-        assert_eq!(config.connection.endpoint, "http://127.0.0.1:9333");
-        let roundtrip = config_to_json(&config);
-        assert_eq!(roundtrip.get("activeUrl"), raw.get("activeUrl"));
-        assert_eq!(roundtrip.get("refs"), raw.get("refs"));
-    }
-
-    #[test]
-    fn v1_config_migrates() {
-        let raw = json!({
-            "endpoint": "http://127.0.0.1:9444",
-            "activeUrl": "https://x.com",
-        });
-        let config = parse_browser_config(&raw).unwrap();
-        assert_eq!(config.version, 2);
-        assert_eq!(config.connection.protocol, "cdp");
-        assert_eq!(config.connection.endpoint, "http://127.0.0.1:9444");
-        assert_eq!(config.active_url.as_deref(), Some("https://x.com"));
-    }
-
-    #[test]
-    fn invalid_configs_rejected() {
-        // Not an object
-        assert!(parse_browser_config(&json!([1, 2])).is_err());
-        // Future version
-        assert!(parse_browser_config(&json!({"version": 99})).is_err());
-        // Bad v2 endpoint
-        assert!(parse_browser_config(&json!({
-            "version": 2,
-            "connection": {"protocol": "cdp", "browserKind": "chrome", "endpoint": "ftp://x"}
-        }))
-        .is_err());
-        // Bad browser kind
-        assert!(parse_browser_config(&json!({
-            "version": 2,
-            "connection": {"protocol": "cdp", "browserKind": "netscape", "endpoint": "http://x"}
-        }))
-        .is_err());
-        // Bad refs value
-        assert!(parse_browser_config(&json!({
-            "version": 2,
-            "connection": {"protocol": "cdp", "browserKind": "chrome", "endpoint": "http://x"},
-            "refs": {"a": 42}
-        }))
-        .is_err());
-    }
-
-    #[test]
-    fn browser_catalog_shape() {
-        let catalog = browser_tool_catalog();
-        assert_eq!(catalog.len(), 1);
-        assert_eq!(catalog[0].0, "browser");
-        assert!(is_browser_tool("browser"));
-        assert!(!is_browser_tool("search_paper"));
     }
 }

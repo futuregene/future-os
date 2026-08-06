@@ -4,6 +4,7 @@
 //! `dispatch` is the port of `cli/src/index.ts` `main()`; command modules port
 //! `cli/src/commands/*`.
 
+pub mod browser;
 pub mod commands;
 pub mod constants;
 pub mod generated;
@@ -375,6 +376,10 @@ mod tests {
     async fn auth_login_url_parsing_reaches_login() {
         // All three forms route into login; with an unreachable --url the
         // device-code POST fails fast with a Network error and exit code 1.
+        // Isolated HOME: login reads ~/.future/agent/auth.json, and the
+        // shared env lock prevents other env-mutating tests from racing us.
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
         for args in [
             &["auth", "login", "--url", "http://127.0.0.1:1"][..],
             &["auth", "login", "--url=http://127.0.0.1:1"][..],

@@ -25,6 +25,10 @@ reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 chrono = { workspace = true, features = ["clock"] }
 dirs = "5"
 base64.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+async-trait.workspace = true
+indexmap = "2"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -29,14 +29,13 @@
 #             the stdout bytes, and the stderr PREFIX are compared. The
 #             rpc.rs module doc documents this accepted divergence.
 #
-# Excluded from the corpus (documented, pending P3): the `browser` tool's
-# session-based commands (tabs/open/snapshot/click/type/press/screenshot/
-# scroll/console) and the Safari start path — the Rust browser backend is a
-# P3 deliverable, so those `tools call browser …` cases are not diffed. The
-# browser catalog/describe surface, `browser start`/`status`, and the arg
-# validation paths ARE covered. `future run` against a live agent (real
-# prompt execution) is likewise not diffed; its local-only paths and the
-# dead-agent transport error ARE covered below.
+# Excluded from the corpus (documented): `future run` against a live agent
+# (real prompt execution) is not diffed; its local-only paths and the
+# dead-agent transport error ARE covered below. The `browser` tool's session
+# commands (tabs/open/snapshot/click/type/press/screenshot/scroll/console)
+# ARE covered via the "browser" scenario (mock CDP endpoint + scripted
+# WebSocket). `browser start` against a non-reachable endpoint would spawn a
+# real Chrome (non-deterministic) — only the already_running path is diffed.
 #
 # Notes:
 #   - Rebuilds BOTH CLIs with FUTURE_VERSION=0.0.0-diff+local so `--version`
@@ -311,6 +310,29 @@ prep_skills_installed() {
   case_grpc=""
 }
 
+# browser — mock CDP endpoint (mode "browser"): config points at the mock
+# with browserKind "chromium" (exercises the /json/version refinement path)
+# and refs pre-seeded (post-snapshot state so click/type --ref work).
+prep_browser() {
+  case_home="$(fake_home browser)"
+  write_auth "$case_home" "{\"future\": {\"type\": \"api_key\", \"key\": \"test-key-123\", \"base_url\": \"http://127.0.0.1:$MOCK_PORT/api\"}}"
+  case_path="/usr/bin:/bin:/usr/sbin:/sbin"
+  case_grpc=""
+  reset_browser_fixture
+}
+
+# Stateful fixture: config.json + mock tab state re-created fresh before each
+# binary run so TS and Rust start from identical browser state.
+reset_browser_fixture() {
+  mkdir -p "$case_home/.future/agent/browser"
+  cat > "$case_home/.future/agent/browser/config.json" <<EOF
+{"version": 2, "connection": {"protocol": "cdp", "browserKind": "chromium", "endpoint": "http://127.0.0.1:$MOCK_PORT"}, "refs": {"b1": "#btn-submit", "i1": "input[data-testid='email']"}}
+EOF
+  if [[ -n "$MOCK_PORT" ]]; then
+    curl -s -X POST "http://127.0.0.1:$MOCK_PORT/__reset" >/dev/null 2>&1 || true
+  fi
+}
+
 reset_skills_installed_fixture() {
   rm -rf "$case_home/.future/agent/skills"
   mkdir -p "$case_home/.future/agent/skills/future-test-a" "$case_home/.future/agent/skills/community-x"
@@ -366,6 +388,8 @@ run_case() {
     rm -rf "$case_home/.future/agent/skills"
   elif [[ "$scenario" == "skills:installed" ]]; then
     reset_skills_installed_fixture
+  elif [[ "$scenario" == "browser" ]]; then
+    reset_browser_fixture
   fi
   ts_code=$("$TS_CLI" "$@" >"$ts_out" 2>"$ts_err"; echo $?)
   if [[ "$scenario" == "init:linked" ]]; then
@@ -376,6 +400,8 @@ run_case() {
     rm -rf "$case_home/.future/agent/skills"
   elif [[ "$scenario" == "skills:installed" ]]; then
     reset_skills_installed_fixture
+  elif [[ "$scenario" == "browser" ]]; then
+    reset_browser_fixture
   fi
   ru_code=$("$RUST_CLI" "$@" >"$ru_out" 2>"$ru_err"; echo $?)
 
@@ -474,6 +500,7 @@ add_case() {
       agentdown)     prep_agentdown ;;
       skills)        prep_skills ;;
       skills:installed) prep_skills_installed ;;
+      browser)       prep_browser ;;
       *) err "unknown scenario $scenario"; exit 2 ;;
     esac
     case "$scenario" in
@@ -486,6 +513,23 @@ add_case() {
       skills | skills:installed)
         MOCK_PID=$(start_mock "$MOCK_PORT" skills)
         wait_port "$MOCK_PORT" || { err "mock server on $MOCK_PORT did not start"; exit 2; } ;;
+      browser)
+        MOCK_PID=$(start_mock "$MOCK_PORT" browser)
+        wait_port "$MOCK_PORT" || { err "mock server on $MOCK_PORT did not start"; exit 2; }
+        # The CDP WebSocket server binds its own ephemeral port; discover it
+        # from /json/version and wait for it to accept connections.
+        WS_URL=""
+        for _ in $(seq 1 60); do
+          WS_URL=$(curl -s "http://127.0.0.1:$MOCK_PORT/json/version" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("webSocketDebuggerUrl",""))' 2>/dev/null)
+          if [[ -n "$WS_URL" ]]; then break; fi
+          sleep 0.25
+        done
+        WS_PORT=$(python3 -c 'import re,sys; m=re.search(r":(\d+)/", sys.argv[1]); print(m.group(1) if m else "")' "$WS_URL" 2>/dev/null)
+        if [[ -z "$WS_PORT" ]]; then
+          err "mock CDP ws url missing from /json/version"; exit 2
+        fi
+        wait_port "$WS_PORT" || { err "mock CDP ws on $WS_PORT did not start"; exit 2; }
+        reset_browser_fixture ;;
     esac
   fi
   run_case "$scenario" "$mode" "$@"
@@ -653,6 +697,41 @@ add_case skills:installed exact skills uninstall community-x
 # agentdown — smoke test: dead gRPC port, normalized comparison
 add_case agentdown agentdown agent status
 add_case agentdown agentdown run "hello agent"
+
+# browser — mock CDP endpoint (mode "browser") with pre-seeded config + refs.
+# Every case resets config.json and the mock tab state per binary run.
+add_case browser exact tools call browser --command status
+add_case browser exact tools call browser --command status --endpoint http://127.0.0.1:1
+add_case browser exact tools call browser --command start --port $MOCK_PORT
+add_case browser exact tools call browser --command tabs
+add_case browser exact tools call browser --command tabs --action list
+add_case browser exact tools call browser --command tabs --action bogus
+add_case browser exact tools call browser --command tabs --action select
+add_case browser exact tools call browser --command tabs --action select --index 1
+add_case browser exact tools call browser --command tabs --action new --url https://example.com/new-tab
+add_case browser exact tools call browser --command tabs --action close --index 0
+add_case browser exact tools call browser --command open
+add_case browser exact tools call browser --command open --url https://example.com/open-page
+add_case browser exact tools call browser --command snapshot
+add_case browser exact tools call browser --command snapshot --limit 2
+add_case browser exact tools call browser --command click
+add_case browser exact tools call browser --command click --ref b1
+add_case browser exact tools call browser --command click --selector "#btn-submit"
+add_case browser exact tools call browser --command type --text hello
+add_case browser exact tools call browser --command type --ref i1 --text hello
+add_case browser exact tools call browser --command type --ref i1 --text "hello world" --clear false
+add_case browser exact tools call browser --command press
+add_case browser exact tools call browser --command press --key Enter
+add_case browser exact tools call browser --command press --key Control+A
+add_case browser exact tools call browser --command press --key F23
+add_case browser exact tools call browser --command screenshot --path $WORK/browser-shot.png
+add_case browser exact tools call browser --command scroll
+add_case browser exact tools call browser --command scroll --direction up --amount 100
+add_case browser exact tools call browser --command scroll --ref t1 --direction left --amount 50
+add_case browser exact tools call browser --command console
+add_case browser exact tools call browser --command console --level warn
+add_case browser exact tools call browser --command console --level nope
+add_case browser exact tools call browser --command bogus-command
 
 # ── summary ────────────────────────────────────────────────────────────────
 

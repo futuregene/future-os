@@ -379,8 +379,12 @@ mod tests {
         parse_run_args(&args, &out)
     }
 
-    #[test]
-    fn parse_basic_message() {
+    #[tokio::test]
+    async fn parse_basic_message() {
+        // The default grpc addr reads FUTURE_AGENT_GRPC_ADDR (global env) —
+        // hold the shared env lock so doctor/session tests cannot race us.
+        let _guard = crate::test_env::lock_env().await;
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_AGENT_GRPC_ADDR"]);
         let parsed = parse(&["hello", "world"]).unwrap();
         assert_eq!(parsed.messages, vec!["hello", "world"]);
         assert_eq!(parsed.mode, "text");

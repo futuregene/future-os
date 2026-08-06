@@ -420,15 +420,19 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 name = "cli-rust"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "base64",
  "chrono",
  "dirs 5.0.1",
+ "futures-util",
+ "indexmap 2.14.0",
  "prost",
  "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "tonic",
  "tonic-build",
 ]
