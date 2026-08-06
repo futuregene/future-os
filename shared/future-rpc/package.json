@@ -1,0 +1,32 @@
+{
+  "name": "@future-os/rpc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared FutureAgent wire contract: embedded proto, loader, typed/JSON decode, and payload types for the TS clients (TUI / CLI).",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "generate-proto": "bun run scripts/generate-proto.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.1",
+    "long": "^5.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "allowScripts": {
+    "protobufjs@7.6.4": true
+  }
+}

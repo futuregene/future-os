@@ -392,6 +392,7 @@ generate-proto:
 	cd future-rpc && REGENERATE_PROTO=1 cargo build
 	cd channels && REGENERATE_PROTO=1 cargo build
 	cd tui && npm run generate-proto
+	cd shared/future-rpc && bun run scripts/generate-proto.ts
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
 
