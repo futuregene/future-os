@@ -1,0 +1,33 @@
+[package]
+name = "future-loop"
+version = "0.1.0"
+edition = "2021"
+description = "FutureOS loop control plane: durable goal/todo/gate/quota state, a deterministic should-run decision kernel, and a gRPC executor bridge (LoopX-style, implemented natively)."
+
+[lib]
+name = "future_loop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "future-loop"
+path = "src/main.rs"
+
+[dependencies]
+tonic.workspace = true
+prost.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+tonic-build.workspace = true
