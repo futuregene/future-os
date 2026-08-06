@@ -301,12 +301,15 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 | 更新 / 账户 / 重置 | ✓ 检查更新→下载→安装→重启（UpdatePage + install_app_update/restart_after_app_update）；账户页资料+余额+充值（AccountPage + useFutureAccount）；重置=清除本地数据并重启（ResetPage clear_app_data） |
 | Skills 页 | ✓ Installed/All 两标签、分类下拉+搜索+结果计数+清除过滤、Install/Uninstall(二次确认)/Upgrade/Upgrade all；首次无已装技能自动切 All；「All 需要联网」正确（SkillsView.tsx + skillsClient） |
 
-### G3. 变更清单（本 todo，一次提交）
+### G3. 变更清单（本 todo，一次提交 `9f68ed0e`，14 个文件）
 
-| 文件（en+zh 成对，10 个） | 内容 |
+| 文件（en+zh 成对，7 对） | 内容 |
 |---|---|
 | Using-FutureOS | Artifacts→Files（三栏描述、Chat vs Workspace 表、Artifacts 小节整体替换） |
 | Quick-Start | 第 5 步「最多三种视图」重写为 Files/Runs(+Review)；FutureGene「Connect」→「Sign in」 |
 | Skills | 内置技能表 11 项 → 实际 14 项（删 3 个不存在的，补 6 个漏掉的，Slides 名称订正） |
 | Settings | General 补 Auto-upgrade skills；FutureGene「Connect」→「Sign in」（删 Sign in again）；内置 provider「Set key/Update key」→「Configure」 |
 | Home | 「generated outputs (Artifacts)」→ Files/Runs/Review 表述 |
+| FAQ | 「FutureGene → Connect」→「FutureGene → Sign in」（EF5） |
+
+核验过程另见 fact-inventory.md：EH3/EQ1/EQ5/EU1/EU2/EU9/ES3/ES4/ESK3/EF5 已更新；§14a H14/H15 关闭。
