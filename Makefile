@@ -200,7 +200,7 @@ build-mobile-ios:
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent test-channels test-cli test-tui test-gui test-gui-rust test-mobile
+test: test-agent test-channels test-cli test-tui test-tui-rust test-gui test-gui-rust test-mobile
 
 test-agent:
 	cd agent && cargo test
@@ -216,6 +216,9 @@ test-tui:
 	$(call npm-install-if-needed,tui)
 	cd tui && npm test
 
+test-tui-rust:
+	rustup run 1.97.0 cargo test -p tui-rust
+
 test-gui:
 	$(call npm-install-if-needed,gui)
 	cd gui && npm test
@@ -229,7 +232,7 @@ test-mobile:
 
 # ─── Lint ───────────────────────────────────────────────────────────────────
 
-lint: lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui lint-mobile
+lint: lint-agent lint-channels lint-tui lint-tui-rust lint-cli lint-gui stylelint-gui lint-mobile
 
 lint-agent:
 	cd agent && cargo fmt --check && cargo clippy
@@ -239,6 +242,7 @@ lint-channels:
 
 lint-tui:
 	cd tui && npm run gen-version && npx tsc --noEmit
+	rustup run 1.97.0 cargo clippy -p tui-rust --all-targets -- -D warnings
 
 lint-cli:
 	cd cli && npm run gen-version && npx tsc --noEmit
@@ -451,6 +455,7 @@ help:
 	@echo "  build-mobile-ios     Generate, build, and install the iOS app (requires Xcode)"
 	@echo "  check-mobile       Typecheck, lint, format-check, and test mobile"
 	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
+	@echo "  test-tui-rust      Run the Rust TUI port unit tests (cargo test -p tui-rust)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
 	@echo "  fmt                Format Rust and mobile code"
 	@echo "  run-agent          Run agent directly (debug build)"

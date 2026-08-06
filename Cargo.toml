@@ -14,7 +14,7 @@
 # one place instead of chasing drift across the Cargo.tomls. Members opt in
 # with `{ workspace = true }` and may add features (cargo unifies them).
 [workspace]
-members = ["agent", "channels", "orchestration/loop"]
+members = ["agent", "channels", "orchestration/loop", "tui/rust"]
 default-members = ["agent", "channels"]
 exclude = ["gui"]
 resolver = "2"
