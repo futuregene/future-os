@@ -149,11 +149,9 @@ jobs:
         env:
           FUTURE_VERSION: ${{ needs.version.outputs.version }}
           FUTURE_BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
-          SIGNING_IDENTITY: ${{ env.SIGNING_IDENTITY }}
           DEVELOPMENT_TEAM: ${{ env.DEVELOPMENT_TEAM }}
         run: |
           set -euo pipefail
-          : "${SIGNING_IDENTITY:?SIGNING_IDENTITY is required}"
           : "${DEVELOPMENT_TEAM:?DEVELOPMENT_TEAM is required}"
 
           xcodebuild -workspace FutureOS.xcworkspace \
@@ -162,8 +160,8 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/FutureOS.xcarchive" \
             -allowProvisioningUpdates \
+            -automaticCodeSigning \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-            CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
             archive
 
           export_options="$RUNNER_TEMP/ExportOptions.plist"
