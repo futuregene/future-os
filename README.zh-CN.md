@@ -13,7 +13,7 @@
 
 > 本地优先的 AI Agent 工作台——终端、桌面、消息平台，一个后端全搞定。
 
-FutureOS 提供统一的 AI Agent 终端体验，并支持命令行（CLI）。Rust 后端负责 LLM 编排、工具执行和会话持久化；TypeScript 终端界面通过 gRPC 连接。写代码、做调研、管理文件——都在终端里完成。
+FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI)、飞书和钉钉——支持 macOS、Linux、Windows。Rust 后端负责 LLM 编排、工具执行和会话持久化；TypeScript 前端与 Tauri 桌面应用通过 gRPC 连接。写代码、做调研、管理文件——从终端、聊天软件或原生桌面窗口，无缝切换。
 
 ## 特性
 
