@@ -1,7 +1,7 @@
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 import { createUser, fromSeed } from "nkeys.js";
-import { isExpectedClaimUrl } from "../config/environment";
+import { isExpectedClaimUrl, natsWsUrlScheme } from "../config/environment";
 import { decodePairingCode, jwtExpiry, parsePairingInvitation, randomId } from "./codec";
 import { clearCredentials, loadDeviceId, saveDeviceId } from "./storage";
 import type { RemoteCredentials } from "./types";
@@ -16,6 +16,13 @@ interface ClaimResponse {
 interface RefreshResponse {
   user_jwt: string;
   nats_ws_url: string;
+}
+
+// NATS must be reached over TLS: iOS's ATS rejects plaintext `ws://` and the
+// server now hands out `wss://` everywhere. Refuse a non-`wss://` endpoint
+// rather than silently degrade to cleartext.
+function assertSecureNatsUrl(url: string): void {
+  if (natsWsUrlScheme(url) !== "wss") throw new Error("nats_ws_not_tls");
 }
 
 async function responseJson<T>(response: Response): Promise<T> {
@@ -58,6 +65,7 @@ export async function claimPairingCode(code: string): Promise<RemoteCredentials>
       }),
     }),
   );
+  assertSecureNatsUrl(body.nats_ws_url);
   const credentials: RemoteCredentials = {
     pairId: body.pair_id,
     deviceId: id,
@@ -94,6 +102,7 @@ export async function refreshCredentials(
     userJwt: body.user_jwt,
     natsWsUrl: body.nats_ws_url,
   };
+  assertSecureNatsUrl(body.nats_ws_url);
   return refreshed;
 }
 

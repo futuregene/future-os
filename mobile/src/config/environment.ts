@@ -11,6 +11,18 @@ export const PRODUCTION_PLATFORM_URL = "https://future-os.cn";
 // the test host (the production host has remote control disabled).
 export const PLATFORM_URL = IS_RELEASE ? PRODUCTION_PLATFORM_URL : DEVELOPMENT_PLATFORM_URL;
 
+/** NATS WebSocket scheme of an endpoint URL — `wss`, `ws`, or unrecognized. */
+export function natsWsUrlScheme(url: string): "wss" | "ws" | "other" {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "wss:") return "wss";
+    if (parsed.protocol === "ws:") return "ws";
+    return "other";
+  } catch {
+    return "other";
+  }
+}
+
 export function isExpectedClaimUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
