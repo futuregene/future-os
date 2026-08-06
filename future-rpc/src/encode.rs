@@ -345,9 +345,131 @@ fn replay_event_to_proto(event: &ReplayEventPayload) -> proto::ReplayEvent {
         timestamp: event.timestamp.clone(),
         session_idx: event.session_idx,
         run_sequence: event.run_sequence,
-        // Event payloads are typed in a later batch (events codec); replayed
-        // events keep the JSON string until then.
-        payload: None,
+        payload: event_payload(&event.event_type, &event.data),
+    }
+}
+
+// ── events ───────────────────────────────────────────────────────────────────
+
+/// Encode a stream event's JSON payload into its typed wire form. Returns
+/// `None` for pass-through event types (settings changes, ping, ...) and
+/// shape mismatches — those keep serving the JSON `data` string only.
+pub fn event_payload(event_type: &str, data_json: &str) -> Option<proto::EventPayload> {
+    use proto::event_payload::Kind;
+    let mut value: Value = serde_json::from_str(data_json).ok()?;
+    // The broadcast serializer injects a redundant "type" key into most
+    // payloads; the envelope already carries the type, so the typed form
+    // drops it.
+    if let Some(object) = value.as_object_mut() {
+        object.remove("type");
+    }
+    let kind = match event_type {
+        "text_chunk" => serde_json::from_value::<crate::event_payloads::TextChunkData>(value)
+            .ok()
+            .map(|data| Kind::TextChunk(proto::TextChunk { text: data.text })),
+        "user_message" => serde_json::from_value::<crate::event_payloads::UserMessageData>(value)
+            .ok()
+            .map(|data| Kind::UserMessage(proto::UserMessageEvent { text: data.text })),
+        "thinking_delta" => {
+            serde_json::from_value::<crate::event_payloads::ThinkingDeltaData>(value)
+                .ok()
+                .map(|data| Kind::ThinkingDelta(proto::ThinkingDelta { text: data.text }))
+        }
+        // Lifecycle markers carry no payload on the wire today.
+        "thinking_start" => Some(Kind::ThinkingStart(proto::ThinkingStart {})),
+        "thinking_end" => Some(Kind::ThinkingEnd(proto::ThinkingEnd {})),
+        "agent_start" => serde_json::from_value::<crate::event_payloads::AgentStartData>(value)
+            .ok()
+            .map(|data| {
+                Kind::AgentStart(proto::AgentStart {
+                    started_at_ms: data.started_at_ms,
+                })
+            }),
+        "agent_end" => serde_json::from_value::<crate::event_payloads::AgentEndData>(value)
+            .ok()
+            .map(|data| {
+                Kind::AgentEnd(proto::AgentEnd {
+                    state: data.state,
+                    error: data.error,
+                    duration_ms: data.duration_ms,
+                    output_tokens: data.usage.map(|usage| usage.output_tokens),
+                    reason: data.reason,
+                })
+            }),
+        "tool_start" => serde_json::from_value::<crate::event_payloads::ToolStartData>(value)
+            .ok()
+            .map(|data| {
+                Kind::ToolStart(proto::ToolStart {
+                    tool_id: data.tool_id,
+                    tool_name: data.tool_name,
+                    tool_args: data
+                        .tool_args
+                        .map(|args| serde_json::to_string(&args).unwrap_or_default())
+                        .unwrap_or_default(),
+                })
+            }),
+        "tool_delta" => serde_json::from_value::<crate::event_payloads::ToolDeltaData>(value)
+            .ok()
+            .map(|data| {
+                Kind::ToolDelta(proto::ToolDelta {
+                    tool_id: data.tool_id,
+                    text: data.text,
+                    tc_index: data.tc_index,
+                })
+            }),
+        "tool_end" => serde_json::from_value::<crate::event_payloads::ToolEndData>(value)
+            .ok()
+            .map(|data| {
+                Kind::ToolEnd(proto::ToolEnd {
+                    tool_id: data.tool_id,
+                    tool_name: data.tool_name,
+                    text: data.text,
+                    error: if data.error.is_empty() {
+                        None
+                    } else {
+                        Some(data.error)
+                    },
+                    exit_code: data.exit_code,
+                    is_soft_fail: data.is_soft_fail,
+                    target_path: data.target_path,
+                })
+            }),
+        "approval_request" => approval_card_to_proto(&value).map(Kind::ApprovalRequest),
+        "approval_decision" => {
+            serde_json::from_value::<crate::event_payloads::ApprovalDecisionData>(value)
+                .ok()
+                .map(|data| {
+                    Kind::ApprovalDecision(proto::ApprovalDecisionEvent {
+                        approval_request_id: data.approval_request_id,
+                        tool_id: data.tool_id,
+                        status: data.status,
+                        note: data.note,
+                    })
+                })
+        }
+        "usage" => serde_json::from_value::<crate::event_payloads::UsageEventData>(value)
+            .ok()
+            .map(|data| {
+                Kind::Usage(proto::UsageEvent {
+                    usage: Some(usage_to_proto(&data.usage)),
+                })
+            }),
+        "error" => serde_json::from_value::<crate::event_payloads::ErrorEventData>(value)
+            .ok()
+            .map(|data| Kind::Error(proto::ErrorEvent { error: data.error })),
+        _ => None,
+    };
+    kind.map(|kind| proto::EventPayload { kind: Some(kind) })
+}
+
+fn usage_to_proto(usage: &crate::event_payloads::UsageData) -> proto::UsageInfo {
+    proto::UsageInfo {
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_write_tokens: usage.cache_write_tokens,
+        credit_cost: usage.credit_cost,
     }
 }
 

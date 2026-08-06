@@ -665,3 +665,172 @@ fn session_events_since_from_proto(
             .collect(),
     }
 }
+
+// ── events ───────────────────────────────────────────────────────────────────
+
+/// The event payload as a JSON value. During the migration window the
+/// original `data` string wins (byte-stable for journal/NATS consumers);
+/// the typed reconstruction takes over when `data` is absent (the future
+/// state once dual-write ends).
+pub fn event_data(event: &proto::StreamEvent) -> Value {
+    if !event.data.is_empty() {
+        return serde_json::from_str(&event.data).unwrap_or(Value::Null);
+    }
+    typed_event_value(event.payload.as_ref().and_then(|p| p.kind.as_ref()))
+}
+
+/// Canonical JSON text of [`event_data`]: the original `data` string
+/// verbatim when present (byte-identical for persistence/republish
+/// consumers), else the typed reconstruction.
+pub fn event_data_json(event: &proto::StreamEvent) -> String {
+    if !event.data.is_empty() {
+        return event.data.clone();
+    }
+    typed_event_json(event.payload.as_ref().and_then(|p| p.kind.as_ref()))
+}
+
+/// [`event_data`] for projection-snapshot events.
+pub fn projected_event_data(event: &proto::ProjectedRunEvent) -> Value {
+    if !event.data.is_empty() {
+        return serde_json::from_str(&event.data).unwrap_or(Value::Null);
+    }
+    typed_event_value(event.payload.as_ref().and_then(|p| p.kind.as_ref()))
+}
+
+/// [`event_data_json`] for projection-snapshot events.
+pub fn projected_event_data_json(event: &proto::ProjectedRunEvent) -> String {
+    if !event.data.is_empty() {
+        return event.data.clone();
+    }
+    typed_event_json(event.payload.as_ref().and_then(|p| p.kind.as_ref()))
+}
+
+/// [`event_data`] for replayed events (get_events_since).
+pub fn replay_event_data(event: &proto::ReplayEvent) -> Value {
+    if !event.data.is_empty() {
+        return serde_json::from_str(&event.data).unwrap_or(Value::Null);
+    }
+    typed_event_value(event.payload.as_ref().and_then(|p| p.kind.as_ref()))
+}
+
+/// [`event_data_json`] for replayed events (get_events_since).
+pub fn replay_event_data_json(event: &proto::ReplayEvent) -> String {
+    if !event.data.is_empty() {
+        return event.data.clone();
+    }
+    typed_event_json(event.payload.as_ref().and_then(|p| p.kind.as_ref()))
+}
+
+fn typed_event_value(kind: Option<&proto::event_payload::Kind>) -> Value {
+    let Some(kind) = kind else {
+        return Value::Null;
+    };
+    typed_event_json_inner(kind).unwrap_or(Value::Null)
+}
+
+fn typed_event_json(kind: Option<&proto::event_payload::Kind>) -> String {
+    let Some(kind) = kind else {
+        return String::new();
+    };
+    match typed_event_json_inner(kind) {
+        Some(value) => serde_json::to_string(&value).unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+/// Reconstruct the canonical payload shape from the typed event form. The
+/// redundant `type` key the JSON serializer injects is NOT re-added — every
+/// consumer keys off the envelope type. Field presence mirrors the broadcast
+/// serializer: empty strings and absent optionals stay omitted.
+fn typed_event_json_inner(kind: &proto::event_payload::Kind) -> Option<serde_json::Value> {
+    use crate::event_payloads as ev;
+    use proto::event_payload::Kind as K;
+    match kind {
+        K::TextChunk(data) => serde_json::to_value(ev::TextChunkData {
+            text: data.text.clone(),
+        })
+        .ok(),
+        K::UserMessage(data) => serde_json::to_value(ev::UserMessageData {
+            text: data.text.clone(),
+        })
+        .ok(),
+        K::ThinkingDelta(data) => serde_json::to_value(ev::ThinkingDeltaData {
+            text: data.text.clone(),
+        })
+        .ok(),
+        K::ThinkingStart(_) => serde_json::to_value(ev::ThinkingMarkerData::default()).ok(),
+        K::ThinkingEnd(_) => serde_json::to_value(ev::ThinkingMarkerData::default()).ok(),
+        K::AgentStart(data) => serde_json::to_value(ev::AgentStartData {
+            started_at_ms: data.started_at_ms,
+        })
+        .ok(),
+        K::AgentEnd(data) => serde_json::to_value(ev::AgentEndData {
+            state: data.state.clone(),
+            error: data.error.clone(),
+            duration_ms: data.duration_ms,
+            usage: data.output_tokens.map(|tokens| ev::AgentEndUsage {
+                output_tokens: tokens,
+            }),
+            reason: data.reason.clone(),
+        })
+        .ok(),
+        K::ToolStart(data) => serde_json::to_value(ev::ToolStartData {
+            tool_id: data.tool_id.clone(),
+            tool_name: data.tool_name.clone(),
+            tool_args: inflate_optional_json(&data.tool_args),
+            tc_index: None,
+        })
+        .ok(),
+        K::ToolDelta(data) => serde_json::to_value(ev::ToolDeltaData {
+            tool_id: data.tool_id.clone(),
+            text: data.text.clone(),
+            tc_index: data.tc_index,
+        })
+        .ok(),
+        K::ToolEnd(data) => serde_json::to_value(ev::ToolEndData {
+            tool_id: data.tool_id.clone(),
+            tool_name: data.tool_name.clone(),
+            text: data.text.clone(),
+            error: data.error.clone().unwrap_or_default(),
+            exit_code: data.exit_code,
+            is_soft_fail: data.is_soft_fail,
+            target_path: data.target_path.clone(),
+        })
+        .ok(),
+        K::ApprovalRequest(info) => Some(approval_card_from_proto(info)),
+        K::ApprovalDecision(data) => serde_json::to_value(ev::ApprovalDecisionData {
+            approval_request_id: data.approval_request_id.clone(),
+            tool_id: data.tool_id.clone(),
+            status: data.status.clone(),
+            note: data.note.clone(),
+        })
+        .ok(),
+        K::Usage(data) => {
+            let usage = data.usage.unwrap_or_default();
+            serde_json::to_value(ev::UsageEventData {
+                usage: ev::UsageData {
+                    prompt_tokens: usage.prompt_tokens,
+                    completion_tokens: usage.completion_tokens,
+                    total_tokens: usage.total_tokens,
+                    cache_read_tokens: usage.cache_read_tokens,
+                    cache_write_tokens: usage.cache_write_tokens,
+                    credit_cost: usage.credit_cost,
+                },
+            })
+            .ok()
+        }
+        K::Error(data) => serde_json::to_value(ev::ErrorEventData {
+            error: data.error.clone(),
+        })
+        .ok(),
+    }
+}
+
+/// Re-inflate a serialized-JSON carrier that may be empty (absent on the
+/// wire) into the original JSON value.
+fn inflate_optional_json(raw: &str) -> Option<Value> {
+    if raw.is_empty() {
+        return None;
+    }
+    Some(serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string())))
+}

@@ -61,23 +61,28 @@ fn map_broadcast_event(
     session_id: &str,
 ) -> Result<proto::StreamEvent, tonic::Status> {
     match result {
-        Ok(event) => Ok(proto::StreamEvent {
-            r#type: event.event_type,
-            data: event.data,
-            run_id: event.run_id,
-            idx: event.idx,
-            projection_snapshot: false,
-            snapshot_events: Vec::new(),
-            snapshot_cursor: 0,
-            session_id: session_id.to_string(),
-            epoch: event.epoch,
-            event_id: event.event_id,
-            timestamp: event.timestamp,
-            session_idx: event.session_idx,
-            run_sequence: event.run_sequence,
-            // Event payloads are dual-written in a later typed-RPC batch.
-            payload: None,
-        }),
+        Ok(event) => {
+            // Typed-RPC dual-write: encode the JSON payload into its typed
+            // form alongside the unchanged `data` string (pass-through event
+            // types return None and stay JSON-only).
+            let payload = future_rpc::encode::event_payload(&event.event_type, &event.data);
+            Ok(proto::StreamEvent {
+                r#type: event.event_type,
+                data: event.data,
+                run_id: event.run_id,
+                idx: event.idx,
+                projection_snapshot: false,
+                snapshot_events: Vec::new(),
+                snapshot_cursor: 0,
+                session_id: session_id.to_string(),
+                epoch: event.epoch,
+                event_id: event.event_id,
+                timestamp: event.timestamp,
+                session_idx: event.session_idx,
+                run_sequence: event.run_sequence,
+                payload,
+            })
+        }
         Err(error) => {
             // Non-atomic observers can remain subscribed across multiple runs,
             // so resolve the canonical run at the moment lag is observed rather
@@ -368,13 +373,17 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         snapshot_events: projection
                             .events
                             .into_iter()
-                            .map(|event| proto::ProjectedRunEvent {
-                                r#type: event.event_type,
-                                data: event.data,
-                                idx: event.idx,
-                                // Event payloads are dual-written in a later
-                                // typed-RPC batch.
-                                payload: None,
+                            .map(|event| {
+                                let payload = future_rpc::encode::event_payload(
+                                    &event.event_type,
+                                    &event.data,
+                                );
+                                proto::ProjectedRunEvent {
+                                    r#type: event.event_type,
+                                    data: event.data,
+                                    idx: event.idx,
+                                    payload,
+                                }
                             })
                             .collect(),
                         snapshot_cursor: projection.cursor,
@@ -387,29 +396,25 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         payload: None,
                     });
                 }
-                initial.extend(
-                    attachment
-                        .events
-                        .into_iter()
-                        .map(|event| proto::StreamEvent {
-                            r#type: event.event_type,
-                            data: event.data,
-                            run_id: event.run_id,
-                            idx: event.idx,
-                            projection_snapshot: false,
-                            snapshot_events: Vec::new(),
-                            snapshot_cursor: 0,
-                            session_id: session_id.clone(),
-                            epoch: event.epoch,
-                            event_id: event.event_id,
-                            timestamp: event.timestamp,
-                            session_idx: event.session_idx,
-                            run_sequence: event.run_sequence,
-                            // Event payloads are dual-written in a later
-                            // typed-RPC batch.
-                            payload: None,
-                        }),
-                );
+                initial.extend(attachment.events.into_iter().map(|event| {
+                    let payload = future_rpc::encode::event_payload(&event.event_type, &event.data);
+                    proto::StreamEvent {
+                        r#type: event.event_type,
+                        data: event.data,
+                        run_id: event.run_id,
+                        idx: event.idx,
+                        projection_snapshot: false,
+                        snapshot_events: Vec::new(),
+                        snapshot_cursor: 0,
+                        session_id: session_id.clone(),
+                        epoch: event.epoch,
+                        event_id: event.event_id,
+                        timestamp: event.timestamp,
+                        session_idx: event.session_idx,
+                        run_sequence: event.run_sequence,
+                        payload,
+                    }
+                }));
                 (attachment.receiver, initial, sess.broadcaster.clone())
             } else {
                 (

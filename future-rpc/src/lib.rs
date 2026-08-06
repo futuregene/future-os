@@ -19,6 +19,7 @@ pub mod proto {
     include!("generated/proto.rs");
 }
 
+pub mod event_payloads;
 pub mod payloads;
 pub mod payloads_ext;
 

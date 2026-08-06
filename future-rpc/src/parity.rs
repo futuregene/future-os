@@ -656,3 +656,299 @@ fn get_session_events_since_wire_parity() {
         }),
     );
 }
+
+// ── event payloads ───────────────────────────────────────────────────────────
+
+/// Event wire-parity: encode the real wire `data` JSON into the typed form,
+/// then verify (a) data-first decode returns the original JSON verbatim
+/// (byte-stable for journal/NATS consumers during the migration window) and
+/// (b) typed-only decode reconstructs the canonical shape — the wire JSON
+/// minus the redundant injected `type` key.
+fn assert_event_parity(event_type: &str, wire_data: Value) {
+    let encoded = encode::event_payload(event_type, &wire_data.to_string())
+        .unwrap_or_else(|| panic!("{event_type}: event encode returned None"));
+
+    // Dual-write: the original data string wins, byte-stable.
+    let event = proto::StreamEvent {
+        r#type: event_type.to_string(),
+        data: wire_data.to_string(),
+        payload: Some(encoded.clone()),
+        ..Default::default()
+    };
+    assert_eq!(
+        decode::event_data(&event),
+        wire_data,
+        "{event_type}: data-first decode must return the wire JSON"
+    );
+    assert_eq!(
+        decode::event_data_json(&event),
+        wire_data.to_string(),
+        "{event_type}: data-first decode must return the wire string verbatim"
+    );
+
+    // Typed-only (future state): canonical reconstruction = wire minus the
+    // redundant injected `type` key.
+    let mut canonical = wire_data.clone();
+    if let Some(object) = canonical.as_object_mut() {
+        object.remove("type");
+    }
+    let typed_only = proto::StreamEvent {
+        r#type: event_type.to_string(),
+        data: String::new(),
+        payload: Some(encoded),
+        ..Default::default()
+    };
+    assert_eq!(
+        decode::event_data(&typed_only),
+        canonical,
+        "{event_type}: typed-only decode must equal the canonical shape"
+    );
+}
+
+#[test]
+fn text_chunk_event_parity() {
+    assert_event_parity("text_chunk", json!({"text": "Hello"}));
+}
+
+#[test]
+fn user_message_event_parity() {
+    assert_event_parity("user_message", json!({"text": "do the thing"}));
+}
+
+#[test]
+fn error_event_parity() {
+    // Inline run-error build (no injected type key)...
+    assert_event_parity("error", json!({"error": "model exploded"}));
+    // ...and the provider-derived variant with the injected type key: both
+    // reconstruct to the same canonical shape.
+    assert_event_parity("error", json!({"type": "error", "error": "provider error"}));
+}
+
+#[test]
+fn agent_start_event_parity() {
+    assert_event_parity(
+        "agent_start",
+        json!({"type": "agent_start", "started_at_ms": 1750000000000_u64}),
+    );
+}
+
+#[test]
+fn agent_end_event_parity() {
+    // Clean completion with run totals.
+    assert_event_parity(
+        "agent_end",
+        json!({
+            "type": "agent_end",
+            "state": "completed",
+            "usage": {"output_tokens": 42},
+            "duration_ms": 1234
+        }),
+    );
+    // Truncated stream marker.
+    assert_event_parity(
+        "agent_end",
+        json!({
+            "type": "agent_end",
+            "state": "completed",
+            "usage": {"output_tokens": 7},
+            "duration_ms": 99,
+            "reason": "incomplete"
+        }),
+    );
+    // Early task-spawn failure: only the error.
+    assert_event_parity(
+        "agent_end",
+        json!({"type": "agent_end", "error": "Failed to start accepted run task"}),
+    );
+}
+
+#[test]
+fn thinking_event_parity() {
+    assert_event_parity(
+        "thinking_delta",
+        json!({"type": "thinking_delta", "text": "Let me consider..."}),
+    );
+    // Lifecycle markers carry no payload.
+    assert_event_parity("thinking_start", json!({"type": "thinking_start"}));
+    assert_event_parity("thinking_end", json!({"type": "thinking_end"}));
+}
+
+#[test]
+fn tool_start_event_parity() {
+    assert_event_parity(
+        "tool_start",
+        json!({
+            "type": "tool_start",
+            "tool_name": "shell",
+            "tool_id": "call_1",
+            "tool_args": {"command": "ls -la"}
+        }),
+    );
+    // JSON-encoded-string arguments variant (some providers).
+    assert_event_parity(
+        "tool_start",
+        json!({
+            "type": "tool_start",
+            "tool_name": "read",
+            "tool_id": "call_2",
+            "tool_args": "{\"path\":\"a.txt\"}"
+        }),
+    );
+}
+
+#[test]
+fn tool_delta_event_parity() {
+    assert_event_parity(
+        "tool_delta",
+        json!({
+            "type": "tool_delta",
+            "tool_id": "call_1",
+            "text": "{\"comma",
+            "tc_index": 2
+        }),
+    );
+}
+
+#[test]
+fn tool_end_event_parity() {
+    // Shell soft-fail semantics. The serializer omits empty `text` (it only
+    // inserts non-empty strings), so no `text` key here.
+    assert_event_parity(
+        "tool_end",
+        json!({
+            "type": "tool_end",
+            "tool_name": "shell",
+            "tool_id": "call_1",
+            "exit_code": 1,
+            "is_soft_fail": true
+        }),
+    );
+    // write/edit target path + output.
+    assert_event_parity(
+        "tool_end",
+        json!({
+            "type": "tool_end",
+            "tool_name": "write",
+            "tool_id": "call_2",
+            "text": "File written",
+            "target_path": "/w/a.txt"
+        }),
+    );
+    // Error result.
+    assert_event_parity(
+        "tool_end",
+        json!({
+            "type": "tool_end",
+            "tool_name": "shell",
+            "tool_id": "call_3",
+            "text": "partial output",
+            "error": "command failed"
+        }),
+    );
+}
+
+#[test]
+fn usage_event_parity() {
+    assert_event_parity(
+        "usage",
+        json!({
+            "type": "usage",
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "cache_read_tokens": 20,
+                "cache_write_tokens": 5,
+                "credit_cost": 0.0002
+            }
+        }),
+    );
+}
+
+#[test]
+fn approval_request_event_parity() {
+    assert_event_parity(
+        "approval_request",
+        json!({
+            "type": "approval_request",
+            "approval_request_id": "approval_1",
+            "session_id": "s1",
+            "tool_id": "call_1",
+            "tool_name": "shell",
+            "kind": "tool",
+            "risk_level": "medium",
+            "title": "Run command",
+            "summary": "ls -la",
+            "requested_action": {"command": "ls -la"},
+            "action": {"command": "ls -la", "cwd": "/w"},
+            "sandbox_boundary": null,
+            "save_suggestion": {
+                "match_kind": "command_prefix",
+                "match_value": "ls",
+                "decision": "approve"
+            },
+            "reviewer": "user"
+        }),
+    );
+}
+
+#[test]
+fn approval_decision_event_parity() {
+    assert_event_parity(
+        "approval_decision",
+        json!({
+            "type": "approval_decision",
+            "approval_request_id": "approval_1",
+            "tool_id": "call_1",
+            "status": "approved",
+            "note": ""
+        }),
+    );
+}
+
+#[test]
+fn pass_through_events_stay_untyped() {
+    // Settings/ping/sideband events have no typed member; encode returns
+    // None and they keep riding the JSON `data` string.
+    for (event_type, data) in [
+        ("model_changed", json!({"model": "provider/next"})),
+        ("ping", json!({"type": "ping"})),
+        (
+            "tool_sandboxed",
+            json!({"type": "tool_sandboxed", "command": "ls"}),
+        ),
+        ("persistence_error", json!({"error": "disk full"})),
+        (
+            "compaction_end",
+            json!({"type": "compaction_end", "tokens_before": 1}),
+        ),
+    ] {
+        assert!(
+            encode::event_payload(event_type, &data.to_string()).is_none(),
+            "{event_type}: must stay on the JSON data string"
+        );
+    }
+}
+
+/// Hot-path budget: text_chunk is emitted per token, so its typed encode
+/// must stay cheap. Generous ceiling (5µs/event) — a regression beyond this
+/// fails the build instead of silently taxing the stream. Measured cost on
+/// dev hardware is well under 1µs.
+#[test]
+fn text_chunk_encode_stays_within_budget() {
+    let data = r#"{"text":"a streaming token"}"#.to_string();
+    // Warm-up (allocator/JIT-free Rust, but keep the first-touch cost out).
+    for _ in 0..1000 {
+        std::hint::black_box(encode::event_payload("text_chunk", &data));
+    }
+    let iterations = 20_000;
+    let start = std::time::Instant::now();
+    for _ in 0..iterations {
+        std::hint::black_box(encode::event_payload("text_chunk", &data));
+    }
+    let per_event = start.elapsed() / iterations;
+    assert!(
+        per_event < std::time::Duration::from_micros(5),
+        "text_chunk encode too slow: {per_event:?}/event"
+    );
+}
