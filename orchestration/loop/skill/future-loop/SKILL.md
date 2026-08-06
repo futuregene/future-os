@@ -117,6 +117,30 @@ future-loop todo add --goal <goal-id> --text "Copy the final deliverables to the
 
 Rule of thumb: if "X must finish before Y can start", add `--blocks X` to Y.
 
+**Todo-creation pitfalls (field-tested 2026-08, cli-rust-port goal).**
+
+1. **Capture todo ids from the `todo add` output itself.** The command prints
+   the new id (`todo todo_xxx added ✔`) — that is the only reliable source.
+   There is NO `future-loop todo list` subcommand; piping
+   `--blocks $(future-loop todo list …)` fails SILENTLY (the substitution
+   yields an empty string, `--blocks` is accepted with no value, and the
+   dependency is quietly dropped). To look ids up afterwards, parse
+   `future-loop status --goal G` (`todos:` line lists `id=status`).
+2. **Verify the wiring after creation.** Run `future-loop status --goal G` and
+   confirm each dependent todo's `blocks` is set. An empty `--blocks` never
+   errors — only a status check catches it. Repair with
+   `future-loop todo update --goal G --todo-id T --blocks <id>`.
+3. **Chain the FINAL validation todo too.** The run loop schedules any open,
+   unblocked todo — priority alone does NOT order execution. The last
+   acceptance/validation todo MUST `--blocks` all implementation todos;
+   otherwise it can be picked while they are still stubs (observed: the
+   differential-test todo ran mid-port and had to be re-planned via
+   `complete --successor` back to the implementation todos).
+4. **`goal init` auto-creates an onboarding todo.** A fresh goal starts with
+   one extra open todo ("Run `future-loop status` … record the goal count as
+   evidence"). Complete it with `--no-follow-up` during setup; don't mistake
+   it for a real work item.
+
 If the user asks for approval before a specific action, create a real gate:
 ```bash
 future-loop todo add --goal <goal-id> --role user --class user_gate \
@@ -299,6 +323,7 @@ future-loop todo complete --goal <goal-id> --todo-id <stale-id> --no-follow-up \
 future-loop status [--goal G]
 future-loop goal init --objective "..." --cwd DIR [--goal-id G] [--goal-doc "..."]
 future-loop todo add --goal G --text "..." [--priority P0|P1|P2] [--role user --class user_gate --gate-question "..." --blocks T]
+future-loop todo update --goal G --todo-id T [--text "..."] [--priority ...] [--blocks T]   # fix wiring after add
 future-loop todo claim --goal G --todo-id T --agent-id A [--lease-secs N]
 future-loop todo complete --goal G --todo-id T [--no-follow-up | --successor T2] [--evidence "..."]
 future-loop todo supersede --goal G --todo-id T --reason "..."
