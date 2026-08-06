@@ -162,9 +162,21 @@ mod tests {
     #[test]
     fn home_ssh_subtree_is_deny_read() {
         let ws = temp_workspace();
-        let plan = plan_for(&ws);
-        let ssh =
-            crate::sandbox::paths::canonicalize_lenient(&dirs::home_dir().unwrap().join(".ssh"));
+        // Capture + canonicalize home ONCE (rule bases are canonicalized
+        // during resolution; /var -> /private/var on macOS must not split
+        // assertion from guard). Immune to other tests mutating $HOME
+        // concurrently (TestHome in rpc::commands).
+        let home = crate::sandbox::paths::canonicalize_lenient(&dirs::home_dir().unwrap());
+        let rules =
+            crate::sandbox::rules::RuleSet::resolve_isolated_with_home(std::path::Path::new(&ws), &home);
+        let sandbox = ResolvedSandbox {
+            tier: SandboxTier::Manual,
+            available: crate::sandbox::platform_sandbox_available(),
+            workspace: rules.workspace.clone(),
+            rules,
+        };
+        let plan = build_plan(&sandbox);
+        let ssh = home.join(".ssh");
         assert!(
             plan.deny_read.contains(&ssh),
             "~/.ssh subtree must be deny-read"

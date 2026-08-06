@@ -2196,8 +2196,15 @@ mod tests {
             let previous_home = std::env::var_os("HOME");
             let previous_userprofile = std::env::var_os("USERPROFILE");
             let dir = tempfile::tempdir().expect("tempdir");
-            std::env::set_var("HOME", dir.path());
-            std::env::set_var("USERPROFILE", dir.path());
+            // Use the CANONICAL tempdir as $HOME: on macOS /var -> /private/var
+            // is a symlink, and sandbox rules canonicalize their bases — a raw
+            // (non-canonical) $HOME would make raw dirs::home_dir() paths never
+            // match canonicalized rule bases, flaking any test that compares
+            // them (e.g. the credential-guard sandbox tests) under parallel
+            // test execution.
+            let canonical_home = crate::sandbox::paths::canonicalize_lenient(dir.path());
+            std::env::set_var("HOME", &canonical_home);
+            std::env::set_var("USERPROFILE", &canonical_home);
             Self {
                 previous_home,
                 previous_userprofile,
