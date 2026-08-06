@@ -146,6 +146,17 @@ jobs:
         if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings
 
+      # The generated wire code (future-rpc proto.rs, channels feishu_ws.rs) is
+      # checked in; guard against proto edits that skip `make generate-proto`.
+      # Output is deterministic for pinned prost/tonic-build, so a regenerate
+      # on the same source must be a no-op.
+      - name: proto codegen is fresh
+        if: needs.changes.outputs.rust_workspace == 'true'
+        run: |
+          (cd future-rpc && REGENERATE_PROTO=1 cargo build)
+          (cd channels && REGENERATE_PROTO=1 cargo build)
+          git diff --exit-code future-rpc/src/generated/proto.rs channels/src/generated/
+
       # ── GUI Tauri backend ──
       - name: rustfmt (GUI backend)
         if: needs.changes.outputs.gui_tauri == 'true'
