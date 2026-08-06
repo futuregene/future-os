@@ -15,6 +15,8 @@
 |---|---|---|
 | 「The release binary is named **`future-cli`**…user-facing wiki must always use `future-cli`, never `future`」 | docs/wiki-prompt-en.md L127, L170-171, L173-174, L219 | `cli/package.json` `bin: {"future": "dist/index.js"}`；Makefile `build-cli` → `bun build --compile dist/index.js --outfile dist/future`（Makefile L159）；Tauri sidecar 名 `future-<triple>`（gui/src-tauri/tauri.conf.json externalBin）。**release 二进制就是 `future`**。zh 版 wiki-prompt.md L171/L219 的 `future` 禁令才是对的 |
 
+→ ✅ **已修复（todo_285b37996a0d，commit 见下）**：wiki-prompt-en.md 全部 `future-cli` 改为 `future`（§6 表格/侧边栏、§7 CLI 定位/位置/运行/命令组/小贴士、§9 A.4 自检项），与 zh 版一致。
+
 ### A2. `future agent start/stop/restart` 与 `future channel …` 已从 CLI 移除（2026-07-16）
 
 commit `eed93369`（2026-07-16）`refactor(cli): remove service management and launcher commands` 删除了 `future agent *`、`future channel *`、`future gui`、`future tui`。现状：`future agent` 只有 `status`；**没有 `channel` 命令组**。用户按 `make install` 后直接运行 `future-agent` / `future-channel` 二进制。
@@ -26,6 +28,10 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 | `future agent start`（agent 必须运行） | docs/wiki/{en,zh}/CLI.md L41, L59-61, L119；docs/wiki/{en,zh}/Feishu.md L22；docs/wiki/{en,zh}/DingTalk.md L22 |
 | `future channel start/status/stop/restart`（服务管理） | docs/wiki/{en,zh}/Feishu.md L144-147(en)/L145-148(zh)；docs/wiki/{en,zh}/DingTalk.md L96-99；docs/wiki/{en,zh}/Feishu.md L185(en)/L186(zh)、DingTalk.md L151（排障「future channel status」） |
 | wiki-prompt 命令组描述 | docs/wiki-prompt.md L177, L183, L185；docs/wiki-prompt-en.md L177, L183, L185 |
+
+→ ✅ **wiki-prompt 部分已修复（todo_285b37996a0d）**：两个 prompt 的 CLI 节全面对齐 `cli/src/index.ts` 实际命令面——`agent` 组仅 `status`（无 start/stop，CLI 不能启停 agent，已注明）、删除不存在的 `channel` 组、skills 补 `install-builtin`/`update`、auth 补 `credential`、补齐 `init`/`account`/`models`/`session`/`doctor` 组、tools 补 `describe` 与 `--input` 等旗标、run 补 `--fork`/`--session`/`--permission`；同时修正「agent 必须在运行」与 FAQ 排障里的 `future agent start`（改为打开桌面应用或手动运行 `future-agent`）。
+
+⚠️ **wiki 页面本身（docs/wiki/{en,zh}/CLI.md、Feishu.md、DingTalk.md）仍待后继 todo 修复**（下述 A3/A4/B1/B7 与 Feishu/DingTalk 页内 `future channel *`、`build-channels-release` 等）。另：本次发现 Windows 安装版也带 CLI——build.yml 把 `future.exe` 复制为 Tauri sidecar `binaries/future-<triple>.exe` 打进 NSIS 安装器，故「CLI 只在便携包」的旧表述（含 wiki CLI.md 表格下注释）应改为「安装版与便携版都带」。
 
 改法建议：改为「启动组件：`future-agent`（agent）、`future-channels`（渠道桥）；服务管理不再由 CLI 提供，桌面应用会自动拉起 agent」等（对应移除 commit 的意图）。
 
@@ -72,7 +78,7 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 |---|---|---|
 | `future skills install # install all future-* skills (~13)`（zh 同） | docs/build-and-install.md L171；zh L159 | skills/builtin/ 现含 **14** 个 future-* 技能（future-account/browser/database-lookup/deep-research/document/experimental-design/image/paper/peer-review/scientific-writing/skill-creator/slides/software-install/web） |
 
-→ 已改为「(14)」/「（14 个）」。另注：**`future skills update` 确实存在**（cli/src/commands/skills.ts L19/L48-49/L287-328 已实现 updateSkills）——build-and-install L165/zh L163 此声明正确，错误在 wiki-prompt W12/WE（说「没有 update」），留待 wiki-prompt todo 修正。
+→ 已改为「(14)」/「（14 个）」。另注：**`future skills update` 确实存在**（cli/src/commands/skills.ts L19/L48-49/L287-328 已实现 updateSkills）——build-and-install L165/zh L163 此声明正确，错误在 wiki-prompt W12/WE（说「没有 update」），留待 wiki-prompt todo 修正。→ ✅ **已修正（todo_285b37996a0d）**：两个 wiki-prompt 的 skills 子命令改为 `list` / `install [<name>]` / `install-builtin` / `uninstall <name>` / `update`。
 
 ### B3. README 模型数量表述过时（低估）—— ✅ 已修复（commit b3b2e114，todo_5d852f73fcb6）
 
@@ -89,6 +95,10 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 | 声明 | 位置 | 依据 |
 |---|---|---|
 | 页面清单 10 页、侧边栏无 Integrations 分组 | docs/wiki-prompt.md W6-W7（L52-109）；en 对应 | 实际 wiki 有 Feishu.md、DingTalk.md，_Sidebar 含 Integrations 分组（docs/wiki/en/_Sidebar.md L4-20） |
+
+→ ✅ **已修复（todo_285b37996a0d）**：两个 prompt 的页面清单补入 `Feishu.md`（飞书集成）、`DingTalk.md`（钉钉集成），§6 侧边栏加「集成 / Integrations」分组，§7 新增 Feishu/DingTalk 内容要点（代码入口指向 `channels/src/`；注明渠道桥为独立服务 `future-channel`、无 `future channel` 命令、斜杠命令 9 个本地处理、未知斜杠转发给 agent、配置 `~/.future/channels/config.json`、CardKit 卡片流式回复）；另加注 **`Models.md` 由 `make generate-models` 自动生成（scripts/generate_models.py），不手写、不进侧边栏**。
+
+同轮其它修正（均以源码核实）：Installation 节「已签名+Apple 公证」→「当前发布包未公证/未签名（以 `docs/dist/readme-*.txt` 为准；仓库另有签名/公证发布流水线）」，与 FAQ 口径一致；Settings 节页码清单改为实测值（`SettingsDialog.tsx`：用户可见页 General/Account/Update/About/Providers/Models/Reset；Remote/Environment 为 devOnly 不写）。
 
 ### B5. `make generate-proto` 覆盖范围少写一端 —— ✅ 已修复（todo_cbbb063d2fd4）
 
