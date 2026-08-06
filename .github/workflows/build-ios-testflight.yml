@@ -140,10 +140,14 @@ jobs:
           : "${APPLE_API_KEY:?APPLE_API_KEY secret is required}"
           : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID secret is required}"
           : "${APPLE_API_ISSUER:?APPLE_API_ISSUER secret is required}"
-          api_key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-          printf '%s' "$APPLE_API_KEY" | base64 -D > "$api_key"
-          chmod 600 "$api_key"
-          echo "APPLE_API_KEY_PATH=$api_key" >> "$GITHUB_ENV"
+          # altool's --apiKeyPath is a DIRECTORY containing AuthKey_<id>.p8,
+          # not the file itself (unlike notarytool). Write it where altool
+          # looks by default.
+          keys_dir="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$keys_dir"
+          printf '%s' "$APPLE_API_KEY" | base64 -D > "$keys_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
+          chmod 600 "$keys_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "APPLE_API_KEY_DIR=$keys_dir" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         working-directory: mobile
@@ -217,13 +221,13 @@ jobs:
 
       - name: Upload to TestFlight
         env:
-          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          APPLE_API_KEY_DIR: ${{ env.APPLE_API_KEY_DIR }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           set -euo pipefail
           : "${IPA_PATH:?IPA_PATH is required}"
-          : "${APPLE_API_KEY_PATH:?APPLE_API_KEY_PATH is required}"
+          : "${APPLE_API_KEY_DIR:?APPLE_API_KEY_DIR is required}"
           : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID secret is required}"
           : "${APPLE_API_ISSUER:?APPLE_API_ISSUER secret is required}"
           [[ -s "$IPA_PATH" ]] || { echo "IPA is missing or empty: $IPA_PATH" >&2; exit 1; }
@@ -233,7 +237,7 @@ jobs:
             --type ios \
             --apiKey "$APPLE_API_KEY_ID" \
             --apiIssuer "$APPLE_API_ISSUER" \
-            --apiKeyPath "$APPLE_API_KEY_PATH" \
+            --apiKeyPath "$APPLE_API_KEY_DIR" \
             --verbose
 
       - name: Upload IPA to OSS
@@ -266,6 +270,7 @@ jobs:
       - name: Clean up signing material
         if: always()
         run: |
+          rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_*.p8"
           rm -f "$RUNNER_TEMP"/AuthKey_*.p8 "$RUNNER_TEMP/futureos-ios-signing.p12"
           keychain="$RUNNER_TEMP/futureos-signing.keychain-db"
           if [[ -f "$keychain" ]]; then
