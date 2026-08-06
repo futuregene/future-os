@@ -121,11 +121,19 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 
 两说都各自成立（不同产物）。建议 Installation.md 措辞改为「官方签名版本经 Apple 公证」并指向 FAQ 的「当前下载包未公证」说明。
 
-### B9. future-loop CLI 一览的呈现方式过时（轻微）
+### B9. future-loop CLI 一览的呈现方式过时（轻微）—— ✅ 已修复（todo_63c718c2a3d5）
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
 | CLI 一览以 `ops <cmd>`、`work-items <cmd>`、`cli registry` 分组呈现 | docs/loop-control-plane.md L115-127 | 实际 `future-loop` 是**扁平顶层命令**分发（orchestration/loop/src/main.rs L93-137，共 42 个顶层命令）；`ops`/`work-items`/`cli` 只是注册表里的帮助分组名（cli/registry.rs），**不是可运行命令**。所列底层命令（goal/todo/gate/capability/extension/handoff/benchmark protocol|run|ledger/replay record|run|corpus/canary smoke/version/doctor/history/turn/todo-event/evidence-log/backup/…）全部存在 ✓，仅呈现层级需校正（文档 L127 已有「无参运行看全量帮助」提示，属低危） |
+
+→ 本轮（todo_63c718c2a3d5）与 `build_cli_registry()`（main.rs L176-471）逐一比对后修正 CLI 一览（en/zh 同步）：
+
+- **goal 组漏 2 命令**：`models`（`models [--format json]`，列出 agent 可用模型，main.rs L1634）与 `diagnose`（`diagnose --goal G [--format json]`，per-goal 诊断面，L3694）→ 已补入 goal 行
+- **extension 漏 `upgrade`**：实际为 `install|upgrade|enable|disable|rollback|status|capabilities`（L2597 `"install" | "upgrade"` 同分支）→ 已补入 extension 行
+- **`cli registry` 少 `--include-experimental`**：实际 `registry [--json] [--include-experimental]`（main.rs L466）→ 已补
+
+其余核对通过：`todo add|claim|complete|supersede|update|archive`（L613-618）、`gate resolve`、`replan ack`、`lease`、`task-graph`、`agent onboard/scope/lane/supervisor`、`capability list|propose|commands` + `catalog`、`handoff [--write]`、`benchmark protocol|run|ledger`、`replay record|run|corpus build|run`、`canary smoke [--profile core-control-plane|extension-runtime|release-gate]`、ops 组全 19 命令、quota 三来源 run/agent/heartbeat（quota/slot_accounting.rs L42-44）、九种 disposition（decision/）、`--class monitor --cadence`（L655-660）、`--verify/--max-validation-attempts`（L656-657）、backup `--restore`（L991-1002）、状态布局 registry.json + goals/<id>/events.jsonl + ACTIVE_GOAL_STATE.md + runs/、`cargo build -p future-loop`、`scripts/install-future-loop.sh` 均 ✓
 
 ---
 

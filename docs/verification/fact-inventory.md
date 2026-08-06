@@ -377,6 +377,7 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 | X9 | **思考级别集合** | README「off ↔ xhigh」；wiki CLI.md `--thinking` 列 off/minimal/low/medium/high/xhigh（EC5）；README 未列全级别 | §1/§8 |
 | X10 | **architecture-audit 时效** | 审计基准 dev @ 8aa82925（2026-08-05）与当前工作树关系需核验；若源码已变，file:line 可能失效 | §10-A0 |
 | X11 | **loop CLI 命令面** | loop-control-plane.md L15 CLI 一览 vs 实际 `future-loop --help`（本轮已见 goal/todo/ops/cli 等组在跑，完整命令面需核验） | §5 |
+| — | **X11 已裁决（2026-08-06，todo_63c718c2a3d5）** | 与 `build_cli_registry()`（main.rs L176-471）逐一比对：goal 组缺 `models`/`diagnose`、extension 缺 `upgrade`、`cli registry` 缺 `--include-experimental`，已修正 en/zh 两份 CLI 一览（B9 详录）。其余全部一致 | |
 | X12 | **`future init` 行为** | build-and-install B14：`future init` = 安装技能 + macOS/Linux 链接本地命令；需核验 cli 源码 | §3 |
 
 ---

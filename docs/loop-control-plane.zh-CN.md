@@ -65,12 +65,12 @@ agent 执行一个回合（gRPC）→ 写入证据 + 交接 + 下一个 todo
 ## CLI 一览
 
 ```text
-goal          goal 生命周期（init / cancel / delete），status
+goal          goal 生命周期（init / cancel / delete）· status · models · diagnose
 todo          add | claim | complete | supersede | update | archive
               gate resolve · replan ack · lease · task-graph
 agent         onboard · scope · lane · supervisor
 capability    list | propose | commands · catalog · 按能力钩子
-extension     install | enable | disable | rollback | status | capabilities
+extension     install | upgrade | enable | disable | rollback | status | capabilities
 ops           version · doctor · history · turn · todo-event · evidence-log
               backup · authority · profile · quota · scheduler · store
               backfill · privacy · runs · heartbeat-prompt · worker-bridge
@@ -80,7 +80,7 @@ handoff       handoff [--write]
 benchmark     protocol | run | ledger
 replay        record | run · corpus build | run
 canary        smoke [--profile ...]
-cli           registry [--json]
+cli           registry [--json] [--include-experimental]
 ```
 
 不带参数运行 `future-loop` 查看完整分组帮助。
