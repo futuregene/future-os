@@ -98,7 +98,8 @@ exhausted — closure stays validated, not self-judged.
 - Identity-scoped multi-agent: agent scope frontiers, lane recommendations,
   supervisor proposal/receipt events, task leases, handoff documents with a
   delivery contract, a todo dependency graph, and an attention queue /
-  operator inbox.
+  operator inbox — driven by the `agent` command group (see
+  [Multi-agent workflow](#multi-agent-workflow)).
 
 ### Evaluation & diagnostics
 
@@ -153,6 +154,88 @@ future-loop todo add --goal <id> --text "write report" --priority P0 \
   --blocks <collect-todo-id> --verify "test -f report.md"
 future-loop status --goal <id>
 future-loop run --goal <id> --model future/deepseek-v4-flash --max-turns 1
+```
+
+## Multi-agent workflow
+
+The `agent` command group models a goal shared by several agents. Every agent
+is identified by an `--agent-id`, scopes its work, and hands over via a
+handoff document — so a supervisor (or a human) can reason about who owns
+what and what the next agent needs to know.
+
+> The commands below are **flat top-level commands** — `future-loop` dispatches
+> `agent`, `scope`, `lane`, `supervisor`, `handoff`, `task-graph`, `attention`
+> and `inbox` all at the top level. The `agent` / `todo` / `work-items` groups
+> in the help output are only presentation groupings.
+
+### 1. Onboard an agent (register + capabilities)
+
+```bash
+# plain registration (prerequisite for quota --agent-id)
+future-loop agent --goal <id> --agent-id codex
+
+# register AND declare capabilities (input to the capability gate)
+future-loop agent onboard --goal <id> --agent-id codex --capability shell,github
+```
+
+`onboard` records an `AgentOnboarded` event with the declared capabilities.
+
+### 2. Scope & lane
+
+```bash
+# identity-scoped frontier: which todos this agent may see/claim, and which
+# claims belong to others (outside the frontier)
+future-loop scope --goal <id> --agent-id codex [--exclude docs,build]
+
+# compact lane recommendation for this agent (classification + action)
+future-loop lane --goal <id> --agent-id codex
+```
+
+The frontier output lists `visible agent todos`, `claimed by self`, `other
+agent claims`, `open user gates`, and the `unclaimed advancement` count;
+`lane` summarizes the agent's progress scope and a recommended next action.
+
+### 3. Supervisor decisions
+
+```bash
+# propose a decision: observe (default) or execute (with capabilities)
+future-loop supervisor propose --goal <id> --agent-id super --decision-id d1 \
+  --target-agent-id codex --kind execute --capabilities shell --summary "run tests"
+
+# record the host's receipt (executed | failed | rejected)
+future-loop supervisor receipt --goal <id> --decision-id d1 \
+  --receipt-id r1 --adapter-id host --outcome executed
+
+# project all supervisor events as JSON
+future-loop supervisor events --goal <id>
+```
+
+### 4. Hand off
+
+```bash
+# print the delivery contract (degradation mode + summary) and the handoff doc
+future-loop handoff --goal <id>
+
+# also write it to .future/loop/goals/<id>/HANDOFF.md
+future-loop handoff --goal <id> --write
+```
+
+The delivery contract is derived from run history (newest first); the handoff
+document is rendered as markdown so the next agent can pick up context without
+re-reading the whole ledger.
+
+### 5. Coordinate
+
+```bash
+# todo dependency graph (topological order; cycles fail closed)
+future-loop task-graph --goal <id>
+
+# attention queue for one goal, or across all goals
+future-loop attention --goal <id>
+future-loop attention --all
+
+# operator inbox urgency projection
+future-loop inbox --project .
 ```
 
 ## State layout

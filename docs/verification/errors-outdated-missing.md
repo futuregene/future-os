@@ -178,6 +178,20 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 
 见 B1：`session`、`models`、`account`、`init`、`doctor` 五个组 + `auth credential` + `skills update/install-builtin` 均未写入 wiki CLI.md。
 
+### C3. 缺失文档已按核验清单补齐（todo_9bb2c6dd1c38，2026-08-06）
+
+按 fact-inventory §14b 的 I-1..I-7 全部处理完毕：
+
+- **I-1** Models.md 再生成说明 → 已解决（todo_bcf715c7cc0e：`make generate-models` 注释写入脚本模板与文件头）。
+- **I-2** Linux 页面决策 → **维持 macOS+Windows**：release.yml 只发布 macOS（arm64+x64 dmg/updater）+ Windows（x64 setup）；Linux 便携包为 tester-only，wiki 不加 Linux 页。
+- **I-3** 新增 **docs/channels-config.md / zh**：`~/.future/channels/config.json` 统一参考——`agent`/`feishu`/`dingtalk` 三块 schema、全部默认值与合法取值（逐字段核对 channels/src/config.rs + feishu/policy.rs；dm_policy=open|disabled|allowlist、group_policy=open|disabled|allowlist、首启写模板并退出、9 个本地斜杠命令、未知斜杠转发、Feishu keepalive 30s / DingTalk 20s、DingTalk webhook 新消息回复）。
+- **I-4** loop-control-plane.md / zh 新增「Multi-agent workflow / 多 agent 工作流」章节：`agent`（注册 + `onboard --capability`）、`scope`（identity 边界 frontier 输出）、`lane`、`supervisor propose|receipt|events`、`handoff [--write]`（交付契约 + HANDOFF.md）、`task-graph`、`attention [--goal|--all]`、`inbox --project` 的完整示例；并注明这些是**扁平顶层命令**（main.rs L94/L119-127 顶层分发；帮助输出里的 agent/todo/work-items 分组仅为展示）。
+- **I-5** 新增 **docs/README.md / zh**：docs 目录导航索引（顶层指南表、wiki 页面清单、dist 活文档、内部工作文档、文档保持正确的方法）。
+- **I-6** 新增 **docs/tui.md / zh**：TUI 使用文档——17 个可用斜杠命令（/export /import 为 stub）、8 个快捷键、settings.json/keybindings.json/debug.log/crash.log 路径、常见排障（依据 tui/src/app.ts 等）。
+- **I-7** 新增 **docs/directory-layout.md / zh**：`~/.future/` 完整布局——agent（settings/models/auth/sessions/skills/logs）、channels、tui、app（app.db/images/review）、workspaces/chat、loop（FUTURE_LOOP_ROOT 可覆盖）、bin；另附 `~/.agents/skills/` 与项目本地 `.future/`（loop、approval_rule.json）说明。
+
+> 交叉链接闭环：docs/README.md（索引）⇄ tui.md ⇄ directory-layout.md ⇄ channels-config.md ⇄ loop-control-plane.md ⇄ wiki 各页，无悬空链接（`grep -rn '](…' docs/*.md` 抽查通过）。
+
 ---
 
 ## D. 核验无误（供后继跳过，不再重查）

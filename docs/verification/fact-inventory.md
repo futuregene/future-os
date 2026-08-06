@@ -422,12 +422,12 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 
 ### 14b. 「缺失文档/章节」候选（供 todo_9bb2c6dd1c38 参考）
 
-| # | 候选缺口 | 依据 |
-|---|---|---|
-| I-1 | Models.md 缺「如何再生成」说明（生成器脚本、命令、是否自动同步） | scripts/generate_models.py；EM1-EM3 |
-| I-2 | dist readme 有 Linux 版，但 wiki 无 Linux 页面——产品平台口径需决策（加 Linux 页 vs 维持 macOS+Windows） | docs/dist/readme-linux*.txt |
-| I-3 | 无 channels 配置的完整参考文档（Feishu/DingTalk 各自成篇，无统一 config.json schema 参考页） | EFE6/EDT5 |
-| I-4 | loop-control-plane 指南未覆盖 `agent` 命令组（onboard/scope/lane/supervisor）与 handoff 用法示例 | loop-control-plane.md L115-127 |
-| I-5 | docs/ 顶层无索引 README（除 architecture-audit 外）——docs 目录缺导航 | 目录结构 |
-| I-6 | 无 TUI 使用文档（wiki 刻意不含 TUI，但 README 有 TUI 斜杠命令/快捷键） | README R6/R7 |
-| I-7 | 无 `.future/` 目录完整布局文档（agent/channels/tui/app/workspaces 各子目录职责） | CLAUDE.md；配置路径核验面 |
+| # | 候选缺口 | 依据 | 状态（todo_9bb2c6dd1c38） |
+|---|---|---|---|
+| I-1 | Models.md 缺「如何再生成」说明（生成器脚本、命令、是否自动同步） | scripts/generate_models.py；EM1-EM3 | ✅ 已解决（todo_bcf715c7cc0e：脚本+文件头注释） |
+| I-2 | dist readme 有 Linux 版，但 wiki 无 Linux 页面——产品平台口径需决策（加 Linux 页 vs 维持 macOS+Windows） | docs/dist/readme-linux*.txt | ✅ 已裁决：**维持 macOS+Windows**——release.yml 只发布 macOS（arm64+x64 dmg/updater）+ Windows（x64 setup），Linux 便携包为 tester-only，无需 wiki 页 |
+| I-3 | 无 channels 配置的完整参考文档（Feishu/DingTalk 各自成篇，无统一 config.json schema 参考页） | EFE6/EDT5 | ✅ 已解决：新建 docs/channels-config.md + zh（schema 全字段/默认值，依据 channels/src/config.rs 逐字段核实） |
+| I-4 | loop-control-plane 指南未覆盖 `agent` 命令组（onboard/scope/lane/supervisor）与 handoff 用法示例 | loop-control-plane.md L115-127 | ✅ 已解决：en/zh 新增「Multi-agent workflow / 多 agent 工作流」章节（agent onboard/注册、scope、lane、supervisor propose|receipt|events、handoff [--write]、task-graph、attention/inbox 示例）；并注明这些为扁平顶层命令（帮助里的 agent/todo/work-items 分组仅为展示） |
+| I-5 | docs/ 顶层无索引 README（除 architecture-audit 外）——docs 目录缺导航 | 目录结构 | ✅ 已解决：新建 docs/README.md + zh（顶层指南表、wiki 清单、dist 说明、内部工作文档） |
+| I-6 | 无 TUI 使用文档（wiki 刻意不含 TUI，但 README 有 TUI 斜杠命令/快捷键） | README R6/R7 | ✅ 已解决：新建 docs/tui.md + zh（17 个斜杠命令、8 快捷键、settings/keybindings/log 路径、排障） |
+| I-7 | 无 `.future/` 目录完整布局文档（agent/channels/tui/app/workspaces 各子目录职责） | CLAUDE.md；配置路径核验面 | ✅ 已解决：新建 docs/directory-layout.md + zh（agent/models/auth/sessions/skills/logs、channels、tui、app(db/images/review)、workspaces/chat、loop、bin；另注 ~/.agents/skills 与项目本地 .future/） |
