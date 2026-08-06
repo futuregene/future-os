@@ -13,22 +13,20 @@
 
 > 本地优先的 AI Agent 工作台——终端、桌面、消息平台，一个后端全搞定。
 
-FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉钉。Rust 后端负责 LLM 编排、工具执行和会话持久化。TypeScript 前端和 Tauri/React 桌面应用通过 gRPC 连接。写代码、做调研、管理文件——从终端、聊天软件或原生桌面窗口，无缝切换。
+FutureOS 提供统一的 AI Agent 终端体验，并支持命令行（CLI）。Rust 后端负责 LLM 编排、工具执行和会话持久化；TypeScript 终端界面通过 gRPC 连接。写代码、做调研、管理文件——都在终端里完成。
 
 ## 特性
 
 | 类别 | 说明 |
 |---|---|
-| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI)、飞书机器人、钉钉机器人——一个 Agent，无处不在 |
-| **模型灵活** | 内置 1000+ 模型，覆盖 100+ Provider（[完整目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
+| **Loop 控制面** | `future-loop`：持久化目标/todos/门禁/监控、quota should-run 内核、事件溯源状态、验证器、扩展与多 agent（[指南](docs/loop-control-plane.zh-CN.md)）——基于 [loopx](https://github.com/huangruiteng/loopx) 的 Rust 改写版，针对 FutureOS 做了定制 |
+| **模型灵活** | 内置 1000+ 模型，覆盖 100+ Provider（[目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
 | **流式输出与思考链** | 实时 token 流式传输，可折叠的思考链展示；可配置思考深度（off ↔ xhigh） |
 | **工具执行** | read, write, edit, shell，带审批控制和沙箱保护（关闭 / 手动 / macOS Seatbelt）；上下文超 90% 自动压缩 |
-| **会话持久化** | JSONL 格式存储，支持 fork、clone、树形导航和问答计数 |
+| **终端界面 (TUI)** | 差异渲染、Markdown、Kitty 图片协议、/ 命令、完整键盘控制 |
+| **会话持久化** | JSONL 格式存储，支持 fork、clone、树形导航和问答计数（[使用](docs/wiki/zh/Using-FutureOS.md)） |
+| **技能系统** | 可插拔的 YAML 定义 Skill 包，从多目录自动发现（[指南](docs/wiki/zh/Skills.md)） |
 | **自动压缩与重试** | 上下文自动压缩；上下文超长时指数退避自动重试 |
-| **Channel Bridge** | 飞书和钉钉机器人——markdown 流式输出、斜杠命令、通过聊天管理会话 |
-| **技能系统** | 可插拔的 YAML 定义 Skill 包，从多目录自动发现 |
-| **Loop 控制面** | `future-loop`：持久化目标/todos/门禁/监控、quota should-run 内核、事件溯源状态、验证器、扩展与多 agent（[指南](docs/loop-control-plane.zh-CN.md)）——基于 [loopx](https://github.com/huangruiteng/loopx) 的 Rust 改写版，针对 FutureOS 做了定制 |
-| **跨平台** | macOS、Linux、Windows（GUI 基于 Tauri + WebView2） |
 
 ## 快速开始
 
@@ -82,45 +80,36 @@ future auth login
 
 ### 启动 Agent
 
-所有客户端——TUI、GUI、CLI、channels——都只是轻量 gRPC 客户端。**必须先启动 Agent**，监听 `127.0.0.1:50051`：
+终端与 CLI 客户端都是轻量 gRPC 客户端。**必须先启动 Agent**，监听 `127.0.0.1:50051`：
 
 ```bash
 future-agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止）
 ```
 
-然后启动任意客户端：
+然后启动终端界面：
 
 ```bash
 future-tui        # 终端界面
-future-gui        # 桌面应用
-future-channel    # 渠道桥接
 ```
 
 > 客户端如果报连接 / gRPC 错误，几乎都是 Agent 还没启动——见 [故障排查](#故障排查)。
-
-### CLI 快速上手
-
-```bash
-future run "用 Python 写个排序函数"         # 单次对话
-future-tui                                 # 打开 TUI
-future-gui                                 # 启动桌面应用
-future-channel                             # 启动 Channel Bridge
-future --help                              # 查看全部命令
-```
 
 ### 常用斜杠命令（TUI）
 
 | 命令 | 说明 |
 |---|---|
 | `/help` | 显示所有命令和快捷键 |
-| `/model <id>` | 切换模型（如 `deepseek-v4-pro`） |
-| `/status` | 会话状态、token 用量、费用 |
-| `/sessions` | 浏览和切换会话 |
+| `/model [name]` | 选择 / 切换模型 |
 | `/new` | 新建会话 |
-| `/stop` | 中断当前生成 |
+| `/sessions` | 浏览和切换会话 |
 | `/compact` | 压缩对话上下文 |
 | `/scoped-models` | 配置模型启用/禁用列表 |
+| `/clone` | 克隆当前会话 |
+| `/fork` | 分叉当前会话 |
 | `/tree` | 会话树（含 fork/clone 层级） |
+| `/name [n]` | 设置会话名称 |
+| `/status` | 会话状态、token 用量、费用 |
+| `/stop` | 中断当前生成 |
 
 ### 键盘快捷键（TUI）
 
@@ -130,8 +119,10 @@ future --help                              # 查看全部命令
 | `ctrl+t` | 循环切换思考级别 |
 | `ctrl+r` | 浏览会话列表 |
 | `ctrl+c` | 中断 / 退出 |
-| `↑↓` | 滚动聊天 / 列表导航 |
-| `Tab` | 自动补全 |
+| `tab` | 自动补全 |
+| `enter` | 提交 / 确认 |
+| `escape` | 关闭弹窗 |
+| `↑↓` | 滚动 / 导航列表 |
 
 ## 故障排查
 

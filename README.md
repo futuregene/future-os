@@ -13,22 +13,23 @@
 
 > A local-first AI agent workspace — terminal, desktop, messaging platforms, all through one backend.
 
-FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, and DingTalk. The Rust backend handles LLM orchestration, tool execution, and persistent sessions. TypeScript frontends and a Tauri/React desktop app connect over gRPC. Write code, run research, manage files — from the terminal, from a chat app, or from a native desktop window.
+FutureOS gives you a unified AI agent experience from the terminal — and
+through the CLI. The Rust backend handles LLM orchestration, tool execution,
+and persistent sessions; the TypeScript terminal UI connects over gRPC. Write
+code, run research, manage files — all from the terminal.
 
 ## Features
 
 | Category | Details |
 |---|---|
-| **Multi-Interface** | Terminal UI (TUI), Desktop app (GUI), CLI, Feishu bot, DingTalk bot — one agent, everywhere |
-| **Model Flexibility** | 1000+ built-in models across 100+ providers ([full catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
+| **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) — a Rust rewrite of the [loopx](https://github.com/huangruiteng/loopx) control plane, customized for FutureOS |
+| **Model Flexibility** | 1000+ built-in models across 100+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Streaming & Thinking** | Real-time token streaming with collapsible reasoning-content blocks; configurable thinking levels (off ↔ xhigh) |
 | **Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt); auto-compaction at 90% context |
-| **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking |
+| **Terminal UI (TUI)** | Differential rendering, markdown, Kitty image protocol, /commands, full keyboard control |
+| **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking ([using](docs/wiki/en/Using-FutureOS.md)) |
+| **Skills System** | Pluggable YAML-defined skill bundles discovered from multiple directories ([guide](docs/wiki/en/Skills.md)) |
 | **Compaction & Retry** | Automatic context compaction; exponential-backoff retry on context-length errors |
-| **Channel Bridge** | Feishu (Lark) and DingTalk bots — markdown streaming, slash commands, session management via chat |
-| **Skills System** | Pluggable YAML-defined skill bundles discovered from multiple directories |
-| **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) — a Rust rewrite of the [loopx](https://github.com/huangruiteng/loopx) control plane, customized for FutureOS |
-| **Cross-Platform** | macOS, Linux, Windows (GUI via Tauri + WebView2) |
 
 ## Quick Start
 
@@ -83,45 +84,37 @@ For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a
 
 ### Run the agent
 
-Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`:
+The terminal and CLI clients are thin gRPC clients. **The agent must be running
+first**, listening on `127.0.0.1:50051`:
 
 ```bash
 future-agent      # start the agent in the terminal (logs to stdout; Ctrl-C to stop)
 ```
 
-Then launch a client:
+Then launch the terminal UI:
 
 ```bash
-future-tui        # terminal
-future-gui        # desktop
-future-channel    # channel bridge
+future-tui        # terminal UI
 ```
 
 > A client that exits with a connection / gRPC error almost always means the agent isn't running yet — see [Troubleshooting](#troubleshooting).
-
-### CLI Quick Start
-
-```bash
-future run "Write a Python sort function"    # one-shot prompt
-future-tui                                   # open the TUI
-future-gui                                   # launch the desktop app
-future-channel                               # start the channel bridge
-future --help                                # full command list
-```
 
 ### Essential Slash Commands (TUI)
 
 | Command | Purpose |
 |---|---|
 | `/help` | Show all commands and shortcuts |
-| `/model <id>` | Switch model (e.g. `deepseek-v4-pro`) |
-| `/status` | Session state, token usage, cost |
-| `/sessions` | Browse and switch sessions |
+| `/model [name]` | Select / switch model |
 | `/new` | Start a new session |
-| `/stop` | Abort current generation |
+| `/sessions` | Browse and switch sessions |
 | `/compact` | Compress conversation context |
 | `/scoped-models` | Configure model enable/disable list |
+| `/clone` | Clone the current session |
+| `/fork` | Fork the current session |
 | `/tree` | Session tree with fork/clone hierarchy |
+| `/name [n]` | Set the session name |
+| `/status` | Session state, token usage, cost |
+| `/stop` | Abort current generation |
 
 ### Keyboard Shortcuts (TUI)
 
@@ -131,8 +124,10 @@ future --help                                # full command list
 | `ctrl+t` | Cycle thinking level |
 | `ctrl+r` | Browse sessions |
 | `ctrl+c` | Interrupt / exit |
-| `↑↓` | Scroll chat / navigate lists |
-| `Tab` | Autocomplete |
+| `tab` | Autocomplete |
+| `enter` | Submit / accept |
+| `escape` | Close popup |
+| `↑↓` | Scroll / navigate lists |
 
 ## Troubleshooting
 
