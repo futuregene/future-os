@@ -17,10 +17,10 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
-// Include the generated proto code
-pub mod proto {
-    include!("generated/proto.rs");
-}
+// Generated proto code lives in the future-rpc crate (single codegen owner;
+// typed-RPC milestone). Re-exported under the historical module name so call
+// sites keep their `proto::...` paths.
+pub use future_rpc::proto;
 
 /// Start a gRPC-only server (no HTTP).
 pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
@@ -75,6 +75,8 @@ fn map_broadcast_event(
             timestamp: event.timestamp,
             session_idx: event.session_idx,
             run_sequence: event.run_sequence,
+            // Event payloads are dual-written in a later typed-RPC batch.
+            payload: None,
         }),
         Err(error) => {
             // Non-atomic observers can remain subscribed across multiple runs,
@@ -284,6 +286,15 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         let json_resp: JsonResp = serde_json::from_str(&resp_str)
             .map_err(|e| tonic::Status::internal(format!("Failed to parse response: {}", e)))?;
 
+        // Typed payload (dual-write): encode the JSON payload into its typed
+        // wire form for commands that have a ResponsePayload member. Untyped
+        // commands keep serving the JSON `data` string only; clients always
+        // fall back to `data` when `payload` is absent.
+        let typed_payload = json_resp
+            .data
+            .as_ref()
+            .and_then(|value| future_rpc::encode::response_payload(&json_resp.command, value));
+
         // Convert to proto response - error is Option<String>, need to handle None
         let proto_resp = proto::RpcResponse {
             id: json_resp.id,
@@ -300,6 +311,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 .error_data
                 .map(|data| serde_json::to_string(&data).unwrap_or_default())
                 .unwrap_or_default(),
+            payload: typed_payload,
         };
 
         Ok(tonic::Response::new(proto_resp))
@@ -360,6 +372,9 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                                 r#type: event.event_type,
                                 data: event.data,
                                 idx: event.idx,
+                                // Event payloads are dual-written in a later
+                                // typed-RPC batch.
+                                payload: None,
                             })
                             .collect(),
                         snapshot_cursor: projection.cursor,
@@ -369,6 +384,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         timestamp: String::new(),
                         session_idx: -1,
                         run_sequence: projection.run_sequence,
+                        payload: None,
                     });
                 }
                 initial.extend(
@@ -389,6 +405,9 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             timestamp: event.timestamp,
                             session_idx: event.session_idx,
                             run_sequence: event.run_sequence,
+                            // Event payloads are dual-written in a later
+                            // typed-RPC batch.
+                            payload: None,
                         }),
                 );
                 (attachment.receiver, initial, sess.broadcaster.clone())
@@ -409,6 +428,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         timestamp: String::new(),
                         session_idx: -1,
                         run_sequence: -1,
+                        payload: None,
                     }],
                     sess.broadcaster.clone(),
                 )

@@ -85,11 +85,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
 ] }
 
-# Proto codegen (for building .proto files)
-[build-dependencies]
-prost-build.workspace = true
-tonic-build.workspace = true
-
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile.workspace = true

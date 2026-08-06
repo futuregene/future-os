@@ -757,14 +757,14 @@ pub struct SessionState {
     #[prost(bool, tag = "4")]
     pub is_compacting: bool,
     /// Reserved for session file path.  Always null in current code.
-    #[prost(string, tag = "7")]
-    pub session_file: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "7")]
+    pub session_file: ::core::option::Option<::prost::alloc::string::String>,
     /// Current session ID (unique, generated on creation).
-    #[prost(string, tag = "8")]
-    pub session_id: ::prost::alloc::string::String,
-    /// User-assigned session name, or empty if unnamed.
-    #[prost(string, tag = "9")]
-    pub session_name: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "8")]
+    pub session_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// User-assigned session name; unset when unnamed.
+    #[prost(string, optional, tag = "9")]
+    pub session_name: ::core::option::Option<::prost::alloc::string::String>,
     /// Whether this session was explicitly created via /new (vs. auto-created).
     #[prost(bool, tag = "10")]
     pub explicit_session: bool,
@@ -828,9 +828,9 @@ pub struct SessionState {
     /// The agent process instance id (changes on every agent restart).
     #[prost(string, tag = "29")]
     pub agent_instance_id: ::prost::alloc::string::String,
-    /// Parent session id when this session was forked; empty otherwise.
-    #[prost(string, tag = "30")]
-    pub parent_session_id: ::prost::alloc::string::String,
+    /// Parent session id when this session was forked; unset otherwise.
+    #[prost(string, optional, tag = "30")]
+    pub parent_session_id: ::core::option::Option<::prost::alloc::string::String>,
     /// Who created the session ("gui", "tui", "cli", a channel id...).
     #[prost(string, tag = "31")]
     pub created_by: ::prost::alloc::string::String,

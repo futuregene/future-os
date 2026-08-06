@@ -1,46 +1,13 @@
 // build.rs — Build-time version injection for FutureAgent.
 //
-// Proto code generation happens via `make generate-proto`, NOT here.
-// The generated files (src/grpc/generated/proto.rs) are checked into git
-// so normal builds never need protoc.
+// Proto code generation lives in the future-rpc crate (single codegen owner);
+// `make generate-proto` regenerates it there. The agent consumes the
+// generated types through the future-rpc dependency.
 
 use std::process::Command;
 
 fn main() {
     emit_build_version();
-    println!("cargo:rerun-if-env-changed=REGENERATE_PROTO");
-
-    // Proto regeneration is opt-in via `make generate-proto` (sets the
-    // REGENERATE_PROTO env var).  Skip it on normal builds so protoc is
-    // never required to compile the agent.
-    if std::env::var("REGENERATE_PROTO").is_ok() {
-        regenerate_proto();
-    }
-}
-
-fn regenerate_proto() {
-    let proto_dir = std::path::PathBuf::from("../proto");
-    if !proto_dir.exists() {
-        panic!("Proto directory not found at {:?}", proto_dir);
-    }
-
-    let proto_files: Vec<_> = std::fs::read_dir(&proto_dir)
-        .expect("Failed to read proto directory")
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "proto"))
-        .map(|e| e.path())
-        .collect();
-
-    if proto_files.is_empty() {
-        panic!("No proto files found in {:?}", proto_dir);
-    }
-
-    tonic_build::configure()
-        .build_server(true)
-        .build_client(false)
-        .out_dir("src/grpc/generated")
-        .compile_protos(&proto_files, &[&proto_dir])
-        .expect("Failed to compile proto files");
 }
 
 /// Inject the build version (see `scripts/version.mjs`) as a compile-time env so

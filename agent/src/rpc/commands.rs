@@ -3352,4 +3352,21 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
     }
+
+    /// The gRPC boundary dual-writes a typed payload for the Tier-1 read
+    /// commands; this pins that the agent's REAL envelopes always encode
+    /// (a None here would silently degrade typed clients to the JSON
+    /// fallback). get_events_since is covered by the future-rpc parity
+    /// fixtures — it needs a live run this fixture does not have.
+    #[test]
+    fn typed_payload_encodes_real_read_command_envelopes() {
+        let state = make_app_state();
+        for cmd_type in ["get_state", "list_sessions", "get_session_entries"] {
+            let envelope = parse_response(&handle_command_internal(&state, make_cmd(cmd_type)));
+            assert_eq!(envelope["success"], true, "{cmd_type} must succeed");
+            let data = &envelope["data"];
+            let payload = future_rpc::encode::response_payload(cmd_type, data);
+            assert!(payload.is_some(), "{cmd_type}: typed payload must encode");
+        }
+    }
 }

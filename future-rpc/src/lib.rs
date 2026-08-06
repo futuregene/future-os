@@ -21,6 +21,12 @@ pub mod proto {
 
 pub mod payloads;
 
+pub mod decode;
+pub mod encode;
+
+#[cfg(test)]
+mod parity;
+
 #[cfg(test)]
 mod tests {
     use super::proto::{RpcResponse, StreamEvent};
@@ -78,7 +84,7 @@ mod tests {
             error_data: String::new(),
             payload: Some(ResponsePayload {
                 kind: Some(response_payload::Kind::GetState(SessionState {
-                    session_id: "s1".to_string(),
+                    session_id: Some("s1".to_string()),
                     model: "m".to_string(),
                     ..Default::default()
                 })),
@@ -88,7 +94,9 @@ mod tests {
         assert_eq!(resp, decoded);
         let kind = decoded.payload.unwrap().kind.unwrap();
         match kind {
-            response_payload::Kind::GetState(state) => assert_eq!(state.session_id, "s1"),
+            response_payload::Kind::GetState(state) => {
+                assert_eq!(state.session_id.as_deref(), Some("s1"))
+            }
             other => panic!("unexpected payload kind: {other:?}"),
         }
 

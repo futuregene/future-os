@@ -702,13 +702,13 @@ message SessionState {
   reserved 5, 6;
 
   // Reserved for session file path.  Always null in current code.
-  string session_file = 7;
+  optional string session_file = 7;
 
   // Current session ID (unique, generated on creation).
-  string session_id = 8;
+  optional string session_id = 8;
 
-  // User-assigned session name, or empty if unnamed.
-  string session_name = 9;
+  // User-assigned session name; unset when unnamed.
+  optional string session_name = 9;
 
   // Whether this session was explicitly created via /new (vs. auto-created).
   bool explicit_session = 10;
@@ -781,8 +781,8 @@ message SessionState {
   // The agent process instance id (changes on every agent restart).
   string agent_instance_id = 29;
 
-  // Parent session id when this session was forked; empty otherwise.
-  string parent_session_id = 30;
+  // Parent session id when this session was forked; unset otherwise.
+  optional string parent_session_id = 30;
 
   // Who created the session ("gui", "tui", "cli", a channel id...).
   string created_by = 31;

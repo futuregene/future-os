@@ -50,6 +50,29 @@ pub fn strip_legacy_aliases(payload: &mut Value, aliases: &[(&str, &str)]) {
     }
 }
 
+/// Legacy casing pairs for the get_state payload (canonical first, legacy
+/// second). The agent injects these into the dual-written JSON `data`; the
+/// decode path strips them before deserializing.
+pub const GET_STATE_ALIASES: &[(&str, &str)] = &[("sessionName", "session_name")];
+
+/// Legacy casing pairs for each TerminalAck inside get_state
+/// `recentTerminalAcks`.
+pub const TERMINAL_ACK_ALIASES: &[(&str, &str)] = &[
+    ("runId", "run_id"),
+    ("runSequence", "run_sequence"),
+    ("clientRequestId", "client_request_id"),
+];
+
+/// Legacy casing pairs for each list_sessions row.
+pub const SESSION_SUMMARY_ALIASES: &[(&str, &str)] = &[
+    ("sessionName", "session_name"),
+    ("updatedAt", "updated_at"),
+    ("parentSessionId", "parent_session_id"),
+    ("firstMessage", "first_message"),
+    ("queryCount", "query_count"),
+    ("isStreaming", "is_streaming"),
+];
+
 /// get_state payload (proto `SessionState`).
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
