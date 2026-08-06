@@ -401,20 +401,10 @@ pub fn migration_bridge_status(
     build_migration_bridge(goal_id, checks, !store.backups(goal_id).is_empty())
 }
 
-/// Locate the ACTIVE_GOAL_STATE.md for a goal (cwd-relative, LoopX layout).
-fn active_state_file(goal_dir: &Path, cwd: Option<&str>) -> Option<PathBuf> {
-    let goal_id = goal_dir.file_name()?.to_string_lossy().into_owned();
-    if let Some(cwd) = cwd {
-        let p = Path::new(cwd)
-            .join(".codex")
-            .join("goals")
-            .join(&goal_id)
-            .join("ACTIVE_GOAL_STATE.md");
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let local = goal_dir.join("..").join("..").join("ACTIVE_GOAL_STATE.md");
+/// Locate the ACTIVE_GOAL_STATE.md for a goal (project-local state layout:
+/// `<cwd>/.future/loop/goals/<id>/ACTIVE_GOAL_STATE.md`).
+fn active_state_file(goal_dir: &Path, _cwd: Option<&str>) -> Option<PathBuf> {
+    let local = goal_dir.join("ACTIVE_GOAL_STATE.md");
     local.exists().then_some(local)
 }
 

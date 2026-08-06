@@ -1,22 +1,17 @@
-//! LoopX-compatible on-disk projection.
+//! Project-local on-disk projection.
 //!
 //! The event ledger stays the source of truth; this layer MATERIALIZES the
-//! same file layout and structure the real LoopX persists, so the two
-//! implementations produce comparable state:
+//! active-state markdown the agent reads, plus the goal document:
 //!
-//!   <project>/GOAL.md                          — goal document
-//!   <project>/.loopx/registry.json             — registry (LoopX schema v0.1)
-//!   <project>/.codex/goals/<id>/ACTIVE_GOAL_STATE.md — active state (markdown,
-//!     todo anchors `<!-- loopx:todo ... -->` exactly like LoopX)
-//!   <runtime>/goals/<id>/runs/<ts>.json|.md    — per-run history + index.jsonl
+//!   <project>/GOAL.md                          — goal document (optional)
+//!   <cwd>/.future/loop/goals/<id>/ACTIVE_GOAL_STATE.md — active state
+//!     (todo anchors `<!-- future-loop:todo ... -->`)
 //!
-//! Field names and enum VALUES mirror LoopX's outputs (verified against a
-//! fresh `loopx demo` run). Only the ledger + compat projection together are
-//! a complete state; the markdown is a REBUILT projection, never a second
-//! source of truth.
+//! Everything lives inside the project (no external runtime root, no
+//! reference-control-plane layout mirrors).
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -66,81 +61,84 @@ pub fn write_goal_doc(project: &str, objective: &str) -> Result<()> {
     fs::write(Path::new(project).join("GOAL.md"), format!("{objective}\n")).context("write GOAL.md")
 }
 
-// ── .loopx/registry.json (LoopX schema v0.1) ───────────────────────────────
+// ── <state>/ACTIVE_GOAL_STATE.md (active-state markdown) ───────────────────
 
-pub fn write_registry(project: &str, goals: &[&Goal], runtime_root: &str) -> Result<()> {
-    let dir = Path::new(project).join(".loopx");
-    fs::create_dir_all(&dir)?;
-    let goal_entries: Vec<serde_json::Value> = goals
-        .iter()
-        .map(|g| goal_registry_entry(g, project, runtime_root))
-        .collect();
-    let payload = json!({
-        "schema_version": "0.1",
-        "updated_at": chrono::Local::now().format("%Y-%m-%d").to_string(),
-        "common_runtime_root": runtime_root,
-        "goals": goal_entries,
-    });
-    let pretty = serde_json::to_string_pretty(&payload)?;
-    fs::write(dir.join("registry.json"), pretty).context("write .loopx/registry.json")
-}
-
-fn goal_registry_entry(g: &Goal, project: &str, runtime_root: &str) -> serde_json::Value {
-    let state_file = format!(".codex/goals/{}/ACTIVE_GOAL_STATE.md", g.goal_id);
-    let _ = runtime_root;
-    json!({
-        "id": g.goal_id,
-        "domain": "project-goal-control-plane",
-        "status": "active",
-        "role": "controller",
-        "parent_goal_id": null,
-        "repo": project,
-        "state_file": state_file,
-        "authority_sources": [
-            {"kind": "goal_doc", "path": "GOAL.md", "role": "primary_goal_document"}
-        ],
-        "adapter": {"kind": "loopx_native_v0", "status": "connected"},
-        "spawn_policy": {"mode": "default", "allowed": false, "max_children": 3, "allowed_domains": []},
-        "coordination": {
-            "write_scope": g.authority.write_scope,
-            "requires_parent_approval": g.authority.requires_approval,
-            "registered_agents": g.registered_agents,
-        },
-        "execution_profile": {
-            "cadence": g.execution_profile.cadence,
-            "minimum_scale": "multi_surface_or_implementation",
-            "must_include": ["coherent_artifact", "targeted_validation", "state_writeback"],
-            "spend_rule": g.execution_profile.spend_rule,
-            "outcome_floor": {
-                "required_when": "after_surface_progress_streak",
-                "surface_streak_threshold": g.execution_profile.outcome_floor_streak_threshold,
-                "outcome_markers": [],
-                "surface_only_hints": [],
-                "must_advance": ["primary_goal_outcome"],
-            },
-        },
-        "guards": [
-            "read-only by default",
-            "do not mutate production systems without explicit user approval",
-            "keep private evidence out of public commits",
-        ],
-        "next_probe": format!("loopx --registry .loopx/registry.json check --scan-root {project}"),
-    })
-}
-
-// ── .codex/goals/<id>/ACTIVE_GOAL_STATE.md (LoopX markdown) ────────────────
-
-pub fn write_active_state(project: &str, goal: &Goal) -> Result<()> {
-    let dir = Path::new(project)
-        .join(".codex")
-        .join("goals")
-        .join(&goal.goal_id);
-    fs::create_dir_all(&dir)?;
+/// Write the active-state projection into the goal's state directory
+/// (`<cwd>/.future/loop/goals/<id>/ACTIVE_GOAL_STATE.md`).
+pub fn write_active_state(goal_dir: &Path, goal: &Goal) -> Result<()> {
+    fs::create_dir_all(goal_dir)?;
     let md = render_active_state(goal);
-    fs::write(dir.join("ACTIVE_GOAL_STATE.md"), md).context("write ACTIVE_GOAL_STATE.md")?;
+    fs::write(goal_dir.join("ACTIVE_GOAL_STATE.md"), md).context("write ACTIVE_GOAL_STATE.md")?;
     // Lock sidecar (file-tree parity; our real concurrency guard is the
     // advisory file lock in the store).
-    fs::write(dir.join("ACTIVE_GOAL_STATE.md.lock"), "").ok();
+    fs::write(goal_dir.join("ACTIVE_GOAL_STATE.md.lock"), "").ok();
+    Ok(())
+}
+
+// ── <state>/runs/ (per-run history + index) ────────────────────────────────
+
+/// Append one run's files (JSON + markdown + index row) into the goal's
+/// state directory (`<cwd>/.future/loop/goals/<id>/runs/`).
+pub fn write_run(goal_dir: &Path, goal_id: &str, record: &crate::state::RunRecord) -> Result<()> {
+    use std::io::Write;
+    let dir = goal_dir.join("runs");
+    fs::create_dir_all(&dir)?;
+    // Run-file names: 2026-08-05T11-03-14-08-00 (offset without +/:)
+    let now = chrono::Local::now();
+    // "+0800" -> "08-00" (dash between hours and minutes).
+    let z = now.format("%z").to_string();
+    let digits = z.trim_start_matches(['+', '-']);
+    let sign = if z.starts_with('-') { "-" } else { "" };
+    let (hh, mm) = digits.split_at(2);
+    let offset = format!("{sign}{hh}-{mm}");
+    let ts = format!("{}-{offset}", now.format("%Y-%m-%dT%H-%M-%S"));
+
+    let json_payload = json!({
+        "goal_id": goal_id,
+        "timestamp": rfc3339(record.recorded_at),
+        "turn": record.turn,
+        "todo_id": record.todo_id,
+        "run_id": record.run_id,
+        "terminal_state": record.terminal_state,
+        "tools": record.tools,
+        "tokens_in": record.tokens_in_delta,
+        "tokens_out": record.tokens_out_delta,
+        "cost": record.cost_delta,
+        "evidence": record.evidence,
+        "error": record.error,
+    });
+    fs::write(
+        dir.join(format!("{ts}.json")),
+        serde_json::to_string_pretty(&json_payload)?,
+    )?;
+
+    let mut md = String::new();
+    md.push_str(&format!("# Run {ts}\n\n"));
+    md.push_str(&format!("- goal_id: {goal_id}\n"));
+    md.push_str(&format!("- turn: {}\n", record.turn));
+    md.push_str(&format!("- todo: {}\n", record.todo_id));
+    md.push_str(&format!("- state: {}\n", record.terminal_state));
+    md.push_str(&format!("- tools: {}\n", record.tools.join(", ")));
+    md.push_str(&format!("- evidence: {}\n", record.evidence));
+    fs::write(dir.join(format!("{ts}.md")), md)?;
+
+    // index.jsonl (append)
+    let index_line = format!(
+        "{}\n",
+        json!({
+            "goal_id": goal_id,
+            "timestamp": rfc3339(record.recorded_at),
+            "path": format!("goals/{goal_id}/runs/{ts}.json"),
+            "turn": record.turn,
+            "classification": record.terminal_state,
+        })
+    );
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("index.jsonl"))
+        .and_then(|mut f| f.write_all(index_line.as_bytes()))
+        .context("append runs/index.jsonl")?;
     Ok(())
 }
 
@@ -320,78 +318,4 @@ fn todo_line(t: &Todo, _history: &[crate::state::RunRecord]) -> String {
     line.push_str(&ts);
     line.push_str(" -->\n");
     line
-}
-
-// ── <runtime>/goals/<id>/runs/ ─────────────────────────────────────────────
-
-pub fn write_run(
-    runtime_root: &str,
-    goal_id: &str,
-    record: &crate::state::RunRecord,
-) -> Result<()> {
-    let dir = PathBuf::from(runtime_root)
-        .join("goals")
-        .join(goal_id)
-        .join("runs");
-    fs::create_dir_all(&dir)?;
-    // LoopX run-file names: 2026-08-05T11-03-14-08-00 (offset without +/:)
-    let now = chrono::Local::now();
-    // "+0800" -> "08-00" (LoopX inserts a dash between hours and minutes).
-    let z = now.format("%z").to_string();
-    let digits = z.trim_start_matches(['+', '-']);
-    let sign = if z.starts_with('-') { "-" } else { "" };
-    let (hh, mm) = digits.split_at(2);
-    let offset = format!("{sign}{hh}-{mm}");
-    let ts = format!("{}-{offset}", now.format("%Y-%m-%dT%H-%M-%S"));
-
-    let json_payload = json!({
-        "goal_id": goal_id,
-        "timestamp": rfc3339(record.recorded_at),
-        "turn": record.turn,
-        "todo_id": record.todo_id,
-        "run_id": record.run_id,
-        "terminal_state": record.terminal_state,
-        "tools": record.tools,
-        "tokens_in": record.tokens_in_delta,
-        "tokens_out": record.tokens_out_delta,
-        "cost": record.cost_delta,
-        "evidence": record.evidence,
-        "error": record.error,
-    });
-    fs::write(
-        dir.join(format!("{ts}.json")),
-        serde_json::to_string_pretty(&json_payload)?,
-    )?;
-
-    let mut md = String::new();
-    md.push_str(&format!("# Run {ts}\n\n"));
-    md.push_str(&format!("- goal_id: {goal_id}\n"));
-    md.push_str(&format!("- turn: {}\n", record.turn));
-    md.push_str(&format!("- todo: {}\n", record.todo_id));
-    md.push_str(&format!("- state: {}\n", record.terminal_state));
-    md.push_str(&format!("- tools: {}\n", record.tools.join(", ")));
-    md.push_str(&format!("- evidence: {}\n", record.evidence));
-    fs::write(dir.join(format!("{ts}.md")), md)?;
-
-    // index.jsonl (append)
-    let index_line = format!(
-        "{}\n",
-        json!({
-            "goal_id": goal_id,
-            "timestamp": rfc3339(record.recorded_at),
-            "path": format!("goals/{goal_id}/runs/{ts}.json"),
-            "turn": record.turn,
-            "classification": record.terminal_state,
-        })
-    );
-    fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("index.jsonl"))
-        .and_then(|mut f| {
-            use std::io::Write;
-            f.write_all(index_line.as_bytes())
-        })
-        .context("append runs/index.jsonl")?;
-    Ok(())
 }

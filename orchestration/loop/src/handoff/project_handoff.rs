@@ -79,19 +79,15 @@ pub fn render_project_handoff_markdown(handoff: &ProjectHandoff) -> String {
 }
 
 /// Write the handoff document next to the goal projection
-/// (`.codex/goals/<id>/HANDOFF.md`), mirroring the LoopX markdown layout.
+/// (`<cwd>/.future/loop/goals/<id>/HANDOFF.md`).
 pub fn write_project_handoff(
-    project: &str,
-    goal: &Goal,
+    goal_dir: &std::path::Path,
+    _goal: &Goal,
     handoff: &ProjectHandoff,
 ) -> std::io::Result<()> {
-    let dir = std::path::Path::new(project)
-        .join(".codex")
-        .join("goals")
-        .join(&goal.goal_id);
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(goal_dir)?;
     std::fs::write(
-        dir.join("HANDOFF.md"),
+        goal_dir.join("HANDOFF.md"),
         render_project_handoff_markdown(handoff),
     )
 }

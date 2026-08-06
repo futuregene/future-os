@@ -32,27 +32,11 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 
 ## 快速开始
 
-### 环境要求
+### 安装
 
-每个平台的完整构建（agent + TUI + CLI + GUI）都需要：
-
-- **Rust** 1.97+（由 `rust-toolchain.toml` 固定）
-- **Node.js** 24+（见 `.nvmrc`）
-- **Bun** —— 必需项，非可选：TUI 构建和 CLI/GUI 打包均使用 `bun build`
-- 可选：**Python 3** —— 仅 `make generate-models` 需要
-- 可选：**protoc**（Protocol Buffers 编译器）—— 仅 `make generate-proto` 需要；生成的代码已提交，正常构建无需安装
-
-### 构建与安装
-
-各平台（macOS / Linux / Windows）完整的构建与安装步骤（GUI 打包、安装目标、
-`future-loop` 控制面）见独立文档 **[构建与安装](docs/build-and-install.zh-CN.md)**。快速上手：
-
-```bash
-git clone https://github.com/futuregene/future-os.git
-cd future-os
-make install        # 构建全部并安装到 ~/.local/bin（macOS 为 /opt/homebrew/bin）
-make install-nogui  # 仅终端栈（跳过 Tauri GUI）
-```
+从预编译安装包或安装脚本安装 FutureOS——无需下载源码。各平台（macOS / Linux /
+Windows、桌面应用、`future-loop` 控制面）的详细安装步骤见
+**[构建与安装](docs/build-and-install.zh-CN.md)** 文档。
 
 ### 配置模型
 
@@ -96,40 +80,23 @@ future auth login
 }
 ```
 
-### 安装技能（可选）
-
-FutureOS 内置一套精选技能——针对深度研究、浏览器自动化、文档处理等常见任务的专业指令集。技能维护在 [future-skills](https://github.com/futuregene/future-skills) 仓库，是我们的推荐默认配置。
-
-```bash
-make install-skills                          # 从内置 skills/ 子模块创建符号链接
-# 或从平台目录安装：
-future skills install                        # 安装所有 future-* 技能（约 13 个）
-future init                                  # 安装技能；macOS/Linux 上同时链接本地命令
-```
-
-> 技能以符号链接方式装入 `~/.future/agent/skills/`，Agent 会自动发现。使用 `future skills list` 查看可用技能，`future skills update` 升级。
-> 在 macOS 和 Linux 上，`future init` 还会将 `future` 及同目录中存在的 `future-agent` 软链到 `~/.future/bin/`；可按需将该目录加入 `PATH`。
-
 ### 启动 Agent
 
-所有客户端——TUI、GUI、CLI、channels——都只是轻量 gRPC 客户端。**必须先启动 Agent**,监听 `127.0.0.1:50051`：
+所有客户端——TUI、GUI、CLI、channels——都只是轻量 gRPC 客户端。**必须先启动 Agent**，监听 `127.0.0.1:50051`：
 
-| 模式 | 命令 | 适用场景 |
-|---|---|---|
-| **前台** | `make run-agent` | 从源码构建并运行，日志打到 stdout，Ctrl-C 停止 |
-| **前台** | `future-agent` | 直接运行已构建好的 Agent，日志打到 stdout，Ctrl-C 停止 |
+```bash
+future-agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止）
+```
 
 然后启动任意客户端：
 
 ```bash
-future-tui           # 终端界面（需先 make install）
-future-gui           # 桌面应用（需先 make install）
-# 开发模式下直接运行（会自动构建）：
-make run-tui         # 终端界面
-make run-gui         # 桌面应用
+future-tui        # 终端界面
+future-gui        # 桌面应用
+future-channel    # 渠道桥接
 ```
 
-> 客户端如果报连接 / gRPC 错误,几乎都是 Agent 还没启动——见 [故障排查](#故障排查)。
+> 客户端如果报连接 / gRPC 错误，几乎都是 Agent 还没启动——见 [故障排查](#故障排查)。
 
 ### CLI 快速上手
 
@@ -166,86 +133,13 @@ future --help                              # 查看全部命令
 | `↑↓` | 滚动聊天 / 列表导航 |
 | `Tab` | 自动补全 |
 
-## Loop 控制面
-
-FutureOS 内置原生 **loop 控制面**（`future-loop`），面向长期 agent 工作：把一段对话变成一个持久化目标，拆成带依赖链与人工门禁的 todos，挂载独立验证器，由确定性 quota 内核决定下一个有界回合。亮点：
-
-- 持久化目标 / todos / 门禁 / 监控，带完成契约
-- 确定性 should-run 决策内核 + 调度仲裁
-- Quota slot 记账与用量汇总；事件溯源状态 + 重放
-- 独立验证（`todo add --verify ...`）、扩展与多 agent
-- benchmark / decision replay / canary 评估工具链
-
-在任意 agent 会话中输入 `/future-loop <目标>` 开始，随时用 `future-loop status` 查看进度。完整能力介绍与 CLI 参考见 **[Loop 控制面指南](docs/loop-control-plane.zh-CN.md)**。
-
-## 架构
-
-```
-                         ┌──────────────────────────┐
-                         │   Rust Agent (gRPC)      │
-                         │   LLM · 工具 · 会话       │
-                         │   127.0.0.1:50051        │
-                         └──────────┬───────────────┘
-                                    │
-        ┌───────────────┬───────────┴───────────┬───────────────┐
-        │               │                       │               │
- TypeScript TUI   Tauri/React GUI       TypeScript CLI   Channel Bridge
- (终端, bun)     (桌面, WebView)         认证 · MCP       飞书 · 钉钉
-        │                                                       │
- Loop 控制面 (future-loop) ─────────────────────────────────────┘
- 持久化目标/todos/门禁 · quota 内核 · gRPC 执行桥
-```
-
-所有客户端独立通过 gRPC 连接 Agent，互不依赖。
-
-- **Agent** (`agent/`) — Rust，tokio，tonic。LLM 客户端（OpenAI 兼容 HTTP+SSE），工具执行，JSONL 会话持久化，gRPC 服务。
-- **TUI** (`tui/`) — TypeScript，bun。差分渲染，Markdown，Kitty 图片协议，14 个 UI 组件。
-- **GUI** (`gui/`) — Tauri 2 + React + TypeScript。三栏布局（导航 / 对话 / 上下文），审批提示，技能浏览，设置。
-- **CLI** (`cli/`) — TypeScript。设备码 OAuth 登录，单次对话（`run`），MCP 工具调用，技能管理，环境诊断（`doctor`）。
-- **Channel Bridge** (`channels/`) — Rust。飞书（pbbp2 WebSocket + CardKit 流式）和钉钉（Stream Mode）。
-- **Loop 控制面** (`orchestration/loop/`) — Rust（`future-loop`）。持久化目标/todo/门禁状态、quota should-run 内核、事件账本 + 重放、gRPC 执行桥。见 [Loop 控制面指南](docs/loop-control-plane.zh-CN.md)。
-
-## 配置
-
-所有配置位于 `~/.future/` 目录：
-
-| 路径 | 组件 | 说明 |
-|---|---|---|
-| `agent/settings.json` | Agent | 队列模式、压缩、重试、最大轮次 |
-| `agent/auth.json` | Agent | API Key（按 Provider 索引） |
-| `agent/models.json` | Agent | 自定义模型配置（Base URL、兼容参数） |
-| `agent/sessions/` | Agent | JSONL 会话文件 |
-| `tui/settings.json` | TUI | 默认模型、思考级别、启用的模型列表 |
-| `app/app.db` | GUI | SQLite — 会话、运行、产出、审批、设置 |
-| `channels/config.json` | Channels | Agent gRPC 地址、飞书/钉钉凭据 |
-
-## 开发
-
-```bash
-make build    # 构建所有组件（不安装到系统）
-make lint     # 全量检查（agent + channels + TUI + CLI + GUI）
-make fmt      # cargo fmt（agent + channels）
-make test     # cargo test（agent）
-make clean    # 清理构建产物 + 已安装的二进制
-```
-
-### Proto
-
-权威 API 定义在 `proto/future.proto`。生成的 Rust/TS 代码已提交到仓库——正常构建不会触碰。修改 `.proto` 文件后，运行：
-
-```bash
-make generate-proto          # agent + channels + TUI
-```
-
 ## 故障排查
 
 | 现象 | 解决 |
 |---|---|
-| 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`future-agent` 或 `make run-agent`),并确认端口没被占用:`lsof -i :50051`。 |
-| Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`,或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
-| GUI 找不到 Agent 二进制 | `make install-gui` 用你的宿主 target triple 复制 sidecar。如果 triple 与自动检测的不一致，手动复制：`cp target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`。 |
-| 构建时报 "unable to find linker 'mold'" | 安装 mold：`sudo apt install mold`（仅限 Linux x86_64，ARM Linux 不需要）。 |
-| Linux 上 GUI 构建失败(webkit / gtk 报错) | 安装 Tauri 系统依赖——见 [Linux 环境搭建](#linux-debianubuntu)。 |
+| 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`future-agent`)，并确认端口没被占用：`lsof -i :50051`。 |
+| Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`，或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
+| 构建 / 安装问题 | 见 [构建与安装](docs/build-and-install.zh-CN.md)（平台工具链、链接器、GUI 打包）。 |
 
 ## License
 

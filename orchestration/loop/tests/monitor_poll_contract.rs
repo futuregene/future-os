@@ -236,8 +236,9 @@ fn compat_projection_carries_monitor_metadata() {
         Some("daily"),
         Duration::from_secs(86400),
     ));
-    future_loop::compat::write_active_state(dir.to_str().unwrap(), &goal).unwrap();
-    let md = std::fs::read_to_string(dir.join(".codex/goals/g1/ACTIVE_GOAL_STATE.md")).unwrap();
+    future_loop::compat::write_active_state(&dir.join(".future/loop/goals/g1"), &goal).unwrap();
+    let md =
+        std::fs::read_to_string(dir.join(".future/loop/goals/g1/ACTIVE_GOAL_STATE.md")).unwrap();
     assert!(
         md.contains("monitor_target=http://target"),
         "anchor target: {md}"

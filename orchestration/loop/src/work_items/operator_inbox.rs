@@ -66,14 +66,14 @@ pub fn operator_inbox_attention_kind(
     let operator_name = operator_display_name.trim().to_lowercase();
     let explicit_mention =
         !operator_name.is_empty() && content.contains('@') && content.contains(&operator_name);
-    let loopx_mention = content.contains('@') && content.contains("loopx");
-    if capture_scope != "addressed_only" && !explicit_mention && !loopx_mention {
+    let loop_mention = content.contains('@') && content.contains("future-loop");
+    if capture_scope != "addressed_only" && !explicit_mention && !loop_mention {
         return None;
     }
     if content.contains('?') || content.contains('？') {
         return Some(OperatorAttentionKind::DirectQuestion);
     }
-    if explicit_mention || loopx_mention {
+    if explicit_mention || loop_mention {
         return Some(OperatorAttentionKind::DirectMention);
     }
     None
@@ -144,10 +144,10 @@ pub fn project_operator_inbox_urgency(
     }
 }
 
-/// Load pending inbox events from `<project>/.loopx/inbox/*.json` (LoopX
-/// `_pending_events`). Path safety: the inbox must stay under `.loopx/inbox`
-/// inside the project; `..` components and absolute paths are rejected
-/// (LoopX `_safe_inbox_path`); malformed files are skipped.
+/// Load pending inbox events from `<project>/.future/loop/inbox/*.json`
+/// (project-local pending events). Path safety: the inbox must stay under
+/// `.future/loop/inbox` inside the project; `..` components and absolute
+/// paths are rejected; malformed files are skipped.
 pub fn load_pending_inbox_events(
     project: &str,
     inbox_rel: &str,
@@ -155,7 +155,7 @@ pub fn load_pending_inbox_events(
     let root = Path::new(project);
     let raw = inbox_rel.trim();
     if raw.starts_with('/') || raw.starts_with('\\') {
-        return Err("operator inbox path must stay under .loopx/inbox".into());
+        return Err("operator inbox path must stay under .future/loop/inbox".into());
     }
     let rel = raw.replace('\\', "/");
     let rel_path = Path::new(&rel);
@@ -164,12 +164,12 @@ pub fn load_pending_inbox_events(
             .components()
             .any(|c| c == std::path::Component::ParentDir)
     {
-        return Err("operator inbox path must stay under .loopx/inbox".into());
+        return Err("operator inbox path must stay under .future/loop/inbox".into());
     }
-    let inbox = root.join(".loopx").join("inbox").join(rel_path);
-    let canonical_inbox = root.join(".loopx").join("inbox");
+    let inbox = root.join(".future").join("loop").join(rel_path);
+    let canonical_inbox = root.join(".future").join("loop").join("inbox");
     if !inbox.starts_with(&canonical_inbox) {
-        return Err("operator inbox path must stay under .loopx/inbox".into());
+        return Err("operator inbox path must stay under .future/loop/inbox".into());
     }
     if !inbox.is_dir() {
         return Ok(vec![]);

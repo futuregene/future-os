@@ -409,10 +409,12 @@ pub fn backfill_todo_events(
     })
 }
 
-/// The markdown workbench text for a goal (LoopX layout under the goal cwd).
+/// The markdown workbench text for a goal (project-local state layout under
+/// the project's `.future/loop/goals/<id>/`).
 pub fn active_state_markdown(cwd: &str, goal_id: &str) -> Result<String> {
     let path = std::path::Path::new(cwd)
-        .join(".codex")
+        .join(".future")
+        .join("loop")
         .join("goals")
         .join(goal_id)
         .join("ACTIVE_GOAL_STATE.md");

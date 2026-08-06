@@ -182,3 +182,25 @@ future init                                  # install skills and, on macOS/Linu
 make test        # cargo test (agent + loop control plane)
 make lint        # lint all (agent + channels + TUI + CLI + GUI)
 ```
+
+## Development (from source)
+
+Source builds use the repo Makefile from the repo root:
+
+```bash
+make build          # build all components (no system install)
+make lint           # lint all (agent + channels + TUI + CLI + GUI)
+make fmt            # cargo fmt (agent + channels)
+make test           # cargo test (agent)
+make clean          # remove build artifacts + installed binaries
+```
+
+### Proto
+
+The canonical API is `proto/future.proto`. Generated Rust/TS code is checked
+into the repo — normal builds don't touch it. After editing a `.proto` file,
+regenerate:
+
+```bash
+make generate-proto          # agent + channels + TUI
+```

@@ -1,9 +1,10 @@
-//! LoopX-compatible projection tests: the on-disk layout mirrors real LoopX
-//! (GOAL.md / .loopx/registry.json / ACTIVE_GOAL_STATE.md / runs/), field
-//! sets match, and todo anchors render with LoopX's exact format.
+//! Project-local projection tests: the on-disk layout keeps everything under
+//! the project (GOAL.md at the project root, ACTIVE_GOAL_STATE.md under
+//! `.future/loop/goals/<id>/`), and todo anchors render with a stable,
+//! URL-encoded format.
 
 use future_loop::compat::{
-    loopx_status, loopx_task_class, rfc3339, write_active_state, write_goal_doc, write_registry,
+    loopx_status, loopx_task_class, rfc3339, write_active_state, write_goal_doc,
 };
 use future_loop::state::{Goal, TaskClass, Todo, TodoStatus};
 
@@ -34,76 +35,30 @@ fn enum_values_match_loopx() {
     assert_eq!(loopx_status(TodoStatus::Deferred), "deferred");
 }
 
-// ── file layout parity ─────────────────────────────────────────────────────
+// ── file layout (project-local) ───────────────────────────────────────────
 #[test]
-fn file_layout_matches_loopx() {
+fn file_layout_is_project_local() {
     let proj = tmp_root("layout");
     let mut goal = Goal::new("g1", "objective", &proj);
     goal.add(Todo::user_gate("ug", "Approve X", &[]));
     goal.add(Todo::advancement("at", "work"));
 
     write_goal_doc(&proj, &goal.objective).unwrap();
-    let goals = vec![&goal];
-    write_registry(&proj, &goals, "/tmp/runtime").unwrap();
-    write_active_state(&proj, &goal).unwrap();
-
-    assert!(std::path::Path::new(&proj).join("GOAL.md").exists());
-    assert!(std::path::Path::new(&proj)
-        .join(".loopx/registry.json")
-        .exists());
-    let state = std::path::Path::new(&proj).join(".codex/goals/g1/ACTIVE_GOAL_STATE.md");
-    assert!(state.exists());
-    assert!(std::path::Path::new(&proj)
-        .join(".codex/goals/g1/ACTIVE_GOAL_STATE.md.lock")
-        .exists());
-}
-
-#[test]
-fn registry_field_set_matches_loopx() {
-    let proj = tmp_root("reg");
-    let mut goal = Goal::new("g1", "objective", &proj);
-    goal.add(Todo::advancement("t", "work"));
-    write_registry(&proj, &[&goal], "/tmp/rt").unwrap();
-    let d: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(format!("{proj}/.loopx/registry.json")).unwrap(),
+    write_active_state(
+        &std::path::Path::new(&proj).join(".future/loop/goals/g1"),
+        &goal,
     )
     .unwrap();
-    let top: std::collections::BTreeSet<String> = d.as_object().unwrap().keys().cloned().collect();
-    assert_eq!(
-        top,
-        [
-            "common_runtime_root",
-            "goals",
-            "schema_version",
-            "updated_at"
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect()
-    );
-    let g = &d["goals"][0];
-    let gkeys: std::collections::BTreeSet<String> =
-        g.as_object().unwrap().keys().cloned().collect();
-    for expected in [
-        "id",
-        "domain",
-        "status",
-        "role",
-        "parent_goal_id",
-        "repo",
-        "state_file",
-        "authority_sources",
-        "adapter",
-        "spawn_policy",
-        "coordination",
-        "execution_profile",
-        "guards",
-        "next_probe",
-    ] {
-        assert!(gkeys.contains(expected), "registry missing {expected}");
-    }
-    assert_eq!(g["id"], "g1");
-    assert_eq!(g["status"], "active");
+
+    assert!(std::path::Path::new(&proj).join("GOAL.md").exists());
+    let state = std::path::Path::new(&proj).join(".future/loop/goals/g1/ACTIVE_GOAL_STATE.md");
+    assert!(state.exists());
+    assert!(std::path::Path::new(&proj)
+        .join(".future/loop/goals/g1/ACTIVE_GOAL_STATE.md.lock")
+        .exists());
+    // Nothing reference-layout outside the project: no .codex, no .loopx.
+    assert!(!std::path::Path::new(&proj).join(".codex").exists());
+    assert!(!std::path::Path::new(&proj).join(".loopx").exists());
 }
 
 // ── todo anchors render with LoopX's exact format ──────────────────────────
@@ -115,9 +70,13 @@ fn todo_anchors_match_loopx_format() {
     // bootstrap-injected gates) — explicit scope flags render them.
     goal.add(Todo::user_gate("ug", "Decide X", &[]));
     goal.add(Todo::advancement("at", "agent work"));
-    write_active_state(&proj, &goal).unwrap();
-    let md =
-        std::fs::read_to_string(format!("{proj}/.codex/goals/g1/ACTIVE_GOAL_STATE.md")).unwrap();
+    write_active_state(
+        &std::path::Path::new(&proj).join(".future/loop/goals/g1"),
+        &goal,
+    )
+    .unwrap();
+    let md = std::fs::read_to_string(format!("{proj}/.future/loop/goals/g1/ACTIVE_GOAL_STATE.md"))
+        .unwrap();
     // user gate anchor: task_class present; scope flags absent by default
     assert!(md.contains("task_class=user_gate"));
     assert!(
@@ -144,9 +103,15 @@ fn todo_anchors_match_loopx_format() {
     let mut g = Todo::user_gate("ug2", "Decide Y", &[]);
     g = g.with_gate_scope(true, true);
     goal2.add(g);
-    write_active_state(&proj2, &goal2).unwrap();
-    let md2 =
-        std::fs::read_to_string(format!("{proj2}/.codex/goals/g2/ACTIVE_GOAL_STATE.md")).unwrap();
+    write_active_state(
+        &std::path::Path::new(&proj2).join(".future/loop/goals/g2"),
+        &goal2,
+    )
+    .unwrap();
+    let md2 = std::fs::read_to_string(format!(
+        "{proj2}/.future/loop/goals/g2/ACTIVE_GOAL_STATE.md"
+    ))
+    .unwrap();
     assert!(md2.contains("goal_bound=true global_gate=true"));
 }
 

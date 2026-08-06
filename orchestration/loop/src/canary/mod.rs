@@ -359,12 +359,15 @@ fn check_status_projection(store: &Store) -> SmokeCheckOutcome {
 }
 
 fn check_extension_state(_store: &Store) -> SmokeCheckOutcome {
-    // Extension state lives under the runtime root; a missing file means no
-    // extensions installed — valid. A corrupt file fails closed.
-    let runtime = std::env::var("FUTURE_LOOP_RUNTIME").unwrap_or_else(|_| {
+    // Extension state lives under the project-local state root; a missing
+    // file means no extensions installed — valid. A corrupt file fails
+    // closed (same root as `extension` commands).
+    let runtime = std::env::var("FUTURE_LOOP_ROOT").unwrap_or_else(|_| {
         format!(
-            "{}/.codex/loopx",
-            std::env::var("HOME").unwrap_or_else(|_| ".".into())
+            "{}/.future/loop",
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".into())
         )
     });
     let state_file = crate::extensions::runtime::default_extension_state_file(&runtime);

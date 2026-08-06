@@ -22,36 +22,13 @@ use future_loop::executor::{execute_turn, writeback};
 use future_loop::state::{now_epoch, Goal, RunRecord, TaskClass, Todo, TodoStatus};
 use future_loop::store::{Event, Store};
 
-/// Runtime root for the reference-compatible run history (default
-/// `<cwd>/.codex/loopx`, overridable via FUTURE_LOOP_RUNTIME). Project-local:
-/// all loop state stays inside the project directory.
-fn runtime_root() -> String {
-    std::env::var("FUTURE_LOOP_RUNTIME").unwrap_or_else(|_| {
-        format!(
-            "{}/.codex/loopx",
-            std::env::current_dir()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| ".".into())
-        )
-    })
-}
-
-/// Materialize the LoopX-compatible on-disk projection for one goal:
-/// GOAL.md + .loopx/registry.json + .codex/goals/<id>/ACTIVE_GOAL_STATE.md.
+/// Materialize the project-local active-state projection for one goal:
+/// `<cwd>/.future/loop/goals/<id>/ACTIVE_GOAL_STATE.md`.
 fn sync_compat(store: &Store, goal_id: &str) -> Result<()> {
     let Some(goal) = store.replay(goal_id)? else {
         return Ok(());
     };
-    // GOAL.md is written only when a goal doc is provided (--goal-doc);
-    // the projection reads its existence for the Authority Sources section.
-    let goals: Vec<Goal> = store
-        .registry()
-        .iter()
-        .filter_map(|e| store.replay(&e.goal_id).ok().flatten())
-        .collect();
-    let goal_refs: Vec<&Goal> = goals.iter().collect();
-    future_loop::compat::write_registry(&goal.cwd, &goal_refs, &runtime_root())?;
-    future_loop::compat::write_active_state(&goal.cwd, &goal)?;
+    future_loop::compat::write_active_state(&store.goal_dir(goal_id), &goal)?;
     Ok(())
 }
 
@@ -1861,7 +1838,8 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         );
         writeback(&mut g, &record, monitor_changed, completion);
         store.append_run(&goal_id, &record)?;
-        let _ = future_loop::compat::write_run(&runtime_root(), &goal_id, &record);
+        // Project-local per-run mirror (runs/ under the goal state dir).
+        let _ = future_loop::compat::write_run(&store.goal_dir(&goal_id), &goal_id, &record);
         store.append(Event::RunRecorded {
             goal_id: goal_id.clone(),
             record: record.clone(),
@@ -2305,7 +2283,7 @@ fn cmd_runs(store: &Store, args: &[String]) -> Result<()> {
     store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let root = runtime_root();
+    let root = store.root_path();
     use future_loop::runtime as rt;
 
     match sub {
@@ -3004,10 +2982,14 @@ fn cmd_handoff(store: &Store, args: &[String]) -> Result<()> {
         contract.as_ref().map(|c| c.summary.as_str()),
     );
     if write {
-        future_loop::handoff::project_handoff::write_project_handoff(&goal.cwd, &goal, &handoff)
-            .map_err(|e| anyhow::anyhow!("write handoff: {e}"))?;
+        future_loop::handoff::project_handoff::write_project_handoff(
+            &store.goal_dir(&goal_id),
+            &goal,
+            &handoff,
+        )
+        .map_err(|e| anyhow::anyhow!("write handoff: {e}"))?;
         println!(
-            "handoff written to .codex/goals/{}/HANDOFF.md",
+            "handoff written to .future/loop/goals/{}/HANDOFF.md",
             goal.goal_id
         );
     } else {
@@ -3247,7 +3229,7 @@ fn cmd_benchmark_protocol(store: &Store, args: &[String]) -> Result<()> {
 
 /// `loopx benchmark ledger [--benchmark-id X] [--case-id Y] [--json]
 /// [--dir DIR]` — query the benchmark run ledger (default dir:
-/// `<FUTURE_LOOP_RUNTIME>/benchmarks`).
+/// `<cwd>/.future/loop/benchmarks`).
 fn cmd_benchmark_ledger(store: &Store, args: &[String]) -> Result<()> {
     let mut benchmark_id = None;
     let mut case_id = None;
@@ -3260,7 +3242,7 @@ fn cmd_benchmark_ledger(store: &Store, args: &[String]) -> Result<()> {
         "--dir" => dir = Some(v),
         _ => {}
     });
-    let dir = dir.unwrap_or_else(|| format!("{}/benchmarks", runtime_root()));
+    let dir = dir.unwrap_or_else(|| format!("{}/benchmarks", store.root_path()));
     let dir = std::path::PathBuf::from(&dir);
     std::fs::create_dir_all(&dir).ok();
     let ledger = future_loop::benchmark::ledger::BenchmarkLedger::open(&dir)?;

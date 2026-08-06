@@ -168,3 +168,23 @@ future init                                  # 安装技能并在 macOS/Linux �
 make test        # cargo test（agent + loop 控制面）
 make lint        # 全量 lint（agent + channels + TUI + CLI + GUI）
 ```
+
+## 开发（源码方式）
+
+源码构建使用仓库根目录的 Makefile：
+
+```bash
+make build          # 构建全部组件（不安装到系统）
+make lint           # 全量 lint（agent + channels + TUI + CLI + GUI）
+make fmt            # cargo fmt（agent + channels）
+make test           # cargo test（agent）
+make clean          # 清理构建产物与已安装二进制
+```
+
+### Proto
+
+规范 API 是 `proto/future.proto`。生成的 Rust/TS 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
+
+```bash
+make generate-proto          # agent + channels + TUI
+```
