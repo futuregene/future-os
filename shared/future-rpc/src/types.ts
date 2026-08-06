@@ -56,6 +56,8 @@ export interface RpcCommand {
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+export type PermissionLevel = "all" | "workspace" | "none";
+
 export interface ImageContent {
   type: "image";
   source: {
@@ -137,6 +139,10 @@ export interface RecentTerminalAck {
   clientRequestId: string;
   state: "terminal" | "cancelled" | "failed";
   reason: string;
+  /** Legacy snake_case aliases, always emitted during the migration window. */
+  run_id: string;
+  run_sequence: number;
+  client_request_id: string;
 }
 
 export interface QueuedRunState {
@@ -183,13 +189,21 @@ export interface RunTerminalState {
 export interface SessionSummary {
   id: string;
   cwd: string;
-  updatedAt: string;
   model: string;
+  updatedAt: string;
+  /** Legacy snake_case alias; always emitted during the migration window. */
+  updated_at: string;
   sessionName?: string;
   firstMessage?: string;
   queryCount?: number;
   isStreaming?: boolean;
   parentSessionId?: string;
+  /** Legacy snake_case aliases emitted during the migration window. */
+  session_name?: string;
+  first_message?: string;
+  query_count?: number;
+  is_streaming?: boolean;
+  parent_session_id?: string;
 }
 
 // ============================================================================
