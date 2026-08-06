@@ -23,7 +23,7 @@ Three steps take you from download to your first answer:
 - **Have an agent conversation** that streams its thinking, calls tools, and shows its work as it happens.
 - **Start fast with a Chat**, or bind a folder on your computer as a **Workspace** for real projects.
 - **Stay in control** — the agent pauses for your approval before risky actions like writing files or running commands.
-- **Review the work** in the right-hand panel: background programs (Runs), file changes (Review), and generated outputs (Artifacts).
+- **Review the work** in the right-hand panel: the conversation's files (Files), background programs (Runs), and — for workspaces — the file changes made (Review).
 - **Use Skills** — installable capability packs the agent uses automatically when they're relevant.
 
 ---

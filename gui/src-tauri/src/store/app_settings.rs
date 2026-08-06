@@ -17,7 +17,7 @@ pub struct AppSettings {
     /// Show the model's thinking/reasoning content in the chat. On by default.
     pub show_thinking: bool,
     /// Silently upgrade installed skills to their latest catalogue version on
-    /// app open (and immediately when toggled on). Off by default.
+    /// app open (and immediately when toggled on). On by default.
     pub auto_upgrade_skills: bool,
     /// Auto-connect the single paired remote device on app launch. Off by
     /// default. Remote control is a dev-only feature, so this is only consulted

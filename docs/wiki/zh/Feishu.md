@@ -19,7 +19,7 @@ Bridge 与飞书维持一条长连接 WebSocket。当有人给你的机器人发
 
 1. **飞书开发者账号**：[open.feishu.cn](https://open.feishu.cn)（Lark 用户使用 [open.larksuite.com](https://open.larksuite.com)）。
 2. 已创建并启用机器人能力的**飞书应用**。
-3. FutureOS Agent 已运行（`make run-agent` 或 `future agent start`）。
+3. FutureOS Agent 已运行（`make run-agent`，或直接打开桌面应用——它会自动拉起 agent）。
 
 ---
 
@@ -135,18 +135,11 @@ Bridge 与飞书维持一条长连接 WebSocket。当有人给你的机器人发
 
 ```bash
 # 构建并运行 Channel Bridge
-make build-channels-release
-./target/release/future-channels
+make build-channels
+./target/release/future-channel
 ```
 
-或作为系统服务管理：
-
-```bash
-future channel start    # macOS launchctl / Linux systemd
-future channel status   # 查看状态
-future channel stop     # 停止
-future channel restart  # 重启
-```
+Bridge 是**独立服务**——没有 `future channel` CLI 命令，桌面应用也不管理它。需要飞书桥接时，直接运行 `future-channel` 二进制即可（或通过 `make run-channels`）。
 
 Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在，会自动创建模板并退出——编辑模板后重新启动即可。
 
@@ -183,14 +176,14 @@ Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在�
 
 ### 机器人不回复
 
-1. 检查 Bridge 是否运行：`future channel status`
+1. 检查 Bridge 是否运行：`future-channel` 进程应存在（macOS/Linux 用 `ps aux | grep future-channel`，Windows 用任务管理器）
 2. 检查 `config.json` 中 `feishu.enabled` 是否为 `true`
 3. 检查 DM/群聊策略——机器人可能在拒绝访问，拒绝消息中会包含你的 open_id 或 chat_id。
 4. 查看 Bridge 日志中的 WebSocket 连接错误。
 
-### Bridge 每 6 分钟左右重连
+### Bridge 自动重连
 
-这是飞书 WebSocket 的正常行为。Bridge 每 30 秒发送 keepalive ping，超时后自动重连。重连对用户透明——会话不受影响。
+这是飞书 WebSocket 的正常行为。Bridge 每 30 秒发送 keepalive ping；连接断开后约 5 秒自动重连。重连对用户透明——会话不受影响。
 
 ### 图片无法处理
 
@@ -202,4 +195,4 @@ Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在�
 
 - [[钉钉集成|DingTalk]] —— 将 FutureOS 接入钉钉。
 - [[设置|Settings]] —— 配置 FutureOS 设置和 Provider。
-- [[命令行工具(future-cli)|CLI]] —— 服务管理的命令行工具。
+- [[命令行工具(future)|CLI]] —— 可选的命令行工具。

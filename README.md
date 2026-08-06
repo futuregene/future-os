@@ -23,7 +23,7 @@ or from a native desktop window.
 | Category | Details |
 |---|---|
 | **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), CLI, Feishu bot, DingTalk bot — one agent, everywhere |
-| **Model Flexibility** | 1000+ built-in models across 100+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
+| **Model Flexibility** | 3800+ built-in models across 140+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Streaming & Thinking** | Real-time token streaming with collapsible reasoning-content blocks; configurable thinking levels (off ↔ xhigh) |
 | **Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt) |
 | **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking ([using](docs/wiki/en/Using-FutureOS.md)) |
@@ -116,6 +116,11 @@ future-tui        # terminal UI
 | `/name [n]` | Set the session name |
 | `/status` | Session state, token usage, cost |
 | `/stop` | Abort current generation |
+| `/cwd` | Change the working directory |
+| `/approve` | Approve pending tool execution |
+| `/reject` | Reject pending tool execution |
+| `/cancel <run-id>` | Cancel a queued run |
+| `/reload` | Reload skills and context |
 
 ### Keyboard Shortcuts (TUI)
 

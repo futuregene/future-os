@@ -24,8 +24,9 @@ iOS；业务层、主题、国际化和凭证存储均保持跨平台。
 开发控制面固定为 `https://test.future-os.cn`，生产控制面为
 `https://future-os.cn`。客户端会拒绝扫描其他环境签发的配对码。
 
-测试环境目前返回明文 `ws://` NATS 地址，因此 Android 开发构建临时允许
-cleartext traffic。生产发布前必须先完成 `wss://` 部署并关闭这个选项。
+NATS 一律走 `wss://`（TLS）连接：测试与生产环境均不下发明文 `ws://`
+地址，客户端在收到非 `wss://` 地址时会拒绝配对。Android 不再允许
+cleartext traffic。
 
 ## 手工运行 Android
 
@@ -145,5 +146,5 @@ npm run ios:device
 
 - Bundle identifier 不能含下划线，Android 的 `cn.future_os.mobile` 在 iOS 上
   不合法；本项目统一为 `cn.futureos.mobile`。
-- 测试环境返回明文 `ws://` NATS 地址，生产发布前必须完成 `wss://` 部署，
-  届时在 `app.config.ts` 关闭 `usesCleartextTraffic` 或配置 ATS 例外。
+- NATS 一律走 `wss://`，不配置任何明文/cleartext 例外；iOS 依赖系统 ATS
+  默认放行 TLS WebSocket，Android 保持 cleartext 禁止。

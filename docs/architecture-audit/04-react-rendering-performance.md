@@ -35,12 +35,12 @@ thread-runtime-updated 到达
 
 ### HIGH
 
-**H1 — `handleFork` 依赖 `messages`，每个流式推送都击穿全列表唯一 memo**
+**H1 — `handleFork` 依赖 `messages`，每个流式推送都击穿全列表唯一 memo** —— ✅ **已修复（commit `306cf05f`）**：`AgentThread.tsx` 现用 `messagesRef` 镜像消息列表，`handleFork`/`handleRetryRun` 不再依赖 `messages` 数组本身（代码注释直接引用 H1）。下述为修复前证据。
 - 证据：`AgentThread.tsx:195-221`（deps 在 221 行：`[thread, messages, onForked, t]`）→ 经 `MessageList.tsx:91`（`onFork={onFork}`）传给每个 `MessageBlock`（`MessageList.tsx:76-97`）。
 - 机制：`messages` 数组每个推送（≈25/s）都换新引用 → `handleFork` 恒为新函数 → `MessageBlock` 的 `memo` 浅比较对**所有行**失败 → 窗口内全部已定稿消息（最多 10 轮对话）每推送整体重渲染，包括每行重跑 `MarkdownContent`（解析有缓存，但整棵元素树每推送重建+diff 一遍）。这是热路径上最大的 React 开销，也是唯一 memo 边界被废的地方。
 - 修复方向：`handleFork` 用 `messagesRef` 读消息（或改为接收 messageId 的稳定回调），deps 去掉 `messages`。
 
-**H2 — `threadRunStatuses` reducer 流式期间从不 bail-out → AppShell 全树 25Hz 重渲染**
+**H2 — `threadRunStatuses` reducer 流式期间从不 bail-out → AppShell 全树 25Hz 重渲染** —— ✅ **已修复（commit `306cf05f`）**：`useThreadStore.ts` 的 reducer 现增加语义不变即返回 `previous` 的 bail-out（status/runId/endedAt 未变时跳过，代码注释直接引用 H2）。下述为修复前证据。
 - 证据：`useThreadStore.ts:42-60`（`reduceThreadRunStatus` 仅在 `revision` 未变时返回旧值；流式中 status 恒为 `"running"` 但 revision 递增 → 每次推送返回新对象）；监听在 `useThreadStore.ts:256-267`；AppShell 消费整个 store（`AppShell.tsx:111-123`）并下传。
 - 机制：每个合并推送（≈40ms）→ 新 `threadRunStatuses` → **AppShell 重渲染** → ActivityRail（排序+多轮过滤+分组，见 M3）、所有 ThreadListItem、ContextPanel、AgentThread（再次）、各 dialog 全部重跑，显示状态其实没变。
 - 修复方向：reducer 在 `{status, runId, endedAt}` 语义未变时返回 `previous`；或把 run-status 拆出 AppShell（只让侧栏订阅）。
@@ -50,7 +50,7 @@ thread-runtime-updated 到达
 - 机制：流式中 `segment.text` 每推送增长 → `content` 恒变 → memo 恒 miss → **对整段已累计文本**做全量 remark parse + 全树 `document.nodes.map(renderBlock)` 重建（另见 L4 的索引 key）。回复越长每推送越贵，整条回复累计 O(n²)。`live` 标志只豁免了代码高亮，没豁免解析。
 - 修复方向：对 live 尾部做增量/分块解析（只重解析最后一个 block），或对渲染更新节流（把 25Hz 的 state 写入合并到 ~8-10Hz）。
 
-**H4 — Composer(+745 行 MentionEditor)每推送重渲染**
+**H4 — Composer(+745 行 MentionEditor)每推送重渲染** —— ✅ **已修复（commit `306cf05f`）**：`Composer` 现为 `memo(ComposerImpl)`，且 `onAbort`/`onSend` 由 AgentThread 以 useCallback 稳定传入（`Composer.tsx:712` 注释：「with stable props … it must not re-render at all」）。下述为修复前证据。
 - 证据：`AgentThread.tsx:317-333`（`Composer` 非 memo，且 `onAbort={() => void handleAbort()}`、`onSend={payload => void handleSend(payload)}` 内联箭头每渲染恒新）；`Composer.tsx:98` 起整个组件体；`MentionEditor.tsx` 745 行。
 - 机制：AgentThread 因 `messages` 变化 + AppShell 推送两条路径每推送重渲染 → Composer 子树（附件列表、三个 SelectMenu、MentionEditor 全部 hooks/JSX）每推送空跑一遍。
 - 修复方向：`memo(Composer)` + 稳定化 `onAbort`/`onSend`（useCallback）；或把 `isSending` 下沉。
@@ -130,15 +130,15 @@ thread-runtime-updated 到达
 
 | 优先级 | 项 | 改动量 | 预期收益 |
 |---|---|---|---|
-| 1 | H1：`handleFork` 去掉 `messages` 依赖（用 ref） | ~5 行 | 恢复唯一 memo 边界，已定稿消息不再每推送重渲染 |
-| 2 | H2：reducer bail-out（语义未变返回旧引用） | ~10 行 | AppShell 全树不再 25Hz 重渲染（连带消除 M3 空转） |
-| 3 | H3：live 尾部 markdown 增量解析或渲染节流 | 中等 | 消除累计 O(n²)，长回复流式显著变顺 |
-| 4 | H4 + M1：`memo(Composer)`、`memo(MarkdownContent)` + 稳定化回调 | 小 | Composer/MentionEditor/已定稿 segment 不再空跑 |
+| 1 | H1：`handleFork` 去掉 `messages` 依赖（用 ref） | ~5 行 | 恢复唯一 memo 边界，已定稿消息不再每推送重渲染 —— ✅ **已实施（commit `306cf05f`）** |
+| 2 | H2：reducer bail-out（语义未变返回旧引用） | ~10 行 | AppShell 全树不再 25Hz 重渲染（连带消除 M3 空转）—— ✅ **已实施（commit `306cf05f`）** |
+| 3 | H3：live 尾部 markdown 增量解析或渲染节流 | 中等 | 消除累计 O(n²)，长回复流式显著变顺 —— ⚠️ 截至 2026-08-06 **未修复** |
+| 4 | H4 + M1：`memo(Composer)`、`memo(MarkdownContent)` + 稳定化回调 | 小 | Composer/MentionEditor/已定稿 segment 不再空跑 —— H4 部分 ✅ **已实施（commit `306cf05f`，Composer 已 memo）**；M1 未修复 |
 | 5 | M2：scrollbar set 前比较 | ~3 行 | 消除每推送二次提交 |
 | 6 | M5：`entryProjection` 稳定 id | 小-中 | 结算/切线程不再整窗口 remount |
 | 7 | M4/M6/L1-L7 | 小 | 局部优化 |
 
-**关键洞察**：1、2 两项是"一行级改动、全局级收益"——它们让代码库里已经存在的正确投资（MessageBlock memo、patchMessage 引用稳定、窗口化、各级缓存）真正生效。建议先做这两项并用 React Profiler 验证，再决定 H3 的方案（增量解析 vs 节流）。
+**关键洞察**：1、2 两项是"一行级改动、全局级收益"——它们让代码库里已经存在的正确投资（MessageBlock memo、patchMessage 引用稳定、窗口化、各级缓存）真正生效。⚠️ 这两项已在 commit `306cf05f` 实施（代码注释引用 H1/H2）；建议用 React Profiler 验证收益，并评估 H3 方案（增量解析 vs 节流）。
 
 ---
 

@@ -12,6 +12,8 @@ export const resources = {
         claiming: "Pairing securely…",
         invalid: "This pairing code is invalid or expired.",
         host: "The QR code belongs to a different FutureOS environment.",
+        secureEndpoint:
+          "The desktop returned an unencrypted connection address. Make sure the server uses wss://.",
         failedWithReason: "Pairing failed: {{reason}}",
         manual: "Paste pairing code",
         manualPlaceholder: "futureos://remote/pair?code=...",
@@ -133,6 +135,7 @@ export const resources = {
         claiming: "正在安全配对…",
         invalid: "配对码无效或已过期。",
         host: "二维码属于另一个 FutureOS 环境。",
+        secureEndpoint: "桌面端返回了未加密的连接地址，请确认服务器使用 wss://。",
         failedWithReason: "配对失败：{{reason}}",
         manual: "粘贴配对码",
         manualPlaceholder: "futureos://remote/pair?code=...",

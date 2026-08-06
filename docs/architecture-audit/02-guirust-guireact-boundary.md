@@ -3,6 +3,8 @@
 > 范围：Tauri Rust 层（`gui/src-tauri/src/`）与 React 前端（`gui/src/`）之间的边界。
 > 方式：只读审计，未修改任何文件。所有路径相对 `gui/`，行号均已逐条核对。
 > 一句话结论：**架构层面边界是干净的，契约层面是全手工且已开始漂移的。** 边界划分（谁拥有什么）是对的，缺的是契约机制（类型如何不漂移）。
+>
+> ⚠️ **2026-08-06 漂移注记**：结论方向不变（截至复核日仍有 0 处裸 `invoke(`，单一入口 `integrations/tauri/invoke.ts` 未变），但数字与路径已变：`invokeCommand` 调用数 102→**125**；引用文件多处移动（`ResetPage.tsx`→`features/settings/`、`AppShell.tsx`→`components/layout/`、`agentStateCache.ts`→`integrations/agent/`、`typeGuards.ts`→`integrations/storage/`、`MarkdownContent.tsx`→`features/markdown/`、`MessageList/MessageBlock.tsx`→`features/agent/`、`useThreadStore.ts`→`components/layout/hooks/`）。引用具体 file:line 前请按当前工作树核对。
 
 ---
 

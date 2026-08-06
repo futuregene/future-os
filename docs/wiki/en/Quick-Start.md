@@ -12,7 +12,7 @@ To use the built-in models, connect your FutureGene account:
 
 1. Click the **gear icon** (Settings) at the bottom-left of the window.
 2. Go to the **Providers** page.
-3. Under **Built-in**, find **FutureGene** and click **Connect**.
+3. Under **Built-in**, find **FutureGene** and click **Sign in**.
 4. Your browser opens for authorization. If it doesn't open automatically, the app shows a **verification code** and a **copyable link** — open the link in any browser and enter the code.
 5. Once authorized, the app confirms you're connected.
 
@@ -56,11 +56,12 @@ To manage which models appear, open **Settings → Models**. See [[Settings]].
 
 ## 5. See the work
 
-Open the panel on the **right** to check what the agent is doing. It has up to three views:
+Open the panel on the **right** to check what the agent is doing. Every conversation shows:
 
+- **Files** — the files in the conversation's work area (for a **Workspace**, the project folder; for a **Chat**, its temporary folder).
 - **Runs** — background programs the agent is running, with the real commands shown. You can stop a running one or clear finished ones.
-- **Review** — for a **Workspace**, the file changes the agent made: the file list, stats, and diffs.
-- **Artifacts** — for a **Chat**, the outputs the agent produced (reports, summaries, tables, files).
+
+A **Workspace** conversation also has a **Review** view — the file changes the agent made: the file list, stats, and diffs.
 
 ---
 

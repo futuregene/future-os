@@ -2,7 +2,7 @@
 
 Open Settings from the **gear icon** at the bottom-left of the window. There's also a **Models** shortcut in the left panel that jumps straight to the Models page.
 
-The settings you'll use day-to-day are **General**, **Providers**, and **Models**. There are also **Check for updates** and **Reset** pages.
+The settings you'll use day-to-day are **General**, **Providers**, and **Models**. There are also **Account**, **Check for updates**, **About**, and **Reset** pages.
 
 ---
 
@@ -16,6 +16,7 @@ Desktop-level options for the app:
   - **Sandboxed** (macOS only) — commands run in the macOS sandbox; file operations still prompt.
   - **Unrestricted** — no prompts and no sandbox; everything runs.
 - **Show thinking process** — show or hide the model's reasoning in the conversation.
+- **Auto-upgrade skills** — silently upgrade installed skills to their latest version each time the app opens.
 
 See [[Using FutureOS|Using-FutureOS]] for how approval works in practice.
 
@@ -29,11 +30,11 @@ A provider is where your models come from.
 
 FutureGene is the built-in provider. To use it:
 
-1. Click **Connect**.
+1. Click **Sign in**.
 2. Authorize in your browser. If it doesn't open automatically, use the **verification code** and **copyable link** shown in the app.
-3. Once connected, you can **Sign in again** or **Sign out** at any time.
+3. Once connected, you can **Sign out** at any time.
 
-Other built-in providers (such as DeepSeek, OpenAI, Anthropic, Google, and more) are listed too — click **Set key** / **Update key** to add your own API key for any of them. Use **More providers** to reveal the full list.
+Other built-in providers (such as DeepSeek, OpenAI, Anthropic, Google, and more) are listed too — click **Configure** to set or update the API key for any of them. Use **More providers** to reveal the full list.
 
 ### Custom providers
 
@@ -66,6 +67,18 @@ The model selector in the input box draws from the same list and shows which pro
 ## Check for updates
 
 Check whether a newer version of FutureOS is available and download the installer for your system. See [[Install FutureOS|Installation]] for how to apply an update.
+
+---
+
+## Account
+
+Shows your signed-in FutureGene account (profile and credit balance) and lets you sign out.
+
+---
+
+## About
+
+Shows the app version, platform, and related release information.
 
 ---
 

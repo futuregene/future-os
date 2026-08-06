@@ -10,7 +10,7 @@ FutureOS is organized into three columns:
 
 - **Left — navigation.** From top to bottom you'll find: **New Chat**, **Models** (a shortcut into settings), **Skills**, your **Workspaces** (each expands to its conversations), your **Chats**, and **Settings** at the bottom. You can collapse the left panel to give the conversation more room.
 - **Center — the conversation.** Your messages, the streaming reply, plans, tool activity, command previews, errors, and approval cards. The input box is fixed at the bottom.
-- **Right — the context panel.** See what the agent is doing (Runs / Review / Artifacts). It's collapsible — open it when you want to check the work, hide it when you don't.
+- **Right — the context panel.** See what the agent is doing (Files / Runs / Review). It's collapsible — open it when you want to check the work, hide it when you don't.
 
 ---
 
@@ -22,7 +22,7 @@ Each conversation is its own independent agent session — they don't interfere 
 |---|---|---|
 | How you create it | **New Chat** — just start typing | **Workspace** — open a folder on your computer |
 | Best for | Quick questions, one-off tasks | Real projects tied to a folder |
-| Right panel shows | **Runs** and **Artifacts** | **Runs** and **Review** |
+| Right panel shows | **Files** and **Runs** | **Files**, **Runs** and **Review** |
 
 - A **Chat** is the fastest way to ask something. Its work area is temporary.
 - A **Workspace** binds a real folder, so the agent reads and changes files there — and the **Review** view shows exactly what changed.
@@ -78,9 +78,9 @@ Every background program the agent runs shows up as a card with the **real comma
 
 For a Workspace, the **Review** view shows the file changes made in the project: the list of changed files, change types (added / modified / deleted / renamed), and per-file diffs. When the folder is under version control, you can also switch to a **"Last run changes"** view to see just what the most recent run changed.
 
-### Artifacts (Chat)
+### Files
 
-For a Chat, the **Artifacts** view collects the outputs the agent produced — reports, summaries, tables, and files. You can preview them, copy their contents, and export or open the originals. You can also upload a file into Artifacts yourself.
+Every conversation has a **Files** view with the files in its work area: for a **Workspace**, the project folder itself; for a **Chat**, the temporary per-conversation folder the agent works in. Browse the tree, preview files (or open them in your system apps), and attach a file to the conversation from the tree.
 
 ---
 

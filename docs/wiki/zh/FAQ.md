@@ -27,7 +27,7 @@
 
 ### 用不了任何模型 / 未登录
 
-打开**设置 → Providers → FutureGene → Connect** 登录,或添加自己的 provider。见 [[设置|Settings]]。
+打开**设置 → Providers → FutureGene → Sign in** 登录,或添加自己的 provider。见 [[设置|Settings]]。
 
 ### 怎么切换模型?
 

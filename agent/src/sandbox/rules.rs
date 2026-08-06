@@ -444,6 +444,22 @@ impl RuleSet {
         )
     }
 
+    /// Test-only constructor with an explicit home: captures `home` ONCE so a
+    /// test can assert on the same home the rules were resolved with. Immune
+    /// to other tests mutating `$HOME`/`USERPROFILE` concurrently (see the
+    /// TestHome helper in `rpc::commands`), which used to make the
+    /// credential-guard tests flaky under parallel test execution.
+    #[cfg(test)]
+    pub(crate) fn resolve_isolated_with_home(workspace: &Path, home: &Path) -> Self {
+        let stub = workspace.join(".future/user-rules-that-do-not-exist.json");
+        Self::resolve_impl(
+            workspace,
+            Some(home),
+            Some(&stub),
+            Arc::new(Mutex::new(vec![])),
+        )
+    }
+
     /// Full constructor with an injectable user-rule file path.
     fn resolve_impl(
         workspace: &Path,
@@ -617,9 +633,11 @@ mod tests {
             set.evaluate(&workspace.join("src/main.rs"), Op::Write),
             Decision::Allow
         );
-        // Write outside → ask.
-        let outside = dirs::home_dir().unwrap().join("futureos-outside-xyz.txt");
-        assert_eq!(set.evaluate(&outside, Op::Write), Decision::Ask);
+        // Write outside → ask. Must NOT derive from home: when the TestHome
+        // helper (rpc::commands) points $HOME at a tempdir, home-derived
+        // paths fall inside the temp roots and the fallback would Allow.
+        let outside = Path::new("/usr/lib/futureos-outside-xyz.txt");
+        assert_eq!(set.evaluate(outside, Op::Write), Decision::Ask);
     }
 
     #[test]
@@ -634,8 +652,13 @@ mod tests {
     #[test]
     fn credential_reads_ask() {
         let workspace = ws();
-        let set = RuleSet::resolve_isolated(&workspace);
-        let ssh = dirs::home_dir().unwrap().join(".ssh/id_rsa");
+        // Capture + canonicalize ONCE: rule bases are canonicalized during
+        // resolution, and /var -> /private/var (macOS) must not split the
+        // assertion path from the guard. Also immune to other tests mutating
+        // $HOME concurrently (TestHome in rpc::commands).
+        let home = paths::canonicalize_lenient(&dirs::home_dir().unwrap());
+        let set = RuleSet::resolve_isolated_with_home(&workspace, &home);
+        let ssh = home.join(".ssh/id_rsa");
         assert_eq!(set.evaluate(&ssh, Op::Read), Decision::Ask);
     }
 
@@ -794,12 +817,13 @@ mod tests {
         std::fs::create_dir_all(workspace.join(".future")).unwrap();
         std::fs::write(workspace.join(".future/approval_rule.json"), "{ not json").unwrap();
         // resolve() logs + skips; built-ins + fallback still apply.
-        let set = RuleSet::resolve_isolated(&workspace);
+        let home = paths::canonicalize_lenient(&dirs::home_dir().unwrap());
+        let set = RuleSet::resolve_isolated_with_home(&workspace, &home);
         assert_eq!(
             set.evaluate(&workspace.join("a.txt"), Op::Read),
             Decision::Allow
         );
-        let ssh = dirs::home_dir().unwrap().join(".ssh/x");
+        let ssh = home.join(".ssh/x");
         assert_eq!(set.evaluate(&ssh, Op::Read), Decision::Ask);
     }
 

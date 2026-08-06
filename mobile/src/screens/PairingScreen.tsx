@@ -28,6 +28,7 @@ function pairingErrorMessage(error: unknown, t: TFunction): string {
   const message = (typeof rawMessage === "string" ? rawMessage.trim() : "") || "unknown error";
   if (message === "unexpected_pairing_host") return t("pairing.host");
   if (message === "invalid_pairing_code") return t("pairing.invalid");
+  if (message === "nats_ws_not_tls") return t("pairing.secureEndpoint");
   return t("pairing.failedWithReason", { reason: message });
 }
 
