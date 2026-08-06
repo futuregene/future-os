@@ -87,15 +87,12 @@ fn root_dir() -> String {
 }
 
 fn gen_id(prefix: &str) -> String {
+    // Loop-style ids: <prefix>_<12hex> (underscore, no dash) — matches the
+    // reference format and pre-existing goal/todo ids.
     format!(
-        "{}-{}",
+        "{}_{}",
         prefix,
-        uuid::Uuid::new_v4()
-            .simple()
-            .to_string()
-            .chars()
-            .take(10)
-            .collect::<String>()
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
     )
 }
 
@@ -136,6 +133,8 @@ async fn main() -> Result<()> {
         "worker-bridge" => cmd_worker_bridge(&mut store, &args[1..]).await,
         "serve-status" => cmd_serve_status(&store, &args[1..]),
         "capability" => cmd_capability(&store, &args[1..]),
+        "models" => cmd_models(&args[1..]).await,
+        "diagnose" => cmd_diagnose(&store, &args[1..]),
         "run" => cmd_run(&mut store, &args[1..]).await,
         // ── P3 commands ──────────────────────────────────────────────────
         "extension" => cmd_extension(&store, &args[1..]),
@@ -186,6 +185,18 @@ fn build_cli_registry() -> CommandRegistry {
         "status",
         "project the active state",
         "status [--goal G]",
+    );
+    r.command(
+        goal,
+        "models",
+        "list models available from the agent",
+        "models [--format json]",
+    );
+    r.command(
+        goal,
+        "diagnose",
+        "per-goal diagnostic surface (decision / gaps / runs)",
+        "diagnose --goal G [--format json]",
     );
 
     let todo = r.group("todo", "todo work graph");
@@ -543,11 +554,11 @@ fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
             format!("{doc}\n"),
         );
     }
-    // LoopX bootstrap auto-adds an onboarding-connection-validation todo.
+    // Bootstrap auto-adds an onboarding-connection-validation todo.
     let onboarding = Todo::advancement(
         &gen_id("todo"),
-        "[P1] Run `future-loop check` against the project registry and record the \
-         first project-specific adapter signal or an explicit no-follow-up rationale.",
+        "[P1] Run `future-loop status` for this goal and record the goal \
+         count as evidence, or declare an explicit no-follow-up rationale.",
     )
     .at_priority(future_loop::state::Priority::P1)
     .with_action_kind("onboarding_connection_validation");
@@ -1640,6 +1651,44 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
 }
 
 // ── run (one bounded gRPC turn + writeback) ────────────────────────────────
+
+/// `future-loop models [--format json]` — list models available from the
+/// agent (auth.json / models.json merged with the built-in catalog).
+async fn cmd_models(args: &[String]) -> Result<()> {
+    let json = args.iter().any(|a| a == "--format" || a == "--json");
+    let mut client = future_loop::agent_client::AgentClient::connect("127.0.0.1:50051").await?;
+    let data = client.list_models().await?;
+    let models = data["models"].as_array().cloned().unwrap_or_default();
+    let default_model = data["defaultModel"].as_str().unwrap_or("");
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
+    println!("Available models (default: {}):", default_model);
+    for m in &models {
+        let id = m["id"].as_str().unwrap_or("");
+        let provider = m["provider"].as_str().unwrap_or("");
+        let label = m["label"].as_str().unwrap_or(id);
+        let full = if provider.is_empty() {
+            id.to_string()
+        } else {
+            format!("{provider}/{id}")
+        };
+        let thinking = m["thinkingLevel"].as_str().unwrap_or("off");
+        let ctx = m["contextWindow"].as_i64().unwrap_or(0);
+        let recommended = m["recommended"].as_bool().unwrap_or(false);
+        let is_default = m["isDefault"].as_bool().unwrap_or(false);
+        let mut flags = String::new();
+        if is_default {
+            flags.push_str(" [default]");
+        }
+        if recommended {
+            flags.push_str(" [recommended]");
+        }
+        println!("- {full}  {label}  thinking={thinking} ctx={ctx}{flags}");
+    }
+    Ok(())
+}
 
 async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
@@ -3654,6 +3703,80 @@ fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
     println!("  scheduler_arbitration_v0 (G-2/G-11)");
     let _ = store;
     let _ = args;
+    Ok(())
+}
+
+/// `future-loop diagnose --goal G [--format json]` — per-goal diagnostic
+/// surface: current decision, open todos/gates, projection gaps, closure
+/// status, and recent run evidence.
+fn cmd_diagnose(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut format_json = false;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--format" => format_json = v == "json",
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let packet = decide_for(&goal, SystemTime::now(), None);
+    if format_json {
+        let diag = serde_json::json!({
+            "goal_id": goal.goal_id,
+            "objective": goal.objective,
+            "status": goal.status,
+            "decision": packet.decision,
+            "mode": packet.interaction_contract.mode.as_str(),
+            "reason": packet.reason,
+            "open_todos": goal.todos.iter().filter(|t| t.status == TodoStatus::Open).count(),
+            "open_gates": goal.open_gates().count(),
+            "projection_gap": future_loop::store::projection_gap(&goal),
+            "terminal": goal.terminal_closure().is_some(),
+            "runs": goal.history.len(),
+            "recent_evidence": goal.history.iter().rev().take(3).map(|r| serde_json::json!({
+                "turn": r.turn, "todo": r.todo_id, "state": r.terminal_state,
+                "tools": r.tools, "cost": r.cost_delta, "evidence": future_loop::decision::truncate(&r.evidence, 200),
+            })).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&diag)?);
+        return Ok(());
+    }
+    println!("== diagnose {goal_id} ==");
+    println!("objective : {}", goal.objective);
+    println!(
+        "status    : {} | terminal: {}",
+        goal.status,
+        goal.terminal_closure().is_some()
+    );
+    println!(
+        "decision  : {} / {} | {}",
+        packet.decision,
+        packet.interaction_contract.mode.as_str(),
+        packet.reason
+    );
+    println!(
+        "todos     : {} open / {} gates",
+        goal.todos
+            .iter()
+            .filter(|t| t.status == TodoStatus::Open)
+            .count(),
+        goal.open_gates().count()
+    );
+    if let Some(gap) = future_loop::store::projection_gap(&goal) {
+        println!("gap       : {gap}");
+    }
+    for r in goal.history.iter().rev().take(3) {
+        println!(
+            "run       : #{} todo={} state={} cost=¥{:.4} tools=[{}]",
+            r.turn,
+            r.todo_id,
+            r.terminal_state,
+            r.cost_delta,
+            r.tools.join(", ")
+        );
+    }
     Ok(())
 }
 

@@ -99,6 +99,12 @@ impl AgentClient {
             .map_err(|e| anyhow!("'{cmd_type}' returned invalid JSON: {e}"))
     }
 
+    /// List models available from the agent (from auth.json / models.json,
+    /// merged with the built-in catalog). Returns the raw list_models payload.
+    pub async fn list_models(&mut self) -> Result<Value> {
+        self.call("list_models", "", Default::default()).await
+    }
+
     /// Create a fresh, isolated session for this goal. One goal = one session
     /// (LoopX: durable identity is the goal, not a chat thread).
     pub async fn new_session(&mut self, cwd: &str) -> Result<String> {

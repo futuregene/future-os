@@ -335,7 +335,7 @@ fn p3_multi_agent_and_work_item_commands() {
         .lines()
         .flat_map(|l| l.split_whitespace())
         .filter_map(|w| w.strip_suffix("=open").map(|s| s.to_string()))
-        .filter(|s| s.starts_with("todo-"))
+        .filter(|s| s.starts_with("todo_"))
         .collect();
     assert!(ids.len() >= 3, "status shows todos: {out}");
     let (t_a, t_b) = (&ids[0], &ids[1]);
@@ -534,7 +534,7 @@ fn two_agent_sessions_hold_disjoint_frontiers() {
         .lines()
         .flat_map(|l| l.split_whitespace())
         .filter_map(|w| w.strip_suffix("=open").map(|s| s.to_string()))
-        .filter(|s| s.starts_with("todo-"))
+        .filter(|s| s.starts_with("todo_"))
         .collect();
     run(
         &root,
@@ -635,7 +635,7 @@ fn p4_diagnostics_commands() {
         .lines()
         .flat_map(|l| l.split_whitespace())
         .filter_map(|w| w.strip_suffix("=open").map(|s| s.to_string()))
-        .find(|s| s.starts_with("todo-"))
+        .find(|s| s.starts_with("todo_"))
         .unwrap();
     let (out, err, code) = run(&root, &["turn", "--goal", "g1", "--todo-id", &todo]);
     assert_eq!(code, 0, "turn: {err}");
