@@ -33,8 +33,27 @@ FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应�
 
 ### 安装
 
-从预编译安装包或安装脚本安装 FutureOS——无需下载源码。各平台（macOS / Linux /
-Windows、桌面应用、`future-loop` 控制面）的详细安装步骤见
+一行命令，无需源码构建：
+
+**macOS** — 安装官方签名应用（自动识别 arm64 / Intel），并构建 `future-loop` 控制面（CLI + skill）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
+```
+
+**Windows**（PowerShell）— 静默运行签名安装程序：
+
+```powershell
+iex (irm https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.ps1)
+```
+
+**Linux** — 暂无预编译产物；脚本自动引导工具链（apt 依赖 + Rust + Node 24 + Bun）并从源码构建终端栈（agent、TUI、CLI、channels、loop）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
+```
+
+各平台（桌面应用、工具链、GUI 打包）的分步安装步骤见
 **[构建与安装](docs/build-and-install.zh-CN.md)** 文档。
 
 ### 配置模型
