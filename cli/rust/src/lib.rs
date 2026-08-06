@@ -1,0 +1,378 @@
+//! cli-rust — 1:1 Rust port of the TypeScript `future` CLI.
+//!
+//! Goal: byte-identical argument parsing, help text, output, and exit codes.
+//! `dispatch` is the port of `cli/src/index.ts` `main()`; command modules port
+//! `cli/src/commands/*`.
+
+pub mod commands;
+pub mod constants;
+pub mod generated;
+pub mod help;
+pub mod output;
+pub mod types;
+pub mod utils;
+pub mod version;
+
+pub use output::Output;
+
+use std::future::Future;
+
+/// Port of `cli/src/index.ts` `main()`.
+///
+/// `args` is the full argv (without the program name), i.e. what Node's
+/// `process.argv.slice(2)` yields. Returns the process exit code.
+pub async fn dispatch(args: &[String], out: &Output) -> i32 {
+    // const [group, command, ...rest] = args;
+    let group = args.first().map(String::as_str);
+    let command = args.get(1).map(String::as_str);
+    let rest: &[String] = args.get(2..).unwrap_or(&[]);
+
+    // if (group === "--version" || group === "-v" || group === "version")
+    if matches!(group, Some("--version" | "-v" | "version")) {
+        out.log(&format!("future v{}", version::VERSION));
+        return 0;
+    }
+
+    // if (group === "init")
+    if group == Some("init") {
+        if command == Some("--help") || command == Some("-h") {
+            out.log(help::INIT_HELP);
+            return 0;
+        }
+        if let Some(cmd) = command {
+            out.log_err(&format!("Unknown argument: {cmd}\n"));
+            out.log_err("Usage: future init");
+            return 1;
+        }
+        return catch(out, commands::init::init_command(out)).await;
+    }
+
+    // if (group === "auth" && (!command || command === "--help" || command === "-h"))
+    if group == Some("auth")
+        && (command.is_none() || command == Some("--help") || command == Some("-h"))
+    {
+        out.log(help::AUTH_GROUP_HELP);
+        return 0;
+    }
+
+    // if (group === "auth" && command === "login")
+    if group == Some("auth") && command == Some("login") {
+        if rest.iter().any(|a| a == "--help" || a == "-h") {
+            out.log(help::AUTH_LOGIN_HELP);
+            return 0;
+        }
+        // const urlIdx = rest.indexOf("--url");
+        // if (urlIdx !== -1 && urlIdx + 1 < rest.length) { urlOverride = rest[urlIdx + 1]; }
+        // else { const urlEq = rest.find(a => a.startsWith("--url=")); urlOverride = urlEq?.slice("--url=".length); }
+        let url_override: Option<String> = match rest.iter().position(|a| a == "--url") {
+            Some(i) if i + 1 < rest.len() => Some(rest[i + 1].clone()),
+            _ => rest
+                .iter()
+                .find(|a| a.starts_with("--url="))
+                .map(|a| a["--url=".len()..].to_string()),
+        };
+        return catch(out, commands::auth::login(url_override, out)).await;
+    }
+
+    // if (group === "auth" && command === "status")
+    if group == Some("auth") && command == Some("status") {
+        if rest.iter().any(|a| a == "--help" || a == "-h") {
+            out.log(help::AUTH_STATUS_HELP);
+            return 0;
+        }
+        return catch(out, commands::auth::status(out)).await;
+    }
+
+    // if (group === "auth" && command === "credential")
+    if group == Some("auth") && command == Some("credential") {
+        if rest.iter().any(|a| a == "--help" || a == "-h") {
+            out.log(help::AUTH_CREDENTIAL_HELP);
+            return 0;
+        }
+        let json_flag = rest.iter().any(|a| a == "--json");
+        return catch(out, commands::auth::credential(json_flag, out)).await;
+    }
+
+    // if (group === "auth" && command === "logout")
+    if group == Some("auth") && command == Some("logout") {
+        if rest.iter().any(|a| a == "--help" || a == "-h") {
+            out.log(help::AUTH_LOGOUT_HELP);
+            return 0;
+        }
+        return catch(out, commands::auth::logout(out)).await;
+    }
+
+    // if (group === "auth") — unknown subcommand: show group help
+    if group == Some("auth") {
+        out.log_err(&format!(
+            "Unknown command: {}\n",
+            command.unwrap_or("undefined")
+        ));
+        out.log(help::AUTH_GROUP_HELP_UNKNOWN);
+        return 0;
+    }
+
+    // if (group === "tools" && (!command || command === "--help" || command === "-h"))
+    if group == Some("tools")
+        && (command.is_none() || command == Some("--help") || command == Some("-h"))
+    {
+        out.log(help::TOOLS_GROUP_HELP);
+        return 0;
+    }
+
+    // if (group === "tools" && isToolsCommand(command))
+    if group == Some("tools") && commands::tools::is_tools_command(command) {
+        let cmd = command.expect("is_tools_command implies a command");
+        return catch(out, commands::tools::tools(cmd, rest, out)).await;
+    }
+
+    // if (group === "tools") — unknown subcommand
+    if group == Some("tools") {
+        out.log_err(&format!(
+            "Unknown command: {}\n",
+            command.unwrap_or("undefined")
+        ));
+        out.log(help::TOOLS_GROUP_HELP);
+        return 0;
+    }
+
+    // if (group === "skills" && (!command || command === "--help" || command === "-h"))
+    if group == Some("skills")
+        && (command.is_none() || command == Some("--help") || command == Some("-h"))
+    {
+        out.log(help::SKILLS_GROUP_HELP);
+        return 0;
+    }
+
+    // if (group === "skills" && isSkillsCommand(command))
+    if group == Some("skills") && commands::skills::is_skills_command(command) {
+        let cmd = command.expect("is_skills_command implies a command");
+        return catch(out, commands::skills::skills(cmd, rest, out)).await;
+    }
+
+    // if (group === "skills") — unknown subcommand
+    if group == Some("skills") {
+        out.log_err(&format!(
+            "Unknown command: {}\n",
+            command.unwrap_or("undefined")
+        ));
+        out.log(help::SKILLS_GROUP_HELP);
+        return 0;
+    }
+
+    // if (group === "account" && (!command || command === "--help" || command === "-h"))
+    if group == Some("account")
+        && (command.is_none() || command == Some("--help") || command == Some("-h"))
+    {
+        out.log(help::ACCOUNT_GROUP_HELP);
+        return 0;
+    }
+
+    // if (group === "account" && isAccountCommand(command))
+    if group == Some("account") && commands::account::is_account_command(command) {
+        let cmd = command.expect("is_account_command implies a command");
+        return catch(out, commands::account::account(cmd, rest, out)).await;
+    }
+
+    // if (group === "account") — unknown subcommand
+    if group == Some("account") {
+        out.log_err(&format!(
+            "Unknown command: {}\n",
+            command.unwrap_or("undefined")
+        ));
+        out.log(help::ACCOUNT_GROUP_HELP);
+        return 0;
+    }
+
+    // if (group === "run") — args.slice(1) is everything after "run"
+    if group == Some("run") {
+        return catch(
+            out,
+            commands::run::run_command(args.get(1..).unwrap_or(&[]), out),
+        )
+        .await;
+    }
+
+    // if (group === "models")
+    if group == Some("models") {
+        if command == Some("--help")
+            || command == Some("-h")
+            || rest.iter().any(|a| a == "--help" || a == "-h")
+        {
+            out.log(help::MODELS_HELP);
+            return 0;
+        }
+        // command === "--json" ? [command, ...rest] : rest
+        let models_args: Vec<String> = if command == Some("--json") {
+            std::iter::once("--json".to_string())
+                .chain(rest.iter().cloned())
+                .collect()
+        } else {
+            rest.to_vec()
+        };
+        return catch(out, commands::models::models(&models_args, out)).await;
+    }
+
+    // if (group === "agent")
+    if group == Some("agent") {
+        if command == Some("status") || command.is_none() {
+            if rest.iter().any(|a| a == "--help" || a == "-h")
+                || command == Some("--help")
+                || command == Some("-h")
+            {
+                out.log(help::AGENT_STATUS_HELP);
+                return 0;
+            }
+            // NB: `command === "--json"` is unreachable here in the TS too
+            // (the outer guard admits only "status"/undefined); kept for parity.
+            let json = command == Some("--json") || rest.iter().any(|a| a == "--json");
+            return catch(out, commands::agent::agent_status(json, out)).await;
+        }
+        out.log_err(&format!(
+            "Unknown command: {}\n",
+            command.unwrap_or("undefined")
+        ));
+        out.log_err("Usage: future agent status [--json]");
+        return 1;
+    }
+
+    // if (group === "session")
+    if group == Some("session") {
+        return catch(out, commands::session::session(command, rest, out)).await;
+    }
+
+    // if (group === "doctor")
+    if group == Some("doctor") {
+        return catch(out, commands::doctor::doctor(out)).await;
+    }
+
+    // printHelp();
+    out.log(help::MAIN_HELP);
+    0
+}
+
+/// Port of `main().catch(...)`: a rejected command promise becomes
+/// `console.error(error.message)` on stderr with exit code 1.
+async fn catch<F>(out: &Output, fut: F) -> i32
+where
+    F: Future<Output = Result<(), String>>,
+{
+    match fut.await {
+        Ok(()) => 0,
+        Err(msg) => {
+            out.log_err(&msg);
+            1
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run the dispatch with captured output; returns (exit_code, stdout, stderr).
+    async fn run(args: &[&str]) -> (i32, String, String) {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let (out, cap) = Output::memory();
+        let code = dispatch(&args, &out).await;
+        let stdout = String::from_utf8(cap.out.lock().expect("poisoned").clone()).unwrap();
+        let stderr = String::from_utf8(cap.err.lock().expect("poisoned").clone()).unwrap();
+        (code, stdout, stderr)
+    }
+
+    #[tokio::test]
+    async fn version_flags() {
+        for flag in ["--version", "-v", "version"] {
+            let (code, stdout, stderr) = run(&[flag]).await;
+            assert_eq!(code, 0);
+            assert_eq!(stdout, format!("future v{}\n", version::VERSION));
+            assert_eq!(stderr, "");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_args_prints_main_help() {
+        let (code, stdout, stderr) = run(&[]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, format!("{}\n", help::MAIN_HELP));
+        assert_eq!(stderr, "");
+    }
+
+    #[tokio::test]
+    async fn unknown_group_prints_main_help() {
+        let (code, stdout, _) = run(&["bogus"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, format!("{}\n", help::MAIN_HELP));
+    }
+
+    #[tokio::test]
+    async fn init_help_and_unknown_arg() {
+        let (code, stdout, _) = run(&["init", "--help"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, format!("{}\n", help::INIT_HELP));
+
+        let (code, stdout, stderr) = run(&["init", "foo"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert_eq!(stderr, "Unknown argument: foo\n\nUsage: future init\n");
+    }
+
+    #[tokio::test]
+    async fn auth_group_help_variants() {
+        // Plain group help.
+        let (code, stdout, stderr) = run(&["auth"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, format!("{}\n", help::AUTH_GROUP_HELP));
+        assert_eq!(stderr, "");
+
+        // Unknown subcommand: error on stderr + the OTHER group-help variant.
+        let (code, stdout, stderr) = run(&["auth", "bogus"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stderr, "Unknown command: bogus\n\n");
+        assert_eq!(stdout, format!("{}\n", help::AUTH_GROUP_HELP_UNKNOWN));
+        assert_ne!(help::AUTH_GROUP_HELP, help::AUTH_GROUP_HELP_UNKNOWN);
+    }
+
+    #[tokio::test]
+    async fn agent_dispatch_quirks() {
+        // `future agent` with no subcommand → status path.
+        let (code, stdout, stderr) = run(&["agent"]).await;
+        assert_eq!(code, 1); // stub not-implemented
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("not implemented"));
+
+        // `future agent --json` is an UNKNOWN command (matches TS dead-code).
+        let (code, stdout, stderr) = run(&["agent", "--json"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert_eq!(
+            stderr,
+            "Unknown command: --json\n\nUsage: future agent status [--json]\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_login_url_parsing_routes_to_stub() {
+        // All three forms reach the (stub) login command; no panic, exit 1.
+        for args in [
+            &["auth", "login", "--url"][..],
+            &["auth", "login", "--url="][..],
+            &["auth", "login", "--url", "https://example.com"][..],
+        ] {
+            let (code, _, stderr) = run(args).await;
+            assert_eq!(code, 1);
+            assert!(stderr.contains("auth login"));
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_skills_account_predicates() {
+        assert!(commands::tools::is_tools_command(Some("list")));
+        assert!(!commands::tools::is_tools_command(Some("bogus")));
+        assert!(!commands::tools::is_tools_command(None));
+        assert!(commands::skills::is_skills_command(Some("install-builtin")));
+        assert!(!commands::skills::is_skills_command(Some("bogus")));
+        assert!(commands::account::is_account_command(Some("balance")));
+        assert!(!commands::account::is_account_command(Some("bogus")));
+    }
+}

@@ -405,6 +405,7 @@ generate-proto:
 	cd agent && REGENERATE_PROTO=1 cargo build
 	cd channels && REGENERATE_PROTO=1 cargo build
 	cd gui/src-tauri && REGENERATE_PROTO=1 cargo build
+	cd cli/rust && REGENERATE_PROTO=1 cargo build
 	cd tui && npm run generate-proto
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
