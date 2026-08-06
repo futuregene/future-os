@@ -114,6 +114,17 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
                     .to_string(),
             );
         }
+        if !opts.model.is_empty() {
+            info.push(format!("Current model: {}", opts.model));
+            info.push(
+                "This is the model (provider/model) you are running as — \
+                 reference it when asked which model you are."
+                    .to_string(),
+            );
+        }
+        if !opts.thinking_level.is_empty() {
+            info.push(format!("Thinking level: {}", opts.thinking_level));
+        }
         info.push(os_hint());
         sections.push(info.join("\n"));
     }
@@ -138,6 +149,12 @@ pub struct PromptOptions {
     /// Session ID — injected into the environment section so the model can
     /// self-identify and reference its own conversation.
     pub session_id: String,
+    /// Model id (provider/model) — injected into the environment section so
+    /// the model can self-report which model it runs as.
+    pub model: String,
+    /// Thinking level — injected into the environment section so the model
+    /// knows its reasoning mode.
+    pub thinking_level: String,
 }
 
 // ─── Identity Section ───────────────────────────────────────────────────────
@@ -368,6 +385,19 @@ fn os_hint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_reports_model_and_thinking_level() {
+        let prompt = build_prompt(&PromptOptions {
+            session_id: "sess-123".to_string(),
+            model: "future/deepseek-v4-flash".to_string(),
+            thinking_level: "high".to_string(),
+            ..Default::default()
+        });
+        assert!(prompt.contains("Current session ID: sess-123"));
+        assert!(prompt.contains("Current model: future/deepseek-v4-flash"));
+        assert!(prompt.contains("Thinking level: high"));
+    }
 
     #[test]
     fn workspace_memory_is_a_separate_layer_from_project_context() {

@@ -27,6 +27,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 | **自动压缩与重试** | 上下文自动压缩；上下文超长时指数退避自动重试 |
 | **Channel Bridge** | 飞书和钉钉机器人——markdown 流式输出、斜杠命令、通过聊天管理会话 |
 | **技能系统** | 可插拔的 YAML 定义 Skill 包，从多目录自动发现 |
+| **Loop 控制面** | `future-loop`：持久化目标/todos/门禁/监控、quota should-run 内核、事件溯源状态、验证器、扩展与多 agent（[指南](docs/loop-control-plane.zh-CN.md)） |
 | **跨平台** | macOS、Linux、Windows（GUI 基于 Tauri + WebView2） |
 
 ## 快速开始
@@ -41,119 +42,17 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 - 可选：**Python 3** —— 仅 `make generate-models` 需要
 - 可选：**protoc**（Protocol Buffers 编译器）—— 仅 `make generate-proto` 需要；生成的代码已提交，正常构建无需安装
 
-### 各平台环境搭建与构建
+### 构建与安装
+
+各平台（macOS / Linux / Windows）完整的构建与安装步骤（GUI 打包、安装目标、
+`future-loop` 控制面）见独立文档 **[构建与安装](docs/build-and-install.zh-CN.md)**。快速上手：
 
 ```bash
 git clone https://github.com/futuregene/future-os.git
 cd future-os
+make install        # 构建全部并安装到 ~/.local/bin（macOS 为 /opt/homebrew/bin）
+make install-nogui  # 仅终端栈（跳过 Tauri GUI）
 ```
-
-#### macOS
-
-安装依赖：
-
-```bash
-xcode-select --install                                            # 系统工具链（Tauri 依赖）
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
-brew install node oven-sh/bun/bun                                 # Node.js 24+ / Bun（也可用 nvm，见 .nvmrc）
-brew install protobuf                                             # 可选 —— 仅 make generate-proto 需要
-```
-
-构建：
-
-```bash
-make install        # 构建全部组件，安装到 /opt/homebrew/bin
-make install-nogui  # 仅终端组件（跳过 Tauri GUI）
-make package-gui    # 桌面安装包 → .app + .dmg，位于 gui/src-tauri/target/release/bundle/
-scripts/build-macos-dmg.sh  # 本地 DMG；检测到 Developer ID 证书时自动签名
-```
-
-`scripts/build-macos-dmg.sh` 会将 agent、CLI sidecar 和 GUI 一起构建。它会
-自动使用 macOS 钥匙串中唯一的 `Developer ID Application` 身份并输出
-`*-sign.dmg`；如果无法确定唯一身份，则自动降级为普通 DMG。证书选择、输出
-目录和 Apple 公证参数请运行脚本的 `--help` 查看。
-
-#### Linux（Debian/Ubuntu）
-
-安装依赖：
-
-```bash
-sudo apt update
-sudo apt install -y build-essential mold libssl-dev \
-  libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
-curl -fsSL https://bun.sh/install | bash                          # Bun
-# Node.js 24+ —— 用 nvm install 自动读取仓库的 .nvmrc
-sudo apt install -y protobuf-compiler                             # 可选 —— 仅 make generate-proto 需要
-```
-
-> x86_64 上必须安装 `mold` —— `.cargo/config.toml` 会给链接器传 `-fuse-ld=mold`。ARM Linux 不需要。
-
-构建：
-
-```bash
-make install        # 构建全部组件，安装到 /usr/local/bin（sudo）
-make install-nogui  # 仅终端组件（跳过 Tauri GUI）
-make package-gui    # 桌面安装包 → .deb，位于 gui/src-tauri/target/release/bundle/
-```
-
-#### Windows
-
-安装工具链：
-
-1. **Visual Studio Build Tools**，勾选「使用 C++ 的桌面开发」工作负载（MSVC + Windows SDK）—— Rust MSVC 工具链和 Tauri 都需要。执行 `winget install Microsoft.VisualStudio.2022.BuildTools` 后在安装器中勾选该工作负载，或从 [visualstudio.com](https://visualstudio.microsoft.com/downloads/) 安装。
-2. **Rust**：`winget install Rustlang.Rustup`（host triple 为 `x86_64-pc-windows-msvc`）
-3. **Node.js 24+**：`winget install OpenJS.NodeJS`，或从 [nodejs.org](https://nodejs.org) 下载
-4. **Bun**：`winget install Oven-sh.Bun`（或 `powershell -c "irm bun.sh/install.ps1 | iex"`）
-5. **WebView2 Runtime**：Windows 10/11 自带 —— 是 GUI 的*运行时*依赖，新系统无需安装
-
-Windows 上无需 `make` —— 以下 PowerShell 命令与各平台的 make 目标逐步对应，在仓库根目录执行。
-
-**终端组件** —— 对应 `make install-nogui`：
-
-```powershell
-# Rust 组件：agent + channel bridge               （对应 make build-agent / build-channels）
-cargo build --release --manifest-path agent/Cargo.toml
-cargo build --release --manifest-path channels/Cargo.toml
-
-# TypeScript 组件：TUI + CLI                      （对应 make build-tui / build-cli）
-Push-Location tui; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future-tui.exe; Pop-Location
-Push-Location cli; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future.exe --external chromium-bidi; Pop-Location
-
-# 安装到 %USERPROFILE%\.future\bin                （对应 install-* 中的复制步骤）
-$bin = "$env:USERPROFILE\.future\bin"
-New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, tui\dist\future-tui.exe, cli\dist\future.exe $bin
-
-# 内置技能 —— make install-skills 使用符号链接；Windows 上改用 CLI 安装
-& "$bin\future.exe" skills install
-```
-
-**桌面应用** —— `make install` 中的 GUI 部分（需先执行上面的终端组件步骤，sidecar 来自其产物）：
-
-```powershell
-# 将 agent + CLI 以 host triple 命名暂存为 Tauri sidecar
-$triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-New-Item -ItemType Directory -Force -Path gui\src-tauri\binaries | Out-Null
-Copy-Item target\release\future-agent.exe "gui\src-tauri\binaries\future-agent-$triple.exe"
-Copy-Item cli\dist\future.exe "gui\src-tauri\binaries\future-$triple.exe"
-
-# 构建应用并安装为 future-gui.exe                 （对应 make install-gui）
-Push-Location gui; npm install; npx tauri build --no-bundle; Pop-Location
-Copy-Item gui\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.future\bin\future-gui.exe"
-```
-
-**安装包** —— 对应 `make package-gui`（sidecar 暂存后执行）：
-
-```powershell
-node scripts\version.mjs --set-bundle
-Push-Location gui; npm run tauri:build; Pop-Location   # → NSIS 安装包 .exe，位于 gui\src-tauri\target\release\bundle\nsis\
-```
-
-补充说明：
-
-- `scripts\start-gui-test.bat` 可用本地构建的 agent 以开发模式启动 GUI。
-- `scripts/` 下的脚本（`build-macos-dmg.sh`、`build-windows-portable.ps1`、`build-windows-installer.ps1`）把上述步骤封装为单条命令，复刻 CI 打包流水线（DMG / 免安装 zip / NSIS 安装包），适用于需要与 CI 完全一致产物的特殊场景。脚本会前置检查工具链，且要求 `protoc`（`brew install protobuf` / `choco install protoc`）。其产物包含 GUI、agent 和 CLI，不含 TUI。
 
 ### 配置模型
 
@@ -267,6 +166,18 @@ future --help                              # 查看全部命令
 | `↑↓` | 滚动聊天 / 列表导航 |
 | `Tab` | 自动补全 |
 
+## Loop 控制面
+
+FutureOS 内置原生 **loop 控制面**（`future-loop`），面向长期 agent 工作：把一段对话变成一个持久化目标，拆成带依赖链与人工门禁的 todos，挂载独立验证器，由确定性 quota 内核决定下一个有界回合。亮点：
+
+- 持久化目标 / todos / 门禁 / 监控，带完成契约
+- 确定性 should-run 决策内核 + 调度仲裁
+- Quota slot 记账与用量汇总；事件溯源状态 + 重放
+- 独立验证（`todo add --verify ...`）、扩展与多 agent
+- benchmark / decision replay / canary 评估工具链
+
+在任意 agent 会话中输入 `/future-loop <目标>` 开始，随时用 `future-loop status` 查看进度。完整能力介绍与 CLI 参考见 **[Loop 控制面指南](docs/loop-control-plane.zh-CN.md)**。
+
 ## 架构
 
 ```
@@ -280,6 +191,9 @@ future --help                              # 查看全部命令
         │               │                       │               │
  TypeScript TUI   Tauri/React GUI       TypeScript CLI   Channel Bridge
  (终端, bun)     (桌面, WebView)         认证 · MCP       飞书 · 钉钉
+        │                                                       │
+ Loop 控制面 (future-loop) ─────────────────────────────────────┘
+ 持久化目标/todos/门禁 · quota 内核 · gRPC 执行桥
 ```
 
 所有客户端独立通过 gRPC 连接 Agent，互不依赖。
@@ -289,6 +203,7 @@ future --help                              # 查看全部命令
 - **GUI** (`gui/`) — Tauri 2 + React + TypeScript。三栏布局（导航 / 对话 / 上下文），审批提示，技能浏览，设置。
 - **CLI** (`cli/`) — TypeScript。设备码 OAuth 登录，单次对话（`run`），MCP 工具调用，技能管理，环境诊断（`doctor`）。
 - **Channel Bridge** (`channels/`) — Rust。飞书（pbbp2 WebSocket + CardKit 流式）和钉钉（Stream Mode）。
+- **Loop 控制面** (`orchestration/loop/`) — Rust（`future-loop`）。持久化目标/todo/门禁状态、quota should-run 内核、事件账本 + 重放、gRPC 执行桥。见 [Loop 控制面指南](docs/loop-control-plane.zh-CN.md)。
 
 ## 配置
 
