@@ -226,6 +226,39 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 
 ---
 
+## F. 最终复核结果（todo_567768e616f3，2026-08-06）
+
+> 在全部修复提交之后对 docs/ 全量做收尾复核，三项检查全部通过：
+
+### F1. 中英一致性
+
+- 成对文档标题结构逐一比对（排除代码围栏内的 shell 注释行）：README（10/10）、docs/README（6/6）、tui（5/5）、directory-layout（9/9）、channels-config（8/8）、loop-control-plane（**19/19**，h1/h2/h3 全等；初查 15 vs 14 的差异来自代码块内 `#` 注释行，非标题）、build-and-install（19/19）、wiki-prompt（23/23）。全部一致。
+- 关键事实抽查一致：TUI 斜杠命令表 en/zh 均为 17 可用 + 2 stub（/export /import）；快捷键 4 项（ctrl+p/t/r/c）逐字一致；channels-config 默认值表 en/zh 数字一致（50051、deepseek-v4-pro、xhigh、10MiB、30s/20s）。
+
+### F2. 链接有效性
+
+- 全量链接检查（16 个 md：docs/*.md + README*），0 断链。检查器先剥离行内代码与代码围栏（wiki-prompt 里 `[x](Quick-Start)` 这类**语法示例**在反引号内，非真实链接；Quick-Start.md 实际存在于 en/zh 两目录）。
+- wiki 交叉链接 + 锚点检查（en/zh 各 13 页，含 `#锚点` 解析为 GitHub slug），0 错误。
+- 新增文档交叉引用闭环（docs/README ⇄ tui ⇄ directory-layout ⇄ channels-config ⇄ loop-control-plane ⇄ wiki）全部可达。
+
+### F3. 变更清单（7383eca1..HEAD，15 commits，全部已推送分支）
+
+| commit | 内容 |
+|---|---|
+| 05a9a575 | README en/zh 全量复核完成标记（B3 收尾） |
+| dd14b60a | loop skill：长回合超过默认 shell 超时——阻塞运行 + 显式超时 |
+| 9cac0b48 | build-and-install en/zh：make test/lint/fmt/generate-proto 范围 + 技能数 14（A5/B2/B5/B6） |
+| 3a587ad4 | loop-control-plane en/zh：CLI 一览对齐实际命令面（B9：goal 补 models/diagnose、extension 补 upgrade、cli registry 补 --include-experimental） |
+| 9512b972 | wiki-prompt en/zh：CLI 命令面/二进制名/打包/清单全面对齐（A1/A2/B4 + Models.md 生成说明） |
+| c7c95d03 | wiki 全部页面 en/zh：CLI.md 重写、Feishu/DingTalk（A3/A4/B7）、Installation（B8）、Settings 页码、Models.md 生成头注 |
+| fff6c18b | architecture-audit 标注时点快照 + dist readmes 核验（X10） |
+| 8fe97b57 | loop 代码修复：流式文本 UTF-8 边界截断（panic 修复） |
+| b19bf933 | loop skill：每回合后显式「反思与改进」步骤（超智能体主动再规划） |
+| 950039f1 | **缺失文档补齐（C3/I-1..I-7）**：docs/README（索引）、tui、directory-layout、channels-config、loop-control-plane 多 agent 章节 |
+| a2b7105c | tui/directory-layout en/zh：crash.log 事实修正 → write.log（PI_TUI_WRITE_LOG=1 才写），4 个文件 |
+
+遗留（见 §E）：GUI 功能声明核验（Using-FutureOS/Settings/Skills/Quick-Start 页面内容）、TUI help-screen 与补全清单不一致（代码侧小问题）。
+
 ## 附：核验方法
 
 - 声明→源码逐条比对；源码依据均含 file:line（见各条目「依据」列）。
