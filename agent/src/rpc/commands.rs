@@ -3361,7 +3361,21 @@ mod tests {
     #[test]
     fn typed_payload_encodes_real_read_command_envelopes() {
         let state = make_app_state();
+        // Session-scoped read commands.
         for cmd_type in ["get_state", "list_sessions", "get_session_entries"] {
+            let envelope = parse_response(&handle_command_internal(&state, make_cmd(cmd_type)));
+            assert_eq!(envelope["success"], true, "{cmd_type} must succeed");
+            let data = &envelope["data"];
+            let payload = future_rpc::encode::response_payload(cmd_type, data);
+            assert!(payload.is_some(), "{cmd_type}: typed payload must encode");
+        }
+        // Sessionless commands.
+        for cmd_type in [
+            "get_agent_info",
+            "list_models",
+            "get_commands",
+            "refresh_skills",
+        ] {
             let envelope = parse_response(&handle_command_internal(&state, make_cmd(cmd_type)));
             assert_eq!(envelope["success"], true, "{cmd_type} must succeed");
             let data = &envelope["data"];

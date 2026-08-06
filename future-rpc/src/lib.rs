@@ -20,6 +20,7 @@ pub mod proto {
 }
 
 pub mod payloads;
+pub mod payloads_ext;
 
 pub mod decode;
 pub mod encode;

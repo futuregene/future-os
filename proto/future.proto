@@ -437,8 +437,9 @@ message ModelEntry {
   string thinking_level = 5;
   int64 context_window = 6;
   bool is_default = 7;
-  string description = 8;
-  string description_en = 9;
+  // Catalog descriptions; unset when the model carries none (JSON null).
+  optional string description = 8;
+  optional string description_en = 9;
   bool recommended = 10;
 }
 
@@ -463,8 +464,9 @@ message CommandsResponse {
 message Command {
   string name = 1;
   string description = 2;
-  string name_zh = 3;
-  string description_zh = 4;
+  // Localized variants; unset when the skill carries none (JSON null).
+  optional string name_zh = 3;
+  optional string description_zh = 4;
   // Origin of the command, e.g. "skill".
   string source = 5;
 }

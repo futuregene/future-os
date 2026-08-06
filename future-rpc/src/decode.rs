@@ -77,6 +77,29 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
             let payload = events_since_from_proto(events);
             serde_json::to_value(&payload).ok()
         }
+        Kind::Prompt(ack) => serde_json::to_value(prompt_ack_from_proto(ack)).ok(),
+        Kind::ListModels(response) => serde_json::to_value(list_models_from_proto(response)).ok(),
+        Kind::GetAgentInfo(info) => serde_json::to_value(agent_info_from_proto(info)).ok(),
+        Kind::GetCommands(response) => serde_json::to_value(commands_from_proto(response)).ok(),
+        Kind::Compact(result) => serde_json::to_value(compact_from_proto(result)).ok(),
+        Kind::Shell(result) => serde_json::to_value(shell_from_proto(result)).ok(),
+        Kind::CycleModel(result) => serde_json::to_value(cycle_model_from_proto(result)).ok(),
+        Kind::SyncFutureModels(result) => {
+            serde_json::to_value(sync_future_models_from_proto(result)).ok()
+        }
+        Kind::RefreshSkills(result) => serde_json::to_value(refresh_skills_from_proto(result)).ok(),
+        Kind::GetSessionStats(response) => {
+            serde_json::to_value(session_stats_from_proto(response)).ok()
+        }
+        Kind::GetRuntimeMetrics(response) => {
+            serde_json::to_value(runtime_metrics_from_proto(response)).ok()
+        }
+        Kind::GetSessionEventsSince(response) => {
+            serde_json::to_value(session_events_since_from_proto(response)).ok()
+        }
+        // Future members: fall through to the JSON `data` string until a
+        // decoder exists.
+        #[allow(unreachable_patterns)]
         _ => None,
     }
 }
@@ -426,5 +449,219 @@ fn replay_event_from_proto(event: &proto::ReplayEvent) -> ReplayEventPayload {
         timestamp: event.timestamp.clone(),
         session_idx: event.session_idx,
         run_sequence: event.run_sequence,
+    }
+}
+
+// ── prompt ack ───────────────────────────────────────────────────────────────
+
+/// Prompt acknowledgement, decoded from the typed wire form when present.
+pub fn decode_prompt_ack(resp: &proto::RpcResponse) -> Option<crate::payloads_ext::RunAck> {
+    if let Some(Kind::Prompt(ack)) = resp.payload.as_ref().and_then(|p| p.kind.as_ref()) {
+        return Some(prompt_ack_from_proto(ack));
+    }
+    fallback_value(resp).and_then(|value| serde_json::from_value(value).ok())
+}
+
+pub(crate) fn prompt_ack_from_proto(ack: &proto::PromptAck) -> crate::payloads_ext::RunAck {
+    crate::payloads_ext::RunAck {
+        run_id: ack.run_id.clone(),
+        run_epoch: ack.run_epoch,
+        accepted_state: crate::payloads_ext::RunAcceptedState::parse(&ack.accepted_state)
+            .unwrap_or(crate::payloads_ext::RunAcceptedState::Running),
+        run_sequence: ack.run_sequence,
+        queue_position: ack.queue_position,
+    }
+}
+
+// ── list_models ──────────────────────────────────────────────────────────────
+
+/// list_models payload, decoded from the typed wire form when present.
+pub fn decode_list_models(
+    resp: &proto::RpcResponse,
+) -> Option<crate::payloads_ext::ListModelsPayload> {
+    if let Some(Kind::ListModels(response)) = resp.payload.as_ref().and_then(|p| p.kind.as_ref()) {
+        return Some(list_models_from_proto(response));
+    }
+    fallback_value(resp).and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn list_models_from_proto(
+    response: &proto::ListModelsResponse,
+) -> crate::payloads_ext::ListModelsPayload {
+    crate::payloads_ext::ListModelsPayload {
+        models: response.models.iter().map(model_entry_from_proto).collect(),
+        default_model: response.default_model.clone(),
+        is_scoped: response.is_scoped,
+        builtin_providers: if response.builtin_providers.is_empty() {
+            None
+        } else {
+            Some(
+                response
+                    .builtin_providers
+                    .iter()
+                    .map(|(id, provider)| {
+                        (
+                            id.clone(),
+                            crate::payloads_ext::BuiltinProviderPayload {
+                                name: provider.name.clone(),
+                                model_count: provider.model_count as usize,
+                                base_url: provider.base_url.clone(),
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+        },
+    }
+}
+
+fn model_entry_from_proto(model: &proto::ModelEntry) -> crate::payloads_ext::ModelEntryPayload {
+    crate::payloads_ext::ModelEntryPayload {
+        id: model.id.clone(),
+        label: model.label.clone(),
+        provider: model.provider.clone(),
+        supports_images: model.supports_images,
+        thinking_level: model.thinking_level.clone(),
+        context_window: model.context_window,
+        is_default: model.is_default,
+        description: model.description.clone(),
+        description_en: model.description_en.clone(),
+        recommended: model.recommended,
+    }
+}
+
+// ── get_agent_info ───────────────────────────────────────────────────────────
+
+fn agent_info_from_proto(info: &proto::AgentInfo) -> crate::payloads_ext::AgentInfoPayload {
+    crate::payloads_ext::AgentInfoPayload {
+        version: info.version.clone(),
+        agent_instance_id: info.agent_instance_id.clone(),
+        skills_count: info.skills_count as usize,
+    }
+}
+
+// ── get_commands ─────────────────────────────────────────────────────────────
+
+fn commands_from_proto(response: &proto::CommandsResponse) -> crate::payloads_ext::CommandsPayload {
+    crate::payloads_ext::CommandsPayload {
+        commands: response
+            .commands
+            .iter()
+            .map(|command| crate::payloads_ext::CommandPayload {
+                name: command.name.clone(),
+                description: command.description.clone(),
+                name_zh: command.name_zh.clone(),
+                description_zh: command.description_zh.clone(),
+                source: command.source.clone(),
+            })
+            .collect(),
+    }
+}
+
+// ── compact / shell / cycle_model / sync_future_models / refresh_skills ─────
+
+fn compact_from_proto(result: &proto::CompactResult) -> crate::payloads_ext::CompactPayload {
+    crate::payloads_ext::CompactPayload {
+        tokens_before: result.tokens_before,
+        tokens_after: result.tokens_after,
+        summary: result.summary.clone(),
+        messages_removed: result.messages_removed,
+    }
+}
+
+fn shell_from_proto(result: &proto::ShellResult) -> crate::payloads_ext::ShellPayload {
+    crate::payloads_ext::ShellPayload {
+        output: result.output.clone(),
+        exit_code: result.exit_code,
+    }
+}
+
+fn cycle_model_from_proto(
+    result: &proto::CycleModelResult,
+) -> crate::payloads_ext::CycleModelPayload {
+    crate::payloads_ext::CycleModelPayload {
+        model: result.model.clone(),
+        thinking_level: result.thinking_level.clone(),
+        is_scoped: result.is_scoped,
+    }
+}
+
+fn sync_future_models_from_proto(
+    result: &proto::SyncFutureModelsResult,
+) -> crate::payloads_ext::SyncFutureModelsPayload {
+    crate::payloads_ext::SyncFutureModelsPayload {
+        synced: result.synced,
+        model_count: result.model_count as usize,
+    }
+}
+
+fn refresh_skills_from_proto(
+    result: &proto::RefreshSkillsResult,
+) -> crate::payloads_ext::RefreshSkillsPayload {
+    crate::payloads_ext::RefreshSkillsPayload {
+        skills_count: result.skills_count as usize,
+        skills: result.skills.clone(),
+        refreshed: result.refreshed,
+    }
+}
+
+// ── get_session_stats / get_runtime_metrics / get_session_events_since ──────
+
+fn session_stats_from_proto(
+    response: &proto::SessionStatsResponse,
+) -> crate::payloads_ext::SessionStatsPayload {
+    let tokens = response.tokens.unwrap_or_default();
+    crate::payloads_ext::SessionStatsPayload {
+        session_file: response.session_file.clone(),
+        session_id: response.session_id.clone(),
+        user_messages: response.user_messages as usize,
+        assistant_messages: response.assistant_messages as usize,
+        tool_calls: response.tool_calls as usize,
+        tool_results: response.tool_results as usize,
+        total_messages: response.total_messages as usize,
+        tokens: crate::payloads_ext::StatsTokensPayload {
+            input: tokens.input,
+            output: tokens.output,
+            cache_read: tokens.cache_read,
+            total: tokens.total,
+        },
+        cost: serde_json::Value::from(response.cost),
+    }
+}
+
+fn runtime_metrics_from_proto(
+    response: &proto::RuntimeMetricsResponse,
+) -> crate::payloads_ext::RuntimeMetricsPayload {
+    crate::payloads_ext::RuntimeMetricsPayload {
+        session_id: response.session_id.clone(),
+        active_run_gauge: response.active_run_gauge as usize,
+        stale_epoch_drops: response.stale_epoch_drops,
+        persistence_degraded: response.persistence_degraded,
+        broadcast_lag: response.broadcast_lag,
+        ring_truncations: response.ring_truncations,
+        active_run_id: response.active_run_id.clone(),
+        queued_runs: response.queued_runs as usize,
+        queued_bytes: response.queued_bytes as usize,
+        event_journal_healthy: response.event_journal_healthy,
+        event_journal_error: response.event_journal_error.clone(),
+    }
+}
+
+fn session_events_since_from_proto(
+    response: &proto::SessionEventsSinceResponse,
+) -> crate::payloads_ext::SessionEventsSincePayload {
+    crate::payloads_ext::SessionEventsSincePayload {
+        events: response
+            .events
+            .iter()
+            .map(|event| crate::payloads_ext::SessionEventRecordPayload {
+                event_type: event.r#type.clone(),
+                data: event.data.clone(),
+                session_id: event.session_id.clone(),
+                session_idx: event.session_idx,
+                event_id: event.event_id.clone(),
+                timestamp: event.timestamp.clone(),
+            })
+            .collect(),
     }
 }

@@ -415,3 +415,244 @@ fn empty_response_decodes_to_null() {
     assert_eq!(decode::response_data(&resp), Value::Null);
     assert_eq!(decode::response_data_str(&resp), "");
 }
+
+// ── prompt ack / models / info / skills / ops commands ──────────────────────
+
+#[test]
+fn prompt_ack_wire_parity() {
+    // Running ack: queue identity absent.
+    assert_command_parity(
+        "prompt",
+        json!({
+            "run_id": "run-a",
+            "run_epoch": 7,
+            "accepted_state": "running"
+        }),
+    );
+    // Queued ack: queue identity present, run_epoch zero.
+    assert_command_parity(
+        "prompt",
+        json!({
+            "run_id": "run-b",
+            "run_epoch": 0,
+            "accepted_state": "queued",
+            "run_sequence": 3,
+            "queue_position": 0
+        }),
+    );
+}
+
+#[test]
+fn list_models_wire_parity() {
+    assert_command_parity(
+        "list_models",
+        json!({
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Model One",
+                    "provider": "future",
+                    "supportsImages": true,
+                    "thinkingLevel": "high",
+                    "contextWindow": 200000,
+                    "isDefault": true,
+                    "description": "旗舰模型",
+                    "descriptionEn": "Flagship model",
+                    "recommended": true
+                },
+                {
+                    // Catalog entry without descriptions: JSON null.
+                    "id": "m2",
+                    "label": "Model Two",
+                    "provider": "future",
+                    "supportsImages": false,
+                    "thinkingLevel": "off",
+                    "contextWindow": 8000,
+                    "isDefault": false,
+                    "description": null,
+                    "descriptionEn": null,
+                    "recommended": false
+                }
+            ],
+            "defaultModel": "m1",
+            "isScoped": false,
+            "builtinProviders": {
+                "openai": {
+                    "name": "OpenAI",
+                    "modelCount": 12,
+                    "baseUrl": "https://api.openai.com/v1"
+                }
+            }
+        }),
+    );
+    // Without builtinProviders (the default list_models call).
+    assert_command_parity(
+        "list_models",
+        json!({
+            "models": [],
+            "defaultModel": "",
+            "isScoped": false
+        }),
+    );
+}
+
+#[test]
+fn get_agent_info_wire_parity() {
+    assert_command_parity(
+        "get_agent_info",
+        json!({
+            "version": "1.0.5",
+            "agentInstanceId": "agent-1",
+            "skillsCount": 4
+        }),
+    );
+}
+
+#[test]
+fn get_commands_wire_parity() {
+    assert_command_parity(
+        "get_commands",
+        json!({
+            "commands": [
+                {
+                    "name": "review",
+                    "description": "Review a pull request",
+                    "nameZh": "评审",
+                    "descriptionZh": "评审拉取请求",
+                    "source": "skill"
+                },
+                {
+                    // Skill without localized fields: JSON null.
+                    "name": "init",
+                    "description": "Initialize a CLAUDE.md",
+                    "nameZh": null,
+                    "descriptionZh": null,
+                    "source": "skill"
+                }
+            ]
+        }),
+    );
+}
+
+#[test]
+fn compact_wire_parity() {
+    assert_command_parity(
+        "compact",
+        json!({
+            "tokensBefore": 100000,
+            "tokensAfter": 20000,
+            "summary": "The user asked about X.",
+            "messagesRemoved": 80000
+        }),
+    );
+}
+
+#[test]
+fn shell_wire_parity() {
+    assert_command_parity("shell", json!({"output": "hello\n", "exitCode": 0}));
+    assert_command_parity("shell", json!({"output": "boom", "exitCode": 127}));
+}
+
+#[test]
+fn cycle_model_wire_parity() {
+    assert_command_parity(
+        "cycle_model",
+        json!({"model": "provider/next", "thinkingLevel": "high", "isScoped": false}),
+    );
+    // Empty-catalog edge case: isScoped absent.
+    assert_command_parity("cycle_model", json!({"model": "", "thinkingLevel": ""}));
+}
+
+#[test]
+fn sync_future_models_wire_parity() {
+    assert_command_parity(
+        "sync_future_models",
+        json!({"synced": true, "modelCount": 42}),
+    );
+}
+
+#[test]
+fn refresh_skills_wire_parity() {
+    // snake_case wire shape — the exception among these payloads.
+    assert_command_parity(
+        "refresh_skills",
+        json!({"skills_count": 2, "skills": ["a", "b"], "refreshed": true}),
+    );
+}
+
+#[test]
+fn get_session_stats_wire_parity() {
+    // cost travels as a float in the typed form (proto double); the agent's
+    // current hardcoded `0` integer literal normalizes to 0.0 on that path,
+    // which every consumer reads as the same number.
+    assert_command_parity(
+        "get_session_stats",
+        json!({
+            "sessionFile": "",
+            "sessionId": "s1",
+            "userMessages": 3,
+            "assistantMessages": 3,
+            "toolCalls": 5,
+            "toolResults": 5,
+            "totalMessages": 16,
+            "tokens": {"input": 0, "output": 0, "cacheRead": 0, "total": 0},
+            "cost": 0.0
+        }),
+    );
+}
+
+#[test]
+fn get_runtime_metrics_wire_parity() {
+    // Healthy journal: eventJournalError is JSON null (the agent emits null,
+    // not an absent key, for Option fields built with json!).
+    assert_command_parity(
+        "get_runtime_metrics",
+        json!({
+            "sessionId": "s1",
+            "activeRunGauge": 1,
+            "staleEpochDrops": 0,
+            "persistenceDegraded": 0,
+            "broadcastLag": 2,
+            "ringTruncations": 0,
+            "activeRunId": "run-1",
+            "queuedRuns": 1,
+            "queuedBytes": 256,
+            "eventJournalHealthy": true,
+            "eventJournalError": null
+        }),
+    );
+    // Idle + degraded journal: activeRunId null, error present.
+    assert_command_parity(
+        "get_runtime_metrics",
+        json!({
+            "sessionId": "s1",
+            "activeRunGauge": 0,
+            "staleEpochDrops": 1,
+            "persistenceDegraded": 3,
+            "broadcastLag": 0,
+            "ringTruncations": 1,
+            "activeRunId": null,
+            "queuedRuns": 0,
+            "queuedBytes": 0,
+            "eventJournalHealthy": false,
+            "eventJournalError": "disk full"
+        }),
+    );
+}
+
+#[test]
+fn get_session_events_since_wire_parity() {
+    assert_command_parity(
+        "get_session_events_since",
+        json!({
+            "events": [{
+                "type": "model_changed",
+                "data": "{\"model\":\"provider/next\"}",
+                "sessionId": "s1",
+                "sessionIdx": 4,
+                "eventId": "sev-1",
+                "timestamp": "2026-08-06T10:00:00Z"
+            }]
+        }),
+    );
+}

@@ -393,10 +393,11 @@ pub struct ModelEntry {
     pub context_window: i64,
     #[prost(bool, tag = "7")]
     pub is_default: bool,
-    #[prost(string, tag = "8")]
-    pub description: ::prost::alloc::string::String,
-    #[prost(string, tag = "9")]
-    pub description_en: ::prost::alloc::string::String,
+    /// Catalog descriptions; unset when the model carries none (JSON null).
+    #[prost(string, optional, tag = "8")]
+    pub description: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "9")]
+    pub description_en: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag = "10")]
     pub recommended: bool,
 }
@@ -431,10 +432,11 @@ pub struct Command {
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub description: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub name_zh: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub description_zh: ::prost::alloc::string::String,
+    /// Localized variants; unset when the skill carries none (JSON null).
+    #[prost(string, optional, tag = "3")]
+    pub name_zh: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "4")]
+    pub description_zh: ::core::option::Option<::prost::alloc::string::String>,
     /// Origin of the command, e.g. "skill".
     #[prost(string, tag = "5")]
     pub source: ::prost::alloc::string::String,
