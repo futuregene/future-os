@@ -1,0 +1,6 @@
+{
+  "clicked": "#btn-submit",
+  "selector": "#btn-submit",
+  "title": "Mock Page Title",
+  "url": "https://example.com/mock-page"
+}

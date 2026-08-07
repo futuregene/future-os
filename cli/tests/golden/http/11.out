@@ -1,0 +1,5 @@
+  mock_special
+  A special mock tool for the diff harness.
+
+  Remote tool — use --args with JSON to call it:
+  future tools call mock_special --args '{"param": "value"}'

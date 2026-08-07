@@ -1,0 +1,4 @@
+Usage: future tools call <tool_name> [--key value...]
+
+Call a tool by name. Use "future tools describe <tool_name>" to see
+required arguments, flags, and examples for each tool.

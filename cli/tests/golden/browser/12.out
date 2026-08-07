@@ -1,0 +1,42 @@
+{
+  "title": "Mock Page Title",
+  "url": "https://example.com/mock-page",
+  "elements": [
+    {
+      "ref": "b1",
+      "role": "button",
+      "name": "Submit",
+      "tag": "button",
+      "disabled": false,
+      "checked": null,
+      "href": null
+    },
+    {
+      "ref": "i1",
+      "role": "textbox",
+      "name": "Email",
+      "tag": "input",
+      "disabled": false,
+      "checked": null,
+      "href": null
+    },
+    {
+      "ref": "a1",
+      "role": "link",
+      "name": "Home",
+      "tag": "a",
+      "disabled": false,
+      "checked": null,
+      "href": "https://example.com/"
+    },
+    {
+      "ref": "t1",
+      "role": "text",
+      "name": "Welcome to the Mock Page",
+      "tag": "h1",
+      "disabled": false,
+      "checked": null,
+      "href": null
+    }
+  ]
+}

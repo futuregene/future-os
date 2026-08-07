@@ -1,0 +1,10 @@
+future account — view platform account information
+
+Usage:
+  future account <command>
+
+Commands:
+  profile     Show account profile (email, user ID, verification status, creation date)
+  balance     Show account credit balance. Use --json for machine-readable output.
+
+Requires authentication: future auth login first.

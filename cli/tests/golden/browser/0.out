@@ -1,0 +1,12 @@
+{
+  "endpoint": "http://127.0.0.1:46331",
+  "reachable": true,
+  "version": {
+    "Browser": "Chrome/999.0.0.0",
+    "Protocol-Version": "1.3",
+    "User-Agent": "Mozilla/5.0 (Mock CDP)",
+    "V8-Version": "12.0.0",
+    "WebKit-Version": "537.36",
+    "webSocketDebuggerUrl": "ws://127.0.0.1:64428/devtools/browser/mock"
+  }
+}

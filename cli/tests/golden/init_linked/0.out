@@ -1,0 +1,4 @@
+No builtin skills available.
+Linked future into /tmp/cli-diff-work/homes/initlinked/.future/bin.
+You can add ~/.future/bin/ to your PATH:
+  export PATH="$HOME/.future/bin:$PATH"

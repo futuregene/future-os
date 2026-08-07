@@ -1,0 +1,9 @@
+future session — manage agent sessions
+
+Usage:
+  future session list [--json]                       List all sessions
+  future session info <id>                           Show session details + stats
+  future session rename <id> <name>                  Give a session a readable name
+  future session delete <id>                         Delete a session
+
+Session data is stored at ~/.future/agent/sessions/

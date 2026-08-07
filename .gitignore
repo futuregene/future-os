@@ -9,6 +9,10 @@
 
 # Go
 *.out
+# ...except the golden test fixtures: committed reference outputs that
+# the CLI diff harness (cli/tests/diff-ts-rust.sh) records with --record
+# and compares against in check mode.
+!cli/tests/golden/**
 vendor/
 
 # Rust

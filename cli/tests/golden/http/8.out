@@ -1,0 +1,13 @@
+  search_paper
+  Search academic papers and extract requested information.
+
+  Flags:
+    --timeout <secs>   HTTP timeout (default: 60s)
+
+  Arguments (--key value):
+    --queries                  search terms, one per query (required)
+    --information_to_extract   what information to extract from the results (optional)
+    --max_results_per_query    max papers to return per query, 1-20 (optional, default: 10)
+
+  Example:
+  future tools call search_paper --queries '["CRISPR gene editing overview","CRISPR applications 2025"]' --information_to_extract "key methods and recent advances" --max_results_per_query 8

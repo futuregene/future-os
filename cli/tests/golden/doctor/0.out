@@ -1,0 +1,42 @@
+[1mFuture Doctor[0m — checking environment...
+
+[32m[ok][0m [32mLogin[0m
+      Logged in to http://127.0.0.1:46331
+
+[31m[!!][0m [31mAgent[0m
+      /tmp/cli-diff-work/homes/doctor/fake-bin/future-agent  [2m(future-agent v9.9.9-diff)[0m
+      [31mNot running — start with: future-agent[0m
+
+[32m[ok][0m [32mCLI[0m
+      /tmp/cli-diff-work/homes/doctor/fake-bin/future  [2m(future v0.0.0-diff+local)[0m
+
+[33m[--][0m [33mTUI[0m
+      future-tui not found on PATH — run `make install`
+
+[33m[--][0m [33mGUI[0m
+      future-gui not found on PATH — run `make install`
+
+[33m[--][0m [33mChannel bridge[0m
+      future-channel not found on PATH — run `make install`
+
+[32m[ok][0m [32mAuth config[0m
+      /tmp/cli-diff-work/homes/doctor/.future/agent/auth.json — 2 provider key(s)
+
+[32m[ok][0m [32mModels config[0m
+      /tmp/cli-diff-work/homes/doctor/.future/agent/models.json not found (using built-in catalog)
+
+[32m[ok][0m [32mAgent settings[0m
+      /tmp/cli-diff-work/homes/doctor/.future/agent/settings.json not found (defaults apply)
+
+[32m[ok][0m [32mProviders[0m
+      2 provider(s) configured
+        future [2m([key])[0m
+        openai [2m([key])[0m
+
+[32m[ok][0m [32mSessions[0m
+      No session directory — no sessions created yet
+
+[33m[--][0m [33mSkills[0m
+      No skills installed.
+        /tmp/cli-diff-work/homes/doctor/.future/agent/skills [2m(directory not found)[0m
+

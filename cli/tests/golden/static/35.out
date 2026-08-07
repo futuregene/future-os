@@ -1,0 +1,11 @@
+future models — list available models from the running agent
+
+Usage:
+  future models [--json]
+
+  --json    Output as JSON array with id, label, provider, contextWindow,
+            supportsImages, thinkingLevel, and isDefault fields.
+  --help    Show this help.
+
+Requires a running agent (connects to 127.0.0.1:50051 by default).
+Override with FUTURE_AGENT_GRPC_ADDR environment variable.

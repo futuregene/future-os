@@ -1,0 +1,18 @@
+[
+  {
+    "name": "browser",
+    "description": "Control a local Chrome/Edge/Safari browser for web automation: navigate pages, take snapshots, click elements, fill forms, capture screenshots."
+  },
+  {
+    "name": "search_paper",
+    "description": "Search academic papers and extract requested information."
+  },
+  {
+    "name": "web_search",
+    "description": "Search the web. Returns result titles, URLs, and snippets."
+  },
+  {
+    "name": "mock_special",
+    "description": "A special mock tool for the diff harness."
+  }
+]
