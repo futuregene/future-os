@@ -27,7 +27,7 @@ for this test cutover.
 testing of older shared-token clients:
 
 ```bash
-cd deploy/nats
+cd desktop/nats
 docker compose up -d
 docker compose logs -f nats
 docker compose down
