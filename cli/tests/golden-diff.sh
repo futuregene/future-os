@@ -6,6 +6,12 @@
 # retired; the TS implementation no longer exists — this harness compares the
 # Rust CLI against the committed snapshots only).
 #
+# STATUS: migration-acceptance tool, NOT a CI gate. The TS→Rust port is
+# complete (2026-08) and the goldens are no longer regenerated, so this is
+# intentionally run only manually before a release (`make test-cli-diff`) to
+# confirm the CLI's output has not drifted. Behavior changes no longer need
+# --record — the unit tests (cargo test -p future-cli) are the regression gate.
+#
 # Modes:
 #   (default)  build the Rust CLI, run every corpus case under a controlled
 #              environment (fake $HOME, fixed version, mock platform server,

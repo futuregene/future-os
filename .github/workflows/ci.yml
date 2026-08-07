@@ -34,8 +34,6 @@ jobs:
       rust_workspace: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_workspace == 'true' || steps.filter.outputs.ci == 'true' }}
       gui_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.gui_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
       gui_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.gui_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
-      cli: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.cli == 'true' || steps.filter.outputs.ci == 'true' }}
-      tui: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.tui == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
     steps:
       - id: force
@@ -75,12 +73,6 @@ jobs:
             gui_frontend:
               - 'gui/**'
               - '!gui/src-tauri/**'
-            cli:
-              - 'cli/**'
-              - 'future-rpc/**'
-            tui:
-              - 'tui/**'
-              - 'future-rpc/**'
             mobile:
               - 'mobile/**'
               - '!mobile/android/**'
@@ -180,6 +172,12 @@ jobs:
   # This deliberately duplicates setup from `rust-quality`: separate jobs do
   # not share a live target directory, but running lint and tests in parallel
   # reduces PR wall-clock time.
+  #
+  # `cargo test --workspace` covers every workspace crate including tui/cli
+  # (their former dedicated jobs were folded in here — see #120). The cli/tui
+  # golden-diff harnesses are NOT part of CI: they were the TS→Rust migration
+  # acceptance gate and now only run manually (make test-cli-diff / test-tui-diff)
+  # before a release.
   rust-tests:
     name: Rust tests (Linux)
     needs: changes
@@ -328,96 +326,6 @@ jobs:
       - name: cargo check (GUI Tauri backend)
         if: needs.changes.outputs.gui_tauri == 'true'
         run: cargo check --manifest-path gui/src-tauri/Cargo.toml
-
-  # ─── CLI: Rust tests + golden diff harness ──────────────────────────────
-  # The CLI is a Rust workspace member (bin `future`); fmt + clippy are covered
-  # by the `rust-quality` job (full-workspace `--all`/`--workspace --all-targets`).
-  # This job runs only the CLI's own tests + the golden harness. The golden
-  # harness (cli/tests/golden-diff.sh) checks byte-identical output against the
-  # committed goldens recorded from the retired TypeScript CLI. It needs
-  # python3 (mock platform server) and skips the live-agent group when no
-  # future-agent binary is present.
-  # NOTE: the "typecheck" in the job name is a TS-era leftover, pinned by the
-  # "Protect Main" ruleset's required status checks ("CLI typecheck + test") —
-  # renaming it would un-mergeable the PRs.
-  cli:
-    name: CLI typecheck + test
-    needs: changes
-    if: needs.changes.outputs.cli == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.0
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-
-      # mold + binutils because .cargo/config.toml pins -fuse-ld=mold (build
-      # scripts and test binaries link too); libssl-dev for rustls-less
-      # transitive deps that still build openssl-sys.
-      - name: Install Linux deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            binutils \
-            mold \
-            pkg-config \
-            libssl-dev
-
-      - name: cargo test (cli)
-        run: cargo test -p future-cli
-
-      - name: Golden diff harness
-        run: bash cli/tests/golden-diff.sh
-
-  # ─── TUI: Rust tests + golden harness ────────────────────────────────────
-  # The TUI is a Rust workspace member (bin `future-tui`); fmt + clippy are
-  # covered by the `rust-quality` job (full-workspace). The TypeScript
-  # implementation was retired (2026-08, same as the CLI) and its render +
-  # screen outputs are committed as goldens (tui/tests/golden/). The golden
-  # harness (tui/tests/golden-diff.sh) byte-compares the Rust renderer
-  # against the recorded TS outputs headlessly.
-  # NOTE: the "typecheck" in the job name is a TS-era leftover, pinned by the
-  # "Protect Main" ruleset's required status checks ("TUI typecheck + test") —
-  # renaming it would un-mergeable the PRs.
-  tui:
-    name: TUI typecheck + test
-    needs: changes
-    if: needs.changes.outputs.tui == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.0
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-
-      # mold + binutils because .cargo/config.toml pins -fuse-ld=mold (build
-      # scripts and test binaries link too); libssl-dev for rustls-less
-      # transitive deps that still build openssl-sys.
-      - name: Install Linux deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y             build-essential             binutils             mold             pkg-config             libssl-dev
-
-      - name: cargo test (tui)
-        run: cargo test -p future-tui
-
-      - name: Golden render harness
-        run: bash tui/tests/golden-diff.sh
 
   # ─── GUI: typecheck + eslint + stylelint + vitest ─────────────────────────
   # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,

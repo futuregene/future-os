@@ -2,6 +2,11 @@
 #
 # Golden render harness: Rust TUI vs recorded TypeScript outputs.
 #
+# STATUS: migration-acceptance tool, NOT a CI gate. The TS→Rust port is
+# complete (2026-08) and the golden is no longer regenerated, so this is
+# intentionally run only manually before a release (`make test-tui-diff`) to
+# confirm the TUI's render has not drifted.
+#
 # The TypeScript TUI was retired (2026-08, same as the CLI): its render
 # outputs were recorded per corpus case into
 # `tui/tests/golden/parity-ts.golden` BEFORE the TS sources were deleted, so
