@@ -202,6 +202,17 @@ impl AgentClient {
         Ok(())
     }
 
+    /// Delete the agent session backing this run — closes its persistence
+    /// journal and reclaims the on-disk session state (~/.future/agent/sessions/).
+    /// The agent session is a per-run scratch workspace (context is replayed
+    /// via the turn envelope), so `run` deletes it when the run ends.
+    /// Fails with a retryable error if the session still has an active run.
+    pub async fn delete_session(&mut self, session_id: &str) -> Result<()> {
+        self.call("delete_session", session_id, Default::default())
+            .await?;
+        Ok(())
+    }
+
     /// Cumulative session token/cost totals (for per-turn accounting we take
     /// the delta between two calls).
     pub async fn session_totals(&mut self, session_id: &str) -> Result<SessionTotals> {
