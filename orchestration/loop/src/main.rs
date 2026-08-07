@@ -4273,6 +4273,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     let mut note = None;
     let mut priority = None;
     let mut resume_when = None;
+    let mut blocks: Option<Vec<String>> = None;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -4282,6 +4283,20 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
         "--note" => note = Some(v),
         "--priority" => priority = Some(v),
         "--resume-when" => resume_when = Some(v),
+        "--blocks" => {
+            // `--blocks a,b` replaces the blocking set; `--blocks ""` clears
+            // it (empty string → Some(vec![])); absent → leave untouched.
+            let trimmed = v.trim();
+            blocks = Some(if trimmed.is_empty() {
+                vec![]
+            } else {
+                trimmed
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            });
+        }
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -4304,6 +4319,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
         note: note.clone(),
         priority: priority.clone(),
         resume_when: resume_when.clone(),
+        blocks: blocks.clone(),
         ts: future_loop::state::now_epoch(),
     })?;
     refresh_next_action(store, &goal_id)?;
