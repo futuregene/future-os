@@ -180,8 +180,13 @@ build-mobile-ios:
 	cd mobile && npm run ios
 
 # ─── Test ───────────────────────────────────────────────────────────────────
+#
+# test-tui-diff / test-tui-tmux / test-cli-diff are migration-acceptance tools
+# (TS→Rust port), NOT part of `make test`: they only run manually before a
+# release. The unit tests below (test-agent/channels/cli/tui/...) are the CI
+# regression gate.
 
-test: test-agent test-channels test-cli test-tui test-tui-diff test-tui-tmux test-gui test-gui-rust test-mobile
+test: test-agent test-channels test-cli test-tui test-gui test-gui-rust test-mobile
 
 test-agent:
 	cd agent && cargo test
@@ -423,10 +428,10 @@ help:
 	@echo "  check-mobile       Typecheck, lint, format-check, and test mobile"
 	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
 	@echo "  test-tui           Run the Rust TUI unit tests (cargo test -p future-tui)"
-	@echo "  test-tui-diff      Rust render parity vs golden (tui/tests/golden-diff.sh)"
-	@echo "  test-tui-tmux      tmux screen consistency vs golden (tui/tests/tmux-diff.sh)"
+	@echo "  test-tui-diff      [manual] migration gate: TUI render vs golden (tui/tests/golden-diff.sh)"
+	@echo "  test-tui-tmux      [manual] migration gate: tmux screen vs golden (tui/tests/tmux-diff.sh)"
 	@echo "  test-cli           Run the Rust CLI unit tests (cargo test -p future-cli)"
-	@echo "  test-cli-diff      Golden regression: CLI output vs recorded goldens (cli/tests/golden-diff.sh)"
+	@echo "  test-cli-diff      [manual] migration gate: CLI output vs goldens (cli/tests/golden-diff.sh)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
 	@echo "  fmt                Format Rust and mobile code"
 	@echo "  run-agent          Run agent directly (debug build)"
