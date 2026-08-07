@@ -1699,14 +1699,47 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         client.set_thinking_level(&session_id, &l).await?;
     }
 
+    // Run the turn loop, then always delete this run's scratch session — on
+    // every exit path — instead of letting ~/.future/agent/sessions/ pile up
+    // one file per run. The agent session is a per-run workspace: context is
+    // replayed via the turn envelope from the goal events.jsonl, so nothing
+    // durable lives in it.
+    let result = run_turns(
+        &mut client,
+        store,
+        &goal_id,
+        &session_id,
+        max_turns,
+        agent_id.as_deref(),
+    )
+    .await;
+    if let Err(e) = client.delete_session(&session_id).await {
+        println!("   ⚠ session cleanup failed (best-effort): {e}");
+    }
+    result
+}
+
+/// One `run` = one bounded turn loop against a fresh agent session. `cmd_run`
+/// owns the session lifecycle (create before, delete after); this function
+/// only executes turns and writes back their ledger effects.
+async fn run_turns(
+    client: &mut crate::agent_client::AgentClient,
+    store: &mut Store,
+    goal_id: &str,
+    session_id: &str,
+    max_turns: u32,
+    agent_id: Option<&str>,
+) -> Result<()> {
     let mut turn = 0u32;
     loop {
         turn += 1;
         if turn > max_turns {
             bail!("max-turns ({max_turns}) reached without validated closure");
         }
-        let goal = store.replay(&goal_id)?.unwrap();
-        let packet = decide_for(&goal, SystemTime::now(), agent_id.as_deref());
+        let goal = store
+            .replay(goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
+        let packet = decide_for(&goal, SystemTime::now(), agent_id);
         println!(
             "── turn {turn}: decision={} mode={} | {}",
             packet.decision,
@@ -1721,7 +1754,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         if mode == crate::contract::TurnMode::Replan {
             if let Some(gap) = crate::store::projection_gap(&goal) {
                 println!("↻ self-repair: {gap}");
-                store.set_next_action(&goal_id, "all todos complete; no further action")?;
+                store.set_next_action(goal_id, "all todos complete; no further action")?;
                 continue;
             }
             println!("↻ replan required — no auto path; stopping (see status)");
@@ -1760,9 +1793,9 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             if let Some(t) = goal.todo(&todo_id) {
                 if !t.claimed_by_other(Some(aid), now) {
                     store.append(Event::TodoClaimed {
-                        goal_id: goal_id.clone(),
+                        goal_id: goal_id.to_string(),
                         todo_id: todo_id.clone(),
-                        agent_id: aid.clone(),
+                        agent_id: aid.to_string(),
                         lease_expires_at: now + 3600,
                         ts: now,
                     })?;
@@ -1770,10 +1803,12 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             }
         }
         let todo = goal.todo(&todo_id).unwrap().clone();
-        let boundary = store.replay(&goal_id)?.unwrap();
+        let boundary = store
+            .replay(goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
         let record = execute_turn(
-            &mut client,
-            &session_id,
+            client,
+            session_id,
             &boundary,
             &todo,
             turn,
@@ -1826,7 +1861,9 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         } else {
             None
         };
-        let mut g = store.replay(&goal_id)?.unwrap();
+        let mut g = store
+            .replay(goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
         let monitor_changed = if mode == crate::contract::TurnMode::MonitorPoll {
             Some(record.evidence.to_uppercase().contains("EXISTS"))
         } else {
@@ -1841,11 +1878,11 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
                 .to_string(),
         );
         writeback(&mut g, &record, monitor_changed, completion);
-        store.append_run(&goal_id, &record)?;
+        store.append_run(goal_id, &record)?;
         // Project-local per-run mirror (runs/ under the goal state dir).
-        let _ = crate::compat::write_run(&store.goal_dir(&goal_id), &goal_id, &record);
+        let _ = crate::compat::write_run(&store.goal_dir(goal_id), goal_id, &record);
         store.append(Event::RunRecorded {
-            goal_id: goal_id.clone(),
+            goal_id: goal_id.to_string(),
             record: record.clone(),
             ts: now_epoch(),
         })?;
@@ -1853,7 +1890,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         // (source mirrors slot accounting; monitor no-change never spends).
         if monitor_changed != Some(false) {
             store.append(Event::QuotaSpent {
-                goal_id: goal_id.clone(),
+                goal_id: goal_id.to_string(),
                 run_id: record.run_id.clone(),
                 todo_id: todo_id.clone(),
                 source: record
@@ -1875,7 +1912,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
                     .unwrap_or(0),
             );
             store.append(Event::MonitorPolled {
-                goal_id: goal_id.clone(),
+                goal_id: goal_id.to_string(),
                 todo_id: todo_id.clone(),
                 result: result.to_string(),
                 no_change_count,
@@ -1885,7 +1922,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         }
         if succeeded {
             store.append(Event::TodoCompleted {
-                goal_id: goal_id.clone(),
+                goal_id: goal_id.to_string(),
                 todo_id: todo_id.clone(),
                 no_follow_up: is_last,
                 successor_ids: successors.clone(),
@@ -1913,7 +1950,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             .next()
             .map(|t| t.text.clone())
             .unwrap_or_else(|| "all todos complete; no further action".to_string());
-        store.set_next_action(&goal_id, &next_text)?;
+        store.set_next_action(goal_id, &next_text)?;
         println!("   ✔ writeback ok — next action synced");
     }
     Ok(())
@@ -2367,7 +2404,9 @@ fn cmd_runs(store: &Store, args: &[String]) -> Result<()> {
             }
         }
         "stale" => {
-            let goal = store.replay(&goal_id)?.unwrap();
+            let goal = store
+                .replay(&goal_id)?
+                .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
             let goal_dir = store.goal_dir(&goal_id);
             match rt::stale_latest_run::stale_latest_run(&goal, &goal_dir) {
                 Some(warning) => {
