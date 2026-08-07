@@ -1556,17 +1556,6 @@ export class App extends Container {
     const shortcuts = truncateToWidth("ctrl+c interrupt · ctrl+p model · ctrl+t thinking · / commands", termW - 4);
     addColored(shortcuts, dim_);
 
-    // Context files
-    if (this.state.contextFiles.length > 0) {
-      add("");
-      addColored("[Context]", sectionHdr);
-      const shortNames = this.state.contextFiles.map((f) => {
-        const parts = f.split("/");
-        return parts[parts.length - 1] ?? f;
-      });
-      addColored(" " + shortNames.join(", "), dim_);
-    }
-
     // Skills (wrap to fit terminal width)
     if (this.state.skills.length > 0) {
       const skillsList = "[skills] " + this.state.skills.join(", ");

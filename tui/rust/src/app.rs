@@ -2976,40 +2976,6 @@ impl<T: TerminalIo> App<T> {
             ..ChatMessage::new(String::new(), ChatRole::System, "")
         });
 
-        // Context files.
-        if !self.state.context_files.is_empty() {
-            self.chat.add_message(ChatMessage {
-                id: random_id(),
-                role: ChatRole::System,
-                content: String::new(),
-                welcome: true,
-                ..ChatMessage::new(String::new(), ChatRole::System, "")
-            });
-            self.chat.add_message(ChatMessage {
-                id: random_id(),
-                role: ChatRole::System,
-                content: section_hdr("[Context]"),
-                welcome: true,
-                ..ChatMessage::new(String::new(), ChatRole::System, "")
-            });
-            let short_names: Vec<String> = self
-                .state
-                .context_files
-                .iter()
-                .map(|f| {
-                    let parts: Vec<&str> = f.split('/').collect();
-                    parts.last().unwrap_or(&"").to_string()
-                })
-                .collect();
-            self.chat.add_message(ChatMessage {
-                id: random_id(),
-                role: ChatRole::System,
-                content: dim(&format!(" {}", short_names.join(", "))),
-                welcome: true,
-                ..ChatMessage::new(String::new(), ChatRole::System, "")
-            });
-        }
-
         // Skills (wrap to fit terminal width).
         if !self.state.skills.is_empty() {
             let skills_list = format!("[skills] {}", self.state.skills.join(", "));
