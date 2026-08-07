@@ -18,8 +18,7 @@ async fn canonical_active_run_id(
         .map_err(|status| map_rpc_error("Unable to read Future Agent run state", status))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the state request.")?;
-    let state: serde_json::Value = serde_json::from_str(&response.data)
-        .map_err(|error| format!("Future Agent returned invalid state: {error}"))?;
+    let state: serde_json::Value = future_rpc::decode::response_data(&response);
     Ok(state
         .get("activeRun")
         .and_then(|run| run.get("runId"))

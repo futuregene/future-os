@@ -7,14 +7,14 @@
   "scripts": {
     "gen-version": "node ../scripts/version.mjs --gen-ts src/version.generated.ts",
     "postinstall": "node ../scripts/version.mjs --gen-ts src/version.generated.ts",
-    "build": "bun run scripts/generate-proto.ts && tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json",
     "dev": "bun run src/index.ts",
     "start": "bun run dist/index.js",
-    "generate-proto": "bun run scripts/generate-proto.ts",
     "test": "bun test",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@future-os/rpc": "0.0.0",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.1",
     "long": "^5.3.2",
@@ -24,8 +24,5 @@
     "@rslint/tsgo": "^0.5.2",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0"
-  },
-  "allowScripts": {
-    "protobufjs@7.6.4": true
   }
 }

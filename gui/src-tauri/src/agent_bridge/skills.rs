@@ -50,8 +50,9 @@ pub async fn list_installed_skills() -> Result<Vec<InstalledSkill>, crate::AppEr
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the skills request.")?;
 
-    let parsed = serde_json::from_str::<CommandsResponse>(&response.data)
-        .map_err(|error| format!("Future Agent returned invalid skills data: {error}"))?;
+    let parsed =
+        serde_json::from_value::<CommandsResponse>(future_rpc::decode::response_data(&response))
+            .map_err(|error| format!("Future Agent returned invalid skills data: {error}"))?;
 
     let versions = crate::skills::installed_versions();
     let skills = parsed
