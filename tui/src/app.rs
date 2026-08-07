@@ -490,7 +490,16 @@ fn split_ws_js(s: &str) -> Vec<&str> {
             in_run = false;
         }
     }
-    out.push(&s[start..]);
+    if in_run {
+        // Trailing whitespace: JS `split(/\s+/)` yields a trailing EMPTY
+        // element ("cwd ../ " → ["cwd", "../", ""]). Pushing `&s[start..]`
+        // here would re-emit the last token with the trailing space
+        // attached (["cwd", "../", "../ "]), which turned `/cwd ../ ` into
+        // arg "../ ../ " and corrupted the resolved cwd.
+        out.push("");
+    } else {
+        out.push(&s[start..]);
+    }
     out
 }
 
@@ -2466,7 +2475,11 @@ impl<T: TerminalIo> App<T> {
                         self.request_render(false);
                         return;
                     }
-                    let mut resolved = arg.clone();
+                    // Trim the arg: `/cwd ../ ` (trailing space) would join to
+                    // `a/b/../ ` and normalize to `a/ ` (the stray space
+                    // becomes a path component). The agent trims its side;
+                    // the TUI must too, or the footer shows the dirty path.
+                    let mut resolved = arg.trim().to_string();
                     let homedir = dirs::home_dir().unwrap_or_default();
                     if resolved == "~" {
                         resolved = homedir.display().to_string();
@@ -4337,7 +4350,9 @@ mod tests {
 
     /// `app.state.cwd` is exactly what the footer renders (`data.cwd`). A
     /// relative cwd like `a/b` with `/cwd ../` must land on a clean `a` —
-    /// not `a/b/../` and not `a/ ../`.
+    /// not `a/b/../` and not `a/ ../`. The trailing-space variant (`/cwd
+    /// ../ `) must behave identically (the arg is trimmed, so the stray
+    /// space never becomes a path component).
     #[tokio::test(flavor = "multi_thread")]
     async fn cwd_dotdot_from_relative_cwd_renders_clean_parent() {
         let (_server, addr) = spawn_cwd_mock_agent().await;
@@ -4354,28 +4369,32 @@ mod tests {
             &CliOptions::default(),
             std::env::temp_dir().join("tui-cwd-test-settings.json"),
         );
-        app.state.cwd = "a/b".into();
 
-        app.handle_submit("/cwd ../");
+        for input in ["/cwd ../", "/cwd ../ "] {
+            app.state.cwd = "a/b".into();
 
-        // Apply the CwdSet UiCmd when it arrives.
-        let deadline = tokio::time::timeout(Duration::from_secs(5), op_rx.recv()).await;
-        if let Ok(Some(cmd)) = deadline {
-            app.handle_cmd(cmd);
+            app.handle_submit(input);
+
+            // Apply the CwdSet UiCmd when it arrives.
+            let deadline = tokio::time::timeout(Duration::from_secs(5), op_rx.recv()).await;
+            if let Ok(Some(cmd)) = deadline {
+                app.handle_cmd(cmd);
+            }
+
+            // The agent's `cwd_changed` echo (best-effort — the stream may
+            // not be subscribed yet, but the real agent always emits it).
+            if let Ok(Some(ev)) =
+                tokio::time::timeout(Duration::from_millis(500), events.recv()).await
+            {
+                app.handle_agent_event(&ev);
+            }
+
+            assert_eq!(
+                app.state.cwd, "a",
+                "input {input:?}: footer cwd must be a clean parent `a`, got {:?}",
+                app.state.cwd
+            );
         }
-
-        // The agent's `cwd_changed` echo (best-effort — the stream may not be
-        // subscribed yet, but the real agent always emits it after set_cwd).
-        if let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(500), events.recv()).await
-        {
-            app.handle_agent_event(&ev);
-        }
-
-        assert_eq!(
-            app.state.cwd, "a",
-            "footer cwd must be a clean parent `a`, got {:?}",
-            app.state.cwd
-        );
     }
 
     // ─── Welcome screen ─────────────────────────────────────────────────
@@ -4412,6 +4431,12 @@ mod tests {
         assert_eq!(split_ws_js("a  b"), vec!["a", "b"]);
         assert_eq!(split_ws_js(""), vec![""]);
         assert_eq!(split_ws_js("status"), vec!["status"]);
+        // Trailing whitespace yields a trailing EMPTY element, exactly like
+        // JS `split(/\s+/)` — NOT a re-emission of the last token with the
+        // space attached (the pre-fix bug that corrupted `/cwd ../ `).
+        assert_eq!(split_ws_js("cwd ../ "), vec!["cwd", "../", ""]);
+        assert_eq!(split_ws_js("cwd "), vec!["cwd", ""]);
+        assert_eq!(split_ws_js(" "), vec!["", ""]);
     }
 
     /// `/status` lines must match the TS template verbatim — in particular
