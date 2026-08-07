@@ -1,0 +1,16 @@
+  image_edit
+  Edit an existing image using a text prompt. Requires --input <path> for the source image. Optional --mask <path> to limit edits to a region.
+
+  Flags:
+    --input <path>     Input file
+    --mask <path>      Optional mask image
+    --output <path>    Save output to file
+    --timeout <secs>   HTTP timeout (default: 60s)
+
+  Arguments (--key value):
+    --prompt                   description of the desired edits (required)
+    --size                     output dimensions, e.g. "1024x1024" (optional)
+    --quality                  "low", "medium", or "high" (optional)
+
+  Example:
+  future tools call image_edit --input <file> --prompt "Convert to watercolor painting"

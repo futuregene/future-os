@@ -1,0 +1,1 @@
+tools call browser --command screenshot --path /tmp/cli-diff-work/browser-shot.png

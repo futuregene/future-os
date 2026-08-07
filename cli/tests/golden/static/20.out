@@ -1,0 +1,14 @@
+future auth — authenticate with the Future platform
+
+Usage:
+  future auth <command>
+
+Commands:
+  login       Device-code OAuth flow; saves API key to ~/.future/agent/auth.json
+  status      Show whether logged in, and the platform URL in use
+  credential  Output the raw API key + endpoint for shell scripts (--json not needed;
+              output is always JSON: {"api_key":"...","endpoint":"..."})
+  logout      Remove the stored API key from auth.json
+
+API key file: ~/.future/agent/auth.json
+Environment override: FUTURE_API_KEY (takes precedence over auth.json)

@@ -1,0 +1,2 @@
+Failed to read file: /nonexistent/file-xyz
+No prompt provided. Usage: future run [options] [@files...] [message...]

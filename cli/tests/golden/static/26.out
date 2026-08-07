@@ -1,0 +1,20 @@
+future skills — install & manage agent skills
+
+Skills are markdown instruction files the agent loads to handle specific tasks.
+They live under ~/.future/agent/skills/<name>/SKILL.md.
+
+Usage:
+  future skills <command> [args]
+
+Commands:
+  list                    Show all skills available in the catalog (name, latest version,
+                          installed version, description).
+  install <name>          Install a specific skill by name. Use --version <ver> for a
+                          specific version; omit for latest.
+  install                 With no name argument, same as install-builtin.
+  install-builtin         Install all built-in platform skills (names prefixed "future-").
+  uninstall <name>        Remove an installed skill.
+  update                  Upgrade all installed skills to their latest versions.
+
+Skills directory: ~/.future/agent/skills/
+Catalog source: fetched from the Future platform API.

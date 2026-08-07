@@ -1,0 +1,7 @@
+future agent status — show running agent state
+
+Usage:
+  future agent status [--json]
+
+  --json    Output full state as JSON.
+  --help    Show this help.

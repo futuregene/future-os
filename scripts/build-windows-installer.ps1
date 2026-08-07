@@ -143,14 +143,9 @@ New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
 Copy-Item "target/release/future-agent.exe" `
           "gui/src-tauri/binaries/future-agent-$triple.exe" -Force
 
-Write-Host "==> Building CLI (standalone binary)" -ForegroundColor Cyan
-Push-Location cli
-try {
-    Invoke-Native { npm run build }
-    Invoke-Native { bun build --compile dist/index.js --outfile dist/future.exe --external chromium-bidi }
-}
-finally { Pop-Location }
-Copy-Item "cli/dist/future.exe" "gui/src-tauri/binaries/future-$triple.exe" -Force
+Write-Host "==> Building CLI (release)" -ForegroundColor Cyan
+Invoke-Native { cargo build --release --manifest-path cli/Cargo.toml }
+Copy-Item "target/release/future.exe" "gui/src-tauri/binaries/future-$triple.exe" -Force
 
 # Sign the sidecars now: the bundler embeds them as-is, so this is the last
 # moment they can be signed without unpacking the installer afterwards.

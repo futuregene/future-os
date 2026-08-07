@@ -1,0 +1,19 @@
+  browser
+  Control a local Chrome/Edge/Safari browser for web automation: navigate pages, take snapshots, click elements, fill forms, capture screenshots.
+
+  Flags:
+    --timeout <secs>   HTTP timeout (default: 60s)
+
+  Arguments (--key value):
+    --command                  sub-command: start | status | open | snapshot | click | type | press | scroll | screenshot | console | tabs (required)
+    --url                      URL to navigate to (for open / start)
+    --ref                      element reference from a previous snapshot (for click / type)
+    --text                     text to type into an element (for type)
+    --key                      key to press, e.g. "Enter" or "Escape" (for press)
+    --fullPage                 capture the full scrollable page (for screenshot, default: false)
+    --limit                    max snapshot lines to return (default: 80)
+    --path                     file path to save screenshot, e.g. ./page.png (for screenshot)
+    --level                    console message level to filter: "log" | "warn" | "error" (for console)
+
+  Example:
+  future tools call browser --command "open" --url "https://example.com"

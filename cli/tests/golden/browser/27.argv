@@ -1,0 +1,1 @@
+tools call browser --command scroll --ref t1 --direction left --amount 50

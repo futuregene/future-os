@@ -1,0 +1,6 @@
+  browser        Control a local Chrome/Edge/Safari browser for web automation: navigate pages, take snaps…
+  search_paper   Search academic papers and extract requested information.
+  web_search     Search the web. Returns result titles, URLs, and snippets.
+  mock_special   A special mock tool for the diff harness.
+
+4 tools available.  Use "future tools describe <name>" for details.

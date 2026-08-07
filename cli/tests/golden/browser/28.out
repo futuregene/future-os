@@ -1,0 +1,19 @@
+{
+  "logs": [
+    {
+      "level": "log",
+      "text": "Mock console message one",
+      "time": "2026-08-06T12:00:00.000Z"
+    },
+    {
+      "level": "warn",
+      "text": "Mock warning message",
+      "time": "2026-08-06T12:00:01.000Z"
+    },
+    {
+      "level": "error",
+      "text": "Mock error message",
+      "time": "2026-08-06T12:00:02.000Z"
+    }
+  ]
+}

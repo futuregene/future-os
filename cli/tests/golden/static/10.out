@@ -1,0 +1,7 @@
+future init — initialize Future OS
+
+Usage:
+  future init
+
+Installs all built-in skills. On macOS and Linux, also links future and, when
+available, its sibling future-agent into ~/.future/bin/ and prints a PATH setup hint.

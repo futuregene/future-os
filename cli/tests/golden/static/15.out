@@ -1,0 +1,10 @@
+future auth login — device-code OAuth flow
+
+Usage:
+  future auth login [--url <url>]
+
+  --url <url>   Override the platform URL (default from DNS TXT record or built-in)
+  --help, -h    Show this help
+
+Opens a browser for you to sign in and authorize this CLI device.
+Saves the resulting API key to ~/.future/agent/auth.json.

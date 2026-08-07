@@ -1,0 +1,24 @@
+{
+  "title": "Mock Page Title",
+  "url": "https://example.com/mock-page",
+  "elements": [
+    {
+      "ref": "b1",
+      "role": "button",
+      "name": "Submit",
+      "tag": "button",
+      "disabled": false,
+      "checked": null,
+      "href": null
+    },
+    {
+      "ref": "i1",
+      "role": "textbox",
+      "name": "Email",
+      "tag": "input",
+      "disabled": false,
+      "checked": null,
+      "href": null
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "endpoint": "http://127.0.0.1:46331",
+  "status": "already_running",
+  "note": "Browser is already running at this endpoint."
+}

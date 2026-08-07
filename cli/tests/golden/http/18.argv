@@ -1,0 +1,1 @@
+tools call mock_special --foo bar

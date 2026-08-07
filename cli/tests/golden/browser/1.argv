@@ -1,0 +1,1 @@
+tools call browser --command snapshot --endpoint http://127.0.0.1:1

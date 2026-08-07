@@ -1,0 +1,4 @@
+future auth status — check current login state
+
+Shows the platform URL and indicates whether an API key is stored.
+Does not validate the key against the server.

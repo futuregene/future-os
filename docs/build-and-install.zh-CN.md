@@ -9,9 +9,9 @@
 完整构建（agent + TUI + CLI + GUI）在所有平台都需要的：
 
 - **Rust** 1.97+（由 `rust-toolchain.toml` 固定版本）
-- **Node.js** 24+（见 `.nvmrc`）
-- **Bun** —— 必需：TUI 构建与 CLI/GUI 打包使用 `bun build`
-- 可选：**Python 3** —— 仅用于 `make generate-models`
+- **Node.js** 24+（见 `.nvmrc`）—— 用于 TUI
+- **Bun** —— TUI 构建需要（`bun build`）；CLI 已是 Rust（`cargo build`），不再需要 Bun 或 Node
+- 可选：**Python 3** —— 仅用于 `make generate-models` 与 CLI golden 差分测试（`make test-cli-diff`）
 - 可选：**protoc**（Protocol Buffers 编译器）—— 仅用于 `make generate-proto`；生成代码已入库，正常构建不需要
 
 ## 克隆
@@ -86,14 +86,14 @@ make package-gui    # 桌面打包 → .deb 位于 gui/src-tauri/target/release/
 cargo build --release --manifest-path agent/Cargo.toml
 cargo build --release --manifest-path channels/Cargo.toml
 
-# TypeScript 组件：TUI + CLI                      （对应 make build-tui / build-cli）
+# TypeScript 组件：TUI；Rust 组件：CLI          （对应 make build-tui / build-cli）
 Push-Location tui; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future-tui.exe; Pop-Location
-Push-Location cli; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future.exe --external chromium-bidi; Pop-Location
+cargo build --release --manifest-path cli/Cargo.toml
 
 # 安装到 %USERPROFILE%\.future\bin                （对应 install-* 中的复制步骤）
 $bin = "$env:USERPROFILE\.future\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, tui\dist\future-tui.exe, cli\dist\future.exe $bin
+Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, tui\dist\future-tui.exe, target\release\future.exe $bin
 
 # 内置技能 —— make install-skills 使用符号链接；Windows 上改用 CLI 安装
 & "$bin\future.exe" skills install
