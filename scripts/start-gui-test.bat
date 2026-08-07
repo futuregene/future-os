@@ -90,7 +90,8 @@ if "%BUILD_AGENT%"=="1" (
 if "%BUILD_CLI%"=="1" call :build_cli
 rem Put the built CLI on the agent's PATH so skills that shell out to `future`
 rem resolve it. The agent (started below) inherits this process's environment.
-if exist "%CLI_DIR%\dist\future.exe" set "PATH=%CLI_DIR%\dist;%PATH%"
+rem cargo build writes to the workspace-level target dir, not cli/target.
+if exist "%ROOT_DIR%\target\debug\future.exe" set "PATH=%ROOT_DIR%\target\debug;%PATH%"
 
 call :port_in_use
 set "PORT_BUSY=%ERRORLEVEL%"
@@ -171,35 +172,23 @@ exit /b %GUI_EXIT%
 
 rem ---------------------------------------------------------------------------
 :build_cli
-rem Build the future CLI to a standalone dist\future.exe (matching make build-cli)
-rem so the agent can shell out to it. Non-fatal: a failure only means skills that
-rem call `future` won't work; the GUI test still runs.
-where bun >nul 2>&1 || (
-  echo bun not found; skipping future CLI build. Skills that call future will not work.
-  exit /b 0
-)
+rem Build the unified Rust CLI (cargo build, matching make build-cli) so the
+rem agent can shell out to it. Non-fatal: a failure only means skills that call
+rem `future` won't work; the GUI test still runs.
 echo Building future CLI...
-rem The CLI imports @future-os/rpc; its dist must exist before tsc compiles.
-pushd "%ROOT_DIR%\future-rpc\ts" || exit /b 0
-call npm run build || (echo shared RPC build failed; skipping future CLI build. & popd & exit /b 0)
-popd
 pushd "%CLI_DIR%" || exit /b 0
-if not exist node_modules (
-  call npm ci || (echo npm ci failed; skipping future CLI build. & popd & exit /b 0)
-)
-call npm run build || (echo CLI tsc build failed; skipping. & popd & exit /b 0)
-call bun build --compile dist\index.js --outfile dist\future.exe || (echo bun compile failed; skipping. & popd & exit /b 0)
+call cargo build || (echo future CLI build failed; skipping. & popd & exit /b 0)
 popd
 exit /b 0
 
 rem ---------------------------------------------------------------------------
 :ensure_sidecars
-rem Tauri validates bundle.externalBin sidecars (future-agent, future) at COMPILE
-rem time — even for `tauri dev`. This script runs the agent standalone and the GUI
-rem connects to it, so the sidecars are never launched here; they only need to
-rem exist. Create empty placeholders (with the Windows .exe suffix) for any that
-rem are missing (CI and the packaging scripts stage the real binaries). Mirrors
-rem the sidecar block in start-gui-test.sh.
+rem Tauri validates bundle.externalBin sidecars (future) at COMPILE time — even
+rem for `tauri dev`. This script runs the agent standalone and the GUI connects
+rem to it, so the sidecar is never launched here; it only needs to exist. Create
+rem an empty placeholder (with the Windows .exe suffix) if it is missing (CI and
+rem the packaging scripts stage the real binary). Mirrors the sidecar block in
+rem start-gui-test.sh.
 set "TRIPLE="
 for /f "tokens=2" %%h in ('rustc -Vv ^| findstr /b /c:"host: "') do set "TRIPLE=%%h"
 if not defined TRIPLE (
@@ -208,11 +197,9 @@ if not defined TRIPLE (
 )
 set "BIN_DIR=%GUI_DIR%\src-tauri\binaries"
 if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
-for %%n in (future-agent future) do (
-  if not exist "%BIN_DIR%\%%n-%TRIPLE%.exe" (
-    echo Creating sidecar placeholder %%n-%TRIPLE%.exe
-    type nul > "%BIN_DIR%\%%n-%TRIPLE%.exe"
-  )
+if not exist "%BIN_DIR%\future-%TRIPLE%.exe" (
+  echo Creating sidecar placeholder future-%TRIPLE%.exe
+  type nul > "%BIN_DIR%\future-%TRIPLE%.exe"
 )
 exit /b 0
 

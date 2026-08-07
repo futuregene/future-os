@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Also re-run when the proto source changes, so `make generate-proto`
     // after a proto edit is not skipped by Cargo's build-script cache (the
     // env var alone is unchanged between two REGENERATE_PROTO=1 runs).
-    println!("cargo:rerun-if-changed=../proto/future.proto");
+    println!("cargo:rerun-if-changed=proto/future.proto");
     // Proto regeneration is opt-in via `make generate-proto` (sets the
     // REGENERATE_PROTO env var).  Skip it on normal builds so protoc is
     // never required to compile the crate.
@@ -24,9 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let proto_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("proto");
+    let proto_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto");
     let generated_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/generated");
     std::fs::create_dir_all(&generated_dir)?;
 

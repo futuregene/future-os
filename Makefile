@@ -1,9 +1,9 @@
-.PHONY: version build build-cli build-gui build-gui-dist build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels run-loop package-gui install uninstall install-cli install-gui install-skills fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars node-workspace
+.PHONY: version build build-cli build-gui build-gui-dist build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels run-loop package-gui install uninstall install-cli install-gui install-skills fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
-# Exported so cargo build.rs and the TS build scripts pick it up. On a release
-# tag CI sets FUTURE_VERSION in the environment, which wins over this default.
+# Exported so the cargo build.rs files pick it up. On a release tag CI sets
+# FUTURE_VERSION in the environment, which wins over this default.
 # Resolve FUTURE_VERSION from git; fall back to 0.0.0-dev if git or the
 # version script is unavailable (e.g. Windows without bash).
 FUTURE_VERSION_SCRIPT := $(CURDIR)/scripts/version.mjs
@@ -140,27 +140,6 @@ define npm-install-if-needed
 		cd $(1) && npm install; \
 	fi
 endef
-endif
-
-# npm workspace (future-rpc/ts + tui + cli): deps hoist to the repo-root
-# node_modules and a single root package-lock.json. Installs only when the
-# manifest/lockfile is newer than the install stamp, then builds the shared
-# wire-contract package so tui/cli can compile against its dist output.
-# (gui and mobile are not workspace members — they keep npm-install-if-needed.)
-ifeq ($(OS),windows)
-node-workspace:
-	@npm install --silent
-	@cd future-rpc/ts && npm run build --silent
-else
-node-workspace:
-	@if [ ! -f "node_modules/.package-lock.json" ] || [ "package.json" -nt "node_modules/.package-lock.json" ] || [ "package-lock.json" -nt "node_modules/.package-lock.json" ]; then \
-		echo "  npm install (workspace)"; \
-		npm install; \
-	fi
-	@if [ ! -f "future-rpc/ts/dist/index.js" ] || [ -n "$$(find future-rpc/ts/src -name '*.ts' -newer future-rpc/ts/dist/index.js 2>/dev/null)" ]; then \
-		echo "  build future-rpc/ts"; \
-		cd future-rpc/ts && npm run build; \
-	fi
 endif
 
 build-cli:
@@ -408,9 +387,8 @@ generate-models:
 	python3 scripts/generate_models.py
 
 generate-proto:
-	cd future-rpc/rust && REGENERATE_PROTO=1 cargo build
+	cd future-rpc && REGENERATE_PROTO=1 cargo build
 	cd channels && REGENERATE_PROTO=1 cargo build
-	cd future-rpc/ts && bun run scripts/generate-proto.ts
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
 
@@ -418,10 +396,6 @@ clean:
 ifeq ($(OS),windows)
 	@if exist target rmdir /s /q target
 	@if exist node_modules rmdir /s /q node_modules
-	@if exist future-rpc\ts\dist rmdir /s /q future-rpc\ts\dist
-	@if exist cli\dist rmdir /s /q cli\dist
-	@if exist cli\node_modules rmdir /s /q cli\node_modules
-	@if exist cli\src\version.generated.ts del /q cli\src\version.generated.ts
 	@if exist gui\dist rmdir /s /q gui\dist
 	@if exist gui\node_modules rmdir /s /q gui\node_modules
 	@if exist gui\src-tauri\target rmdir /s /q gui\src-tauri\target
@@ -433,8 +407,7 @@ ifeq ($(OS),windows)
 	@if exist "$(PREFIX)\future-channel$(EXE_SUFFIX)" del /q "$(PREFIX)\future-channel$(EXE_SUFFIX)"
 else
 	rm -rf target
-	rm -rf node_modules future-rpc/ts/dist
-	rm -rf tui/node_modules
+	rm -rf node_modules
 	rm -rf gui/dist gui/node_modules gui/src-tauri/target gui/src-tauri/binaries
 	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-gui$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
 endif
@@ -469,7 +442,7 @@ help:
 	@echo "  profile-quick      CPU profile: run agent N secs (PROFILE_SECS=30)"
 	@echo "  profile-heap       Heap profile via dhat, write dhat report JSON"
 	@echo "  generate-models    Fetch model data, regenerate Rust catalog + wiki docs"
-	@echo "  generate-proto     Regenerate wire code: future-rpc (future.proto, all TS clients) + channels feishu_ws"
+	@echo "  generate-proto     Regenerate wire code: future-rpc (future.proto) + channels feishu_ws"
 	@echo "  install            Build & install GUI + unified CLI + skills"
 	@echo "  install-cli        Install the unified \`future\` CLI (agent/tui/channel/loop embedded)"
 	@echo "  install-gui        Install the desktop app (stages its own agent/CLI sidecars)"

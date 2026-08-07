@@ -173,28 +173,17 @@ if [[ "$BUILD_AGENT" == "1" ]]; then
   (cd "$AGENT_DIR" && cargo build)
 fi
 
-# Build the future CLI to a standalone dist/future (matching make build-cli) and
-# put it on the agent's PATH, so skills that shell out to `future` resolve it.
+# Build the unified Rust CLI (cargo build, matching make build-cli) and put it
+# on the agent's PATH, so skills that shell out to `future` resolve it.
 # Non-fatal: a failure only means those skills won't work; the GUI test proceeds.
 if [[ "$BUILD_CLI" == "1" ]]; then
-  # The CLI imports @future-os/rpc; its dist must exist before tsc compiles.
-  (cd "$ROOT_DIR/future-rpc/ts" && npm run build) || \
-    echo "shared RPC build failed; future CLI build skipped."
-  if command -v bun >/dev/null 2>&1; then
-    echo "Building future CLI..."
-    (
-      cd "$CLI_DIR"
-      [[ -d node_modules ]] || npm ci
-      npm run build
-      bun build --compile dist/index.js --outfile dist/future
-    ) || echo "future CLI build failed; skills that call \`future\` will not work."
-  else
-    echo "bun not found; skipping future CLI build (skills that call \`future\` will not work)."
-  fi
+  echo "Building future CLI..."
+  (cd "$CLI_DIR" && cargo build) || \
+    echo "future CLI build failed; skills that call \`future\` will not work."
 fi
 # The agent (started below) inherits this exported PATH.
-if [[ -x "$CLI_DIR/dist/future" ]]; then
-  export PATH="$CLI_DIR/dist:$PATH"
+if [[ -x "$ROOT_DIR/target/debug/future" ]]; then
+  export PATH="$ROOT_DIR/target/debug:$PATH"
 fi
 
 if [[ "$REUSE_AGENT" == "1" ]] && nc -z "$AGENT_HOST" "$AGENT_PORT" >/dev/null 2>&1; then
@@ -241,21 +230,19 @@ else
   echo "Agent console log: $AGENT_CONSOLE_LOG"
 fi
 
-# Tauri validates bundle.externalBin sidecars (future-agent, future) at
-# COMPILE time — even for `tauri dev`. This script runs the agent as a standalone
-# process and the GUI connects to it, so the bundled sidecars are never launched
-# here; they only need to exist. Create empty placeholders for any that are
-# missing (CI and the packaging scripts stage the real binaries).
+# Tauri validates bundle.externalBin sidecars (future) at COMPILE time — even
+# for `tauri dev`. This script runs the agent as a standalone process and the
+# GUI connects to it, so the bundled sidecar is never launched here; it only
+# needs to exist. Create an empty placeholder if it is missing (CI and the
+# packaging scripts stage the real binary).
 TRIPLE="$(rustc -Vv | sed -n 's/^host: //p')"
 BIN_DIR="$GUI_DIR/src-tauri/binaries"
 mkdir -p "$BIN_DIR"
-for name in future-agent future; do
-  sidecar="$BIN_DIR/$name-$TRIPLE"
-  if [[ ! -f "$sidecar" ]]; then
-    : >"$sidecar"
-    chmod +x "$sidecar"
-  fi
-done
+sidecar="$BIN_DIR/future-$TRIPLE"
+if [[ ! -f "$sidecar" ]]; then
+  : >"$sidecar"
+  chmod +x "$sidecar"
+fi
 
 echo "Starting GUI..."
 echo "Press Ctrl-C here to stop the GUI and the agent started by this script."

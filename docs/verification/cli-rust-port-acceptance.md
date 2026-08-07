@@ -100,7 +100,8 @@ dependent, same class as the P4 turn-1 findings). All are documented in
 - `1069f227` merge of `origin/main` (#112 typed-RPC): cli consumes
   `future-rpc` crate (generated proto retired), Makefile `test-cli-diff`
   gains the `node-workspace` prerequisite (root npm install + future-rpc/ts
-  build for the TS side), acceptance numbers refreshed (1729 workspace).
+  build for the TS side — both retired in the 2026-08 Rust-only pass),
+  acceptance numbers refreshed (1729 workspace).
 
 ## 4. Re-running the gates
 

@@ -23,12 +23,12 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build-macos-dmg.sh [options]
 
-Build the agent, standalone CLI and Tauri GUI, then produce a macOS DMG.
+Build the unified `future` CLI and Tauri GUI, then produce a macOS DMG.
 Signing is automatic when exactly one Developer ID Application identity is
 available. Without a usable identity the script falls back to a normal package.
 
 Options:
-  --skip-deps              Skip npm ci in gui/ and cli/.
+  --skip-deps              Skip npm ci in gui/.
   --out-dir DIR            Copy the final DMG to DIR (default: repository root).
   --identity TEXT          Select a Developer ID identity containing TEXT.
   --notary-profile NAME    notarytool keychain profile used for notarization.
@@ -168,21 +168,13 @@ if [[ -n "$SIGNING_IDENTITY" ]]; then
 fi
 
 if [[ "$SKIP_DEPS" != true ]]; then
-  echo "==> Installing npm dependencies (gui, npm workspace)"
+  echo "==> Installing npm dependencies (gui)"
   (cd gui && npm ci)
-  npm ci  # root workspace: future-rpc/ts only (tui + cli are Rust, no npm deps)
 fi
 
-echo "==> Building shared RPC package (@future-os/rpc)"
-(cd future-rpc/ts && npm run build)
-
-echo "==> Building agent (release)"
-cargo build --release --manifest-path agent/Cargo.toml
-mkdir -p gui/src-tauri/binaries
-cp target/release/future-agent "gui/src-tauri/binaries/future-agent-$TRIPLE"
-
-echo "==> Building CLI (release)"
+echo "==> Building CLI (release) and staging as Tauri sidecar"
 cargo build --release --manifest-path cli/Cargo.toml
+mkdir -p gui/src-tauri/binaries
 cp target/release/future "gui/src-tauri/binaries/future-$TRIPLE"
 
 echo "==> Setting Tauri bundle version"

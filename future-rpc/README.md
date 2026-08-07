@@ -7,9 +7,9 @@ This crate is the **single owner** of the generated proto code for
 `../proto/future.proto` (both tonic server and client modules) and of the
 typed-RPC payload contract: the shared payload structs plus the encode/decode
 layer. The per-crate generated copies that used to live in `agent/`,
-`channels/` and `gui/src-tauri/` have been retired onto this crate; the
-TypeScript clients share the same contract through the sibling npm package
-`future-rpc/ts` (`@future-os/rpc`).
+`channels/` and `gui/src-tauri/` have been retired onto this crate. Every
+consumer is Rust; the former sibling npm package `future-rpc/ts`
+(`@future-os/rpc`) was removed when the TUI/CLI were ported to Rust.
 
 ## Typed payloads + dual-write
 
