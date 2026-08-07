@@ -982,6 +982,19 @@ fn apply(goal: &mut Goal, event: Event) {
                 if let Some(rw) = resume_when {
                     t.resume_when_text = Some(rw.clone());
                     t.status = crate::state::TodoStatus::Deferred;
+                    // `defer:N` (written by `todo update --resume-when N` with a
+                    // numeric N) sets a REAL deadline: resume_when = now + N
+                    // seconds, so the deferred/monitor todo becomes due again.
+                    // Any other value is a text-only hint (no deadline) and
+                    // keeps the legacy behavior.
+                    if let Some(secs) = rw
+                        .strip_prefix("defer:")
+                        .and_then(|s| s.parse::<u64>().ok())
+                    {
+                        t.resume_when = Some(
+                            std::time::SystemTime::now() + std::time::Duration::from_secs(secs),
+                        );
+                    }
                 }
                 if let Some(st) = status.as_deref() {
                     match st {
