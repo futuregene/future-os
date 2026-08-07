@@ -158,7 +158,7 @@ pub enum Event {
         ts: u64,
     },
     /// Field-level todo update (the reference: `todo update` — text / status /
-    /// evidence / note / priority / resume-when). Done must go through
+    /// evidence / note / priority / resume-when / blocks). Done must go through
     /// `todo complete` (closure-intent contract).
     TodoUpdated {
         goal_id: String,
@@ -169,6 +169,11 @@ pub enum Event {
         note: Option<String>,
         priority: Option<String>,
         resume_when: Option<String>,
+        /// Replace the blocking set (`--blocks a,b`); `Some([])` clears it.
+        /// Absent (`None`) leaves the current blocking set untouched. Old
+        /// events serialized without this field deserialize as `None`.
+        #[serde(default)]
+        blocks: Option<Vec<String>>,
         ts: u64,
     },
     /// Stop automation while retaining state (the reference: goal cancel).
@@ -944,6 +949,7 @@ fn apply(goal: &mut Goal, event: Event) {
             note,
             priority,
             resume_when,
+            blocks,
             ts,
             ..
         } => {
@@ -956,6 +962,15 @@ fn apply(goal: &mut Goal, event: Event) {
                 }
                 if let Some(x) = note {
                     t.note = Some(x);
+                }
+                if let Some(b) = blocks {
+                    // `--blocks a,b` replaces the blocking set; `--blocks ""`
+                    // clears it. Mirrors Todo::blocking()'s join encoding.
+                    if b.is_empty() {
+                        t.blocked_by_gate = None;
+                    } else {
+                        t.blocked_by_gate = Some(b.join(","));
+                    }
                 }
                 if let Some(p) = priority.as_deref() {
                     t.priority = match p.to_uppercase().as_str() {
