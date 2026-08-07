@@ -13,13 +13,13 @@
 
 > 本地优先的 AI Agent 工作台——终端、桌面、消息平台，一个后端全搞定。
 
-FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI)、飞书和钉钉——支持 macOS、Linux、Windows。写代码、做调研、管理文件——从终端、聊天软件或原生桌面窗口，无缝切换。
+FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI) 和 IM 机器人——支持 macOS、Linux、Windows。写代码、做调研、管理文件——从终端、聊天软件或原生桌面窗口，无缝切换。
 
 ## 特性
 
 | 类别 | 说明 |
 |---|---|
-| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI)、飞书机器人、钉钉机器人——一个 Agent，无处不在 |
+| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI)、IM 机器人——一个 Agent，无处不在 |
 | **模型灵活** | 内置 3800+ 模型，覆盖 140+ Provider（[目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
 | **流式输出与思考链** | 实时 token 流式传输，可折叠的思考链展示；可配置思考深度（off ↔ xhigh） |
 | **工具执行** | read, write, edit, shell，带审批控制和沙箱保护（关闭 / 手动 / macOS Seatbelt） |
@@ -27,7 +27,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应�
 | **技能系统** | 可插拔的 YAML 定义 Skill 包，从多目录自动发现（[指南](docs/wiki/zh/Skills.md)） |
 | **自动压缩与重试** | 上下文自动压缩；上下文超长时指数退避自动重试 |
 | **Loop 控制面** | `future-loop`：持久化目标/todos/门禁/监控、quota should-run 内核、事件溯源状态、验证器、扩展与多 agent（[指南](docs/loop-control-plane.zh-CN.md)）——基于 [loopx](https://github.com/huangruiteng/loopx) 的 Rust 改写版，针对 FutureOS 做了定制 |
-| **Rust 核心** | Agent、渠道桥与 loop 控制面均用 Rust 编写——高性能、内存安全 |
+| **Rust 核心** | Agent、IM 渠道桥、loop 控制面、CLI 与 TUI 均用 Rust 编写——高性能、内存安全 |
 
 ## 快速开始
 
@@ -47,7 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/i
 iex (irm https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.ps1)
 ```
 
-**Linux** — 暂无预编译产物；脚本自动引导工具链（apt 依赖 + Rust + Node 24 + Bun）并从源码构建终端栈（agent、TUI、CLI、channels、loop）：
+**Linux** — 暂无预编译产物；脚本自动引导工具链（apt 依赖 + Rust + Node 24 + Bun）并从源码构建终端栈（agent、TUI、CLI、IM 渠道、loop）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
