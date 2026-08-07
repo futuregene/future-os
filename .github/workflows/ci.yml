@@ -366,8 +366,10 @@ jobs:
   # committed goldens recorded from the retired TypeScript CLI. It needs
   # python3 (mock platform server) and skips the live-agent group when no
   # future-agent binary is present.
+  # NOTE: job name is pinned by the "Protect Main" ruleset's required status
+  # checks ("CLI typecheck + test") — renaming it would un-mergeable the PRs.
   cli:
-    name: CLI tests + golden diff
+    name: CLI typecheck + test
     needs: changes
     if: needs.changes.outputs.cli == 'true'
     runs-on: ubuntu-latest
