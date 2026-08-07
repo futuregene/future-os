@@ -740,9 +740,17 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     }
     if let Some(rw) = resume_when_cond {
         todo.resume_when_text = Some(rw.clone());
-        todo.resume_when =
-            Some(std::time::SystemTime::now() + std::time::Duration::from_secs(3600));
         todo.status = crate::state::TodoStatus::Deferred;
+        // Numeric `--resume-when N` defers N seconds from now (real deadline,
+        // same semantics as --defer-secs); non-numeric keeps legacy +3600s
+        // placeholder (text hint only).
+        if let Ok(secs) = rw.trim().parse::<u64>() {
+            todo.resume_when =
+                Some(std::time::SystemTime::now() + std::time::Duration::from_secs(secs));
+        } else {
+            todo.resume_when =
+                Some(std::time::SystemTime::now() + std::time::Duration::from_secs(3600));
+        }
     }
     if let Some(n) = note {
         todo.note = Some(n);
@@ -948,6 +956,22 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
             "agent todo completion must declare --no-follow-up or --successor \
              (completion policy, successor, and no-follow-up contracts are enforced)"
         );
+    }
+    // Gate enforcement at the CLI too — aligned with the run loop's semantics:
+    // any OPEN user gate freezes gated work (decision step 1 → AskUser) until
+    // it is resolved. Completing a non-gate todo while a gate is open would
+    // bypass that contract; the run loop already refuses to schedule it, this
+    // closes the manual `todo complete` bypass. Resolving the gate itself is
+    // the gate's own path (`gate resolve`) — gates are never completed here.
+    if t.class != TaskClass::UserGate && t.class != TaskClass::Blocker {
+        let open_gates: Vec<String> = goal.open_gates().map(|g| g.id.clone()).collect();
+        if !open_gates.is_empty() {
+            bail!(
+                "todo {todo_id} cannot be completed while open gate(s) [{}] are pending — \
+                 resolve them first (`future loop gate resolve --goal {goal_id} --todo-id <gate> --decision \"...\"`)",
+                open_gates.join(", ")
+            );
+        }
     }
     let successors = successor.clone().into_iter().collect::<Vec<_>>();
     store.append(Event::TodoCompleted {
@@ -4345,6 +4369,17 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
              (completion policy, successor, and no-follow-up contracts are enforced)"
         );
     }
+    // `--resume-when N` with a numeric N means "defer N seconds from now"
+    // (same semantics as `--defer-secs`), so a deferred/monitor todo actually
+    // becomes due. A non-numeric value keeps the legacy text-only behavior
+    // (resume_when_text hint, no real deadline).
+    let resume_when_parsed = resume_when.as_deref().map(|rw| {
+        if let Ok(secs) = rw.trim().parse::<u64>() {
+            format!("defer:{secs}")
+        } else {
+            rw.to_string()
+        }
+    });
     store.append(Event::TodoUpdated {
         goal_id: goal_id.clone(),
         todo_id: todo_id.clone(),
@@ -4353,7 +4388,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
         evidence: evidence.clone(),
         note: note.clone(),
         priority: priority.clone(),
-        resume_when: resume_when.clone(),
+        resume_when: resume_when_parsed,
         blocks: blocks.clone(),
         ts: crate::state::now_epoch(),
     })?;
