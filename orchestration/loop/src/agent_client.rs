@@ -7,18 +7,9 @@
 //! `loop_engine.rs` / `state.rs` — this module must stay policy-free.
 
 use anyhow::{anyhow, Result};
+use future_rpc::proto::future_agent_client::FutureAgentClient;
+use future_rpc::proto::{RpcCommand, StreamEvent, StreamRequest};
 use serde_json::Value;
-
-pub mod proto {
-    // The typed payload oneofs (ResponsePayload / EventPayload) mix large
-    // variants (a full SessionState) with small acks, which trips
-    // clippy::large_enum_variant; the spread is inherent to a wire oneof.
-    #![allow(clippy::large_enum_variant)]
-    include!(concat!(env!("OUT_DIR"), "/proto.rs"));
-}
-
-use proto::future_agent_client::FutureAgentClient;
-use proto::{RpcCommand, StreamEvent, StreamRequest};
 
 /// What the agent reported at the end of one bounded turn (agent_end).
 #[derive(Debug, Clone)]

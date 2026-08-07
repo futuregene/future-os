@@ -933,8 +933,8 @@ dependencies = [
  "anyhow",
  "chrono",
  "fs2",
+ "future-rpc",
  "futures-util",
- "prost",
  "serde",
  "serde_json",
  "tempfile",
@@ -942,7 +942,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-build",
  "uuid",
 ]
 
