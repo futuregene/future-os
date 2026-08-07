@@ -22,7 +22,7 @@
 ### Windows:启动后没反应
 
 - 到微软官网安装 **Microsoft Edge WebView2 运行时**(Evergreen 版)——应用需要它。较新的 Windows 10 和 Windows 11 一般已内置。
-- **便携版**请确认 `FutureOS.exe` 与 `future-agent.exe` 在**同一文件夹**。
+- **便携版**请确认 `FutureOS.exe` 与 `future.exe` 在**同一文件夹**。
 - 若窗口能开但提示后台服务未连接,是 `.zip` 被打上了「来自 Internet」标记。右键 `.zip` →「属性」→ 勾选「解除锁定」→ 重新解压。
 
 ### 用不了任何模型 / 未登录

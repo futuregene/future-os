@@ -132,7 +132,7 @@ GUI 白名单硬编码于 `observer.rs:71-81`（`FORWARDED_EVENTS`）。
 
 **L3. agent 的持久化格式反向为 GUI 渲染定制**（agent 侧的 GUI-specific 泄漏）：commands.rs:1494-1518 `get_session_entries` 注释："so the GUI can rebuild attachment chips after reload — the JSONL is the only message source"、"the GUI's message footer ('time · N tokens')"；proto:164-167 `Attachment.thumbnail` 注释同样承认 GUI 渲染需求。agent 的存储 schema 与 GUI 展示需求互相渗透（双向泄漏）。
 
-**L4. 部署耦合**：agent_supervisor.rs GUI 直接 spawn/kill `future-agent` sidecar，固定 127.0.0.1:50051（client.rs:26-28）。对捆绑发版是合理的，但意味着 GUI 进程对 agent 生命周期有完全控制权（含 force-quit 时 abort 会话，agent_supervisor.rs:231-241）。
+**L4. 部署耦合**：agent_supervisor.rs GUI 直接 spawn/kill `future` sidecar（`future agent --grpc-addr ...`，内嵌 agent），固定 127.0.0.1:50051（client.rs:26-28）。对捆绑发版是合理的，但意味着 GUI 进程对 agent 生命周期有完全控制权（含 force-quit 时 abort 会话，agent_supervisor.rs:231-241）。
 
 **L5. 审批卡载荷映射在 GUI 内部也重复两份**：persist.rs:61-115（实时事件路径）与 approval.rs:224-294 `heal_pending_approval_from_agent`（get_state 重建路径）逐字段重复同一 agent JSON 的解析，注释互相引用对方（approval.rs:220-223）。
 

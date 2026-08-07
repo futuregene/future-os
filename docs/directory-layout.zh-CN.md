@@ -90,8 +90,9 @@ GUI 的每线程聊天工作区，每个子目录以 agent 会话 id（已知时
 
 ## `~/.future/bin/` — CLI 链接
 
-`future init` 会安装内置技能，并在 macOS/Linux 上把 `future` 与
-`future-agent` 符号链接到 `~/.future/bin/`，同时打印 PATH 配置提示。
+`future init` 会安装内置技能，并在 macOS/Linux 上把 `future`（以及位于
+`future` 可执行文件旁时的 `future-agent`）符号链接到 `~/.future/bin/`，
+同时打印 PATH 配置提示。默认安装只链接 `future`（独立二进制已不再默认安装）。
 Windows 安装版同样安装到 `%USERPROFILE%\.future\bin`。
 
 ## 相关

@@ -95,7 +95,9 @@ under `<cwd>/.future/loop/` (`registry.json`, `goals/<id>/events.jsonl`,
 ## `~/.future/bin/` — CLI links
 
 `future init` installs the built-in skills and (macOS/Linux) symlinks
-`future` and `future-agent` into `~/.future/bin/`, printing a PATH setup hint.
+`future` — plus `future-agent`, when it sits next to the `future` executable
+— into `~/.future/bin/`, printing a PATH setup hint. On a default install
+only `future` is linked (the standalone binaries are no longer installed).
 The Windows installer installs to `%USERPROFILE%\.future\bin` as well.
 
 ## Related

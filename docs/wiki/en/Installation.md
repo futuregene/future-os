@@ -31,7 +31,7 @@ The repository's official **signed-release pipeline** signs the macOS and Window
 ### Windows
 
 - **Installer version:** run the `.exe` and follow the prompts.
-- **Portable version:** unzip the **whole folder**, then double-click `FutureOS.exe`. Keep `FutureOS.exe` and `future-agent.exe` in the **same folder** — the background service is started automatically from there, so don't move `FutureOS.exe` on its own.
+- **Portable version:** unzip the **whole folder**, then double-click `FutureOS.exe`. Keep `FutureOS.exe` and `future.exe` in the **same folder** — the background service is started automatically from there (via `future agent`), so don't move `FutureOS.exe` on its own.
 - Windows may temporarily show a SmartScreen reputation prompt. Confirm that the publisher and download source are the official FutureOS channel.
 - FutureOS needs the **Microsoft Edge WebView2 Runtime**. Recent Windows 10 and Windows 11 usually already have it. If the window won't open or a component is reported missing, install the "Evergreen" WebView2 Runtime from Microsoft's website and try again.
 

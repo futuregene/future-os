@@ -31,7 +31,7 @@ FutureOS 运行于 **macOS 和 Windows**。本页介绍下载、首次启动、�
 ### Windows
 
 - **安装版:** 运行 `.exe`,按提示安装。
-- **便携版:** 把压缩包**整个文件夹**解压,再双击 `FutureOS.exe`。请把 `FutureOS.exe` 和 `future-agent.exe` 放在**同一文件夹**——后台服务会从这里被自动拉起,所以不要单独移动 `FutureOS.exe`。
+- **便携版:** 把压缩包**整个文件夹**解压,再双击 `FutureOS.exe`。请把 `FutureOS.exe` 和 `future.exe` 放在**同一文件夹**——后台服务会从这里被自动拉起（通过 `future agent`），所以不要单独移动 `FutureOS.exe`。
 - Windows 可能暂时显示 SmartScreen 信誉提示；请确认发布者和下载来源为 FutureOS 官方渠道。
 - FutureOS 需要 **Microsoft Edge WebView2 运行时**。较新的 Windows 10 和 Windows 11 一般已内置。若窗口打不开或提示缺组件,请到微软官网安装「Evergreen」版 WebView2 运行时后重试。
 
