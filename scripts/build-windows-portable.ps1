@@ -128,7 +128,7 @@ Write-Host "    version: $($env:FUTURE_VERSION)"
 if (-not $SkipDeps) {
     Write-Host "==> Installing npm dependencies (gui, npm workspace)" -ForegroundColor Cyan
     Push-Location gui; try { Invoke-Native { npm ci } } finally { Pop-Location }
-    Invoke-Native { npm ci }  # root workspace: future-rpc/ts + tui + cli
+    Invoke-Native { npm ci }  # root workspace: future-rpc/ts only (tui + cli are Rust, no npm deps)
 }
 
 Write-Host "==> Building shared RPC package (@future-os/rpc)" -ForegroundColor Cyan

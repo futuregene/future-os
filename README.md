@@ -14,7 +14,7 @@
 > A local-first AI agent workspace — terminal, desktop, messaging platforms, all through one backend.
 
 FutureOS gives you a unified AI agent experience across a terminal UI (TUI),
-desktop app (GUI), CLI, Feishu, and DingTalk — on macOS, Linux, and Windows.
+desktop app (GUI), CLI, and IM bots — on macOS, Linux, and Windows.
 Write code, run research, manage files — from the terminal, from a chat app,
 or from a native desktop window.
 
@@ -22,7 +22,7 @@ or from a native desktop window.
 
 | Category | Details |
 |---|---|
-| **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), CLI, Feishu bot, DingTalk bot — one agent, everywhere |
+| **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), CLI, IM bots — one agent, everywhere |
 | **Model Flexibility** | 3800+ built-in models across 140+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Streaming & Thinking** | Real-time token streaming with collapsible reasoning-content blocks; configurable thinking levels (off ↔ xhigh) |
 | **Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt) |
@@ -30,7 +30,7 @@ or from a native desktop window.
 | **Skills System** | Pluggable YAML-defined skill bundles discovered from multiple directories ([guide](docs/wiki/en/Skills.md)) |
 | **Compaction & Retry** | Automatic context compaction; exponential-backoff retry on context-length errors |
 | **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) — a Rust rewrite of the [loopx](https://github.com/huangruiteng/loopx) control plane, customized for FutureOS |
-| **Rust Core** | Agent, channel bridge, and loop control plane are written in Rust — high performance with memory safety |
+| **Rust Core** | Agent, IM channel bridge, loop control plane, CLI, and TUI are all written in Rust — high performance with memory safety |
 
 ## Quick Start
 
@@ -50,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/i
 iex (irm https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.ps1)
 ```
 
-**Linux** — no prebuilt binaries yet; the script bootstraps the toolchain (apt deps + Rust + Node 24 + Bun) and builds the terminal stack (agent, TUI, CLI, channels, loop) from source:
+**Linux** — no prebuilt binaries yet; the script bootstraps the toolchain (apt deps + Rust + Node 24 + Bun) and builds the terminal stack (agent, TUI, CLI, IM channels, loop) from source:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash

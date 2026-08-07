@@ -405,7 +405,14 @@ jobs:
       - name: Golden diff harness
         run: bash cli/tests/diff-ts-rust.sh
 
-  # ─── TUI: typecheck + bun test ───────────────────────────────────────────
+  # ─── TUI: Rust tests + golden harness ────────────────────────────────────
+  # The TUI is a Rust workspace member (bin `future-tui`); the TypeScript
+  # implementation was retired (2026-08, same as the CLI) and its render +
+  # screen outputs are committed as goldens (tui/tests/golden/). The golden
+  # harness (tui/tests/diff-ts-rust.sh) byte-compares the Rust renderer
+  # against the recorded TS outputs headlessly.
+  # NOTE: job name is pinned by the "Protect Main" ruleset's required status
+  # checks ("TUI typecheck + test") — renaming it would un-mergeable the PRs.
   tui:
     name: TUI typecheck + test
     needs: changes
@@ -415,35 +422,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
         with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: package-lock.json
+          workspaces: |
+            .
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+      # mold + binutils because .cargo/config.toml pins -fuse-ld=mold (build
+      # scripts and test binaries link too); libssl-dev for rustls-less
+      # transitive deps that still build openssl-sys.
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             build-essential             binutils             mold             pkg-config             libssl-dev
 
-      # npm workspace: a single root `npm ci` installs future-rpc/ts, tui
-      # and cli (hoisted).
-      - name: Install dependencies
-        run: npm ci
+      - name: cargo test (tui)
+        run: cargo test -p tui-rust
 
-      # The TUI compiles against the shared wire-contract package's dist.
-      - name: Build shared wire-contract package
-        working-directory: future-rpc/ts
-        run: npm run build
-
-      - name: Typecheck
-        working-directory: tui
-        run: npx tsc --noEmit
-
-      - name: bun test
-        working-directory: tui
-        run: bun test
+      - name: Golden render harness
+        run: bash tui/tests/diff-ts-rust.sh
 
   # ─── GUI: typecheck + eslint + stylelint + vitest ─────────────────────────
   # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,

@@ -86,14 +86,14 @@ make package-gui    # 桌面打包 → .deb 位于 gui/src-tauri/target/release/
 cargo build --release --manifest-path agent/Cargo.toml
 cargo build --release --manifest-path channels/Cargo.toml
 
-# TypeScript 组件：TUI；Rust 组件：CLI          （对应 make build-tui / build-cli）
-Push-Location tui; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future-tui.exe; Pop-Location
+# Rust 组件：TUI + CLI                        （对应 make build-tui / build-cli）
+cargo build --release --manifest-path tui/Cargo.toml
 cargo build --release --manifest-path cli/Cargo.toml
 
 # 安装到 %USERPROFILE%\.future\bin                （对应 install-* 中的复制步骤）
 $bin = "$env:USERPROFILE\.future\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, tui\dist\future-tui.exe, target\release\future.exe $bin
+Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, target\release\future-tui.exe, target\release\future.exe $bin
 
 # 内置技能 —— make install-skills 使用符号链接；Windows 上改用 CLI 安装
 & "$bin\future.exe" skills install

@@ -1,0 +1,36 @@
+[1m[38;5;151mfuture-tui[0m[38;5;245m v0.0.0-mock[39m
+
+[38;5;245m┌──────────────────────────────────────────────────────────────────────────────┐
+│[39m  [1m[38;5;252mfuture-tui[0m  [38;5;245mTerminal UI Help[39m                                                [38;5;245m│
+├──────────────────────────────────────────────────────────────────────────────┤
+│[39m  [38;5;151mShortcuts:[39m                                                                  [38;5;245m│
+│[39m  [38;5;245mctrl+c   interrupt[39m                                                          [38;5;245m│
+│[39m  [38;5;245mctrl+p   cycle model[39m                                                        [38;5;245m│
+│[39m  [38;5;245mctrl+r   browse sessions[39m                                                    [38;5;245m│
+│[39m  [38;5;245mctrl+t   cycle thinking[39m                                                     [38;5;245m│
+│[39m  [38;5;245mtab      autocomplete[39m                                                       [38;5;245m│
+│[39m  [38;5;245m↑↓       scroll / navigate[39m                                                  [38;5;245m│
+│[39m  [38;5;245menter    submit / accept[39m                                                    [38;5;245m│
+│[39m  [38;5;245mescape   close popup[39m                                                        [38;5;245m│
+│[39m                                                                              [38;5;245m│
+│[39m  [38;5;151m/commands:[39m                                                                  [38;5;245m│
+│[39m  [38;5;245m/model [name]     select model[39m                                              [38;5;245m│
+│[39m  [38;5;245m/new              start a new session[39m                                       [38;5;245m│
+│[39m  [38;5;245m/sessions         browse and switch sessions[39m                                [38;5;245m│
+│[39m  [38;5;245m/compact          compress conversation context[39m                             [38;5;245m│
+│[39m  [38;5;245m/scoped-models    configure model enable/disable list[39m                       [38;5;245m│
+│[39m  [38;5;245m/clone            clone the current session[39m                                 [38;5;245m│
+│[39m  [38;5;245m/fork             fork the current session[39m                                  [38;5;245m│
+│[39m  [38;5;245m/tree             session tree with fork/clone hierarchy[39m                    [38;5;245m│
+│[39m  [38;5;245m/name [n]         set the session name[39m                                      [38;5;245m│
+│[39m  [38;5;245m/status           session state, token usage, cost[39m                          [38;5;245m│
+│[39m  [38;5;245m/stop             abort current generation[39m                                  [38;5;245m│
+│[39m  [38;5;245m/cwd              change the working directory[39m                              [38;5;245m│
+│[39m  [38;5;245m/approve          approve pending tool execution[39m                            [38;5;245m│
+│[39m  [38;5;245m/reject           reject pending tool execution[39m                             [38;5;245m│
+│[39m  [38;5;245m/cancel <run-id>  cancel a queued run[39m                                       [38;5;245m│
+│[39m  [38;5;245m/reload           reload skills and context[39m                                 [38;5;245m│
+│[39m  [38;5;245m/help             show all commands and shortcuts[39m                           [38;5;245m│
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
