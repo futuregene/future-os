@@ -29,6 +29,16 @@ prost.workspace = true
 chrono = { workspace = true, features = ["clock"] }
 dirs = "5"
 
+# Windows terminal backend (terminal_windows.rs): console API for raw mode,
+# VT input/output, window size and input waits. Target-gated — POSIX uses libc.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 tempfile.workspace = true
 futures-util.workspace = true

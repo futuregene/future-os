@@ -1,22 +1,18 @@
-//! Self-implemented POSIX terminal backend — the Rust replacement for Node's
+//! Self-implemented terminal backend — the Rust replacement for Node's
 //! `process.stdin`/`process.stdout` machinery in `tui/src/tui.ts`.
 //!
-//! Design (see `RESEARCH.md` §1): raw mode via `tcgetattr`/`tcsetattr` (flag
-//! ops identical to Node's `setRawMode(true)`), window size via
-//! `ioctl(TIOCGWINSZ)` with `COLUMNS`/`LINES` env fallback then 80×24, signal
-//! handling via `sigaction` + self-pipe (the handler only does an
-//! async-signal-safe `write(2)`; the reader thread decodes the byte and does
-//! the real work — restore + re-raise on termination signals), and an input
-//! loop on `poll(2)` over `{stdin, signal-pipe}` running on a background
-//! thread. `StdinBuffer` → `keys` parsing is 1:1 with the TS pipeline.
-//!
-//! Windows support (windows-sys console API) lands in a later phase behind the
-//! same `Terminal` surface; the TS code branches on `process.platform !==
-//! "win32"` in the same places.
+//! The platform-specific half lives in `terminal_posix.rs` (`cfg(unix)`:
+//! termios / ioctl(TIOCGWINSZ) / sigaction+self-pipe / poll — see
+//! `RESEARCH.md` §1) and `terminal_windows.rs` (`cfg(windows)`: windows-sys
+//! console API with VT input/output). Both expose the same `Backend` surface
+//! (`enable_raw` / `restore_raw` / `size` / `wait` / `read_stdin` /
+//! `eof_is_terminal` / `wake`), so this file's orchestration — the reader
+//! thread, StdinBuffer → keys pipeline, kitty keyboard-protocol query and
+//! modifyOtherKeys fallback, drain_input, progress keepalive, exit failsafe —
+//! is shared verbatim between platforms.
 
 use std::io;
-use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -27,118 +23,54 @@ use std::sync::OnceLock;
 use crate::keys;
 use crate::stdin_buffer::{StdinBuffer, StdinEvent};
 
-const STDIN_FD: RawFd = 0;
-const STDOUT_FD: RawFd = 1;
+#[cfg(unix)]
+#[path = "terminal_posix.rs"]
+mod terminal_posix;
+#[cfg(unix)]
+use terminal_posix as platform;
+#[cfg(windows)]
+#[path = "terminal_windows.rs"]
+mod terminal_windows;
+#[cfg(windows)]
+use terminal_windows as platform;
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS: u64 = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE: &str = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE: &str = "\x1b]9;4;0;\x07";
-
-/// Signals delivered through the self-pipe. SIGWINCH → resize; the rest are
-/// termination signals whose default action we restore and re-raise after
-/// cleaning up the terminal (mirrors TS's `process.on("exit")` failsafe).
-const TERM_SIGNALS: [libc::c_int; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
-
-/// Write end of the self-pipe, reachable from the async-signal-safe handler.
-static SIGNAL_PIPE_WRITE: AtomicI32 = AtomicI32::new(-1);
-
-extern "C" fn signal_handler(sig: libc::c_int) {
-    let fd = SIGNAL_PIPE_WRITE.load(Ordering::Relaxed);
-    if fd >= 0 {
-        let byte = sig as u8;
-        unsafe {
-            libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
-        }
-    }
-}
 
 fn kitty_response_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^\x1b\[\?(\d+)u$").unwrap())
 }
 
-// ─── Low-level helpers ────────────────────────────────────────────────────
-
-fn isatty(fd: RawFd) -> bool {
-    unsafe { libc::isatty(fd) == 1 }
+/// Outcome of one platform `wait()` in the reader loop.
+///
+/// - `Input`: stdin has bytes (read via `read_stdin`).
+/// - `Resize`: the terminal size changed (Windows: window-size event; POSIX
+///   reports resize through `Signal(SIGWINCH)` instead).
+/// - `Signal(sig)`: a self-pipe byte decoded to a signal (POSIX only) —
+///   `platform::RESIZE_SIGNAL` → resize, `platform::TERM_SIGNALS` → exit path.
+/// - `Timeout`: nothing happened within the deadline; run timer checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadWait {
+    Input,
+    Timeout,
+    /// Constructed on Windows only (window-size events); POSIX reports
+    /// resize via `Signal(SIGWINCH)`.
+    #[allow(dead_code)]
+    Resize,
+    Signal(i32),
 }
 
-fn get_termios(fd: RawFd) -> io::Result<libc::termios> {
-    unsafe {
-        let mut termios: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(fd, &mut termios) != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(termios)
-    }
-}
+// ─── Low-level write ──────────────────────────────────────────────────────
 
-fn set_termios(fd: RawFd, termios: &libc::termios) -> io::Result<()> {
-    unsafe {
-        if libc::tcsetattr(fd, libc::TCSANOW, termios) != 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
-fn create_pipe() -> io::Result<(RawFd, RawFd)> {
-    unsafe {
-        let mut fds = [0 as RawFd; 2];
-        if libc::pipe(fds.as_mut_ptr()) != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // Non-blocking self-pipe: the reader drains it with read-until-EAGAIN
-        // (a blocking read would hang forever once the pipe is empty), and the
-        // async-signal-safe handler never blocks on a full pipe.
-        let flags = libc::fcntl(fds[0], libc::F_GETFL);
-        if flags >= 0 {
-            libc::fcntl(fds[0], libc::F_SETFL, flags | libc::O_NONBLOCK);
-        }
-        let flags = libc::fcntl(fds[1], libc::F_GETFL);
-        if flags >= 0 {
-            libc::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK);
-        }
-        Ok((fds[0], fds[1]))
-    }
-}
-
-/// Write all bytes to stdout, retrying on EINTR, serialized by `lock`.
+/// Write all bytes to stdout, retrying on interruption, serialized by `lock`.
 fn write_str(lock: &Mutex<()>, data: &str) {
     let _guard = lock.lock();
-    let bytes = data.as_bytes();
-    let mut written = 0usize;
-    while written < bytes.len() {
-        let n = unsafe {
-            libc::write(
-                STDOUT_FD,
-                bytes[written..].as_ptr() as *const libc::c_void,
-                bytes.len() - written,
-            )
-        };
-        if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            break;
-        }
-        if n == 0 {
-            break;
-        }
-        written += n as usize;
-    }
+    let _ = platform::write_stdout(data.as_bytes());
 }
 
-fn read_winsize(fd: RawFd) -> (u16, u16) {
-    unsafe {
-        let mut ws: libc::winsize = std::mem::zeroed();
-        if libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) == 0 {
-            return (ws.ws_col, ws.ws_row);
-        }
-    }
-    (0, 0)
-}
+// ─── Size helpers (shared: env fallback mirrors `tui.ts`) ────────────────
 
 /// Port of the size fallback in `tui.ts`:
 /// `process.stdout.columns || Number(process.env.COLUMNS) || 80`.
@@ -163,48 +95,9 @@ fn rows_with_ioctl(ioctl_rows: u16) -> u16 {
         .unwrap_or(24)
 }
 
-fn install_signal_handlers() -> io::Result<()> {
-    unsafe {
-        let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = signal_handler as *const () as usize;
-        sa.sa_flags = libc::SA_RESTART;
-        libc::sigemptyset(&mut sa.sa_mask);
-        for &sig in &TERM_SIGNALS {
-            if libc::sigaction(sig, &sa, std::ptr::null_mut()) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-        }
-        if libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut()) != 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
-fn restore_signal_handlers() {
-    unsafe {
-        let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = libc::SIG_DFL;
-        libc::sigemptyset(&mut sa.sa_mask);
-        for &sig in &TERM_SIGNALS {
-            libc::sigaction(sig, &sa, std::ptr::null_mut());
-        }
-        libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
-    }
-}
-
 // ─── Terminal ─────────────────────────────────────────────────────────────
 
-/// Reproduce Node's `setRawMode(true)` flag changes exactly.
-fn apply_raw_mode(termios: &mut libc::termios) {
-    termios.c_iflag &= !(libc::BRKINT | libc::ICRNL | libc::INPCK | libc::ISTRIP | libc::IXON);
-    termios.c_oflag &= !(libc::OPOST);
-    termios.c_cflag |= libc::CS8;
-    termios.c_lflag &= !(libc::ECHO | libc::ICANON | libc::IEXTEN | libc::ISIG);
-}
-
 pub struct Terminal {
-    orig_termios: Option<libc::termios>,
     raw_enabled: bool,
     size: Arc<Mutex<(u16, u16)>>,
     kitty_active: Arc<AtomicBool>,
@@ -213,10 +106,10 @@ pub struct Terminal {
     last_data_time: Arc<Mutex<Instant>>,
     stop_flag: Arc<AtomicBool>,
     reader_thread: Option<std::thread::JoinHandle<()>>,
-    signal_pipe: Option<(RawFd, RawFd)>,
     write_lock: Arc<Mutex<()>>,
     progress_stop: Option<Arc<AtomicBool>>,
     progress_thread: Option<std::thread::JoinHandle<()>>,
+    backend: Arc<platform::Backend>,
     /// SIGINT/SIGTERM callback (set before `start`; invoked on the reader
     /// thread in place of the default restore-and-re-raise).
     #[allow(clippy::type_complexity)]
@@ -231,9 +124,9 @@ impl Default for Terminal {
 
 impl Terminal {
     pub fn new() -> io::Result<Self> {
-        let size = Arc::new(Mutex::new(read_winsize(STDOUT_FD)));
+        let backend = Arc::new(platform::Backend::new()?);
+        let size = Arc::new(Mutex::new(backend.size()));
         Ok(Self {
-            orig_termios: None,
             raw_enabled: false,
             size,
             kitty_active: Arc::new(AtomicBool::new(false)),
@@ -242,10 +135,10 @@ impl Terminal {
             last_data_time: Arc::new(Mutex::new(Instant::now())),
             stop_flag: Arc::new(AtomicBool::new(false)),
             reader_thread: None,
-            signal_pipe: None,
             write_lock: Arc::new(Mutex::new(())),
             progress_stop: None,
             progress_thread: None,
+            backend,
             exit_signal_cb: Arc::new(Mutex::new(None)),
         })
     }
@@ -272,53 +165,24 @@ impl Terminal {
                 "terminal already started",
             ));
         }
-        if !isatty(STDIN_FD) {
+        if !self.backend.is_tty() {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "stdin is not a TTY — the interactive TUI needs a terminal",
             ));
         }
 
-        // Raw mode (Node setRawMode(true) flag ops).
-        let orig = get_termios(STDIN_FD)?;
-        let mut raw = orig;
-        apply_raw_mode(&mut raw);
-        set_termios(STDIN_FD, &raw)?;
-        self.orig_termios = Some(orig);
+        // Raw mode + input machinery (POSIX: termios + signal handlers;
+        // Windows: console modes + VT flags). Backend rolls back internally
+        // on failure.
+        self.backend.enable_raw()?;
         self.raw_enabled = true;
 
-        // If anything below fails, restore the terminal before returning.
-        let setup = (|| -> io::Result<(RawFd, RawFd)> {
-            // Alternate screen buffer — isolates TUI from terminal scrollback.
-            write_str(&self.write_lock, "\x1b[?1049h");
-            // Enable bracketed paste mode.
-            write_str(&self.write_lock, "\x1b[?2004h");
-
-            self.refresh_size();
-
-            // Signals via self-pipe.
-            let (read_fd, write_fd) = create_pipe()?;
-            self.signal_pipe = Some((read_fd, write_fd));
-            SIGNAL_PIPE_WRITE.store(write_fd, Ordering::SeqCst);
-            install_signal_handlers()?;
-            Ok((read_fd, write_fd))
-        })();
-        let (read_fd, _write_fd) = match setup {
-            Ok(fds) => fds,
-            Err(err) => {
-                self.raw_enabled = false;
-                let _ = set_termios(STDIN_FD, &orig);
-                restore_signal_handlers();
-                if let Some((read_fd, write_fd)) = self.signal_pipe.take() {
-                    SIGNAL_PIPE_WRITE.store(-1, Ordering::SeqCst);
-                    unsafe {
-                        libc::close(read_fd);
-                        libc::close(write_fd);
-                    }
-                }
-                return Err(err);
-            }
-        };
+        // Enter the alternate screen, enable bracketed paste, refresh size.
+        // On failure, restore the terminal before returning.
+        write_str(&self.write_lock, "\x1b[?1049h");
+        write_str(&self.write_lock, "\x1b[?2004h");
+        self.refresh_size();
 
         self.stop_flag.store(false, Ordering::SeqCst);
         self.draining.store(false, Ordering::SeqCst);
@@ -334,7 +198,7 @@ impl Terminal {
         let modify_other_keys_active = self.modify_other_keys_active.clone();
         let write_lock = self.write_lock.clone();
         let size = self.size.clone();
-        let orig_termios = orig;
+        let backend = self.backend.clone();
         let exit_signal_cb = self.exit_signal_cb.clone();
         let mut on_input = on_input;
         let mut on_resize = on_resize;
@@ -349,7 +213,7 @@ impl Terminal {
                     break;
                 }
 
-                // Poll timeout: wake for the nearest deadline (kitty query
+                // Wait timeout: wake for the nearest deadline (kitty query
                 // fallback or the StdinBuffer idle flush), else 100 ms.
                 let now = Instant::now();
                 let mut timeout_ms: i64 = 100;
@@ -359,117 +223,78 @@ impl Terminal {
                 if let Some(d) = flush_deadline {
                     timeout_ms = timeout_ms.min(ms_until(d, now));
                 }
-                let timeout_ms = timeout_ms.max(0) as libc::c_int;
+                let timeout_ms = timeout_ms.max(0) as i32;
 
-                let mut fds = [
-                    libc::pollfd {
-                        fd: STDIN_FD,
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                    libc::pollfd {
-                        fd: read_fd,
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                ];
-                let rc = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) };
-                if rc < 0 {
-                    let err = io::Error::last_os_error();
-                    if err.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    break;
-                }
+                let wait = match backend.wait(timeout_ms) {
+                    Ok(w) => w,
+                    Err(_) => break, // wait error — stdin gone
+                };
 
-                if rc == 0 {
-                    // Timeout — run timer checks below.
-                }
-
-                // Stdin readable.
-                if fds[0].revents & libc::POLLIN != 0 {
-                    let mut chunk = [0u8; 4096];
-                    let n = unsafe {
-                        libc::read(
-                            STDIN_FD,
-                            chunk.as_mut_ptr() as *mut libc::c_void,
-                            chunk.len(),
-                        )
-                    };
-                    if n < 0 {
-                        break; // read error
-                    }
-                    if n == 0 {
-                        break; // EOF — stdin closed
-                    }
-                    *last_data_time.lock() = Instant::now();
-                    let events = buffer.process_bytes(&chunk[..n as usize]);
-                    for ev in &events {
-                        handle_event(&mut on_input, ev, &kitty_active, &draining, &write_lock);
-                    }
-                    if buffer.pending() {
-                        flush_deadline =
-                            Some(Instant::now() + Duration::from_millis(buffer.timeout_ms()));
-                    } else {
-                        flush_deadline = None;
-                    }
-                }
-
-                // Signal pipe readable.
-                if fds[1].revents & libc::POLLIN != 0 {
-                    let mut sigbuf = [0u8; 64];
-                    loop {
-                        let n = unsafe {
-                            libc::read(
-                                read_fd,
-                                sigbuf.as_mut_ptr() as *mut libc::c_void,
-                                sigbuf.len(),
-                            )
+                match wait {
+                    ReadWait::Input => {
+                        let mut chunk = [0u8; 4096];
+                        let n = match backend.read_stdin(&mut chunk) {
+                            Ok(n) => n,
+                            Err(_) => break, // read error
                         };
-                        if n <= 0 {
-                            break;
-                        }
-                        for &b in &sigbuf[..n as usize] {
-                            match b as libc::c_int {
-                                libc::SIGWINCH => {
-                                    let (cols, rows) = read_winsize(STDOUT_FD);
-                                    if cols > 0 && rows > 0 {
-                                        *size.lock() = (cols, rows);
-                                    }
-                                    on_resize();
-                                }
-                                sig if TERM_SIGNALS.contains(&sig) => {
-                                    // If the app installed an exit-signal
-                                    // callback (graceful stop path), invoke
-                                    // it instead of the failsafe restore. The
-                                    // terminal is restored by the app's
-                                    // `stop()` (TS `process.on("SIGINT")`).
-                                    let mut cb = exit_signal_cb.lock();
-                                    if let Some(cb_fn) = cb.as_mut() {
-                                        cb_fn();
-                                        drop(cb);
-                                        continue;
-                                    }
-                                    drop(cb);
-                                    // Failsafe restore (the TS exitHandler
-                                    // equivalent), then die with the signal's
-                                    // default disposition for a proper status.
-                                    restore_terminal_for_exit(
-                                        &orig_termios,
-                                        &kitty_active,
-                                        &modify_other_keys_active,
-                                        &write_lock,
-                                    );
-                                    unsafe {
-                                        libc::signal(sig, libc::SIG_DFL);
-                                        libc::raise(sig);
-                                    }
-                                    std::process::abort(); // unreachable
-                                }
-                                _ => {}
+                        if n == 0 {
+                            // POSIX: EOF — stdin closed. Windows: a wait can
+                            // fire with no key data (window event); continue.
+                            if backend.eof_is_terminal() {
+                                break;
                             }
+                            continue;
+                        }
+                        *last_data_time.lock() = Instant::now();
+                        let events = buffer.process_bytes(&chunk[..n]);
+                        for ev in &events {
+                            handle_event(&mut on_input, ev, &kitty_active, &draining, &write_lock);
+                        }
+                        if buffer.pending() {
+                            flush_deadline =
+                                Some(Instant::now() + Duration::from_millis(buffer.timeout_ms()));
+                        } else {
+                            flush_deadline = None;
                         }
                     }
+                    ReadWait::Resize => {
+                        let (cols, rows) = backend.size();
+                        if cols > 0 && rows > 0 {
+                            *size.lock() = (cols, rows);
+                        }
+                        on_resize();
+                    }
+                    ReadWait::Signal(sig) if sig == platform::RESIZE_SIGNAL => {
+                        let (cols, rows) = backend.size();
+                        if cols > 0 && rows > 0 {
+                            *size.lock() = (cols, rows);
+                        }
+                        on_resize();
+                    }
+                    ReadWait::Signal(sig) if platform::TERM_SIGNALS.contains(&sig) => {
+                        // If the app installed an exit-signal callback
+                        // (graceful stop path), invoke it instead of the
+                        // failsafe restore. The terminal is restored by the
+                        // app's `stop()` (TS `process.on("SIGINT")`).
+                        let mut cb = exit_signal_cb.lock();
+                        if let Some(cb_fn) = cb.as_mut() {
+                            cb_fn();
+                            drop(cb);
+                            continue;
+                        }
+                        drop(cb);
+                        // Failsafe restore (the TS exitHandler equivalent),
+                        // then die with the signal's default disposition for
+                        // a proper status.
+                        restore_terminal_for_exit(
+                            &backend,
+                            &kitty_active,
+                            &modify_other_keys_active,
+                            &write_lock,
+                        );
+                        platform::die_with_signal(sig);
+                    }
+                    _ => {} // Timeout (or unknown signal) — run timer checks.
                 }
 
                 // Timer: Kitty query fallback → modifyOtherKeys.
@@ -538,12 +363,7 @@ impl Terminal {
         self.stop_flag.store(true, Ordering::SeqCst);
 
         // Wake the reader thread so it observes the flag promptly.
-        if let Some((_, wfd)) = self.signal_pipe {
-            let zero = 0u8;
-            unsafe {
-                libc::write(wfd, &zero as *const u8 as *const libc::c_void, 1);
-            }
-        }
+        self.backend.wake();
         if let Some(handle) = self.reader_thread.take() {
             let _ = handle.join();
         }
@@ -569,27 +389,13 @@ impl Terminal {
         // Exit alternate screen buffer.
         write_str(&self.write_lock, "\x1b[?1049l");
 
-        // Restore raw mode.
+        // Restore raw mode (termios / console modes) — idempotent.
         if self.raw_enabled {
-            if let Some(orig) = self.orig_termios {
-                let _ = set_termios(STDIN_FD, &orig);
-            }
+            self.backend.restore_raw();
             self.raw_enabled = false;
-        }
-
-        // Restore default signal dispositions, close the self-pipe.
-        restore_signal_handlers();
-        if let Some((read_fd, write_fd)) = self.signal_pipe.take() {
-            SIGNAL_PIPE_WRITE.store(-1, Ordering::SeqCst);
-            unsafe {
-                libc::close(read_fd);
-                libc::close(write_fd);
-            }
         }
     }
 
-    /// Write to stdout (app rendering path). Honors the `PI_TUI_WRITE_LOG=1`
-    /// debug log to `~/.future/tui/write.log`, exactly like the TS `write()`.
     pub fn write(&self, data: &str) {
         if std::env::var("PI_TUI_WRITE_LOG").as_deref() == Ok("1") {
             if let Ok(home) = std::env::var("HOME") {
@@ -622,7 +428,7 @@ impl Terminal {
     }
 
     fn refresh_size(&self) {
-        let (cols, rows) = read_winsize(STDOUT_FD);
+        let (cols, rows) = self.backend.size();
         if cols > 0 && rows > 0 {
             *self.size.lock() = (cols, rows);
         }
@@ -750,7 +556,7 @@ fn handle_event(
 /// disable the keyboard protocols, clear the progress indicator, restore raw
 /// mode, and leave a newline so the shell prompt starts clean.
 fn restore_terminal_for_exit(
-    orig_termios: &libc::termios,
+    backend: &platform::Backend,
     kitty_active: &AtomicBool,
     modify_other_keys_active: &AtomicBool,
     write_lock: &Mutex<()>,
@@ -767,11 +573,11 @@ fn restore_terminal_for_exit(
         modify_other_keys_active.store(false, Ordering::SeqCst);
     }
     write_str(write_lock, TERMINAL_PROGRESS_CLEAR_SEQUENCE);
-    let _ = set_termios(STDIN_FD, orig_termios);
+    backend.restore_raw();
     write_str(write_lock, "\r\n");
 }
 
-// ─── Tests ─────────────────────────────────────────────────────────────────
+// ─── Tests (shared logic; POSIX primitives live in terminal_posix.rs) ─────
 
 #[cfg(test)]
 mod tests {
@@ -808,90 +614,6 @@ mod tests {
         unsafe {
             std::env::remove_var("LINES");
         }
-    }
-
-    #[test]
-    fn self_pipe_roundtrip() {
-        // The reader thread is tty-gated, but the pipe primitive itself is
-        // testable: a byte written to the write end is readable on the read end.
-        let (r, w) = create_pipe().unwrap();
-        let byte = 42u8;
-        let n = unsafe { libc::write(w, &byte as *const u8 as *const libc::c_void, 1) };
-        assert_eq!(n, 1);
-        let mut buf = [0u8; 8];
-        let n = unsafe { libc::read(r, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        assert_eq!(n, 1);
-        assert_eq!(buf[0], 42);
-        unsafe {
-            libc::close(r);
-            libc::close(w);
-        }
-    }
-
-    #[test]
-    fn poll_wakes_on_pipe_write() {
-        let (r, w) = create_pipe().unwrap();
-        let mut fds = [libc::pollfd {
-            fd: r,
-            events: libc::POLLIN,
-            revents: 0,
-        }];
-        // Nothing to read yet → poll times out.
-        let rc = unsafe { libc::poll(fds.as_mut_ptr(), 1, 20) };
-        assert_eq!(rc, 0);
-        // Write → poll returns immediately with POLLIN.
-        let byte = 7u8;
-        unsafe {
-            libc::write(w, &byte as *const u8 as *const libc::c_void, 1);
-        }
-        let rc = unsafe { libc::poll(fds.as_mut_ptr(), 1, 1000) };
-        assert_eq!(rc, 1);
-        assert_ne!(fds[0].revents & libc::POLLIN, 0);
-        unsafe {
-            libc::close(r);
-            libc::close(w);
-        }
-    }
-
-    #[test]
-    fn signal_handler_writes_to_pipe_when_installed() {
-        // Exercise the async-signal-safe path: with SIGNAL_PIPE_WRITE set, a
-        // synthetic SIGWINCH write lands in the pipe.
-        let (r, w) = create_pipe().unwrap();
-        SIGNAL_PIPE_WRITE.store(w, Ordering::SeqCst);
-        let handler = signal_handler as extern "C" fn(libc::c_int);
-        handler(libc::SIGWINCH);
-        let mut buf = [0u8; 8];
-        let n = unsafe { libc::read(r, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        assert_eq!(n, 1);
-        assert_eq!(buf[0], libc::SIGWINCH as u8);
-        SIGNAL_PIPE_WRITE.store(-1, Ordering::SeqCst);
-        unsafe {
-            libc::close(r);
-            libc::close(w);
-        }
-    }
-
-    #[test]
-    fn raw_mode_flag_changes_match_node() {
-        // The flag ops are the contract with the host terminal: verify the
-        // exact bits Node's setRawMode(true) clears/sets.
-        let mut t: libc::termios = unsafe { std::mem::zeroed() };
-        t.c_iflag = 0xFFFF;
-        t.c_oflag = 0xFFFF;
-        t.c_cflag = 0x0000;
-        t.c_lflag = 0xFFFF;
-        apply_raw_mode(&mut t);
-        assert_eq!(
-            t.c_iflag & (libc::BRKINT | libc::ICRNL | libc::INPCK | libc::ISTRIP | libc::IXON),
-            0
-        );
-        assert_eq!(t.c_oflag & libc::OPOST, 0);
-        assert_ne!(t.c_cflag & libc::CS8, 0);
-        assert_eq!(
-            t.c_lflag & (libc::ECHO | libc::ICANON | libc::IEXTEN | libc::ISIG),
-            0
-        );
     }
 
     #[test]
