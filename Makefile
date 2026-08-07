@@ -67,9 +67,9 @@ endif
 
 install-cli: build-cli
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
+	$(SUDO) $(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
 else
-	$(SUDO) cp cli/dist/future "$(PREFIX)/future"
+	$(SUDO) cp target/release/future "$(PREFIX)/future"
 endif
 
 install-gui: install-cli install-agent gui-sidecars
@@ -177,8 +177,8 @@ build-tui: node-workspace
 build-tui-rust:
 	rustup run 1.97.0 cargo build -p tui-rust
 
-build-cli: node-workspace
-	cd cli && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future
+build-cli:
+	cd cli && cargo build --release
 
 # Internal: copy sidecar binaries (agent + CLI) into the Tauri resource dir.
 # Tauri's externalBin references these at build time; they are embedded next
@@ -188,11 +188,11 @@ gui-sidecars: build-agent build-cli
 ifeq ($(OS),windows)
 	cmd /c "if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries"
 	$(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)"
-	$(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
+	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
 else
 	@mkdir -p gui/src-tauri/binaries
 	cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
-	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
+	cp target/release/future gui/src-tauri/binaries/future-$(TARGET)
 endif
 
 # Compile the React frontend only — needed by check-gui and as a dep of build-gui.
@@ -222,7 +222,7 @@ build-mobile-ios:
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent test-channels test-cli test-tui test-tui-rust test-tui-diff test-tui-tmux test-gui test-gui-rust test-mobile
+test: test-agent test-channels test-cli test-cli-rust test-tui test-tui-rust test-tui-diff test-tui-tmux test-gui test-gui-rust test-mobile
 
 test-agent:
 	cd agent && cargo test
@@ -230,8 +230,13 @@ test-agent:
 test-channels:
 	cd channels && cargo test
 
-test-cli: node-workspace
-	cd cli && npm test
+test-cli: test-cli-rust
+
+test-cli-rust:
+	rustup run 1.97.0 cargo test -p cli-rust
+
+test-cli-diff:
+	./cli/tests/diff-ts-rust.sh
 
 test-tui: node-workspace
 	cd tui && npm test
@@ -273,8 +278,9 @@ lint-tui: node-workspace
 lint-tui-rust:
 	rustup run 1.97.0 cargo clippy -p tui-rust --all-targets -- -D warnings
 
-lint-cli: node-workspace
-	cd cli && npm run gen-version && npx tsc --noEmit
+lint-cli:
+	cd cli && rustup run 1.97.0 cargo fmt --check
+	rustup run 1.97.0 cargo clippy -p cli-rust --all-targets -- -D warnings
 
 lint-gui:
 	cd gui && npm run lint
@@ -311,8 +317,8 @@ run-agent:
 run-tui: node-workspace
 	cd tui && npm run gen-version && npm run dev
 
-run-cli: node-workspace
-	cd cli && npm run gen-version && npm run dev
+run-cli:
+	cd cli && cargo run
 
 run-gui: build-gui
 ifeq ($(OS),windows)
@@ -320,7 +326,7 @@ ifeq ($(OS),windows)
 	@if not exist "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)" "$(MAKE)" build-agent
 	@if not exist "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)" $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)"
 	@if not exist "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" "$(MAKE)" build-cli
-	@if not exist "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
+	@if not exist "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" $(COPY_CMD) target\release\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
 	cd gui && npm run tauri:dev
 else
 	@mkdir -p gui/src-tauri/binaries
@@ -329,9 +335,8 @@ else
 		cp target/release/future-agent "gui/src-tauri/binaries/future-agent-$(TARGET)"; \
 	fi
 	@if [ ! -f "gui/src-tauri/binaries/future-$(TARGET)" ]; then \
-		cd cli && npm install && npm run build && \
-		bun build --compile dist/index.js --outfile dist/future && \
-		cd .. && cp cli/dist/future "gui/src-tauri/binaries/future-$(TARGET)"; \
+		$(MAKE) build-cli && \
+		cp target/release/future "gui/src-tauri/binaries/future-$(TARGET)"; \
 	fi
 	cd gui && npm run tauri:dev
 endif
@@ -465,8 +470,6 @@ else
 	rm -rf node_modules future-rpc/ts/dist
 	rm -rf tui/dist tui/node_modules
 	rm -f tui/future-tui tui/src/version.generated.ts
-	rm -rf cli/dist cli/node_modules
-	rm -f cli/src/version.generated.ts
 	rm -rf gui/dist gui/node_modules gui/src-tauri/target gui/src-tauri/binaries
 	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-gui$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
 endif
@@ -488,6 +491,8 @@ help:
 	@echo "  test-tui-rust      Run the Rust TUI port unit tests (cargo test -p tui-rust)"
 	@echo "  test-tui-diff      TS vs Rust render parity (byte-compare tui/rust/tests/diff-ts-rust.sh)"
 	@echo "  test-tui-tmux      TS vs Rust tmux screen consistency + goldens (tui/rust/tests/tmux-diff.sh)"
+	@echo "  test-cli-rust      Run the Rust CLI port unit tests (cargo test -p cli-rust)"
+	@echo "  test-cli-diff      Differential test: TS future vs Rust future, byte-identical output"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
 	@echo "  fmt                Format Rust and mobile code"
 	@echo "  run-agent          Run agent directly (debug build)"

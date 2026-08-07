@@ -14,7 +14,7 @@
 # one place instead of chasing drift across the Cargo.tomls. Members opt in
 # with `{ workspace = true }` and may add features (cargo unifies them).
 [workspace]
-members = ["agent", "channels", "future-rpc/rust", "orchestration/loop", "tui/rust"]
+members = ["agent", "channels", "future-rpc/rust", "orchestration/loop", "tui/rust", "cli"]
 default-members = ["agent", "channels", "future-rpc/rust"]
 exclude = ["gui"]
 resolver = "2"
@@ -36,6 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 async-trait = "0.1"
+tokio-tungstenite = { version = "0.24", features = ["__rustls-tls"] }
 tonic = "0.12"
 prost = "0.13"
 prost-build = "0.13"

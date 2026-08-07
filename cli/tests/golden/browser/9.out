@@ -1,0 +1,15 @@
+{
+  "tabs": [
+    {
+      "index": 0,
+      "title": "Second Page",
+      "url": "https://example.com/two",
+      "active": true
+    }
+  ],
+  "tabCount": 1,
+  "closed": {
+    "index": 0,
+    "url": "https://example.com/one"
+  }
+}

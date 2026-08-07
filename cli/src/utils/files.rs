@@ -1,0 +1,126 @@
+//! File helpers — port of `cli/src/utils/files.ts`.
+
+use std::process::Stdio;
+
+/// `assertReadableFile` — throws `"{label} not found at {path}."` (+ hint).
+pub async fn assert_readable_file(
+    path: &str,
+    label: &str,
+    hint: Option<&str>,
+) -> Result<(), String> {
+    if tokio::fs::try_exists(path).await.unwrap_or(false) {
+        Ok(())
+    } else {
+        match hint {
+            Some(hint) => Err(format!("{label} not found at {path}. {hint}")),
+            None => Err(format!("{label} not found at {path}.")),
+        }
+    }
+}
+
+/// `assertExecutableFile` — throws `"{label} not found or not executable at {path}."`.
+pub async fn assert_executable_file(path: &str, label: &str) -> Result<(), String> {
+    if !can_access(path, X_OK).await {
+        return Err(format!("{label} not found or not executable at {path}."));
+    }
+    Ok(())
+}
+
+/// Node `fs.constants` access modes (F_OK=0, X_OK=1, W_OK=2, R_OK=4).
+pub const F_OK: u32 = 0;
+pub const X_OK: u32 = 1;
+pub const W_OK: u32 = 2;
+pub const R_OK: u32 = 4;
+
+/// `canAccess(path, mode)` — Node `fs.access` semantics. On Windows, Node
+/// treats X_OK as F_OK (executability is not a file attribute), so any mode
+/// check reduces to existence.
+pub async fn can_access(path: &str, mode: u32) -> bool {
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(meta) => meta,
+        Err(_) => return false,
+    };
+    if mode == F_OK {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perm = meta.permissions().mode();
+        if mode & X_OK != 0 && perm & 0o111 == 0 {
+            return false;
+        }
+        if mode & W_OK != 0 && perm & 0o222 == 0 {
+            return false;
+        }
+        if mode & R_OK != 0 && perm & 0o444 == 0 {
+            return false;
+        }
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+        true
+    }
+}
+
+/// `which(name)` — first PATH match for an executable. On Unix shells out to
+/// `which`, on Windows to `where <name>.exe`, exactly like the TS version.
+pub async fn which(name: &str) -> Option<String> {
+    let (cmd, target) = if cfg!(windows) {
+        ("where", format!("{name}.exe"))
+    } else {
+        ("which", name.to_string())
+    };
+    let output = tokio::process::Command::new(cmd)
+        .arg(&target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Take the first line (`which` may print multiple matches on Windows).
+    trimmed.lines().next().map(|line| line.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn which_finds_shell() {
+        // `which` reads PATH — serialize against tests that repoint it.
+        let _guard = crate::test_env::lock_env().await;
+        let found = which("sh").await;
+        assert!(found.is_some(), "`which sh` should resolve on this host");
+        assert!(found.as_deref().unwrap_or("").contains("sh"));
+    }
+
+    #[tokio::test]
+    async fn which_missing_returns_none() {
+        let _guard = crate::test_env::lock_env().await;
+        assert!(which("definitely-not-a-real-binary-xyz").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn assert_readable_file_errors() {
+        let err = assert_readable_file("/no/such/file", "Config", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Config not found at /no/such/file.");
+        let err = assert_readable_file("/no/such/file", "Config", Some("Check the path."))
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Config not found at /no/such/file. Check the path.");
+    }
+}

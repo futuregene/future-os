@@ -1,0 +1,1 @@
+tools call browser --command press --key Control+A

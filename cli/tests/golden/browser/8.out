@@ -1,0 +1,27 @@
+{
+  "tabs": [
+    {
+      "index": 0,
+      "title": "First Page",
+      "url": "https://example.com/one",
+      "active": false
+    },
+    {
+      "index": 1,
+      "title": "Second Page",
+      "url": "https://example.com/two",
+      "active": false
+    },
+    {
+      "index": 2,
+      "title": "",
+      "url": "https://example.com/new-tab",
+      "active": true
+    }
+  ],
+  "tabCount": 3,
+  "created": {
+    "index": 2,
+    "url": "https://example.com/new-tab"
+  }
+}

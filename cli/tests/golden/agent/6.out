@@ -1,0 +1,21 @@
+{
+  "sessions": [
+    {
+      "id": "abc123",
+      "sessionName": "Test Session",
+      "model": "future/fast",
+      "cwd": "/Users/geilige/future-os",
+      "updatedAt": "2026-08-06 13:02:00",
+      "parentSessionId": "",
+      "firstMessage": "Hello there, agent! Please help me with ",
+      "queryCount": 1,
+      "isStreaming": false,
+      "session_name": "Test Session",
+      "updated_at": "2026-08-06 13:02:00",
+      "parent_session_id": "",
+      "first_message": "Hello there, agent! Please help me with ",
+      "query_count": 1,
+      "is_streaming": false
+    }
+  ]
+}

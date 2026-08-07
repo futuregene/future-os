@@ -1,0 +1,5 @@
+{
+  "typed": "i1",
+  "selector": "input[data-testid='email']",
+  "submitted": false
+}

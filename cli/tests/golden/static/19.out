@@ -1,0 +1,4 @@
+future auth logout — remove stored API key
+
+Deletes the Future provider key from ~/.future/agent/auth.json.
+Other provider keys in the file are left untouched.

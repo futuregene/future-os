@@ -1,0 +1,21 @@
+{
+  "tabs": [
+    {
+      "index": 0,
+      "title": "First Page",
+      "url": "https://example.com/one",
+      "active": false
+    },
+    {
+      "index": 1,
+      "title": "Second Page",
+      "url": "https://example.com/two",
+      "active": true
+    }
+  ],
+  "tabCount": 2,
+  "selected": {
+    "index": 1,
+    "url": "https://example.com/two"
+  }
+}

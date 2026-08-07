@@ -1,0 +1,4 @@
+{
+  "logs": [],
+  "note": "No buffered console messages. The hook captures messages after a Future browser tool has touched the page."
+}

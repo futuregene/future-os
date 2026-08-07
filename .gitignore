@@ -9,6 +9,10 @@
 
 # Go
 *.out
+# ...except the golden test fixtures: committed reference outputs that
+# the CLI diff harness (cli/tests/diff-ts-rust.sh) records with --record
+# and compares against in check mode.
+!cli/tests/golden/**
 vendor/
 
 # Rust
@@ -23,7 +27,6 @@ gui/src-tauri/binaries/
 
 # Node
 tui/dist/
-cli/dist/
 gui/dist/
 future-rpc/ts/dist/
 gui/.vite/
@@ -34,7 +37,6 @@ node_modules/
 
 # Build-time generated version modules (see scripts/version.mjs)
 tui/src/version.generated.ts
-cli/src/version.generated.ts
 mobile/src/version.generated.ts
 
 # FutureOS local app data

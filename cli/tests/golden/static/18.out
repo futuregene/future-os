@@ -1,0 +1,12 @@
+future auth credential — output API key for scripting
+
+Usage:
+  future auth credential [--json]
+
+Output (always JSON on success):
+  {"api_key":"...","endpoint":"..."}
+
+  --json    When not logged in, emit JSON error instead of plain text.
+            On success the output is always JSON regardless of this flag.
+
+Useful for piping into other tools or CI/CD scripts.

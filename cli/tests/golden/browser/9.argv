@@ -1,0 +1,1 @@
+tools call browser --command tabs --action close --index 0
