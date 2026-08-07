@@ -435,6 +435,25 @@ fn random_id() -> String {
     Uuid::new_v4().to_string()
 }
 
+/// Lexically resolve `.` / `..` path components (no filesystem access, so
+/// the target need not exist yet) and clamp at the root like `cd ..` does at
+/// `/`. Makes `/cwd ../../` (and `/cwd /a/../b`) resolve to a clean absolute
+/// path before it reaches the agent.
+fn normalize_path(path: &str) -> String {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in std::path::Path::new(path).components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out.display().to_string()
+}
+
 /// Collapse all whitespace runs to a single space and trim (TS
 /// `sanitizeSessionName`).
 fn sanitize_session_name(name: &str) -> String {
@@ -2461,6 +2480,10 @@ impl<T: TerminalIo> App<T> {
                         };
                         resolved = base.join(&resolved).display().to_string();
                     }
+                    // Resolve `.`/`..` lexically so `/cwd ../../` lands on a
+                    // clean path (the agent stores it verbatim after a
+                    // trailing-separator trim — no `..` handling on its side).
+                    resolved = normalize_path(&resolved);
                     let client = self.client.clone();
                     let tx = self.op_tx.clone();
                     let cwd = resolved.clone();
@@ -2976,19 +2999,19 @@ impl<T: TerminalIo> App<T> {
             ..ChatMessage::new(String::new(), ChatRole::System, "")
         });
 
-        // Skills (wrap to fit terminal width).
+        // Skills (wrap to fit terminal width). The wrapped lines join into a
+        // SINGLE message (TS parity: `add(lines.join("\n"))`) — one message
+        // per line would render blank lines between the wrapped segments.
         if !self.state.skills.is_empty() {
             let skills_list = format!("[skills] {}", self.state.skills.join(", "));
             let lines = wrap_text_with_ansi(&dim(&skills_list), term_w.saturating_sub(4));
-            for line in lines {
-                self.chat.add_message(ChatMessage {
-                    id: random_id(),
-                    role: ChatRole::System,
-                    content: line,
-                    welcome: true,
-                    ..ChatMessage::new(String::new(), ChatRole::System, "")
-                });
-            }
+            self.chat.add_message(ChatMessage {
+                id: random_id(),
+                role: ChatRole::System,
+                content: lines.join("\n"),
+                welcome: true,
+                ..ChatMessage::new(String::new(), ChatRole::System, "")
+            });
         }
 
         // Extensions (truncate to fit terminal width).
@@ -4211,6 +4234,50 @@ mod tests {
         assert_eq!(sanitize_session_name("  a   b\t\n c "), "a b c");
         assert_eq!(sanitize_session_name("single"), "single");
         assert_eq!(sanitize_session_name(""), "");
+    }
+
+    // ─── /cwd path normalization ────────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn normalize_path_resolves_dotdot_and_clamps_at_root() {
+        // `/cwd ../../` from a project dir → two levels up, clean path.
+        assert_eq!(normalize_path("/Users/geilige/future-os/../../"), "/Users");
+        assert_eq!(normalize_path("/a/b/../c"), "/a/c");
+        assert_eq!(normalize_path("/a/./b"), "/a/b");
+        assert_eq!(normalize_path("/a/b/.."), "/a");
+        // Extra `..` clamps at the root, like `cd ..` at `/`.
+        assert_eq!(normalize_path("/../a"), "/a");
+        assert_eq!(normalize_path("/a/b/../../../c"), "/c");
+        // Absolute paths without `.`/`..` pass through untouched.
+        assert_eq!(normalize_path("/tmp/foo"), "/tmp/foo");
+    }
+
+    // ─── Welcome screen ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn welcome_skills_wrap_stays_in_one_message() {
+        // A long skills list wraps; the wrapped lines must join into a SINGLE
+        // message (one message per line renders blank lines between the
+        // wrapped segments — the pre-fix bug).
+        let (mut app, _rx) = make_app(40, 24);
+        app.state.skills = (0..20).map(|i| format!("future-skill-{i:02}")).collect();
+        app.show_welcome();
+        let skills = app.chat.last_message().expect("welcome must add messages");
+        assert!(
+            skills.content.contains("[skills]"),
+            "last welcome message should be the skills list, got: {}",
+            skills.content
+        );
+        let lines: Vec<&str> = skills.content.split('\n').collect();
+        assert!(
+            lines.len() >= 2,
+            "long skills list must wrap inside one message"
+        );
+        assert!(
+            lines.iter().all(|l| !l.is_empty()),
+            "no blank lines between wrapped segments"
+        );
     }
 
     #[test]
