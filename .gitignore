@@ -23,7 +23,6 @@ gui/src-tauri/binaries/
 
 # Node
 tui/dist/
-cli/dist/
 gui/dist/
 future-rpc/ts/dist/
 gui/.vite/
@@ -34,7 +33,6 @@ node_modules/
 
 # Build-time generated version modules (see scripts/version.mjs)
 tui/src/version.generated.ts
-cli/src/version.generated.ts
 mobile/src/version.generated.ts
 
 # FutureOS local app data

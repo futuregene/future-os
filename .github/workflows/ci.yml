@@ -360,13 +360,14 @@ jobs:
         if: needs.changes.outputs.gui_tauri == 'true'
         run: cargo check --manifest-path gui/src-tauri/Cargo.toml
 
-  # ─── CLI: typecheck + bun test ───────────────────────────────────────────
-  # `bun run test` runs the unit set only (src/commands + browser unit tests);
-  # real-browser suites (validation/characterization) are opt-in via
-  # `npm run test:browser` since they need Chrome/Safari on the machine.
-  # Platform-agnostic — a single OS covers it.
+  # ─── CLI: Rust tests + golden diff harness ──────────────────────────────
+  # The CLI is a Rust workspace member (bin `future`); the golden harness
+  # (cli/tests/diff-ts-rust.sh) checks byte-identical output against the
+  # committed goldens recorded from the retired TypeScript CLI. It needs
+  # python3 (mock platform server) and skips the live-agent group when no
+  # future-agent binary is present.
   cli:
-    name: CLI typecheck + test
+    name: CLI tests + golden diff
     needs: changes
     if: needs.changes.outputs.cli == 'true'
     runs-on: ubuntu-latest
@@ -374,36 +375,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
         with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: package-lock.json
+          workspaces: |
+            .
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+      - name: cargo test (cli)
+        run: cargo test -p cli-rust
 
-      # npm workspace: a single root `npm ci` installs future-rpc/ts, tui
-      # and cli (hoisted). postinstall also runs gen-version
-      # (version.generated.ts is gitignored and required by tsc).
-      - name: Install dependencies
-        run: npm ci
-
-      # The CLI compiles against the shared wire-contract package's dist.
-      - name: Build shared wire-contract package
-        working-directory: future-rpc/ts
-        run: npm run build
-
-      - name: Typecheck
-        working-directory: cli
-        run: npx tsc --noEmit
-
-      - name: bun test
-        working-directory: cli
-        run: bun run test
+      - name: Golden diff harness
+        run: bash cli/tests/diff-ts-rust.sh
 
   # ─── TUI: typecheck + bun test ───────────────────────────────────────────
   tui:

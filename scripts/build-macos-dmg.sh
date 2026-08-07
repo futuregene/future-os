@@ -104,7 +104,6 @@ cd "$ROOT"
 echo "==> Checking prerequisites"
 require_tool node "Install Node.js 24+ (https://nodejs.org)."
 require_tool npm "npm is included with Node.js."
-require_tool bun "Install Bun (https://bun.sh)."
 require_tool cargo "Install Rust (https://rustup.rs)."
 require_tool rustc "Install Rust (https://rustup.rs)."
 require_tool protoc "Install protobuf with 'brew install protobuf'."
@@ -171,7 +170,7 @@ fi
 if [[ "$SKIP_DEPS" != true ]]; then
   echo "==> Installing npm dependencies (gui, npm workspace)"
   (cd gui && npm ci)
-  npm ci  # root workspace: future-rpc/ts + tui + cli
+  npm ci  # root workspace: future-rpc/ts (+ tui; cli is Rust, no npm deps)
 fi
 
 echo "==> Building shared RPC package (@future-os/rpc)"
@@ -182,13 +181,9 @@ cargo build --release --manifest-path agent/Cargo.toml
 mkdir -p gui/src-tauri/binaries
 cp target/release/future-agent "gui/src-tauri/binaries/future-agent-$TRIPLE"
 
-echo "==> Building CLI (standalone binary)"
-(
-  cd cli
-  npm run build
-  bun build --compile dist/index.js --outfile dist/future --external chromium-bidi
-)
-cp cli/dist/future "gui/src-tauri/binaries/future-$TRIPLE"
+echo "==> Building CLI (release)"
+cargo build --release --manifest-path cli/Cargo.toml
+cp target/release/future "gui/src-tauri/binaries/future-$TRIPLE"
 
 echo "==> Setting Tauri bundle version"
 node scripts/version.mjs --set-bundle

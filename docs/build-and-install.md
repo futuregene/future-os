@@ -12,9 +12,9 @@ loop control plane (`future-loop`).
 Required on every platform for a full build (agent + TUI + CLI + GUI):
 
 - **Rust** 1.97+ (pinned via `rust-toolchain.toml`)
-- **Node.js** 24+ (see `.nvmrc`)
-- **Bun** — required, not optional: the TUI build and CLI/GUI packaging use `bun build`
-- Optional: **Python 3** — only for `make generate-models`
+- **Node.js** 24+ (see `.nvmrc`) — for the TUI
+- **Bun** — required for the TUI build (`bun build`); the CLI is Rust (`cargo build`) and no longer needs Bun or Node
+- Optional: **Python 3** — only for `make generate-models` and the CLI golden-diff harness (`make test-cli-diff`)
 - Optional: **protoc** (Protocol Buffers compiler) — only for `make generate-proto`; generated code is checked in so normal builds don't need it
 
 ## Clone
@@ -93,14 +93,14 @@ No `make` needed — the PowerShell commands below mirror the make targets step 
 cargo build --release --manifest-path agent/Cargo.toml
 cargo build --release --manifest-path channels/Cargo.toml
 
-# TypeScript components: TUI + CLI                 (make build-tui / build-cli)
+# TypeScript component: TUI; Rust components: CLI  (make build-tui / build-cli)
 Push-Location tui; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future-tui.exe; Pop-Location
-Push-Location cli; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future.exe --external chromium-bidi; Pop-Location
+cargo build --release --manifest-path cli/Cargo.toml
 
 # Install to %USERPROFILE%\.future\bin             (the install-* copy steps)
 $bin = "$env:USERPROFILE\.future\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, tui\dist\future-tui.exe, cli\dist\future.exe $bin
+Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, tui\dist\future-tui.exe, target\release\future.exe $bin
 
 # Built-in skills — make install-skills uses symlinks; on Windows use the CLI instead
 & "$bin\future.exe" skills install

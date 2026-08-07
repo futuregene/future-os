@@ -185,11 +185,10 @@ jobs:
           FUTURE_VERSION: ${{ steps.v.outputs.version }}
         run: |
           set -euo pipefail
-          npm run build
-          bun build --compile dist/index.js --outfile dist/future
+          cargo build --release
           triple="$(rustc -Vv | sed -n 's/^host: //p')"
           mkdir -p ../gui/src-tauri/binaries
-          cp dist/future "../gui/src-tauri/binaries/future-$triple"
+          cp ../target/release/future "../gui/src-tauri/binaries/future-$triple"
 
       - name: Set Tauri bundle version
         env:

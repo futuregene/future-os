@@ -1,0 +1,3 @@
+Error: Not logged in or token expired
+Fix: Run 'future auth login' to sign in.
+Use "future tools describe mock_error" for help.

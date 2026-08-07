@@ -1,0 +1,1 @@
+tools call web_search --query x --timeout -5

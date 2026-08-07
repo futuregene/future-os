@@ -1,0 +1,36 @@
+[package]
+name = "cli-rust"
+version = "0.0.0"
+edition = "2021"
+description = "Rust port of the TypeScript `future` CLI — byte-identical argument parsing, help text, output, and exit codes"
+license = "MIT"
+
+[[bin]]
+name = "future"
+path = "src/main.rs"
+
+[lib]
+name = "cli_rust"
+path = "src/lib.rs"
+
+[dependencies]
+tokio.workspace = true
+tonic.workspace = true
+# Single proto codegen owner (PR #112): generated proto code lives in the
+# future-rpc crate; the CLI consumes it instead of owning a generated copy.
+future-rpc = { path = "../future-rpc/rust" }
+serde.workspace = true
+# preserve_order: JSON object key order must match the TS CLI's JS semantics
+# (JSON.parse preserves insertion order; serde_json's default BTreeMap sorts).
+serde_json = { workspace = true, features = ["preserve_order"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+chrono = { workspace = true, features = ["clock"] }
+dirs = "5"
+base64.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+async-trait.workspace = true
+indexmap = "2"
+
+[dev-dependencies]
+tempfile.workspace = true
