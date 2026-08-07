@@ -117,6 +117,53 @@ future-loop todo add --goal <goal-id> --text "Copy the final deliverables to the
 
 Rule of thumb: if "X must finish before Y can start", add `--blocks X` to Y.
 
+**Todo-creation pitfalls (field-tested 2026-08, cli-rust-port + tui-rust-port goals).**
+
+1. **Capture todo ids from the `todo add` output itself.** The command prints
+   the new id (`todo todo_xxx added ✔`) — that is the only reliable source.
+   There is NO `future-loop todo list` subcommand, and `future-loop status`
+   has NO `--format json` flag (only `future-loop models` does) — piping
+   `--blocks $(future-loop status --format json …)` fails SILENTLY (the
+   substitution yields an empty string, `--blocks` is accepted with no value,
+   and the dependency is quietly dropped). To look ids up afterwards, parse
+   `future-loop status --goal G` (`todos:` line lists `id=status`), or read
+   the event ledger `<cwd>/.future/loop/goals/<id>/events.jsonl`
+   (`kind: "todo_added"` events carry the full `todo` object).
+2. **Verify the wiring after creation.** Run `future-loop status --goal G` and
+   confirm each dependent todo's `blocks` is set. An empty `--blocks` never
+   errors — only a status check catches it. **Repair in place with
+   `todo update --blocks`** (supported since the 2026-08 loop update):
+   `future-loop todo update --goal G --todo-id T --blocks a,b` REPLACES the
+   blocking set, and `--blocks ""` clears it; an update without `--blocks`
+   leaves the set untouched. Older `future-loop` binaries (before that
+   update) silently ignored `--blocks` — for those, the only repair was to
+   recreate the goal: `future-loop goal delete --goal G --force` (delete is
+   IRREVERSIBLE and refuses without `--force`) → `goal init` → re-add all
+   todos in dependency order, capturing each id from the add output.
+3. **Chain the FINAL validation todo too.** The run loop schedules any open,
+   unblocked todo — priority alone does NOT order execution. The last
+   acceptance/validation todo MUST `--blocks` all implementation todos;
+   otherwise it can be picked while they are still stubs (observed: the
+   differential-test todo ran mid-port and had to be re-planned via
+   `complete --successor` back to the implementation todos).
+4. **`goal init` auto-creates an onboarding todo.** A fresh goal starts with
+   one extra open todo ("Run `future-loop status` … record the goal count as
+   evidence"). Complete it with `--no-follow-up` during setup (or at the end,
+   with the goal count as `--evidence`); don't mistake it for a real work
+   item — it does not block the chain but stays open until completed.
+5. **`goal delete` requires `--force` and is irreversible.** A mis-created
+   goal cannot be repaired in place — `future-loop goal delete --goal G`
+   refuses with "irreversible — pass --force". Passing `--force` removes the
+   registry entry + state, so recreate via `goal init` afterwards.
+6. **`registry.json` holds only goal summaries** (objective/cwd/status); todo
+   ids and their `blocks`/priority live in the event ledger
+   `<cwd>/.future/loop/goals/<id>/events.jsonl` — the reliable place to
+   re-derive ids after a botched creation.
+7. **Subcommand `--help` is NOT supported.** `future-loop todo update --help`
+   silently ignores the flag (and "updates" even a nonexistent `--todo-id`).
+   Check the exact flags in `orchestration/loop/src/main.rs`
+   (`todo_add`/`todo_update` `parse_pairs`) or in this skill instead.
+
 If the user asks for approval before a specific action, create a real gate:
 ```bash
 future-loop todo add --goal <goal-id> --role user --class user_gate \
@@ -202,7 +249,8 @@ After each `run`, before starting the next step:
    plan yourself, no user confirmation for routine replans:
    - `todo add` — new steps discovered by the completed step;
    - `todo supersede --reason "..."` — steps that are now obsolete;
-   - `todo update` — fix a step's text/priority;
+   - `todo update` — fix a step's text/priority/blocks (`--blocks a,b` replaces
+  the blocking set, `--blocks ""` clears it);
    - `todo archive` — tidy completed work.
 3. **Check whether the plan still holds** — `future-loop status --goal <goal-id>`:
    does the remaining todo list still make sense given what this step revealed?
@@ -299,6 +347,7 @@ future-loop todo complete --goal <goal-id> --todo-id <stale-id> --no-follow-up \
 future-loop status [--goal G]
 future-loop goal init --objective "..." --cwd DIR [--goal-id G] [--goal-doc "..."]
 future-loop todo add --goal G --text "..." [--priority P0|P1|P2] [--role user --class user_gate --gate-question "..." --blocks T]
+future-loop todo update --goal G --todo-id T [--text "..."] [--priority ...] [--blocks T]   # fix wiring after add
 future-loop todo claim --goal G --todo-id T --agent-id A [--lease-secs N]
 future-loop todo complete --goal G --todo-id T [--no-follow-up | --successor T2] [--evidence "..."]
 future-loop todo supersede --goal G --todo-id T --reason "..."
