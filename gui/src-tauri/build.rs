@@ -23,7 +23,11 @@ fn ensure_placeholder_sidecars_for_non_release_builds() -> Result<(), Box<dyn st
     }
 
     let target = std::env::var("TARGET")?;
-    let ext = if target.contains("windows") { ".exe" } else { "" };
+    let ext = if target.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
     let binaries_dir = std::path::Path::new("binaries");
     std::fs::create_dir_all(binaries_dir)?;
 
