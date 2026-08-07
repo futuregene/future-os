@@ -34,11 +34,9 @@ fn ensure_placeholder_sidecars_for_non_release_builds() -> Result<(), Box<dyn st
     // The unified `future` CLI is the only sidecar — `future agent` runs the
     // embedded agent, so a separate future-agent binary is no longer bundled
     // (see agent_supervisor.rs).
-    for bin in ["future"] {
-        let path = binaries_dir.join(format!("{bin}-{target}{ext}"));
-        if !path.exists() {
-            std::fs::File::create(path)?;
-        }
+    let path = binaries_dir.join(format!("future-{target}{ext}"));
+    if !path.exists() {
+        std::fs::File::create(path)?;
     }
 
     Ok(())
