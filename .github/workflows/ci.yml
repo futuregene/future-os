@@ -63,6 +63,8 @@ jobs:
               - 'future-rpc/**'
               - 'agent/**'
               - 'channels/**'
+              - 'tui/**'
+              - 'cli/**'
             gui_tauri:
               - 'gui/src-tauri/**'
               - '.cargo/**'
@@ -85,8 +87,10 @@ jobs:
               - '!mobile/ios/**'
 
   # ─── Rust lint gate (Linux): fmt + clippy ─────────────────────────────────
-  # Lint all workspace crates plus the GUI Tauri backend. Tests run in the
-  # independent `rust-tests` job below so both gates can execute in parallel.
+  # Lint every workspace crate (agent / channels / tui / cli / loop / future-rpc,
+  # via `--all` and `--workspace --all-targets`) plus the GUI Tauri backend.
+  # Tests run in the independent `rust-tests` job below so both gates can
+  # execute in parallel.
   rust-quality:
     name: Rust fmt + clippy (Linux)
     needs: changes
@@ -326,13 +330,16 @@ jobs:
         run: cargo check --manifest-path gui/src-tauri/Cargo.toml
 
   # ─── CLI: Rust tests + golden diff harness ──────────────────────────────
-  # The CLI is a Rust workspace member (bin `future`); the golden harness
-  # (cli/tests/golden-diff.sh) checks byte-identical output against the
+  # The CLI is a Rust workspace member (bin `future`); fmt + clippy are covered
+  # by the `rust-quality` job (full-workspace `--all`/`--workspace --all-targets`).
+  # This job runs only the CLI's own tests + the golden harness. The golden
+  # harness (cli/tests/golden-diff.sh) checks byte-identical output against the
   # committed goldens recorded from the retired TypeScript CLI. It needs
   # python3 (mock platform server) and skips the live-agent group when no
   # future-agent binary is present.
-  # NOTE: job name is pinned by the "Protect Main" ruleset's required status
-  # checks ("CLI typecheck + test") — renaming it would un-mergeable the PRs.
+  # NOTE: the "typecheck" in the job name is a TS-era leftover, pinned by the
+  # "Protect Main" ruleset's required status checks ("CLI typecheck + test") —
+  # renaming it would un-mergeable the PRs.
   cli:
     name: CLI typecheck + test
     needs: changes
@@ -371,13 +378,15 @@ jobs:
         run: bash cli/tests/golden-diff.sh
 
   # ─── TUI: Rust tests + golden harness ────────────────────────────────────
-  # The TUI is a Rust workspace member (bin `future-tui`); the TypeScript
+  # The TUI is a Rust workspace member (bin `future-tui`); fmt + clippy are
+  # covered by the `rust-quality` job (full-workspace). The TypeScript
   # implementation was retired (2026-08, same as the CLI) and its render +
   # screen outputs are committed as goldens (tui/tests/golden/). The golden
   # harness (tui/tests/golden-diff.sh) byte-compares the Rust renderer
   # against the recorded TS outputs headlessly.
-  # NOTE: job name is pinned by the "Protect Main" ruleset's required status
-  # checks ("TUI typecheck + test") — renaming it would un-mergeable the PRs.
+  # NOTE: the "typecheck" in the job name is a TS-era leftover, pinned by the
+  # "Protect Main" ruleset's required status checks ("TUI typecheck + test") —
+  # renaming it would un-mergeable the PRs.
   tui:
     name: TUI typecheck + test
     needs: changes
