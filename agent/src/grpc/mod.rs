@@ -1,7 +1,7 @@
 //! gRPC Server for FutureAgent
 //!
 //! This module implements the FutureAgent gRPC service using tonic.
-//! The proto definition is in the ../proto/ directory.
+//! The proto definition is in the future-rpc/proto/ directory.
 //!
 //! HTTP endpoints:
 //! - POST / - RPC commands (JSON)
@@ -17,10 +17,10 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
-// Include the generated proto code
-pub mod proto {
-    include!("generated/proto.rs");
-}
+// Generated proto code lives in the future-rpc crate (single codegen owner;
+// typed-RPC milestone). Re-exported under the historical module name so call
+// sites keep their `proto::...` paths.
+pub use future_rpc::proto;
 
 /// Start a gRPC-only server (no HTTP).
 pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
@@ -61,21 +61,28 @@ fn map_broadcast_event(
     session_id: &str,
 ) -> Result<proto::StreamEvent, tonic::Status> {
     match result {
-        Ok(event) => Ok(proto::StreamEvent {
-            r#type: event.event_type,
-            data: event.data,
-            run_id: event.run_id,
-            idx: event.idx,
-            projection_snapshot: false,
-            snapshot_events: Vec::new(),
-            snapshot_cursor: 0,
-            session_id: session_id.to_string(),
-            epoch: event.epoch,
-            event_id: event.event_id,
-            timestamp: event.timestamp,
-            session_idx: event.session_idx,
-            run_sequence: event.run_sequence,
-        }),
+        Ok(event) => {
+            // Typed-RPC dual-write: encode the JSON payload into its typed
+            // form alongside the unchanged `data` string (pass-through event
+            // types return None and stay JSON-only).
+            let payload = future_rpc::encode::event_payload(&event.event_type, &event.data);
+            Ok(proto::StreamEvent {
+                r#type: event.event_type,
+                data: event.data,
+                run_id: event.run_id,
+                idx: event.idx,
+                projection_snapshot: false,
+                snapshot_events: Vec::new(),
+                snapshot_cursor: 0,
+                session_id: session_id.to_string(),
+                epoch: event.epoch,
+                event_id: event.event_id,
+                timestamp: event.timestamp,
+                session_idx: event.session_idx,
+                run_sequence: event.run_sequence,
+                payload,
+            })
+        }
         Err(error) => {
             // Non-atomic observers can remain subscribed across multiple runs,
             // so resolve the canonical run at the moment lag is observed rather
@@ -284,6 +291,15 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         let json_resp: JsonResp = serde_json::from_str(&resp_str)
             .map_err(|e| tonic::Status::internal(format!("Failed to parse response: {}", e)))?;
 
+        // Typed payload (dual-write): encode the JSON payload into its typed
+        // wire form for commands that have a ResponsePayload member. Untyped
+        // commands keep serving the JSON `data` string only; clients always
+        // fall back to `data` when `payload` is absent.
+        let typed_payload = json_resp
+            .data
+            .as_ref()
+            .and_then(|value| future_rpc::encode::response_payload(&json_resp.command, value));
+
         // Convert to proto response - error is Option<String>, need to handle None
         let proto_resp = proto::RpcResponse {
             id: json_resp.id,
@@ -300,6 +316,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 .error_data
                 .map(|data| serde_json::to_string(&data).unwrap_or_default())
                 .unwrap_or_default(),
+            payload: typed_payload,
         };
 
         Ok(tonic::Response::new(proto_resp))
@@ -356,10 +373,17 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         snapshot_events: projection
                             .events
                             .into_iter()
-                            .map(|event| proto::ProjectedRunEvent {
-                                r#type: event.event_type,
-                                data: event.data,
-                                idx: event.idx,
+                            .map(|event| {
+                                let payload = future_rpc::encode::event_payload(
+                                    &event.event_type,
+                                    &event.data,
+                                );
+                                proto::ProjectedRunEvent {
+                                    r#type: event.event_type,
+                                    data: event.data,
+                                    idx: event.idx,
+                                    payload,
+                                }
                             })
                             .collect(),
                         snapshot_cursor: projection.cursor,
@@ -369,28 +393,28 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         timestamp: String::new(),
                         session_idx: -1,
                         run_sequence: projection.run_sequence,
+                        payload: None,
                     });
                 }
-                initial.extend(
-                    attachment
-                        .events
-                        .into_iter()
-                        .map(|event| proto::StreamEvent {
-                            r#type: event.event_type,
-                            data: event.data,
-                            run_id: event.run_id,
-                            idx: event.idx,
-                            projection_snapshot: false,
-                            snapshot_events: Vec::new(),
-                            snapshot_cursor: 0,
-                            session_id: session_id.clone(),
-                            epoch: event.epoch,
-                            event_id: event.event_id,
-                            timestamp: event.timestamp,
-                            session_idx: event.session_idx,
-                            run_sequence: event.run_sequence,
-                        }),
-                );
+                initial.extend(attachment.events.into_iter().map(|event| {
+                    let payload = future_rpc::encode::event_payload(&event.event_type, &event.data);
+                    proto::StreamEvent {
+                        r#type: event.event_type,
+                        data: event.data,
+                        run_id: event.run_id,
+                        idx: event.idx,
+                        projection_snapshot: false,
+                        snapshot_events: Vec::new(),
+                        snapshot_cursor: 0,
+                        session_id: session_id.clone(),
+                        epoch: event.epoch,
+                        event_id: event.event_id,
+                        timestamp: event.timestamp,
+                        session_idx: event.session_idx,
+                        run_sequence: event.run_sequence,
+                        payload,
+                    }
+                }));
                 (attachment.receiver, initial, sess.broadcaster.clone())
             } else {
                 (
@@ -409,6 +433,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                         timestamp: String::new(),
                         session_idx: -1,
                         run_sequence: -1,
+                        payload: None,
                     }],
                     sess.broadcaster.clone(),
                 )

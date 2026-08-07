@@ -1,43 +1,17 @@
-// build.rs — Proto code generation + version injection for the Rust CLI.
-//
-// Proto code generation mirrors agent/ and channels/: it is opt-in via the
-// REGENERATE_PROTO env var (the Makefile `generate-proto` target sets it) and
-// the generated file (src/generated/proto.rs) is checked into git, so normal
-// builds never need protoc.
+// build.rs — Version injection for the Rust CLI.
 //
 // Version injection mirrors scripts/version.mjs — the single source of truth
 // for FutureOS build versioning — so `future --version` prints exactly what
 // the TypeScript CLI prints for the same checkout/CI environment.
+//
+// Proto code generation is NOT owned here: future-rpc is the single proto
+// codegen owner (PR #112) and the CLI consumes `future_rpc::proto` as a
+// crate dependency.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     emit_build_version();
-    println!("cargo:rerun-if-env-changed=REGENERATE_PROTO");
-    if std::env::var("REGENERATE_PROTO").is_err() {
-        return Ok(());
-    }
-
-    let proto_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("proto");
-    let generated_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/generated");
-
-    tonic_build::configure()
-        .build_server(false)
-        .build_client(true)
-        .out_dir(&generated_dir)
-        .compile_protos(&[proto_dir.join("future.proto")], &[proto_dir])?;
-
-    // tonic-build names the output after the proto file (future.rs); the
-    // crate convention (matching channels/src/generated) is proto.rs.
-    let src = generated_dir.join("future.rs");
-    let dst = generated_dir.join("proto.rs");
-    if src.exists() && !dst.exists() {
-        std::fs::rename(&src, &dst)?;
-    }
     Ok(())
 }
 

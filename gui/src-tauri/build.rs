@@ -7,20 +7,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| local_dev_version(&base));
     println!("cargo:rustc-env=FUTURE_VERSION={version}");
     println!("cargo:rerun-if-env-changed=FUTURE_VERSION");
-    println!("cargo:rerun-if-env-changed=REGENERATE_PROTO");
 
+    ensure_placeholder_sidecars_for_non_release_builds()?;
     tauri_build::build();
 
-    // Proto regeneration is opt-in via `make generate-proto` (sets REGENERATE_PROTO=1).
-    // Generated files are checked into src/generated/ so normal builds never need protoc.
-    if std::env::var("REGENERATE_PROTO").is_ok() {
-        let proto_path = std::path::Path::new("../../proto/future.proto");
-        println!("cargo:rerun-if-changed={}", proto_path.display());
-        tonic_build::configure()
-            .build_server(false)
-            .build_client(true)
-            .out_dir("src/generated")
-            .compile_protos(&[proto_path], &[proto_path.parent().unwrap()])?;
+    // Agent gRPC bindings come from the future-rpc crate (single codegen
+    // owner; typed-RPC milestone) — nothing to generate here.
+
+    Ok(())
+}
+
+fn ensure_placeholder_sidecars_for_non_release_builds() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("PROFILE").ok().as_deref() == Some("release") {
+        return Ok(());
+    }
+
+    let target = std::env::var("TARGET")?;
+    let ext = if target.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    let binaries_dir = std::path::Path::new("binaries");
+    std::fs::create_dir_all(binaries_dir)?;
+
+    for bin in ["future-agent", "future"] {
+        let path = binaries_dir.join(format!("{bin}-{target}{ext}"));
+        if !path.exists() {
+            std::fs::File::create(path)?;
+        }
     }
 
     Ok(())

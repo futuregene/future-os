@@ -622,8 +622,7 @@ pub fn publish_snapshot(
         .map(|event| {
             json!({
                 "type": event.r#type,
-                "data": serde_json::from_str::<serde_json::Value>(&event.data)
-                    .unwrap_or(serde_json::Value::Null),
+                "data": future_rpc::decode::projected_event_data(event),
                 "idx": event.idx,
             })
         })

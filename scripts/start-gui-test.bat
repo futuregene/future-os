@@ -179,6 +179,10 @@ where bun >nul 2>&1 || (
   exit /b 0
 )
 echo Building future CLI...
+rem The CLI imports @future-os/rpc; its dist must exist before tsc compiles.
+pushd "%ROOT_DIR%\future-rpc\ts" || exit /b 0
+call npm run build || (echo shared RPC build failed; skipping future CLI build. & popd & exit /b 0)
+popd
 pushd "%CLI_DIR%" || exit /b 0
 if not exist node_modules (
   call npm ci || (echo npm ci failed; skipping future CLI build. & popd & exit /b 0)

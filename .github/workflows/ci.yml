@@ -60,20 +60,33 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain.toml'
-              - 'proto/**'
+              - 'future-rpc/proto/**'
+              - 'future-rpc/rust/**'
               - 'agent/**'
               - 'channels/**'
             gui_tauri:
               - 'gui/src-tauri/**'
               - '.cargo/**'
               - 'rust-toolchain.toml'
+              # The GUI backend path-depends on future-rpc; changes there must
+              # revalidate the GUI backend too.
+              - 'future-rpc/rust/**'
+              - 'future-rpc/proto/**'
             gui_frontend:
               - 'gui/**'
               - '!gui/src-tauri/**'
             cli:
               - 'cli/**'
+              - 'future-rpc/ts/**'
+              - 'future-rpc/proto/**'
+              - 'package.json'
+              - 'package-lock.json'
             tui:
               - 'tui/**'
+              - 'future-rpc/ts/**'
+              - 'future-rpc/proto/**'
+              - 'package.json'
+              - 'package-lock.json'
             mobile:
               - 'mobile/**'
               - '!mobile/android/**'
@@ -95,6 +108,14 @@ jobs:
       # compiler. Bump both together (see build.yml for the same pin).
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.0
+
+      # Node 24 for the TS embedded-proto freshness step below (the generator
+      # runs under Node 24's native type stripping). The runner's preinstalled
+      # node is too old to parse the TypeScript source.
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -145,6 +166,20 @@ jobs:
       - name: clippy (workspace)
         if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings
+
+      # The generated wire code (future-rpc proto.rs, channels feishu_ws.rs) and
+      # the TS embedded proto (future-rpc/ts/src/proto.ts) are checked in;
+      # guard against proto edits that skip `make generate-proto`.
+      # Output is deterministic for pinned prost/tonic-build, so a regenerate
+      # on the same source must be a no-op. The TS generator uses only Node
+      # builtins (no deps) and runs under Node 24's native type stripping.
+      - name: proto codegen is fresh
+        if: needs.changes.outputs.rust_workspace == 'true'
+        run: |
+          (cd future-rpc/rust && REGENERATE_PROTO=1 cargo build)
+          (cd channels && REGENERATE_PROTO=1 cargo build)
+          (cd future-rpc/ts && node scripts/generate-proto.ts)
+          git diff --exit-code future-rpc/rust/src/generated/proto.rs channels/src/generated/ future-rpc/ts/src/proto.ts
 
       # ── GUI Tauri backend ──
       - name: rustfmt (GUI backend)
@@ -344,18 +379,23 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: cli/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
-      # npm ci also runs postinstall → gen-version (version.generated.ts is
-      # gitignored and required by tsc).
+      # npm workspace: a single root `npm ci` installs future-rpc/ts, tui
+      # and cli (hoisted). postinstall also runs gen-version
+      # (version.generated.ts is gitignored and required by tsc).
       - name: Install dependencies
-        working-directory: cli
         run: npm ci
+
+      # The CLI compiles against the shared wire-contract package's dist.
+      - name: Build shared wire-contract package
+        working-directory: future-rpc/ts
+        run: npm run build
 
       - name: Typecheck
         working-directory: cli
@@ -380,16 +420,22 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: tui/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
+      # npm workspace: a single root `npm ci` installs future-rpc/ts, tui
+      # and cli (hoisted).
       - name: Install dependencies
-        working-directory: tui
         run: npm ci
+
+      # The TUI compiles against the shared wire-contract package's dist.
+      - name: Build shared wire-contract package
+        working-directory: future-rpc/ts
+        run: npm run build
 
       - name: Typecheck
         working-directory: tui

@@ -11,9 +11,9 @@
 //! transport errors differ from grpc-js (network-stack dependent), which the
 //! golden diff tests accept for remote commands.
 
-use crate::generated::proto::future_agent_client::FutureAgentClient;
-use crate::generated::proto::{RpcCommand, StreamEvent, StreamRequest};
 use crate::output::Output;
+use future_rpc::proto::future_agent_client::FutureAgentClient;
+use future_rpc::proto::{RpcCommand, StreamEvent, StreamRequest};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

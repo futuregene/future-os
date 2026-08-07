@@ -424,9 +424,9 @@ dependencies = [
  "base64",
  "chrono",
  "dirs 5.0.1",
+ "future-rpc",
  "futures-util",
  "indexmap 2.14.0",
- "prost",
  "reqwest",
  "serde",
  "serde_json",
@@ -434,7 +434,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tonic",
- "tonic-build",
 ]
 
 [[package]]
@@ -859,6 +858,7 @@ dependencies = [
  "dhat",
  "dirs 5.0.1",
  "fd-lock",
+ "future-rpc",
  "futures",
  "futures-util",
  "image",
@@ -867,7 +867,6 @@ dependencies = [
  "parking_lot",
  "pprof",
  "prost",
- "prost-build",
  "prost-types",
  "rand 0.8.7",
  "regex",
@@ -885,7 +884,6 @@ dependencies = [
  "tokio-stream",
  "tokio-test",
  "tonic",
- "tonic-build",
  "tower-http",
  "tracing",
  "tracing-subscriber",
@@ -902,6 +900,7 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
+ "future-rpc",
  "futures",
  "futures-util",
  "parking_lot",
@@ -917,7 +916,6 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite",
  "tonic",
- "tonic-build",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -942,6 +940,18 @@ dependencies = [
  "tonic",
  "tonic-build",
  "uuid",
+]
+
+[[package]]
+name = "future-rpc"
+version = "0.0.0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "serde",
+ "serde_json",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]

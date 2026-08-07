@@ -7,6 +7,7 @@
     "future": "dist/index.js"
   },
   "dependencies": {
+    "@future-os/rpc": "0.0.0",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.1"
   },
@@ -24,10 +25,5 @@
     "playwright-core": "^1.57.0",
     "tsx": "^4.20.0",
     "typescript": "^5.6.0"
-  },
-  "allowScripts": {
-    "protobufjs@7.6.4": true,
-    "fsevents@2.3.3": true,
-    "esbuild@0.28.1": true
   }
 }

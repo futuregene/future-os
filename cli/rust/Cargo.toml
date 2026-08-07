@@ -16,7 +16,9 @@ path = "src/lib.rs"
 [dependencies]
 tokio.workspace = true
 tonic.workspace = true
-prost.workspace = true
+# Single proto codegen owner (PR #112): generated proto code lives in the
+# future-rpc crate; the CLI consumes it instead of owning a generated copy.
+future-rpc = { path = "../../future-rpc/rust" }
 serde.workspace = true
 # preserve_order: JSON object key order must match the TS CLI's JS semantics
 # (JSON.parse preserves insertion order; serde_json's default BTreeMap sorts).
@@ -32,6 +34,3 @@ indexmap = "2"
 
 [dev-dependencies]
 tempfile.workspace = true
-
-[build-dependencies]
-tonic-build.workspace = true

@@ -7,7 +7,6 @@
 pub mod browser;
 pub mod commands;
 pub mod constants;
-pub mod generated;
 pub mod help;
 pub mod output;
 pub mod rpc;

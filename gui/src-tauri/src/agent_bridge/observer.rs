@@ -264,9 +264,9 @@ async fn discover_streaming_sessions() {
     if !response.success {
         return;
     }
-    let session_ids: Vec<String> = serde_json::from_str::<serde_json::Value>(&response.data)
-        .ok()
-        .and_then(|value| value.get("sessionIds")?.as_array().cloned())
+    let session_ids: Vec<String> = future_rpc::decode::response_data(&response)
+        .get("sessionIds")
+        .and_then(|value| value.as_array().cloned())
         .unwrap_or_default()
         .into_iter()
         .filter_map(|value| {
@@ -603,7 +603,7 @@ async fn probe_active_run(
     if !response.success {
         return None;
     }
-    let state: serde_json::Value = serde_json::from_str(&response.data).ok()?;
+    let state: serde_json::Value = future_rpc::decode::response_data(&response);
     state
         .get("activeRun")?
         .get("runId")?
@@ -641,13 +641,14 @@ async fn handle_event(
             }
             state.session_cursor = event.session_idx;
         }
+        let event_data = future_rpc::decode::event_data_json(&event);
         if FORWARDED_EVENTS.contains(&event_type) {
-            forward_settings_event(session_id, &shared.thread_id, event_type, &event.data);
+            forward_settings_event(session_id, &shared.thread_id, event_type, &event_data);
         }
         crate::remote::publish_event(
             session_id,
             event_type,
-            &event.data,
+            &event_data,
             run_id,
             event.idx,
             event.epoch,
@@ -672,14 +673,14 @@ async fn handle_event(
                 .snapshot_events
                 .iter()
                 .find(|projected| projected.r#type == "agent_end")
-                .map(|projected| projected.data.clone());
+                .map(future_rpc::decode::projected_event_data_json);
             let events: Vec<(String, String, i64)> = event
                 .snapshot_events
                 .iter()
                 .map(|projected| {
                     (
                         projected.r#type.clone(),
-                        projected.data.clone(),
+                        future_rpc::decode::projected_event_data_json(projected),
                         projected.idx,
                     )
                 })
@@ -734,18 +735,19 @@ async fn handle_event(
                     // content: forward and mirror without cursor bookkeeping —
                     // treating them as gaps would force a pointless re-attach
                     // on every settings change.
+                    let event_data = future_rpc::decode::event_data_json(&event);
                     if FORWARDED_EVENTS.contains(&event_type) {
                         forward_settings_event(
                             session_id,
                             &shared.thread_id,
                             event_type,
-                            &event.data,
+                            &event_data,
                         );
                     }
                     crate::remote::publish_event(
                         session_id,
                         event_type,
-                        &event.data,
+                        &event_data,
                         run_id,
                         event.idx,
                         event.epoch,
@@ -763,6 +765,11 @@ async fn handle_event(
     state.cursors.insert(run_id.to_string(), event.idx);
     note_run_active(shared, state, run_id);
 
+    // Canonical event payload (byte-stable while the agent dual-writes `data`;
+    // the typed reconstruction takes over once `data` is retired). Persistence,
+    // terminal detection, forwarding and the NATS mirror all read it.
+    let event_data = future_rpc::decode::event_data_json(&event);
+
     // Terminal bookkeeping applies regardless of ownership — otherwise a
     // pipeline-owned run's end would wedge has_active_run forever.
     let is_terminal = matches!(event_type, "agent_end" | "error");
@@ -775,14 +782,14 @@ async fn handle_event(
             &thread_id,
             Some(&local_run_id),
             event_type.to_string(),
-            event.data.clone(),
+            event_data.clone(),
             event.idx,
         )
         .await;
 
         match event_type {
             "agent_end" => {
-                if stream::agent_end_incomplete(&event.data) {
+                if stream::agent_end_incomplete(&event_data) {
                     mark_run_failed_if_active(
                         Some(&local_run_id),
                         "Future Agent response ended before a clean terminal.",
@@ -804,12 +811,12 @@ async fn handle_event(
     }
 
     if FORWARDED_EVENTS.contains(&event_type) {
-        forward_settings_event(session_id, &shared.thread_id, event_type, &event.data);
+        forward_settings_event(session_id, &shared.thread_id, event_type, &event_data);
     }
     crate::remote::publish_event(
         session_id,
         event_type,
-        &event.data,
+        &event_data,
         run_id,
         event.idx,
         event.epoch,
@@ -838,22 +845,26 @@ async fn replay_session_events(
     if !response.success {
         return false;
     }
-    let events = serde_json::from_str::<serde_json::Value>(&response.data)
-        .ok()
-        .and_then(|value| value.get("events")?.as_array().cloned())
+    let events = future_rpc::decode::response_data(&response)
+        .get("events")
+        .and_then(|value| value.as_array().cloned())
         .unwrap_or_default();
     for value in events {
+        let event_type = value
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let event_data = value
+            .get("data")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        // Reconstructed events carry the typed payload like live ones.
+        let payload = future_rpc::encode::event_payload(&event_type, &event_data);
         let event = crate::agent_proto::StreamEvent {
-            r#type: value
-                .get("type")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            data: value
-                .get("data")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_string(),
+            r#type: event_type,
+            data: event_data,
             session_id: session_id.to_string(),
             session_idx: value
                 .get("sessionIdx")
@@ -871,6 +882,7 @@ async fn replay_session_events(
                 .to_string(),
             idx: -1,
             run_sequence: -1,
+            payload,
             ..Default::default()
         };
         if !handle_event(session_id, shared, state, event).await {
@@ -1049,6 +1061,7 @@ mod tests {
             timestamp: String::new(),
             session_idx: -1,
             run_sequence: 1,
+            payload: None,
         }
     }
 
