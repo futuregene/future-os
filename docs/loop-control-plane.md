@@ -12,8 +12,9 @@ deterministic kernel decides what should happen next — one bounded turn at a
 time.
 
 The primary way to invoke it is `future loop <command>`; the standalone
-`future-loop` binary is equivalent and still installed (used by the
-installer and `make run-loop`).
+`future-loop` binary is equivalent but no longer installed by default —
+build it with `cargo build -p future-loop` (or install via
+scripts/install-future-loop.sh), and `make run-loop` runs it in dev.
 
 > `future-loop` is a Rust rewrite of the
 > [loopx](https://github.com/huangruiteng/loopx) control plane, adapted and

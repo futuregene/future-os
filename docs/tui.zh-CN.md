@@ -6,12 +6,12 @@ TUI 是终端客户端：`future-tui`。它是轻量 gRPC 客户端——**必�
 
 ```bash
 future agent      # 终端 1：agent
-future tui        # 终端 2：终端界面（等同于 future-tui）
+future tui        # 终端 2：终端界面
 ```
 
-`future tui <args>` 在进程内运行 TUI；独立二进制 `future-tui` 依然安装且用法
-一致。`future tui --help` 可查看全部选项（print 模式、`--list-models`、
-`--session` 等）。
+`future tui <args>` 在进程内运行 TUI；独立二进制 `future-tui` 与之等价，但已
+不再默认安装（需要时用 `cargo build -p future-tui` 构建）。`future tui --help`
+可查看全部选项（print 模式、`--list-models`、`--session` 等）。
 
 - 构建 / 安装：见 [构建与安装](build-and-install.zh-CN.md)。
 - 会话持久化、模型配置、工具审批都由 agent 处理；TUI 只是前端。

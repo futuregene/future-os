@@ -135,7 +135,7 @@ docs/wiki/
 - 说明命令行工具 `future` **随每个下载包附带**(安装包与便携包都有,装在应用旁边),详见 CLI 页。
 - **首次启动**:**以随包附带的 `docs/dist/readme-*.txt` 为准**——当前发布包 macOS **未做 Apple 公证**(首次双击可能被 Gatekeeper 拦下,属正常,右键打开或按下方步骤即可),Windows 安装包/便携包未做代码签名(SmartScreen 可能提示,见 FAQ)。(仓库另有签名/公证的发布流水线,若 Releases 下载页提供的是签名版则按实际措辞;措辞与 FAQ 页保持一致。)
   - **macOS**:把 FutureOS 拖进"应用程序"后正常启动。
-  - **Windows**:安装版跑 `.exe`;便携版解压整个文件夹后双击 `FutureOS.exe`(便携版需把 `FutureOS.exe` 和 `future-agent.exe` 放在同一文件夹)。若遇 SmartScreen 信誉提示，应核对发布者和官方来源。需要 **Microsoft Edge WebView2 Runtime**(Win10 近期版与 Win11 一般已内置,缺失则从微软官网装 Evergreen 版)。
+  - **Windows**:安装版跑 `.exe`;便携版解压整个文件夹后双击 `FutureOS.exe`(便携版需把 `FutureOS.exe` 和 `future.exe` 放在同一文件夹)。若遇 SmartScreen 信誉提示，应核对发布者和官方来源。需要 **Microsoft Edge WebView2 Runtime**(Win10 近期版与 Win11 一般已内置,缺失则从微软官网装 Evergreen 版)。
 - **登录**:首次使用需联网并在应用内登录,详见快速开始。
 - **数据位置**:主目录下的 `.future` 文件夹(macOS `~/.future`,Windows `C:\Users\<你>\.future`)。
 - **更新**:安装版可在 Settings → 检查更新中下载、验证并安装更新，按提示重启；也可手动覆盖安装。便携版替换文件夹；`.future` 数据保留。
@@ -179,9 +179,9 @@ docs/wiki/
   - > ⚠️ 命令名统一为 **`future`**:发布产物的二进制名(见 `tauri.conf.json` 的 sidecar、`docs/dist/readme-*.txt`、应用内文案)与开发期 npm link 装的命令一致,都是 `future`。全文一律用 `future`,不要写成 `future-cli`。
 - **位置**:
   - macOS(`.dmg`):应用内 `/Applications/FutureOS.app/Contents/MacOS/future`
-  - Windows(安装版与**便携** `.zip` 都带):`future.exe`(便携版解压后与 `FutureOS.exe`、`future-agent.exe` 同目录)
+  - Windows(安装版与**便携** `.zip` 都带):`future.exe`(便携版解压后与 `FutureOS.exe` 同目录)
 - **运行**:在含二进制的文件夹开终端;`--help` 查看;可加入 PATH 或做别名(给 macOS 别名示例);首次使用可先跑 `future init` 安装内置技能。
-- **agent 必须在运行**:每条命令都要连 FutureOS agent;开着桌面应用则已在运行。**CLI 本身不能启动 agent**(`agent` 组只有 `status`),未运行时先打开桌面应用(它会自动拉起后台 agent),或手动运行 `future-agent`。
+- **agent 必须在运行**:每条命令都要连 FutureOS agent;开着桌面应用则已在运行。未运行时用 `future agent` 启动(或打开桌面应用,它会自动拉起后台 agent)。
 - **命令组**(以 `cli/src/index.ts` 实际分发为准;无 `tui` 组,也无 `channel` 组):
   - `init`:安装内置技能;macOS/Linux 上还会把 `future` 链接进 `~/.future/bin` 并提示加入 PATH
   - `auth`:登录/登出/状态/取凭据(`login` / `status` / `credential` / `logout`;`credential` 输出 API key 供脚本使用)
@@ -214,7 +214,7 @@ docs/wiki/
 覆盖这些问题(去掉一切 Linux 与 TUI 相关项):
 - macOS 打不开("身份不明的开发者"/"已损坏"):右键打开;"已损坏"用 `xattr -dr com.apple.quarantine /Applications/FutureOS.app`。
 - Windows 提示"Windows 保护了你的电脑":SmartScreen,点"更多信息 → 仍要运行"。
-- Windows 启动没反应:装 Microsoft Edge WebView2 Runtime;便携版确认 `FutureOS.exe` 与 `future-agent.exe` 同文件夹。
+- Windows 启动没反应:装 Microsoft Edge WebView2 Runtime;便携版确认 `FutureOS.exe` 与 `future.exe` 同文件夹。
 - 用不了任何模型/未登录:Settings → Providers → FutureGene → Connect,或加自己的 provider。
 - 怎么切换模型:输入框选择器,或 Settings → Models。
 - agent 停下来问我东西:那是批准机制,Allow/Reject,不超时。

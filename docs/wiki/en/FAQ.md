@@ -22,7 +22,7 @@ That's **SmartScreen**. Click **More info → Run anyway**.
 ### Windows: nothing happens when I launch it
 
 - Install the **Microsoft Edge WebView2 Runtime** (Evergreen version) from Microsoft's website — the app needs it. Recent Windows 10 and Windows 11 usually already have it.
-- On the **portable** version, make sure `FutureOS.exe` and `future-agent.exe` are in the **same folder**.
+- On the **portable** version, make sure `FutureOS.exe` and `future.exe` are in the **same folder**.
 - If the window opens but says the background service isn't connected, the `.zip` was tagged "came from the Internet". Right-click the `.zip` → **Properties** → tick **Unblock** → unzip again.
 
 ### I can't use any model / I'm not signed in

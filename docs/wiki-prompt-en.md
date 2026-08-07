@@ -135,7 +135,7 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 - Mention that the CLI tool `future` **ships with every download** (both installer and portable, placed next to the app) — see the CLI page for details.
 - **First launch**: **defer to `docs/dist/readme-*.txt`** (shipped with the artifact) — the current release is not Apple-notarized (macOS; Gatekeeper may block the first double-click — normal, use the steps below), and Windows builds are not code-signed (SmartScreen may warn; see FAQ). (The repo also has signed/notarized release pipelines; if the Releases download page offers a signed build, describe that instead. Keep wording consistent with the FAQ page.)
   - **macOS**: drag FutureOS into Applications and launch it normally.
-  - **Windows**: installer version — run `.exe`; portable version — extract the entire folder then double-click `FutureOS.exe` (keep `FutureOS.exe` and `future-agent.exe` in the same folder). If SmartScreen shows a reputation prompt, verify the publisher and official download source. Requires **Microsoft Edge WebView2 Runtime** (pre-installed on recent Win10 and Win11; if missing, install the Evergreen version from Microsoft's website).
+  - **Windows**: installer version — run `.exe`; portable version — extract the entire folder then double-click `FutureOS.exe` (keep `FutureOS.exe` and `future.exe` in the same folder). If SmartScreen shows a reputation prompt, verify the publisher and official download source. Requires **Microsoft Edge WebView2 Runtime** (pre-installed on recent Win10 and Win11; if missing, install the Evergreen version from Microsoft's website).
 - **Sign in**: first use requires internet and in-app sign-in — see Quick Start.
 - **Data location**: `.future` folder in your home directory (macOS `~/.future`, Windows `C:\Users\<you>\.future`).
 - **Updating**: installer builds can use Settings → Check for updates to download, verify, and install an update, then restart when prompted; manual overwrite remains available. Replace the folder for portable builds. `.future` data is preserved.
@@ -179,10 +179,10 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
   - > ⚠️ The release binary is named **`future`** (see the `tauri.conf.json` sidecar, `docs/dist/readme-*.txt`, in-app copy) — the same name as the dev-time `future` installed via `npm link`. Use `future` throughout, never `future-cli`.
 - **Location**:
   - macOS (`.dmg`): inside the app at `/Applications/FutureOS.app/Contents/MacOS/future`
-  - Windows (installer and **portable** `.zip` both include it): `future.exe` (portable: in the extracted folder, next to `FutureOS.exe` and `future-agent.exe`)
+  - Windows (installer and **portable** `.zip` both include it): `future.exe` (portable: in the extracted folder, next to `FutureOS.exe`)
   - Note: the CLI ships in the installer too (staged as a Tauri sidecar), not just the portable package.
 - **Running**: open a terminal in the folder containing the binary; use `--help` to explore; can add to PATH or create an alias (give macOS alias example). First-time users can run `future init` to install built-in skills.
-- **Agent must be running**: every command needs the FutureOS agent; if the desktop app is open it's already running. **The CLI itself cannot start the agent** (the `agent` group only has `status`) — if it's not running, open the desktop app first (it auto-starts the agent), or launch the `future-agent` binary manually.
+- **Agent must be running**: every command needs the FutureOS agent; if the desktop app is open it's already running. If it's not, start it with `future agent` (or open the desktop app, which auto-starts the agent).
 - **Command groups** (use `cli/src/index.ts` actual dispatch; there is no `tui` group and no `channel` group):
   - `init`: install built-in skills; on macOS/Linux also links `future` into `~/.future/bin` and prints a PATH hint
   - `auth`: sign in / sign out / status / credential (`login` / `status` / `credential` / `logout`; `credential` prints the API key for scripting)
@@ -215,7 +215,7 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 Cover these questions (remove all Linux and TUI items):
 - macOS won't open ("unidentified developer" / "damaged"): right-click open; for "damaged" use `xattr -dr com.apple.quarantine /Applications/FutureOS.app`.
 - Windows says "Windows protected your PC": SmartScreen, click "More info → Run anyway".
-- Windows: nothing happens when launching: install Microsoft Edge WebView2 Runtime; for portable version, confirm `FutureOS.exe` and `future-agent.exe` are in the same folder.
+- Windows: nothing happens when launching: install Microsoft Edge WebView2 Runtime; for portable version, confirm `FutureOS.exe` and `future.exe` are in the same folder.
 - Can't use any model / not signed in: Settings → Providers → FutureGene → Connect, or add your own provider.
 - How to switch models: input box selector, or Settings → Models.
 - The agent stops and asks me something: that's the approval mechanism, Allow/Reject, no timeout.

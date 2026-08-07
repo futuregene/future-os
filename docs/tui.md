@@ -7,11 +7,12 @@ always means the agent isn't running yet.
 
 ```bash
 future agent      # terminal 1: the agent
-future tui        # terminal 2: the terminal UI (same as future-tui)
+future tui        # terminal 2: the terminal UI
 ```
 
 `future tui <args>` runs the TUI in-process; the standalone `future-tui`
-binary is equivalent and still installed. `future tui --help` lists all
+binary is equivalent but no longer installed by default (build it with
+`cargo build -p future-tui` if you need it). `future tui --help` lists all
 options (print mode, `--list-models`, `--session`, ...).
 
 - Build / install: see [Build & Install](build-and-install.md).

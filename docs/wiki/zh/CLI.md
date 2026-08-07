@@ -126,7 +126,7 @@ future models --json     # 机器可读输出
 ### `agent` —— 启动 agent 服务
 
 ```bash
-future agent              # 启动 agent gRPC 服务（等同于 future-agent）
+future agent              # 启动 agent gRPC 服务
 future agent --help       # 查看 agent 选项（gRPC 地址、日志、profiling）
 ```
 
@@ -136,12 +136,12 @@ future agent --help       # 查看 agent 选项（gRPC 地址、日志、profili
 ### `tui` / `channel` / `loop` —— 运行其他组件
 
 `future` 是所有 Rust 组件的统一入口——每个都运行与独立二进制完全相同的代码，
-独立二进制仍然安装：
+独立二进制仍是构建目标（`cargo build -p <crate>`），但已不再默认安装：
 
 ```bash
-future tui                # 终端界面（等同于 future-tui）
-future channel            # IM 渠道桥：飞书 / 钉钉（等同于 future-channel）
-future loop status        # loop 控制面：goal/todo/gate（等同于 future-loop）
+future tui                # 终端界面
+future channel            # IM 渠道桥：飞书 / 钉钉
+future loop status        # loop 控制面：goal/todo/gate
 ```
 
 ### `session` —— 管理会话

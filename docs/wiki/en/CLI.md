@@ -126,7 +126,7 @@ future models --json     # machine-readable output
 ### `agent` — run the agent server
 
 ```bash
-future agent              # start the agent gRPC server (same as future-agent)
+future agent              # start the agent gRPC server
 future agent --help       # agent options: gRPC address, logging, profiling
 ```
 
@@ -136,12 +136,13 @@ as the standalone `future-agent` binary.
 ### `tui` / `channel` / `loop` — run the other components
 
 `future` is the unified entry point for every Rust component — each runs the
-same code as its standalone binary, which stays installed:
+same code as its standalone binary (the `future-*` binaries still exist as
+build targets but no longer ship by default):
 
 ```bash
-future tui                # terminal UI (same as future-tui)
-future channel            # IM channel bridge: Feishu / DingTalk (same as future-channel)
-future loop status        # loop control plane: goals/todos/gates (same as future-loop)
+future tui                # terminal UI
+future channel            # IM channel bridge: Feishu / DingTalk
+future loop status        # loop control plane: goals/todos/gates
 ```
 
 ### `session` — manage sessions

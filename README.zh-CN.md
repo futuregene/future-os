@@ -106,16 +106,16 @@ future auth login
 future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止）
 ```
 
-然后启动终端界面——用同一个 `future` 命令或独立二进制均可（二者等价）：
+然后用同一个 `future` 命令启动终端界面：
 
 ```bash
-future tui        # 终端界面（等同于 future-tui）
+future tui        # 终端界面
 ```
 
 > `future <cmd>` 是所有 Rust 组件的统一入口：`future agent`、`future tui`、
-> `future channel`、`future loop`。独立二进制（`future-agent`、`future-tui`、
-> `future-channel`、`future-loop`）仍然安装且用法完全一致——`future <cmd> <args>`
-> 只是在进程内运行它们。
+> `future channel`、`future loop`。每个都运行与同名独立二进制完全相同的代码
+> （`future-*` 二进制仍是构建目标，可用 `cargo build -p future-tui` 等构建，
+> 但已不再默认安装）。
 >
 > 客户端如果报连接 / gRPC 错误，几乎都是 Agent 还没启动——见 [故障排查](#故障排查)。
 

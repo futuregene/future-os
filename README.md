@@ -110,18 +110,17 @@ first**, listening on `127.0.0.1:50051`:
 future agent     # start the agent in the terminal (logs to stdout; Ctrl-C to stop)
 ```
 
-Then launch the terminal UI — from the same `future` command or the standalone
-binary (both are equivalent):
+Then launch the terminal UI from the same `future` command:
 
 ```bash
-future tui       # terminal UI (same as future-tui)
+future tui       # terminal UI
 ```
 
 > `future <cmd>` is the unified entry point for every Rust component: `future agent`,
-> `future tui`, `future channel`, `future loop`. The standalone binaries
-> (`future-agent`, `future-tui`, `future-channel`, `future-loop`) remain
-> installed and work exactly the same — `future <cmd> <args>` just runs them
-> in-process.
+> `future tui`, `future channel`, `future loop`. Each runs the same code as the
+> standalone binary of the same name (the `future-*` binaries still exist as
+> build targets — `cargo build -p future-tui` etc. — but are no longer
+> installed by default).
 >
 > A client that exits with a connection / gRPC error almost always means the agent isn't running yet — see [Troubleshooting](#troubleshooting).
 
