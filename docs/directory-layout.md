@@ -68,7 +68,7 @@ screen writes when `PI_TUI_WRITE_LOG=1`. See [tui.md](tui.md).
 
 ## `~/.future/app/` — desktop GUI
 
-Owned by the Tauri desktop app (see `gui/`):
+Owned by the Tauri desktop app (see `desktop/`):
 
 - `app.db` — the SQLite database (threads, runs, approval requests, …).
 - `images/` — persistent per-thread image tree (`<thread_id>/thumb/` and,

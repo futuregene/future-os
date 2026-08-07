@@ -206,7 +206,7 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     guidelines.push("Write ordinary responses in standard Markdown. To reference a file you created or edited on disk, use a normal Markdown link whose destination is the file path from the write tool result: [name](<path>). Wrap the path in angle brackets so paths with spaces work, and write it verbatim (an absolute path keeps its leading slash; a workspace-relative path MUST start with ./ — e.g. [notes.txt](<./notes.txt>), never [notes.txt](<notes.txt>)). Use forward slashes even on Windows. Do NOT percent-encode the path or use any custom URL scheme.".to_string());
     // Minimal link mode: application-object references (futureos:// links and
     // futureos-* fenced embeds) are disabled while we trial the simplest link
-    // set. The GUI no longer renders them (see gui parseFutureMarkdown.ts), so we
+    // set. The GUI no longer renders them (see desktop parseFutureMarkdown.ts), so we
     // don't instruct the model to emit them. File links above are unaffected.
     // To restore, uncomment the two guidelines below.
     // guidelines.push("Only use an id-based reference — [label](futureos://artifact/<id>), [label](futureos://run/<id>), [label](futureos://tool/<id>), [label](futureos://approval/<id>), or [label](futureos://review/<id>) — when you actually have that object's id from earlier in the conversation or tool results. NEVER invent or guess an id; if you don't have one (e.g. a file you just wrote), use a plain [name](<path>) file link instead. Prefer a reference over pasting long stdout, full diffs, or large file contents inline.".to_string());

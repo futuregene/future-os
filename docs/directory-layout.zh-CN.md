@@ -64,7 +64,7 @@ FutureOS 的所有用户状态都存放在 `~/.future/` 下（Windows 为
 
 ## `~/.future/app/` — 桌面 GUI
 
-归 Tauri 桌面应用所有（见 `gui/`）：
+归 Tauri 桌面应用所有（见 `desktop/`）：
 
 - `app.db` — SQLite 数据库（线程、run、审批请求等）。
 - `images/` — 持久化的每线程图片树（`<thread_id>/thumb/`，工作区对话另有

@@ -1,6 +1,6 @@
 # 模块审计报告 03：超大模块与职责拆分建议
 
-> 范围：Rust agent（`agent/src/`）、GUI Rust 层（`gui/src-tauri/src/`）、React 层（`gui/src/`）中的大文件。
+> 范围：Rust agent（`agent/src/`）、GUI Rust 层（`desktop/src-tauri/src/`）、React 层（`desktop/src/`）中的大文件。
 > 方式：全部文件先做函数级结构清单（`grep -n` 声明），再逐段阅读关键区间；行号均经实际核对。多数文件含大量内联测试，下文区分"生产代码"与测试行数。
 > 一句话结论：18 个候选中 **3 个强烈建议拆分（Tier 1）、9 个建议拆分（Tier 2）**；另有 6 个大文件经核查是内聚的，不拆。
 
@@ -10,24 +10,24 @@
 
 | # | 文件 | 行数 | 判定 | 核心问题 |
 |---|---|---|---|---|
-| 1 | gui/src-tauri/src/agent_bridge/mod.rs | 1343 | 杂物箱 | 6 个主题堆在已有 13 个兄弟模块的 mod.rs |
+| 1 | desktop/src-tauri/src/agent_bridge/mod.rs | 1343 | 杂物箱 | 6 个主题堆在已有 13 个兄弟模块的 mod.rs |
 | 2 | agent/src/session/mod.rs | 3624 | 混合 | 类型+持久化+修复+摘要+fork+消息转换，5 主题 |
-| 3 | gui/src/features/agent/Composer.tsx | 704 | 混合→杂物箱 | God component：9 useState+8 useRef 跨 5 个无关关注点 |
+| 3 | desktop/src/features/agent/Composer.tsx | 704 | 混合→杂物箱 | God component：9 useState+8 useRef 跨 5 个无关关注点 |
 | 4 | agent/src/rpc/commands.rs | 2865 | 混合 | 870 行 match，~12 个 arm 内联业务逻辑 + 15 个跨域 helper |
 | 5 | agent/src/tools/mod.rs | 1925 | 混合 | 工具注册+作用域+580 行 shell 引擎+fs 操作+路径安全 |
-| 6 | gui/src-tauri/src/lib.rs | 763 | 混合 | 事件合并推送基建(~180 行)+Win32 图标(~130 行)混入装配文件 |
-| 7 | gui/src-tauri/src/remote/mod.rs | 1084 | 混合 | 生命周期+事件镜像+presence 快照+手写 HTTP 服务器 |
-| 8 | gui/src/features/agent/threadRunProjection.ts | 697 | 混合 | 3 条互相独立的对账管线同居 |
+| 6 | desktop/src-tauri/src/lib.rs | 763 | 混合 | 事件合并推送基建(~180 行)+Win32 图标(~130 行)混入装配文件 |
+| 7 | desktop/src-tauri/src/remote/mod.rs | 1084 | 混合 | 生命周期+事件镜像+presence 快照+手写 HTTP 服务器 |
+| 8 | desktop/src/features/agent/threadRunProjection.ts | 697 | 混合 | 3 条互相独立的对账管线同居 |
 | 9 | agent/src/rpc/approval.rs | 1539 | 混合 | 门控生命周期+形状分类+UI 建议构造 3 主题 |
 | 10 | agent/src/rpc/protocol.rs | 1590 | 混合 | wire 类型 vs 广播器+日志持久化引擎 |
 | 11 | agent/src/types/mod.rs | 1603 | 杂物箱（类型层） | 消息/usage/流事件/工具/配置/模型/provider trait 跨域混装 |
 | 12 | agent/src/models/mod.rs | 1519 | 混合 | 模型类型+builtin 表+用户模型合并富化+Registry |
-| 13 | gui/src/components/layout/ActivityRail.tsx | 917 | 混合 | 批量选择状态机+账户菜单可剥离 |
-| 14 | gui/src-tauri/src/remote/commands.rs | 1198 | 混合 | 握手密码学(~200 行)+分页截断(~125 行)嵌入分发器 |
-| 15 | gui/src-tauri/src/store/runs.rs | 1500 | 混合 | 420 行 tool 投影引擎放在 store 文件里 |
+| 13 | desktop/src/components/layout/ActivityRail.tsx | 917 | 混合 | 批量选择状态机+账户菜单可剥离 |
+| 14 | desktop/src-tauri/src/remote/commands.rs | 1198 | 混合 | 握手密码学(~200 行)+分页截断(~125 行)嵌入分发器 |
+| 15 | desktop/src-tauri/src/store/runs.rs | 1500 | 混合 | 420 行 tool 投影引擎放在 store 文件里 |
 | 16 | agent/src/rpc/session_prompt.rs | 1586 | 基本内聚 | 文件级问题小；`prompt_internal` 单函数 766 行 |
 | 17 | agent/src/rpc/session.rs | 2127 | 文件内聚/结构体 God | ServerSession 30+ 字段跨 8 类关注点 |
-| 18 | gui/src-tauri/src/store/cleanup.rs | 826 | 轻微混合 | run 恢复查询放错名字；与 agent_bridge 有映射重复 |
+| 18 | desktop/src-tauri/src/store/cleanup.rs | 826 | 轻微混合 | run 恢复查询放错名字；与 agent_bridge 有映射重复 |
 
 **内聚、跳过**：agent_bridge/observer.rs（1219）、MentionEditor.tsx（745）、agentActivity.ts（594）、parseFutureMarkdown.ts（559）、AppShell.tsx（597，编排器属既定设计）、SkillsView.tsx（654，单一领域，可选提数据 hook）。理由见 §6。
 
@@ -35,7 +35,7 @@
 
 ## 2. Tier 1：强烈建议拆分
 
-### 2.1 `gui/src-tauri/src/agent_bridge/mod.rs`（1343 行，生产 ~1256）
+### 2.1 `desktop/src-tauri/src/agent_bridge/mod.rs`（1343 行，生产 ~1256）
 
 目录下已拆出 13 个兄弟模块（approval/client/import/observer/persist/replica/review/session/stream 等），mod.rs 成了"剩下的都放这里"：
 
@@ -74,7 +74,7 @@
 - `session/manager.rs`（Manager 本体的路径/追加/加载）
 - mod.rs 保留类型与常量
 
-### 2.3 `gui/src/features/agent/Composer.tsx`（704 行）
+### 2.3 `desktop/src/features/agent/Composer.tsx`（704 行）
 
 单个 `Composer`（98-704）承担 5 个互不相关关注点（本次审计 React 侧最严重）：
 
@@ -120,7 +120,7 @@
 
 **拆分建议**：`tools/shell.rs`(401-984)、`tools/files.rs`(985-1161，含路径安全)、mod.rs 留作用域+注册（~400 行）。已有 `cmd_exe_rewrite.rs` 先例。
 
-### 3.3 `gui/src-tauri/src/lib.rs`（763 行）
+### 3.3 `desktop/src-tauri/src/lib.rs`（763 行）
 
 `run()`（410-763）本体是纯装配（合格），但混入两块真实逻辑：
 
@@ -129,7 +129,7 @@
 
 **拆分建议**：新建 `emit.rs`(242-407 全部+`runtime_update_tests`)、`window.rs`(51-209)。拆后 lib.rs ~380 行纯装配。
 
-### 3.4 `gui/src-tauri/src/remote/mod.rs`（1084 行，生产 ~1036）
+### 3.4 `desktop/src-tauri/src/remote/mod.rs`（1084 行，生产 ~1036）
 
 4 主题：
 
@@ -142,7 +142,7 @@
 
 **拆分建议**：`remote/presence.rs`、`remote/web.rs`、`remote/events.rs`（re-export 保持 `crate::remote::publish_event` 路径不变）；`spawn_credential_refresh`(644-728)深改 STATE 任务句柄，留在 mod.rs。拆后 ~500 行。
 
-### 3.5 `gui/src/features/agent/threadRunProjection.ts`（697 行）
+### 3.5 `desktop/src/features/agent/threadRunProjection.ts`（697 行）
 
 3 条独立管线：
 
@@ -195,7 +195,7 @@
 
 ## 4. Tier 3：可选 / 局部调整
 
-### 4.1 `gui/src/components/layout/ActivityRail.tsx`（917 行）
+### 4.1 `desktop/src/components/layout/ActivityRail.tsx`（917 行）
 
 主组件 90-691（11 个 useState）。可剥离块：
 - **批量选择状态机**（148-253 的 `selectionMode`/`selectionScope`/`selectedThreadIds` + `toggleThreadSelection`/`enterChatSelectionMode`/`selectAll`/`handleStartBatchDelete` + Esc effect——完整自洽子功能）→ `layout/hooks/useThreadSelection.ts`
@@ -203,7 +203,7 @@
 
 拆后 ~550 行纯布局+列表。
 
-### 4.2 `gui/src-tauri/src/remote/commands.rs`（1198 行）
+### 4.2 `desktop/src-tauri/src/remote/commands.rs`（1198 行）
 
 分发循环+单飞(172-546)合理，但混入：
 - **配对握手密码学**(28-62、553-745，nkeys 签名/转录本绑定 ~200 行) → `remote/handshake.rs`
@@ -211,7 +211,7 @@
 
 commands.rs 留传输+分发+应答（~600 行）。
 
-### 4.3 `gui/src-tauri/src/store/runs.rs`（1500 行，生产 ~1043）
+### 4.3 `desktop/src-tauri/src/store/runs.rs`（1500 行，生产 ~1043）
 
 | 主题 | 行范围 | 内容 |
 |---|---|---|
@@ -231,7 +231,7 @@ commands.rs 留传输+分发+应答（~600 行）。
 
 **建议**（低优先级，结构性）：把 6 个 token/cost 计数器收进 `SessionCounters` 子结构、sandbox/permission/session_rules 收进 `SessionSecurity` 子结构；文件可不拆。
 
-### 4.6 `gui/src-tauri/src/store/cleanup.rs`（826 行，生产 ~455）——轻微
+### 4.6 `desktop/src-tauri/src/store/cleanup.rs`（826 行，生产 ~455）——轻微
 
 run 恢复查询（`list_active_runs` 57、`reanimate_run` 86、`settle_interrupted_run_from_agent` 107）是 **run 生命周期**语义（供 agent_bridge 看门狗消费），放在叫 cleanup 的文件里名不副实 → 可移 `store/run_recovery.rs`。孤儿回收(173-353)+`clear_finished_runs`(388-454)留在 cleanup 名副其实。
 
@@ -248,9 +248,9 @@ run 恢复查询（`list_active_runs` 57、`reanimate_run` 86、`settle_interrup
    - GUI **没有** AppState/tauri::State；全局状态是模块级 static（`APP_HANDLE`、`OBSERVERS`、`TOOL_PROJECTION_CACHE`、`AGENT_REPLICAS`），其中 `crate::emit_thread_runtime_updated` 等横切设施住在 lib.rs 是 §3.3 的根因。
    - agent 侧 `AppState`（rpc/mod.rs:24-59，15 字段）尚可，但 `welcome_version/cwd/skills/context/exts` 5 个字段可收进 `WelcomeConfig`。
 2. **重复编码（漂移点）**：`store/cleanup.rs::agent_terminal_settlement`(131-149)与 `agent_bridge/mod.rs::settle_from_agent_terminal`(916-944)实现几乎相同的 agent 终态→status/error_type 映射，两处各自维护。
-3. **三处退出码语义重复**：GUI `store/runs.rs`（`nonzero_exit_code` 878、`is_soft_fail_command` 887）、`gui/src/features/agent/agentActivity.ts`（`nonZeroExitCode` 569、`isSoftExit` 580、`SOFT_FAIL_COMMANDS` 550）、`toolActivityModel.ts`——Rust/TS 两层各维护一份软失败命令清单。
+3. **三处退出码语义重复**：GUI `store/runs.rs`（`nonzero_exit_code` 878、`is_soft_fail_command` 887）、`desktop/src/features/agent/agentActivity.ts`（`nonZeroExitCode` 569、`isSoftExit` 580、`SOFT_FAIL_COMMANDS` 550）、`toolActivityModel.ts`——Rust/TS 两层各维护一份软失败命令清单。
 4. **循环导入**：未发现。TS 依赖单向：`threadRunProjection → agentActivity → toolActivityModel`；`Composer → MentionEditor`；`AppShell → ActivityRail`。Rust 单 crate 无模块循环问题。
-5. **规范小疵**：AppShell.tsx 137-143 直接用 `window.addEventListener("future:cwd-changed")`，违反 gui/CLAUDE.md 的事件总线原则（非拆分项）。
+5. **规范小疵**：AppShell.tsx 137-143 直接用 `window.addEventListener("future:cwd-changed")`，违反 desktop/CLAUDE.md 的事件总线原则（非拆分项）。
 
 ---
 
@@ -260,7 +260,7 @@ run 恢复查询（`list_active_runs` 57、`reanimate_run` 86、`settle_interrup
 - **`MentionEditor.tsx`（745）**：单个 contentEditable 编辑器+两个补全菜单；纯函数 helper 与命令式 DOM 操作共享 pill 隐式契约（`PILL_ATTR`），WebKit IME 约束下的刻意写法。保持原样。
 - **`agentActivity.ts`（594）**：单一增量状态机（run 事件→渲染投影）+其私有解析器；`createRunProjector` 闭包状态与 `snapshot` 强耦合。退出码三件套（45 行）可移入现有 `toolActivityModel.ts`。
 - **`parseFutureMarkdown.ts`（559）**：单条 mdast→FutureMarkdownDocument 管线；futureos 引用解析(~120 行)与主 switch 耦合，目录已有 `futureReferenceStore`/`futureMarkdownTypes`/`resolveFutureReferences` 分担。保持原样。
-- **`AppShell.tsx`（597）**：12 个 useState 全部是布局编排状态，域逻辑已外置到 16 个 hooks（gui/CLAUDE.md 既定设计）。合格。
+- **`AppShell.tsx`（597）**：12 个 useState 全部是布局编排状态，域逻辑已外置到 16 个 hooks（desktop/CLAUDE.md 既定设计）。合格。
 - **`SkillsView.tsx`（654）**：单一技能目录域，子组件已分列；可选抽 `useSkillsCatalog.ts`（非紧急）。
 
 ---

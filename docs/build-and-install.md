@@ -41,13 +41,13 @@ Build:
 ```bash
 make install        # GUI + unified `future` CLI + skills (agent/tui/channel/loop are embedded) → /opt/homebrew/bin
 make install-cli    # unified `future` CLI only
-make install-gui    # desktop app only (stages its own agent/CLI sidecars)
+make install-desktop    # desktop app only (stages its own agent/CLI sidecars)
 make install-skills # built-in skills + the /future-loop skill
-make package-gui    # desktop bundle → .app + .dmg in gui/src-tauri/target/release/bundle/
-scripts/build-macos-dmg.sh  # local DMG; auto-signs when a Developer ID certificate is available
+make package-desktop    # desktop bundle → .app + .dmg in desktop/src-tauri/target/release/bundle/
+scripts/build-desktop-macos.sh  # local DMG; auto-signs when a Developer ID certificate is available
 ```
 
-`scripts/build-macos-dmg.sh` builds the unified `future` CLI sidecar together
+`scripts/build-desktop-macos.sh` builds the unified `future` CLI sidecar together
 with the GUI. It automatically uses a single `Developer ID Application` identity
 from the macOS Keychain and writes a `*-sign.dmg`; if no unambiguous identity
 is available, it falls back to the normal DMG. Run it with `--help` for
@@ -72,9 +72,9 @@ Build:
 ```bash
 make install        # GUI + unified `future` CLI + skills (agent/tui/channel/loop are embedded) → /usr/local/bin (sudo)
 make install-cli    # unified `future` CLI only
-make install-gui    # desktop app only (stages its own agent/CLI sidecars)
+make install-desktop    # desktop app only (stages its own agent/CLI sidecars)
 make install-skills # built-in skills + the /future-loop skill
-make package-gui    # desktop bundle → .deb in gui/src-tauri/target/release/bundle/
+make package-desktop    # desktop bundle → .deb in desktop/src-tauri/target/release/bundle/
 ```
 
 ## Windows
@@ -106,31 +106,31 @@ Copy-Item target\release\future.exe $bin
 ```
 
 **Desktop app** — the GUI half of `make install` (stages its own sidecar,
-`make gui-sidecars` — only the unified `future` CLI; the GUI starts the agent
+`make desktop-sidecars` — only the unified `future` CLI; the desktop app starts the agent
 via `future agent`):
 
 ```powershell
 # Stage the unified CLI as the Tauri sidecar, named with the host triple
 $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-New-Item -ItemType Directory -Force -Path gui\src-tauri\binaries | Out-Null
-Copy-Item target\release\future.exe "gui\src-tauri\binaries\future-$triple.exe"
+New-Item -ItemType Directory -Force -Path desktop\src-tauri\binaries | Out-Null
+Copy-Item target\release\future.exe "desktop\src-tauri\binaries\future-$triple.exe"
 
-# Build the app and install it as future-gui.exe   (make install-gui)
-Push-Location gui; npm install; npx tauri build --no-bundle; Pop-Location
-Copy-Item gui\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.future\bin\future-gui.exe"
+# Build the app and install it as future-desktop.exe   (make install-desktop)
+Push-Location desktop; npm install; npx tauri build --no-bundle; Pop-Location
+Copy-Item desktop\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.future\bin\future-desktop.exe"
 ```
 
-**Installer package** — equivalent to `make package-gui`, once the sidecars are staged:
+**Installer package** — equivalent to `make package-desktop`, once the sidecars are staged:
 
 ```powershell
 node scripts\version.mjs --set-bundle
-Push-Location gui; npm run tauri:build; Pop-Location   # → NSIS setup .exe under gui\src-tauri\target\release\bundle\nsis\
+Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS setup .exe under desktop\src-tauri\target\release\bundle\nsis\
 ```
 
 Notes:
 
-- `scripts\start-gui-test.bat` runs the GUI in dev mode against a locally built agent.
-- The scripts under `scripts/` (`build-macos-dmg.sh`, `build-windows-portable.ps1`, `build-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI and the unified `future` CLI (agent/TUI/channel/loop embedded) — not a separate TUI.
+- `scripts\start-desktop-windows.bat` runs the GUI in dev mode against a locally built agent.
+- The scripts under `scripts/` (`build-desktop-macos.sh`, `build-desktop-windows-portable.ps1`, `build-desktop-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI and the unified `future` CLI (agent/TUI/channel/loop embedded) — not a separate TUI.
 
 ## Loop control plane (`future-loop`)
 
@@ -211,7 +211,7 @@ make clean          # remove build artifacts + installed binaries
 
 ### Proto
 
-The canonical API is `future-rpc/proto/future.proto`. Generated Rust code is
+The canonical API is `rpc/proto/future.proto`. Generated Rust code is
 checked into the repo — normal builds don't touch it. After editing a `.proto`
 file, regenerate:
 
@@ -233,7 +233,7 @@ make clean          # remove build artifacts + installed binaries
 
 ### Proto
 
-The canonical API is `future-rpc/proto/future.proto`. Generated Rust code is
+The canonical API is `rpc/proto/future.proto`. Generated Rust code is
 checked into the repo — normal builds don't touch it. After editing a `.proto`
 file, regenerate:
 

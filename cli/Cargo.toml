@@ -18,7 +18,7 @@ tokio.workspace = true
 tonic.workspace = true
 # Single proto codegen owner (PR #112): generated proto code lives in the
 # future-rpc crate; the CLI consumes it instead of owning a generated copy.
-future-rpc = { path = "../future-rpc" }
+future-rpc = { path = "../rpc" }
 # Embedded components: `future agent|tui|channel|loop <args>` runs the same
 # code as the standalone binaries (kept as separate [[bin]] targets too, see
 # Makefile run-* targets). The entry points build their own tokio runtimes,

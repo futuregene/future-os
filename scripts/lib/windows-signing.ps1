@@ -9,7 +9,7 @@
         . "$PSScriptRoot\lib\windows-signing.ps1"
 
     Used by scripts/sign-file.ps1 (the Tauri signCommand callback) and
-    scripts/build-windows-installer.ps1.
+    scripts/build-desktop-windows-installer.ps1.
 #>
 
 Set-StrictMode -Version Latest

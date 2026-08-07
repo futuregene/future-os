@@ -3,7 +3,7 @@ import { IS_RELEASE } from "../version.generated";
 export const DEVELOPMENT_PLATFORM_URL = "https://test.future-os.cn";
 export const PRODUCTION_PLATFORM_URL = "https://future-os.cn";
 
-// Channel policy mirrors the desktop (gui/src-tauri/src/build_info.rs +
+// Channel policy mirrors the desktop (desktop/src-tauri/src/build_info.rs +
 // future_platform.rs): a release build (plain `X.Y.Z`) is production-locked,
 // every other build (`0.0.0-<hash>…`) targets the test environment. The flag is
 // derived from the version string by scripts/version.mjs — NOT from `__DEV__` —

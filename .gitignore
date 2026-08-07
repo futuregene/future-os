@@ -17,17 +17,17 @@ vendor/
 
 # Rust
 **/target/
-gui/src-tauri/gen/
+desktop/src-tauri/gen/
 # Bundled agent sidecars — built in CI / locally, never committed
-gui/src-tauri/binaries/
+desktop/src-tauri/binaries/
 *.app/
 *.dmg
 *.msi
 *.AppImage
 
 # Node
-gui/dist/
-gui/.vite/
+desktop/dist/
+desktop/.vite/
 mobile/.expo/
 mobile/android/
 mobile/ios/
@@ -68,5 +68,5 @@ channel/
 # loop control plane runtime state (never commit)
 .codex/
 .future/loop/
-gui/node_modules
+desktop/node_modules
 FUTURE.md

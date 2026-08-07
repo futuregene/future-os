@@ -318,7 +318,7 @@ async fn async_main(
     // but the user logs in *from inside the GUI*, which needs the agent already
     // reachable to drive the flow. If the agent exited here, that first-run login
     // could never complete (the GUI spawns the sidecar exactly once at startup;
-    // see gui/src-tauri/src/agent_supervisor.rs), and the app would look broken
+    // see desktop/src-tauri/src/agent_supervisor.rs), and the app would look broken
     // out of the box. So when nothing is configured we log a warning and start
     // the server anyway with an empty model. The endpoint stays unconfigured
     // until the first `set_model` call, which resolves base_url + api_key from a

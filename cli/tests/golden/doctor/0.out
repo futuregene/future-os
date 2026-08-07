@@ -14,7 +14,7 @@
       future-tui not found on PATH — run `make install`
 
 [33m[--][0m [33mGUI[0m
-      future-gui not found on PATH — run `make install`
+      future-desktop not found on PATH — run `make install`
 
 [33m[--][0m [33mChannel bridge[0m
       future-channel not found on PATH — run `make install`

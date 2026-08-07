@@ -33,7 +33,7 @@ FutureOS is a **desktop AI Agent workbench**: users don't just "chat for answers
 - **Data** entry — hidden from navigation.
 - **Remote / mobile remote** — still under development.
 
-> Judge by the code: e.g., if `gui/src/components/layout/ActivityRail.tsx` has an empty `featureItems` array, those sidebar entries are not shown to users. When writing, if you discover a feature is hidden or unwired in code, don't include it in the wiki.
+> Judge by the code: e.g., if `desktop/src/components/layout/ActivityRail.tsx` has an empty `featureItems` array, those sidebar entries are not shown to users. When writing, if you discover a feature is hidden or unwired in code, don't include it in the wiki.
 
 ## 4. Output Requirements: Bilingual (Chinese + English)
 
@@ -121,14 +121,14 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 > Write in a user-facing, actionable style. The **"code entry points (read first)"** listed for each page are exploration starting points for you only — **do not** include them in the actual wiki pages.
 
 ### Home
-**Code entry points (read first):** `gui/src/app/App.tsx`, `gui/src/components/layout/AppShell.tsx`, `gui/src/components/layout/ActivityRail.tsx`, `gui/src/i18n/locales/` (feature naming & copy), `CLAUDE.md` (overall positioning).
+**Code entry points (read first):** `desktop/src/app/App.tsx`, `desktop/src/components/layout/AppShell.tsx`, `desktop/src/components/layout/ActivityRail.tsx`, `desktop/src/i18n/locales/` (feature naming & copy), `CLAUDE.md` (overall positioning).
 - One-line definition: **desktop AI Agent workbench** — not just chat, but seeing and verifying the agent's work.
 - "Getting started" in three steps: Install → Quick Start → Using FutureOS.
 - "What you can do" highlights: agent conversations with streaming thinking, tool calls, and visible work; quick Chat or folder-bound Workspace; you stay in control (approval before risky actions); reviewable work (background runs, file changes, outputs); use skill packs.
 - Note at bottom: runs on **macOS and Windows**.
 
 ### Installation
-**Code entry points (read first):** `gui/src-tauri/tauri.conf.json` (packaging artifacts: dmg / nsis / zip — confirm actual artifact types), `gui/src-tauri/build.rs` (sidecar binaries bundled), `scripts/build-windows-portable.ps1` (Windows portable package contents), `Makefile` (`package-gui` and other packaging targets), `CLAUDE.md` (`~/.future` data/config location).
+**Code entry points (read first):** `desktop/src-tauri/tauri.conf.json` (packaging artifacts: dmg / nsis / zip — confirm actual artifact types), `desktop/src-tauri/build.rs` (sidecar binaries bundled), `scripts/build-desktop-windows-portable.ps1` (Windows portable package contents), `Makefile` (`package-desktop` and other packaging targets), `CLAUDE.md` (`~/.future` data/config location).
 - **Download**: go to the Releases page and get the latest version for your system.
   - macOS: `.dmg` disk image
   - Windows: installer (`.exe`), or portable `.zip`
@@ -142,7 +142,7 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 - **Uninstalling**: macOS — delete `FutureOS.app`; Windows — uninstall from Settings or delete portable folder. To also remove data, delete `.future` afterward.
 
 ### Quick-Start
-**Code entry points (read first):** `gui/src/features/settings/FutureLoginDialog.tsx` (device-code login flow), `gui/src/features/settings/ProvidersPage.tsx`, `gui/src/features/agent/NewConversation.tsx`, `gui/src/features/agent/Composer.tsx` (send, model selector, attachments), `gui/src/components/layout/ActivityRail.tsx` (New Chat / Workspace entries).
+**Code entry points (read first):** `desktop/src/features/settings/FutureLoginDialog.tsx` (device-code login flow), `desktop/src/features/settings/ProvidersPage.tsx`, `desktop/src/features/agent/NewConversation.tsx`, `desktop/src/features/agent/Composer.tsx` (send, model selector, attachments), `desktop/src/components/layout/ActivityRail.tsx` (New Chat / Workspace entries).
 - **Open and sign in**: Settings (gear icon bottom-left) → Providers → built-in FutureGene → Connect → authorize in browser (if it doesn't open automatically, use the verification code + copyable link shown in the app). Mention you can also bring your own provider (see Settings).
 - **Start a conversation**: two ways — **New Chat** (fastest, for questions and one-off tasks), **Workspace** (bind a folder on your computer, for real projects).
 - **Send your first message**: use the input box at the bottom; you'll see streaming replies, tool call displays, and **pauses for your approval** before risky actions; local files are supported, with up to 4 images per message (25 MiB each) and no count limit for other files.
@@ -150,7 +150,7 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 - **See the work**: right-side panel — Runs (background tasks), Review (file changes in Workspace), Artifacts (outputs from Chat).
 
 ### Using-FutureOS
-**Code entry points (read first):** `gui/src/components/layout/AppShell.tsx` (three-panel layout), `gui/src/components/layout/ActivityRail.tsx` (left navigation — use this to confirm exactly which entries exist), `gui/src/components/layout/ContextPanel.tsx` (right panel), `gui/src/features/agent/ApprovalPrompt.tsx` (approval mechanism), `gui/src/features/runs/RunsPanel.tsx` + `gui/src/features/review/ReviewPanel.tsx` + `gui/src/features/artifacts/ArtifactsPanel.tsx` (three right-side views).
+**Code entry points (read first):** `desktop/src/components/layout/AppShell.tsx` (three-panel layout), `desktop/src/components/layout/ActivityRail.tsx` (left navigation — use this to confirm exactly which entries exist), `desktop/src/components/layout/ContextPanel.tsx` (right panel), `desktop/src/features/agent/ApprovalPrompt.tsx` (approval mechanism), `desktop/src/features/runs/RunsPanel.tsx` + `desktop/src/features/review/ReviewPanel.tsx` + `desktop/src/features/artifacts/ArtifactsPanel.tsx` (three right-side views).
 - **Three-panel layout**: left = navigation (use what `ActivityRail.tsx` actually renders: New Chat, your Workspaces & conversations, Chats, Settings); center = conversation (messages, streaming replies, plans, tool activity, command previews, errors, approval cards, input box fixed at bottom); right = context (see what the agent is doing, collapsible).
 - **Chat vs Workspace**: compare in a table (how created, suitable scenarios, what the right panel shows). Emphasize each conversation is an independent agent session that doesn't interfere with others.
 - **Talking to the agent**: send via input box; model selector can be changed per-session; up to 4 images per message, while non-image attachments are not count-limited.
@@ -159,7 +159,7 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 - (Don't write about Research / Data entries — they are hidden from navigation.)
 
 ### Settings
-**Code entry points (read first):** `gui/src/features/settings/SettingsDialog.tsx` (page composition), `gui/src/features/settings/GeneralPage.tsx`, `gui/src/features/settings/ProvidersPage.tsx` + `CustomProviderDialog.tsx`, `gui/src/features/settings/ModelsPage.tsx`, `gui/src/features/settings/FutureLoginDialog.tsx`. **Use these to confirm what settings pages actually exist and their real fields.**
+**Code entry points (read first):** `desktop/src/features/settings/SettingsDialog.tsx` (page composition), `desktop/src/features/settings/GeneralPage.tsx`, `desktop/src/features/settings/ProvidersPage.tsx` + `CustomProviderDialog.tsx`, `desktop/src/features/settings/ModelsPage.tsx`, `desktop/src/features/settings/FutureLoginDialog.tsx`. **Use these to confirm what settings pages actually exist and their real fields.**
 - Access via gear icon bottom-left; there's also a Models shortcut under New Chat. **Page count and names must match `SettingsDialog.tsx`**: the user-visible pages are General, Account, Check for updates, About, Providers, Models, Reset; Remote and Environment are dev-only pages and must be skipped. Focus on the three below.
 - **General**: desktop-level options. Use real labels from code; typically includes: **Language**, **Approval mode** (Manual / Sandbox [macOS only] / Unrestricted), **Show thinking process**.
 - **Providers**:
@@ -168,7 +168,7 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 - **Models**: all available models listed grouped by provider; toggle each model's visibility; searchable; the input box selector draws from the same source and shows which provider each model comes from.
 
 ### Skills
-**Code entry points (read first):** `gui/src/features/skills/SkillsView.tsx`, `gui/src/integrations/skills/skillsClient.ts`, `cli/src/commands/skills.ts`, `agent/src/skills/mod.rs` (skill discovery). **Use these first to confirm the actual list of currently existing skills and their purposes**, then fill in the table below based on reality.
+**Code entry points (read first):** `desktop/src/features/skills/SkillsView.tsx`, `desktop/src/integrations/skills/skillsClient.ts`, `cli/src/commands/skills.ts`, `agent/src/skills/mod.rs` (skill discovery). **Use these first to confirm the actual list of currently existing skills and their purposes**, then fill in the table below based on reality.
 - Definition: built-in capability packs the agent **automatically uses** when relevant; also a **browseable/installable/uninstallable directory** (Installed / All tabs, catalog comes from the online directory). **The Skills sidebar entry is visible** (unlike Research/Data which are hidden) — confirm via `ActivityRail.tsx`.
 - Common built-in skills table (skill name + purpose, **reference only — use the actual All tab list from the app**): Account (profile/quota/recharge), Web (search the web and read full articles), Paper (search PubMed/ArXiv/DOI and fetch full text), Deep research (multi-source cross-checking, cited reports), Document (PDF/Word to structured text), Image (generate/edit/analyze images, including OCR), Browser (drive a browser: open pages, click, type, screenshot), Hand-drawn posters (hand-drawn vertical infographic posters), Hand-drawn slides (hand-drawn sketch slides composited into PDF), Subagent (run multiple tasks in parallel), Skill creator (help make new skills).
 - **How to use**: no manual activation needed — just describe your needs; you can also browse and install/uninstall on the Skills page. (Don't write about Research / Data entries — they are hidden.)
@@ -211,7 +211,7 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
 - Slash commands match Feishu (handled locally, 9 of them); unknown slash commands are forwarded to the agent as ordinary messages.
 
 ### FAQ
-**Code entry points (read first):** `gui/src-tauri/tauri.conf.json` (install/signing related), `gui/src/features/settings/FutureLoginDialog.tsx` + `ProvidersPage.tsx` (login issues), `gui/src/features/agent/ApprovalPrompt.tsx` (approval), `cli/src/commands/agent.ts` ("connection refused" / agent not running), `CLAUDE.md` (data location).
+**Code entry points (read first):** `desktop/src-tauri/tauri.conf.json` (install/signing related), `desktop/src/features/settings/FutureLoginDialog.tsx` + `ProvidersPage.tsx` (login issues), `desktop/src/features/agent/ApprovalPrompt.tsx` (approval), `cli/src/commands/agent.ts` ("connection refused" / agent not running), `CLAUDE.md` (data location).
 Cover these questions (remove all Linux and TUI items):
 - macOS won't open ("unidentified developer" / "damaged"): right-click open; for "damaged" use `xattr -dr com.apple.quarantine /Applications/FutureOS.app`.
 - Windows says "Windows protected your PC": SmartScreen, click "More info → Run anyway".

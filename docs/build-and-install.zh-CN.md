@@ -38,13 +38,13 @@ brew install protobuf                                             # 可选 —�
 ```bash
 make install        # GUI + 统一 `future` CLI + 技能（agent/tui/channel/loop 已内嵌）→ /opt/homebrew/bin
 make install-cli    # 仅统一 `future` CLI
-make install-gui    # 仅桌面应用（自带 agent/CLI sidecar）
+make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
 make install-skills # 内置技能 + /future-loop 技能
-make package-gui    # 桌面打包 → .app + .dmg 位于 gui/src-tauri/target/release/bundle/
-scripts/build-macos-dmg.sh  # 本地 DMG；有 Developer ID 证书时自动签名
+make package-desktop    # 桌面打包 → .app + .dmg 位于 desktop/src-tauri/target/release/bundle/
+scripts/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动签名
 ```
 
-`scripts/build-macos-dmg.sh` 将统一 `future` CLI sidecar 连同 GUI 一起构建。它会自动使用 Keychain 中唯一的 `Developer ID Application` 身份并生成 `*-sign.dmg`；若身份不唯一，则回退到普通 DMG。用 `--help` 查看证书选择、输出目录与 Apple 公证选项。
+`scripts/build-desktop-macos.sh` 将统一 `future` CLI sidecar 连同 GUI 一起构建。它会自动使用 Keychain 中唯一的 `Developer ID Application` 身份并生成 `*-sign.dmg`；若身份不唯一，则回退到普通 DMG。用 `--help` 查看证书选择、输出目录与 Apple 公证选项。
 
 ## Linux（Debian/Ubuntu）
 
@@ -65,9 +65,9 @@ sudo apt install -y protobuf-compiler                             # 可选 —�
 ```bash
 make install        # GUI + 统一 `future` CLI + 技能（agent/tui/channel/loop 已内嵌）→ /usr/local/bin（sudo）
 make install-cli    # 仅统一 `future` CLI
-make install-gui    # 仅桌面应用（自带 agent/CLI sidecar）
+make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
 make install-skills # 内置技能 + /future-loop 技能
-make package-gui    # 桌面打包 → .deb 位于 gui/src-tauri/target/release/bundle/
+make package-desktop    # 桌面打包 → .deb 位于 desktop/src-tauri/target/release/bundle/
 ```
 
 ## Windows
@@ -97,30 +97,30 @@ Copy-Item target\release\future.exe $bin
 & "$bin\future.exe" skills install
 ```
 
-**桌面应用** —— `make install` 的 GUI 部分（自身暂存 sidecar，对应 `make gui-sidecars`；只暂存统一 `future` CLI，GUI 通过 `future agent` 启动 agent）：
+**桌面应用** —— `make install` 的 desktop 部分（自身暂存 sidecar，对应 `make desktop-sidecars`；只暂存统一 `future` CLI，GUI 通过 `future agent` 启动 agent）：
 
 ```powershell
 # 将统一 CLI 以 host triple 命名暂存为 Tauri sidecar
 $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-New-Item -ItemType Directory -Force -Path gui\src-tauri\binaries | Out-Null
-Copy-Item target\release\future.exe "gui\src-tauri\binaries\future-$triple.exe"
+New-Item -ItemType Directory -Force -Path desktop\src-tauri\binaries | Out-Null
+Copy-Item target\release\future.exe "desktop\src-tauri\binaries\future-$triple.exe"
 
-# 构建应用并安装为 future-gui.exe                 （对应 make install-gui）
-Push-Location gui; npm install; npx tauri build --no-bundle; Pop-Location
-Copy-Item gui\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.future\bin\future-gui.exe"
+# 构建应用并安装为 future-desktop.exe                 （对应 make install-desktop）
+Push-Location desktop; npm install; npx tauri build --no-bundle; Pop-Location
+Copy-Item desktop\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.future\bin\future-desktop.exe"
 ```
 
-**安装包** —— 等价于 `make package-gui`（sidecar 就绪后）：
+**安装包** —— 等价于 `make package-desktop`（sidecar 就绪后）：
 
 ```powershell
 node scripts\version.mjs --set-bundle
-Push-Location gui; npm run tauri:build; Pop-Location   # → NSIS 安装 .exe 位于 gui\src-tauri\target\release\bundle\nsis\
+Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS 安装 .exe 位于 desktop\src-tauri\target\release\bundle\nsis\
 ```
 
 说明：
 
-- `scripts\start-gui-test.bat` 以开发模式针对本地构建的 agent 运行 GUI。
-- `scripts/` 下的脚本（`build-macos-dmg.sh`、`build-windows-portable.ps1`、`build-windows-installer.ps1`）把上述步骤封装成单条命令，复刻 CI 打包流水线（DMG / 便携 zip / NSIS 安装器）。它们会预先检查工具链，且需要 `protoc`（`brew install protobuf` / `choco install protoc`）。产物包含 GUI 与统一 `future` CLI（agent/tui/channel/loop 已内嵌）——不含单独的 TUI。
+- `scripts\start-desktop-windows.bat` 以开发模式针对本地构建的 agent 运行 GUI。
+- `scripts/` 下的脚本（`build-desktop-macos.sh`、`build-desktop-windows-portable.ps1`、`build-desktop-windows-installer.ps1`）把上述步骤封装成单条命令，复刻 CI 打包流水线（DMG / 便携 zip / NSIS 安装器）。它们会预先检查工具链，且需要 `protoc`（`brew install protobuf` / `choco install protoc`）。产物包含 GUI 与统一 `future` CLI（agent/tui/channel/loop 已内嵌）——不含单独的 TUI。
 
 ## Loop 控制面（`future-loop`）
 
@@ -192,7 +192,7 @@ make clean          # 清理构建产物与已安装二进制
 
 ### Proto
 
-规范 API 是 `future-rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
+规范 API 是 `rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
 
 ```bash
 make generate-proto          # future-rpc + channels
@@ -212,7 +212,7 @@ make clean          # 清理构建产物与已安装二进制
 
 ### Proto
 
-规范 API 是 `future-rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
+规范 API 是 `rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
 
 ```bash
 make generate-proto          # future-rpc + channels

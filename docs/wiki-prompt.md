@@ -33,7 +33,7 @@ FutureOS 是一个**桌面 AI Agent 工作台**:用户不只是"聊天拿答案"
 - **Data(数据源)** 入口 —— 已从导航隐藏。
 - **Remote / 手机远程** —— 仍在开发中。
 
-> 判断依据看代码:例如 `gui/src/components/layout/ActivityRail.tsx` 里 `featureItems` 若为空数组,即表示这些侧边栏入口当前不对用户显示。写作时若发现某功能在代码里被隐藏或未接线,就不要写进 wiki。
+> 判断依据看代码:例如 `desktop/src/components/layout/ActivityRail.tsx` 里 `featureItems` 若为空数组,即表示这些侧边栏入口当前不对用户显示。写作时若发现某功能在代码里被隐藏或未接线,就不要写进 wiki。
 
 ## 4. 输出要求:中英双语
 
@@ -121,14 +121,14 @@ docs/wiki/
 > 写作时保持面向用户、可操作。每页的「代码入口(先读再写)」只是给你的探索起点,**不要**把这些行写进真正的 wiki 页面。
 
 ### Home
-**代码入口(先读再写):** `gui/src/app/App.tsx`、`gui/src/components/layout/AppShell.tsx`、`gui/src/components/layout/ActivityRail.tsx`、`gui/src/i18n/locales/`(功能命名与文案)、`CLAUDE.md`(整体定位)。
+**代码入口(先读再写):** `desktop/src/app/App.tsx`、`desktop/src/components/layout/AppShell.tsx`、`desktop/src/components/layout/ActivityRail.tsx`、`desktop/src/i18n/locales/`(功能命名与文案)、`CLAUDE.md`(整体定位)。
 - 一句话定义:**桌面 AI Agent 工作台**,不只是聊天,而是能看到并核对 agent 的工作。
 - "开始使用"三步:安装 → 快速开始 → 使用 FutureOS。
 - "你能做什么"要点:与会流式展示思考、调用工具、展示过程的 agent 对话;快速 Chat 或绑定文件夹的 Workspace;你始终掌控(风险操作前会征求批准);可核对工作(后台任务、文件改动、产出);使用技能包。
 - 底部注明:运行于 **macOS 和 Windows**。
 
 ### Installation
-**代码入口(先读再写):** `gui/src-tauri/tauri.conf.json`(打包产物:dmg / nsis / zip,确认真实产物类型)、`gui/src-tauri/build.rs`(随包附带的 sidecar 二进制)、`scripts/build-windows-portable.ps1`(Windows 便携包内容)、`Makefile`(`package-gui` 等打包目标)、`CLAUDE.md`(`~/.future` 数据/配置位置)。
+**代码入口(先读再写):** `desktop/src-tauri/tauri.conf.json`(打包产物:dmg / nsis / zip,确认真实产物类型)、`desktop/src-tauri/build.rs`(随包附带的 sidecar 二进制)、`scripts/build-desktop-windows-portable.ps1`(Windows 便携包内容)、`Makefile`(`package-desktop` 等打包目标)、`CLAUDE.md`(`~/.future` 数据/配置位置)。
 - **下载**:去 Releases 页下载对应系统最新版。
   - macOS:`.dmg` 磁盘镜像
   - Windows:安装包(`.exe`),或便携版 `.zip`
@@ -142,7 +142,7 @@ docs/wiki/
 - **卸载**:macOS 删除 `FutureOS.app`;Windows 从设置卸载或删除便携文件夹。要清数据再删 `.future`。
 
 ### Quick-Start
-**代码入口(先读再写):** `gui/src/features/settings/FutureLoginDialog.tsx`(设备码登录流程)、`gui/src/features/settings/ProvidersPage.tsx`、`gui/src/features/agent/NewConversation.tsx`、`gui/src/features/agent/Composer.tsx`(发送、模型选择器、附件)、`gui/src/components/layout/ActivityRail.tsx`(New Chat / Workspace 入口)。
+**代码入口(先读再写):** `desktop/src/features/settings/FutureLoginDialog.tsx`(设备码登录流程)、`desktop/src/features/settings/ProvidersPage.tsx`、`desktop/src/features/agent/NewConversation.tsx`、`desktop/src/features/agent/Composer.tsx`(发送、模型选择器、附件)、`desktop/src/components/layout/ActivityRail.tsx`(New Chat / Workspace 入口)。
 - **打开并登录**:Settings(左下齿轮)→ Providers → 内置 FutureGene → Connect → 浏览器授权(不自动打开时用应用给出的验证码 + 可复制链接)。提一句也可改用自己的 provider(见 Settings)。
 - **开始对话**:两种方式 —— **New Chat**(最快,适合提问和一次性任务)、**Workspace**(绑定电脑上的文件夹,适合真实项目)。
 - **发第一条消息**:底部输入框发送;会看到流式回复、工具调用展示、风险操作时**暂停等你批准**;支持任意本地文件，每轮最多 4 张图片（单张 25 MiB），非图片不限数量。
@@ -150,7 +150,7 @@ docs/wiki/
 - **查看工作**:右侧面板 —— Runs(后台任务)、Review(Workspace 的文件改动)、Artifacts(Chat 的产出)。
 
 ### Using-FutureOS
-**代码入口(先读再写):** `gui/src/components/layout/AppShell.tsx`(三栏布局)、`gui/src/components/layout/ActivityRail.tsx`(左侧导航,以此为准确认到底有哪些入口)、`gui/src/components/layout/ContextPanel.tsx`(右侧面板)、`gui/src/features/agent/ApprovalPrompt.tsx`(批准机制)、`gui/src/features/runs/RunsPanel.tsx` + `gui/src/features/review/ReviewPanel.tsx` + `gui/src/features/artifacts/ArtifactsPanel.tsx`(右侧三种视图)。
+**代码入口(先读再写):** `desktop/src/components/layout/AppShell.tsx`(三栏布局)、`desktop/src/components/layout/ActivityRail.tsx`(左侧导航,以此为准确认到底有哪些入口)、`desktop/src/components/layout/ContextPanel.tsx`(右侧面板)、`desktop/src/features/agent/ApprovalPrompt.tsx`(批准机制)、`desktop/src/features/runs/RunsPanel.tsx` + `desktop/src/features/review/ReviewPanel.tsx` + `desktop/src/features/artifacts/ArtifactsPanel.tsx`(右侧三种视图)。
 - **三栏布局**:左=导航(以 `ActivityRail.tsx` 实际渲染的入口为准:New Chat、你的 Workspaces 及其会话、Chats、Settings);中=对话(消息、流式回复、计划、工具活动、命令预览、错误、批准卡片,输入框固定底部);右=上下文(查看 agent 在做什么,可折叠)。
 - **Chat vs Workspace**:用表格对比(建立方式、适用场景、右侧面板显示的内容)。强调每个会话是独立 agent session,互不干扰。
 - **和 agent 对话**:输入框发送;模型选择器可逐会话切换;每轮最多 4 张图片，非图片附件不限数量。
@@ -159,7 +159,7 @@ docs/wiki/
 - (不要写 Research / Data 入口——当前已从导航隐藏。)
 
 ### Settings
-**代码入口(先读再写):** `gui/src/features/settings/SettingsDialog.tsx`(页面构成)、`gui/src/features/settings/GeneralPage.tsx`、`gui/src/features/settings/ProvidersPage.tsx` + `CustomProviderDialog.tsx`、`gui/src/features/settings/ModelsPage.tsx`、`gui/src/features/settings/FutureLoginDialog.tsx`。**以此确认实际有哪几个设置页、每页真实字段**。
+**代码入口(先读再写):** `desktop/src/features/settings/SettingsDialog.tsx`(页面构成)、`desktop/src/features/settings/GeneralPage.tsx`、`desktop/src/features/settings/ProvidersPage.tsx` + `CustomProviderDialog.tsx`、`desktop/src/features/settings/ModelsPage.tsx`、`desktop/src/features/settings/FutureLoginDialog.tsx`。**以此确认实际有哪几个设置页、每页真实字段**。
 - 从左下齿轮进入;New Chat 下还有 Models 快捷入口。**页面数量与名称以 `SettingsDialog.tsx` 为准**:用户可见页为 General(通用)、Account(账号)、Update(检查更新)、About(关于)、Providers(提供商)、Models(模型)、Reset(重置);Remote(远程)与 Environment(环境)是开发版专用页,不写。重点讲下面三页。
 - **General**:桌面级选项。以代码里的真实标签为准,通常含:**界面语言(Language)**、**批准模式(Approval mode:手动 / 沙盒[仅 macOS] / 无限制)**、**是否显示思考过程(Show thinking)**。
 - **Providers**:
@@ -168,7 +168,7 @@ docs/wiki/
 - **Models**:按 provider 分组列出所有可用模型;可切换每个模型的可见性、可搜索;输入框里的选择器同源,并显示模型来自哪个 provider。
 
 ### Skills
-**代码入口(先读再写):** `gui/src/features/skills/SkillsView.tsx`、`gui/src/integrations/skills/skillsClient.ts`、`cli/src/commands/skills.ts`、`agent/src/skills/mod.rs`(技能发现)。**先用这些确认当前真实存在的技能清单和用途**,再据实写下方表格。
+**代码入口(先读再写):** `desktop/src/features/skills/SkillsView.tsx`、`desktop/src/integrations/skills/skillsClient.ts`、`cli/src/commands/skills.ts`、`agent/src/skills/mod.rs`(技能发现)。**先用这些确认当前真实存在的技能清单和用途**,再据实写下方表格。
 - 定义:内置能力包,agent 在相关时**自动使用**;同时也是一个**可浏览/安装/卸载的目录**(Installed / All 标签,清单来自在线目录)。**Skills 侧边栏入口是可见的**(与 Research/Data 不同,后者才是隐藏的)——以 `ActivityRail.tsx` 为准。
 - 常见内置技能表(技能名 + 用途,**参考,以应用 All 标签实际清单为准**):Account(账户资料/额度/充值)、Web(搜公网并读全文)、Paper(检索 PubMed/ArXiv/DOI 并取全文)、Deep research(多源交叉核对、带引用的报告)、Document(PDF/Word 转结构化文本)、Image(生成/编辑/分析图像,含读图中文字)、Browser(驱动浏览器:开页、点击、输入、截图)、Hand-drawn posters(手绘竖版信息图海报)、Hand-drawn slides(手绘草图幻灯并合成 PDF)、Subagent(并行跑多任务)、Skill creator(帮忙做新技能)。
 - **使用方式**:无需手动开启,直接描述需求即可;也可在 Skills 页浏览与安装/卸载。(不要写 Research / Data 入口——它们已隐藏。)
@@ -210,7 +210,7 @@ docs/wiki/
 - 斜杠命令与飞书一致(本地处理,9 个);未知斜杠命令转发给 agent 当普通消息。
 
 ### FAQ
-**代码入口(先读再写):** `gui/src-tauri/tauri.conf.json`(安装/签名相关)、`gui/src/features/settings/FutureLoginDialog.tsx` + `ProvidersPage.tsx`(登录问题)、`gui/src/features/agent/ApprovalPrompt.tsx`(批准)、`cli/src/commands/agent.ts`("连接被拒"/agent 未运行)、`CLAUDE.md`(数据位置)。
+**代码入口(先读再写):** `desktop/src-tauri/tauri.conf.json`(安装/签名相关)、`desktop/src/features/settings/FutureLoginDialog.tsx` + `ProvidersPage.tsx`(登录问题)、`desktop/src/features/agent/ApprovalPrompt.tsx`(批准)、`cli/src/commands/agent.ts`("连接被拒"/agent 未运行)、`CLAUDE.md`(数据位置)。
 覆盖这些问题(去掉一切 Linux 与 TUI 相关项):
 - macOS 打不开("身份不明的开发者"/"已损坏"):右键打开;"已损坏"用 `xattr -dr com.apple.quarantine /Applications/FutureOS.app`。
 - Windows 提示"Windows 保护了你的电脑":SmartScreen,点"更多信息 → 仍要运行"。

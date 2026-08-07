@@ -1,0 +1,688 @@
+# FutureOS 对象与关联设计草案
+
+## 1. 设计目标
+
+这份文档用于描述 FutureOS 第一阶段需要持久化和管理的核心对象，以及对象之间的关联关系。
+
+它不是数据库 migration 文件，而是产品模型到数据模型之间的设计稿。字段类型、索引、约束与兼容方案必须在此同步；实现层的 migration 规则以 `desktop/CLAUDE.md` 的 “Released database migrations” 为准。
+
+> **发布后迁移边界。** GUI SQLite 已正式发布。每次修改数据库结构或持久化数据形态，先以最近可达的正式 tag 为基线比对；该 tag 中已有的 migration 不可修改，当前未发布 migration 才可继续调整。一个目标发布 tag 的相关变更原则上合并为一条新 migration，并同时验证“上一 tag 的旧库升级”与“当前 schema 的全新库”。
+
+第一阶段设计重点：
+
+- 支持 Workspace 与普通 Chat 两种工作入口；Workspace 支持打开（按路径去重）、重命名、软删除（级联软删子对话）。
+- 支持 Thread 创建、恢复、重命名、置顶、归档、删除。
+- 支持消息、Run、Run Event 的持久化（消息与事件现由 Agent 持久化，GUI 只存 Run 状态等附加数据，见 §4.3、§4.5）。
+- 支持 artifacts、Data sources、Skills。（Research 延后，见 §4.12。）
+- 支持统一引用对象，用于 `@` 引用 Artifact、文件和 Data Source。
+- 支持审批对象，用于高风险操作的批准或拒绝。
+- 支持 Review 对象，用于文件、代码和文本类 artifact 的变更对比。
+
+## 2. 核心关系总览
+
+```mermaid
+erDiagram
+    WORKSPACE ||--o{ THREAD : contains
+    WORKSPACE ||--o{ ARTIFACT : stores
+    WORKSPACE ||--o{ WORKSPACE_FILE : exposes
+
+    THREAD ||--o{ RUN : triggers
+    THREAD ||--o{ ARTIFACT : produces
+    THREAD ||--o{ APPROVAL_REQUEST : requests
+    THREAD ||--o{ REVIEW_CHANGESET : reviews
+
+    RUN ||--o{ APPROVAL_REQUEST : creates
+    RUN ||--o{ REVIEW_CHANGESET : produces
+    RUN ||--o{ REVIEW_SNAPSHOT : snapshots
+
+    REVIEW_CHANGESET ||--o{ REVIEW_FILE_CHANGE : contains
+    REVIEW_SNAPSHOT ||--o{ REVIEW_CHANGESET : bounds
+
+    REFERENCE_TARGET ||--o{ OBJECT_REFERENCE : target_of
+    REVIEW_FILE_CHANGE ||--o{ OBJECT_REFERENCE : compares
+```
+
+> Message / Run Event / Tool Call / Tool Output 已不是 GUI SQLite 对象：它们由
+> Agent 持久化（会话 JSONL 与 run-events journal，唯一真源），GUI 经 gRPC
+> 读取后投影展示。见 §4.3、§4.5–4.7。Data Source / Skill 相关对象已废弃，
+> 见 §4.14–4.17。
+
+## 3. 命名约定
+
+- `Workspace`：项目或工作上下文，包括用户选择的目录和系统自动创建的临时工作空间。
+- `Thread`：用户可见的一段对话。产品上分为普通 Chat 和 Workspace 对话。
+- `Message`：对话中的消息。
+- `Run`：一次 Agent 执行。
+- `Run Event`：Run 过程中产生的结构化事件。
+- `Tool Call`：Agent 调用工具的记录。
+- `Approval Request`：需要用户批准或拒绝的高风险操作。
+- `Review Changeset`：一组可供用户 review 的变更集合。
+- `Review File Change`：Review Changeset 中某个文件或 artifact 的具体变更。
+- `Artifact`：工作过程中产生的可复用产物。
+- `Data Source`：Data 模块中可访问的数据入口。
+- `Reference Target`：统一引用对象的索引层，供 `@` 引用和跨对象引用使用。
+
+## 4. 对象设计
+
+### 4.1 Workspace
+
+Workspace 表示一个项目或工作上下文。
+
+字段草案：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Workspace 唯一标识 |
+| `name` | 展示名称 |
+| `kind` | `user` 或 `temporary` |
+| `path` | 本地目录路径 |
+| `description` | 可选描述 |
+| `cleanup_status` | `active`、`pending_cleanup`、`cleaned` |
+| `cleanup_requested_at` | 请求清理时间 |
+| `cleaned_at` | 实际清理完成时间 |
+| `last_opened_at` | 最近打开时间 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+| `deleted_at` | 软删除时间 |
+
+关系：
+
+- 一个 Workspace 可以包含多个 Thread。
+- 一个 Workspace 可以包含多个 Artifact。
+- 一个 Workspace 可以暴露多个 Workspace File。
+
+说明：
+
+- 用户明确选择项目目录时，创建 `kind = user` 的 Workspace。按 `path` 去重：打开一个已登记（未软删）的目录会复用现有 `kind = user` 记录，不新建。
+- 普通 Chat 背后自动创建 `kind = temporary` 的 Workspace，但 UI 不突出展示。
+- 删除 Workspace 对话不删除 Workspace 目录。
+- 清理普通 Chat 时，可以把对应临时 Workspace 标记为 `pending_cleanup`，清理完成后标记为 `cleaned`。
+- 支持重命名（改 `name`）与删除 Workspace。删除是**软删除**：在一个事务里给 Workspace 置 `deleted_at`，并把其名下未删除的 Thread 级联软删除（`status = 'deleted'` + `deleted_at`）；磁盘目录与文件不动。若被删的是 `temporary` Workspace，额外标记 `cleanup_status = 'pending_cleanup'`。对应后端 `store::workspaces::{rename_workspace, delete_workspace}`。
+
+### 4.2 Thread
+
+Thread 表示用户可恢复、可继续、可管理的一段对话。
+
+字段草案：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Thread 唯一标识 |
+| `workspace_id` | 所属 Workspace |
+| `mode` | `chat` 或 `workspace` |
+| `title` | 对话标题 |
+| `status` | `active`、`archived`、`deleted` |
+| `pinned` | 是否置顶 |
+| `readonly` | 是否只读 |
+| `agent_session_id` | GUI Thread ↔ Agent 会话映射；解析 Agent 侧 sessions JSONL、远程控制查会话时用（`store/schema.rs`） |
+| `last_message_at` | 最近消息时间 |
+| `last_opened_at` | 最近打开时间 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+| `archived_at` | 归档时间 |
+| `deleted_at` | 删除时间 |
+
+关系：
+
+- 一个 Thread 属于一个 Workspace。
+- 一个 Thread 包含多个 Message。
+- 一个 Thread 可以触发多个 Run。
+- 一个 Thread 可以产生多个 Artifact。
+- 一个 Thread 可以产生多个 Approval Request。
+- 一个 Thread 可以产生多个 Review Changeset。
+
+说明：
+
+- 普通 Chat 使用 `mode = chat`。
+- Workspace 对话使用 `mode = workspace`。
+- 标题默认生成，用户可以修改。
+- 归档对话默认隐藏、只读，但允许搜索命中。
+- 用户在归档对话中点击输入框时，产品自动引导恢复后继续。
+- 模型与思考等级**不再是 Thread 列**（`model_provider` / `model_id` / `thinking_level` 已经 `DROPPED_COLUMNS` 从旧库删除）：权威状态在 Agent session，GUI 经 `get_thread_agent_state` 读取，切换经 `set_model` / `set_thinking_level` 下发，只影响该会话之后的 run，不打断进行中的 run。
+
+### 4.3 Message
+
+Message 表示对话中的一条消息。
+
+**存储：`messages` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 消息由 Agent 会话
+JSONL（`~/.future/agent/sessions/<session-id>.jsonl`）单一持久化，是唯一真源；
+GUI 通过 `get_session_entries` gRPC 命令读取并投影为界面消息，不再落 GUI
+SQLite，也没有第二份副本需要合并仲裁。
+
+关系：
+
+- 一个 Message 逻辑上属于一个 Thread（经 Thread 的 `agent_session_id` 映射到 Agent session）。
+- 一个 Message 可以关联一个 Run（JSONL 条目 `meta` 携带 `run_id`）。
+- 一个 Message 可以包含多个 Object Reference。
+
+说明：
+
+- 流式输出由 Agent 事件流驱动（见 §4.5），GUI 实时投影；run 结束后消息以 JSONL 为准。
+- 附件元数据（`path` / `kind` / `name` / `thumbnail`）存于用户消息条目的 `meta.attachments`，无独立附件表。
+
+### 4.4 Run
+
+Run 表示一次 Agent 执行，通常由用户消息触发。
+
+字段草案：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Run 唯一标识 |
+| `thread_id` | 所属 Thread |
+| `trigger_message_id` | 触发 Run 的用户消息 |
+| `status` | `queued`、`running`、`waiting_approval`、`completed`、`failed`、`cancelled` |
+| `model_provider` | 模型 provider |
+| `model_id` | 模型 id |
+| `started_at` | 开始时间 |
+| `ended_at` | 结束时间 |
+| `error_message` | 错误信息 |
+| `error_type` | 结构化错误分类（`stream_interrupted`、`command_failed`、`model_failed`、`abort_requested`、`timeout`、`interrupted`、`unknown` 等；配套 `run_error.rs`，未失败时为 NULL） |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
+关系：
+
+- 一个 Run 属于一个 Thread。
+- 一个 Run 可以包含多个 Run Event。
+- 一个 Run 可以包含多个 Tool Call。
+- 一个 Run 可以产生多个 Approval Request。
+- 一个 Run 可以产生多个 Review Changeset。
+
+说明：
+
+- Run 是 GUI 展示计划、工具调用、状态和失败恢复的核心对象。
+- Run 在当前 GUI 中以“后台程序”列表呈现：运行中、排队中、等待审批显示为活动程序；完成、失败、取消显示为已结束程序。
+- 日常 Runs 面板只展示程序摘要和结果状态，不承载完整 event timeline、长 stdout/stderr、tool payload 或审批历史。这些内容应进入后续专门 Debug / Inspect / Review 视图。
+- 运行中 Run 可以被用户终止；终止后状态进入 `cancelled`，并同步取消该 Run 下仍然 pending 的 Approval Request。
+- 长任务恢复时，Thread 可以通过最近 Run 恢复上下文展示。
+
+### 4.5 Run Event
+
+Run Event 表示 Run 过程中的结构化事件。
+
+**存储：`run_events` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 事件由 Agent 的
+run-events journal（`~/.future/agent/run-events/<session-id>/<run-id>.jsonl`，
+逐事件落盘 + fsync）持久化，是唯一真源；GUI 经 `get_events_since` gRPC 命令
+按游标增量读取，不写第二份。旧版 GUI JSONL（`~/.future/app/run_events/`）仅作为
+Agent 不可达时的兼容读取源，生产不再写入。
+
+事件标识与顺序：每个事件带 run 内单调 `idx`、session 级 `session_idx`、跨 run 的
+`run_sequence` 与 `event_id`；GUI 观察者先按游标校验再扇出（重放去重、跳号触发
+重连重放），保证不乱序、不重复。
+
+事件类型（与 proto 词汇表一致）：
+
+- `agent_start` / `agent_end` — Run 生命周期（`agent_end` 携带 error / usage / duration 权威合计）
+- `user_message` — 用户 prompt
+- `text_chunk` — 助手文本增量
+- `thinking_start` / `thinking_delta` / `thinking_end` — 推理流
+- `tool_start` / `tool_delta` / `tool_end` — 工具执行
+- `approval_request` / `approval_decision` — 审批
+- `usage` — token 计量
+- `error` — Run 错误
+- `tool_sandboxed` / `persistence_error` / `compaction_end` — 旁路信号
+
+说明：
+
+- GUI 根据 Run Event 渲染流式预览、工具活动时间线和 Runs 面板（工具列表 / 输出也是事件投影，见 §4.6、§4.7）。
+- 右侧 Runs 面板不直接展示完整 Run Event 原文；长输出与调试细节由 Run 检查器承载。
+
+### 4.6 Tool Call
+
+Tool Call 表示 Agent 调用某个工具的记录。
+
+**存储：`tool_calls` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 工具调用由 Run
+Event 投影重建：`tool_start` / `tool_end` 事件携带稳定的 `tool_id`，按 id 配对
+（并行工具调用不会错配）。Runs 面板经 `list_tool_calls` / `list_tool_calls_bulk`
+命令从 Agent journal 拉取事件投影（GUI 侧带增量投影缓存，Agent 不可达时回退旧
+GUI JSONL）。`tool_start` 的结构化输入另存内存索引（`store::remember_tool_input`），
+供 `tool_end` 落库时的工件路径提取（`persist.rs`）。
+
+字段（投影结构 `ToolCallRecord`）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Tool Call 唯一标识（agent 稳定 tool id） |
+| `run_id` | 所属 Run |
+| `name` | 工具名称 |
+| `kind` | 工具类别（与 name 同源：shell、read、write、edit 等） |
+| `input` | 工具输入（`tool_args`） |
+| `status` | `running`、`completed`、`failed` |
+| `started_at` | 开始时间 |
+| `ended_at` | 结束时间 |
+| `created_at` | 创建时间 |
+
+关系：
+
+- 一个 Tool Call 属于一个 Run。
+- 一个 Tool Call 可以触发 Approval Request（`approval_requests.tool_call_id`，可为空）。
+- 一个 Tool Call 的输出可以产生文件 Artifact（write / edit 成功后由 `persist.rs` 登记）。
+
+### 4.7 Tool Output
+
+Tool Output 表示工具调用产生的输出。
+
+**存储：`tool_outputs` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 输出由
+`tool_end` 事件投影（`list_tool_outputs` 命令，数据源同 §4.6）：`text` / `error`
+包装为 JSON 供检查器的 stdout / stderr 面板解析。
+
+字段（投影结构 `ToolOutputRecord`）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Tool Output 唯一标识 |
+| `tool_call_id` | 所属 Tool Call |
+| `kind` | `text` 或 `error` |
+| `content` | 输出内容（JSON 字符串） |
+| `created_at` | 创建时间 |
+
+说明：
+
+- Shell 非零退出以 `[exit: N]` 尾部标记判定失败（裸 grep/diff/test 退出 1 属正常信号的豁免除外）。
+- 大输出不经 GUI 落库——事件投影按需读取 Agent journal。
+
+### 4.8 Approval Request
+
+Approval Request 表示需要用户批准或拒绝的高风险操作。
+
+它解决的是“是否允许执行”的问题，不负责展示文件 diff。文件 diff 和变更对比属于 Review Changeset。
+
+字段草案：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Approval Request 唯一标识 |
+| `thread_id` | 所属 Thread |
+| `run_id` | 来源 Run |
+| `tool_call_id` | 来源 Tool Call，可为空 |
+| `kind` | `shell_command`、`file_write`、`file_delete`、`network_access`、`data_access`、`batch_operation`、`outside_workspace_write`、`outside_workspace_read` |
+| `status` | `pending`、`approved`、`rejected`、`cancelled` |
+| `title` | 标题 |
+| `summary` | 摘要 |
+| `risk_level` | `low`、`medium`、`high` |
+| `requested_action` | 准备执行的操作（原始 JSON，向后兼容） |
+| `action_category` | P2 结构化字段：操作类别 |
+| `action_payload` | P2 结构化字段：完整 action JSON |
+| `sandbox_boundary` | P2 结构化字段：沙盒边界信息 JSON |
+| `reviewer` | 审查者，`user` 或 `auto_review`（预留） |
+| `decision_scope` | 决策范围，`once`、`session`、`always`（预留），当前仅 `once` |
+| `decision_source` | 决策来源，`user`、`rule`（预留）、`sandbox`（预留） |
+| `decision_note` | 用户决策备注，可为空 |
+| `decided_at` | 用户决策时间 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
+关系：
+
+- 一个 Approval Request 属于一个 Thread。
+- 一个 Approval Request 可以来源于 Run 或 Tool Call。
+
+说明：
+
+- 审批界面属于中间对话区的即时交互层，显示在 composer 上方；右侧上下文面板不承载审批操作，也不提供审批历史 tab。
+- UI 同时只展示一个 `pending` Approval Request。Agent 当前审批未决时应停在对应危险操作处等待用户明确允许或拒绝，不设置审批超时。
+- 第一版审批界面需要展示操作类型、影响范围、修改摘要、拒绝、允许一次、查看详情。
+- 审批支持键盘快捷操作：`Esc` 拒绝，`Cmd/Ctrl + Enter` 允许一次。
+- `requested_action` 预览需要可读化展示；内容过长时 UI 内部滚动，最大高度不超过窗口高度的三分之一。
+- 批量操作使用 `batch_operation`，用于一组文件写入、批量删除、批量命令或跨多个资源的高风险动作。
+- 超出当前 workspace 范围的读取对应枚举值 `outside_workspace_read`（与上表 `kind` 一致）。注意：该读取审批**当前尚未实现**，Agent 侧仅对 workspace 外的写入 / 编辑 / 删除（`outside_workspace_write` 等）触发审批。
+- GUI 或 Agent 重启后遗留的 `pending` 审批**不**无条件取消：启动收敛保留它们，由 `reconcile_pending_approvals`（启动一次 + watchdog 周期）按 Agent `get_state.pendingApprovals` 的权威集合裁决——Agent 仍在等待的保留卡片（run 复活并回到 `waiting_approval`），Agent 已不持有的（在他处已决、已 abort、或 Agent 自身重启丢失）才转为 `cancelled`，本地缺失的可从 Agent payload 重建。非终态 Run 同样不启动即取消，而是经 `reconcile_interrupted_runs` + `reanimate_run` + active-run watchdog 按 Agent 实际状态收敛（GUI 崩溃期间 Agent 可能仍在运行；仅当 Agent 确认 run 已消失才 settle）。
+- 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
+- P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段（设计细节见 git history，原 `P2_APPROVAL_MODEL.md`）。
+- **v2（审批规则重构，2026-07-04）**：审批对象收敛为**文件路径访问**，规则改为**文件式**（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`，agent 直接读），语义与实现见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) / [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)。相应地：
+  - `approval_requests` 新增 `save_suggestion`（TEXT，JSON）——审批卡片“本工作区/对话允许”的建议规则 `{path, access, action}`；敏感文件为空（只能允许一次）。
+  - **三张预留配置表 `sandbox_config` / `approval_policy_config` / `approval_rules` 已删除**（2026-07-05）——规则迁到文件后它们成为死结构；对应 `store/approval_config.rs` 模块与三个 record 类型一并移除。旧库里遗留的空表无害（无代码引用），新库不再创建。Phase 2 曾短暂用 `approval_rules` 存规则并经 gRPC 下发，v2 已拆除该链路。
+  - `kind` 扩展 `sandbox_escalation`（bash 越界失败的升级审批）；`outside_workspace_read` 等旧枚举随命令级模型作废。
+
+### 4.9 Review Changeset
+
+Review Changeset 表示一组可供用户 review 的变更集合。
+
+它解决的是“改了什么”的问题，重点是对比文件、代码或文本类 artifact 的修改。
+
+字段草案：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Review Changeset 唯一标识 |
+| `thread_id` | 所属 Thread |
+| `run_id` | 来源 Run，可为空 |
+| `tool_call_id` | 来源 Tool Call，可为空 |
+| `title` | 标题 |
+| `summary` | 变更摘要 |
+| `status` | `draft`、`ready`、`viewed`、`applied`、`discarded` |
+| `files_changed` | 变更文件数 |
+| `additions` | 总新增行数 |
+| `deletions` | 总删除行数 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
+关系：
+
+- 一个 Review Changeset 属于一个 Thread。
+- 一个 Review Changeset 可以来源于 Run 或 Tool Call。
+- 一个 Review Changeset 包含多个 Review File Change。
+
+说明：
+
+- Review Changeset 不表示审批请求。
+- Review 覆盖所有 Workspace 对话（`mode = workspace`），有两类数据来源（见 4.10 的 `source_kind`）：
+  - **Git changes**（仅 Git workspace）：实时 `git diff`，不落库为 Review Changeset。
+  - **上一轮变更**（两类 workspace 都有）：影子快照 diff 固化为 `source_kind = 'run_snapshot'` 的 Review Changeset。
+- 普通 Chat 不展示 Review，文件产物进入 Artifact 管理；Workspace 对话不展示 Artifacts，避免同一文件同时进入 Review 和 Artifact 两套语义。
+- 用户可以在 Review 中查看代码 diff、文件变更，以及后续文本类 artifact 的变更摘要。
+- `files_changed`、`additions`、`deletions` 用于展示类似 Git / Codex 的本轮变更汇总，例如 `2 个文件 +204 -90`。
+- `status` 列（`draft`/`ready`/`viewed`/`applied`/`discarded`）属于早期的 apply/discard 决策流；该流程前端已移除，`run_snapshot` changeset **不使用**该列，其状态改由 `completeness` / `confidence` 表达（见 4.10）。`StoredReviewChangeset` 类型保留，仅 markdown `futureos://` 引用仍在用。
+
+### 4.10 Review File Change
+
+Review File Change 表示某个文件或 artifact 的具体变更。
+
+字段草案：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Review File Change 唯一标识 |
+| `changeset_id` | 所属 Review Changeset |
+| `target_type` | `workspace_file` 或 `artifact` |
+| `target_id` | 目标对象 id，可为空 |
+| `path` | 文件路径或 artifact 路径 |
+| `change_type` | `create`、`modify`、`delete`、`rename` |
+| `before_ref` | 变更前内容引用，可为空 |
+| `after_ref` | 变更后内容引用，可为空 |
+| `diff` | 小型文本 diff，可为空 |
+| `summary` | 变更摘要 |
+| `additions` | 新增行数 |
+| `deletions` | 删除行数 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
+关系：
+
+- 一个 Review File Change 属于一个 Review Changeset。
+- 一个 Review File Change 可以引用 Workspace File 或 Artifact。
+
+说明：
+
+- 第一版针对代码和文本文件可以保存文本 diff。
+- Git workspace 的 Review File Change 优先对应 Git 工作树文件。
+- 非 Git workspace / 普通 Chat 后续针对 markdown、文档、表格等文本类 artifact，只做文本 diff 和摘要审查。
+- `additions` 和 `deletions` 只记录 Git diff 风格的简单行级统计，不做复杂行级实体建模。
+- 大型 diff 后续可以落文件，数据库保存引用。
+
+#### Shadow Review 扩展（「上一轮变更」）
+
+「上一轮变更」由 FutureOS 影子仓库（per-workspace 的 bare git repo，位于 `~/.future/app/review/<workspace-id>/`，**不在 workspace 目录建 `.git`**）的 before/after 快照 diff 生成，`source_kind = 'run_snapshot'`。影子仓只把 git 当内容寻址快照与 diff 引擎：只读，从不 checkout / reset / clean，也从不修改用户真实仓的 index / refs / objects / 工作树。设计取舍见 6.8。
+
+**新增 `review_snapshots`**：记录每个 Run 的 before/after 快照。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 快照唯一标识 |
+| `workspace_id` / `thread_id` / `run_id` | 归属 |
+| `phase` | `before` / `after` |
+| `commit_id` / `tree_id` | 影子仓 commit / tree（可丢弃缓存，非真源） |
+| `status` | `complete` / `partial` / `failed` |
+| `file_count` / `total_bytes` / `ignored_count` / `omitted_count` | 快照统计 |
+| `error_message` | 失败原因 |
+| `created_at` | 创建时间 |
+
+约束 `UNIQUE(run_id, phase)`。
+
+**扩展 `review_changesets`**：`source_kind`（`run_snapshot` / `native_git`）、`workspace_id`、`before_snapshot_id`、`after_snapshot_id`、`binary_files`、`omitted_files`、`completeness`（`complete` / `partial`）、`confidence`（`normal` / `recovered`）、`overlapped`（0/1）、`error_message`。`run_snapshot` changeset 不参与 apply/discard，旧 `status` 列对它不使用。
+
+**扩展 `review_file_changes`**：`previous_path`、`binary`、`before_size`、`after_size`、`mime`、`diff_truncated`、`omission_reason`。在 after 快照固化时，每个文本文件的统一 diff 写入既有 `diff` 列，这是「上一轮变更」的**真源**——前端直接读 SQLite，不再回影子仓重算；二进制文件只记 size / mime，不存 diff。
+
+**派生状态**：API 层把 `RunReview.snapshotStatus`（`complete` / `partial` / `incomplete` / `unavailable`）从快照 `status` + changeset `completeness` 派生，不落库。非 Git workspace 走简化档，只产生 `complete` 或 `unavailable`（任何 before/after/diff 失败一律塌缩为 `unavailable`）；`partial` / `incomplete` / `recovered` 只出现在 Git workspace。`overlapped`（并发窗口重叠）与上述状态正交，单独透传。
+
+### 4.11 Artifact
+
+> **面板已暂时隐藏（见 PRODUCT.md §4.8），但表仍在正常写入**——`persist_file_artifact` 每次 write / edit 成功后照常登记，历史数据继续积累，恢复面板时数据是连续的。以下身份与去重规则因此仍然有效。
+
+Artifact 表示工作过程中产生的可复用产物。
+
+字段草案：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Artifact 唯一标识 |
+| `workspace_id` | 所属 Workspace |
+| `thread_id` | 来源 Thread，可为空 |
+| `run_id` | 来源 Run，可为空 |
+| `title` | 展示标题 |
+| `artifact_type` | `document`、`table`、`chart`、`diff`、`summary`、`report`、`data_result` 等 |
+| `path` | 本地文件路径，可为空 |
+| `content` | 小型 artifact 内容，可为空 |
+| `content_storage` | `inline` 或 `file` |
+| `summary` | 摘要 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+| `deleted_at` | 删除时间 |
+
+关系：
+
+- 一个 Artifact 属于一个 Workspace。
+- 一个 Artifact 可以来源于一个 Thread 或 Run。
+- 一个 Artifact 可以成为引用对象。
+
+身份与去重（`idx_artifacts_thread_path`）：
+
+- **文件型 Artifact 的身份是 (`thread_id`, `path`)，不是 Run**。同一个文件被 write 之后又在后续 Run 里 edit，是同一件工作成果，面板必须只显示一行、且是最新状态——而不是每次改动一行。由 partial unique index `idx_artifacts_thread_path ON artifacts(thread_id, path) WHERE deleted_at IS NULL AND path IS NOT NULL` 强制。
+- `store::ensure_artifact` 据此 upsert：命中则更新 `run_id` / `summary` / `content` / `updated_at`（指向最新一次改动），`created_at` 保留首次生成时间；未命中才插入。
+- 无 `path` 的 inline artifact 没有文件身份，仍按 (`run_id`, `title`) 去重，也被上述 partial index 排除。
+- 用户软删（`deleted_at`）的行不参与去重：Agent 事后重新写同一个文件会新起一行，符合直觉。
+- 该索引暂不在 `SCHEMA` 里，只在 `ADDED_INDEXES`——早期版本写入的库可能存在重复行，必须先由 `db::dedupe_file_artifacts` 折叠（保留组内最近改动的一行，并继承组内最早的 `created_at`）才能建索引，而 `SCHEMA` 跑在兼容步骤之前。
+- `dedupe_file_artifacts` 是**发布基线之前的历史兼容清理**，不是未来 schema 变更的范例。不要再往启动路径追加类似删除/修复逻辑；它的移除、替换或任何新的数据修复都必须作为独立的版本化 migration，并按 `desktop/CLAUDE.md` 的 tag 边界规则验证。
+- 面板排序按 `updated_at DESC`：一行已折叠该文件的全部改动，用 `created_at` 会把刚被 Agent 重写的文件钉在它首次出现的位置。
+
+说明：
+
+- Artifact 的 `content` 只存小内容。
+- 大内容全部走文件路径，即 `content_storage = file` 并填写 `path`。
+- 普通 Chat 产生的 Artifact 存在临时 Workspace 下。
+- 清理普通 Chat 时，用户可以下载 Artifact。
+- 对话输入框附件不自动登记为 Artifact，也不复制到普通 Chat / Workspace 的工作目录。Artifacts 面板的主动上传是独立流程。
+- **图片持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/` 保存所有图片附件的缩略图，`origin/` 仅保存粘贴图片等没有稳定用户原始路径的图片。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent session JSONL 的 `SessionEntry.meta.attachments` 中，GUI SQLite `messages` 已不作为消息来源，**无独立附件表**。
+- **回收**：`images/<tid>` 无逐删执行器,靠启动时 `reconcile_orphan_images` 孤儿清扫——`threads` 表中 `status='deleted'` 或无行的 tid 其目录被删（无软删撤销）；整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
+
+### 4.12–4.13 Research Collection / Research Resource（已延后，未建表）
+
+> **第一版发布前不上线，已从 schema 移除。** Research 模块（资料集合 + 沉淀的研究材料）的数据模型、存储方式、产品形态均未定，为避免日后迁移负担，第一版**不建表**：`research_collections`、`research_resources` 两张表及其 CRUD、命令、前端视图已整体移除，`apply_schema` 通过 `DROPPED_TABLES`（`store/schema.rs`）在旧库上 `DROP TABLE IF EXISTS` 清除它们。
+>
+> 产品记录**仅保留在 PRODUCT.md §4.9**。日后重启 Research 时，需重新设计数据模型并回写本节。
+
+### 4.14–4.17 Data Source / Data Credential / Skill / Skill Enablement（已废弃）
+
+> **已废弃并从 schema 删除（2026-07-07）。** 这四张表（`data_sources`、`data_credentials`、`skills`、`skill_enablements`）曾由早期 schema 建立，但从未接入任何 CRUD 代码：
+> - **Data 模块**（CSV/TSV/MySQL 数据源）整体延后，未进入第一版实现。
+> - **Skill** 改走**官方平台目录 + 文件系统**路线（`GET {platform}/client/v1/skills` → 下载安装到 `~/.future/agent/skills`），不入库；语义见 PRODUCT.md §4.11，实现见 `src-tauri/src/skills.rs`。
+>
+> `apply_schema` 通过 `DROPPED_TABLES`（`store/schema.rs`）在旧库上 `DROP TABLE IF EXISTS` 清除它们。若日后重启 Data 功能，需重新设计并回写本节。
+
+### 4.18 Workspace File
+
+Workspace File 表示 workspace 中可被索引、引用或展示的文件。
+
+字段草案：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Workspace File 唯一标识 |
+| `workspace_id` | 所属 Workspace |
+| `path` | 相对路径或绝对路径 |
+| `name` | 文件名 |
+| `mime_type` | 文件类型 |
+| `size` | 文件大小 |
+| `last_seen_at` | 最近扫描时间 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
+关系：
+
+- 一个 Workspace File 属于一个 Workspace。
+- 一个 Workspace File 可以成为引用对象。
+
+说明：
+
+- 第一版可以按需记录被引用或被 Agent 读取过的文件，不必完整索引整个目录。
+
+### 4.19 Reference Target
+
+Reference Target 是统一引用对象的索引层。
+
+字段草案：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Reference Target 唯一标识 |
+| `target_type` | 实现中解析器使用**短名**（见 `store/markdown_refs/resolve.rs`）：`artifact`、`file`、`run`、`tool`、`approval`、`review`。`data_source`、`skill` 的 Data/Skill 引用未实现（落 "not supported yet" 分支）；`research` 已随 Research 模块整体移除（见 §4.12）；其余类型是设计草案 |
+| `target_id` | 目标对象 id |
+| `scope` | `global` 或 `workspace` |
+| `workspace_id` | 所属 Workspace，可为空 |
+| `title` | 展示标题 |
+| `subtitle` | 展示副标题 |
+| `search_text` | 搜索文本 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
+关系：
+
+- Artifact、Run、Tool Call、Approval Request、Review Changeset、Workspace File、Data Source、Skill 都可以注册为 Reference Target。
+- Message、Review File Change 等对象可以通过 Object Reference 指向 Reference Target。
+
+说明：
+
+- 用户通过 `@` 搜索和引用时，主要查询 Reference Target。
+- Reference Target 负责统一展示和搜索，不替代原始对象。
+- Reference Target 支持全局对象，例如全局 Data Source 和全局 Skill。
+
+### 4.20 Object Reference
+
+Object Reference 表示某个对象引用了另一个对象。
+
+字段草案：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | Object Reference 唯一标识 |
+| `source_type` | `message`、`review_file_change`、`artifact` 等 |
+| `source_id` | 来源对象 id |
+| `reference_target_id` | 被引用对象 |
+| `created_at` | 创建时间 |
+
+说明：
+
+- Message 中 `@` 引用的对象可以记录为 Object Reference。
+- Review File Change 对比的文件或 artifact 也可以记录为 Object Reference。
+
+## 5. 第一版建议表清单
+
+第一版建议优先落地：
+
+- `workspaces`
+- `threads`
+- `runs`
+- `approval_requests`
+- `review_changesets`
+- `review_file_changes`
+- `review_snapshots`
+- `artifacts`
+- `workspace_files`
+- `reference_targets`
+- `object_references`
+- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`、`show_thinking`，见 `store/app_settings.rs`；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
+- `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
+
+> `messages`、`run_events`、`tool_calls`、`tool_outputs` 曾在此清单，随「Agent JSONL 为唯一真源」改造从 schema 删除（`DROPPED_TABLES` 在旧库清除；消息与事件改由 Agent 持久化，详见 §4.3、§4.5–4.7）。
+>
+> `research_collections`、`research_resources` 曾在此清单，因 Research 延后于第一版发布前从 schema 移除（详见 §4.12–4.13）。
+>
+> `data_sources`、`data_credentials`、`skills`、`skill_enablements` 曾在此清单，已于 2026-07-07 从 schema 删除（从未接线，详见 §4.14–4.17）。
+>
+> P2 审批脚手架的三张预留表（`sandbox_config`、`approval_policy_config`、`approval_rules`）已于 2026-07-05 删除——规则迁到文件后成为死结构，详见 §4.8。
+
+## 6. 关键设计决策
+
+### 6.1 Chat 与 Workspace 对话统一为 Thread
+
+产品上有 Chat 和 Workspace 对话两种入口，但数据上统一为 Thread。
+
+这样可以让消息、Run、Artifact、Approval、Review、恢复、归档、置顶等能力复用同一套结构。
+
+### 6.2 普通 Chat 使用临时 Workspace
+
+普通 Chat 不要求用户选择项目目录，但工具运行和 artifact 生成仍需要工作空间。
+
+因此普通 Chat 背后应自动创建临时 Workspace。UI 不突出展示这个 Workspace，但数据关系保持一致。
+
+临时 Workspace 需要显式记录清理状态，用于支持清理确认、清理中、已清理等状态。
+
+### 6.3 Approval 与 Review 分离
+
+Approval 解决“是否允许执行”的问题。
+
+Review 解决“改了什么”的问题。
+
+因此：
+
+- Shell 命令、文件写入、删除、网络访问、数据访问、批量操作、超出 workspace 范围的读取等高风险操作进入 Approval Request。
+- 文件、代码、markdown、文档、表格等变更对比进入 Review Changeset / Review File Change。
+- Review Changeset 可以处于 `viewed`，表示用户看过但暂未应用或丢弃。
+
+第一版不需要为 Review Changeset 增加 `reverted` 状态；从未应用状态丢弃和已应用后的撤销暂时都归入现有状态和操作记录处理。
+
+第一版不为 `batch_operation` 单独拆子操作表，批量操作的摘要和结构化内容先记录在 `requested_action` 中。
+
+### 6.4 引用对象独立建模
+
+Artifact、Run、Tool Call、Approval Request、Review Changeset、Workspace File、Data Source、Skill 都可以被 `@` 引用或被 markdown 中的 `futureos://` 链接引用。
+
+为了避免每种对象分别实现搜索和引用，建议通过 Reference Target 做统一索引，再通过 Object Reference 记录引用关系。
+
+Reference Target 需要支持全局对象，例如全局 Data Source 和全局 Skill。
+
+### 6.5 Research 转入（已延后）
+
+Research 模块延后至第一版发布后，相关设计已移除，仅在 PRODUCT.md §4.9 保留产品记录，数据模型见 §4.12–4.13 的延后说明。（编号保留，避免后续小节与 §6.8/§6.9 及 desktop/CLAUDE.md 的引用错位。）
+
+### 6.6 Data 凭证与模型凭证分离
+
+Data Credential 只服务 Data Source。
+
+模型 provider key 属于模型或应用设置，不进入 Data Source / Data Credential。
+
+### 6.7 大内容走文件路径
+
+Artifact 的 `content` 只用于存放小内容。
+
+大内容统一走文件路径，数据库只保存路径、摘要和元信息。
+
+### 6.8 「上一轮变更」用影子仓求 Run 级 diff
+
+Review 有两个数据源：「Git changes」读用户真实 Git 仓库的工作树 diff；「上一轮变更」读 FutureOS 影子仓库对每轮 Run before/after 快照求出的 diff（schema 见 4.10）。
+
+关键取舍：
+
+- **写隔离**：影子仓与真实仓物理分离（`~/.future/app/review/<workspace-id>/`），只读真实仓对象做加速，从不写真实仓，也不在用户目录建 `.git`。这样非 Git workspace 也能拿到准确的 Run 级 diff，且不污染用户目录。
+- **diff 立即固化为真源**：after 快照落盘后立即算出 patch 写入 SQLite（`review_file_changes.diff`），影子 commit / tree 降级为可丢弃缓存。即使日后真实仓 `git gc`、移动或影子仓被清理，已存 diff 仍可展示。
+- **归属诚实**：快照只能算出“运行窗口内 workspace 发生了什么变化”，无法绝对区分 Agent / 用户 / formatter，底层语义是 workspace_delta；并发 Run 重叠标 `overlapped`，失败标 `unavailable`；重启恢复按是否需重抓 after 分档——after 已在运行中抓到、仅事后 materialize 未跑完的，恢复为 `normal`（delta 完全可归属），需重启后重新捕获 after 的才标 `recovered`；绝不谎称归属或伪装“无变化”。
+- **两档可靠性**：Git workspace 借用真实仓对象库加速 + 完整可靠性机制（`partial` / `incomplete` / `recovered` / 重启恢复）；非 Git workspace 走简化档（失败即 `unavailable`，并对超体积目录用红线 `changePreview = unsupported_too_large` 关闭预览），换取实现简单。
+- **适用范围与保留**：仅 `thread.mode = workspace` 接入影子 Review；普通 Chat 继续用 Artifacts，不创建影子数据。每个 Thread 默认保留最近 10 个 changeset，超出后清理旧 refs 与 DB 投影。删除 Workspace 记录时同步清理其影子仓与 review 数据。
+
+### 6.9 Provider / 模型 / 登录配置存于 agent 配置文件，不落 GUI SQLite
+
+Provider、模型与登录凭证不进 GUI 的 SQLite，而是读写 agent 的配置文件（与 CLI 共用）：
+
+- `~/.future/agent/auth.json`：按 provider id 存 API key（含内置 `future`）。
+- `~/.future/agent/models.json`：`providers.<id>` 自定义 provider 配置（`name` / `api` / `baseUrl` / `models` / `compat` …），合并在内置 catalog 之上。
+- `~/.future/agent/settings.json`：`defaultModel`、`enabledModels`（模型可见白名单）等。
+
+关键取舍：
+
+- **配置文件 IO 统一收口到 `config_io`**（`src-tauri/src/config_io.rs`）：`auth.json`、`models.json`、`approval_rule.json` 共用一套读写原语——严格解析（坏 JSON / 非对象 → **报错**，不静默重置；缺文件 → 空对象）、原子写（唯一 temp 名 + `rename`，`auth.json` 加 `0600`）、每路径读-改-写串行锁。`auth_store`（登录/退出/provider key）、`agent_providers`（models.json 的 provider 增删改）、`approval_rules`（allow 规则）都经由它，避免某条路径把权限改回默认、吞掉损坏文件、或并发写互相截断。（历史上 models.json / approval_rule.json 的写路径曾「坏文件即静默重建」，会丢掉用户手写的 provider / deny 规则，现已修。）
+- **FutureGene 登录在 Tauri 后端独立实现**（`future_login.rs` + `commands/login.rs`）：设备码 OAuth 走**平台根**（`POST {platform}/client/v1/oauth/device/code` → 轮询 `/client/v1/oauth/device/token`），协议复刻 CLI 但不调用 CLI；前端 `FutureLoginDialog` 用 `usePolling` 驱动轮询（起始 2s、`slow_down` 退避、`attemptId` 守卫），授权成功后才写 `auth.json.future` 的 `key` 与 `base_url`（`= {platform}/api`，与 CLI `saveAuth` 一致，使 GUI / CLI 登录落地的 `auth.json` 完全相同）。平台 URL 由 `future_platform::resolve_future_platform_url` 解析（`future.platform_base_url` ?? `future.base_url` 去掉尾部 `/api` ?? 默认 `https://future-os.cn`），与 CLI `getPlatformUrl()` 对齐；模型 API base 则为 `{platform}/api/v1`（`resolve_future_base_url`，Providers 页展示）。该解析器已从 `agent_providers` 抽到独立的 `future_platform.rs`（login/skills/debug 共用，不再让这些模块依赖 Providers 页）。打开授权页前只校验 scheme（http/https），不绑定 host（授权页在不同域）。
+- **生效时机**：agent 按会话 / 命令重载 auth（`AuthStore::load()`），登录后新开一轮会话即生效，通常无需重启 agent。
+- **agent-app 优先级（已知限制）**：agent 读 auth 时 `~/.future/agent-app/auth.json` 优先于 `~/.future/agent/auth.json`（取第一个存在的，不合并）；GUI 只写后者，若存在前者会被忽略——与 CLI 同款行为，本期不处理。
+- **模型可见性**：GUI 用应用设置里的 `hiddenModels`（opt-out）控制展示；agent 的 `enabledModels`（opt-in 白名单）非空时会限制 `list_models` 返回集——两者叠加时新登录 provider 的模型可能被旧白名单挡住（见 PLAN.md 待办）。
+- **字段校验**：自定义 provider 的 id（小写 `[a-z0-9_-]`）/ 名称（ASCII，禁中文 / emoji / 全角）/ Base URL（http(s)）/ 模型 等规则见 PLAN.md「自定义 Provider 字段校验」，前端即时 + 后端权威。

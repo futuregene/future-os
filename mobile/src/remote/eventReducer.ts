@@ -81,7 +81,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 // Output (completion) tokens from a usage-bearing event — mirrors the desktop
-// `usageOutputTokens` (gui agentActivity): the streamed `usage` event nests the
+// `usageOutputTokens` (desktop agentActivity): the streamed `usage` event nests the
 // raw usage under a `usage` key, the `agent_end` total carries it the same way,
 // and the field name is `completion_tokens` or `output_tokens` depending on the
 // emitter. Returns 0 when absent so callers can guard with `> 0`.

@@ -81,7 +81,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: gui/package-lock.json
+          cache-dependency-path: desktop/package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.0
@@ -91,7 +91,7 @@ jobs:
         with:
           workspaces: |
             .
-            gui/src-tauri
+            desktop/src-tauri
           cache-on-failure: true
           cache-all-crates: true
 
@@ -147,8 +147,8 @@ jobs:
           FUTURE_VERSION: ${{ inputs.version }}
         run: node scripts/version.mjs --github-output
 
-      - name: Install npm dependencies (GUI)
-        working-directory: gui
+      - name: Install npm dependencies (Desktop)
+        working-directory: desktop
         run: npm ci
 
       # The unified `future` CLI is the single sidecar (tauri.conf.json
@@ -162,8 +162,8 @@ jobs:
           set -euo pipefail
           cargo build --release
           triple="$(rustc -Vv | sed -n 's/^host: //p')"
-          mkdir -p ../gui/src-tauri/binaries
-          cp ../target/release/future "../gui/src-tauri/binaries/future-$triple"
+          mkdir -p ../desktop/src-tauri/binaries
+          cp ../target/release/future "../desktop/src-tauri/binaries/future-$triple"
 
       - name: Set Tauri bundle version
         env:
@@ -221,7 +221,7 @@ jobs:
               }
             }));
           ' "$overlay"
-          npm --prefix gui run tauri:build -- --config "$overlay"
+          npm --prefix desktop run tauri:build -- --config "$overlay"
 
       # Tauri notarizes the app before it creates the DMG. Apple treats the
       # resulting signed disk image as a separate distribution artifact: submit
@@ -243,10 +243,10 @@ jobs:
           }
 
           shopt -s nullglob
-          dmgs=(gui/src-tauri/target/release/bundle/dmg/*.dmg)
+          dmgs=(desktop/src-tauri/target/release/bundle/dmg/*.dmg)
           if [[ ${#dmgs[@]} -ne 1 ]]; then
             echo "Expected exactly one DMG, found ${#dmgs[@]}." >&2
-            find gui/src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -print >&2 || true
+            find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -print >&2 || true
             exit 1
           fi
           dmg="${dmgs[0]}"
@@ -370,9 +370,9 @@ jobs:
           set -euo pipefail
           : "${SIGNED_DMG:?SIGNED_DMG is required}"
           shopt -s nullglob
-          apps=(gui/src-tauri/target/release/bundle/macos/*.app)
-          updaters=(gui/src-tauri/target/release/bundle/macos/*.app.tar.gz)
-          updater_sigs=(gui/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig)
+          apps=(desktop/src-tauri/target/release/bundle/macos/*.app)
+          updaters=(desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz)
+          updater_sigs=(desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig)
           [[ ${#apps[@]} -eq 1 ]] || {
             echo "Expected exactly one .app bundle, found ${#apps[@]}." >&2
             exit 1

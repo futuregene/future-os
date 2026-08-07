@@ -16,7 +16,7 @@ path = "src/main.rs"
 # Single proto codegen owner (PR #112): the gRPC wire types come from the
 # future-rpc crate, so building this crate (and anything that depends on it,
 # e.g. the unified `future` CLI) does NOT need protoc.
-future-rpc = { path = "../../future-rpc" }
+future-rpc = { path = "../../rpc" }
 tonic.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

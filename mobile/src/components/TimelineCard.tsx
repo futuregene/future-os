@@ -24,7 +24,7 @@ interface TimelineCardProps {
   item: TimelineItem;
 }
 
-// Same shape as the desktop footer (gui/src/lib/date.ts formatDuration): "5s"
+// Same shape as the desktop footer (desktop/src/lib/date.ts formatDuration): "5s"
 // under a minute, "1m 25s" above — so phone and desktop read identically.
 function formatDuration(durationMs: number): string {
   const totalSeconds = Math.max(0, Math.round(durationMs / 1_000));
@@ -46,7 +46,7 @@ function RunIndicator({ startedAt }: { startedAt: number }) {
   );
 }
 
-// Tool kinds mirror the desktop activity line (gui AgentActivityList): the icon
+// Tool kinds mirror the desktop activity line (desktop AgentActivityList): the icon
 // and label follow the *tool*, not a generic wrench, so phone and desktop read
 // the same. The agent's tool_name is exactly one of these four.
 type ToolKind = "shell" | "write" | "edit" | "read";

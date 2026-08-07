@@ -67,7 +67,7 @@ pub struct ServerSession {
     pub parent_session_id: String,
     /// Human-readable label (set via `/name`).  Empty until named.
     pub session_name: String,
-    /// Source that created this session: "gui", "tui", "fork", "feishu", "dingtalk", etc.
+    /// Source that created this session: "desktop", "tui", "fork", "feishu", "dingtalk", etc.
     pub created_by: String,
     /// Arbitrary metadata from the source side (JSON). Free-form.
     pub source_meta: serde_json::Value,
