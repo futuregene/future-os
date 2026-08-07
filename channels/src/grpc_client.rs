@@ -8,55 +8,17 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-// Generated proto code (from future.proto) — checked into src/generated/
-mod proto {
-    include!("generated/proto.rs");
-}
+// Generated proto code lives in the future-rpc crate (single codegen owner;
+// typed-RPC milestone). Re-exported under the historical module name so call
+// sites keep their `proto::...` paths.
+use future_rpc::proto;
+
+// The wire-contract event vocabulary and its parser live in future-rpc so
+// every client decodes events the same way.
+pub use future_rpc::events::AgentEvent;
 
 use proto::future_agent_client::FutureAgentClient;
 use proto::{RpcCommand, StreamRequest};
-
-/// Event types from the agent event stream.
-#[derive(Debug, Clone)]
-pub enum AgentEvent {
-    TextChunk(String),
-    ThinkingStart,
-    ThinkingDelta(String),
-    ThinkingEnd,
-    AgentStart,
-    AgentEnd {
-        error: Option<String>,
-        /// Canonical terminal state (`completed` / `cancelled` / `error` /
-        /// `incomplete`); lets a bridge tell a cancellation apart from a clean
-        /// completion without parsing free-text error strings.
-        state: Option<String>,
-    },
-    ToolStart {
-        tool_id: String,
-        tool_name: String,
-        tool_args: Option<String>,
-    },
-    ToolDelta {
-        tool_id: String,
-        text: String,
-    },
-    ToolEnd {
-        tool_id: String,
-        text: Option<String>,
-    },
-    ApprovalRequest {
-        approval_request_id: String,
-        tool_id: String,
-        tool_name: String,
-        kind: String,
-        risk_level: String,
-        title: String,
-        summary: String,
-        requested_action: serde_json::Value,
-    },
-    Error(String),
-    Ping,
-}
 
 #[derive(Clone)]
 pub struct AgentClient {
@@ -117,6 +79,9 @@ fn expand_projection_snapshot(event: proto::StreamEvent) -> VecDeque<proto::Stre
             timestamp: String::new(),
             session_idx: -1,
             run_sequence,
+            // Keep the typed payload so expanded events decode through the
+            // same path as live ones.
+            payload: projected.payload,
         })
         .collect()
 }
@@ -168,12 +133,9 @@ impl AgentClient {
             return Err(anyhow!("Command '{}' failed: {}", cmd_type, err));
         }
 
-        if response.data.is_empty() {
-            return Ok(Value::Null);
-        }
-
-        serde_json::from_str(&response.data)
-            .map_err(|e| anyhow!("Failed to parse response data for '{}': {}", cmd_type, e))
+        // Typed payload first, JSON `data` fallback (old agent / untyped
+        // commands) — the shared decode keeps every client consistent.
+        Ok(future_rpc::decode::response_data(&response))
     }
 
     /// Create a new agent session. Returns the session_id.
@@ -554,84 +516,11 @@ impl AgentClient {
     /// `run_id` so callers can drop events that belong to a different run on the
     /// same session (another client, or a stale tail after a supersede) instead
     /// of letting a foreign `agent_end` finalize their reply.
+    ///
+    /// Delegates to the shared future-rpc parser (typed payload first, JSON
+    /// `data` fallback).
     pub fn parse_event(event: proto::StreamEvent) -> Option<(String, AgentEvent)> {
-        let parsed: Option<AgentEvent> = match event.r#type.as_str() {
-            "ping" => Some(AgentEvent::Ping),
-            "agent_start" => Some(AgentEvent::AgentStart),
-            "agent_end" => {
-                let data = serde_json::from_str::<Value>(&event.data).ok();
-                let error = data
-                    .as_ref()
-                    .and_then(|d| d["error"].as_str().map(|s| s.to_string()));
-                let state = data
-                    .as_ref()
-                    .and_then(|d| d["state"].as_str().map(|s| s.to_string()));
-                Some(AgentEvent::AgentEnd { error, state })
-            }
-            "text_chunk" => {
-                let text = serde_json::from_str::<Value>(&event.data)
-                    .ok()
-                    .and_then(|d| d["text"].as_str().map(|s| s.to_string()))
-                    .unwrap_or_default();
-                Some(AgentEvent::TextChunk(text))
-            }
-            "thinking_start" => Some(AgentEvent::ThinkingStart),
-            "thinking_delta" => {
-                let text = serde_json::from_str::<Value>(&event.data)
-                    .ok()
-                    .and_then(|d| d["text"].as_str().map(|s| s.to_string()))
-                    .unwrap_or_default();
-                Some(AgentEvent::ThinkingDelta(text))
-            }
-            "thinking_end" => Some(AgentEvent::ThinkingEnd),
-            "tool_start" => {
-                let data = serde_json::from_str::<Value>(&event.data).ok()?;
-                Some(AgentEvent::ToolStart {
-                    tool_id: data["tool_id"].as_str().unwrap_or("").to_string(),
-                    tool_name: data["tool_name"].as_str().unwrap_or("").to_string(),
-                    tool_args: data["tool_args"].as_str().map(|s| s.to_string()),
-                })
-            }
-            "tool_delta" => {
-                let data = serde_json::from_str::<Value>(&event.data).ok()?;
-                Some(AgentEvent::ToolDelta {
-                    tool_id: data["tool_id"].as_str().unwrap_or("").to_string(),
-                    text: data["text"].as_str().unwrap_or("").to_string(),
-                })
-            }
-            "tool_end" => {
-                let data = serde_json::from_str::<Value>(&event.data).ok()?;
-                Some(AgentEvent::ToolEnd {
-                    tool_id: data["tool_id"].as_str().unwrap_or("").to_string(),
-                    text: data["text"].as_str().map(|s| s.to_string()),
-                })
-            }
-            "approval_request" => {
-                let data = serde_json::from_str::<Value>(&event.data).ok()?;
-                Some(AgentEvent::ApprovalRequest {
-                    approval_request_id: data["approval_request_id"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string(),
-                    tool_id: data["tool_id"].as_str().unwrap_or("").to_string(),
-                    tool_name: data["tool_name"].as_str().unwrap_or("").to_string(),
-                    kind: data["kind"].as_str().unwrap_or("").to_string(),
-                    risk_level: data["risk_level"].as_str().unwrap_or("").to_string(),
-                    title: data["title"].as_str().unwrap_or("").to_string(),
-                    summary: data["summary"].as_str().unwrap_or("").to_string(),
-                    requested_action: data["requested_action"].clone(),
-                })
-            }
-            "error" => {
-                let msg = serde_json::from_str::<Value>(&event.data)
-                    .ok()
-                    .and_then(|d| d["error"].as_str().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "unknown error".to_string());
-                Some(AgentEvent::Error(msg))
-            }
-            _ => None,
-        };
-        parsed.map(|ev| (event.run_id.clone(), ev))
+        future_rpc::events::parse_agent_event(&event)
     }
 }
 
@@ -684,30 +573,36 @@ pub struct ImageInput {
 mod tests {
     use super::*;
 
-    fn make_event(event_type: &str, data: &str) -> proto::StreamEvent {
-        proto::StreamEvent {
-            r#type: event_type.to_string(),
-            data: data.to_string(),
-            run_id: "run_1".to_string(),
-            idx: 0,
-            ..Default::default()
-        }
-    }
-
-    /// `parse_event` also yields the event's run_id; the unit tests below only
-    /// care about the decoded variant, so strip the id here.
-    fn parsed(event: proto::StreamEvent) -> Option<AgentEvent> {
-        AgentClient::parse_event(event).map(|(_, ev)| ev)
-    }
-
-    // ─── parse_event: basic events ───────────────────────────────────────────
+    // Event-parsing coverage lives with the shared parser in future-rpc
+    // (`events::tests`), where every case runs against both the JSON-data
+    // twin (old agent) and the typed-payload twin (new agent).
 
     #[test]
-    fn parse_event_carries_run_id() {
-        let event = make_event("text_chunk", r#"{"text":"hi"}"#);
+    fn parse_event_delegates_to_shared_parser() {
+        // JSON-data path.
+        let event = proto::StreamEvent {
+            r#type: "text_chunk".to_string(),
+            data: r#"{"text":"hi"}"#.to_string(),
+            run_id: "run_1".to_string(),
+            ..Default::default()
+        };
         let (run_id, ev) = AgentClient::parse_event(event).expect("parsed");
         assert_eq!(run_id, "run_1");
         assert!(matches!(ev, AgentEvent::TextChunk(t) if t == "hi"));
+
+        // Typed-payload path.
+        let payload = future_rpc::encode::event_payload("text_chunk", r#"{"text":"yo"}"#)
+            .expect("text_chunk encodes");
+        let typed = proto::StreamEvent {
+            r#type: "text_chunk".to_string(),
+            data: String::new(),
+            run_id: "run_2".to_string(),
+            payload: Some(payload),
+            ..Default::default()
+        };
+        let (run_id, ev) = AgentClient::parse_event(typed).expect("parsed");
+        assert_eq!(run_id, "run_2");
+        assert!(matches!(ev, AgentEvent::TextChunk(t) if t == "yo"));
     }
 
     #[test]
@@ -721,11 +616,13 @@ mod tests {
                     r#type: "text_chunk".to_string(),
                     data: r#"{"text":"hello"}"#.to_string(),
                     idx: 4,
+                    payload: None,
                 },
                 proto::ProjectedRunEvent {
                     r#type: "agent_end".to_string(),
                     data: r#"{"state":"completed"}"#.to_string(),
                     idx: 5,
+                    payload: None,
                 },
             ],
             session_id: "session_1".to_string(),
@@ -748,230 +645,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_agent_end_state() {
-        let event = make_event("agent_end", r#"{"state":"cancelled"}"#);
-        match parsed(event) {
-            Some(AgentEvent::AgentEnd { state, error }) => {
-                assert_eq!(state.as_deref(), Some("cancelled"));
-                assert!(error.is_none());
-            }
-            other => panic!("expected AgentEnd, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_ping() {
-        let event = make_event("ping", "{}");
-        assert!(matches!(parsed(event), Some(AgentEvent::Ping)));
-    }
-
-    #[test]
-    fn parse_agent_start() {
-        let event = make_event("agent_start", "{}");
-        assert!(matches!(parsed(event), Some(AgentEvent::AgentStart)));
-    }
-
-    #[test]
-    fn parse_agent_end_no_error() {
-        let event = make_event("agent_end", "{}");
-        match parsed(event) {
-            Some(AgentEvent::AgentEnd { error, .. }) => assert!(error.is_none()),
-            other => panic!("expected AgentEnd, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_agent_end_with_error() {
-        let event = make_event("agent_end", r#"{"error":"rate limited"}"#);
-        match parsed(event) {
-            Some(AgentEvent::AgentEnd { error, .. }) => {
-                assert_eq!(error.as_deref(), Some("rate limited"))
-            }
-            other => panic!("expected AgentEnd, got {:?}", other),
-        }
-    }
-
-    // ─── parse_event: text events ────────────────────────────────────────────
-
-    #[test]
-    fn parse_text_chunk() {
-        let event = make_event("text_chunk", r#"{"text":"Hello world"}"#);
-        match parsed(event) {
-            Some(AgentEvent::TextChunk(text)) => assert_eq!(text, "Hello world"),
-            other => panic!("expected TextChunk, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_text_chunk_empty_data() {
-        let event = make_event("text_chunk", "{}");
-        match parsed(event) {
-            Some(AgentEvent::TextChunk(text)) => assert_eq!(text, ""),
-            other => panic!("expected TextChunk, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_thinking_start() {
-        let event = make_event("thinking_start", "{}");
-        assert!(matches!(parsed(event), Some(AgentEvent::ThinkingStart)));
-    }
-
-    #[test]
-    fn parse_thinking_delta() {
-        let event = make_event("thinking_delta", r#"{"text":"Let me think"}"#);
-        match parsed(event) {
-            Some(AgentEvent::ThinkingDelta(text)) => assert_eq!(text, "Let me think"),
-            other => panic!("expected ThinkingDelta, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_thinking_end() {
-        let event = make_event("thinking_end", "{}");
-        assert!(matches!(parsed(event), Some(AgentEvent::ThinkingEnd)));
-    }
-
-    // ─── parse_event: tool events ────────────────────────────────────────────
-
-    #[test]
-    fn parse_tool_start() {
-        let event = make_event(
-            "tool_start",
-            r#"{"tool_id":"call_1","tool_name":"shell","tool_args":"{\"command\":\"ls\"}"}"#,
+    fn projection_expansion_keeps_typed_payloads() {
+        let payload = future_rpc::encode::event_payload("text_chunk", r#"{"text":"hi"}"#)
+            .expect("text_chunk encodes");
+        let snapshot = proto::StreamEvent {
+            r#type: "run_snapshot".to_string(),
+            run_id: "run_snapshot_1".to_string(),
+            projection_snapshot: true,
+            snapshot_events: vec![proto::ProjectedRunEvent {
+                r#type: "text_chunk".to_string(),
+                data: r#"{"text":"hi"}"#.to_string(),
+                idx: 4,
+                payload: Some(payload),
+            }],
+            session_id: "session_1".to_string(),
+            ..Default::default()
+        };
+        let expanded: Vec<_> = expand_projection_snapshot(snapshot).into_iter().collect();
+        assert!(
+            expanded[0].payload.is_some(),
+            "expanded events must carry the typed payload"
         );
-        match parsed(event) {
-            Some(AgentEvent::ToolStart {
-                tool_id,
-                tool_name,
-                tool_args,
-                ..
-            }) => {
-                assert_eq!(tool_id, "call_1");
-                assert_eq!(tool_name, "shell");
-                assert_eq!(tool_args.as_deref(), Some("{\"command\":\"ls\"}"));
-            }
-            other => panic!("expected ToolStart, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_tool_start_missing_args() {
-        let event = make_event("tool_start", r#"{"tool_id":"call_1","tool_name":"read"}"#);
-        match parsed(event) {
-            Some(AgentEvent::ToolStart { tool_args, .. }) => assert!(tool_args.is_none()),
-            other => panic!("expected ToolStart, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_tool_start_invalid_json() {
-        let event = make_event("tool_start", "not json");
-        assert!(parsed(event).is_none());
-    }
-
-    #[test]
-    fn parse_tool_delta() {
-        let event = make_event(
-            "tool_delta",
-            r#"{"tool_id":"call_1","text":"partial output"}"#,
-        );
-        match parsed(event) {
-            Some(AgentEvent::ToolDelta { tool_id, text }) => {
-                assert_eq!(tool_id, "call_1");
-                assert_eq!(text, "partial output");
-            }
-            other => panic!("expected ToolDelta, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_tool_end() {
-        let event = make_event("tool_end", r#"{"tool_id":"call_1","text":"file1.txt"}"#);
-        match parsed(event) {
-            Some(AgentEvent::ToolEnd { tool_id, text }) => {
-                assert_eq!(tool_id, "call_1");
-                assert_eq!(text.as_deref(), Some("file1.txt"));
-            }
-            other => panic!("expected ToolEnd, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_tool_end_no_text() {
-        let event = make_event("tool_end", r#"{"tool_id":"call_1"}"#);
-        match parsed(event) {
-            Some(AgentEvent::ToolEnd { text, .. }) => assert!(text.is_none()),
-            other => panic!("expected ToolEnd, got {:?}", other),
-        }
-    }
-
-    // ─── parse_event: approval & error events ────────────────────────────────
-
-    #[test]
-    fn parse_approval_request() {
-        let event = make_event(
-            "approval_request",
-            r#"{
-                "approval_request_id": "req_1",
-                "tool_id": "call_1",
-                "tool_name": "shell",
-                "kind": "sandbox",
-                "risk_level": "high",
-                "title": "Dangerous command",
-                "summary": "rm -rf /",
-                "requested_action": {"command": "rm -rf /"}
-            }"#,
-        );
-        match parsed(event) {
-            Some(AgentEvent::ApprovalRequest {
-                approval_request_id,
-                tool_name,
-                risk_level,
-                title,
-                summary,
-                ..
-            }) => {
-                assert_eq!(approval_request_id, "req_1");
-                assert_eq!(tool_name, "shell");
-                assert_eq!(risk_level, "high");
-                assert_eq!(title, "Dangerous command");
-                assert_eq!(summary, "rm -rf /");
-            }
-            other => panic!("expected ApprovalRequest, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_error_event() {
-        let event = make_event("error", r#"{"error":"something went wrong"}"#);
-        match parsed(event) {
-            Some(AgentEvent::Error(msg)) => assert_eq!(msg, "something went wrong"),
-            other => panic!("expected Error, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_error_event_invalid_json() {
-        let event = make_event("error", "not json");
-        match parsed(event) {
-            Some(AgentEvent::Error(msg)) => assert_eq!(msg, "unknown error"),
-            other => panic!("expected Error, got {:?}", other),
-        }
-    }
-
-    // ─── parse_event: unknown events ─────────────────────────────────────────
-
-    #[test]
-    fn parse_unknown_event_returns_none() {
-        let event = make_event("custom_event", "{}");
-        assert!(parsed(event).is_none());
-    }
-
-    #[test]
-    fn parse_empty_type_returns_none() {
-        let event = make_event("", "{}");
-        assert!(parsed(event).is_none());
     }
 
     // ─── SessionState construction ───────────────────────────────────────────

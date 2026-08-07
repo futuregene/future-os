@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills install-loop fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars
+.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills install-loop fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars node-workspace
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -147,15 +147,34 @@ define npm-install-if-needed
 endef
 endif
 
+# npm workspace (future-rpc/ts + tui + cli): deps hoist to the repo-root
+# node_modules and a single root package-lock.json. Installs only when the
+# manifest/lockfile is newer than the install stamp, then builds the shared
+# wire-contract package so tui/cli can compile against its dist output.
+# (gui and mobile are not workspace members — they keep npm-install-if-needed.)
+ifeq ($(OS),windows)
+node-workspace:
+	@npm install --silent
+	@cd future-rpc/ts && npm run build --silent
+else
+node-workspace:
+	@if [ ! -f "node_modules/.package-lock.json" ] || [ "package.json" -nt "node_modules/.package-lock.json" ] || [ "package-lock.json" -nt "node_modules/.package-lock.json" ]; then \
+		echo "  npm install (workspace)"; \
+		npm install; \
+	fi
+	@if [ ! -f "future-rpc/ts/dist/index.js" ] || [ -n "$$(find future-rpc/ts/src -name '*.ts' -newer future-rpc/ts/dist/index.js 2>/dev/null)" ]; then \
+		echo "  build future-rpc/ts"; \
+		cd future-rpc/ts && npm run build; \
+	fi
+endif
+
 build-agent:
 	cd agent && cargo build --release
 
-build-tui:
-	$(call npm-install-if-needed,tui)
+build-tui: node-workspace
 	cd tui && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
 
-build-cli:
-	$(call npm-install-if-needed,cli)
+build-cli: node-workspace
 	cd cli && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future
 
 # Internal: copy sidecar binaries (agent + CLI) into the Tauri resource dir.
@@ -208,12 +227,10 @@ test-agent:
 test-channels:
 	cd channels && cargo test
 
-test-cli:
-	$(call npm-install-if-needed,cli)
+test-cli: node-workspace
 	cd cli && npm test
 
-test-tui:
-	$(call npm-install-if-needed,tui)
+test-tui: node-workspace
 	cd tui && npm test
 
 test-gui:
@@ -237,10 +254,10 @@ lint-agent:
 lint-channels:
 	cd channels && cargo fmt --check && cargo clippy
 
-lint-tui:
+lint-tui: node-workspace
 	cd tui && npm run gen-version && npx tsc --noEmit
 
-lint-cli:
+lint-cli: node-workspace
 	cd cli && npm run gen-version && npx tsc --noEmit
 
 lint-gui:
@@ -275,12 +292,10 @@ fmt-mobile:
 run-agent:
 	cd agent && cargo run -- --verbose --log-file
 
-run-tui:
-	$(call npm-install-if-needed,tui)
+run-tui: node-workspace
 	cd tui && npm run gen-version && npm run dev
 
-run-cli:
-	$(call npm-install-if-needed,cli)
+run-cli: node-workspace
 	cd cli && npm run gen-version && npm run dev
 
 run-gui: build-gui
@@ -402,16 +417,17 @@ generate-models:
 	python3 scripts/generate_models.py
 
 generate-proto:
-	cd agent && REGENERATE_PROTO=1 cargo build
+	cd future-rpc/rust && REGENERATE_PROTO=1 cargo build
 	cd channels && REGENERATE_PROTO=1 cargo build
-	cd gui/src-tauri && REGENERATE_PROTO=1 cargo build
-	cd tui && npm run generate-proto
+	cd future-rpc/ts && bun run scripts/generate-proto.ts
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
 
 clean:
 ifeq ($(OS),windows)
 	@if exist target rmdir /s /q target
+	@if exist node_modules rmdir /s /q node_modules
+	@if exist future-rpc\ts\dist rmdir /s /q future-rpc\ts\dist
 	@if exist tui\dist rmdir /s /q tui\dist
 	@if exist tui\node_modules rmdir /s /q tui\node_modules
 	@if exist tui\future-tui del /q tui\future-tui
@@ -430,6 +446,7 @@ ifeq ($(OS),windows)
 	@if exist "$(PREFIX)\future-channel$(EXE_SUFFIX)" del /q "$(PREFIX)\future-channel$(EXE_SUFFIX)"
 else
 	rm -rf target
+	rm -rf node_modules future-rpc/ts/dist
 	rm -rf tui/dist tui/node_modules
 	rm -f tui/future-tui tui/src/version.generated.ts
 	rm -rf cli/dist cli/node_modules
@@ -465,7 +482,7 @@ help:
 	@echo "  profile-quick      CPU profile: run agent N secs (PROFILE_SECS=30)"
 	@echo "  profile-heap       Heap profile via dhat, write dhat report JSON"
 	@echo "  generate-models    Fetch model data, regenerate Rust catalog + wiki docs"
-	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
+	@echo "  generate-proto     Regenerate wire code: future-rpc (future.proto, all TS clients) + channels feishu_ws"
 	@echo "  install            Build & install all components"
 	@echo "  install-nogui      Build & install terminal stack (skip GUI)"
 	@echo "  uninstall          Remove installed binaries from $(PREFIX)/"

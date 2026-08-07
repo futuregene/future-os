@@ -5,11 +5,8 @@
 use std::time::Duration;
 use tokio::time::timeout;
 
-// Reuse the channel's gRPC client types
-mod proto {
-    #![allow(dead_code)]
-    include!("../src/generated/proto.rs");
-}
+// Reuse the shared wire contract (single codegen owner).
+use future_rpc::proto;
 
 use proto::future_agent_client::FutureAgentClient;
 use proto::{RpcCommand, StreamRequest};
@@ -54,10 +51,8 @@ async fn call(
     if !response.success {
         return Err(format!("Command '{}' failed: {}", cmd_type, response.error).into());
     }
-    if response.data.is_empty() {
-        return Ok(serde_json::Value::Null);
-    }
-    Ok(serde_json::from_str(&response.data)?)
+    // Typed payload first, JSON `data` fallback — the shared decode.
+    Ok(future_rpc::decode::response_data(&response))
 }
 
 fn parse_event(event: proto::StreamEvent) -> Option<AgentEvent> {

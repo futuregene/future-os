@@ -177,6 +177,9 @@ fi
 # put it on the agent's PATH, so skills that shell out to `future` resolve it.
 # Non-fatal: a failure only means those skills won't work; the GUI test proceeds.
 if [[ "$BUILD_CLI" == "1" ]]; then
+  # The CLI imports @future-os/rpc; its dist must exist before tsc compiles.
+  (cd "$ROOT_DIR/future-rpc/ts" && npm run build) || \
+    echo "shared RPC build failed; future CLI build skipped."
   if command -v bun >/dev/null 2>&1; then
     echo "Building future CLI..."
     (
