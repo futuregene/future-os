@@ -1,9 +1,16 @@
 # cli-rust-port — Final Acceptance Report (P4-final)
 
-Status: **ACCEPTED** — verified 2026-08-07 on commit `d5fa284a` (branch `claude/cli-rust-port`).
+Status: **ACCEPTED** — verified 2026-08-07 on commit `1069f227` (branch `claude/cli-rust-port`,
+merge of `origin/main` incl. PR #112 typed-RPC wire contract).
 Scope: 1:1 TypeScript→Rust port of `cli/` (TS) → `cli/rust/` (Rust crate, bin `future`),
 byte-identical args / help text / output / exit codes, with ported unit tests + a
 differential (golden) test harness against the TS CLI.
+
+> Post-merge note (PR #112 integration): `cli/rust` now consumes the generated proto
+> code from the `future-rpc` crate (the single proto-codegen owner introduced by #112)
+> instead of owning a generated copy — `src/generated/` and the proto half of build.rs
+> were removed; `rpc.rs` imports `future_rpc::proto`. Verified wire-compatible against
+> the new typed-payload agent (163/163 diff, incl. the live-gRPC `agent` scenario).
 
 ---
 
@@ -13,7 +20,7 @@ differential (golden) test harness against the TS CLI.
 |---|---|---|
 | Differential harness (TS vs Rust) | `make test-cli-diff` (`cli/rust/tests/diff-ts-rust.sh`) | **163 passed / 0 failed / 0 skipped** |
 | cli-rust unit tests | `cargo test -p cli-rust` | **194 passed / 0 failed** |
-| Workspace tests | `cargo test --workspace` | **1675 passed / 0 failed** |
+| Workspace tests | `cargo test --workspace` | **1729 passed / 0 failed** (incl. future-rpc) |
 | Workspace clippy (CI flags) | `cargo clippy --workspace --all-targets -- -D warnings` (rustup 1.97.0) | clean |
 | Format | `cargo fmt --check` | clean |
 | TS CLI typecheck | `npx tsc --noEmit` (via `make lint-cli`) | clean (unchanged TS) |
@@ -89,6 +96,10 @@ dependent, same class as the P4 turn-1 findings). All are documented in
   Safari path + selector/input/screenshot; corpus 163/163.
 - `d5fa284a` corpus refinement: `snapshot --endpoint <unreachable>` covers the
   fixed-message ensureBrowser error (status transport wording diverges).
+- `1069f227` merge of `origin/main` (#112 typed-RPC): cli/rust consumes
+  `future-rpc` crate (generated proto retired), Makefile `test-cli-diff`
+  gains the `node-workspace` prerequisite (root npm install + future-rpc/ts
+  build for the TS side), acceptance numbers refreshed (1729 workspace).
 
 ## 4. Re-running the gates
 
