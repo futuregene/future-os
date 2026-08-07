@@ -42,6 +42,16 @@ For one-shot conversations, just answer normally — no goal needed.
 - The agent must be running for `future loop run` — start it with
   `future agent` (gRPC 127.0.0.1:50051). Probe it with `future models`
   — a plain curl to the gRPC port reports nothing useful.
+- **Verify the CLI binary is not stale before relying on recent loop
+  features.** The installed `future` binary can be older than the loop
+  source (observed 2026-08: session auto-cleanup, `todo update --blocks`,
+  and gate enforcement silently absent from an out-of-date binary — the
+  commands still "work" but skip the new behavior with no warning). Quick
+  freshness probe: `strings $(command -v future) | grep -c "session cleanup failed"`
+  — `1` = fresh (session auto-clean present), `0` = stale → rebuild with
+  `cargo build -p future-cli` (or reinstall) before relying on loop features.
+  If you see `⚠ session cleanup failed` lines or stray per-run sessions in
+  `future session list`, treat it as the same stale-binary symptom.
 
 ## State layout (project-local, all under `<cwd>`)
 
@@ -190,7 +200,12 @@ future loop todo add --goal <goal-id> --role user --class user_gate \
   --blocks <todo-id-of-the-action>
 ```
 Describing approval in the objective text is NOT enough — a gate todo is
-what actually blocks the action.
+what actually blocks the action. Semantics (verified): the `--blocks` value
+is a declarative link; what actually freezes work is the gate being OPEN —
+the run loop returns `AskUser` for the whole goal until the gate is resolved
+(any open gate freezes everything, not just the linked todo), and since the
+2026-08 hardening pass `todo complete` also rejects completing non-gate
+todos while a gate is pending.
 
 **Conditional iteration (validate until it passes).** When a todo must
 iterate until a condition is met (e.g. optimize until tests pass), attach an
@@ -359,13 +374,32 @@ future loop todo complete --goal <goal-id> --todo-id <stale-id> --no-follow-up \
   (todos done + closure intent + no acceptance gaps). Check `closure_proof`.
 - **Never silently complete agent work**: `todo complete` requires
   `--no-follow-up` or `--successor`; the CLI rejects silent completion.
+- **Gates freeze ALL work until resolved — enforced at the CLI too.**
+  The run loop returns `AskUser` while any user gate is open (it does NOT
+  gate by reverse `--blocks` wiring — any open gate freezes everything), and
+  `todo complete` now rejects completing a non-gate todo while a gate is
+  pending. To complete gated work: `gate resolve` the gate first, then
+  complete the todo. Gates themselves are completed via `gate resolve`, never
+  `todo complete`.
 - **Never guess a gate decision — but not every gate is the user's.**
   Gates created by the kernel as `PLAN_REVIEW` replan checkpoints are the
   agent's to resolve (review plan → adjust todos via CLI → resolve gate).
   Gates that pose a genuine human decision (approvals, scope/goal changes,
   risky/irreversible actions) MUST be surfaced to the user IN the
   conversation — stop and wait, never guess.
-- **Monitors**: not-due monitors must NOT be polled; `run` handles cadence.
+- **Monitors**: not-due monitors must NOT be polled; `run` handles cadence
+  (a run with only not-due monitors returns `wait / wait_monitor`). A
+  monitor's due time is driven by its cadence (`--cadence 15m|1h|2d` or a
+  class) or `--defer-secs N`; numeric `todo update --resume-when N` also
+  defers N seconds from now (real deadline), while a non-numeric value is a
+  text-only hint with NO deadline (the todo stays deferred forever — don't
+  use text hints when you need the todo to become due again).
+- **`--verify` semantics**: exit 0 → todo completes validated; exit non-zero
+  → validation fails, the kernel marks repair-required and retries up to
+  `--max-validation-attempts` (default 3), then replans. NOTE: the agent
+  itself can still `todo complete --no-follow-up` a failing validator via the
+  CLI (agent autonomy) — the validator only gates the kernel's automatic
+  completion path.
 - **Evidence honesty**: report real outputs (paths, test results); the
   control plane readbacks key results itself.
 - **Deliverables to CWD**: agent turns write artifacts into the loop state
@@ -391,8 +425,44 @@ future loop run --goal G [--model M] [--thinking-level L] [--max-turns N]
 future loop backup --goal G [--list | --restore DIR]
 future loop serve-status [--port 8791]         # browser dashboard
 
-> Model listing lives on the top-level CLI (`future models [--json]`) — the
-> loop does not need its own copy. Session cleanup is automatic per `run`;
-> for manual cleanup of leftover sessions use the top-level
-> `future session list` / `future session delete <id>`.
+> Model listing is available BOTH on the top-level CLI (`future models
+> [--json]`) AND as `future loop models` (same catalog). Session cleanup is
+> automatic per `run`; for manual cleanup of leftover sessions use the
+> top-level `future session list` / `future session delete <id>`.
+
+### Full command surface (52 commands, 12 groups — `future loop registry`)
+
+Beyond the workflow commands above, the control plane ships a wider surface
+(verified 2026-08, v0.0.1574). Use `future loop --help` / `future loop
+registry` for the authoritative list; the notable extras:
+
+- **todo graph**: `todo update` (text/priority/blocks/evidence/note —
+  `--blocks a,b` replaces, `--blocks ""` clears, absent leaves untouched);
+  `task-graph` (dependency DAG — **fails closed** on unknown block refs);
+  `lease claim|renew|release|expire|status` (task leases — claim requires the
+  agent to be `agent register`ed for the goal).
+- **gates & replan**: `gate resolve`; `replan ack` / `replan obligations`
+  (kernel-injected plan-review checkpoints).
+- **agents**: `agent register|onboard` (onboard declares capabilities);
+  `scope` (identity-scoped frontier); `lane` (lane recommendation);
+  `supervisor propose|receipt|events`.
+- **quota/scheduler**: `quota should-run|usage|spend`;
+  `scheduler tick|show|record-host-failure`.
+- **ops**: `diagnose` (per-goal decision surface, supports `--format json`);
+  `doctor` (ledger integrity + canary self-check); `runs
+  history|compact|retention|stale`; `backup --list|--restore`;
+  `evidence-log`; `todo-event`; `turn` (per-todo turn envelope);
+  `privacy` (privacy-graded projection); `store verify|migrate|bridge`;
+  `authority`; `profile`; `version`.
+- **work-items & handoff**: `attention` (attention queue); `inbox` (operator
+  inbox urgency); `handoff --write` (handoff doc + delivery contract).
+- **extensions**: `extension install|upgrade|enable|disable|rollback`;
+  `capability list|propose|commands|catalog`; `agent-turn-recall`,
+  `change-quality`, `content-ops`, `explore`, `integration-branch`,
+  `issue-fix`, `periodic-report`, `reward-memory`, `semantic-preference`,
+  `value-connectors` (each takes `--input` for one private turn context).
+- **benchmark/replay/canary**: `benchmark protocol|run|ledger`;
+  `replay record|run` (+ `replay corpus build|run`); `canary smoke
+  [--profile core-control-plane|extension-runtime|release-gate]` (release
+  gate default) — run `canary smoke` after touching loop code.
 ```
