@@ -151,9 +151,22 @@ async fn ensure_symlink(source: &Path, destination: PathBuf) -> Result<(), Strin
         Err(e) => return Err(e.to_string()),
     }
 
-    tokio::fs::symlink(source, &destination)
+    create_symlink(source, &destination)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// `fs.symlink` (Node) — file symlink creation. `tokio::fs::symlink` is
+/// unix-only; init never reaches this on Windows (guarded by the platform
+/// check in `init_command`), but the code must still compile there.
+#[cfg(unix)]
+async fn create_symlink(source: &Path, destination: &Path) -> std::io::Result<()> {
+    tokio::fs::symlink(source, destination).await
+}
+
+#[cfg(windows)]
+async fn create_symlink(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(source, destination)
 }
 
 /// `fs.realpath` equivalent (canonicalize); ENOENT is reported as `Err` with

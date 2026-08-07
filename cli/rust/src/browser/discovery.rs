@@ -79,7 +79,8 @@ fn find_windows_browser() -> Option<BrowserExecutable> {
         ),
         (
             "chrome",
-            prog.map(|p| format!("{p}\\Google\\Chrome\\Application\\chrome.exe")),
+            prog.as_ref()
+                .map(|p| format!("{p}\\Google\\Chrome\\Application\\chrome.exe")),
         ),
         (
             "edge",
@@ -87,7 +88,8 @@ fn find_windows_browser() -> Option<BrowserExecutable> {
         ),
         (
             "edge",
-            prog.map(|p| format!("{p}\\Microsoft\\Edge\\Application\\msedge.exe")),
+            prog.as_ref()
+                .map(|p| format!("{p}\\Microsoft\\Edge\\Application\\msedge.exe")),
         ),
     ];
     for (kind, path) in candidates {
