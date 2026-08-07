@@ -1,17 +1,17 @@
 ---
 version: 1.0.1
 name: future-loop
-description: FutureOS loop control plane — manage long-running goals, todo lists, human gates, monitors, and validated completion via the future-loop CLI. Use when the user wants a long-lived/multi-step/cross-session task tracked as a goal, asks to "keep working on X", "track this issue", "run this overnight", needs progress/status of ongoing agent work, or starts a message with "/future-loop" (treat everything after the prefix as the goal).
+description: FutureOS loop control plane — manage long-running goals, todo lists, human gates, monitors, and validated completion via the loop control plane. Use when the user wants a long-lived/multi-step/cross-session task tracked as a goal, asks to "keep working on X", "track this issue", "run this overnight", needs progress/status of ongoing agent work, or starts a message with "/future-loop" (treat everything after the prefix as the goal).
 allowed-tools: Bash(future-loop:*)
 category: tools
 ---
 
-# Loop Control Plane (future-loop)
+# Loop Control Plane
 
-`future-loop` turns a conversation into a durable, reviewable long-running goal:
+`future loop` turns a conversation into a durable, reviewable long-running goal:
 the goal, todos, human gates, monitors, evidence, and completion are
 persisted outside the chat. The agent executes one bounded turn at a time;
-`future-loop` decides what should happen next.
+the loop control plane decides what should happen next.
 
 ## When to use
 
@@ -29,15 +29,19 @@ For one-shot conversations, just answer normally — no goal needed.
 
 ## Prerequisites
 
-- `future-loop` binary on PATH. If missing, install it:
-  `bash scripts/install-future-loop.sh` from the FutureOS repo
-  (installs to `~/.local/bin/future-loop` and the skill to
-  `~/.future/agent/skills/future-loop/`). State lives in the PROJECT:
-  `<cwd>/.future/loop/` (run future-loop from the project dir, or pass --cwd).
-  The unified `future` CLI runs the same code: `future loop <cmd>` ≡
-  `future-loop <cmd>`.
-- `future-agent` must be running (gRPC 127.0.0.1:50051) for `future-loop run`
-  (`future agent` ≡ `future-agent`).
+- The loop control plane runs through the unified CLI: **`future loop
+  <cmd>`**. Before anything else, look for an existing install on the
+  system (`command -v future`; also check common locations like
+  `~/.local/bin/future`, `~/bin/future`, Homebrew cask/brew links). If
+  `future loop` is NOT available, do NOT rebuild from source — point the
+  user to the official install instructions at
+  <https://github.com/futuregene/future-os> (README install section) and
+  wait for them to install. (This skill installs to
+  `~/.future/agent/skills/future-loop/`.) State lives in the PROJECT:
+  `<cwd>/.future/loop/` (run from the project dir, or pass --cwd).
+- The agent must be running for `future loop run` — start it with
+  `future agent` (gRPC 127.0.0.1:50051). Probe it with `future models`
+  — a plain curl to the gRPC port reports nothing useful.
 
 ## State layout (project-local, all under `<cwd>`)
 
@@ -56,7 +60,7 @@ project `.gitignore` (runtime state, never commit).
 ### 1. Inspect existing goals first
 
 ```bash
-future-loop status
+future loop status
 ```
 If the user's objective already exists, continue it — never silently create a duplicate.
 
@@ -70,13 +74,13 @@ Before `goal init`, present a concrete plan and get the user's confirmation:
    thinking level (read them from your own environment: `Current model:` /
    `Thinking level:`), and propose those as the default. Keep the user's
    adjustment cost low:
-   - if the user wants a different model, run `future-loop models` to list
-     alternatives (`--format json` for machine-readable output); prefer a
+   - if the user wants a different model, run `future models` to list
+     alternatives (`--json` for machine-readable output); prefer a
      model flagged `[recommended]`, else `[default]`;
    - thinking level: `high` for reasoning/analysis-heavy goals, `off`/`low`
-     for mechanical or fast-turn work — `future-loop models` shows each
+     for mechanical or fast-turn work — `future models` shows each
      model's suggested level;
-   - if `future-agent` is not running, `future-loop models` will fail — fall
+   - if the agent is not running, `future models` will fail — fall
      back to the current session's model + `high` and tell the user the model
      list was unavailable.
 3. Ask for confirmation, e.g.:
@@ -93,7 +97,7 @@ Do NOT create the goal or todos until the user confirms (or adjusts).
 ### 3. Create a goal (or reuse)
 
 ```bash
-future-loop goal init --objective "..." --cwd <project-dir> [--goal-id <id>]
+future loop goal init --objective "..." --cwd <project-dir> [--goal-id <id>]
 ```
 When the user names a directory (e.g. "in /tmp/foo"), pass it as `--cwd`;
 when they name a repo, use its root. If the directory does not exist,
@@ -102,7 +106,7 @@ create it first (`mkdir -p`).
 ### 4. Break the work into todos (optional but recommended)
 
 ```bash
-future-loop todo add --goal <goal-id> --text "..." --priority P0
+future loop todo add --goal <goal-id> --text "..." --priority P0
 ```
 
 **Dependency chains.** When a todo logically depends on the output of another
@@ -111,10 +115,10 @@ open todos as independently runnable and may reorder or skip them. Example:
 
 ```bash
 # Report generation depends on first fetching data:
-future-loop todo add --goal <goal-id> --text "Generate the change-analysis summary report" --priority P0 \
+future loop todo add --goal <goal-id> --text "Generate the change-analysis summary report" --priority P0 \
   --blocks <data-todo-id-1>,<data-todo-id-2>
 # Copy-to-CWD must happen after the report exists:
-future-loop todo add --goal <goal-id> --text "Copy the final deliverables to the project root (cwd)" --priority P0 \
+future loop todo add --goal <goal-id> --text "Copy the final deliverables to the project root (cwd)" --priority P0 \
   --blocks <report-todo-id>
 ```
 
@@ -124,23 +128,27 @@ Rule of thumb: if "X must finish before Y can start", add `--blocks X` to Y.
 
 1. **Capture todo ids from the `todo add` output itself.** The command prints
    the new id (`todo todo_xxx added ✔`) — that is the only reliable source.
-   There is NO `future-loop todo list` subcommand, and `future-loop status`
-   has NO `--format json` flag (only `future-loop models` does) — piping
-   `--blocks $(future-loop status --format json …)` fails SILENTLY (the
+   There is NO `future loop todo list` subcommand, and `future loop status`
+   has NO `--format json` flag (only `future models` does) — piping
+   `--blocks $(future loop status --format json …)` fails SILENTLY (the
    substitution yields an empty string, `--blocks` is accepted with no value,
    and the dependency is quietly dropped). To look ids up afterwards, parse
-   `future-loop status --goal G` (`todos:` line lists `id=status`), or read
+   `future loop status --goal G` (`todos:` line lists `id=status`), or read
    the event ledger `<cwd>/.future/loop/goals/<id>/events.jsonl`
-   (`kind: "todo_added"` events carry the full `todo` object).
-2. **Verify the wiring after creation.** Run `future-loop status --goal G` and
+   (`kind: "todo_added"` events carry the full `todo` object). **Field-name
+   gotcha:** in the ledger the dependency is `blocked_by_gate` (NOT `blocks`)
+   and the validator is `validator` (NOT `verify`) — inspecting a todo with
+   guessed field names will falsely report flags as dropped; print the whole
+   object (or the goal's `schema.json`) before concluding.
+2. **Verify the wiring after creation.** Run `future loop status --goal G` and
    confirm each dependent todo's `blocks` is set. An empty `--blocks` never
    errors — only a status check catches it. **Repair in place with
    `todo update --blocks`** (supported since the 2026-08 loop update):
-   `future-loop todo update --goal G --todo-id T --blocks a,b` REPLACES the
+   `future loop todo update --goal G --todo-id T --blocks a,b` REPLACES the
    blocking set, and `--blocks ""` clears it; an update without `--blocks`
-   leaves the set untouched. Older `future-loop` binaries (before that
-   update) silently ignored `--blocks` — for those, the only repair was to
-   recreate the goal: `future-loop goal delete --goal G --force` (delete is
+   leaves the set untouched. Older loop builds silently ignored `--blocks`
+   — for those, the only repair was to
+   recreate the goal: `future loop goal delete --goal G --force` (delete is
    IRREVERSIBLE and refuses without `--force`) → `goal init` → re-add all
    todos in dependency order, capturing each id from the add output.
 3. **Chain the FINAL validation todo too.** The run loop schedules any open,
@@ -150,26 +158,34 @@ Rule of thumb: if "X must finish before Y can start", add `--blocks X` to Y.
    differential-test todo ran mid-port and had to be re-planned via
    `complete --successor` back to the implementation todos).
 4. **`goal init` auto-creates an onboarding todo.** A fresh goal starts with
-   one extra open todo ("Run `future-loop status` … record the goal count as
+   one extra open todo ("Run `future loop status` … record the goal count as
    evidence"). Complete it with `--no-follow-up` during setup (or at the end,
    with the goal count as `--evidence`); don't mistake it for a real work
    item — it does not block the chain but stays open until completed.
 5. **`goal delete` requires `--force` and is irreversible.** A mis-created
-   goal cannot be repaired in place — `future-loop goal delete --goal G`
+   goal cannot be repaired in place — `future loop goal delete --goal G`
    refuses with "irreversible — pass --force". Passing `--force` removes the
    registry entry + state, so recreate via `goal init` afterwards.
 6. **`registry.json` holds only goal summaries** (objective/cwd/status); todo
    ids and their `blocks`/priority live in the event ledger
    `<cwd>/.future/loop/goals/<id>/events.jsonl` — the reliable place to
    re-derive ids after a botched creation.
-7. **Subcommand `--help` is NOT supported.** `future-loop todo update --help`
+7. **Subcommand `--help` is NOT supported.** `future loop todo update --help`
    silently ignores the flag (and "updates" even a nonexistent `--todo-id`).
    Check the exact flags in `orchestration/loop/src/main.rs`
    (`todo_add`/`todo_update` `parse_pairs`) or in this skill instead.
+8. **The agent treats the objective as an instruction list — keep
+   cleanup/deletion words OUT of test goals.** The run-loop agent may execute
+   `future loop goal delete --force` itself if the objective mentions
+   "cleanup/delete" (observed 2026-08: a smoke-test goal whose objective ended
+   with "清理" got self-deleted by the agent mid-run). Since 2026-08 the loop
+   no longer panics on this (`goal X not found (deleted while running?)` is a
+   clean error), but the goal state is gone either way — delete test goals
+   yourself, don't ask the agent to.
 
 If the user asks for approval before a specific action, create a real gate:
 ```bash
-future-loop todo add --goal <goal-id> --role user --class user_gate \
+future loop todo add --goal <goal-id> --role user --class user_gate \
   --gate-question "<the exact question>" --text "<the exact question>" \
   --blocks <todo-id-of-the-action>
 ```
@@ -182,7 +198,7 @@ independent validator — the kernel runs it in the goal's cwd after each turn
 and only completes the todo when it exits 0:
 
 ```bash
-future-loop todo add --goal <goal-id> --text "Optimize until tests pass" --priority P0 \
+future loop todo add --goal <goal-id> --text "Optimize until tests pass" --priority P0 \
   --verify "cargo test" --max-validation-attempts 5
 ```
 
@@ -200,7 +216,7 @@ a final P0 todo that copies the deliverables from the loop state directory
 to the CWD:
 
 ```bash
-future-loop todo add --goal <goal-id> --text "Copy the final deliverables to the project root (cwd)" --priority P0
+future loop todo add --goal <goal-id> --text "Copy the final deliverables to the project root (cwd)" --priority P0
 ```
 
 This todo should be the last in the chain — add it as the successor of the
@@ -216,14 +232,26 @@ user wait with no visibility; a turn-by-turn loop lets them see each step's
 progress, cost, and any issues as they happen:
 
 ```bash
-future-loop run --goal <goal-id> --model <confirmed-model> \
+future loop run --goal <goal-id> --model <confirmed-model> \
   --thinking-level <confirmed-thinking> --max-turns 1
 ```
+
+> **Session lifecycle (no manual cleanup needed):** each `run` creates a
+> fresh scratch agent session, executes the bounded turn loop, then **deletes
+> the session automatically on every exit path** (terminal, gate, monitor
+> wait, max-turns, or error) — context is replayed into each run via the
+> turn envelope from the goal events.jsonl, so nothing durable lives in the
+> agent session. `~/.future/agent/sessions/` should therefore NOT accumulate
+> per-run files. If you ever see a stray `⚠ session cleanup failed` line, or
+> want to tidy leftover sessions from other tools, clean them manually with
+> the top-level CLI: `future session list` to find ids, then
+> `future session delete <id>` (same agent `delete_session` RPC the loop
+> uses).
 
 > **Long turns vs. shell timeouts**: a single `run --max-turns 1` turn often
 > takes several minutes — the ~120s default timeout of typical shell tools is
 > usually NOT enough. Run **blocking** with an explicit longer timeout on the
-> shell call (e.g. `timeout: 1800`), and poll `future-loop status` between
+> shell call (e.g. `timeout: 1800`), and poll `future loop status` between
 > turns. Avoid backgrounding the run (nohup/&): it hides progress, risks
 > overlapping turns, and the kernel expects one run at a time. If a blocking
 > run is interrupted, check `status` before re-running to see what completed.
@@ -255,13 +283,13 @@ After each `run`, before starting the next step:
    - `todo update` — fix a step's text/priority/blocks (`--blocks a,b` replaces
   the blocking set, `--blocks ""` clears it);
    - `todo archive` — tidy completed work.
-3. **Check whether the plan still holds** — `future-loop status --goal <goal-id>`:
+3. **Check whether the plan still holds** — `future loop status --goal <goal-id>`:
    does the remaining todo list still make sense given what this step revealed?
 4. Stop and ask the user ONLY when absolutely necessary (see step 7):
    risky/irreversible changes, decisions only the user can make, or you
    cannot determine the right adjustment.
 5. If the exit code is non-zero, it means `--max-turns 1` was hit — check
-   `future-loop status --goal <goal-id>` and run again ONLY if open todos
+   `future loop status --goal <goal-id>` and run again ONLY if open todos
    remain.
 6. If validated closure is reached (terminal), stop.
 
@@ -275,13 +303,13 @@ cannot continue as-is (validation/repair budget exhausted, outcome floor,
 acceptance gaps, succession obligation), it injects a `PLAN_REVIEW` user gate.
 **Handle it yourself first** — the agent owns routine replans:
 
-1. review the plan: `future-loop status --goal G` (and `future-loop diagnose --goal G`);
+1. review the plan: `future loop status --goal G` (and `future loop diagnose --goal G`);
 2. adjust the todo list with the CLI: `todo add` / `todo update` /
    `todo supersede --reason "..."` / `todo archive`;
 3. resolve the gate and re-run:
    ```bash
-   future-loop gate resolve --goal G --todo-id <gate> --decision "agent replan: <summary>" --note "..."
-   future-loop run --goal G ...
+   future loop gate resolve --goal G --todo-id <gate> --decision "agent replan: <summary>" --note "..."
+   future loop run --goal G ...
    ```
 
 **Escalate to the user ONLY when absolutely necessary** — never guess a
@@ -293,7 +321,7 @@ human decision:
 
 Then stop and report the gate IN THIS CONVERSATION, quoting the exact
 question and the gate todo id, and wait — do not resolve it yourself. After
-the user decides, resolve with their decision and resume `future-loop run`.
+the user decides, resolve with their decision and resume `future loop run`.
 
 After each `run`, if the output contains `USER GATE` / `ask_user`:
 1. if it is a `PLAN_REVIEW` gate and the adjustment is routine → self-resolve
@@ -302,17 +330,17 @@ After each `run`, if the output contains `USER GATE` / `ask_user`:
    gate id to the user IN THIS CONVERSATION, and wait;
 3. after the user decides:
    ```bash
-   future-loop gate resolve --goal <goal-id> --todo-id <gate-id> --decision "<user's decision>" --note "..."
+   future loop gate resolve --goal <goal-id> --todo-id <gate-id> --decision "<user's decision>" --note "..."
    ```
-4. resume with `future-loop run` again.
+4. resume with `future loop run` again.
 
 ### 8. Report progress
 
 After each turn, always run status and report the result to the user:
 
 ```bash
-future-loop status --goal <goal-id>
-future-loop quota should-run --goal <goal-id> [--agent-id <id>]
+future loop status --goal <goal-id>
+future loop quota should-run --goal <goal-id> [--agent-id <id>]
 ```
 Report: current todo state, next action, any gates, cost if available.
 
@@ -321,7 +349,7 @@ fetched issues data while generating the report without marking the issues
 todo done), close them manually:
 
 ```bash
-future-loop todo complete --goal <goal-id> --todo-id <stale-id> --no-follow-up \
+future loop todo complete --goal <goal-id> --todo-id <stale-id> --no-follow-up \
   --evidence "data already collected and included in report"
 ```
 
@@ -346,19 +374,25 @@ future-loop todo complete --goal <goal-id> --todo-id <stale-id> --no-follow-up \
 
 ## Command reference
 
+All commands below use the unified `future loop` form.
+
 ```bash
-future-loop status [--goal G]
-future-loop goal init --objective "..." --cwd DIR [--goal-id G] [--goal-doc "..."]
-future-loop todo add --goal G --text "..." [--priority P0|P1|P2] [--role user --class user_gate --gate-question "..." --blocks T]
-future-loop todo update --goal G --todo-id T [--text "..."] [--priority ...] [--blocks T]   # fix wiring after add
-future-loop todo claim --goal G --todo-id T --agent-id A [--lease-secs N]
-future-loop todo complete --goal G --todo-id T [--no-follow-up | --successor T2] [--evidence "..."]
-future-loop todo supersede --goal G --todo-id T --reason "..."
-future-loop gate resolve --goal G --todo-id T --decision "..." [--note "..."]
-future-loop quota should-run --goal G [--agent-id A]
-future-loop models [--format json] # list models available from the agent
-future-loop heartbeat-prompt --goal G          # re-entry packet for the next turn
-future-loop run --goal G [--model M] [--thinking-level L] [--max-turns N]
-future-loop backup --goal G [--list | --restore DIR]
-future-loop serve-status [--port 8791]         # browser dashboard
+future loop status [--goal G]
+future loop goal init --objective "..." --cwd DIR [--goal-id G] [--goal-doc "..."]
+future loop todo add --goal G --text "..." [--priority P0|P1|P2] [--role user --class user_gate --gate-question "..." --blocks T]
+future loop todo update --goal G --todo-id T [--text "..."] [--priority ...] [--blocks T]   # fix wiring after add
+future loop todo claim --goal G --todo-id T --agent-id A [--lease-secs N]
+future loop todo complete --goal G --todo-id T [--no-follow-up | --successor T2] [--evidence "..."]
+future loop todo supersede --goal G --todo-id T --reason "..."
+future loop gate resolve --goal G --todo-id T --decision "..." [--note "..."]
+future loop quota should-run --goal G [--agent-id A]
+future loop heartbeat-prompt --goal G          # re-entry packet for the next turn
+future loop run --goal G [--model M] [--thinking-level L] [--max-turns N]
+future loop backup --goal G [--list | --restore DIR]
+future loop serve-status [--port 8791]         # browser dashboard
+
+> Model listing lives on the top-level CLI (`future models [--json]`) — the
+> loop does not need its own copy. Session cleanup is automatic per `run`;
+> for manual cleanup of leftover sessions use the top-level
+> `future session list` / `future session delete <id>`.
 ```
