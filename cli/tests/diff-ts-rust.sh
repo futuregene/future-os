@@ -381,6 +381,11 @@ export_case_env() {
   unset FUTURE_VERSION
 }
 
+# Golden dir name: scenario names contain ':' (home:auth, http:errors...)
+# which is an INVALID path character on Windows — map to '_' for the on-disk
+# name (record and check must agree).
+golden_dir() { printf '%s' "${1//:/_}"; }
+
 # run_case <scenario> <mode> <argv...>
 #   record mode: runs the TS CLI, saves its output as the golden reference.
 #   check mode:  runs the Rust CLI, compares against the recorded golden.
@@ -416,7 +421,7 @@ run_case() {
   CASE_COUNT=$((CASE_COUNT + 1))
 
   if [[ "$RECORD" == 1 ]]; then
-    local dir="$GOLDEN_DIR/$scenario"
+    local dir="$GOLDEN_DIR/$(golden_dir "$scenario")"
     mkdir -p "$dir"
     cp "$out" "$dir/$idx.out"
     cp "$err" "$dir/$idx.err"
@@ -424,7 +429,7 @@ run_case() {
     printf '%s\n' "$label" > "$dir/$idx.argv"
     pass=$((pass+1)); ok "[record] [$scenario] $label"
   else
-    local g_out="$GOLDEN_DIR/$scenario/$idx.out" g_err="$GOLDEN_DIR/$scenario/$idx.err" g_code="$GOLDEN_DIR/$scenario/$idx.code"
+    local g_out="$GOLDEN_DIR/$(golden_dir "$scenario")/$idx.out" g_err="$GOLDEN_DIR/$(golden_dir "$scenario")/$idx.err" g_code="$GOLDEN_DIR/$(golden_dir "$scenario")/$idx.code"
     if [[ ! -f "$g_out" ]]; then
       fail=$((fail+1)); bad "[$scenario] $label (no golden $g_out — run with --record first)"
       FAILED_CASES+=("[$scenario] $label")
