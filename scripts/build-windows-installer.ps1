@@ -7,15 +7,15 @@
 .DESCRIPTION
     The installer counterpart to build-windows-portable.ps1 (which produces a zip
     of loose .exe files). Steps:
-      1. build the agent (release) and stage it as the Tauri sidecar,
-      2. compile the CLI into a standalone .exe (bun --compile), stage it too,
-      3. sign both sidecars (-Sign only) — see below,
-      4. build the GUI with Tauri, producing bundle/nsis/*.exe.
+      1. compile the unified `future` CLI (release) and stage it as the Tauri
+         sidecar,
+      2. sign the sidecar (-Sign only) — see below,
+      3. build the GUI with Tauri, producing bundle/nsis/*.exe.
 
     Signing splits across two mechanisms, which is the whole reason this script
     exists separately:
 
-      * The sidecars are signed here, before the bundle. Tauri copies externalBin
+      * The sidecar is signed here, before the bundle. Tauri copies externalBin
         binaries into the installer as-is, so anything not signed by now ships
         unsigned inside the installer.
       * The app .exe, the NSIS plugin DLLs and the setup .exe are signed by the
@@ -30,7 +30,7 @@
     machines without the certificate) keep working untouched.
 
 .PARAMETER SkipDeps
-    Skip `npm ci` in gui/ and cli/ (use when node_modules are already current).
+    Skip `npm ci` in gui/ (use when node_modules are already current).
 
 .PARAMETER Sign
     Authenticode-sign the sidecars, the app .exe and both installers. Opt-in: a
@@ -74,7 +74,7 @@ Set-Location $Root
 . "$PSScriptRoot\lib\windows-signing.ps1"
 
 # $ErrorActionPreference="Stop" only stops on *cmdlet* errors, NOT on a native
-# command (cargo/npm/bun/tauri) exiting non-zero — those would silently continue
+# command (cargo/npm/tauri) exiting non-zero — those would silently continue
 # and produce a broken package. Run every external command through this so a
 # failure aborts the build.
 function Invoke-Native {
@@ -94,7 +94,6 @@ function Require-Tool([string]$Cmd, [string]$Hint) {
 Write-Host "==> Checking prerequisites" -ForegroundColor Cyan
 Require-Tool node   "Install Node.js 24+ (https://nodejs.org)."
 Require-Tool npm    "Comes with Node.js."
-Require-Tool bun    "Install Bun (https://bun.sh) — compiles the CLI binary."
 Require-Tool cargo  "Install Rust (https://rustup.rs)."
 Require-Tool rustc  "Install Rust (https://rustup.rs)."
 Require-Tool protoc "Install protobuf (e.g. 'choco install protoc') — gRPC codegen."
@@ -114,14 +113,14 @@ if ($Sign) {
 }
 
 # Host target triple, e.g. x86_64-pc-windows-msvc. Tauri looks for the sidecar
-# named future-agent-<triple>.exe (bundle.externalBin in tauri.conf.json).
+# named future-<triple>.exe (bundle.externalBin in tauri.conf.json).
 $hostLine = (rustc -Vv) | Select-String '^host:'
 if (-not $hostLine) { throw "Could not read host triple from 'rustc -Vv'." }
 $triple = $hostLine.Line.Split(' ')[1]
 Write-Host "    host triple: $triple"
 
-# Resolve ONE version string and pin it for every sub-build (agent build.rs,
-# CLI gen-version, GUI build.rs) so they all agree.
+# Resolve ONE version string and pin it for every sub-build (CLI build.rs,
+# GUI build.rs) so they all agree.
 if (-not $env:FUTURE_VERSION) {
     $env:FUTURE_VERSION = (node scripts/version.mjs)
     if ($LASTEXITCODE -ne 0) { throw "scripts/version.mjs failed to resolve a version." }
@@ -129,33 +128,22 @@ if (-not $env:FUTURE_VERSION) {
 Write-Host "    version: $($env:FUTURE_VERSION)"
 
 if (-not $SkipDeps) {
-    Write-Host "==> Installing npm dependencies (gui, npm workspace)" -ForegroundColor Cyan
+    Write-Host "==> Installing npm dependencies (gui)" -ForegroundColor Cyan
     Push-Location gui; try { Invoke-Native { npm ci } } finally { Pop-Location }
-    Invoke-Native { npm ci }  # root workspace: future-rpc/ts only (tui + cli are Rust, no npm deps)
 }
 
-Write-Host "==> Building shared RPC package (@future-os/rpc)" -ForegroundColor Cyan
-Push-Location future-rpc/ts; try { Invoke-Native { npm run build } } finally { Pop-Location }
-
-Write-Host "==> Building agent (release)" -ForegroundColor Cyan
-Invoke-Native { cargo build --release --manifest-path agent/Cargo.toml }
-New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
-Copy-Item "target/release/future-agent.exe" `
-          "gui/src-tauri/binaries/future-agent-$triple.exe" -Force
-
-Write-Host "==> Building CLI (release)" -ForegroundColor Cyan
+Write-Host "==> Building CLI (release) and staging as Tauri sidecar" -ForegroundColor Cyan
 Invoke-Native { cargo build --release --manifest-path cli/Cargo.toml }
+New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
 Copy-Item "target/release/future.exe" "gui/src-tauri/binaries/future-$triple.exe" -Force
 
-# Sign the sidecars now: the bundler embeds them as-is, so this is the last
-# moment they can be signed without unpacking the installer afterwards.
+# Sign the sidecar now: the bundler embeds it as-is, so this is the last
+# moment it can be signed without unpacking the installer afterwards.
 if ($Sign) {
-    Write-Host "==> Signing sidecars" -ForegroundColor Cyan
-    foreach ($exe in @("future-agent-$triple.exe", "future-$triple.exe")) {
-        $p = Join-Path "$Root\gui\src-tauri\binaries" $exe
-        Invoke-SignFile -SignTool $signTool -Thumbprint $signThumbprint -Path $p -TimestampUrl $TimestampUrl
-        Write-Host "    signed: $exe"
-    }
+    Write-Host "==> Signing sidecar" -ForegroundColor Cyan
+    $p = Join-Path "$Root\gui\src-tauri\binaries" "future-$triple.exe"
+    Invoke-SignFile -SignTool $signTool -Thumbprint $signThumbprint -Path $p -TimestampUrl $TimestampUrl
+    Write-Host "    signed: $p"
 }
 
 Write-Host "==> Building GUI installers (Tauri)" -ForegroundColor Cyan

@@ -11,9 +11,9 @@
 # - Windows uses install.ps1 instead (iex (irm ...)); this script targets
 #          macOS and Linux only.
 # - Linux  has no prebuilt release binaries yet, so this script bootstraps the
-#          toolchain (apt deps + Rust + Node 24 + Bun) and builds the terminal
-#          stack (agent, TUI, CLI, channels, skills, loop) from source via
-#          `make install-cli install-skills`.
+#          toolchain (apt deps + Rust) and builds the terminal stack (unified
+#          CLI with agent/TUI/channel/loop embedded, skills, loop) from source
+#          via `make install-cli install-skills`.
 #
 # Env overrides:
 #   FUTUREOS_VERSION  pin a specific release (e.g. v0.1.2); default = latest
@@ -159,29 +159,7 @@ install_linux() {
     export PATH="$HOME/.cargo/bin:$PATH"
   fi
 
-  # 3. Node.js 24 (repo pins .nvmrc = 24) via nvm when missing or too old.
-  if ! command -v node >/dev/null 2>&1 || [[ "$(node -v 2>/dev/null | tr -dc '0-9' | cut -c1-2)" -lt 24 ]]; then
-    if [[ ! -s "$HOME/.nvm/nvm.sh" ]]; then
-      say "Installing nvm"
-      curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-    fi
-    export NVM_DIR="$HOME/.nvm"
-    # shellcheck disable=SC1091
-    \. "$NVM_DIR/nvm.sh"
-    say "Installing Node.js 24"
-    nvm install 24 >/dev/null
-    nvm alias default 24 >/dev/null
-    nvm use default >/dev/null
-  fi
-
-  # 4. Bun (required for the TUI/CLI single-binary builds).
-  if ! command -v bun >/dev/null 2>&1; then
-    say "Installing Bun"
-    curl -fsSL https://bun.sh/install | bash
-    export PATH="$HOME/.bun/bin:$PATH"
-  fi
-
-  # 5. Clone (or update) and build the terminal stack.
+  # 3. Clone (or update) and build the terminal stack.
   local src="$HOME/future-os"
   if [[ ! -d "$src/.git" ]]; then
     say "Cloning https://github.com/futuregene/future-os -> $src"
@@ -197,7 +175,6 @@ install_linux() {
 
   say "Done — FutureOS terminal stack installed"
   say "Run: future agent (agent)  ·  future tui (terminal UI)  ·  future (CLI)  ·  future loop (control plane)"
-  say "      or the standalone binaries: future-agent · future-tui · future-channel · future-loop"
 }
 
 case "$OS" in

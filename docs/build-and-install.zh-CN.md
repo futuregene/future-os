@@ -9,10 +9,11 @@
 完整构建（agent + TUI + CLI + GUI）在所有平台都需要的：
 
 - **Rust** 1.97+（由 `rust-toolchain.toml` 固定版本）
-- **Node.js** 24+（见 `.nvmrc`）—— 用于 TUI
-- **Bun** —— TUI 构建需要（`bun build`）；CLI 已是 Rust（`cargo build`），不再需要 Bun 或 Node
+- **Node.js** 24+（见 `.nvmrc`）—— 用于 GUI 前端
 - 可选：**Python 3** —— 仅用于 `make generate-models` 与 CLI golden 差分测试（`make test-cli-diff`）
 - 可选：**protoc**（Protocol Buffers 编译器）—— 仅用于 `make generate-proto`；生成代码已入库，正常构建不需要
+
+TUI 与 CLI 均为 Rust（`cargo build`），不再需要 Bun 或 Node。
 
 ## 克隆
 
@@ -28,7 +29,7 @@ cd future-os
 ```bash
 xcode-select --install                                            # 系统工具链（Tauri）
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
-brew install node oven-sh/bun/bun                                 # Node.js 24+ / Bun（也可用 nvm——见 .nvmrc）
+brew install node                                                 # Node.js 24+（也可用 nvm——见 .nvmrc）
 brew install protobuf                                             # 可选 —— 仅用于 make generate-proto
 ```
 
@@ -43,7 +44,7 @@ make package-gui    # 桌面打包 → .app + .dmg 位于 gui/src-tauri/target/r
 scripts/build-macos-dmg.sh  # 本地 DMG；有 Developer ID 证书时自动签名
 ```
 
-`scripts/build-macos-dmg.sh` 将 agent 与 CLI sidecar 连同 GUI 一起构建。它会自动使用 Keychain 中唯一的 `Developer ID Application` 身份并生成 `*-sign.dmg`；若身份不唯一，则回退到普通 DMG。用 `--help` 查看证书选择、输出目录与 Apple 公证选项。
+`scripts/build-macos-dmg.sh` 将统一 `future` CLI sidecar 连同 GUI 一起构建。它会自动使用 Keychain 中唯一的 `Developer ID Application` 身份并生成 `*-sign.dmg`；若身份不唯一，则回退到普通 DMG。用 `--help` 查看证书选择、输出目录与 Apple 公证选项。
 
 ## Linux（Debian/Ubuntu）
 
@@ -54,8 +55,6 @@ sudo apt update
 sudo apt install -y build-essential mold libssl-dev \
   libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
-curl -fsSL https://bun.sh/install | bash                          # Bun
-# Node.js 24+ —— 用 nvm install 自动读取仓库的 .nvmrc
 sudo apt install -y protobuf-compiler                             # 可选 —— 仅用于 make generate-proto
 ```
 
@@ -78,8 +77,7 @@ make package-gui    # 桌面打包 → .deb 位于 gui/src-tauri/target/release/
 1. **Visual Studio Build Tools**，勾选 *Desktop development with C++* 工作负载（MSVC + Windows SDK）—— Rust MSVC 工具链与 Tauri 必需。`winget install Microsoft.VisualStudio.2022.BuildTools`，然后在安装器中选择 C++ 工作负载（或从 [visualstudio.com](https://visualstudio.microsoft.com/downloads/) 安装）。
 2. **Rust**：`winget install Rustlang.Rustup`（host triple `x86_64-pc-windows-msvc`）
 3. **Node.js 24+**：`winget install OpenJS.NodeJS` 或 [nodejs.org](https://nodejs.org)
-4. **Bun**：`winget install Oven-sh.Bun`（或 `powershell -c "irm bun.sh/install.ps1 | iex"`）
-5. **WebView2 Runtime**：随 Windows 10/11 自带 —— GUI 的*运行时*依赖，现代系统无需安装
+4. **WebView2 Runtime**：随 Windows 10/11 自带 —— GUI 的*运行时*依赖，现代系统无需安装
 
 无需 `make` —— 下面的 PowerShell 命令与 make 目标一一对应。在仓库根目录执行。
 
@@ -122,7 +120,7 @@ Push-Location gui; npm run tauri:build; Pop-Location   # → NSIS 安装 .exe �
 说明：
 
 - `scripts\start-gui-test.bat` 以开发模式针对本地构建的 agent 运行 GUI。
-- `scripts/` 下的脚本（`build-macos-dmg.sh`、`build-windows-portable.ps1`、`build-windows-installer.ps1`）把上述步骤封装成单条命令，复刻 CI 打包流水线（DMG / 便携 zip / NSIS 安装器）。它们会预先检查工具链，且需要 `protoc`（`brew install protobuf` / `choco install protoc`）。产物包含 GUI、agent 与 CLI——不含 TUI。
+- `scripts/` 下的脚本（`build-macos-dmg.sh`、`build-windows-portable.ps1`、`build-windows-installer.ps1`）把上述步骤封装成单条命令，复刻 CI 打包流水线（DMG / 便携 zip / NSIS 安装器）。它们会预先检查工具链，且需要 `protoc`（`brew install protobuf` / `choco install protoc`）。产物包含 GUI 与统一 `future` CLI（agent/tui/channel/loop 已内嵌）——不含单独的 TUI。
 
 ## Loop 控制面（`future-loop`）
 
@@ -194,10 +192,10 @@ make clean          # 清理构建产物与已安装二进制
 
 ### Proto
 
-规范 API 是 `future-rpc/proto/future.proto`。生成的 Rust/TS 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
+规范 API 是 `future-rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
 
 ```bash
-make generate-proto          # future-rpc/rust + channels + future-rpc/ts
+make generate-proto          # future-rpc + channels
 ```
 
 ## 开发（源码方式）
@@ -214,8 +212,8 @@ make clean          # 清理构建产物与已安装二进制
 
 ### Proto
 
-规范 API 是 `future-rpc/proto/future.proto`。生成的 Rust/TS 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
+规范 API 是 `future-rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
 
 ```bash
-make generate-proto          # future-rpc/rust + channels + future-rpc/ts
+make generate-proto          # future-rpc + channels
 ```

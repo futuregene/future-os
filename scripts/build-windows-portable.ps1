@@ -5,24 +5,24 @@
 
 .DESCRIPTION
     Replicates the CI "Windows portable" pipeline (.github/workflows/build.yml):
-      1. build the agent (release) and stage it as the Tauri sidecar,
-      2. compile the CLI into a standalone .exe (bun --compile),
-      3. build the GUI with Tauri (--no-bundle: just the .exe, no installer),
-      4. assemble FutureOS.exe + future-agent.exe + future.exe + Readme.txt
+      1. compile the unified `future` CLI (release) and stage it as the Tauri
+         sidecar,
+      2. build the GUI with Tauri (--no-bundle: just the .exe, no installer),
+      3. assemble FutureOS.exe + future.exe + Readme.txt
          into FutureOS-portable-windows.zip.
 
     The resulting app needs the Microsoft Edge WebView2 runtime (ships with
-    Windows 10/11). Keep FutureOS.exe and future-agent.exe together — the GUI
-    starts the agent sidecar from its own directory.
+    Windows 10/11). Keep FutureOS.exe and future.exe together — the GUI starts
+    the bundled agent via `future agent` from its own directory.
 
 .PARAMETER SkipDeps
-    Skip `npm ci` in gui/ and cli/ (use when node_modules are already current).
+    Skip `npm ci` in gui/ (use when node_modules are already current).
 
 .PARAMETER OutDir
     Directory to write the zip into. Defaults to the repository root.
 
 .PARAMETER Sign
-    Authenticode-sign the three .exe files before zipping. Opt-in: a plain local
+    Authenticode-sign the two .exe files before zipping. Opt-in: a plain local
     build stays unsigned so it needs no certificate.
 
     Requires a code signing certificate in the CurrentUser\My store. For Certum
@@ -70,7 +70,7 @@ Set-Location $Root
 . "$PSScriptRoot\lib\windows-signing.ps1"
 
 # $ErrorActionPreference="Stop" only stops on *cmdlet* errors, NOT on a native
-# command (cargo/npm/bun/tauri) exiting non-zero — those would silently
+# command (cargo/npm/tauri) exiting non-zero — those would silently
 # continue and produce a broken package. Run every external command through
 # this so a failure aborts the build.
 function Invoke-Native {
@@ -90,7 +90,6 @@ function Require-Tool([string]$Cmd, [string]$Hint) {
 Write-Host "==> Checking prerequisites" -ForegroundColor Cyan
 Require-Tool node   "Install Node.js 24+ (https://nodejs.org)."
 Require-Tool npm    "Comes with Node.js."
-Require-Tool bun    "Install Bun (https://bun.sh) — compiles the CLI binary."
 Require-Tool cargo  "Install Rust (https://rustup.rs)."
 Require-Tool rustc  "Install Rust (https://rustup.rs)."
 Require-Tool protoc "Install protobuf (e.g. 'choco install protoc') — gRPC codegen."
@@ -110,15 +109,15 @@ if ($Sign) {
 }
 
 # Host target triple, e.g. x86_64-pc-windows-msvc. Tauri looks for the sidecar
-# named future-agent-<triple>.exe (bundle.externalBin in tauri.conf.json).
+# named future-<triple>.exe (bundle.externalBin in tauri.conf.json).
 $hostLine = (rustc -Vv) | Select-String '^host:'
 if (-not $hostLine) { throw "Could not read host triple from 'rustc -Vv'." }
 $triple = $hostLine.Line.Split(' ')[1]
 Write-Host "    host triple: $triple"
 
-# Resolve ONE version string and pin it for every sub-build (agent build.rs,
-# CLI gen-version, GUI build.rs) so they all agree. version.mjs derives it from
-# git: 0.0.0-<hash>+local[.dirty] locally, or the tag/CI value when set.
+# Resolve ONE version string and pin it for every sub-build (CLI build.rs,
+# GUI build.rs) so they all agree. version.mjs derives it from git:
+# 0.0.0-<hash>+local[.dirty] locally, or the tag/CI value when set.
 if (-not $env:FUTURE_VERSION) {
     $env:FUTURE_VERSION = (node scripts/version.mjs)
     if ($LASTEXITCODE -ne 0) { throw "scripts/version.mjs failed to resolve a version." }
@@ -126,24 +125,13 @@ if (-not $env:FUTURE_VERSION) {
 Write-Host "    version: $($env:FUTURE_VERSION)"
 
 if (-not $SkipDeps) {
-    Write-Host "==> Installing npm dependencies (gui, npm workspace)" -ForegroundColor Cyan
+    Write-Host "==> Installing npm dependencies (gui)" -ForegroundColor Cyan
     Push-Location gui; try { Invoke-Native { npm ci } } finally { Pop-Location }
-    Invoke-Native { npm ci }  # root workspace: future-rpc/ts only (tui + cli are Rust, no npm deps)
 }
 
-Write-Host "==> Building shared RPC package (@future-os/rpc)" -ForegroundColor Cyan
-Push-Location future-rpc/ts; try { Invoke-Native { npm run build } } finally { Pop-Location }
-
-Write-Host "==> Building agent (release)" -ForegroundColor Cyan
-Invoke-Native { cargo build --release --manifest-path agent/Cargo.toml }
-New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
-Copy-Item "target/release/future-agent.exe" `
-          "gui/src-tauri/binaries/future-agent-$triple.exe" -Force
-
-Write-Host "==> Building CLI (release)" -ForegroundColor Cyan
+Write-Host "==> Building CLI (release) and staging as Tauri sidecar" -ForegroundColor Cyan
 Invoke-Native { cargo build --release --manifest-path cli/Cargo.toml }
-# Stage the CLI as a Tauri sidecar (bundle.externalBin), same as the agent, so a
-# full `tauri build` would bundle it into the installer.
+New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
 Copy-Item "target/release/future.exe" "gui/src-tauri/binaries/future-$triple.exe" -Force
 
 Write-Host "==> Building GUI (Tauri, no installer)" -ForegroundColor Cyan
@@ -157,18 +145,17 @@ $stage = Join-Path $Root "futureos-portable"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-# The agent sidecar is renamed without the triple (as Tauri does on bundling)
-# so the GUI finds it next to its own exe.
-Copy-Item "gui/src-tauri/target/release/futureos.exe"       (Join-Path $stage "FutureOS.exe")     -Force
-Copy-Item "gui/src-tauri/binaries/future-agent-$triple.exe" (Join-Path $stage "future-agent.exe") -Force
-Copy-Item "target/release/future.exe"                         (Join-Path $stage "future.exe")   -Force
-Copy-Item "docs/dist/readme-windows.txt"                    (Join-Path $stage "Readme.txt")       -Force
+# The unified CLI sidecar is renamed without the triple (as Tauri does on
+# bundling) so the GUI finds it next to its own exe.
+Copy-Item "gui/src-tauri/target/release/futureos.exe" (Join-Path $stage "FutureOS.exe") -Force
+Copy-Item "target/release/future.exe" (Join-Path $stage "future.exe") -Force
+Copy-Item "docs/dist/readme-windows.txt" (Join-Path $stage "Readme.txt") -Force
 
 # Sign the staged copies, not the build outputs, so target/ stays reusable and
 # every .exe that ships in the zip carries a signature.
 if ($Sign) {
     Write-Host "==> Signing binaries" -ForegroundColor Cyan
-    foreach ($exe in @("FutureOS.exe", "future-agent.exe", "future.exe")) {
+    foreach ($exe in @("FutureOS.exe", "future.exe")) {
         Invoke-SignFile -SignTool $signTool -Thumbprint $signThumbprint `
                         -Path (Join-Path $stage $exe) -TimestampUrl $TimestampUrl
         Write-Host "    signed: $exe"
@@ -184,5 +171,5 @@ Remove-Item -Recurse -Force $stage
 
 Write-Host ""
 Write-Host "Done: $zip" -ForegroundColor Green
-Write-Host "  Contents: FutureOS.exe, future-agent.exe, future.exe, Readme.txt"
+Write-Host "  Contents: FutureOS.exe, future.exe, Readme.txt"
 Write-Host "  Requires the Microsoft Edge WebView2 runtime (bundled with Windows 10/11)."

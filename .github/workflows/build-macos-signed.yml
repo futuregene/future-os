@@ -81,14 +81,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            gui/package-lock.json
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+          cache-dependency-path: gui/package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.0
@@ -102,10 +95,8 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
 
-      - name: Install macOS system dependencies
-        env:
-          HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
-        run: brew install protobuf
+      # No protoc needed here: proto generation is gated on REGENERATE_PROTO and
+      # the generated code is checked in, so signing builds never run protoc.
 
       # Import the base64-encoded Developer ID Application certificate into an
       # ephemeral keychain. Resolve its full identity rather than hard-coding the
@@ -160,25 +151,9 @@ jobs:
         working-directory: gui
         run: npm ci
 
-      - name: Install npm workspace (shared RPC + TUI + CLI)
-        run: npm ci
-
-      # The CLI imports @future-os/rpc; its dist must exist before the CLI's
-      # TypeScript compiles. Build it explicitly on fresh runners.
-      - name: Build shared RPC package
-        working-directory: future-rpc/ts
-        run: npm run build
-
-      - name: Build bundled agent
-        env:
-          FUTURE_VERSION: ${{ steps.v.outputs.version }}
-        run: |
-          set -euo pipefail
-          cargo build --release --manifest-path agent/Cargo.toml
-          triple="$(rustc -Vv | sed -n 's/^host: //p')"
-          mkdir -p gui/src-tauri/binaries
-          cp target/release/future-agent "gui/src-tauri/binaries/future-agent-$triple"
-
+      # The unified `future` CLI is the single sidecar (tauri.conf.json
+      # bundle.externalBin); the agent runs through `future agent`, so only the
+      # CLI needs building and staging.
       - name: Build CLI binary
         working-directory: cli
         env:

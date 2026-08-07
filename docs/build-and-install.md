@@ -12,10 +12,11 @@ loop control plane (`future-loop`).
 Required on every platform for a full build (agent + TUI + CLI + GUI):
 
 - **Rust** 1.97+ (pinned via `rust-toolchain.toml`)
-- **Node.js** 24+ (see `.nvmrc`) — for the TUI
-- **Bun** — required for the TUI build (`bun build`); the CLI is Rust (`cargo build`) and no longer needs Bun or Node
+- **Node.js** 24+ (see `.nvmrc`) — for the GUI frontend
 - Optional: **Python 3** — only for `make generate-models` and the CLI golden-diff harness (`make test-cli-diff`)
 - Optional: **protoc** (Protocol Buffers compiler) — only for `make generate-proto`; generated code is checked in so normal builds don't need it
+
+The TUI and CLI are Rust (`cargo build`) and no longer need Bun or Node.
 
 ## Clone
 
@@ -31,7 +32,7 @@ Install dependencies:
 ```bash
 xcode-select --install                                            # system toolchain (Tauri)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
-brew install node oven-sh/bun/bun                                 # Node.js 24+ / Bun (nvm works too — see .nvmrc)
+brew install node                                                 # Node.js 24+ (nvm works too — see .nvmrc)
 brew install protobuf                                             # optional — only for make generate-proto
 ```
 
@@ -46,8 +47,8 @@ make package-gui    # desktop bundle → .app + .dmg in gui/src-tauri/target/rel
 scripts/build-macos-dmg.sh  # local DMG; auto-signs when a Developer ID certificate is available
 ```
 
-`scripts/build-macos-dmg.sh` builds the agent and CLI sidecars together with
-the GUI. It automatically uses a single `Developer ID Application` identity
+`scripts/build-macos-dmg.sh` builds the unified `future` CLI sidecar together
+with the GUI. It automatically uses a single `Developer ID Application` identity
 from the macOS Keychain and writes a `*-sign.dmg`; if no unambiguous identity
 is available, it falls back to the normal DMG. Run it with `--help` for
 certificate selection, output-directory and Apple notarization options.
@@ -61,8 +62,6 @@ sudo apt update
 sudo apt install -y build-essential mold libssl-dev \
   libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
-curl -fsSL https://bun.sh/install | bash                          # Bun
-# Node.js 24+ — `nvm install` reads the repo's .nvmrc
 sudo apt install -y protobuf-compiler                             # optional — only for make generate-proto
 ```
 
@@ -85,8 +84,7 @@ Install the toolchain:
 1. **Visual Studio Build Tools** with the *Desktop development with C++* workload (MSVC + Windows SDK) — required by the Rust MSVC toolchain and Tauri. `winget install Microsoft.VisualStudio.2022.BuildTools`, then select the C++ workload in the installer (or install from [visualstudio.com](https://visualstudio.microsoft.com/downloads/)).
 2. **Rust**: `winget install Rustlang.Rustup` (host triple `x86_64-pc-windows-msvc`)
 3. **Node.js 24+**: `winget install OpenJS.NodeJS` or [nodejs.org](https://nodejs.org)
-4. **Bun**: `winget install Oven-sh.Bun` (or `powershell -c "irm bun.sh/install.ps1 | iex"`)
-5. **WebView2 Runtime**: ships with Windows 10/11 — a GUI *runtime* dependency, nothing to install on current systems
+4. **WebView2 Runtime**: ships with Windows 10/11 — a GUI *runtime* dependency, nothing to install on current systems
 
 No `make` needed — the PowerShell commands below mirror the make targets step for step. Run them from the repo root.
 
@@ -132,7 +130,7 @@ Push-Location gui; npm run tauri:build; Pop-Location   # → NSIS setup .exe und
 Notes:
 
 - `scripts\start-gui-test.bat` runs the GUI in dev mode against a locally built agent.
-- The scripts under `scripts/` (`build-macos-dmg.sh`, `build-windows-portable.ps1`, `build-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI, agent, and CLI — not the TUI.
+- The scripts under `scripts/` (`build-macos-dmg.sh`, `build-windows-portable.ps1`, `build-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI and the unified `future` CLI (agent/TUI/channel/loop embedded) — not a separate TUI.
 
 ## Loop control plane (`future-loop`)
 
@@ -213,12 +211,12 @@ make clean          # remove build artifacts + installed binaries
 
 ### Proto
 
-The canonical API is `future-rpc/proto/future.proto`. Generated Rust/TS code is
+The canonical API is `future-rpc/proto/future.proto`. Generated Rust code is
 checked into the repo — normal builds don't touch it. After editing a `.proto`
 file, regenerate:
 
 ```bash
-make generate-proto          # future-rpc/rust + channels + future-rpc/ts
+make generate-proto          # future-rpc + channels
 ```
 
 ## Development (from source)
@@ -235,10 +233,10 @@ make clean          # remove build artifacts + installed binaries
 
 ### Proto
 
-The canonical API is `future-rpc/proto/future.proto`. Generated Rust/TS code is
+The canonical API is `future-rpc/proto/future.proto`. Generated Rust code is
 checked into the repo — normal builds don't touch it. After editing a `.proto`
 file, regenerate:
 
 ```bash
-make generate-proto          # future-rpc/rust + channels + future-rpc/ts
+make generate-proto          # future-rpc + channels
 ```

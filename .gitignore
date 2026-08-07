@@ -26,9 +26,7 @@ gui/src-tauri/binaries/
 *.AppImage
 
 # Node
-tui/dist/
 gui/dist/
-future-rpc/ts/dist/
 gui/.vite/
 mobile/.expo/
 mobile/android/
@@ -36,7 +34,6 @@ mobile/ios/
 node_modules/
 
 # Build-time generated version modules (see scripts/version.mjs)
-tui/src/version.generated.ts
 mobile/src/version.generated.ts
 
 # FutureOS local app data

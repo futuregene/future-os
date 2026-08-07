@@ -64,9 +64,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            gui/package-lock.json
+          cache-dependency-path: gui/package-lock.json
 
       # Pinned to match rust-toolchain.toml so CI and local dev use the same
       # compiler. Bump both together.
@@ -102,25 +100,10 @@ jobs:
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             patchelf \
-            protobuf-compiler \
             wget
 
-      - name: Install macOS system dependencies
-        if: runner.os == 'macOS'
-        env:
-          HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
-        run: brew install protobuf
-
-      # protoc for the cargo/Tauri proto codegen (only re-runs on a rust-cache
-      # miss, when build.rs regenerates). taiki-e/install-action is a composite
-      # action (no Node runtime), so unlike arduino/setup-protoc it doesn't emit
-      # the Node 20 deprecation warning; it fetches protoc from upstream releases
-      # and puts it on PATH. `choco install protoc` was unreliable at exposing it.
-      - name: Install Windows protoc
-        if: runner.os == 'Windows'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: protoc
+      # No protoc needed here: proto generation is gated on REGENERATE_PROTO and
+      # the generated code is checked in, so packaging builds never run protoc.
 
       # Linking the agent and the (large, WebView-heavy) Tauri binary dominates
       # the Windows job; lld-link links far faster than MSVC link.exe. Opt into
@@ -145,15 +128,6 @@ jobs:
       - name: Install npm dependencies (GUI)
         working-directory: gui
         run: npm ci
-
-      - name: Install npm workspace (shared RPC + TUI + CLI)
-        run: npm ci
-
-      # The CLI (and TUI) import @future-os/rpc; its dist must exist before
-      # their TypeScript compiles. Build it explicitly on fresh runners.
-      - name: Build shared RPC package
-        working-directory: future-rpc/ts
-        run: npm run build
 
       # Windows Defender real-time scanning inspects every intermediate file the
       # Rust compiler and linker emit — thousands of them — and is the single

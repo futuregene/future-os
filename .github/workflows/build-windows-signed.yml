@@ -84,9 +84,7 @@ jobs:
           function Have($c) { if (Get-Command $c -ErrorAction SilentlyContinue) { "true" } else { "false" } }
           @(
             "node=$(Have node)"
-            "bun=$(Have bun)"
             "cargo=$(Have cargo)"
-            "protoc=$(Have protoc)"
           ) | Add-Content -Path $env:GITHUB_OUTPUT
 
       - name: Setup Node.js
@@ -94,12 +92,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "24"
-
-      - name: Setup Bun
-        if: steps.detect.outputs.bun == 'false'
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
 
       # Match the toolchain pinned in rust-toolchain.toml and the other CI
       # workflows, rather than accepting whichever stable version is current.
@@ -110,12 +102,6 @@ jobs:
           Invoke-WebRequest https://win.rustup.rs -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
           & "$env:RUNNER_TEMP\rustup-init.exe" -y --default-toolchain 1.97.0
           "$env:USERPROFILE\.cargo\bin" | Add-Content -Path $env:GITHUB_PATH
-
-      - name: Install protoc
-        if: steps.detect.outputs.protoc == 'false'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: protoc
 
       # Single source of truth: scripts/version.mjs. A `vX.Y.Z` tag → release
       # ("X.Y.Z"); anything else → dev ("0.0.0-<hash>").
@@ -165,28 +151,9 @@ jobs:
         working-directory: gui
         run: npm ci
 
-      - name: Install npm workspace (shared RPC + TUI + CLI)
-        run: npm ci
-
-      # The CLI imports @future-os/rpc; its dist must exist before the CLI's
-      # TypeScript compiles. Build it explicitly on fresh runners.
-      - name: Build shared RPC package
-        working-directory: future-rpc/ts
-        run: npm run build
-
-      # Build the agent and stage it as a Tauri sidecar so the packaged app starts
-      # it automatically (see bundle.externalBin in tauri.conf.json). The file must
-      # be named future-agent-<target-triple> for Tauri to pick it up.
-      - name: Build bundled agent
-        shell: powershell
-        env:
-          FUTURE_VERSION: ${{ steps.v.outputs.version }}
-        run: |
-          cargo build --release --manifest-path agent/Cargo.toml
-          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
-          Copy-Item "target/release/future-agent.exe" "gui/src-tauri/binaries/future-agent-$triple.exe"
-
+      # The unified `future` CLI is the single sidecar (tauri.conf.json
+      # bundle.externalBin); the agent runs through `future agent`, so only the
+      # CLI needs building and staging.
       - name: Build CLI binary
         working-directory: cli
         shell: powershell
@@ -200,20 +167,18 @@ jobs:
 
       # The bundler copies externalBin binaries into the installer as-is and never
       # signs them (it signs the app exe, the NSIS plugin DLLs and the setup), so
-      # this is the last moment the sidecars can be signed without unpacking the
+      # this is the last moment the sidecar can be signed without unpacking the
       # installer afterwards.
-      - name: Sign sidecars
+      - name: Sign sidecar
         shell: powershell
         timeout-minutes: 15
         run: |
           . scripts/lib/windows-signing.ps1
           $signTool = Find-SignTool
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          foreach ($exe in @("future-agent-$triple.exe", "future-$triple.exe")) {
-            $p = "gui/src-tauri/binaries/$exe"
-            Invoke-SignFile -SignTool $signTool -Thumbprint $env:SIGN_THUMBPRINT -Path $p
-            Write-Host "signed: $exe"
-          }
+          $p = "gui/src-tauri/binaries/future-$triple.exe"
+          Invoke-SignFile -SignTool $signTool -Thumbprint $env:SIGN_THUMBPRINT -Path $p
+          Write-Host "signed: $p"
 
       # Pin the Tauri installer version to the plain semver core (NSIS rejects
       # SemVer suffixes). The display version keeps the full FUTURE_VERSION.
@@ -260,9 +225,9 @@ jobs:
             Remove-Item -Force $overlay -ErrorAction SilentlyContinue
           }
 
-      # Portable (install-free) build: the GUI exe plus the agent and CLI
-      # binaries, all in one directory. Signed here rather than assumed: the
-      # bundler signs its own copies on the way into the installer, so whether
+      # Portable (install-free) build: the GUI exe plus the unified CLI binary,
+      # all in one directory. Signed here rather than assumed: the bundler signs
+      # its own copies on the way into the installer, so whether
       # target/release/futureos.exe itself ends up signed is its business. Signing
       # the staged copies makes the zip's contents certain either way.
       - name: Assemble Windows portable (signed)
@@ -275,10 +240,9 @@ jobs:
           $dir = "futureos-portable"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           Copy-Item "gui/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
-          Copy-Item "gui/src-tauri/binaries/future-agent-$triple.exe" "$dir/future-agent.exe"
           Copy-Item "target/release/future.exe" "$dir/future.exe"
           Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
-          foreach ($exe in @("FutureOS.exe", "future-agent.exe", "future.exe")) {
+          foreach ($exe in @("FutureOS.exe", "future.exe")) {
             Invoke-SignFile -SignTool $signTool -Thumbprint $env:SIGN_THUMBPRINT -Path "$dir/$exe"
             Write-Host "signed: $exe"
           }
