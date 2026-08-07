@@ -191,21 +191,22 @@ Generate the following pages (**do not generate TUI / terminal UI pages**). The 
   - `tools`: list / describe / call tools (`tools list [--json]`, `tools describe <name>`, `tools call <name>`; args as `--key value`, or `--args '<json>'` for complex tools; some tools accept `--input <path>`, `--output <path>`, `--stdin`, etc.)
   - `skills`: manage skill packs (`list` / `install [<name>]` / `install-builtin` / `uninstall <name>` / `update`)
   - `models`: list available models (`models [--json]`)
-  - `agent`: status only (`agent status [--json]`; **no** `start`/`stop` — the CLI cannot start the agent)
+  - `agent`: run the agent server (`future agent <args>`, same args as `future-agent`; `future agent --help` lists options)
+  - `tui` / `channel` / `loop`: run the other Rust components (`future tui` / `future channel` / `future loop <cmd>` — equivalent to `future-tui` / `future-channel` / `future-loop`; the standalone binaries still work)
   - `session`: list / inspect / rename / delete sessions
   - `doctor`: environment diagnostics
-- **Tips**: macOS first-time blocked → right-click open the app first to clear the block; "Connection refused" → agent not running, open the desktop app (it starts the agent) or launch `future-agent` manually.
+- **Tips**: macOS first-time blocked → right-click open the app first to clear the block; "Connection refused" → agent not running, open the desktop app (it starts the agent) or run `future agent`.
 
 ### Feishu
 **Code entry points (read first):** `channels/src/feishu/bridge.rs` (message handling & slash commands), `channels/src/feishu/feishu_ws.rs` (WebSocket long connection/heartbeat), `channels/src/main.rs` + `channels/src/config.rs` (`~/.future/channels/config.json` loading & startup). **Command names, slash commands, and config keys must match the code.**
-- Positioning: connect FutureOS to Feishu (Lark) through the **Channel Bridge** so you can talk to the agent from any Feishu chat. The bridge is a separate service (binary `future-channel`) — there is **no `future channel` command**; start/stop it by running `future-channel` directly (or `make run-channels`), and the agent must be running (desktop app open is enough).
+- Positioning: connect FutureOS to Feishu (Lark) through the **Channel Bridge** so you can talk to the agent from any Feishu chat. The bridge is a separate service (binary `future-channel`) — start it with `future channel` (or `future-channel` directly, or `make run-channels`), and the agent must be running (desktop app open is enough).
 - Config: first run auto-creates defaults in `~/.future/channels/config.json`; fill in the Feishu app's App ID / App Secret etc. and enable the channel.
 - Messages are pushed over a WebSocket (open.feishu.cn); replies stream back via CardKit cards; unknown slash commands are forwarded to the agent as ordinary messages.
 - Slash commands (handled locally): `/new` `/status` `/stop` `/model` `/models` `/compact` `/effort` `/cwd` `/help`.
 
 ### DingTalk
 **Code entry points (read first):** `channels/src/dingtalk/bridge.rs` (message handling & slash commands), `channels/src/main.rs` + `channels/src/config.rs` (startup & config). **Command names, slash commands, and config keys must match the code.**
-- Positioning: connect FutureOS to DingTalk through the **Channel Bridge** so you can talk to the agent from any DingTalk chat. The bridge is a separate service (binary `future-channel`) — there is **no `future channel` command**; start/stop it by running `future-channel` directly (or `make run-channels`), and the agent must be running.
+- Positioning: connect FutureOS to DingTalk through the **Channel Bridge** so you can talk to the agent from any DingTalk chat. The bridge is a separate service (binary `future-channel`) — start it with `future channel` (or `future-channel` directly, or `make run-channels`), and the agent must be running.
 - Config: `~/.future/channels/config.json` (same as Feishu).
 - Slash commands match Feishu (handled locally, 9 of them); unknown slash commands are forwarded to the agent as ordinary messages.
 

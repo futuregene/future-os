@@ -1,4 +1,4 @@
-//! cli-rust — 1:1 Rust port of the TypeScript `future` CLI.
+//! future-cli — Rust port of the TypeScript `future` CLI.
 //!
 //! Goal: byte-identical argument parsing, help text, output, and exit codes.
 //! `dispatch` is the port of `cli/src/index.ts` `main()`; command modules port
@@ -222,29 +222,6 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return catch(out, commands::models::models(&models_args, out)).await;
     }
 
-    // if (group === "agent")
-    if group == Some("agent") {
-        if command == Some("status") || command.is_none() {
-            if rest.iter().any(|a| a == "--help" || a == "-h")
-                || command == Some("--help")
-                || command == Some("-h")
-            {
-                out.log(help::AGENT_STATUS_HELP);
-                return 0;
-            }
-            // NB: `command === "--json"` is unreachable here in the TS too
-            // (the outer guard admits only "status"/undefined); kept for parity.
-            let json = command == Some("--json") || rest.iter().any(|a| a == "--json");
-            return catch(out, commands::agent::agent_status(json, out)).await;
-        }
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log_err("Usage: future agent status [--json]");
-        return 1;
-    }
-
     // if (group === "session")
     if group == Some("session") {
         return catch(out, commands::session::session(command, rest, out)).await;
@@ -348,30 +325,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_dispatch_quirks() {
-        let _guard = crate::test_env::lock_env().await;
-        let _env = crate::test_env::EnvGuard::set(&[(
-            "FUTURE_AGENT_GRPC_ADDR",
-            std::ffi::OsString::from("127.0.0.1:1"),
-        )]);
-        // `future agent` with no subcommand → status path; agent unreachable
-        // → "Error: ..." on stderr with exit 1.
-        let (code, stdout, stderr) = run(&["agent"]).await;
-        assert_eq!(code, 1);
-        assert_eq!(stdout, "");
-        assert!(stderr.starts_with("Error: "), "stderr: {stderr}");
-
-        // `future agent --json` is an UNKNOWN command (matches TS dead-code).
-        let (code, stdout, stderr) = run(&["agent", "--json"]).await;
-        assert_eq!(code, 1);
-        assert_eq!(stdout, "");
-        assert_eq!(
-            stderr,
-            "Unknown command: --json\n\nUsage: future agent status [--json]\n"
-        );
-    }
-
-    #[tokio::test]
     async fn auth_login_url_parsing_reaches_login() {
         // All three forms route into login; with an unreachable --url the
         // device-code POST fails fast with a Network error and exit code 1.
@@ -416,7 +369,6 @@ mod tests {
             (&["tools", "--help"], help::TOOLS_GROUP_HELP),
             (&["models", "--help"], help::MODELS_HELP),
             (&["models", "-h"], help::MODELS_HELP),
-            (&["agent", "status", "--help"], help::AGENT_STATUS_HELP),
             (&["session", "--help"], commands::session::SESSION_HELP),
             (&["session", "-h"], commands::session::SESSION_HELP),
         ];

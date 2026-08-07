@@ -134,11 +134,11 @@ Control who can talk to your bot:
 
 ```bash
 # Build and run the channel bridge
-make build-channels
+cargo build -p future-channel
 ./target/release/future-channel
 ```
 
-The bridge is a **standalone service** — there is no `future channel` CLI command, and the desktop app doesn't manage it. Run the `future-channel` binary directly (or via `make run-channels`) whenever you want the Feishu bridge up.
+The bridge is a **standalone service** — the desktop app doesn't manage it. Start it with `future channel`, or run the `future-channel` binary directly (or via `make run-channels`) whenever you want the Feishu bridge up.
 
 The bridge loads `~/.future/channels/config.json` on startup. If the file doesn't exist, a template is created and the bridge exits — edit the template and restart.
 

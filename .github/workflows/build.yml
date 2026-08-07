@@ -166,26 +166,6 @@ jobs:
         continue-on-error: true
         run: Set-MpPreference -DisableRealtimeMonitoring $true
 
-      # Build the agent and stage it as a Tauri sidecar so the packaged app
-      # starts it automatically (see bundle.externalBin in tauri.conf.json).
-      # The file must be named future-agent-<target-triple> for Tauri to pick it.
-      - name: Build bundled agent (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          cargo build --release --manifest-path agent/Cargo.toml
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p gui/src-tauri/binaries
-          cp "target/release/future-agent" "gui/src-tauri/binaries/future-agent-$triple"
-
-      - name: Build bundled agent (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cargo build --release --manifest-path agent/Cargo.toml
-          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
-          Copy-Item "target/release/future-agent.exe" "gui/src-tauri/binaries/future-agent-$triple.exe"
-
       # Compile the CLI into a standalone binary (Rust workspace member).
       - name: Build CLI binary (Unix)
         if: runner.os != 'Windows'
@@ -219,7 +199,8 @@ jobs:
         working-directory: gui
         run: npm run tauri:build
 
-      # macOS: agent + CLI are now Tauri sidecars (bundle.externalBin), so both
+      # macOS: the unified `future` CLI is the Tauri sidecar (bundle.externalBin); the
+      # agent runs through `future agent`, so only the CLI binary sits in the .app.
       # already sit in the .app's Contents/MacOS, signed by Tauri. We only need
       # to drop the first-launch (Gatekeeper) note into the dmg — the .app is
       # unsigned/un-notarized. Tauri's dmg is read-only, so round-trip it through
@@ -255,9 +236,9 @@ jobs:
           retention-days: 3
 
       # Portable (install-free) Windows build: the GUI exe plus the agent and
-      # CLI binaries, all in one directory. The agent sidecar is renamed
-      # without the triple (as Tauri does on bundling) so the GUI finds it next
-      # to the exe. Requires the WebView2 Evergreen runtime (ships with Win 10/11).
+      # CLI binary, all in one directory. The agent runs through `future agent`
+      # (embedded), so only the unified CLI is staged next to the exe. Requires
+      # the WebView2 Evergreen runtime (ships with Win 10/11).
       - name: Assemble Windows portable
         if: runner.os == 'Windows'
         shell: pwsh
@@ -266,7 +247,6 @@ jobs:
           $dir = "futureos-portable"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           Copy-Item "gui/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
-          Copy-Item "gui/src-tauri/binaries/future-agent-$triple.exe" "$dir/future-agent.exe"
           Copy-Item "target/release/future.exe" "$dir/future.exe"
           Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
           Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
@@ -281,8 +261,8 @@ jobs:
           path: FutureOS-portable-windows.zip
           retention-days: 3
 
-      # Portable (install-free) Linux build: the GUI binary plus the agent and
-      # CLI binaries, all in one directory.
+      # Portable (install-free) Linux build: the GUI binary plus the unified
+      # CLI binary, all in one directory.
       - name: Assemble Linux portable
         if: runner.os == 'Linux'
         run: |
@@ -290,7 +270,6 @@ jobs:
           dir="futureos-portable-linux"
           mkdir -p "$dir"
           cp "gui/src-tauri/target/release/futureos" "$dir/futureos"
-          cp "target/release/future-agent" "$dir/future-agent"
           cp "target/release/future" "$dir/future"
           chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"

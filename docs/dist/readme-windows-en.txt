@@ -4,9 +4,9 @@ FutureOS Portable Setup Guide (Windows)
 [Launch]
 Extract the entire archive to any folder (e.g. D:\FutureOS) and double-click
 FutureOS.exe to run — no installation needed.
-Note: FutureOS.exe and future-agent.exe must stay in the same folder; do not
-move them separately. future-agent.exe is the backend service and launches
-automatically on startup.
+Note: FutureOS.exe and future.exe must stay in the same folder; do not move
+them separately. The backend agent is launched automatically via future.exe
+(`future agent`) on startup.
 
 [First Run]
 · If you see "Windows protected your PC" (SmartScreen): click "More info"
@@ -27,8 +27,7 @@ website and try again.
 [Notes]
 · An internet connection is required for the first-time login.
   Personal data is stored in C:\Users\<username>\.future.
-· Closing the window quits the app; the background future-agent service stops
-  automatically.
+· Closing the window quits the app; the background agent stops automatically.
 · The command-line tool future.exe is included in the same directory.
 
 If you encounter any issues, please send us a screenshot of the error window.

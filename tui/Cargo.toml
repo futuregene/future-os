@@ -1,5 +1,5 @@
 [package]
-name = "tui-rust"
+name = "future-tui"
 version = "0.0.0"
 edition = "2021"
 description = "Rust port of the TypeScript future-tui — 1:1 behavior (UI rendering, key handling, interaction, args, help text) with a self-implemented terminal backend"

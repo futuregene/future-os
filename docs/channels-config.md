@@ -2,7 +2,8 @@
 
 The channel bridge (`future-channel`, see `channels/`) reads a single config
 file at `~/.future/channels/config.json`. It connects to the agent over gRPC
-and exposes it through Feishu and DingTalk bots.
+and exposes it through Feishu and DingTalk bots. Start it with `future channel`
+(the unified CLI entry; identical to the standalone `future-channel` binary).
 
 **First run:** if the file doesn't exist, the bridge writes a default template
 and **exits** — edit the file and start it again.

@@ -1,1 +1,1 @@
-run -h
+run @/nonexistent/file-xyz hi

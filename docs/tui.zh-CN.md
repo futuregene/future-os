@@ -1,13 +1,17 @@
 # FutureOS 终端界面（TUI）
 
 TUI 是终端客户端：`future-tui`。它是轻量 gRPC 客户端——**必须先启动 agent**
-（`future-agent`，监听 `127.0.0.1:50051`）。启动时出现连接/gRPC 错误，几乎
+（`future agent`，监听 `127.0.0.1:50051`）。启动时出现连接/gRPC 错误，几乎
 总是因为 agent 还没启动。
 
 ```bash
-future-agent      # 终端 1：agent
-future-tui        # 终端 2：终端界面
+future agent      # 终端 1：agent
+future tui        # 终端 2：终端界面（等同于 future-tui）
 ```
+
+`future tui <args>` 在进程内运行 TUI；独立二进制 `future-tui` 依然安装且用法
+一致。`future tui --help` 可查看全部选项（print 模式、`--list-models`、
+`--session` 等）。
 
 - 构建 / 安装：见 [构建与安装](build-and-install.zh-CN.md)。
 - 会话持久化、模型配置、工具审批都由 agent 处理；TUI 只是前端。
@@ -67,7 +71,7 @@ TUI 把客户端侧设置持久化到 `~/.future/tui/settings.json`（如 `defau
 
 | 症状 | 解决办法 |
 |---|---|
-| 启动即连接 / gRPC 错误 | agent 未运行。启动 `future-agent`，并确认端口未被占用：`lsof -i :50051` |
+| 启动即连接 / gRPC 错误 | agent 未运行。启动 `future agent`，并确认端口未被占用：`lsof -i :50051` |
 | auth / 「no model」错误 | 未配置模型。运行 `future auth login`，或向 `~/.future/agent/models.json` 添加 provider——见仓库 README「配置模型」 |
 
 参见：[目录布局](directory-layout.zh-CN.md)（`~/.future/` 下各目录职责）、

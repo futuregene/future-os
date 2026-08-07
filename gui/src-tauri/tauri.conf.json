@@ -47,7 +47,7 @@
   "bundle": {
     "active": true,
     "targets": ["deb", "app", "dmg", "nsis"],
-    "externalBin": ["binaries/future-agent", "binaries/future"],
+    "externalBin": ["binaries/future"],
     "macOS": {
       "signingIdentity": "-"
     },

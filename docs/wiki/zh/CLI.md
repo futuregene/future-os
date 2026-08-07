@@ -35,9 +35,7 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 ### agent 必须在运行
 
-大部分命令都要连接 FutureOS 的 agent(后台服务)。如果**桌面应用已打开**,agent 就已经在运行。否则,直接运行 `future-agent` 二进制来启动 agent(或打开桌面应用,它会自动拉起 agent)。
-
-> CLI **不能**启动或停止 agent——`future agent` 只能查看状态。
+大部分命令都要连接 FutureOS 的 agent(后台服务)。如果**桌面应用已打开**,agent 就已经在运行。否则,用 `future agent` 启动 agent(或直接运行 `future-agent` 二进制,二者是同一套代码;打开桌面应用也会自动拉起 agent)。
 
 ---
 
@@ -125,13 +123,26 @@ future models            # 列出运行中 agent 的模型
 future models --json     # 机器可读输出
 ```
 
-### `agent` —— 查看后台 agent
+### `agent` —— 启动 agent 服务
 
 ```bash
-future agent status      # agent 版本 + 已加载技能数
+future agent              # 启动 agent gRPC 服务（等同于 future-agent）
+future agent --help       # 查看 agent 选项（gRPC 地址、日志、profiling）
 ```
 
-`status` 是 `agent` 组唯一的子命令——启停 agent 不通过 CLI 完成。
+`future agent <args>` 直接运行 agent 后端——参数与独立二进制 `future-agent`
+完全一致。
+
+### `tui` / `channel` / `loop` —— 运行其他组件
+
+`future` 是所有 Rust 组件的统一入口——每个都运行与独立二进制完全相同的代码，
+独立二进制仍然安装：
+
+```bash
+future tui                # 终端界面（等同于 future-tui）
+future channel            # IM 渠道桥：飞书 / 钉钉（等同于 future-channel）
+future loop status        # loop 控制面：goal/todo/gate（等同于 future-loop）
+```
 
 ### `session` —— 管理会话
 
@@ -157,7 +168,7 @@ future doctor
 ## 小贴士
 
 - **macOS 首次被拦?** 先用右键 →「打开」把 FutureOS 应用打开一次以清除拦截,之后命令行工具也能运行。
-- **提示「Connection refused」?** 说明 agent 没运行。打开桌面应用,或直接运行 `future-agent`。
+- **提示「Connection refused」?** 说明 agent 没运行。打开桌面应用,或直接运行 `future agent`。
 
 ---
 

@@ -34,7 +34,10 @@ For one-shot conversations, just answer normally — no goal needed.
   (installs to `~/.local/bin/future-loop` and the skill to
   `~/.future/agent/skills/future-loop/`). State lives in the PROJECT:
   `<cwd>/.future/loop/` (run future-loop from the project dir, or pass --cwd).
-- `future-agent` must be running (gRPC 127.0.0.1:50051) for `future-loop run`.
+  The unified `future` CLI runs the same code: `future loop <cmd>` ≡
+  `future-loop <cmd>`.
+- `future-agent` must be running (gRPC 127.0.0.1:50051) for `future-loop run`
+  (`future agent` ≡ `future-agent`).
 
 ## State layout (project-local, all under `<cwd>`)
 

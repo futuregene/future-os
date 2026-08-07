@@ -1,3 +1,1 @@
-Unknown command: -h
-
-Usage: future agent status [--json]
+Usage: future session bogus <session-id>

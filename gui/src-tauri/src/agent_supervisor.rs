@@ -60,6 +60,10 @@ fn agent_reachable(addr: &str) -> bool {
 /// off the launch path (does a blocking TCP probe). No-op in dev when the
 /// sidecar binary isn't present — the error is logged and the user is expected
 /// to run the agent manually.
+///
+/// The agent runs through the unified `future` CLI sidecar (`future agent`),
+/// which embeds the same code as the retired standalone future-agent binary —
+/// so only `future` is bundled (tauri.conf.json externalBin).
 pub fn ensure_agent_running(app: &AppHandle) {
     let addr = bare_addr();
     if agent_reachable(&addr) {
@@ -67,11 +71,11 @@ pub fn ensure_agent_running(app: &AppHandle) {
         return;
     }
 
-    let command = match app.shell().sidecar("future-agent") {
-        Ok(command) => command.args(["--grpc-addr", &addr]),
+    let command = match app.shell().sidecar("future") {
+        Ok(command) => command.args(["agent", "--grpc-addr", &addr]),
         Err(error) => {
             eprintln!(
-                "FutureOS: bundled agent sidecar unavailable ({error}); run it manually in dev"
+                "FutureOS: bundled CLI sidecar unavailable ({error}); run it manually in dev"
             );
             return;
         }

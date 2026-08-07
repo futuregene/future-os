@@ -13,7 +13,7 @@
 # - Linux  has no prebuilt release binaries yet, so this script bootstraps the
 #          toolchain (apt deps + Rust + Node 24 + Bun) and builds the terminal
 #          stack (agent, TUI, CLI, channels, skills, loop) from source via
-#          `make install-nogui`.
+#          `make install-cli install-skills`.
 #
 # Env overrides:
 #   FUTUREOS_VERSION  pin a specific release (e.g. v0.1.2); default = latest
@@ -113,17 +113,15 @@ install_macos() {
   install_future_loop
   say "Done — FutureOS $version installed"
   say "Launch the app with: open -a FutureOS"
+  say "Terminal users: the unified 'future' CLI is bundled with the app (run 'future init' to link it into ~/.future/bin, then use 'future agent|tui|channel|loop')."
 }
 
-# The GUI app bundles the agent + CLI sidecars but not the loop control plane;
-# build `future-loop` (CLI + skill) from source like the Linux path does.
+# The GUI app bundles the agent + CLI sidecars but not the loop skill; link it
+# from the repo. The loop control plane itself runs through the unified
+# `future` CLI (`future loop`) — no separate binary build is needed (the
+# standalone future-loop binary remains available via scripts/install-future-loop.sh).
 install_future_loop() {
   command -v git >/dev/null 2>&1 || die "git is required (Xcode Command Line Tools: xcode-select --install)"
-  if ! command -v cargo >/dev/null 2>&1; then
-    say "Installing Rust via rustup"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-    export PATH="$HOME/.cargo/bin:$PATH"
-  fi
   local src="$HOME/future-os"
   if [[ ! -d "$src/.git" ]]; then
     say "Cloning https://github.com/futuregene/future-os -> $src"
@@ -133,14 +131,15 @@ install_future_loop() {
     git -C "$src" fetch --depth 1 origin
     git -C "$src" reset --hard origin/main
   fi
-  say "Building future-loop (cargo build -p future-loop) — this can take a few minutes"
-  bash "$src/scripts/install-future-loop.sh"
-  say "future-loop installed: $HOME/.local/bin/future-loop (add ~/.local/bin to PATH if needed)"
+  say "Linking the /future-loop skill (loop control plane = 'future loop', embedded in the unified CLI)"
+  mkdir -p "$HOME/.future/agent/skills/future-loop"
+  ln -sf "$src/orchestration/loop/skill/future-loop/SKILL.md" "$HOME/.future/agent/skills/future-loop/SKILL.md"
+  say "future-loop skill installed at $HOME/.future/agent/skills/future-loop/ (use 'future loop' or 'future-loop')"
 }
 
 install_linux() {
   say "Linux has no prebuilt release binaries yet — building the terminal stack from source"
-  say "This installs: agent (future-agent), TUI (future-tui), CLI (future), channel bridge, skills, loop control plane (future-loop)"
+  say "This installs the unified CLI (agent/TUI/channel/loop embedded) + skills + /future-loop skill"
 
   # 1. System build dependencies (Debian/Ubuntu).
   if command -v apt-get >/dev/null 2>&1; then
@@ -193,11 +192,12 @@ install_linux() {
     git -C "$src" reset --hard origin/main
   fi
 
-  say "Building and installing (make install-nogui) — this can take a while"
-  ( cd "$src" && make install-nogui )
+  say "Building and installing (make install-cli install-skills) — this can take a while"
+  ( cd "$src" && make install-cli install-skills )
 
   say "Done — FutureOS terminal stack installed"
-  say "Run: future-agent (agent)  ·  future-tui (terminal UI)  ·  future (CLI)  ·  future-loop (control plane)"
+  say "Run: future agent (agent)  ·  future tui (terminal UI)  ·  future (CLI)  ·  future loop (control plane)"
+  say "      or the standalone binaries: future-agent · future-tui · future-channel · future-loop"
 }
 
 case "$OS" in

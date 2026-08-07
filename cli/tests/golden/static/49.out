@@ -1,0 +1,12 @@
+Usage: future-agent [OPTIONS]
+
+Options:
+      --grpc-addr <GRPC_ADDR>  gRPC server address (host:port, e.g., 127.0.0.1:50051) [default: 127.0.0.1:50051]
+      --verbose                Enable verbose logging (show gRPC requests, LLM calls, tool execution)
+      --log-file [<PATH>]      Append logs (without ANSI colors) to a file. Accepts an optional path; when omitted, defaults to ~/.future/agent/logs/agent.log. Parent directories are created if missing. Can also be enabled via FUTURE_AGENT_LOG_FILE (a path, or empty for the default location) [env: FUTURE_AGENT_LOG_FILE=]
+      --log-max-lines <N>      When file logging is enabled, keep only the newest N lines (trimmed at startup and as the file grows). 0 disables trimming [env: FUTURE_AGENT_LOG_MAX_LINES=] [default: 1000]
+      --profile <PATH>         Enable CPU profiling and write a flamegraph SVG to the given path on shutdown.  Profiling starts immediately and runs until the agent exits
+      --profile-seconds <N>    Profile for N seconds then exit automatically (for benchmarking). Implies --profile with a default path when --profile is not also set
+      --profile-heap <PATH>    Enable heap (memory) profiling and write a dhat report to the given path on shutdown.  Requires the `dhat-heap` build feature (`cargo build --release --features dhat-heap`); without it this flag is ignored with a warning
+  -h, --help                   Print help
+  -V, --version                Print version

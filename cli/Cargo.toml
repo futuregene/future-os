@@ -1,5 +1,5 @@
 [package]
-name = "cli-rust"
+name = "future-cli"
 version = "0.0.0"
 edition = "2021"
 description = "Rust port of the TypeScript `future` CLI — byte-identical argument parsing, help text, output, and exit codes"
@@ -10,7 +10,7 @@ name = "future"
 path = "src/main.rs"
 
 [lib]
-name = "cli_rust"
+name = "future_cli"
 path = "src/lib.rs"
 
 [dependencies]
@@ -19,6 +19,14 @@ tonic.workspace = true
 # Single proto codegen owner (PR #112): generated proto code lives in the
 # future-rpc crate; the CLI consumes it instead of owning a generated copy.
 future-rpc = { path = "../future-rpc/rust" }
+# Embedded components: `future agent|tui|channel|loop <args>` runs the same
+# code as the standalone binaries (kept as separate [[bin]] targets too, see
+# Makefile run-* targets). The entry points build their own tokio runtimes,
+# so the CLI dispatches them from main() BEFORE entering its own runtime.
+future-agent = { path = "../agent" }
+future-tui = { path = "../tui" }
+future-channel = { path = "../channels" }
+future-loop = { path = "../orchestration/loop" }
 serde.workspace = true
 # preserve_order: JSON object key order must match the TS CLI's JS semantics
 # (JSON.parse preserves insertion order; serde_json's default BTreeMap sorts).

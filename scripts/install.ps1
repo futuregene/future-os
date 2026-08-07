@@ -47,6 +47,7 @@ if ($p.ExitCode -ne 0) {
 Write-Host ""
 Write-Host "FutureOS $Version installed." -ForegroundColor Green
 Write-Host "  - Launch 'FutureOS' from the Start menu; the desktop app auto-starts the agent."
-Write-Host "  - The 'future' CLI is bundled with the app."
-Write-Host "  - future-loop (control plane) is not included: it needs a Rust source build;"
-Write-Host "    see docs/build-and-install.md (make install-loop)."
+Write-Host "  - The unified 'future' CLI is bundled with the app (run 'future init' to link it"
+Write-Host "    into ~\.future\bin, then use 'future agent|tui|channel|loop')."
+Write-Host "  - The /future-loop skill is not included in the installer: it needs a source build;"
+Write-Host "    see docs/build-and-install.md (make install-skills)."

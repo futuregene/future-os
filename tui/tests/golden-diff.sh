@@ -23,11 +23,11 @@
 #
 # Requirements:
 #   - rustup with the pinned toolchain (rust-toolchain.toml) — the Rust
-#     side runs as `cargo run -p tui-rust --example render_parity`
+#     side runs as `cargo run -p future-tui --example render_parity`
 #
 # Usage:
 #   make test-tui-diff
-#   tui/tests/diff-ts-rust.sh [--verbose] [--keep]
+#   tui/tests/golden-diff.sh [--verbose] [--keep]
 #
 # Environment: output files land in /tmp/future-tui-diff-*; pass --keep to
 # keep them for inspection.
@@ -70,8 +70,8 @@ echo "work:   $WORK"
 [ -f "$GOLDEN" ] || { echo "FATAL: golden missing: $GOLDEN" >&2; exit 1; }
 
 # ── Rust side (cargo run --example render_parity) ──────────────────────────
-echo "-- Rust (cargo run -p tui-rust --example render_parity) --"
-(cd "$ROOT" && rustup run 1.97.0 cargo run -q -p tui-rust --example render_parity -- "$CORPUS") > "$RUST_OUT"
+echo "-- Rust (cargo run -p future-tui --example render_parity) --"
+(cd "$ROOT" && rustup run 1.97.0 cargo run -q -p future-tui --example render_parity -- "$CORPUS") > "$RUST_OUT"
 RUST_LINES="$(wc -l < "$RUST_OUT")"
 echo "   $RUST_LINES cases"
 

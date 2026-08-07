@@ -1,5 +1,6 @@
-  SESSION ID               TITLE                                  UPDATED    MODEL                        QUERIES
-  ———————————————————————— —————————————————————————————————————— —————————— ———————————————————————————— ———————
-  abc123                   Test Session                           20h ago    future/fast                  1
-
-1 sessions.
+Session:  abc123
+  Name:        (untitled)
+  Model:       ?
+  Thinking:    ?
+  Messages:    3 (0 user, 0 assistant, 0 tool)
+  Tool calls:  0

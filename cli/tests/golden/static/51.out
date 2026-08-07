@@ -1,0 +1,133 @@
+FutureOS loop control plane — durable goals, deterministic should-run kernel
+
+USAGE: future loop <command> [args]
+
+── goal ── goal lifecycle
+  goal init --objective "..." [--cwd DIR] [--goal-doc TEXT] [--goal-id ID]
+    create a durable goal
+  status [--goal G]
+    project the active state
+  models [--format json]
+    list models available from the agent
+  diagnose --goal G [--format json]
+    per-goal diagnostic surface (decision / gaps / runs)
+
+── todo ── todo work graph
+  todo add|claim|complete|archive --goal G ...
+    add/claim/complete/archive todos
+  gate resolve --goal G --todo-id G1 --decision "..."
+    resolve a user gate
+  replan ack --goal G --delta-kind ... | replan obligations --goal G
+    ack a replan obligation / list obligations
+  lease claim|renew|release|expire|status --goal G --todo-id T --agent-id A
+    task lease lifecycle (claim/renew/release/expire/status)
+  task-graph --goal G
+    todo dependency graph (G-14)
+
+── agent ── agent sessions
+  agent onboard --goal G --agent-id A [--capabilities c1,c2]
+    register/onboard agents
+  scope --goal G --agent-id A [--exclude X]
+    identity-scoped agent frontier (G-16)
+  lane --goal G --agent-id A
+    agent lane recommendation (G-16)
+  supervisor propose|receipt|events --goal G ...
+    supervisor proposal/receipt events (G-16)
+
+── capability ── capability framework
+  capability list|propose|commands [--name X] [--input "..."]
+    list / propose / commands for capabilities
+  catalog [--name X] [--json]
+    capability catalog metadata: status/stage/provider (G-23)
+  agent-turn-recall --input "..." [--include-experimental]
+    Recall exact-scope guidance and inject it into one private turn context.
+  change-quality --input "..." [--include-experimental]
+    Assess a change's validation evidence and propose repair or acceptance.
+  content-ops --input "..." [--include-experimental]
+    Project one ordered content operation against the goal state.
+  explore --input "..." [--include-experimental]
+    Run one bounded exploration probe with trace hygiene.
+  integration-branch --input "..." [--include-experimental]
+    Reconcile one ordered integration-branch plan.
+  issue-fix --input "..." [--include-experimental]
+    Project one issue-fix intake packet and propose successor/triage/gate.
+  periodic-report --input "..." [--include-experimental]
+    Propose a periodic report successor from a cadence/scope profile.
+  reward-memory --input "..." [--include-experimental]
+    Build a compact reward-memory receipt with hashed preference references.
+  semantic-preference --input "..." [--include-experimental]
+    Project the semantic-preference inventory and bounded rerank.
+  value-connectors --input "..." [--include-experimental]
+    Render the value-connector inventory and lifecycle boundaries.
+
+── extension ── extension lifecycle (G-21)
+  extension install --manifest PATH [--execute] | enable|disable|rollback --id X [--execute] | status [--id X] | capabilities
+    install/upgrade/enable/disable/rollback/status/capabilities
+
+── ops ── operations / diagnostics
+  version
+    print version + schema surface (G-27)
+  doctor [--goal G] [--agent-addr ADDR]
+    run the diagnostic surface (smoke + ledger + agent probe)
+  history --goal G
+    goal run history (ledger-derived)
+  turn --goal G --todo-id T [--agent-id A]
+    render the per-turn envelope for a todo
+  todo-event --goal G --todo-id T
+    event history of one todo
+  evidence-log --goal G [--todo-id T]
+    evidence trail (attached + run + completion evidence)
+  backup --goal G
+    back up a goal
+  authority set --goal G --write-scope ... [--requires-approval ...]
+    set authority declaration
+  profile set --goal G --outcome-floor N
+    set execution profile
+  quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G
+    quota should-run / usage / spend
+  scheduler tick|show|record-host-failure --goal G [--agent-id A]
+    scheduler tick/show/record-host-failure
+  store migrate|verify|bridge --goal G
+    event-store schema migration / ledger integrity
+  backfill --goal G [--from PATH] [--privacy LEVEL] [--dry-run]
+    markdown backfill into the event ledger
+  privacy --goal G [--level LEVEL] [--json]
+    privacy-graded projection
+  runs history|compact|index|retention|stale --goal G [--keep N] [--cutoff TS] [--rebuild]
+    run history lifecycle (history/compact/index/retention/stale)
+  heartbeat-prompt --goal G [--agent-id A]
+    render the per-turn re-entry packet
+  worker-bridge --goal G [--agent-id A] [--max-turns N]
+    run the worker bridge
+  serve-status [--goal G]
+    serve the status projection
+  run --goal G [--model M] [--thinking-level L] [--max-turns N]
+    drive one bounded gRPC turn
+
+── work-items ── attention / operator inbox (G-15)
+  attention [--goal G] [--all]
+    project the attention queue
+  inbox --project DIR [--scope addressed_only|configured_chat_all] [--name NAME]
+    project the operator inbox urgency
+
+── handoff ── project handoff (G-17)
+  handoff --goal G [--write]
+    generate the handoff document + delivery contract
+
+── cli ── command registry
+  registry [--json] [--include-experimental]
+    inspect the CLI registry (groups/commands)
+
+── benchmark ── benchmark closed loop (G-18)
+  benchmark protocol --route R | run --benchmark-id X --case-id Y --task "..." [--agent-addr A] | ledger [--benchmark-id X]
+    benchmark protocol|run|ledger — loop protocol, qualification run, run ledger
+
+── replay ── decision replay / behavior corpus (G-19)
+  replay record --goal G [--out PATH] | replay run --case PATH | replay corpus build|run ...
+    record / replay public-safe decisions + model-behavior corpus
+
+── canary ── canary smoke (G-20)
+  canary smoke [--profile core-control-plane|extension-runtime|release-gate] [--json]
+    run a smoke profile (release gate default)
+
+State root: /tmp/cli-diff-work/homes/static/.future/loop (env FUTURE_LOOP_ROOT)

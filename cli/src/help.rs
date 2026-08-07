@@ -16,13 +16,20 @@ Groups:
   skills    Install & manage agent skills
   tools     List, describe, and call platform & browser tools
   models    List available AI models from the agent
-  agent     Show running agent status
   session   List, inspect, rename, and delete agent sessions
   doctor    Environment diagnostic
+
+Apps (run the FutureOS components — same as their standalone binaries):
+  agent     Start the agent gRPC server (future-agent)
+  tui       Launch the terminal UI (future-tui)
+  channel   Start the IM channel bridge (future-channel)
+  loop      Loop control plane: goals/todos/gates (future-loop)
 
 Quick start:
   future init                                Initialize Future OS
   future auth login                          Sign in to the Future platform
+  future agent                               Start the agent server
+  future tui                                 Launch the terminal UI
   future run "Explain this project"          One-shot agent prompt
   future run @README.md "Summarize this"     Include files in prompt
   future skills install-builtin              Install all built-in skills
@@ -37,6 +44,9 @@ Run 'future <group> --help' for per-group details.
   future tools --help        Tool subcommands
   future models --help       Model listing options
   future session --help      Session management options
+  future agent --help        Agent server options (gRPC addr, logging, profiling)
+  future tui --help          TUI options (print mode, list models, etc.)
+  future loop --help         Loop control plane commands
   future --version           Print version and exit"#;
 
 /// `future init --help` output (index.ts).
@@ -175,12 +185,3 @@ Usage:
 
 Requires a running agent (connects to 127.0.0.1:50051 by default).
 Override with FUTURE_AGENT_GRPC_ADDR environment variable."#;
-
-/// `future agent status --help` output (index.ts).
-pub const AGENT_STATUS_HELP: &str = r#"future agent status — show running agent state
-
-Usage:
-  future agent status [--json]
-
-  --json    Output full state as JSON.
-  --help    Show this help."#;

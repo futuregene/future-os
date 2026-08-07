@@ -35,7 +35,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应�
 
 一行命令，无需源码构建：
 
-**macOS** — 安装官方签名应用（自动识别 arm64 / Intel），并构建 `future-loop` 控制面（CLI + skill）：
+**macOS** — 安装官方签名应用（自动识别 arm64 / Intel），并链接 `/future-loop` 技能（控制面本身通过随应用分发的统一 `future` CLI 运行）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
@@ -47,7 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/i
 iex (irm https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.ps1)
 ```
 
-**Linux** — 暂无预编译产物；脚本自动引导工具链（apt 依赖 + Rust + Node 24 + Bun）并从源码构建终端栈（agent、TUI、CLI、IM 渠道、loop）：
+**Linux** — 暂无预编译产物；脚本自动引导工具链（apt 依赖 + Rust + Node 24 + Bun）并从源码构建终端栈——统一 `future` CLI（agent、TUI、IM 渠道与 loop 均内嵌其中）及技能：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
@@ -103,15 +103,20 @@ future auth login
 终端与 CLI 客户端都是轻量 gRPC 客户端。**必须先启动 Agent**，监听 `127.0.0.1:50051`：
 
 ```bash
-future-agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止）
+future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止）
 ```
 
-然后启动终端界面：
+然后启动终端界面——用同一个 `future` 命令或独立二进制均可（二者等价）：
 
 ```bash
-future-tui        # 终端界面
+future tui        # 终端界面（等同于 future-tui）
 ```
 
+> `future <cmd>` 是所有 Rust 组件的统一入口：`future agent`、`future tui`、
+> `future channel`、`future loop`。独立二进制（`future-agent`、`future-tui`、
+> `future-channel`、`future-loop`）仍然安装且用法完全一致——`future <cmd> <args>`
+> 只是在进程内运行它们。
+>
 > 客户端如果报连接 / gRPC 错误，几乎都是 Agent 还没启动——见 [故障排查](#故障排查)。
 
 ### 常用斜杠命令（TUI）
@@ -153,7 +158,7 @@ future-tui        # 终端界面
 
 | 现象 | 解决 |
 |---|---|
-| 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`future-agent`)，并确认端口没被占用：`lsof -i :50051`。 |
+| 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`future agent`)，并确认端口没被占用：`lsof -i :50051`。 |
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`，或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
 | 构建 / 安装问题 | 见 [构建与安装](docs/build-and-install.zh-CN.md)（平台工具链、链接器、GUI 打包）。 |
 

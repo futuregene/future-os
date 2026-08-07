@@ -86,11 +86,11 @@ Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebS
 
 ```bash
 # 构建并运行 Channel Bridge
-make build-channels
+cargo build -p future-channel
 ./target/release/future-channel
 ```
 
-Bridge 是**独立服务**——没有 `future channel` CLI 命令，桌面应用也不管理它。需要钉钉桥接时，直接运行 `future-channel` 二进制即可（或通过 `make run-channels`）。
+Bridge 是**独立服务**——桌面应用不管理它。需要钉钉桥接时，用 `future channel` 或直接运行 `future-channel` 二进制（或通过 `make run-channels`）。
 
 Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在，会自动创建模板并退出——编辑模板后重新启动即可。
 

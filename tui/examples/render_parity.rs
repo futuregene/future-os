@@ -13,7 +13,7 @@
 //! `JSON.stringify` exactly (verified), and the standard base64 alphabet
 //! with padding matches `Buffer.toString("base64")`.
 //!
-//! Usage: cargo run -p tui-rust --example render_parity -- <corpus.json>
+//! Usage: cargo run -p future-tui --example render_parity -- <corpus.json>
 
 use base64::Engine as _;
 use serde_json::{json, Value};

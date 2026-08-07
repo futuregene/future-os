@@ -80,8 +80,8 @@ mkdir -p "$GOLDEN_DIR"
 
 # ── Build Rust TUI + mock agent ─────────────────────────────────────────────
 echo "-- build future-tui + mock_agent --"
-(cd "$ROOT" && rustup run 1.97.0 cargo build -q -p tui-rust --bin future-tui)
-(cd "$ROOT" && rustup run 1.97.0 cargo build -q -p tui-rust --example mock_agent)
+(cd "$ROOT" && rustup run 1.97.0 cargo build -q -p future-tui --bin future-tui)
+(cd "$ROOT" && rustup run 1.97.0 cargo build -q -p future-tui --example mock_agent)
 [ -x "$RUST_TUI" ] || { echo "FATAL: $RUST_TUI missing" >&2; exit 1; }
 [ -x "$MOCK_AGENT" ] || { echo "FATAL: $MOCK_AGENT missing" >&2; exit 1; }
 

@@ -1,1 +1,1 @@
-agent status -h
+session --help

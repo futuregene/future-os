@@ -1,1 +1,1 @@
-session bogus
+run --mode xml hi
