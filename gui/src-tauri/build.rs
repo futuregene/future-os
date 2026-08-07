@@ -8,10 +8,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-env=FUTURE_VERSION={version}");
     println!("cargo:rerun-if-env-changed=FUTURE_VERSION");
 
+    ensure_placeholder_sidecars_for_non_release_builds()?;
     tauri_build::build();
 
     // Agent gRPC bindings come from the future-rpc crate (single codegen
     // owner; typed-RPC milestone) — nothing to generate here.
+
+    Ok(())
+}
+
+fn ensure_placeholder_sidecars_for_non_release_builds() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("PROFILE").ok().as_deref() == Some("release") {
+        return Ok(());
+    }
+
+    let target = std::env::var("TARGET")?;
+    let ext = if target.contains("windows") { ".exe" } else { "" };
+    let binaries_dir = std::path::Path::new("binaries");
+    std::fs::create_dir_all(binaries_dir)?;
+
+    for bin in ["future-agent", "future"] {
+        let path = binaries_dir.join(format!("{bin}-{target}{ext}"));
+        if !path.exists() {
+            std::fs::File::create(path)?;
+        }
+    }
 
     Ok(())
 }
