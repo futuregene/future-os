@@ -28,7 +28,7 @@ const config: ExpoConfig = {
   scheme: "futureos",
   version,
   orientation: "portrait",
-  icon: "../gui/src-tauri/icons/icon.png",
+  icon: "../desktop/src-tauri/icons/icon.png",
   userInterfaceStyle: "light",
   plugins: [
     [
@@ -73,7 +73,7 @@ const config: ExpoConfig = {
     versionCode: Number.parseInt(buildNumber, 10),
     adaptiveIcon: {
       backgroundColor: "#0f172a",
-      foregroundImage: "../gui/src-tauri/icons/icon.png",
+      foregroundImage: "../desktop/src-tauri/icons/icon.png",
     },
     predictiveBackGestureEnabled: true,
   },

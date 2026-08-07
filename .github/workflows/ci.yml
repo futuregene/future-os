@@ -32,8 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust_workspace: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_workspace == 'true' || steps.filter.outputs.ci == 'true' }}
-      gui_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.gui_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
-      gui_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.gui_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
+      desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
+      desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
     steps:
       - id: force
@@ -58,21 +58,21 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain.toml'
-              - 'future-rpc/**'
+              - 'rpc/**'
               - 'agent/**'
               - 'channels/**'
               - 'tui/**'
               - 'cli/**'
-            gui_tauri:
-              - 'gui/src-tauri/**'
+            desktop_tauri:
+              - 'desktop/src-tauri/**'
               - '.cargo/**'
               - 'rust-toolchain.toml'
-              # The GUI backend path-depends on future-rpc; changes there must
-              # revalidate the GUI backend too.
-              - 'future-rpc/**'
-            gui_frontend:
-              - 'gui/**'
-              - '!gui/src-tauri/**'
+              # The desktop backend path-depends on future-rpc; changes there must
+              # revalidate the desktop backend too.
+              - 'rpc/**'
+            desktop_frontend:
+              - 'desktop/**'
+              - '!desktop/src-tauri/**'
             mobile:
               - 'mobile/**'
               - '!mobile/android/**'
@@ -80,13 +80,13 @@ jobs:
 
   # ─── Rust lint gate (Linux): fmt + clippy ─────────────────────────────────
   # Lint every workspace crate (agent / channels / tui / cli / loop / future-rpc,
-  # via `--all` and `--workspace --all-targets`) plus the GUI Tauri backend.
+  # via `--all` and `--workspace --all-targets`) plus the desktop Tauri backend.
   # Tests run in the independent `rust-tests` job below so both gates can
   # execute in parallel.
   rust-quality:
     name: Rust fmt + clippy (Linux)
     needs: changes
-    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
+    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -102,13 +102,13 @@ jobs:
         with:
           workspaces: |
             .
-            gui/src-tauri
+            desktop/src-tauri
           cache-on-failure: true
           cache-all-crates: true
 
       # mold + binutils because .cargo/config.toml pins -fuse-ld=mold and clippy
       # still links build scripts, proc-macros and test binaries. WebKit/GTK for
-      # the Tauri -sys build scripts (GUI backend is part of this gate now).
+      # the Tauri -sys build scripts (desktop backend is part of this gate now).
       # protobuf-compiler is needed only for the `proto codegen is fresh` step
       # below — normal builds never run protoc (generation is gated on
       # REGENERATE_PROTO).
@@ -131,11 +131,11 @@ jobs:
       # unless every `bundle.externalBin` sidecar is present. For lint empty
       # placeholders suffice.
       - name: Create placeholder sidecars
-        if: needs.changes.outputs.gui_tauri == 'true'
+        if: needs.changes.outputs.desktop_tauri == 'true'
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p gui/src-tauri/binaries
-          : > "gui/src-tauri/binaries/future-$triple"
+          mkdir -p desktop/src-tauri/binaries
+          : > "desktop/src-tauri/binaries/future-$triple"
 
       # ── Workspace crates (agent / channels) ──
       # --all because the root manifest is a virtual workspace (no [package]);
@@ -155,18 +155,18 @@ jobs:
       - name: proto codegen is fresh
         if: needs.changes.outputs.rust_workspace == 'true'
         run: |
-          (cd future-rpc && REGENERATE_PROTO=1 cargo build)
+          (cd rpc && REGENERATE_PROTO=1 cargo build)
           (cd channels && REGENERATE_PROTO=1 cargo build)
-          git diff --exit-code future-rpc/src/generated/proto.rs channels/src/generated/
+          git diff --exit-code rpc/src/generated/proto.rs channels/src/generated/
 
-      # ── GUI Tauri backend ──
-      - name: rustfmt (GUI backend)
-        if: needs.changes.outputs.gui_tauri == 'true'
-        run: cargo fmt --check --manifest-path gui/src-tauri/Cargo.toml
+      # ── desktop Tauri backend ──
+      - name: rustfmt (desktop backend)
+        if: needs.changes.outputs.desktop_tauri == 'true'
+        run: cargo fmt --check --manifest-path desktop/src-tauri/Cargo.toml
 
-      - name: clippy (GUI backend)
-        if: needs.changes.outputs.gui_tauri == 'true'
-        run: cargo clippy --all-targets --manifest-path gui/src-tauri/Cargo.toml -- -D warnings
+      - name: clippy (desktop backend)
+        if: needs.changes.outputs.desktop_tauri == 'true'
+        run: cargo clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
   # ─── Rust test gate (Linux) ───────────────────────────────────────────────
   # This deliberately duplicates setup from `rust-quality`: separate jobs do
@@ -181,7 +181,7 @@ jobs:
   rust-tests:
     name: Rust tests (Linux)
     needs: changes
-    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
+    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -195,7 +195,7 @@ jobs:
         with:
           workspaces: |
             .
-            gui/src-tauri
+            desktop/src-tauri
           cache-on-failure: true
           cache-all-crates: true
 
@@ -214,34 +214,34 @@ jobs:
             libwebkit2gtk-4.1-dev
 
       - name: Create placeholder sidecars
-        if: needs.changes.outputs.gui_tauri == 'true'
+        if: needs.changes.outputs.desktop_tauri == 'true'
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p gui/src-tauri/binaries
-          : > "gui/src-tauri/binaries/future-$triple"
+          mkdir -p desktop/src-tauri/binaries
+          : > "desktop/src-tauri/binaries/future-$triple"
 
       - name: cargo test (workspace)
         if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo test --workspace --manifest-path Cargo.toml
 
-      - name: cargo test (GUI backend)
-        if: needs.changes.outputs.gui_tauri == 'true'
-        run: cargo test --manifest-path gui/src-tauri/Cargo.toml
+      - name: cargo test (desktop backend)
+        if: needs.changes.outputs.desktop_tauri == 'true'
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
 
   # ─── Rust 3-platform compile check ───────────────────────────────────────
   # The quality gate above only runs on Linux, so platform-conditional code was
-  # never type-checked on Windows/macOS — exactly how the GUI Tauri backend
+  # never type-checked on Windows/macOS — exactly how the desktop Tauri backend
   # regressed twice (a macOS-only fix dropped the `windows` crate and broke
   # Windows, and vice versa) with no PR signal. This matrix runs `cargo check`
   # on every release target so a missing `cfg`/crate surfaces on the PR.
   #
-  # Scope: the whole workspace (agent / channels) plus the GUI Tauri
+  # Scope: the whole workspace (agent / channels) plus the desktop Tauri
   # backend. `cargo check` type-checks without linking the final crate, but it
   # DOES link build scripts / proc-macros, so each OS still needs its linker
   # story: Linux needs mold (`.cargo/config.toml`'s -fuse-ld=mold) and the
   # WebKit/GTK libs (the -sys build scripts run pkg-config). No protoc is
   # needed: proto generation is gated on REGENERATE_PROTO and the generated
-  # code is checked in. The GUI backend's `bundle.externalBin` sidecars don't
+  # code is checked in. The desktop backend's `bundle.externalBin` sidecars don't
   # exist in a bare check, so we drop empty placeholders (tauri-build only
   # checks presence; `binaries/` is gitignored).
   rust-build:
@@ -262,30 +262,30 @@ jobs:
       # Keep the three matrix statuses present for branch protection. A
       # job-level `if` would skip matrix expansion entirely, leaving the
       # required per-platform checks as "Expected" on unrelated PRs.
-      - name: No Rust or GUI Tauri changes
-        if: needs.changes.outputs.rust_workspace != 'true' && needs.changes.outputs.gui_tauri != 'true'
-        run: echo "No Rust workspace or GUI Tauri changes; build check skipped."
+      - name: No Rust or desktop Tauri changes
+        if: needs.changes.outputs.rust_workspace != 'true' && needs.changes.outputs.desktop_tauri != 'true'
+        run: echo "No Rust workspace or desktop Tauri changes; build check skipped."
 
       - name: Checkout
-        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
+        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
         uses: actions/checkout@v5
 
       - name: Setup Rust
-        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
+        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
         uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Cache Rust
-        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true'
+        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             .
-            gui/src-tauri
+            desktop/src-tauri
           cache-on-failure: true
           cache-all-crates: true
 
       - name: Install Linux system dependencies
-        if: (needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.gui_tauri == 'true') && runner.os == 'Linux'
+        if: (needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true') && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -305,35 +305,35 @@ jobs:
       # ones; for a type-check empty placeholders suffice. Split per-OS so
       # Windows uses pwsh natively instead of relying on git-bash's sed/case.
       - name: Create placeholder sidecars (Unix)
-        if: runner.os != 'Windows' && needs.changes.outputs.gui_tauri == 'true'
+        if: runner.os != 'Windows' && needs.changes.outputs.desktop_tauri == 'true'
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p gui/src-tauri/binaries
-          : > "gui/src-tauri/binaries/future-$triple"
+          mkdir -p desktop/src-tauri/binaries
+          : > "desktop/src-tauri/binaries/future-$triple"
 
       - name: Create placeholder sidecars (Windows)
-        if: runner.os == 'Windows' && needs.changes.outputs.gui_tauri == 'true'
+        if: runner.os == 'Windows' && needs.changes.outputs.desktop_tauri == 'true'
         shell: pwsh
         run: |
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
-          New-Item -ItemType File -Force -Path "gui/src-tauri/binaries/future-$triple.exe" | Out-Null
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
+          New-Item -ItemType File -Force -Path "desktop/src-tauri/binaries/future-$triple.exe" | Out-Null
 
       - name: cargo check (workspace)
         if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo check --workspace --manifest-path Cargo.toml
 
-      - name: cargo check (GUI Tauri backend)
-        if: needs.changes.outputs.gui_tauri == 'true'
-        run: cargo check --manifest-path gui/src-tauri/Cargo.toml
+      - name: cargo check (desktop Tauri backend)
+        if: needs.changes.outputs.desktop_tauri == 'true'
+        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
 
-  # ─── GUI: typecheck + eslint + stylelint + vitest ─────────────────────────
+  # ─── Desktop: typecheck + eslint + stylelint + vitest ─────────────────────────
   # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,
   # 3-platform) and rust-quality (lint + test, hard gate). Platform-agnostic.
-  gui:
-    name: GUI typecheck + lint + test
+  desktop:
+    name: Desktop typecheck + lint + test
     needs: changes
-    if: needs.changes.outputs.gui_frontend == 'true'
+    if: needs.changes.outputs.desktop_frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -344,26 +344,26 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: gui/package-lock.json
+          cache-dependency-path: desktop/package-lock.json
 
       - name: Install dependencies
-        working-directory: gui
+        working-directory: desktop
         run: npm ci
 
       - name: Typecheck
-        working-directory: gui
+        working-directory: desktop
         run: npx tsc --noEmit
 
       - name: ESLint
-        working-directory: gui
+        working-directory: desktop
         run: npm run lint
 
       - name: Stylelint
-        working-directory: gui
+        working-directory: desktop
         run: npm run stylelint
 
       - name: vitest
-        working-directory: gui
+        working-directory: desktop
         run: npm run test
 
   # ─── Mobile: typecheck + eslint + jest ───────────────────────────────────

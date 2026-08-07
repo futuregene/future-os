@@ -4,7 +4,7 @@
 #   macOS / Linux:  curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
 #   Windows:        iex (irm https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.ps1)
 #
-# - macOS  installs the official signed GUI app (DMG) for the detected arch,
+# - macOS  installs the official signed desktop app (DMG) for the detected arch,
 #          verifies its SHA-256 against the release manifest, copies it to
 #          /Applications, then builds and installs the `future-loop` control
 #          plane (CLI + skill) from source.
@@ -116,7 +116,7 @@ install_macos() {
   say "Terminal users: the unified 'future' CLI is bundled with the app (run 'future init' to link it into ~/.future/bin, then use 'future agent|tui|channel|loop')."
 }
 
-# The GUI app bundles the agent + CLI sidecars but not the loop skill; link it
+# The desktop app bundles the agent + CLI sidecars but not the loop skill; link it
 # from the repo. The loop control plane itself runs through the unified
 # `future` CLI (`future loop`) — no separate binary build is needed (the
 # standalone future-loop binary remains available via scripts/install-future-loop.sh).

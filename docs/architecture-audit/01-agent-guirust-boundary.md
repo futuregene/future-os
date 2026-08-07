@@ -1,6 +1,6 @@
 # 边界审计报告 01：agent ↔ gui_rust
 
-> 范围：Rust agent 后端（`agent/`）与 GUI 的 Tauri Rust 层（`gui/src-tauri/`）之间的边界。
+> 范围：Rust agent 后端（`agent/`）与 GUI 的 Tauri Rust 层（`desktop/src-tauri/`）之间的边界。
 > 方式：只读审计，未修改任何文件。所有行号基于审计时的仓库状态（与本地 `dev` 树内容一致）。
 > 一句话结论：**边界是泄漏的（leaky），且双向泄漏。** gRPC 是"信封"，信封里装的是无 schema 的 JSON 字符串 + 一捆共享文件。agent 与 GUI 之间是"共享磁盘状态 + 影子 JSON 契约"的联邦，而不是 proto 隔离的客户-服务端。
 
@@ -10,7 +10,7 @@
 
 ### 1.1 gRPC 通道（proto/future.proto：`ExecuteCommand` + `StreamEvents`）
 
-GUI Rust 端使用的 RPC 命令（构造点集中在 `gui/src-tauri/src/agent_bridge/client.rs`，另有散落调用）：
+GUI Rust 端使用的 RPC 命令（构造点集中在 `desktop/src-tauri/src/agent_bridge/client.rs`，另有散落调用）：
 
 | 命令 | GUI 构造位置 |
 |---|---|
@@ -173,7 +173,7 @@ GUI 白名单硬编码于 `observer.rs:71-81`（`FORWARDED_EVENTS`）。
 
 - 会话导入/fork/历史重建走 RPC（`list_sessions` / `get_session_entries`）而非直接读 JSONL（import.rs、session.rs）——读路径基本守住了边界，只有 cleanup.rs 的存在性探测例外。
 - GUI 有意不复制 agent 的原始事件日志（persist.rs:41-44："Raw events are durable in the Agent event journal. Do not create a second GUI JSONL copy"）。
-- `set_sandbox_policy` 是唯一演进出 typed 子消息的命令（proto:135-137）；审批规则文件旁路是**成文设计**（proto:175-178 reserved 注释 + gui/APPROVAL_PLAN.md），不是失控产物。
+- `set_sandbox_policy` 是唯一演进出 typed 子消息的命令（proto:135-137）；审批规则文件旁路是**成文设计**（proto:175-178 reserved 注释 + desktop/APPROVAL_PLAN.md），不是失控产物。
 - 附件改为路径过线、agent 自行读图（proto:148-168）是近期有意的契约收紧。
 
 ---

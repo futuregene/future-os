@@ -97,7 +97,7 @@ export interface HistoryAttachment {
 
 /**
  * Display-shaped session entry from `get_session_entries` (the agent's JSONL,
- * same source the desktop GUI renders). Content is plain text; user entries
+ * same source the desktop app renders). Content is plain text; user entries
  * carry attachments on `meta`.
  */
 export interface HistoryEntry {
@@ -136,7 +136,7 @@ export type TimelineItem =
       role: "user" | "assistant";
       text: string;
       runId?: string;
-      // Live "in-flight" flag for assistant replies, mirroring the desktop GUI's
+      // Live "in-flight" flag for assistant replies, mirroring the desktop app's
       // per-message `status === "streaming"`. While true the footer shows the
       // generating indicator instead of the copy button. Driven by agent_start /
       // text_chunk (set) and agent_end (cleared), so it survives a resync that

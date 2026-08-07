@@ -13,7 +13,7 @@
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
-| 「The release binary is named **`future-cli`**…user-facing wiki must always use `future-cli`, never `future`」 | docs/wiki-prompt-en.md L127, L170-171, L173-174, L219 | `cli/package.json` `bin: {"future": "dist/index.js"}`；Makefile `build-cli` → `bun build --compile dist/index.js --outfile dist/future`（Makefile L159）；Tauri sidecar 名 `future-<triple>`（gui/src-tauri/tauri.conf.json externalBin）。**release 二进制就是 `future`**。zh 版 wiki-prompt.md L171/L219 的 `future` 禁令才是对的 |
+| 「The release binary is named **`future-cli`**…user-facing wiki must always use `future-cli`, never `future`」 | docs/wiki-prompt-en.md L127, L170-171, L173-174, L219 | `cli/package.json` `bin: {"future": "dist/index.js"}`；Makefile `build-cli` → `bun build --compile dist/index.js --outfile dist/future`（Makefile L159）；Tauri sidecar 名 `future-<triple>`（desktop/src-tauri/tauri.conf.json externalBin）。**release 二进制就是 `future`**。zh 版 wiki-prompt.md L171/L219 的 `future` 禁令才是对的 |
 
 → ✅ **已修复（todo_285b37996a0d，commit 见下）**：wiki-prompt-en.md 全部 `future-cli` 改为 `future`（§6 表格/侧边栏、§7 CLI 定位/位置/运行/命令组/小贴士、§9 A.4 自检项），与 zh 版一致。
 
@@ -57,7 +57,7 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
-| `make test # cargo test (agent + loop control plane)`（zh：「agent + loop 控制面」） | docs/build-and-install.md L182；zh L168 | Makefile `test:` = test-agent + test-channels + test-cli + test-tui + test-gui + test-gui-rust + test-mobile（Makefile L203-229）。**没有 test-loop 目标**，loop 不在 make test 内 |
+| `make test # cargo test (agent + loop control plane)`（zh：「agent + loop 控制面」） | docs/build-and-install.md L182；zh L168 | Makefile `test:` = test-agent + test-channels + test-cli + test-tui + test-desktop + test-desktop-rust + test-mobile（Makefile L203-229）。**没有 test-loop 目标**，loop 不在 make test 内 |
 | （同文件开发节）`make test # cargo test (agent)` | docs/build-and-install.md L194；zh L180 | 同上，实际 7 个套件 |
 
 → 两处均改为「all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile」（zh 同）。`make clean`（删构建产物+已安装二进制）、`future init`（装技能+macOS/Linux 链接本地命令）、mold（仅 x86_64-linux）、loop 为 workspace 成员（Cargo.toml L17）等声明复核无误。
@@ -114,7 +114,7 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
-| 「make generate-proto（agent + channels + TUI）」 | docs/build-and-install.md L186-206（B17）；zh 对应 | 实际还包含 **gui/src-tauri**（Makefile L404-410：agent → channels → gui/src-tauri → tui） |
+| 「make generate-proto（agent + channels + TUI）」 | docs/build-and-install.md L186-206（B17）；zh 对应 | 实际还包含 **desktop/src-tauri**（Makefile L404-410：agent → channels → desktop/src-tauri → tui） |
 
 → 已改为「agent + channels + GUI (src-tauri) + TUI」（zh 同）。
 
@@ -122,7 +122,7 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
-| 「lint all (agent + channels + TUI + CLI + GUI)」（zh 同） | docs/build-and-install.md L183, L192；zh L169, L178 | 实际 = lint-agent + lint-channels + lint-tui + lint-cli + lint-gui + **stylelint-gui** + **lint-mobile**（Makefile L232-253） |
+| 「lint all (agent + channels + TUI + CLI + GUI)」（zh 同） | docs/build-and-install.md L183, L192；zh L169, L178 | 实际 = lint-agent + lint-channels + lint-tui + lint-cli + lint-desktop + **stylelint-desktop** + **lint-mobile**（Makefile L232-253） |
 
 → 已改为「agent, channels, TUI, CLI, GUI (+stylelint), mobile」（zh 同）。另补：`make fmt` 实际 = cargo fmt（agent+channels）+ fmt-mobile（Makefile L262-269），文档原「cargo fmt (agent + channels)」也已一并更新。
 
@@ -205,14 +205,14 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 | channels 斜杠命令 | ✓ 两桥各 9 个：/new /status /stop /model /models /compact /effort /cwd /help（feishu/bridge.rs L424-714；dingtalk/bridge.rs L141-262） |
 | DingTalk keepalive 20s | ✓ PING_INTERVAL_SECS=20（dingtalk/dingtalk_ws.rs L32） |
 | 工具链版本 | ✓ rust-toolchain.toml `1.97.0`；.nvmrc `24`；.cargo/config.toml：mold 仅 x86_64-unknown-linux-gnu、windows-msvc /DEBUG:NONE（「mold 在 x86_64 必需、ARM Linux 不需要」表述正确） |
-| Makefile 其余目标 | ✓ install/install-nogui/install-agent|tui|cli|gui|channels|skills|loop、uninstall、build*（agent/tui/cli/gui/gui-dist/channels/mobile）、package-gui、run-agent|tui|cli|gui|channels、generate-models、generate-proto、fmt、clean 全存在；install 前缀 per-OS 正确（macOS /opt/homebrew/bin、Linux /usr/local/bin sudo、Windows %USERPROFILE%\.future\bin）；install-skills 符号链接/Windows 拷贝；install-loop → scripts/install-future-loop.sh；scripts/（build-macos-dmg.sh、build-windows-portable.ps1、build-windows-installer.ps1、start-gui-test.bat）全存在 |
-| build-macos-dmg.sh | ✓ 唯一 Developer ID 自动签名、`--identity`/`--out-dir`/`--notary-profile` 等选项与 B4 描述一致 |
+| Makefile 其余目标 | ✓ install/install-desktop/install-agent|tui|cli|desktop|channels|skills|loop、uninstall、build*（agent/tui/cli/desktop/desktop-dist/channels/mobile）、package-desktop、run-agent|tui|cli|desktop|channels、generate-models、generate-proto、fmt、clean 全存在；install 前缀 per-OS 正确（macOS /opt/homebrew/bin、Linux /usr/local/bin sudo、Windows %USERPROFILE%\.future\bin）；install-skills 符号链接/Windows 拷贝；install-loop → scripts/install-future-loop.sh；scripts/（build-desktop-macos.sh、build-desktop-windows-portable.ps1、build-desktop-windows-installer.ps1、start-desktop-windows.bat）全存在 |
+| build-desktop-macos.sh | ✓ 唯一 Developer ID 自动签名、`--identity`/`--out-dir`/`--notary-profile` 等选项与 B4 描述一致 |
 | CLI run 选项 | ✓ --model 支持 `model:thinking`、--thinking off/minimal/low/medium/high/xhigh、@<path> 文件包含、--continue/-c、--cwd、--mode text|json、--no-session（cli/src/commands/run.ts 帮助文本） |
 | CLI tools | ✓ list / describe / call（--key value、--args '<json>'、--stdin、--output、--timeout 等） |
 | `future init` | ✓ = 装内置技能 + macOS/Linux 链接 future/future-agent 到 ~/.future/bin（cli/src/index.ts L41-46 帮助文本）——build-and-install B14 描述正确 |
 | future-loop 命令面 | ✓ 顶层 42 命令（main.rs L93-137）；goal init/cancel/delete（L494-586）、todo add/claim/complete/supersede/update/archive（L613-618）、gate、capability/catalog、extension install|upgrade|enable|disable|rollback|status|capabilities（L2593-2670）、handoff（L2958）、benchmark protocol|run|ledger（L3393-3395）、replay record|run|corpus build|run（L3610-3614）、canary smoke --profile（L3631-）、run --goal/--model/--thinking-level/--max-turns（L375）、todo add --verify/--max-validation-attempts（L656-657）全部存在 |
 | install-future-loop.sh | ✓ CLI → ~/.local/bin/future-loop、skill → ~/.future/agent/skills/future-loop/SKILL.md、`future-loop status` 验证 |
-| proto | ✓ proto/future.proto 存在；生成代码入库（agent/src/grpc/generated/proto.rs、channels/src/generated/proto.rs）；make generate-proto 再生 agent+channels+gui/src-tauri+tui |
+| proto | ✓ proto/future.proto 存在；生成代码入库（agent/src/grpc/generated/proto.rs、channels/src/generated/proto.rs）；make generate-proto 再生 agent+channels+desktop/src-tauri+tui |
 
 ---
 
@@ -220,7 +220,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 
 - **GUI 功能声明**（wiki Using-FutureOS/Settings/Skills/Quick-Start + Home 的 Artifacts 提及）—— ✅ 已核验（todo_cab9a84ced24，2026-08-06），见 §G。发现并修正 6 项：Artifacts 面板已停用（→Files 视图）、右栏视图表、内置技能表（3 个不存在技能 → 实际 14 个）、Settings General 缺 Auto-upgrade skills、FutureGene「Connect」→「Sign in」、内置 provider「Set key/Update key」→「Configure」。
 - **X10 架构审计时效 —— ✅ 已裁决（todo_41f779819879）**：architecture-audit 判定为**时点快照，标注历史，不逐行重核**。审计文档与首批修复同批入库（commit `306cf05f`，2026-08-06）：报告 01 H2/H3/H4、报告 04 H1/H2/H4 已在同一 commit 修复（代码注释直接引用审计编号，如 auth_store.rs「audit item 2」、useThreadStore.ts「(H2)」）；仍成立的高危项为报告 01 H1/H5、报告 04 H3。file:line 已漂移（报告 02 引用文件多处移动、报告 03 行数增长、报告 01 proto 行号失效），README.md 顶部已加时效性说明并逐条标注 ✅。后续如需更新审计，应基于当前工作树重跑调查而非修订旧行号。
-- **docs/dist/*.txt —— ✅ 已核验（todo_41f779819879）**：6 个发布包内附说明为**活文档**（build.yml / build-windows-portable.ps1 / build-windows-signed.yml 打包时逐字复制进 dmg/zip/tar.gz），全部声明与当前源码一致（二进制名 `futureos`/`future-agent`/`future` 三件套与 build.yml 装配步骤完全吻合；macOS「未公证」与 FAQ/B8 口径一致；WebView2/WebKitGTK 运行时要求正确）。**无需修改**；`-en.txt` 为参考译文（打包只用 zh `.txt`）。后继 todo 可跳过。
+- **docs/dist/*.txt —— ✅ 已核验（todo_41f779819879）**：6 个发布包内附说明为**活文档**（build.yml / build-desktop-windows-portable.ps1 / build-windows-signed.yml 打包时逐字复制进 dmg/zip/tar.gz），全部声明与当前源码一致（二进制名 `futureos`/`future-agent`/`future` 三件套与 build.yml 装配步骤完全吻合；macOS「未公证」与 FAQ/B8 口径一致；WebView2/WebKitGTK 运行时要求正确）。**无需修改**；`-en.txt` 为参考译文（打包只用 zh `.txt`）。后继 todo 可跳过。
 - **X8 沙箱术语**：README「off / manual / macOS Seatbelt」vs wiki「Manual / Sandboxed (macOS only) / Unrestricted」——属 GUI 核验面。
 - TUI help-screen / 自动补全清单与实现命令集不一致（代码侧小问题，见 C1 备注）—— ✅ 已修复（commit 042a7d07，todo_b98a9381ad9e）。
 
@@ -269,7 +269,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 
 ## G. GUI 核验结果（todo_cab9a84ced24，2026-08-06）
 
-> 对照 gui/src-tauri（Rust commands）+ gui/src（React）核验 wiki 四个 GUI 页面（Using-FutureOS / Settings / Skills / Quick-Start）+ Home 页的 Artifacts 提及。en/zh 成对修改，标题结构保持对齐。
+> 对照 desktop/src-tauri（Rust commands）+ desktop/src（React）核验 wiki 四个 GUI 页面（Using-FutureOS / Settings / Skills / Quick-Start）+ Home 页的 Artifacts 提及。en/zh 成对修改，标题结构保持对齐。
 
 ### G1. 已修正（6 项）
 

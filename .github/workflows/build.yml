@@ -31,7 +31,7 @@ jobs:
     needs: version
     runs-on: ${{ matrix.os }}
     # Injected into every build step so Rust build.rs (FUTURE_VERSION → agent,
-    # GUI) and the TS build scripts (generated version module) all agree.
+    # Desktop) and the TS build scripts (generated version module) all agree.
     env:
       FUTURE_VERSION: ${{ needs.version.outputs.version }}
     strategy:
@@ -41,19 +41,19 @@ jobs:
           - name: macOS
             os: macos-latest
             artifact_name: futureos-macos
-            bundle_path: gui/src-tauri/target/release/bundle/dmg/*.dmg
+            bundle_path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
           - name: macOS Intel
             os: macos-15-intel
             artifact_name: futureos-macos-intel
-            bundle_path: gui/src-tauri/target/release/bundle/dmg/*.dmg
+            bundle_path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
           - name: Windows
             os: windows-latest
             artifact_name: futureos-windows
-            bundle_path: gui/src-tauri/target/release/bundle/nsis/*.exe
+            bundle_path: desktop/src-tauri/target/release/bundle/nsis/*.exe
           - name: Linux
             os: ubuntu-latest
             artifact_name: futureos-linux
-            bundle_path: gui/src-tauri/target/release/bundle/deb/*.deb
+            bundle_path: desktop/src-tauri/target/release/bundle/deb/*.deb
 
     steps:
       - name: Checkout
@@ -64,7 +64,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: gui/package-lock.json
+          cache-dependency-path: desktop/package-lock.json
 
       # Pinned to match rust-toolchain.toml so CI and local dev use the same
       # compiler. Bump both together.
@@ -76,7 +76,7 @@ jobs:
         with:
           workspaces: |
             .
-            gui/src-tauri
+            desktop/src-tauri
           # Persist the target dir even when a later step fails, so a broken
           # release run doesn't throw away a full cold compile.
           cache-on-failure: true
@@ -125,8 +125,8 @@ jobs:
             Write-Host "lld-link not found — falling back to MSVC link.exe"
           }
 
-      - name: Install npm dependencies (GUI)
-        working-directory: gui
+      - name: Install npm dependencies (Desktop)
+        working-directory: desktop
         run: npm ci
 
       # Windows Defender real-time scanning inspects every intermediate file the
@@ -149,8 +149,8 @@ jobs:
           # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
           # inside the installers, not just the portable packages.
           triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p ../gui/src-tauri/binaries
-          cp ../target/release/future "../gui/src-tauri/binaries/future-$triple"
+          mkdir -p ../desktop/src-tauri/binaries
+          cp ../target/release/future "../desktop/src-tauri/binaries/future-$triple"
 
       - name: Build CLI binary (Windows)
         if: runner.os == 'Windows'
@@ -161,8 +161,8 @@ jobs:
           # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
           # inside the NSIS installer, not just the portable zip.
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          New-Item -ItemType Directory -Force -Path ../gui/src-tauri/binaries | Out-Null
-          Copy-Item "../target/release/future.exe" "../gui/src-tauri/binaries/future-$triple.exe"
+          New-Item -ItemType Directory -Force -Path ../desktop/src-tauri/binaries | Out-Null
+          Copy-Item "../target/release/future.exe" "../desktop/src-tauri/binaries/future-$triple.exe"
 
       # Pin the Tauri installer version to the plain semver core (NSIS rejects
       # SemVer suffixes). The display version keeps the full FUTURE_VERSION.
@@ -170,7 +170,7 @@ jobs:
         run: node scripts/version.mjs --set-bundle
 
       - name: Build desktop bundle
-        working-directory: gui
+        working-directory: desktop
         run: npm run tauri:build
 
       # macOS: the unified `future` CLI is the Tauri sidecar (bundle.externalBin); the
@@ -183,7 +183,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          src=$(ls gui/src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
+          src=$(ls desktop/src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
           work="$RUNNER_TEMP/rw.dmg"
           out="$RUNNER_TEMP/out.dmg"
           mnt="$RUNNER_TEMP/mnt"
@@ -209,7 +209,7 @@ jobs:
           # doesn't fill up. Release assets live on the GitHub Release, not here.
           retention-days: 3
 
-      # Portable (install-free) Windows build: the GUI exe plus the agent and
+      # Portable (install-free) Windows build: the desktop exe plus the agent and
       # CLI binary, all in one directory. The agent runs through `future agent`
       # (embedded), so only the unified CLI is staged next to the exe. Requires
       # the WebView2 Evergreen runtime (ships with Win 10/11).
@@ -220,7 +220,7 @@ jobs:
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
           $dir = "futureos-portable"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          Copy-Item "gui/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
+          Copy-Item "desktop/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
           Copy-Item "target/release/future.exe" "$dir/future.exe"
           Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
           Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
@@ -235,7 +235,7 @@ jobs:
           path: FutureOS-portable-windows.zip
           retention-days: 3
 
-      # Portable (install-free) Linux build: the GUI binary plus the unified
+      # Portable (install-free) Linux build: the desktop binary plus the unified
       # CLI binary, all in one directory.
       - name: Assemble Linux portable
         if: runner.os == 'Linux'
@@ -243,7 +243,7 @@ jobs:
           set -euo pipefail
           dir="futureos-portable-linux"
           mkdir -p "$dir"
-          cp "gui/src-tauri/target/release/futureos" "$dir/futureos"
+          cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
           cp "target/release/future" "$dir/future"
           chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"

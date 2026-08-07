@@ -167,7 +167,7 @@ function main() {
       const bundle = bundleVersion(version);
       // fileURLToPath (not .pathname) so this resolves correctly on Windows too.
       const root = fileURLToPath(new URL("../", import.meta.url));
-      patchJson(`${root}gui/src-tauri/tauri.conf.json`, bundle);
+      patchJson(`${root}desktop/src-tauri/tauri.conf.json`, bundle);
       process.stderr.write(`tauri bundle version set to ${bundle}\n`);
       break;
     }

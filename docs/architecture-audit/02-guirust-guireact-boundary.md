@@ -1,7 +1,7 @@
 # 边界审计报告 02：gui_rust ↔ gui_react
 
-> 范围：Tauri Rust 层（`gui/src-tauri/src/`）与 React 前端（`gui/src/`）之间的边界。
-> 方式：只读审计，未修改任何文件。所有路径相对 `gui/`，行号均已逐条核对。
+> 范围：Tauri Rust 层（`desktop/src-tauri/src/`）与 React 前端（`desktop/src/`）之间的边界。
+> 方式：只读审计，未修改任何文件。所有路径相对 `desktop/`，行号均已逐条核对。
 > 一句话结论：**架构层面边界是干净的，契约层面是全手工且已开始漂移的。** 边界划分（谁拥有什么）是对的，缺的是契约机制（类型如何不漂移）。
 >
 > ⚠️ **2026-08-06 漂移注记**：结论方向不变（截至复核日仍有 0 处裸 `invoke(`，单一入口 `integrations/tauri/invoke.ts` 未变），但数字与路径已变：`invokeCommand` 调用数 102→**125**；引用文件多处移动（`ResetPage.tsx`→`features/settings/`、`AppShell.tsx`→`components/layout/`、`agentStateCache.ts`→`integrations/agent/`、`typeGuards.ts`→`integrations/storage/`、`MarkdownContent.tsx`→`features/markdown/`、`MessageList/MessageBlock.tsx`→`features/agent/`、`useThreadStore.ts`→`components/layout/hooks/`）。引用具体 file:line 前请按当前工作树核对。
@@ -78,7 +78,7 @@
 ### S4【med】违反自定规则 #3（禁裸 window CustomEvent）
 
 - `agentStateCache.ts:275-277` `window.dispatchEvent(new CustomEvent("future:agent-event", ...))`、`:298` `future:cwd-changed`；消费端靠 cast 链：`useThreadMessages.ts:271-277` `(ev as CustomEvent).detail as {...}`；`AppShell.tsx:141` 直接监听裸 `future:cwd-changed`。
-- 而 `gui/CLAUDE.md` 原则 3 明确要求一律走 `lib/futureEvents.ts` 类型化总线（该文件自己在 :300 用了 `emitFutureEvent("toast")`，说明是遗漏不是有意）。
+- 而 `desktop/CLAUDE.md` 原则 3 明确要求一律走 `lib/futureEvents.ts` 类型化总线（该文件自己在 :300 用了 `emitFutureEvent("toast")`，说明是遗漏不是有意）。
 
 ### S5【med】`ResolvedMarkdownReference.data: Option<serde_json::Value>`（`store/records.rs:45-49`）
 
@@ -134,7 +134,7 @@
 
 ## 5. 总体结论
 
-- **宏观纪律罕见地好**：invoke 单一入口 102/102 零违规；浏览器存储与 SQLite 零状态重叠；前端不直连 gRPC；Rust 自有领域对象的命令/事件全部类型化；能力授权最小化。`gui/CLAUDE.md` 的原则 2、6、8、10、11 在代码里都成立。
+- **宏观纪律罕见地好**：invoke 单一入口 102/102 零违规；浏览器存储与 SQLite 零状态重叠；前端不直连 gRPC；Rust 自有领域对象的命令/事件全部类型化；能力授权最小化。`desktop/CLAUDE.md` 的原则 2、6、8、10、11 在代码里都成立。
 - **真正的边界问题集中在 agent 透传域**：凡是数据源头是 agent gRPC 的（session entries、session state、run event payload、agent-event 推送），Rust 层退化为无类型管道（`serde_json::Value`），把 proto 的字符串语义原样泄漏给 React，形成"proto 字符串 → SQLite 字符串 → TS JSON.parse/typeof 收窄"的三层手工契约，且已出现死分支（TS 处理 Rust 从不转发的事件类型）与混合命名（同一 payload 里 `session_name` 与 `sessionId` 并存）。
 - **最强证据链**：
   1. `commands/threads.rs:235,302` 两个高频命令返回裸 `Value` + `agentStateCache.ts:92-103` 手工收窄；

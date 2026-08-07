@@ -1,0 +1,195 @@
+#requires -Version 5.1
+<#
+.SYNOPSIS
+    Build the FutureOS Windows installer (NSIS setup) locally, optionally
+    signed — no GitHub Actions.
+
+.DESCRIPTION
+    The installer counterpart to build-desktop-windows-portable.ps1 (which produces a zip
+    of loose .exe files). Steps:
+      1. compile the unified `future` CLI (release) and stage it as the Tauri
+         sidecar,
+      2. sign the sidecar (-Sign only) — see below,
+      3. build the desktop app with Tauri, producing bundle/nsis/*.exe.
+
+    Signing splits across two mechanisms, which is the whole reason this script
+    exists separately:
+
+      * The sidecar is signed here, before the bundle. Tauri copies externalBin
+        binaries into the installer as-is, so anything not signed by now ships
+        unsigned inside the installer.
+      * The app .exe, the NSIS plugin DLLs and the setup .exe are signed by the
+        Tauri bundler itself, which calls scripts/sign-file.ps1 through
+        bundle.windows.signCommand. We cannot sign those ourselves: they only
+        exist part-way through the bundling process. (The plugin DLLs ship
+        unsigned from upstream NSIS and get flagged by AV if left that way —
+        tauri-apps/tauri#11673.)
+
+    signCommand is injected via a generated `tauri build --config` overlay rather
+    than committed to tauri.conf.json, so unsigned builds (local dev, and CI on
+    machines without the certificate) keep working untouched.
+
+.PARAMETER SkipDeps
+    Skip `npm ci` in desktop/ (use when node_modules are already current).
+
+.PARAMETER Sign
+    Authenticode-sign the sidecars, the app .exe and both installers. Opt-in: a
+    plain local build stays unsigned so it needs no certificate.
+
+    Requires a code signing certificate in the CurrentUser\My store. For Certum
+    Code Signing in the Cloud that means SimplySign Desktop must be logged in
+    (the session is short-lived — log in shortly before building) and the
+    virtual card mounted.
+
+.PARAMETER CertSubject
+    Substring of the signing certificate's Subject, used to pick one when the
+    store holds several code signing certificates. Unnecessary when there is
+    exactly one. Match it against the real Subject — run
+    `Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Format-List Subject`
+    to see it; a CA may romanize the company name rather than use it verbatim.
+
+.PARAMETER TimestampUrl
+    RFC 3161 timestamp server. Timestamping is what keeps signatures valid after
+    the certificate expires, so it is on by default.
+
+.EXAMPLE
+    pwsh scripts/build-desktop-windows-installer.ps1
+    pwsh scripts/build-desktop-windows-installer.ps1 -Sign
+    pwsh scripts/build-desktop-windows-installer.ps1 -Sign -SkipDeps
+#>
+[CmdletBinding()]
+param(
+    [switch]$SkipDeps,
+    [switch]$Sign,
+    [string]$CertSubject,
+    [string]$TimestampUrl = "http://time.certum.pl/"
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$Root = Split-Path -Parent $PSScriptRoot
+Set-Location $Root
+
+. "$PSScriptRoot\lib\windows-signing.ps1"
+
+# $ErrorActionPreference="Stop" only stops on *cmdlet* errors, NOT on a native
+# command (cargo/npm/tauri) exiting non-zero — those would silently continue
+# and produce a broken package. Run every external command through this so a
+# failure aborts the build.
+function Invoke-Native {
+    param([Parameter(Mandatory)][scriptblock]$Command)
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed (exit $LASTEXITCODE): $($Command.ToString().Trim())"
+    }
+}
+
+function Require-Tool([string]$Cmd, [string]$Hint) {
+    if (-not (Get-Command $Cmd -ErrorAction SilentlyContinue)) {
+        throw "Missing required tool '$Cmd'. $Hint"
+    }
+}
+
+Write-Host "==> Checking prerequisites" -ForegroundColor Cyan
+Require-Tool node   "Install Node.js 24+ (https://nodejs.org)."
+Require-Tool npm    "Comes with Node.js."
+Require-Tool cargo  "Install Rust (https://rustup.rs)."
+Require-Tool rustc  "Install Rust (https://rustup.rs)."
+Require-Tool protoc "Install protobuf (e.g. 'choco install protoc') — gRPC codegen."
+
+# Resolve the certificate up front rather than at the signing step: the build
+# takes tens of minutes, and a SimplySign session that isn't logged in should
+# fail now, not after all that work.
+$signTool = $null
+$signThumbprint = $null
+if ($Sign) {
+    $signTool = Find-SignTool
+    $cert = Resolve-SigningCert $CertSubject
+    $signThumbprint = $cert.Thumbprint
+    Write-Host "    signtool: $signTool"
+    Write-Host "    cert    : $($cert.Subject)"
+    Write-Host "    expires : $($cert.NotAfter.ToString('yyyy-MM-dd'))"
+}
+
+# Host target triple, e.g. x86_64-pc-windows-msvc. Tauri looks for the sidecar
+# named future-<triple>.exe (bundle.externalBin in tauri.conf.json).
+$hostLine = (rustc -Vv) | Select-String '^host:'
+if (-not $hostLine) { throw "Could not read host triple from 'rustc -Vv'." }
+$triple = $hostLine.Line.Split(' ')[1]
+Write-Host "    host triple: $triple"
+
+# Resolve ONE version string and pin it for every sub-build (CLI build.rs,
+# desktop build.rs) so they all agree.
+if (-not $env:FUTURE_VERSION) {
+    $env:FUTURE_VERSION = (node scripts/version.mjs)
+    if ($LASTEXITCODE -ne 0) { throw "scripts/version.mjs failed to resolve a version." }
+}
+Write-Host "    version: $($env:FUTURE_VERSION)"
+
+if (-not $SkipDeps) {
+    Write-Host "==> Installing npm dependencies (desktop)" -ForegroundColor Cyan
+    Push-Location desktop; try { Invoke-Native { npm ci } } finally { Pop-Location }
+}
+
+Write-Host "==> Building CLI (release) and staging as Tauri sidecar" -ForegroundColor Cyan
+Invoke-Native { cargo build --release --manifest-path cli/Cargo.toml }
+New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
+Copy-Item "target/release/future.exe" "desktop/src-tauri/binaries/future-$triple.exe" -Force
+
+# Sign the sidecar now: the bundler embeds it as-is, so this is the last
+# moment it can be signed without unpacking the installer afterwards.
+if ($Sign) {
+    Write-Host "==> Signing sidecar" -ForegroundColor Cyan
+    $p = Join-Path "$Root\desktop\src-tauri\binaries" "future-$triple.exe"
+    Invoke-SignFile -SignTool $signTool -Thumbprint $signThumbprint -Path $p -TimestampUrl $TimestampUrl
+    Write-Host "    signed: $p"
+}
+
+Write-Host "==> Building desktop installers (Tauri)" -ForegroundColor Cyan
+$overlay = $null
+$failLog = $null
+$tauriArgs = @()
+if ($Sign) {
+    # Start from a clean log — a leftover from an earlier build would fail this
+    # one for a signature that has since been fixed.
+    $failLog = Join-Path ([System.IO.Path]::GetTempPath()) "futureos-sign-failures-$PID.log"
+    Remove-Item -Force -ErrorAction SilentlyContinue $failLog
+
+    $overlay = New-SignOverlayConfig -Thumbprint $signThumbprint `
+                                     -SignScript (Join-Path $PSScriptRoot "sign-file.ps1") `
+                                     -TimestampUrl $TimestampUrl `
+                                     -FailLog $failLog
+    Write-Host "    signCommand overlay: $overlay"
+    $tauriArgs = @("--config", $overlay)
+}
+
+Push-Location desktop
+try { Invoke-Native { npm run tauri:build -- @tauriArgs } }
+finally {
+    Pop-Location
+    if ($overlay -and (Test-Path $overlay)) { Remove-Item -Force $overlay }
+}
+
+# Before looking at the artifacts: catches the signing failures the bundler
+# swallowed, notably the NSIS uninstaller's, which no check further down can see.
+if ($failLog) {
+    try { Assert-NoSignFailures $failLog }
+    finally { Remove-Item -Force -ErrorAction SilentlyContinue $failLog }
+}
+
+Write-Host "==> Installer" -ForegroundColor Cyan
+$bundle = Join-Path $Root "desktop\src-tauri\target\release\bundle"
+$artifacts = @(Get-ChildItem -Path (Join-Path $bundle "nsis\*.exe") -ErrorAction SilentlyContinue)
+if (-not $artifacts) { throw "Tauri produced no installer under $bundle\nsis." }
+
+foreach ($a in $artifacts) {
+    # Independent check that the bundler really did call signCommand — a
+    # silently-unsigned installer is exactly the failure worth catching here.
+    $state = if ($Sign) { Get-SignatureState -SignTool $signTool -Path $a.FullName } else { "unsigned" }
+    Write-Host ("    {0,-12} {1}" -f $state, $a.FullName)
+}
+
+Write-Host ""
+Write-Host "Done." -ForegroundColor Green
+Write-Host "  Installers require the Microsoft Edge WebView2 runtime (bundled with Windows 10/11)."

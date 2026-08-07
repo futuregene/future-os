@@ -174,7 +174,7 @@ fn session_info_content_includes_required_fields() {
         "auto_compaction": true,
         "parent_session_id": "parent-1",
         "thinking_level": "high",
-        "created_by": "gui",
+        "created_by": "desktop",
         "source_meta": {"threadId": "t1"},
     });
 
@@ -184,9 +184,9 @@ fn session_info_content_includes_required_fields() {
     assert!(content.get("auto_compaction").and_then(|v| v.as_bool()) == Some(true));
     assert!(content.get("cwd").and_then(|v| v.as_str()) == Some("/tmp/test-ws"));
 
-    // Fields that fork_agent_session (GUI) reads from session_info content
+    // Fields that fork_agent_session (desktop) reads from session_info content
     assert!(content.get("session_name").and_then(|v| v.as_str()) == Some("fix the bug"));
-    assert!(content.get("created_by").and_then(|v| v.as_str()) == Some("gui"));
+    assert!(content.get("created_by").and_then(|v| v.as_str()) == Some("desktop"));
 
     // Token counters must survive a crash → must be in content
     assert!(content.get("tokens_in").and_then(|v| v.as_i64()) == Some(1000));

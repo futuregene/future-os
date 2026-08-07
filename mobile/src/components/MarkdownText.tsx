@@ -54,7 +54,7 @@ function parseAligns(sepLine: string, columnCount: number): Align[] {
 }
 
 // GFM normalises every row to the header's column count: extra cells are dropped,
-// missing cells are padded with empty strings (mirrors the GUI's tableToFutureNode).
+// missing cells are padded with empty strings (mirrors the desktop's tableToFutureNode).
 function normalizeRow(cells: string[], columnCount: number): string[] {
   if (cells.length >= columnCount) return cells.slice(0, columnCount);
   return [...cells, ...Array.from({ length: columnCount - cells.length }, () => "")];

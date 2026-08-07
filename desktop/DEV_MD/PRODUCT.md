@@ -1,0 +1,393 @@
+# FutureOS 产品说明
+
+## 1. 产品定位
+
+FutureOS 是一个以桌面 GUI 为主体验的 Agent 工作空间，面向需要持续推进复杂任务的人：软件工程、科研、数据分析、文档写作、报告生成和自动化调试都应该能在同一套工作对象里完成。
+
+FutureOS 的核心目标是让 AI 的工作过程可检查、可恢复、可审查。用户不是只看到最终答案，而是能看到 Agent 读取了什么、运行了什么命令、等待哪些审批、产生了哪些文件和 artifact，以及之后如何继续这段工作。
+
+第一阶段的重点是桌面体验、workspace 绑定的 Agent 执行、审批闭环和科研工作流的基础对象。
+
+## 2. 当前模块边界
+
+当前仓库采用扁平模块结构，不再保留源项目的 `apps/desktop` 或 `packages/agent-core` 路径。
+
+- `desktop/`：Tauri + React + TypeScript 桌面 GUI，是主产品入口。
+- `agent/`：Rust `future-agent` gRPC 服务，负责会话、LLM streaming、工具执行、审批和事件投影。
+- `cli/`：当前仓库已有的 TypeScript CLI，负责 auth、agent、channel、tools、skills、tui 等管理能力。
+- `tui/`：当前仓库已有的 TypeScript TUI。
+- `channel/`：Rust channel 模块，作为独立构建目标保留。
+
+GUI 不把 Agent 作为 Tauri crate dependency 编进桌面进程。运行时 GUI 通过 `FUTURE_AGENT_GRPC_ADDR` 连接 `future-agent` gRPC 服务，默认地址是 `127.0.0.1:50051`。
+
+源项目中的 Rust CLI 没有迁入。本仓库的 `cli/` 仍是最终 CLI。
+
+## 3. 产品原则
+
+### 3.1 GUI 是主体验
+
+桌面 GUI 应该提供最完整、最细腻的体验，包括对话、workspace、后台程序状态、工具执行结果、即时审批、review、artifacts 和长任务进度。GUI 不应该只是终端包装器，而是把 Agent 的工作过程渲染成可理解、可操作的界面。
+
+### 3.2 Agent 工作必须可检查
+
+用户应该能够检查：
+
+- Agent 做了什么计划。
+- 它调用了哪些工具。
+- 它读取了哪些文件。
+- 它执行了哪些命令。
+- 哪些文件发生了变化。
+- 哪些步骤失败了。
+- 哪些操作需要审批。
+- 哪些任务可以继续恢复。
+
+### 3.3 对话是工作对象
+
+对话不是临时 chat log，而是可恢复、可继续、可管理的工作对象。FutureOS 同时支持普通 Chat 和绑定到具体目录的 Workspace 对话。
+
+- Chat：系统自动创建临时 workspace，适合快速开始。
+- Workspace 对话：用户选择本地目录，适合长期项目和真实文件工作。
+
+每个 Thread 都必须使用独立 Agent session，避免不同 Chat 或 Workspace 对话共享运行上下文。
+
+### 3.4 CLI 是辅助入口
+
+CLI 用于登录、服务管理、终端自动化和调试。CLI 不复制 GUI 的完整体验，也不替代 GUI 的产品主线。CLI 创建的任务是否进入 GUI 需要后续单独定义，第一阶段不作为默认同步目标。
+
+### 3.5 系统不只服务于编码
+
+FutureOS 要支持编码，但不能只被设计成代码工具。科研、文献整理、数据分析、报告写作和 artifact 管理都是同级产品场景。Research 是第一阶段优先优化的非编码工作流。
+
+## 4. 核心工作对象
+
+### 4.1 Workspace
+
+Workspace 是一个项目或工作上下文，可以对应本地项目目录、科研目录、数据分析目录、写作目录，或 FutureOS 自动创建的临时目录。
+
+Workspace 下可以有多个子对话。删除某个 workspace 对话只删除对话本身，不删除 workspace 目录和目录内文件。
+
+Workspace 本身支持重命名和删除（左侧导航工作区分组标题的操作菜单）。删除 workspace 是**软删除**：把该 workspace 及其子对话从侧边栏移除，但**不删除磁盘上的目录和文件**。「打开工作区」时若所选目录已登记为 workspace，会提示并直接打开已有的那个（按路径去重，不产生重复记录）。
+
+### 4.2 Chat
+
+Chat 是不显式绑定用户目录的普通对话。为了让工具、脚本和 artifacts 有稳定运行空间，每个 Chat 背后都会自动创建一个临时 workspace。
+
+普通 Chat 的文件产物需要可检查、可清理、可转入 Research。清理普通 Chat 时，如果存在 artifacts 或临时 workspace 文件，需要提示用户确认。
+
+### 4.3 Message
+
+Message 是对话中的消息，不只是一段文本。它未来可能包含 markdown、图片、文件引用、附件、tool result、diff 和 artifact 引用。
+
+输入框附件入口支持本地文件。图片作为多模态输入传给模型；其他文件以结构化路径清单传给 Agent，由模型按需使用 `read` / `bash` 等工具读取。附件不复制到工作目录、不自动登记为 Artifact，详见 4.12 Attachment。
+
+### 4.4 Run
+
+Run 是一次 Agent 执行，通常由一条用户消息触发。Run 在 GUI 中以“后台程序”呈现，记录状态、模型、开始和结束时间、错误信息、工具调用过程和输出结果。
+
+用户应该能够看到当前后台程序是否正在执行、是否失败、是否等待审批、是否可以终止、重试或恢复。右侧 Runs 面板只展示后台程序列表和结果状态，不展示完整 event、tool payload 或长输出细节，避免把右侧变成调试日志集合。
+
+后台程序列表的产品规则：
+
+- 正在运行、排队中、等待审批的程序使用蓝色小点。
+- 已完成、失败、已取消的程序使用灰色小点。
+- 运行中的程序可以强制终止，终止前必须二次确认。
+- 终止会调用 Agent abort，并把对应 run 标记为 `cancelled`。
+- 如果 run 正在等待审批，终止时要同步取消该 run 下的 pending approval，避免 composer 上方残留无效审批。
+- 已完成程序展示结果状态：成功、失败或已取消。
+- 已完成、失败、已取消的程序可以一键清空；清空只删除 run 及其事件、tool、approval、review 关联，不能删除用户消息或 artifact 本体。
+
+### 4.5 Tool Call
+
+Tool Call 是 Agent 对外部能力的一次调用。默认工具集是长期固定约束：`read`、`bash`、`edit`、`write`。
+
+目录浏览和搜索不新增 `ls` 或 `grep` 工具，而是通过 `bash` 执行系统能力，并由审批和可观察 UI 保证用户能理解风险。
+
+GUI 中的工具调用应展示短标题、状态、耗时、路径或命令摘要。命令详情以单行截断展示，hover 时可以看到完整内容。
+
+### 4.6 Approval
+
+Approval 解决“是否允许执行”。它发生在高风险操作真正执行之前。
+
+审批的对象是**文件路径访问**（读 / 写），不是命令。设计与实现细节见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md)（规则模型、分层、规则文件、三档）与 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)（Seatbelt 强制、escalation、非 macOS 回退）。要点：
+
+- **按路径的分层规则**得出 `ask / allow / deny`，首个匹配即返回：内置安全覆盖（不可改）→ 敏感文件守卫（不可改）→ 本对话/工作区临时规则 → 规则文件（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`）→ 兜底（读放开、写限 workspace/temp）。
+- **审批分三档**（输入框下拉 / 设置页切换，全局生效）：
+  - **手动审批**（默认，全平台）：read/write/edit 按规则弹审批；bash 的只读命令（`ls/cat/grep/git status` 等）免问直跑，其余命令弹卡片确认；不启用 OS 沙盒。
+  - **沙箱保护**（**仅 macOS**）：bash 在 Seatbelt 沙盒里自动跑，越界失败后走升级审批；read/write/edit 仍按规则弹审批。
+  - **完全放开**：全部放行，不再询问，也不启用沙箱。
+- **网络完全放开、不审批**。
+- **敏感文件**（`.env`、`*.pem`、`*.key`、`~/.ssh`、凭证等）默认 ask 且**不可被规则覆盖**——只能“允许一次”，不能持久放行；应用自身凭证（`~/.future/agent/auth.json` 等）与规则文件的写更是硬 deny，跳过用户意愿。
+- 非 macOS 平台的下拉/设置页**不显示“沙箱保护”**——没有“降级”一说，默认统一是“手动审批”，mac 只是多一个档位。TUI / CLI / channels 走各自 `permission_level`，不参与本套审批。
+- 审批弹窗提供三个选项：**拒绝 / 允许一次 / 本工作区允许**（普通 Chat 显示“本对话允许”）。“本工作区/对话允许”把一条 allow 规则写入该 workspace 的 `.future/approval_rule.json`（普通 Chat 是其临时工作目录），并即时对本轮生效；敏感文件不提供此选项。
+
+GUI 负责展示审批请求、把决策回传给 Agent，并在“本工作区允许”时经可信路径写规则文件（agent 工具无权写该文件）。
+
+审批体验是产品关键路径，必须遵守以下规则：
+
+- 审批不放在右侧上下文面板中，不作为历史 tab 操作。
+- 当前待处理审批显示在中间对话区底部、composer 上方，位置必须比普通上下文信息更醒目。
+- UI 同时最多只展示一个待审批项；Agent 后端也应串行等待审批，当前审批未决时不继续执行后续危险操作。
+- 审批不超时，始终等待用户明确允许或拒绝；Agent / GUI 不应因为固定 HTTP、SSE idle 或事件收集 timeout 结束正在等待审批的 run。
+- 支持键盘快捷操作：`Esc` 拒绝（若“本工作区允许”的编辑框打开则先关闭），`Cmd/Ctrl + Enter` 允许一次。
+- requested action 预览应 JSON pretty print、自动换行、高度随内容自适应，但最大不超过窗口高度的三分之一，超过后内部滚动。
+- GUI 重启后，遗留的 pending approval **不**无条件取消：启动收敛保留它们，由 Agent 可达后的对账（`reconcile_pending_approvals`，启动一次 + watchdog 每轮）按 Agent 的权威 pending 集合裁决——Agent 仍在等待的保留卡片（run 复活并回到 `waiting_approval`），Agent 已不持有的（在他处已决、已 abort、或 Agent 自身重启丢失）才转为 `cancelled`。这保证 GUI 崩溃期间 Agent 挂起的审批能在重启后继续展示并决策。
+- 如果用户点击一个后端已不存在的旧 pending approval，GUI 应把本地状态转为 `cancelled`，不能向用户暴露 “not pending” 之类内部错误。
+
+### 4.7 Review
+
+Review 解决“改了什么”。它不同于 Approval。Approval 是执行前允许与否，Review 是执行后查看变更。
+
+Review 覆盖所有 Workspace 对话（`mode = workspace`），无论目录是否为 Git 仓库；普通 Chat 不显示 Review，其文件产物进入 Artifacts（见 4.8）。Review 面板顶部用一个下拉切换视图，按 workspace 类型提供：
+
+- **Git changes**（仅 Git workspace）：基于真实 `git diff` 展示当前工作树相对所选 base（默认 `HEAD`）的未提交变更，包括新增、删除、修改、重命名和未跟踪文本文件，并展示文件级 additions / deletions。
+- **上一轮变更**（两类 workspace 都有）：展示当前 Thread **最近一轮已结束 Run**（`completed` / `failed` / `cancelled`）从运行前到运行后之间的 workspace 文件变化。
+
+「上一轮变更」的产品语义：
+
+- 严格指最新结束的那一轮 Run；正在运行的 Run 不进入，运行期间继续显示前一轮结果。
+- 最新一轮没有文件变化时显示“上一轮没有文件变化”，不回退到更早但有变化的 Run，否则“上一轮”语义会失真。
+- 它表示“该轮运行期间工作区内发生的文件变化”，不绝对断言每处改动都来自 Agent（用户、IDE formatter、后台进程在同一窗口内的修改也会被纳入），UI 不谎称归属。
+- 失败、取消或部分完成的 Run 仍尽量展示已落盘的变化；快照失败时明确标为「不可用」，绝不伪装成“没有变化”。
+
+「上一轮变更」由 FutureOS 在每轮 Run 前后对 workspace 拍快照并求 diff 得到，全程只读：不向用户真实 Git 仓库写入任何 commit / index / ref / object，也不在非 Git 目录里创建 `.git`（实现见 ER.md §4.10、§6.8）。
+
+「上一轮变更」顶部按情况叠加状态提示：
+
+- **并发**：本轮运行期间该 workspace 有其他 Run 并发，部分变更可能来自并发运行，仍展示 diff。
+- **恢复**：应用重启后恢复的快照，归属可能不精确。
+- **不可用**：存在上一轮 Run 但快照不可用，区别于“没有变化”。
+- **目录过大**：非 Git workspace 超过体积红线后关闭改动预览，显示静态提示而非空状态。
+
+展示约定：diff 只做 unified（单栏）；文件默认收起，顶部一个「全部展开 / 全部收起」开关；二进制文件只显示路径、状态、前后大小与类型，不做文本 diff；命中凭证规则的敏感文件（`.env`、`*.pem`、`*.key` 等）只标记“敏感文件发生变化，内容未保存”，不保存内容。
+
+长期目标中，Review 还会覆盖 markdown、文档、表格等文本类 artifact 的变更审查。
+
+### 4.8 Artifact
+
+> **当前状态：Artifacts 面板已暂时隐藏**（入口从 `ContextPanel.tsx` 的 `fileTabs` 注释保留，面板/详情/store/上传全部完好）。本节以下描述的是设计意图，不是当前行为。
+>
+> **为什么隐藏**：普通 Chat 的 workspace 是每个 Thread 专属的空目录，里面的文件按定义就是本次对话的产物——Files 面板读的正是同一个 `activeWorkspace.path`，已经完整展示了它，且不会漏掉 bash / 脚本产生的文件。而 artifacts 表登记的是 write / edit 工具调用，是同一个目录**更小且会漏的一个子集**。原本支撑 Artifact 独立存在的三件事也都已不在：`@` 引用 artifact 已禁用（`isFutureReferenceType`）、卡片明确不展示 summary 与类型徽章、Research（「可复用产物」的下游）已延后。
+>
+> **为什么不改成扫描目录**：扫描能补上召回率，但「产物」是一个语义判断，而文件系统只有语法信息（路径、扩展名、mtime）——任何扫描规则都无法断言「这一个才是成果」，只能在「漏掉产物」和「混入中间文件」之间取舍。
+>
+> **恢复时应重新设计**：Artifact 在路线图上与「统一 `@` 引用」同属第 4 项（见 §9），恢复时应放在那个语境里，且形态应为**策展**（Agent 在回答中标记交付物，或用户主动加入）而非自动收集——语义判断应由有语义的一方给出。
+
+Artifact 是 Agent 或用户在工作过程中产生的可复用产物，包括文档、报告、表格、图表、diff、命令输出、文献摘要、实验计划和数据分析结果。
+
+Artifact 主要服务普通 Chat：Chat 的文件产物由 FutureOS 在临时 workspace 中自动管理。Workspace 对话（含非 Git 目录）的文件变更改由 Review 的「上一轮变更」展示（见 4.7），不再投影为 Artifact。
+
+Workspace 对话中，文件写入、编辑和新增不自动创建 Artifact，避免同一个文件同时进入 Review 和 Artifacts 两套系统。
+
+对话输入框中的附件不自动登记为 Artifact，也不复制进普通 Chat 或 Workspace 的工作目录；Artifacts 面板中的用户主动上传仍是独立入口。详见 4.12 Attachment。
+
+普通 Chat 的 Artifacts 面板顶部提供**筛选框**和**上传按钮**：上传可选任意普通文件（单文件最大 25 MiB），文件被直接复制进（临时）工作目录并登记为 Artifact，供 Agent 后续运行使用。Artifact 卡片只展示标题、时间和内容，不展示自动生成的 summary 与类型徽章。
+
+### 4.9 Research Resource
+
+Research Resource 是科研工作中的资料对象，包括论文、网页、笔记、摘要、方法表、数据集说明、证据链和实验计划。
+
+Research 不是单纯搜索入口，而是面向科研工作的材料和证据空间。用户应该能把对话中的 artifacts、链接、文件和摘要转入 Research。
+
+### 4.10 Data Source
+
+Data Source 是 FutureOS 可以访问的数据或凭证入口。它可以服务科研、分析、报告和工程场景，不只代表数据库连接。
+
+Data 管理任务相关的数据源和访问凭证；模型 provider key 属于模型或应用设置，二者必须分开。
+
+### 4.11 Skill
+
+Skill 是 Agent 可使用的能力单元，有清晰说明、适用场景和启用状态。
+
+**实现路线（2026-07 落地）**：Skill 走**官方平台目录**，不入库。可用列表来自 `GET {platform}/client/v1/skills`（未鉴权），安装时下载版本 zip 解包到本地技能目录（`~/.future/agent/skills`），卸载即删除该目录；已安装列表由 Agent 的 `get_commands` 汇报。相关代码：`src-tauri/src/skills.rs`（下载/安装/卸载 + skill id 白名单校验）、`src/features/skills/SkillsView.tsx`。早期 ER 设计的 `skills`/`skill_enablements` 数据表从未接线，已于 2026-07-07 删除（见 ER.md §4.14–4.17）。
+
+Research、Data、Skill 的边界：
+
+- Research 是材料。
+- Data 是数据入口。
+- Skill 是能力。
+
+### 4.12 Attachment
+
+Attachment 是用户在对话输入框中附加、供模型理解的本地文件。图片单独走多模态通道，其他文件统一作为可由 Agent 工具按需读取的文件处理。
+
+附件来源与上传方式：
+
+- 接受任意普通文件，不接受目录。jpg、jpeg、png、gif、webp、bmp 归为图片；SVG 作为文本文件交给 Agent 读取。
+- 支持三种上传方式：点击输入框的附件按钮、复制粘贴、拖拽文件。
+- 每条消息最多附加 4 张图片；非图片文件不限制数量与大小。单张图片最大 25 MiB，选择、拖拽和粘贴均执行校验。
+- 图片发送前必须成功读取并解码；失败时本条消息不发送、保留输入框草稿并明确提示具体文件。
+- 支持图片输入的模型收到图片内容；不支持图片输入的模型收到图片路径。其他文件通过单行 JSON 附件清单把名称、类型和绝对路径提供给模型，字符串按 JSON 规则转义，并明确标记为不可信数据；不在 GUI 内抽取或内联文件内容。
+
+普通 Chat 与 Workspace 对话采用相同的文件策略：不复制到工作目录、不自动创建 Artifact，消息元数据记录原始绝对路径。图片额外生成持久缩略图；粘贴图片没有用户原始路径，因此原图保存到 FutureOS 的 thread 图片目录。
+
+历史消息中图片与 Markdown 使用应用内预览，其他文件交给系统默认应用打开。原路径失效时明确提示「文件已移动或删除」。
+
+## 5. 桌面体验
+
+### 5.1 三栏布局
+
+GUI 采用三栏结构：
+
+```text
+左侧导航栏      中间对话区      右侧上下文面板
+```
+
+左侧负责功能入口、workspace 和 thread 导航。中间负责 conversation 和即时审批。右侧负责后台程序、review 和 artifacts 等可检查上下文。
+
+右侧面板不能抢占用户注意力，也不能承载需要用户立即响应的审批操作。普通后台刷新不应该造成闪烁或频繁切 tab。
+
+### 5.2 左侧导航
+
+左侧导航应支持：
+
+- New Chat。
+- Research、Data、Skill（**当前已暂时隐藏**，优先级下调；入口在 `ActivityRail.tsx` 中注释保留，待相应模块可用后再放开）。
+- Remote（当前前端 `ActivityRail.tsx` 在 release 构建隐藏入口；后端 `remote_start` 门禁本阶段暂缓，进入正式发布前需随 L1 scoped JWT 策略一并收口）。
+- 置顶分区（所有置顶对话）。
+- Workspace 列表。
+- Workspace 下子对话。
+- Chat 列表。
+- Settings。
+- 展开、收起和归档显示。
+
+置顶是**全局**的：所有被置顶的对话——无论属于某个 workspace 还是普通 Chat——都集中显示在顶部「置顶」分区；取消置顶后回到各自所属的分组。
+
+对话行**整行可点击**进入该对话；行末的操作菜单（重命名 / 置顶 / 删除）不会误触发进入。工作区分组标题旁提供「打开工作区」入口，以及分组标题的操作菜单（重命名 / 删除工作区）；不提供「新建工作区」入口。
+
+对话右侧的**未读指示**：后台运行结束后显示未读圆点（正常完成为绿色、失败为红色）；运行中显示蓝色等待图标；用户打开或离开该对话后未读圆点清除，空闲状态不显示任何圆点。未读状态存于当前会话（sessionStorage），应用重启后清空。
+
+### 5.3 中间对话区
+
+中间区域展示用户消息、assistant 流式输出、计划、工具调用、命令预览、错误状态和 follow-up 交互。
+
+assistant 的**思考过程**（模型 reasoning）按发生顺序**内联**展示在文本与工具调用之间（与工具调用同处一条时间线，不聚集在消息顶部），以暗色弱化的样式呈现。是否展示由设置「通用」页的**显示思考过程**开关控制，**默认关闭**。开关**关闭**时不展示 reasoning 内容，但模型进入思考、尚无正文输出时，会在该消息的**底部信息栏**显示「正在思考中…」文字提示，让用户知道运行未卡住；开关**打开**时 reasoning 已内联可见，不再重复提示。该提示只在流式期间出现，停止或结束后随即消失。
+
+输入框应保持底部悬浮，模型选择位于输入框区域。发送消息时 GUI 创建 Run 记录并把 prompt 交给 Agent；用户消息与事件由 Agent 持久化（会话 JSONL 与 run-events journal，唯一真源），GUI 观察者把事件流实时投影到 UI 与附加存储（审批、工件等）。
+
+输入框区域除模型、思考等级选择外，还提供**审批模式**（手动审批 / 沙箱保护 / 完全放开）的快速切换下拉；它与设置「通用」页里的审批模式是同一个全局选择。“沙箱保护”仅在 macOS 出现。
+
+每条消息下方提供**复制按钮**（用户消息与 assistant 消息都有），复制该消息的纯文本内容；复制按钮平时隐藏，hover 消息行时才显示。assistant 消息**流式生成期间**例外：底部信息栏常驻显示，元素按序为——复制按钮位置改为常显的**生成中动态指示**（一个动态圆点，贯穿整个流式生成，表示对话尚未结束）、**用时·token**，以及仅当**显示思考过程**关闭且模型正在思考时出现的**「正在思考中…」**提示；生成结束后才恢复复制按钮及其 hover 显隐逻辑。
+
+输入框支持本地文件附件，三种上传方式：附件按钮、复制粘贴、拖拽文件；每条消息最多 4 张图片，非图片不限数量。图片走多模态，其他文件以安全转义的结构化路径清单交给 Agent，详见 4.12 Attachment。
+
+当 Agent 请求审批时，审批卡片应插入在 composer 上方，而不是右侧面板。审批卡片属于当前对话的即时交互层；用户做出允许或拒绝前，Agent run 保持等待状态。
+
+### 5.4 右侧上下文面板
+
+右侧面板用于检查当前 Thread 的运行上下文，但不承载即时审批。顶部不显示独立标题和当前 session / thread name；使用一个 dropdown 作为当前视图标题，并根据 workspace 类型切换可用视图。
+
+当前重点：
+
+- Runs：展示后台运行程序列表，区分运行中和已完成程序，支持终止运行中程序和清空已完成程序。每个程序卡片主内容只展示 tool input JSON 中的 `command` 字段，按真实命令文本显示，不展示完整 JSON、转义文本、模型名或 `Program <id>` 这类内部编号；没有 `command` 的 run 不进入 Runs 列表。
+- Workspace 对话：展示 Files、Runs 和 Review，不展示 Artifacts。Git workspace 的 Review 提供「Git changes」+「上一轮变更」两个视图；非 Git workspace 只提供「上一轮变更」。
+- 普通 Chat：展示 Files 和 Runs，不展示 Review。（**Artifacts 已暂时隐藏**，见 4.8；隐藏期间两种模式打开面板都默认停在 Files。）
+- Review：展示当前 Workspace 对话的变更审查，包含文件列表、统计和 diff，详见 4.7。
+- Artifacts：展示当前普通 Chat 的产物。**当前已隐藏**——普通 Chat 的产物即临时 workspace 目录的内容，Files 已完整展示，详见 4.8。
+
+右侧面板应可以收起。收起后只保留轻量入口，不影响主对话阅读。
+
+Runs 面板明确不做以下事情：
+
+- 不展示完整 run event timeline。
+- 不展示完整 tool payload。
+- 不展示长 stdout / stderr。
+- 不展示审批历史和审批操作。
+
+这些细节属于后续专门的调试 / timeline / review 视图，不能污染日常后台程序列表。
+
+### 5.5 配色与设计 token
+
+GUI 的颜色统一走 `desktop/tailwind.config.js` 里定义的**语义 token**（中性/表面、强调/交互、状态三件套、diff、阴影），组件里不直接写 Tailwind 原生具名色。状态徽章统一用 `<Badge tone>` 组件；用颜色区分**并列种类**（事件类别、错误子类型）的地方是有意的例外。
+
+配色清单、用法速查与反模式见 [`desktop/COLOR.md`](COLOR.md)——新写或改组件选色时以它为准。
+
+### 5.6 设置：Provider 与模型
+
+设置面板（左侧导航底部齿轮进入；New Chat 下方的「Models」快捷入口可直达模型页）分三页：
+
+- **通用**：界面语言切换（中文 / English，默认中文，选择存于本地）；**审批模式**三档选择（手动审批 / 沙箱保护(仅 macOS) / 完全放开，默认手动审批）；显示思考过程开关（默认关闭）。
+- **提供商**：
+  - **内置 FutureGene**（只读）：点「连接」走 GUI 内置的设备码 OAuth 登录——在系统浏览器完成授权，弹窗显示验证码和可复制链接（浏览器没自动打开时的降级），成功后写入凭证；已配置后支持「重新登录 / 退出登录」。GUI 自带登录，不依赖 CLI。
+  - **自定义提供商**：增 / 改 / 删 OpenAI 兼容或 Anthropic 兼容的第三方 provider（id / 名称 / API 类型 / Base URL / API Key / 模型列表），带字段校验与唯一性检查。
+- **模型**：列出 Agent 当前可用模型，按**提供商分组**（显示提供商名称，无名称才用 id），可逐个开关可见性、搜索。
+
+对话框的模型选择器与模型页同源：都标明模型来自哪个提供商。Provider key 属于应用 / 模型设置，与数据源凭证分开（见 4.10）。配置的存储位置与登录实现见 ER.md §6.9。
+
+#### 新人引导遮罩（OnboardingGate）
+
+初次启动时，若检测到**没有任何可用的提供商**（FutureOS 未登录、无内置提供商配置 API Key、且无自定义提供商），应用会展示全屏引导遮罩，引导用户选择两种使用方式：
+
+1. **登录 FutureOS**（主推）：主按钮走设备码 OAuth 登录流程，在系统浏览器完成授权。
+2. **自带 API Key（BYOK）**：弱化的次级按钮，点击后遮罩消失，自动打开设置 → 提供商页面，引导用户添加自定义的 OpenAI/Anthropic 兼容提供商。
+
+引导遮罩右上角始终显示语言切换器（支持中/英文切换），开发/测试版本还会显示环境切换器（正式环境 / 测试环境）。
+
+**登录后初始化**：FutureOS 登录授权成功后，遮罩**不会立即消失**，而是原地展示进度条，依次完成三步初始化——① 等待 Agent 就绪；② 同步并加载模型（调用专用的 `sync_future_models`，让 Agent 同步拉取 Future 模型目录、写缓存并重建模型注册表，确保模型列表完整）；③ 安装内置技能。遮罩只有在「模型真正加载完成」后才关闭，因此用户进入主界面时**绝不会**看到「尚未配置模型」的空模型提示。初始化至少持续 500ms 以防闪烁。BYOK 路径不触发此初始化（不安装内置技能）。
+
+**登录中取消**：登录进行时可点「取消」终止。若此时已存在可用提供商，则关闭遮罩回到应用；否则遮罩回到初始状态（登录 + BYOK 按钮），不进入后续流程。
+
+**从设置重新登录**：设置 → 提供商 / 账户页的「连接 / 登录」按钮不再各自弹窗内联登录，而是统一弹出本引导遮罩并**自动开始**登录流程，复用同一套登录 + 初始化逻辑。
+
+遮罩的展示逻辑：
+- 无可用提供商 → 展示引导遮罩
+- FutureOS 登录成功 → 进入登录后初始化（进度条），初始化完成且模型就绪后遮罩消失，进入正常三栏布局
+- 用户成功添加自定义提供商 → 遮罩自动消失（通过 `future-auth-changed` 事件触发重新检测）
+- 用户选择 BYOK → 遮罩立即消失，打开提供商设置页
+- 设置页发起重连 → 强制展示遮罩并自动登录，完成或取消后关闭
+
+此引导遮罩**不是强制登录**：任何可用的提供商（无论 FutureOS 还是自定义）都能让软件正常运行。
+
+## 6. Agent 工作流
+
+一次典型流程：
+
+1. 用户打开 FutureOS。
+2. 用户创建 Chat 或选择 Workspace 对话。
+3. GUI 创建 Thread、Message 和 Run。
+4. GUI 通过 gRPC 调用 `future-agent`。
+5. Agent 进行 LLM streaming。
+6. Agent 根据模型输出执行 `read`、`bash`、`edit`、`write`。
+7. 高风险操作进入 Approval，Agent 停止在当前工具调用处等待用户决策，不超时。
+8. GUI 在 composer 上方展示当前审批；用户允许后 Agent 继续，用户拒绝后该危险操作失败并反馈给 Agent。
+9. GUI 展示文本增量、后台程序状态、工具活动摘要和结束状态。
+10. Run 完成后 assistant message、run events、tool calls、tool outputs 和 approval 记录被持久化。
+
+Agent 工具执行默认以当前 session cwd 为 workspace 边界。普通 Chat 使用系统创建的临时 workspace，Workspace 对话使用用户选择的目录。越界访问不允许静默执行。
+
+## 7. 构建与发布
+
+根 `Makefile` 是当前推荐入口：
+
+- `make build`：构建 agent、tui、cli、desktop。
+- `make lint`：运行 Rust fmt check、TS lint 和 GUI stylelint。
+- `make check-desktop`：运行 GUI lint、stylelint 和 frontend build。
+- `make run-agent`：启动 `future-agent` gRPC 服务。
+- `make run-desktop`：启动 GUI dev app。
+- `make package-desktop`：构建桌面 bundle。
+
+macOS 下 `.app` bundle 已支持 Tauri 构建和 ad-hoc signing。DMG 依赖系统 `hdiutil`，需要在真实 macOS session 或 CI 中验证；受限 sandbox 中可能出现 `hdiutil: create failed - 设备未配置`。
+
+## 8. 第一阶段非目标
+
+以下内容暂不进入第一阶段：
+
+- 不引入根 `package.json` workspace。
+- 不引入根 `Cargo.toml` workspace。
+- 不迁入源项目 Rust CLI。
+- 不把 Agent 编进 GUI Tauri crate。
+- 不让 CLI 默认复制 GUI 的完整 chat 体验。
+- 不做复杂多 Agent 服务 UI。
+- 不做完整 PDF 阅读器和精细标注。
+- 不做复杂数据分析工作台。
+- 不做第三方付费 Skill 市场；Skill 仅来自官方平台目录（`GET {platform}/client/v1/skills`），支持从目录安装/卸载到本地文件系统（见 §4.11、`src-tauri/src/skills.rs`）。
+
+## 9. 产品路线
+
+近期产品路线按稳定性优先：
+
+1. 对话、Workspace、Run、Tool Call、Approval 的稳定闭环。
+2. 运行控制：终止、重试、恢复。
+3. Review 基于真实 diff 的审查体验。
+4. Artifact 和统一 `@` 引用。
+5. Research / Data / Skill 从入口变成可用模块。
+6. CLI 和 TUI 在核心模型稳定后继续补齐高级工作流。

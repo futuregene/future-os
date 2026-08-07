@@ -147,8 +147,8 @@ jobs:
           $region = $env:OSS_ENDPOINT -replace '^https?://','' -replace '^oss-','' -replace '-internal','' -replace '\.aliyuncs\.com$',''
           "OSS_REGION=$region" | Add-Content -Path $env:GITHUB_ENV
 
-      - name: Install npm dependencies (GUI)
-        working-directory: gui
+      - name: Install npm dependencies (Desktop)
+        working-directory: desktop
         run: npm ci
 
       # The unified `future` CLI is the single sidecar (tauri.conf.json
@@ -162,8 +162,8 @@ jobs:
         run: |
           cargo build --release
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          New-Item -ItemType Directory -Force -Path ../gui/src-tauri/binaries | Out-Null
-          Copy-Item "../target/release/future.exe" "../gui/src-tauri/binaries/future-$triple.exe"
+          New-Item -ItemType Directory -Force -Path ../desktop/src-tauri/binaries | Out-Null
+          Copy-Item "../target/release/future.exe" "../desktop/src-tauri/binaries/future-$triple.exe"
 
       # The bundler copies externalBin binaries into the installer as-is and never
       # signs them (it signs the app exe, the NSIS plugin DLLs and the setup), so
@@ -176,7 +176,7 @@ jobs:
           . scripts/lib/windows-signing.ps1
           $signTool = Find-SignTool
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          $p = "gui/src-tauri/binaries/future-$triple.exe"
+          $p = "desktop/src-tauri/binaries/future-$triple.exe"
           Invoke-SignFile -SignTool $signTool -Thumbprint $env:SIGN_THUMBPRINT -Path $p
           Write-Host "signed: $p"
 
@@ -215,7 +215,7 @@ jobs:
           $json = $config | ConvertTo-Json -Depth 10
           [IO.File]::WriteAllText($overlay, $json, [Text.UTF8Encoding]::new($false))
           Write-Host "overlay: $overlay"
-          Push-Location gui
+          Push-Location desktop
           try {
             npm run tauri:build -- --config $overlay
             if ($LASTEXITCODE -ne 0) { throw "tauri build failed (exit $LASTEXITCODE)" }
@@ -225,7 +225,7 @@ jobs:
             Remove-Item -Force $overlay -ErrorAction SilentlyContinue
           }
 
-      # Portable (install-free) build: the GUI exe plus the unified CLI binary,
+      # Portable (install-free) build: the desktop exe plus the unified CLI binary,
       # all in one directory. Signed here rather than assumed: the bundler signs
       # its own copies on the way into the installer, so whether
       # target/release/futureos.exe itself ends up signed is its business. Signing
@@ -239,7 +239,7 @@ jobs:
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
           $dir = "futureos-portable"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          Copy-Item "gui/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
+          Copy-Item "desktop/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
           Copy-Item "target/release/future.exe" "$dir/future.exe"
           Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
           foreach ($exe in @("FutureOS.exe", "future.exe")) {
@@ -257,7 +257,7 @@ jobs:
         run: |
           . scripts/lib/windows-signing.ps1
           $signTool = Find-SignTool
-          $installers = @(Get-ChildItem gui/src-tauri/target/release/bundle/nsis/*.exe -ErrorAction SilentlyContinue)
+          $installers = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe -ErrorAction SilentlyContinue)
           if (-not $installers) { throw "Tauri produced no installer under bundle/nsis." }
           foreach ($f in $installers) {
             if (-not (Test-Path "$($f.FullName).sig")) {
@@ -279,7 +279,7 @@ jobs:
           Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          Get-ChildItem gui/src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object {
+          Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object {
             $name = "$([IO.Path]::GetFileNameWithoutExtension($_.Name))-sign$($_.Extension)"
             $output = Join-Path $stage $name
             Copy-Item $_.FullName $output

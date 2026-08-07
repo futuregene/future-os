@@ -1,5 +1,5 @@
 # Repo-wide Cargo config. Cargo discovers this by walking up from the manifest
-# dir, so it applies to every workspace here (agent/, gui/src-tauri/, channels/)
+# dir, so it applies to every workspace here (agent/, desktop/src-tauri/, channels/)
 # for both CI and local builds. Purpose: cut release link/compile time — the
 # Windows/Linux CI jobs were dominated by linking and I/O.
 

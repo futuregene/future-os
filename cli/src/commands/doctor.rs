@@ -97,7 +97,7 @@ pub async fn doctor(out: &Output) -> Result<(), String> {
     results.push(check_agent().await);
     results.push(check_component("future", "CLI").await);
     results.push(check_component("future-tui", "TUI").await);
-    results.push(check_component("future-gui", "GUI").await);
+    results.push(check_component("future-desktop", "Desktop").await);
     results.push(check_component("future-channel", "Channel bridge").await);
     // 3. Configuration.
     results.push(check_auth_config().await);
@@ -748,7 +748,7 @@ mod tests {
         assert!(stdout.contains("future-agent not found on PATH"));
         assert!(stdout.contains("future not found on PATH — run `make install`"));
         assert!(stdout.contains("future-tui not found on PATH"));
-        assert!(stdout.contains("future-gui not found on PATH"));
+        assert!(stdout.contains("future-desktop not found on PATH"));
         assert!(stdout.contains("future-channel not found on PATH"));
         assert!(stdout.contains("Auth config"));
         assert!(stdout.contains("not found — run `future auth login` or create manually"));
@@ -819,9 +819,9 @@ mod tests {
         ]);
         let bin_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("fake-bin");
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
-        let gui = bin_dir.join("future-gui");
+        let desktop = bin_dir.join("future-desktop");
         tokio::fs::write(
-            &gui,
+            &desktop,
             "#!/bin/sh\necho \"FutureOS: agent already reachable at 127.0.0.1:50051\"\nsleep 30\n",
         )
         .await
@@ -829,7 +829,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&gui, std::fs::Permissions::from_mode(0o755))
+            tokio::fs::set_permissions(&desktop, std::fs::Permissions::from_mode(0o755))
                 .await
                 .unwrap();
         }

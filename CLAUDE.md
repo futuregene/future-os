@@ -17,10 +17,10 @@ Development happens in an isolated git worktree (this repo uses `.claude/worktre
 Run the full pre-PR pass in the worktree, then verify on the CI toolchain (the repo pins `rust-toolchain.toml`; use the same clippy flags CI uses):
 
 1. `git fetch origin main` then merge `origin/main` into the worktree branch (resolving any conflicts here).
-2. `cargo fmt --check` (workspace + `gui/src-tauri`) — apply `cargo fmt` if needed.
+2. `cargo fmt --check` (workspace + `desktop/src-tauri`) — apply `cargo fmt` if needed.
 3. `cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings` — CI fails on warnings, and `--all-targets` is required to lint test code (a bare `--lib` misses it).
-4. GUI: `tsc --noEmit`, `eslint "src/**/*.{ts,tsx}"`, `vitest run`; plus `cargo fmt --check` / `cargo clippy` under `gui/src-tauri`.
-5. Run the test suites: `cargo test` for agent, `cargo test --lib` for `gui/src-tauri`.
+4. Desktop: `tsc --noEmit`, `eslint "src/**/*.{ts,tsx}"`, `vitest run`; plus `cargo fmt --check` / `cargo clippy` under `desktop/src-tauri`.
+5. Run the test suites: `cargo test` for agent, `cargo test --lib` for `desktop/src-tauri`.
 6. Commit any fmt/clippy fixes, push, then create the PR.
 
 Do not skip steps or use narrower flags than CI — a green local check on a smaller scope does not guarantee CI passes.
@@ -29,14 +29,14 @@ During normal development you don't need to run this full suite every time — i
 
 ### GUI Tauri sidecar binaries in a worktree
 
-`gui/src-tauri/tauri.conf.json` declares `externalBin: ["binaries/future"]`, and `tauri-build`'s build script **aborts** with `resource path ... doesn't exist` if those files are missing. They are build artifacts — present in the main worktree but absent from a fresh worktree, so `cargo check`/`clippy`/`test` under `gui/src-tauri` fails for environmental reasons, not your code.
+`desktop/src-tauri/tauri.conf.json` declares `externalBin: ["binaries/future"]`, and `tauri-build`'s build script **aborts** with `resource path ... doesn't exist` if those files are missing. They are build artifacts — present in the main worktree but absent from a fresh worktree, so `cargo check`/`clippy`/`test` under `desktop/src-tauri` fails for environmental reasons, not your code.
 
 CI solves this by creating **empty placeholder sidecars** (`.github/workflows/ci.yml`):
 
 ```bash
 triple=$(rustc -Vv | sed -n 's/^host: //p')
-mkdir -p gui/src-tauri/binaries
-: > "gui/src-tauri/binaries/future-$triple"
+mkdir -p desktop/src-tauri/binaries
+: > "desktop/src-tauri/binaries/future-$triple"
 ```
 
 The placeholders are empty files and are gitignored — they only satisfy the build script's existence check. Do the same in a worktree before running GUI Rust checks.
@@ -55,7 +55,7 @@ The placeholders are empty files and are gitignored — they only satisfy the bu
 
 - Prefer `make` targets from repo root (`make build`, `make test`, `make lint`, ...). `make help` lists them all. For more control, use cargo/npm directly. See `README.md` Quick Start for the common flows.
 - The Rust binary `future-agent` is the backend, always a gRPC server at `127.0.0.1:50051`. The TUI, GUI Tauri backend, and channel bridge all connect to it via gRPC. `future <cmd>` is the unified entry point for every Rust component (`future agent|tui|channel|loop <args>` — each runs the same code as the standalone `future-agent` / `future-tui` / `future-channel` / `future-loop` binaries, which remain buildable (`cargo build -p <crate>`) but are no longer installed by default; `make run-*` targets also still work).
-- Proto codegen is owned by the `future-rpc` crate (single source of truth): `make generate-proto` regenerates `future-rpc/src/generated/proto.rs` (server + all clients). It is opt-in (`REGENERATE_PROTO=1`), checked into git, and CI fails if it goes stale. The old per-crate generated copies (`agent/`, `channels/`, `gui/src-tauri/`) are gone — every Rust consumer depends on `future-rpc`.
+- Proto codegen is owned by the `future-rpc` crate (single source of truth): `make generate-proto` regenerates `rpc/src/generated/proto.rs` (server + all clients). It is opt-in (`REGENERATE_PROTO=1`), checked into git, and CI fails if it goes stale. The old per-crate generated copies (`agent/`, `channels/`, `desktop/src-tauri/`) are gone — every Rust consumer depends on `future-rpc`.
 - Typed-RPC wire contract: `RpcResponse.payload` / `StreamEvent.payload` (field 20) carry typed `oneof` payloads for Tier-1 commands/events. The agent **dual-writes** the typed `payload` and the legacy JSON `data` string during the migration window. Decoding: Rust clients (`future_rpc::decode`) are typed-first with a JSON `data` fallback. The former TypeScript clients (`@future-os/rpc` in `future-rpc/ts`) were removed when the TUI/CLI were ported to Rust. Do not retire the `data` dual-write until every released client reads the typed payload. Field numbers are stable / never reused; `optional` marks fields whose JSON distinguishes null/absent.
 
 ### Config
@@ -64,9 +64,9 @@ Agent config lives under `~/.future/agent/` (`settings.json`, `models.json`, `au
 
 API key resolution order: `auth.json` (by model ID) → `auth.json` (by provider) → model built-in key → `auth.json` default key.
 
-### GUI (`gui/`)
+### Desktop (`desktop/`)
 
-See `gui/CLAUDE.md` for the GUI development guide. The GUI owns `~/.future/app/` (SQLite `app.db`, images, review repos) and per-thread chat workspaces under `~/.future/workspaces/chat/`.
+See `desktop/CLAUDE.md` for the desktop development guide. The desktop app owns `~/.future/app/` (SQLite `app.db`, images, review repos) and per-thread chat workspaces under `~/.future/workspaces/chat/`.
 
 ### Channels (`channels/`)
 

@@ -1,6 +1,6 @@
 # 渲染审计报告 04：React 层渲染性能（流式热路径）
 
-> 范围：`gui/src/` React 前端，重点是流式 agent 响应的热路径（后端 40ms 合并推送，流式期约 **25 次/秒**）。
+> 范围：`desktop/src/` React 前端，重点是流式 agent 响应的热路径（后端 40ms 合并推送，流式期约 **25 次/秒**）。
 > 方式：只读审计，未修改任何文件。行号基于审计时的仓库状态。
 > 一句话结论：架构上已做了大量正确的性能投资（增量投影、窗口化、缓存），但 **4 个 HIGH 级问题让这些投资大部分失效**——核心是"每次推送全应用树重渲染 + 全代码库唯一的 memo 边界被击穿 + 流式尾部 markdown 全量重解析（累计 O(n²)）"。
 
@@ -10,7 +10,7 @@
 
 - **无第三方状态库**（无 zustand/redux/jotai），React 19。状态分两层：
   - **AppShell 域 hooks**（`useThreadStore` / `useAgentConnection` / `useAppSettings` 等）用普通 `useState` 拥有全局状态，经 **props 逐层下传**。`threadRunStatuses`（每线程运行状态）住在 AppShell 里，因此**每次流式推送都会重渲染整棵应用树**。
-  - **线程消息状态**在按 `thread.id` 加 key 的 `AgentThread` 实例内（`useThreadMessages` 的 `useState<AgentMessage[]>`）。流式更新来自 Tauri `thread-runtime-updated` 推送（后端 `gui/src-tauri/src/lib.rs:286-330` 做 **40ms 合并** → 流式期间约 **25 次/秒**），每次推送 → 增量投影（`listRunEventsSince`）→ `setMessages`。
+  - **线程消息状态**在按 `thread.id` 加 key 的 `AgentThread` 实例内（`useThreadMessages` 的 `useState<AgentMessage[]>`）。流式更新来自 Tauri `thread-runtime-updated` 推送（后端 `desktop/src-tauri/src/lib.rs:286-330` 做 **40ms 合并** → 流式期间约 **25 次/秒**），每次推送 → 增量投影（`listRunEventsSince`）→ `setMessages`。
 - 横切缓存是**模块级外部 store**（`agentStateCache`、`futureReferenceStore`、shiki store、`useNow` ticker、markdown 解析 LRU、投影器 LRU），经 `useSyncExternalStore` 消费，subscribe/snapshot 都做了稳定化——这部分总体做得好。
 - 全代码库 **`React.memo` 只用了 1 处**（`MessageBlock`，MessageBlock.tsx:46，grep 确认），其余组件（MessageList/Composer/ActivityRail/ThreadListItem/MarkdownContent…）全部无 memo。
 

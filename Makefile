@@ -1,4 +1,4 @@
-.PHONY: version build build-cli build-gui build-gui-dist build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels run-loop package-gui install uninstall install-cli install-gui install-skills fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars
+.PHONY: version build build-cli build-desktop build-desktop-dist build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-desktop lint-mobile stylelint-desktop check-desktop check-mobile clean run run-agent run-tui run-cli run-desktop run-mobile-android run-channels run-loop package-desktop install uninstall install-cli install-desktop install-skills fmt fmt-mobile generate-models generate-proto help test-desktop-rust desktop-sidecars
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -36,26 +36,26 @@ endif
 # ─── Install ──────────────────────────────────────────────────────────────────
 
 # The unified `future` CLI (install-cli) embeds agent/tui/channel/loop, and
-# the GUI bundles its own future sidecar (gui-sidecars; the agent runs via
+# the desktop bundles its own future sidecar (desktop-sidecars; the agent runs via
 # `future agent`). So the install surface is exactly four targets: everything
-# (install), the GUI, the CLI, and the skills (which also links the
+# (install), the desktop, the CLI, and the skills (which also links the
 # /future-loop skill). The standalone future-agent/tui/channel/loop binaries
 # remain runnable via `make run-*` (dev use) and buildable with
 # `cargo build -p <crate>`; the standalone future-loop binary is installable
 # via scripts/install-future-loop.sh.
-install: install-cli install-gui install-skills
+install: install-cli install-desktop install-skills
 
 uninstall:
 ifeq ($(OS),windows)
 	cmd /c del /q "$(PREFIX)\future-agent$(EXE_SUFFIX)" 2>NUL
 	cmd /c del /q "$(PREFIX)\future$(EXE_SUFFIX)" 2>NUL
 	cmd /c del /q "$(PREFIX)\future-tui$(EXE_SUFFIX)" 2>NUL
-	cmd /c del /q "$(PREFIX)\future-gui$(EXE_SUFFIX)" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-desktop$(EXE_SUFFIX)" 2>NUL
 	cmd /c del /q "$(PREFIX)\future-channel$(EXE_SUFFIX)" 2>NUL
 else
-	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-gui$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
+	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-desktop$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
 endif
-	@echo "Removed: future-agent, future, future-tui, future-gui, future-channel"
+	@echo "Removed: future-agent, future, future-tui, future-desktop, future-channel"
 
 install-cli: build-cli
 ifeq ($(OS),windows)
@@ -64,13 +64,13 @@ else
 	$(SUDO) cp target/release/future "$(PREFIX)/future"
 endif
 
-install-gui: install-cli gui-sidecars
-	$(call npm-install-if-needed,gui)
-	cd gui && npx tauri build --no-bundle
+install-desktop: install-cli desktop-sidecars
+	$(call npm-install-if-needed,desktop)
+	cd desktop && npx tauri build --no-bundle
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) gui\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-gui$(EXE_SUFFIX)"
+	$(SUDO) $(COPY_CMD) desktop\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-desktop$(EXE_SUFFIX)"
 else
-	$(SUDO) cp gui/src-tauri/target/release/futureos "$(PREFIX)/future-gui"
+	$(SUDO) cp desktop/src-tauri/target/release/futureos "$(PREFIX)/future-desktop"
 endif
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
@@ -119,11 +119,11 @@ endif
 # ─── Build ──────────────────────────────────────────────────────────────────
 
 # The unified `future` CLI (build-cli) embeds agent/tui/channel/loop, and the
-# GUI (build-gui → gui-sidecars) builds + stages its future sidecar itself
+# desktop (build-desktop → desktop-sidecars) builds + stages its future sidecar itself
 # (the agent runs via `future agent`). So `make build` needs exactly these
 # two; the standalone agent/tui/channel/loop binaries remain buildable via
 # their individual build-* targets (dev use).
-build: build-cli build-gui
+build: build-cli build-desktop
 
 # Only run npm install when package.json is newer than node_modules.
 # npm-install-if-needed ─────────────────────────────────────────────────────
@@ -145,27 +145,27 @@ endif
 build-cli:
 	cd cli && cargo build --release
 
-# Stage the unified `future` CLI as the Tauri sidecar (externalBin). The GUI
+# Stage the unified `future` CLI as the Tauri sidecar (externalBin). The desktop
 # spawns the agent via `future agent` (embedded), so no separate future-agent
 # sidecar is needed.
-gui-sidecars: build-cli
+desktop-sidecars: build-cli
 ifeq ($(OS),windows)
-	cmd /c "if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries"
-	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
+	cmd /c "if not exist desktop\src-tauri\binaries mkdir desktop\src-tauri\binaries"
+	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
 else
-	@mkdir -p gui/src-tauri/binaries
-	cp target/release/future gui/src-tauri/binaries/future-$(TARGET)
+	@mkdir -p desktop/src-tauri/binaries
+	cp target/release/future desktop/src-tauri/binaries/future-$(TARGET)
 endif
 
-# Compile the React frontend only — needed by check-gui and as a dep of build-gui.
-build-gui-dist:
-	$(call npm-install-if-needed,gui)
-	cd gui && npm run build
+# Compile the React frontend only — needed by check-desktop and as a dep of build-desktop.
+build-desktop-dist:
+	$(call npm-install-if-needed,desktop)
+	cd desktop && npm run build
 
 # Self-contained standalone binary (no installer).  Produces
-#   gui/src-tauri/target/release/futureos$(EXE_SUFFIX)
-build-gui: build-gui-dist gui-sidecars
-	cd gui && npx tauri build --no-bundle
+#   desktop/src-tauri/target/release/futureos$(EXE_SUFFIX)
+build-desktop: build-desktop-dist desktop-sidecars
+	cd desktop && npx tauri build --no-bundle
 
 # Mobile native projects are generated locally by Expo and are intentionally
 # not part of the default build. This target builds and installs Android.
@@ -186,7 +186,7 @@ build-mobile-ios:
 # release. The unit tests below (test-agent/channels/cli/tui/...) are the CI
 # regression gate.
 
-test: test-agent test-channels test-cli test-tui test-gui test-gui-rust test-mobile
+test: test-agent test-channels test-cli test-tui test-desktop test-desktop-rust test-mobile
 
 test-agent:
 	cd agent && cargo test
@@ -209,12 +209,12 @@ test-tui-diff:
 test-tui-tmux:
 	./tui/tests/tmux-diff.sh
 
-test-gui:
-	$(call npm-install-if-needed,gui)
-	cd gui && npm test
+test-desktop:
+	$(call npm-install-if-needed,desktop)
+	cd desktop && npm test
 
-test-gui-rust:
-	cd gui/src-tauri && cargo test
+test-desktop-rust:
+	cd desktop/src-tauri && cargo test
 
 test-mobile:
 	$(call npm-install-if-needed,mobile)
@@ -222,7 +222,7 @@ test-mobile:
 
 # ─── Lint ───────────────────────────────────────────────────────────────────
 
-lint: lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui lint-mobile
+lint: lint-agent lint-channels lint-tui lint-cli lint-desktop stylelint-desktop lint-mobile
 
 lint-agent:
 	cd agent && cargo fmt --check && cargo clippy
@@ -239,18 +239,18 @@ lint-cli:
 	cd cli && rustup run 1.97.0 cargo fmt --check
 	rustup run 1.97.0 cargo clippy -p future-cli --all-targets -- -D warnings
 
-lint-gui:
-	cd gui && npm run lint
+lint-desktop:
+	cd desktop && npm run lint
 
-stylelint-gui:
-	cd gui && npm run stylelint
+stylelint-desktop:
+	cd desktop && npm run stylelint
 
 lint-mobile:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run typecheck && npm run lint
 
-check-gui: lint-gui stylelint-gui build-gui-dist
-	cd gui/src-tauri && cargo check
+check-desktop: lint-desktop stylelint-desktop build-desktop-dist
+	cd desktop/src-tauri && cargo check
 
 check-mobile: lint-mobile test-mobile
 	cd mobile && npm run format:check
@@ -277,19 +277,19 @@ run-tui:
 run-cli:
 	cd cli && cargo run
 
-run-gui: build-gui
+run-desktop: build-desktop
 ifeq ($(OS),windows)
-	@if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries
-	@if not exist "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" "$(MAKE)" build-cli
-	@if not exist "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" $(COPY_CMD) target\release\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
-	cd gui && npm run tauri:dev
+	@if not exist desktop\src-tauri\binaries mkdir desktop\src-tauri\binaries
+	@if not exist "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" "$(MAKE)" build-cli
+	@if not exist "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" $(COPY_CMD) target\release\future$(EXE_SUFFIX) "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
+	cd desktop && npm run tauri:dev
 else
-	@mkdir -p gui/src-tauri/binaries
-	@if [ ! -f "gui/src-tauri/binaries/future-$(TARGET)" ]; then \
+	@mkdir -p desktop/src-tauri/binaries
+	@if [ ! -f "desktop/src-tauri/binaries/future-$(TARGET)" ]; then \
 		$(MAKE) build-cli && \
-		cp target/release/future "gui/src-tauri/binaries/future-$(TARGET)"; \
+		cp target/release/future "desktop/src-tauri/binaries/future-$(TARGET)"; \
 	fi
-	cd gui && npm run tauri:dev
+	cd desktop && npm run tauri:dev
 endif
 
 run-mobile-android:
@@ -300,9 +300,9 @@ run-mobile-ios:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run ios
 
-package-gui: install-gui
+package-desktop: install-desktop
 	node scripts/version.mjs --set-bundle
-	cd gui && npm run tauri:build
+	cd desktop && npm run tauri:build
 
 run-channels:
 	cd channels && cargo run
@@ -392,7 +392,7 @@ generate-models:
 	python3 scripts/generate_models.py
 
 generate-proto:
-	cd future-rpc && REGENERATE_PROTO=1 cargo build
+	cd rpc && REGENERATE_PROTO=1 cargo build
 	cd channels && REGENERATE_PROTO=1 cargo build
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
@@ -401,56 +401,56 @@ clean:
 ifeq ($(OS),windows)
 	@if exist target rmdir /s /q target
 	@if exist node_modules rmdir /s /q node_modules
-	@if exist gui\dist rmdir /s /q gui\dist
-	@if exist gui\node_modules rmdir /s /q gui\node_modules
-	@if exist gui\src-tauri\target rmdir /s /q gui\src-tauri\target
-	@if exist gui\src-tauri\binaries rmdir /s /q gui\src-tauri\binaries
+	@if exist desktop\dist rmdir /s /q desktop\dist
+	@if exist desktop\node_modules rmdir /s /q desktop\node_modules
+	@if exist desktop\src-tauri\target rmdir /s /q desktop\src-tauri\target
+	@if exist desktop\src-tauri\binaries rmdir /s /q desktop\src-tauri\binaries
 	@if exist "$(PREFIX)\future-agent$(EXE_SUFFIX)" del /q "$(PREFIX)\future-agent$(EXE_SUFFIX)"
 	@if exist "$(PREFIX)\future$(EXE_SUFFIX)" del /q "$(PREFIX)\future$(EXE_SUFFIX)"
 	@if exist "$(PREFIX)\future-tui$(EXE_SUFFIX)" del /q "$(PREFIX)\future-tui$(EXE_SUFFIX)"
-	@if exist "$(PREFIX)\future-gui$(EXE_SUFFIX)" del /q "$(PREFIX)\future-gui$(EXE_SUFFIX)"
+	@if exist "$(PREFIX)\future-desktop$(EXE_SUFFIX)" del /q "$(PREFIX)\future-desktop$(EXE_SUFFIX)"
 	@if exist "$(PREFIX)\future-channel$(EXE_SUFFIX)" del /q "$(PREFIX)\future-channel$(EXE_SUFFIX)"
 else
 	rm -rf target
 	rm -rf node_modules
-	rm -rf gui/dist gui/node_modules gui/src-tauri/target gui/src-tauri/binaries
-	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-gui$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
+	rm -rf desktop/dist desktop/node_modules desktop/src-tauri/target desktop/src-tauri/binaries
+	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-desktop$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
 endif
 
 # ─── Help ───────────────────────────────────────────────────────────────────
 
 help:
-	@echo "  build              Build GUI + unified CLI (agent/tui/channel/loop embedded; GUI stages its own sidecars)"
+	@echo "  build              Build desktop + unified CLI (agent/tui/channel/loop embedded; desktop stages its own sidecars)"
 	@echo "  build-cli          Build Rust CLI (future)"
-	@echo "  build-gui          Build React/Tauri GUI frontend"
+	@echo "  build-desktop          Build React/Tauri desktop frontend"
 	@echo "  build-mobile-android Generate, build, and install the Android app"
 	@echo "  build-mobile-ios     Generate, build, and install the iOS app (requires Xcode)"
 	@echo "  check-mobile       Typecheck, lint, format-check, and test mobile"
-	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
+	@echo "  test               Run all tests (Rust crates + cli/tui/desktop/mobile)"
 	@echo "  test-tui           Run the Rust TUI unit tests (cargo test -p future-tui)"
 	@echo "  test-tui-diff      [manual] migration gate: TUI render vs golden (tui/tests/golden-diff.sh)"
 	@echo "  test-tui-tmux      [manual] migration gate: tmux screen vs golden (tui/tests/tmux-diff.sh)"
 	@echo "  test-cli           Run the Rust CLI unit tests (cargo test -p future-cli)"
 	@echo "  test-cli-diff      [manual] migration gate: CLI output vs goldens (cli/tests/golden-diff.sh)"
-	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
+	@echo "  lint               Lint all (agent + channels + TUI + CLI + desktop + mobile)"
 	@echo "  fmt                Format Rust and mobile code"
 	@echo "  run-agent          Run agent directly (debug build)"
 	@echo "  run-tui            Run the Rust TUI (cargo run)"
 	@echo "  run-cli            Run CLI in dev mode"
-	@echo "  run-gui            Run GUI in dev mode"
+	@echo "  run-desktop            Run the desktop app in dev mode"
 	@echo "  run-mobile-android Run the Android app on a selected device"
 	@echo "  run-mobile-ios     Run the iOS app on the simulator (requires Xcode)"
 	@echo "  run-channels        Run channel bridge directly (debug build)"
 	@echo "  run-loop            Run loop control plane directly (debug build)"
-	@echo "  package-gui        Package GUI desktop bundles"
+	@echo "  package-desktop        Package desktop bundles"
 	@echo "  profile-agent      CPU profile: build + 90s bench, write flamegraph SVG"
 	@echo "  profile-quick      CPU profile: run agent N secs (PROFILE_SECS=30)"
 	@echo "  profile-heap       Heap profile via dhat, write dhat report JSON"
 	@echo "  generate-models    Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto     Regenerate wire code: future-rpc (future.proto) + channels feishu_ws"
-	@echo "  install            Build & install GUI + unified CLI + skills"
+	@echo "  install            Build & install desktop + unified CLI + skills"
 	@echo "  install-cli        Install the unified \`future\` CLI (agent/tui/channel/loop embedded)"
-	@echo "  install-gui        Install the desktop app (stages its own agent/CLI sidecars)"
+	@echo "  install-desktop        Install the desktop app (stages its own agent/CLI sidecars)"
 	@echo "  install-skills     Link built-in skills + the /future-loop skill"
 	@echo "  uninstall          Remove installed binaries from $(PREFIX)/"
 	@echo "  clean              Remove build artifacts + installed binaries"

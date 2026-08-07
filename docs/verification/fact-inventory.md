@@ -8,7 +8,7 @@
 
 - 生成时间：2026-08-06
 - 范围：`README.md`、`README.zh-CN.md`、`docs/` 全部 **45 个文件**（39 个 .md + 6 个 .txt；含 docs 根 6 个、wiki en/zh 各 13 个、architecture-audit 5 个、dist 6 个）
-- 不在范围：`CLAUDE.md`（agent 指令）、`gui/CLAUDE.md`、`mobile/README.md`、`skills/README*.md`（组件级 README，非 README+docs 范畴）
+- 不在范围：`CLAUDE.md`（agent 指令）、`desktop/CLAUDE.md`、`mobile/README.md`、`skills/README*.md`（组件级 README，非 README+docs 范畴）
 
 ---
 
@@ -82,15 +82,15 @@ Using-FutureOS、Settings、Skills、CLI、FAQ、Feishu、DingTalk、Models、_S
 | B1 | 前置要求：**Rust 1.97+**（`rust-toolchain.toml` 固定）、**Node.js 24+**（`.nvmrc`）、**Bun 必需**（TUI 构建与 CLI/GUI 打包用 `bun build`）、可选 Python 3（仅 `make generate-models`）、可选 protoc（仅 `make generate-proto`，生成代码已入库） | L12-18 |
 | B2 | 克隆：`git clone https://github.com/futuregene/future-os.git` | L22-25 |
 | B3 | macOS 依赖：`xcode-select --install`、rustup、`brew install node oven-sh/bun/bun`、可选 `brew install protobuf` | L30-37 |
-| B4 | macOS 构建：`make install` → **/opt/homebrew/bin**；`make install-nogui`；`make package-gui` → **.app + .dmg**（gui/src-tauri/target/release/bundle/）；`scripts/build-macos-dmg.sh`（自动用唯一 Developer ID Application 签名 → `*-sign.dmg`，`--help` 看证书选择/输出目录/**Apple 公证**选项） | L40-51 |
+| B4 | macOS 构建：`make install` → **/opt/homebrew/bin**；`make install-desktop`；`make package-desktop` → **.app + .dmg**（desktop/src-tauri/target/release/bundle/）；`scripts/build-desktop-macos.sh`（自动用唯一 Developer ID Application 签名 → `*-sign.dmg`，`--help` 看证书选择/输出目录/**Apple 公证**选项） | L40-51 |
 | B5 | Linux 依赖：`build-essential mold libssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf` + rustup + bun + nvm(Node 24) + 可选 protobuf-compiler | L58-64 |
 | B6 | **mold 在 x86_64 上必需**（`.cargo/config.toml` 传 `-fuse-ld=mold`）；ARM Linux 不需要 | L67 |
-| B7 | Linux 构建：`make install` → /usr/local/bin (sudo)；`make package-gui` → **.deb** | L71-75 |
+| B7 | Linux 构建：`make install` → /usr/local/bin (sudo)；`make package-desktop` → **.deb** | L71-75 |
 | B8 | Windows 工具链：VS Build Tools（Desktop C++ workload）、`winget install Rustlang.Rustup`（host triple x86_64-pc-windows-msvc）、Node 24+、Bun、WebView2（随 Win10/11 自带） | L79-86 |
-| B9 | Windows 终端栈（等价 install-nogui）：cargo build agent/channels → `npm install; npm run gen-version; npm run build; bun build --compile ... --outfile dist/future-tui.exe`（tui）与 `...--outfile dist/future.exe --external chromium-bidi`（cli）→ 复制到 **%USERPROFILE%\.future\bin**（future-agent.exe、future-channel.exe、future-tui.exe、future.exe）→ `& "$bin\future.exe" skills install`（Windows 上不用符号链接） | L88-108 |
-| B10 | Windows 桌面应用：sidecar 以 host triple 命名（future-agent-$triple.exe / future-$triple.exe）→ `npx tauri build --no-bundle` → 复制 futureos.exe → **future-gui.exe** | L110-122 |
+| B9 | Windows 终端栈（等价 install-cli，不含 desktop）：cargo build agent/channels → `npm install; npm run gen-version; npm run build; bun build --compile ... --outfile dist/future-tui.exe`（tui）与 `...--outfile dist/future.exe --external chromium-bidi`（cli）→ 复制到 **%USERPROFILE%\.future\bin**（future-agent.exe、future-channel.exe、future-tui.exe、future.exe）→ `& "$bin\future.exe" skills install`（Windows 上不用符号链接） | L88-108 |
+| B10 | Windows 桌面应用：sidecar 以 host triple 命名（future-agent-$triple.exe / future-$triple.exe）→ `npx tauri build --no-bundle` → 复制 futureos.exe → **future-desktop.exe** | L110-122 |
 | B11 | Windows 安装包：`node scripts\version.mjs --set-bundle` + `npm run tauri:build` → **NSIS .exe**（bundle\nsis\） | L124-128 |
-| B12 | 脚本说明：`scripts/start-gui-test.bat` 开发模式；`build-macos-dmg.sh`/`build-windows-portable.ps1`/`build-windows-installer.ps1` 复刻 CI 流水线（DMG/便携 zip/NSIS），需 protoc；产物含 GUI+agent+CLI，**不含 TUI** | L130-133 |
+| B12 | 脚本说明：`scripts/start-desktop-windows.bat` 开发模式；`build-desktop-macos.sh`/`build-desktop-windows-portable.ps1`/`build-desktop-windows-installer.ps1` 复刻 CI 流水线（DMG/便携 zip/NSIS），需 protoc；产物含 GUI+agent+CLI，**不含 TUI** | L130-133 |
 | B13 | loop 控制面：`orchestration/loop`，`cargo build -p future-loop`（debug→target/debug，release→target/release）；`bash scripts/install-future-loop.sh` → **~/.local/bin/future-loop** + **~/.future/agent/skills/**；`future-loop status` 验证 | L135-155 |
 | B14 | 技能安装：`make install-skills`（内置 skills/ 子模块符号链接）；`future skills install`（**约 13 个**）；`future init`（装技能 + macOS/Linux 链接本地命令）；符号链接进 `~/.future/agent/skills/`；`future skills list`/`future skills update` | L162-178（`future skills install` L171，`future skills update` L177） |
 | B15 | 验证：`make test`（cargo test agent + loop）、`make lint`（agent+channels+TUI+CLI+GUI） | L168-171 |
@@ -353,7 +353,7 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 
 ## 11. docs/dist/*.txt（发布包内附说明，6 个）
 
-> ✅ **已核验（2026-08-06，todo_41f779819879）**：全部声明与当前源码一致，**无需修改**。这些文件是活文档——build.yml（macOS dmg / Windows portable / Linux portable）与 scripts/build-windows-portable.ps1、build-windows-signed.yml 打包时逐字复制为各包内 `Readme.txt`（`-en.txt` 为参考译文，打包只用 zh `.txt`）。二进制三件套（`futureos`/`FutureOS.exe` + `future-agent`/`future-agent.exe` + `future`/`future.exe`）与 build.yml 装配步骤逐条吻合（L239-301）；macOS「not Apple-notarised」与 FAQ/B8 口径一致；WebView2/WebKitGTK 运行时要求与 Tauri 默认一致；`~/.future` / `C:\Users\<用户名>\.future` 数据目录正确。
+> ✅ **已核验（2026-08-06，todo_41f779819879）**：全部声明与当前源码一致，**无需修改**。这些文件是活文档——build.yml（macOS dmg / Windows portable / Linux portable）与 scripts/build-desktop-windows-portable.ps1、build-windows-signed.yml 打包时逐字复制为各包内 `Readme.txt`（`-en.txt` 为参考译文，打包只用 zh `.txt`）。二进制三件套（`futureos`/`FutureOS.exe` + `future-agent`/`future-agent.exe` + `future`/`future.exe`）与 build.yml 装配步骤逐条吻合（L239-301）；macOS「not Apple-notarised」与 FAQ/B8 口径一致；WebView2/WebKitGTK 运行时要求与 Tauri 默认一致；`~/.future` / `C:\Users\<用户名>\.future` 数据目录正确。
 
 | # | 声明 | 位置 |
 |---|---|---|
@@ -397,7 +397,7 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 | 配置路径 ~/.future/agent/{auth,models}.json、~/.future/channels/config.json、~/.future/loop/ | R3 / EFE6 / EDT5 / L18 | README L46-79；wiki Feishu L51-87 |
 | 工具链版本：Rust 1.97+、Node 24+、Bun | B1 / B3-B8 | build-and-install L12-18, L30-86 |
 | .cargo/config.toml mold 声明 | B6 | build-and-install L67；.cargo/config.toml |
-| Makefile 目标面（install/install-nogui/package-gui/build-*/run-*/generate-*/install-skills/install-loop…） | B4-B17 / X7 | build-and-install 全文；Makefile |
+| Makefile 目标面（install/install-desktop/package-desktop/build-*/run-*/generate-*/install-skills/install-loop…） | B4-B17 / X7 | build-and-install 全文；Makefile |
 | CLI 命令面（auth/agent/run/tools/skills/channel + 各选项） | EC5 / W12 / X1/X2/X4 | wiki CLI.md L37-93；wiki-prompt L175-185 |
 | channels 配置与斜杠命令 | EFE6-EFE10 / EDT5-EDT7 | wiki Feishu/DingTalk |
 | future-loop CLI 命令面 | L15 / X11 | loop-control-plane.md L115-127 |
