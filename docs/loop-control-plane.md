@@ -11,6 +11,10 @@ monitors, evidence, and completion are persisted outside the chat, and a
 deterministic kernel decides what should happen next — one bounded turn at a
 time.
 
+The primary way to invoke it is `future loop <command>`; the standalone
+`future-loop` binary is equivalent and still installed (used by the
+installer and `make run-loop`).
+
 > `future-loop` is a Rust rewrite of the
 > [loopx](https://github.com/huangruiteng/loopx) control plane, adapted and
 > extended for FutureOS (project-local state, gRPC executor bridge, quota
@@ -52,7 +56,7 @@ quota decides the next tick
 
 ### Deterministic should-run decision kernel
 
-`future-loop run` asks a pure, injectable-clock kernel whether to run, why,
+`future loop run` asks a pure, injectable-clock kernel whether to run, why,
 and which todo — identity-scoped frontiers, user-gate precedence, repair
 budgets, outcome floors, succession replan obligations, acceptance gaps, and
 a scheduler-arbitration layer that classifies every decision into one of nine
@@ -130,7 +134,7 @@ canary        smoke [--profile ...]
 cli           registry [--json] [--include-experimental]
 ```
 
-Run `future-loop` with no arguments for the full grouped help.
+Run `future loop` (or `future-loop`) with no arguments for the full grouped help.
 
 ## Quick start (skill mode)
 
@@ -142,18 +146,19 @@ Start a conversation with the agent and type:
 
 The skill loads, creates a durable goal, breaks the work into todos (with
 dependency chains and a final deliverable-copy todo), and drives it turn by
-turn with `future-loop run --max-turns 1` — reporting status and cost after
+turn with `future loop run --max-turns 1` — reporting status and cost after
 each step.
 
-Or drive it directly from the terminal:
+Or drive it directly from the terminal (`future loop` runs the same code as
+the standalone `future-loop` binary):
 
 ```bash
-future-loop goal init --objective "..." --cwd /path/to/project
-future-loop todo add --goal <id> --text "collect data" --priority P0
-future-loop todo add --goal <id> --text "write report" --priority P0 \
+future loop goal init --objective "..." --cwd /path/to/project
+future loop todo add --goal <id> --text "collect data" --priority P0
+future loop todo add --goal <id> --text "write report" --priority P0 \
   --blocks <collect-todo-id> --verify "test -f report.md"
-future-loop status --goal <id>
-future-loop run --goal <id> --model future/deepseek-v4-flash --max-turns 1
+future loop status --goal <id>
+future loop run --goal <id> --model future/deepseek-v4-flash --max-turns 1
 ```
 
 ## Multi-agent workflow
@@ -172,10 +177,10 @@ what and what the next agent needs to know.
 
 ```bash
 # plain registration (prerequisite for quota --agent-id)
-future-loop agent --goal <id> --agent-id codex
+future loop agent --goal <id> --agent-id codex
 
 # register AND declare capabilities (input to the capability gate)
-future-loop agent onboard --goal <id> --agent-id codex --capability shell,github
+future loop agent onboard --goal <id> --agent-id codex --capability shell,github
 ```
 
 `onboard` records an `AgentOnboarded` event with the declared capabilities.
@@ -185,10 +190,10 @@ future-loop agent onboard --goal <id> --agent-id codex --capability shell,github
 ```bash
 # identity-scoped frontier: which todos this agent may see/claim, and which
 # claims belong to others (outside the frontier)
-future-loop scope --goal <id> --agent-id codex [--exclude docs,build]
+future loop scope --goal <id> --agent-id codex [--exclude docs,build]
 
 # compact lane recommendation for this agent (classification + action)
-future-loop lane --goal <id> --agent-id codex
+future loop lane --goal <id> --agent-id codex
 ```
 
 The frontier output lists `visible agent todos`, `claimed by self`, `other
@@ -199,25 +204,25 @@ agent claims`, `open user gates`, and the `unclaimed advancement` count;
 
 ```bash
 # propose a decision: observe (default) or execute (with capabilities)
-future-loop supervisor propose --goal <id> --agent-id super --decision-id d1 \
+future loop supervisor propose --goal <id> --agent-id super --decision-id d1 \
   --target-agent-id codex --kind execute --capabilities shell --summary "run tests"
 
 # record the host's receipt (executed | failed | rejected)
-future-loop supervisor receipt --goal <id> --decision-id d1 \
+future loop supervisor receipt --goal <id> --decision-id d1 \
   --receipt-id r1 --adapter-id host --outcome executed
 
 # project all supervisor events as JSON
-future-loop supervisor events --goal <id>
+future loop supervisor events --goal <id>
 ```
 
 ### 4. Hand off
 
 ```bash
 # print the delivery contract (degradation mode + summary) and the handoff doc
-future-loop handoff --goal <id>
+future loop handoff --goal <id>
 
 # also write it to .future/loop/goals/<id>/HANDOFF.md
-future-loop handoff --goal <id> --write
+future loop handoff --goal <id> --write
 ```
 
 The delivery contract is derived from run history (newest first); the handoff
@@ -228,14 +233,14 @@ re-reading the whole ledger.
 
 ```bash
 # todo dependency graph (topological order; cycles fail closed)
-future-loop task-graph --goal <id>
+future loop task-graph --goal <id>
 
 # attention queue for one goal, or across all goals
-future-loop attention --goal <id>
-future-loop attention --all
+future loop attention --goal <id>
+future loop attention --all
 
 # operator inbox urgency projection
-future-loop inbox --project .
+future loop inbox --project .
 ```
 
 ## State layout
@@ -253,7 +258,10 @@ Runtime state is never written outside the project; add `.future/loop/` to
 ## Install
 
 ```bash
-bash scripts/install-future-loop.sh        # CLI → ~/.local/bin/future-loop, skill → ~/.future/agent/skills/
+make install-skills                      # preferred: links the /future-loop skill (no build —
+                                          # `future loop` runs through the unified CLI)
+# optional standalone binary (dev use):
+bash scripts/install-future-loop.sh      # CLI → ~/.local/bin/future-loop, skill → ~/.future/agent/skills/
 # or build in the workspace:
 cargo build -p future-loop
 ```

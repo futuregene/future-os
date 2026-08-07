@@ -35,9 +35,7 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 ### The agent must be running
 
-Most commands connect to the FutureOS agent (the background service). If the **desktop app is open**, the agent is already running. Otherwise, start the agent by running the `future-agent` binary directly (or by opening the desktop app, which starts it automatically).
-
-> The CLI **can't** start or stop the agent — `future agent` only reports its status.
+Most commands connect to the FutureOS agent (the background service). If the **desktop app is open**, the agent is already running. Otherwise, start the agent with `future agent` (or the `future-agent` binary directly — both are the same code), or open the desktop app, which starts it automatically.
 
 ---
 
@@ -125,13 +123,26 @@ future models            # list models from the running agent
 future models --json     # machine-readable output
 ```
 
-### `agent` — check the background agent
+### `agent` — run the agent server
 
 ```bash
-future agent status      # agent version + number of loaded skills
+future agent              # start the agent gRPC server (same as future-agent)
+future agent --help       # agent options: gRPC address, logging, profiling
 ```
 
-`status` is the only `agent` subcommand — starting or stopping the agent isn't done from the CLI.
+`future agent <args>` runs the agent backend directly with the same arguments
+as the standalone `future-agent` binary.
+
+### `tui` / `channel` / `loop` — run the other components
+
+`future` is the unified entry point for every Rust component — each runs the
+same code as its standalone binary, which stays installed:
+
+```bash
+future tui                # terminal UI (same as future-tui)
+future channel            # IM channel bridge: Feishu / DingTalk (same as future-channel)
+future loop status        # loop control plane: goals/todos/gates (same as future-loop)
+```
 
 ### `session` — manage sessions
 
@@ -157,7 +168,7 @@ Checks login status, component installation, agent connectivity, configuration, 
 ## Tips
 
 - **macOS blocked it the first time?** Open the FutureOS app once via right-click → **Open** to clear the block, then the CLI runs too.
-- **"Connection refused"?** The agent isn't running. Open the desktop app, or run `future-agent` directly.
+- **"Connection refused"?** The agent isn't running. Open the desktop app, or run `future agent` directly.
 
 ---
 

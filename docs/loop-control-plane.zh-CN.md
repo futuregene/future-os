@@ -6,6 +6,9 @@ FutureOS 在 `orchestration/loop` 内置了原生 loop 控制面，提供 `futur
 
 > `future-loop` 是基于 [loopx](https://github.com/huangruiteng/loopx) 的 Rust 改写版，针对 FutureOS 做了适配与扩展（项目本地状态、gRPC 执行桥、quota 内核、扩展与多 agent）。
 
+主要调用方式是 `future loop <command>`；独立二进制 `future-loop` 与其等价且仍会安装（安装脚本与 `make run-loop` 使用它）。
+
+
 ```
 objective / issue / project
    │
@@ -34,7 +37,7 @@ agent 执行一个回合（gRPC）→ 写入证据 + 交接 + 下一个 todo
 
 ### 确定性 should-run 决策内核
 
-`future-loop run` 让一个纯函数、可注入时钟的内核决定：是否运行、为什么、运行哪个 todo——identity 范围边界、人工门禁优先级、修复预算、成果底线、后继 replan 义务、接受度缺口，以及一个把每次决策归入九种 disposition 之一的调度仲裁层（terminal / monitor-wait / active work / consistency repair / human gate / quiet wait / …）。执行是 fail-closed 的：已取消的目标永不运行；状态歧义时停止而不是继续消耗。
+`future loop run` 让一个纯函数、可注入时钟的内核决定：是否运行、为什么、运行哪个 todo——identity 范围边界、人工门禁优先级、修复预算、成果底线、后继 replan 义务、接受度缺口，以及一个把每次决策归入九种 disposition 之一的调度仲裁层（terminal / monitor-wait / active work / consistency repair / human gate / quiet wait / …）。执行是 fail-closed 的：已取消的目标永不运行；状态歧义时停止而不是继续消耗。
 
 ### 额度与调度
 
@@ -93,17 +96,17 @@ cli           registry [--json] [--include-experimental]
 /future-loop 把这个长期目标拆成 goal 和 todos，持续推进到完成
 ```
 
-技能加载后：创建持久化目标 → 把工作拆成 todos（含依赖链与最终交付复制 todo）→ 用 `future-loop run --max-turns 1` 逐回合推进，每步汇报状态与成本。
+技能加载后：创建持久化目标 → 把工作拆成 todos（含依赖链与最终交付复制 todo）→ 用 `future loop run --max-turns 1` 逐回合推进，每步汇报状态与成本。
 
 也可以直接在终端驱动：
 
 ```bash
-future-loop goal init --objective "..." --cwd /path/to/project
-future-loop todo add --goal <id> --text "collect data" --priority P0
-future-loop todo add --goal <id> --text "write report" --priority P0 \
+future loop goal init --objective "..." --cwd /path/to/project
+future loop todo add --goal <id> --text "collect data" --priority P0
+future loop todo add --goal <id> --text "write report" --priority P0 \
   --blocks <collect-todo-id> --verify "test -f report.md"
-future-loop status --goal <id>
-future-loop run --goal <id> --model future/deepseek-v4-flash --max-turns 1
+future loop status --goal <id>
+future loop run --goal <id> --model future/deepseek-v4-flash --max-turns 1
 ```
 
 ## 多 agent 工作流
@@ -121,10 +124,10 @@ future-loop run --goal <id> --model future/deepseek-v4-flash --max-turns 1
 
 ```bash
 # 仅注册（quota --agent-id 的前置条件）
-future-loop agent --goal <id> --agent-id codex
+future loop agent --goal <id> --agent-id codex
 
 # 注册并声明能力（能力门禁的输入）
-future-loop agent onboard --goal <id> --agent-id codex --capability shell,github
+future loop agent onboard --goal <id> --agent-id codex --capability shell,github
 ```
 
 `onboard` 会记录一条带能力声明的 `AgentOnboarded` 事件。
@@ -133,10 +136,10 @@ future-loop agent onboard --goal <id> --agent-id codex --capability shell,github
 
 ```bash
 # identity 范围边界：该 agent 可见/可认领的 todos，以及属于他人（边界外）的认领
-future-loop scope --goal <id> --agent-id codex [--exclude docs,build]
+future loop scope --goal <id> --agent-id codex [--exclude docs,build]
 
 # 该 agent 的紧凑 lane 推荐（分类 + 建议动作）
-future-loop lane --goal <id> --agent-id codex
+future loop lane --goal <id> --agent-id codex
 ```
 
 frontier 输出列出 `visible agent todos`、`claimed by self`、`other agent
@@ -147,25 +150,25 @@ agent 的进展范围与建议的下一步动作。
 
 ```bash
 # 提案一个决策：observe（默认）或 execute（带能力）
-future-loop supervisor propose --goal <id> --agent-id super --decision-id d1 \
+future loop supervisor propose --goal <id> --agent-id super --decision-id d1 \
   --target-agent-id codex --kind execute --capabilities shell --summary "run tests"
 
 # 记录宿主的回执（executed | failed | rejected）
-future-loop supervisor receipt --goal <id> --decision-id d1 \
+future loop supervisor receipt --goal <id> --decision-id d1 \
   --receipt-id r1 --adapter-id host --outcome executed
 
 # 以 JSON 投影全部 supervisor 事件
-future-loop supervisor events --goal <id>
+future loop supervisor events --goal <id>
 ```
 
 ### 4. 交接
 
 ```bash
 # 打印交付契约（降级模式 + 摘要）与交接文档
-future-loop handoff --goal <id>
+future loop handoff --goal <id>
 
 # 同时写入 .future/loop/goals/<id>/HANDOFF.md
-future-loop handoff --goal <id> --write
+future loop handoff --goal <id> --write
 ```
 
 交付契约由 run 历史推导（新的在前）；交接文档渲染为 markdown，下一个
@@ -175,14 +178,14 @@ agent 无需重读整个账本即可接续上下文。
 
 ```bash
 # todo 依赖图（拓扑序；有环则 fail closed）
-future-loop task-graph --goal <id>
+future loop task-graph --goal <id>
 
 # 单个目标或全部目标的注意力队列
-future-loop attention --goal <id>
-future-loop attention --all
+future loop attention --goal <id>
+future loop attention --all
 
 # operator inbox 紧急度投影
-future-loop inbox --project .
+future loop inbox --project .
 ```
 
 ## 状态布局
@@ -199,7 +202,10 @@ future-loop inbox --project .
 ## 安装
 
 ```bash
-bash scripts/install-future-loop.sh        # CLI → ~/.local/bin/future-loop，技能 → ~/.future/agent/skills/
+make install-skills                      # 首选：链接 /future-loop 技能（无需构建——
+                                          # `future loop` 通过统一 CLI 运行）
+# 可选：独立二进制（开发用途）
+bash scripts/install-future-loop.sh      # CLI → ~/.local/bin/future-loop，技能 → ~/.future/agent/skills/
 # 或在 workspace 中构建：
 cargo build -p future-loop
 ```

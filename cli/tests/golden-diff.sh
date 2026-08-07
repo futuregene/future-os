@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 #
-# Behavioral-consistency gate for the Rust CLI (cli/, bin `future`):
-# byte-identical stdout / stderr / exit code against the recorded golden
-# outputs of the TypeScript CLI (captured before the TS CLI was retired).
+# Golden regression gate for the Rust CLI (cli/, bin `future`):
+# byte-identical stdout / stderr / exit code against the recorded goldens in
+# tests/golden/<scenario>/ (captured from the TypeScript CLI before it was
+# retired; the TS implementation no longer exists — this harness compares the
+# Rust CLI against the committed snapshots only).
 #
 # Modes:
 #   (default)  build the Rust CLI, run every corpus case under a controlled
 #              environment (fake $HOME, fixed version, mock platform server,
 #              real agent on a dedicated port) and compare against the
 #              committed goldens in tests/golden/<scenario>/.
-#   --record   rebuild the TypeScript CLI (needs node+npm+bun, an old
-#              checkout of cli/src) and (re)capture the goldens. Only needed
-#              when the reference behavior changes.
+#   --record   re-capture the goldens from the current Rust CLI (used when a
+#              behavior change is intentional). Historical note: goldens were
+#              originally recorded from the retired TS CLI.
 #
 # Requirements (check mode):
 #   - rustup with the pinned toolchain (rust-toolchain.toml)
@@ -22,7 +24,7 @@
 #
 # Usage:
 #   make test-cli-diff
-#   cli/tests/diff-ts-rust.sh [--verbose] [--keep] [--record]
+#   cli/tests/golden-diff.sh [--verbose] [--keep] [--record]
 #
 # Comparison modes:
 #   exact     stdout + stderr + exit code must be byte-identical (default)
@@ -55,7 +57,6 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TS_CLI_BUILT="$ROOT/cli/dist/future"  # --record only; needs an old checkout with the TS CLI
 DIFF_VERSION="0.0.0-diff+local"
 # FIXED workdir (not mktemp): recorded goldens embed paths from this dir
 # (e.g. doctor's `which` output), so check mode must reproduce the same
@@ -63,12 +64,11 @@ DIFF_VERSION="0.0.0-diff+local"
 WORK="/tmp/cli-diff-work"
 rm -rf "$WORK"
 mkdir -p "$WORK"
-# Both CLIs are run from COPIES under $WORK so that (a) neither executable
+# The binary is run from COPIES under $WORK so that (a) neither executable
 # dir has a future-agent sibling (`future init` reports the sibling when
-# present; the TS cli/dist has none) and (b) a concurrent rebuild of
-# $ROOT/target/debug/future cannot clobber the binary mid-corpus. Check mode
-# runs the Rust binary from the SAME ts-bin path record mode used, so
-# recorded paths match.
+# present) and (b) a concurrent rebuild of $ROOT/target/debug/future cannot
+# clobber the binary mid-corpus. Both record and check run from the same
+# ts-bin path (historical name), so recorded paths match.
 TS_CLI="$WORK/ts-bin/future"
 RUST_CLI="$WORK/rust-bin/future"
 RUST_CLI_BUILT="$ROOT/target/debug/future"
@@ -123,22 +123,11 @@ wait_port() {
   return 1
 }
 
-# Build the TS CLI with the pinned version (mirrors `make build-cli`).
-build_ts() {
-  info "building TS CLI (FUTURE_VERSION=$DIFF_VERSION) ..."
-  (cd "$ROOT/cli" && \
-     FUTURE_VERSION="$DIFF_VERSION" npm run gen-version >/dev/null && \
-     FUTURE_VERSION="$DIFF_VERSION" npm run build >/dev/null && \
-     FUTURE_VERSION="$DIFF_VERSION" bun build --compile dist/index.js --outfile dist/future >/dev/null 2>&1) \
-    || { err "TS CLI build failed (need node/npm/bun + npm install in cli/)"; exit 2; }
-  mkdir -p "$(dirname "$TS_CLI")"
-  cp "$TS_CLI_BUILT" "$TS_CLI"
-}
-
+# Build the Rust CLI with the pinned version (mirrors `make build-cli`).
 build_rust() {
   info "building Rust CLI (FUTURE_VERSION=$DIFF_VERSION) ..."
   (cd "$ROOT" && FUTURE_VERSION="$DIFF_VERSION" \
-     rustup run 1.97.0 cargo build -p cli-rust >/dev/null 2>&1) \
+     rustup run 1.97.0 cargo build -p future-cli >/dev/null 2>&1) \
     || { err "Rust CLI build failed"; exit 2; }
   # Copy to an isolated dir WITHOUT a future-agent sibling (see TS_CLI).
   mkdir -p "$(dirname "$RUST_CLI")"
@@ -387,7 +376,7 @@ export_case_env() {
 golden_dir() { printf '%s' "${1//:/_}"; }
 
 # run_case <scenario> <mode> <argv...>
-#   record mode: runs the TS CLI, saves its output as the golden reference.
+#   record mode: runs the Rust CLI, saves its output as the golden reference.
 #   check mode:  runs the Rust CLI, compares against the recorded golden.
 # The binary always runs from $WORK/ts-bin/future so recorded paths (e.g.
 # doctor's `which` output, init's symlink target) reproduce byte-for-byte.
@@ -495,6 +484,7 @@ normalize() {
   sed -E \
     -e 's/"agentInstanceId": "agent_[0-9a-f]+"/"agentInstanceId": "<agent-id>"/g' \
     -e 's/[0-9]+ ?[a-z]+ ago/<dur> ago/g' \
+    -e 's/ ago +/ ago /g' \
     -e 's#ws://127\.0\.0\.1:[0-9]+/devtools/#ws://127.0.0.1:<ws-port>/devtools/#g'
 }
 
@@ -503,10 +493,14 @@ normalize() {
 CASE_COUNT=0
 
 if [[ "$RECORD" == 1 ]]; then
-  build_ts
-  cp "$TS_CLI_BUILT" "$TS_CLI"
+  # Goldens were historically captured from the retired TS CLI; the Rust CLI
+  # is now the reference. --record re-captures from it (use only when a
+  # behavior change is intentional).
+  build_rust
+  mkdir -p "$(dirname "$TS_CLI")"
+  cp "$RUST_CLI_BUILT" "$TS_CLI"
   sanity_version "$TS_CLI"
-  info "recording goldens into $GOLDEN_DIR (TS CLI as reference)..."
+  info "recording goldens into $GOLDEN_DIR (Rust CLI as reference)..."
 else
   build_rust
   # Check mode runs from the SAME ts-bin path record mode used, so recorded
@@ -630,12 +624,6 @@ add_case static exact account bogus
 add_case static exact models --help
 add_case static exact models -h
 add_case static exact models --json --help
-add_case static exact agent status --help
-add_case static exact agent status -h
-add_case static exact agent --help
-add_case static exact agent -h
-add_case static exact agent --json
-add_case static exact agent bogus
 add_case static exact session
 add_case static exact session --help
 add_case static exact session -h
@@ -651,6 +639,15 @@ add_case static exact run --mode xml hi
 add_case static exact run --permission everywhere hi
 add_case static exact run --bogus-flag hi
 add_case static exact run @/nonexistent/file-xyz hi
+
+# embedded components — `future agent|tui|channel|loop` run the same code as
+# the standalone binaries. Only deterministic, non-network paths are diffed:
+# help/version output. (Starting the agent or the TUI blocks; the channel
+# bridge reads ~/.future/channels/config.json.)
+add_case static exact agent --help
+add_case static exact tui --help
+add_case static exact loop
+add_case static exact channel --version
 
 # home:no auth.json — pure local behavior, no network
 add_case home:none exact auth status
@@ -716,8 +713,8 @@ add_case init:linked exact init
 add_case init:blocked exact init
 
 # agent — real future-agent on a dedicated port; ordered stateful cases
-add_case agent exact agent status
-add_case agent exact agent status --json
+# (agent status was removed with the old CLI agent group — `future agent` now
+# RUNS the agent, so it is exercised only via --help in the static scenario)
 add_case agent exact models
 add_case agent exact models --json
 add_case agent exact session
@@ -757,7 +754,6 @@ add_case skills:installed exact skills install-builtin
 add_case skills:installed exact skills uninstall community-x
 
 # agentdown — smoke test: dead gRPC port, normalized comparison
-add_case agentdown agentdown agent status
 add_case agentdown agentdown run "hello agent"
 
 # browser — mock CDP endpoint (mode "browser") with pre-seeded config + refs.

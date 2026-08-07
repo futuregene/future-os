@@ -21,7 +21,13 @@ future-rpc = { path = "../future-rpc/rust" }
 tokio.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# preserve_order: session-list JSON key order must be deterministic across
+# build modes. Without it, the order silently depends on cargo feature
+# unification with the CLI's serde_json (BTreeMap-sorted when the agent builds
+# alone, insertion order when built in the workspace graph) — which flips the
+# golden harness's `session list --json` output. Enabled explicitly so the
+# wire order is always the struct-declaration (insertion) order.
+serde_json = { workspace = true, features = ["preserve_order"] }
 serde_with = "3"
 reqwest = { workspace = true, features = ["stream", "json", "rustls-tls", "blocking"] }
 futures.workspace = true

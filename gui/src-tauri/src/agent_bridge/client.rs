@@ -446,7 +446,7 @@ mod tests {
     ///
     /// Requires a live agent on 127.0.0.1:50051: `cargo test -- --ignored`.
     #[test]
-    #[ignore = "requires a running future-agent on 127.0.0.1:50051"]
+    #[ignore = "requires a running agent on 127.0.0.1:50051 (future agent)"]
     fn shared_channel_survives_caller_runtime_drop() {
         // First caller on a throwaway runtime, dropped on thread exit.
         std::thread::spawn(|| {

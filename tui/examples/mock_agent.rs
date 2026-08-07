@@ -4,7 +4,7 @@
 //! and the Rust TUI render byte-identical screens.
 //!
 //! Usage:
-//!   cargo build -p tui-rust --example mock_agent
+//!   cargo build -p future-tui --example mock_agent
 //!   target/debug/examples/mock_agent --port 50051
 //!
 //! The harness (tests/tmux-diff.sh) starts one instance per TUI on different

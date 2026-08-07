@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills install-loop fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars node-workspace
+.PHONY: version build build-cli build-gui build-gui-dist build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels run-loop package-gui install uninstall install-cli install-gui install-skills fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars node-workspace
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -35,9 +35,15 @@ endif
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
-install: install-agent install-tui install-cli install-gui install-channels install-skills install-loop
-
-install-nogui: install-agent install-tui install-cli install-channels install-skills install-loop
+# The unified `future` CLI (install-cli) embeds agent/tui/channel/loop, and
+# the GUI bundles its own future sidecar (gui-sidecars; the agent runs via
+# `future agent`). So the install surface is exactly four targets: everything
+# (install), the GUI, the CLI, and the skills (which also links the
+# /future-loop skill). The standalone future-agent/tui/channel/loop binaries
+# remain runnable via `make run-*` (dev use) and buildable with
+# `cargo build -p <crate>`; the standalone future-loop binary is installable
+# via scripts/install-future-loop.sh.
+install: install-cli install-gui install-skills
 
 uninstall:
 ifeq ($(OS),windows)
@@ -51,20 +57,6 @@ else
 endif
 	@echo "Removed: future-agent, future, future-tui, future-gui, future-channel"
 
-install-agent: build-agent
-ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "$(PREFIX)\future-agent$(EXE_SUFFIX)"
-else
-	$(SUDO) cp target/release/future-agent "$(PREFIX)/future-agent"
-endif
-
-install-tui: build-tui
-ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) target\release\future-tui$(EXE_SUFFIX) "$(PREFIX)\future-tui$(EXE_SUFFIX)"
-else
-	$(SUDO) cp target/release/future-tui "$(PREFIX)/future-tui"
-endif
-
 install-cli: build-cli
 ifeq ($(OS),windows)
 	$(SUDO) $(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
@@ -72,7 +64,7 @@ else
 	$(SUDO) cp target/release/future "$(PREFIX)/future"
 endif
 
-install-gui: install-cli install-agent gui-sidecars
+install-gui: install-cli gui-sidecars
 	$(call npm-install-if-needed,gui)
 	cd gui && npx tauri build --no-bundle
 ifeq ($(OS),windows)
@@ -81,17 +73,12 @@ else
 	$(SUDO) cp gui/src-tauri/target/release/futureos "$(PREFIX)/future-gui"
 endif
 
-install-channels: build-channels
-ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) target\release\future-channel$(EXE_SUFFIX) "$(PREFIX)\"
-else
-	$(SUDO) cp target/release/future-channel "$(PREFIX)/"
-endif
-
 # Symlink the built-in skill bundles into the agent's app-skills directory
 # so the agent discovers them on startup.  Pulls the latest from the skills
 # submodule first, then links each skill.  Orphaned symlinks (skills removed
-# from the repo) are cleaned up.
+# from the repo) are cleaned up. Also links the /future-loop skill (single
+# source of truth = repo SKILL.md; the loop control plane itself runs through
+# the unified `future` CLI, `future loop` — no binary build needed).
 install-skills:
 	git submodule update --init --remote skills
 ifeq ($(OS),windows)
@@ -101,7 +88,10 @@ ifeq ($(OS),windows)
 		xcopy /e /i /y "%%d" "$(USERPROFILE)\.future\agent\skills\%%~nxd" >NUL & \
 		echo   ✓ %%~nxd \
 	)
-	@echo Copied built-in skills to ~/.future/agent/skills/
+	@if not exist "%USERPROFILE%\.future\agent\skills\future-loop" mkdir "%USERPROFILE%\.future\agent\skills\future-loop"
+	@copy /y orchestration\loop\skill\future-loop\SKILL.md "%USERPROFILE%\.future\agent\skills\future-loop\SKILL.md" >NUL
+	@echo   ✓ future-loop skill
+	@echo Copied built-in skills + future-loop skill to ~/.future/agent/skills/
 else
 	@mkdir -p "$${HOME}/.future/agent/skills"
 	@for skill_dir in skills/builtin/*/; do \
@@ -115,20 +105,25 @@ else
 	@for link in "$${HOME}/.future/agent/skills"/*; do \
 		[ -L "$$link" ] || continue; \
 		name=$$(basename "$$link"); \
-		if [ ! -d "skills/builtin/$$name" ]; then \
+		if [ ! -d "skills/builtin/$$name" ] && [ "$$name" != "future-loop" ]; then \
 			rm -rf "$$link"; \
 			echo "  ✗ $$name (removed)"; \
 		fi; \
 	done
-	@echo "Linked built-in skills to ~/.future/agent/skills/"
+	@mkdir -p "$${HOME}/.future/agent/skills/future-loop"
+	@ln -sf "$(CURDIR)/orchestration/loop/skill/future-loop/SKILL.md" "$${HOME}/.future/agent/skills/future-loop/SKILL.md"
+	@echo "  ✓ future-loop skill"
+	@echo "Linked built-in skills + future-loop skill to ~/.future/agent/skills/"
 endif
-
-install-loop:
-	bash scripts/install-future-loop.sh $(if $(RELEASE),--release,)
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 
-build: build-agent build-tui build-cli build-gui build-channels
+# The unified `future` CLI (build-cli) embeds agent/tui/channel/loop, and the
+# GUI (build-gui → gui-sidecars) builds + stages its future sidecar itself
+# (the agent runs via `future agent`). So `make build` needs exactly these
+# two; the standalone agent/tui/channel/loop binaries remain buildable via
+# their individual build-* targets (dev use).
+build: build-cli build-gui
 
 # Only run npm install when package.json is newer than node_modules.
 # npm-install-if-needed ─────────────────────────────────────────────────────
@@ -168,27 +163,18 @@ node-workspace:
 	fi
 endif
 
-build-agent:
-	cd agent && cargo build --release
-
-build-tui:
-	cd tui && cargo build --release
-
 build-cli:
 	cd cli && cargo build --release
 
-# Internal: copy sidecar binaries (agent + CLI) into the Tauri resource dir.
-# Tauri's externalBin references these at build time; they are embedded next
-# to the GUI binary and extracted on first launch so the GUI can auto-start
-# the agent, run CLI commands (skill bootstrap), etc.
-gui-sidecars: build-agent build-cli
+# Stage the unified `future` CLI as the Tauri sidecar (externalBin). The GUI
+# spawns the agent via `future agent` (embedded), so no separate future-agent
+# sidecar is needed.
+gui-sidecars: build-cli
 ifeq ($(OS),windows)
 	cmd /c "if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries"
-	$(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)"
 	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
 else
 	@mkdir -p gui/src-tauri/binaries
-	cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
 	cp target/release/future gui/src-tauri/binaries/future-$(TARGET)
 endif
 
@@ -201,9 +187,6 @@ build-gui-dist:
 #   gui/src-tauri/target/release/futureos$(EXE_SUFFIX)
 build-gui: build-gui-dist gui-sidecars
 	cd gui && npx tauri build --no-bundle
-
-build-channels:
-	cd channels && cargo build --release
 
 # Mobile native projects are generated locally by Expo and are intentionally
 # not part of the default build. This target builds and installs Android.
@@ -219,7 +202,7 @@ build-mobile-ios:
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent test-channels test-cli test-cli-rust test-tui test-tui-rust test-tui-diff test-tui-tmux test-gui test-gui-rust test-mobile
+test: test-agent test-channels test-cli test-tui test-tui-diff test-tui-tmux test-gui test-gui-rust test-mobile
 
 test-agent:
 	cd agent && cargo test
@@ -227,21 +210,17 @@ test-agent:
 test-channels:
 	cd channels && cargo test
 
-test-cli: test-cli-rust
-
-test-cli-rust:
-	rustup run 1.97.0 cargo test -p cli-rust
+test-cli:
+	rustup run 1.97.0 cargo test -p future-cli
 
 test-cli-diff:
-	./cli/tests/diff-ts-rust.sh
+	./cli/tests/golden-diff.sh
 
-test-tui: test-tui-rust
-
-test-tui-rust:
-	rustup run 1.97.0 cargo test -p tui-rust
+test-tui:
+	rustup run 1.97.0 cargo test -p future-tui
 
 test-tui-diff:
-	./tui/tests/diff-ts-rust.sh
+	./tui/tests/golden-diff.sh
 
 test-tui-tmux:
 	./tui/tests/tmux-diff.sh
@@ -269,12 +248,12 @@ lint-channels:
 
 lint-tui:
 	cd tui && rustup run 1.97.0 cargo fmt --check
-	rustup run 1.97.0 cargo clippy -p tui-rust --all-targets -- -D warnings
+	rustup run 1.97.0 cargo clippy -p future-tui --all-targets -- -D warnings
 
 
 lint-cli:
 	cd cli && rustup run 1.97.0 cargo fmt --check
-	rustup run 1.97.0 cargo clippy -p cli-rust --all-targets -- -D warnings
+	rustup run 1.97.0 cargo clippy -p future-cli --all-targets -- -D warnings
 
 lint-gui:
 	cd gui && npm run lint
@@ -317,17 +296,11 @@ run-cli:
 run-gui: build-gui
 ifeq ($(OS),windows)
 	@if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries
-	@if not exist "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)" "$(MAKE)" build-agent
-	@if not exist "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)" $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)$(EXE_SUFFIX)"
 	@if not exist "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" "$(MAKE)" build-cli
 	@if not exist "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" $(COPY_CMD) target\release\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
 	cd gui && npm run tauri:dev
 else
 	@mkdir -p gui/src-tauri/binaries
-	@if [ ! -f "gui/src-tauri/binaries/future-agent-$(TARGET)" ]; then \
-		$(MAKE) build-agent && \
-		cp target/release/future-agent "gui/src-tauri/binaries/future-agent-$(TARGET)"; \
-	fi
 	@if [ ! -f "gui/src-tauri/binaries/future-$(TARGET)" ]; then \
 		$(MAKE) build-cli && \
 		cp target/release/future "gui/src-tauri/binaries/future-$(TARGET)"; \
@@ -349,6 +322,9 @@ package-gui: install-gui
 
 run-channels:
 	cd channels && cargo run
+
+run-loop:
+	cd orchestration/loop && cargo run
 
 # ─── Profile ───────────────────────────────────────────────────────────────
 
@@ -466,21 +442,18 @@ endif
 # ─── Help ───────────────────────────────────────────────────────────────────
 
 help:
-	@echo "  build              Build agent, TUI, CLI, and GUI"
-	@echo "  build-agent        Build Rust agent"
-	@echo "  build-tui          Build standalone TUI binary (Rust: cargo build --release)"
+	@echo "  build              Build GUI + unified CLI (agent/tui/channel/loop embedded; GUI stages its own sidecars)"
 	@echo "  build-cli          Build Rust CLI (future)"
 	@echo "  build-gui          Build React/Tauri GUI frontend"
-	@echo "  build-channels      Build channel bridge"
 	@echo "  build-mobile-android Generate, build, and install the Android app"
 	@echo "  build-mobile-ios     Generate, build, and install the iOS app (requires Xcode)"
 	@echo "  check-mobile       Typecheck, lint, format-check, and test mobile"
 	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
-	@echo "  test-tui-rust      Run the Rust TUI unit tests (cargo test -p tui-rust)"
-	@echo "  test-tui-diff      Rust render parity vs golden (byte-compare tui/tests/diff-ts-rust.sh)"
-	@echo "  test-tui-tmux      Rust tmux screen consistency vs golden (tui/tests/tmux-diff.sh)"
-	@echo "  test-cli-rust      Run the Rust CLI port unit tests (cargo test -p cli-rust)"
-	@echo "  test-cli-diff      Differential test: TS future vs Rust future, byte-identical output"
+	@echo "  test-tui           Run the Rust TUI unit tests (cargo test -p future-tui)"
+	@echo "  test-tui-diff      Rust render parity vs golden (tui/tests/golden-diff.sh)"
+	@echo "  test-tui-tmux      tmux screen consistency vs golden (tui/tests/tmux-diff.sh)"
+	@echo "  test-cli           Run the Rust CLI unit tests (cargo test -p future-cli)"
+	@echo "  test-cli-diff      Golden regression: CLI output vs recorded goldens (cli/tests/golden-diff.sh)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
 	@echo "  fmt                Format Rust and mobile code"
 	@echo "  run-agent          Run agent directly (debug build)"
@@ -490,13 +463,16 @@ help:
 	@echo "  run-mobile-android Run the Android app on a selected device"
 	@echo "  run-mobile-ios     Run the iOS app on the simulator (requires Xcode)"
 	@echo "  run-channels        Run channel bridge directly (debug build)"
+	@echo "  run-loop            Run loop control plane directly (debug build)"
 	@echo "  package-gui        Package GUI desktop bundles"
 	@echo "  profile-agent      CPU profile: build + 90s bench, write flamegraph SVG"
 	@echo "  profile-quick      CPU profile: run agent N secs (PROFILE_SECS=30)"
 	@echo "  profile-heap       Heap profile via dhat, write dhat report JSON"
 	@echo "  generate-models    Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto     Regenerate wire code: future-rpc (future.proto, all TS clients) + channels feishu_ws"
-	@echo "  install            Build & install all components"
-	@echo "  install-nogui      Build & install terminal stack (skip GUI)"
+	@echo "  install            Build & install GUI + unified CLI + skills"
+	@echo "  install-cli        Install the unified \`future\` CLI (agent/tui/channel/loop embedded)"
+	@echo "  install-gui        Install the desktop app (stages its own agent/CLI sidecars)"
+	@echo "  install-skills     Link built-in skills + the /future-loop skill"
 	@echo "  uninstall          Remove installed binaries from $(PREFIX)/"
 	@echo "  clean              Remove build artifacts + installed binaries"

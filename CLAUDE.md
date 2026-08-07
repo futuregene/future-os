@@ -29,14 +29,13 @@ During normal development you don't need to run this full suite every time — i
 
 ### GUI Tauri sidecar binaries in a worktree
 
-`gui/src-tauri/tauri.conf.json` declares `externalBin: ["binaries/future-agent", "binaries/future"]`, and `tauri-build`'s build script **aborts** with `resource path ... doesn't exist` if those files are missing. They are build artifacts — present in the main worktree but absent from a fresh worktree, so `cargo check`/`clippy`/`test` under `gui/src-tauri` fails for environmental reasons, not your code.
+`gui/src-tauri/tauri.conf.json` declares `externalBin: ["binaries/future"]`, and `tauri-build`'s build script **aborts** with `resource path ... doesn't exist` if those files are missing. They are build artifacts — present in the main worktree but absent from a fresh worktree, so `cargo check`/`clippy`/`test` under `gui/src-tauri` fails for environmental reasons, not your code.
 
 CI solves this by creating **empty placeholder sidecars** (`.github/workflows/ci.yml`):
 
 ```bash
 triple=$(rustc -Vv | sed -n 's/^host: //p')
 mkdir -p gui/src-tauri/binaries
-: > "gui/src-tauri/binaries/future-agent-$triple"
 : > "gui/src-tauri/binaries/future-$triple"
 ```
 
@@ -55,7 +54,7 @@ The placeholders are empty files and are gitignored — they only satisfy the bu
 ### Build / run
 
 - Prefer `make` targets from repo root (`make build`, `make test`, `make lint`, ...). `make help` lists them all. For more control, use cargo/npm directly. See `README.md` Quick Start for the common flows.
-- The Rust binary `future-agent` is the backend, always a gRPC server at `127.0.0.1:50051`. The TUI, GUI Tauri backend, and channel bridge all connect to it via gRPC. Start components directly (e.g. `future-agent`) rather than through the CLI.
+- The Rust binary `future-agent` is the backend, always a gRPC server at `127.0.0.1:50051`. The TUI, GUI Tauri backend, and channel bridge all connect to it via gRPC. `future <cmd>` is the unified entry point for every Rust component (`future agent|tui|channel|loop <args>` — each runs the same code as the standalone `future-agent` / `future-tui` / `future-channel` / `future-loop` binaries, which remain installed; `make run-*` targets also still work).
 - Proto codegen is owned by the `future-rpc` crate (single source of truth): `make generate-proto` regenerates `future-rpc/rust/src/generated/proto.rs` (server + all clients) and the embedded TS proto. It is opt-in (`REGENERATE_PROTO=1`), checked into git, and CI fails if it goes stale. The old per-crate generated copies (`agent/`, `channels/`, `gui/src-tauri/`) are gone — every Rust consumer depends on `future-rpc`.
 - Typed-RPC wire contract: `RpcResponse.payload` / `StreamEvent.payload` (field 20) carry typed `oneof` payloads for Tier-1 commands/events. The agent **dual-writes** the typed `payload` and the legacy JSON `data` string during the migration window. Decoding strategy differs by client: **Rust** clients (`future_rpc::decode`) are typed-first with a JSON `data` fallback; **TS** clients (`@future-os/rpc` in `future-rpc/ts`) stay JSON-first and treat the typed `payload` fallback as best-effort raw output (not a normalized shape) — they are transitional and expected to be replaced by Rust implementations, so no full typed normalization is planned for them. Do not retire the `data` dual-write until the TS clients have been replaced (not merely "all clients read typed"). Field numbers are stable / never reused; `optional` marks fields whose JSON distinguishes null/absent.
 

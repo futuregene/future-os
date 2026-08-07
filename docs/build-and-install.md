@@ -38,8 +38,10 @@ brew install protobuf                                             # optional —
 Build:
 
 ```bash
-make install        # build everything, install to /opt/homebrew/bin
-make install-nogui  # terminal stack only (skip the Tauri GUI)
+make install        # GUI + unified `future` CLI + skills (agent/tui/channel/loop are embedded) → /opt/homebrew/bin
+make install-cli    # unified `future` CLI only
+make install-gui    # desktop app only (stages its own agent/CLI sidecars)
+make install-skills # built-in skills + the /future-loop skill
 make package-gui    # desktop bundle → .app + .dmg in gui/src-tauri/target/release/bundle/
 scripts/build-macos-dmg.sh  # local DMG; auto-signs when a Developer ID certificate is available
 ```
@@ -69,8 +71,10 @@ sudo apt install -y protobuf-compiler                             # optional —
 Build:
 
 ```bash
-make install        # build everything, install to /usr/local/bin (sudo)
-make install-nogui  # terminal stack only (skip the Tauri GUI)
+make install        # GUI + unified `future` CLI + skills (agent/tui/channel/loop are embedded) → /usr/local/bin (sudo)
+make install-cli    # unified `future` CLI only
+make install-gui    # desktop app only (stages its own agent/CLI sidecars)
+make install-skills # built-in skills + the /future-loop skill
 make package-gui    # desktop bundle → .deb in gui/src-tauri/target/release/bundle/
 ```
 
@@ -86,34 +90,32 @@ Install the toolchain:
 
 No `make` needed — the PowerShell commands below mirror the make targets step for step. Run them from the repo root.
 
-**Terminal stack** — equivalent to `make install-nogui`:
+**Terminal stack** — equivalent to `make install-cli install-skills`: only the unified
+`future` CLI is needed (agent/tui/channel/loop are embedded in it); skills are
+installed by the CLI itself:
 
 ```powershell
-# Rust components: agent + channel bridge          (make build-agent / build-channels)
-cargo build --release --manifest-path agent/Cargo.toml
-cargo build --release --manifest-path channels/Cargo.toml
-
-# Rust components: TUI + CLI (make build-tui / build-cli)
-cargo build --release --manifest-path tui/Cargo.toml
+# Rust CLI — the unified binary (make build-cli)
 cargo build --release --manifest-path cli/Cargo.toml
 
-# Install to %USERPROFILE%\.future\bin             (the install-* copy steps)
+# Install to %USERPROFILE%\.future\bin             (the install-cli copy step)
 $bin = "$env:USERPROFILE\.future\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, target\release\future-tui.exe, target\release\future.exe $bin
+Copy-Item target\release\future.exe $bin
 
 # Built-in skills — make install-skills uses symlinks; on Windows use the CLI instead
 & "$bin\future.exe" skills install
 ```
 
-**Desktop app** — the GUI half of `make install` (run after the terminal stack block above, which produces the sidecars):
+**Desktop app** — the GUI half of `make install` (stages its own sidecar,
+`make gui-sidecars` — only the unified `future` CLI; the GUI starts the agent
+via `future agent`):
 
 ```powershell
-# Stage agent + CLI as Tauri sidecars, named with the host triple
+# Stage the unified CLI as the Tauri sidecar, named with the host triple
 $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
 New-Item -ItemType Directory -Force -Path gui\src-tauri\binaries | Out-Null
-Copy-Item target\release\future-agent.exe "gui\src-tauri\binaries\future-agent-$triple.exe"
-Copy-Item cli\dist\future.exe "gui\src-tauri\binaries\future-$triple.exe"
+Copy-Item target\release\future.exe "gui\src-tauri\binaries\future-$triple.exe"
 
 # Build the app and install it as future-gui.exe   (make install-gui)
 Push-Location gui; npm install; npx tauri build --no-bundle; Pop-Location
@@ -142,18 +144,32 @@ cargo build -p future-loop                 # debug build → target/debug/future
 cargo build -p future-loop --release       # release build → target/release/future-loop
 ```
 
-To install the CLI plus the `/future-loop` agent skill locally:
+To use it with the agent, link the `/future-loop` skill (no build needed —
+the control plane runs through the unified `future` CLI):
+
+```bash
+make install-skills                    # built-in skills + the /future-loop skill → ~/.future/agent/skills/
+```
+
+Optionally install the standalone `future-loop` binary as well (dev use):
 
 ```bash
 bash scripts/install-future-loop.sh        # CLI → ~/.local/bin/future-loop, skill → ~/.future/agent/skills/
 bash scripts/install-future-loop.sh --release
 ```
 
-Add `~/.local/bin` to your `PATH` if it isn't already, then verify:
+Verify:
 
 ```bash
-future-loop status
+future loop status        # primary entry (same code as `future-loop status`)
 ```
+
+> All Rust components are also reachable through the unified `future` CLI:
+> `future agent`, `future tui`, `future channel`, `future loop` — each runs
+> the same code as its standalone binary (`future-agent`, `future-tui`,
+> `future-channel`, `future-loop`). The standalone binaries remain buildable
+> with `cargo build -p <crate>` and runnable via `make run-*` (dev use); the
+> standalone future-loop binary installs via scripts/install-future-loop.sh.
 
 See the [loop control plane guide](loop-control-plane.md) for what it does
 and how to use it.
@@ -188,7 +204,7 @@ make lint        # lint all: agent, channels, TUI, CLI, GUI (+stylelint), mobile
 Source builds use the repo Makefile from the repo root:
 
 ```bash
-make build          # build all components (no system install)
+make build          # build GUI + unified CLI (no system install; agent/tui/channel/loop embedded in future, GUI stages its own sidecars)
 make lint           # lint all: agent, channels, TUI, CLI, GUI (+stylelint), mobile
 make fmt            # cargo fmt (agent + channels) + mobile formatting
 make test           # all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile
@@ -210,7 +226,7 @@ make generate-proto          # future-rpc/rust + channels + future-rpc/ts
 Source builds use the repo Makefile from the repo root:
 
 ```bash
-make build          # build all components (no system install)
+make build          # build GUI + unified CLI (no system install; agent/tui/channel/loop embedded in future, GUI stages its own sidecars)
 make lint           # lint all (agent + channels + TUI + CLI + GUI)
 make fmt            # cargo fmt (agent + channels)
 make test           # cargo test (agent)

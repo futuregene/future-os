@@ -1,1 +1,1 @@
-session rename abc123
+session delete abc123

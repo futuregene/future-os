@@ -13,6 +13,7 @@ pub mod capabilities;
 pub mod cli;
 pub mod cli_projection;
 pub mod compat;
+pub mod console;
 pub mod contract;
 pub mod decision;
 pub mod executor;

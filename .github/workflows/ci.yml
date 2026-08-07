@@ -153,7 +153,7 @@ jobs:
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p gui/src-tauri/binaries
-          : > "gui/src-tauri/binaries/future-agent-$triple"
+          : > "gui/src-tauri/binaries/future-$triple"
           : > "gui/src-tauri/binaries/future-$triple"
 
       # ── Workspace crates (agent / channels) ──
@@ -235,7 +235,7 @@ jobs:
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p gui/src-tauri/binaries
-          : > "gui/src-tauri/binaries/future-agent-$triple"
+          : > "gui/src-tauri/binaries/future-$triple"
           : > "gui/src-tauri/binaries/future-$triple"
 
       - name: cargo test (workspace)
@@ -340,7 +340,6 @@ jobs:
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p gui/src-tauri/binaries
-          : > "gui/src-tauri/binaries/future-agent-$triple"
           : > "gui/src-tauri/binaries/future-$triple"
 
       - name: Create placeholder sidecars (Windows)
@@ -349,7 +348,6 @@ jobs:
         run: |
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
           New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
-          New-Item -ItemType File -Force -Path "gui/src-tauri/binaries/future-agent-$triple.exe" | Out-Null
           New-Item -ItemType File -Force -Path "gui/src-tauri/binaries/future-$triple.exe" | Out-Null
 
       - name: cargo check (workspace)
@@ -362,7 +360,7 @@ jobs:
 
   # ─── CLI: Rust tests + golden diff harness ──────────────────────────────
   # The CLI is a Rust workspace member (bin `future`); the golden harness
-  # (cli/tests/diff-ts-rust.sh) checks byte-identical output against the
+  # (cli/tests/golden-diff.sh) checks byte-identical output against the
   # committed goldens recorded from the retired TypeScript CLI. It needs
   # python3 (mock platform server) and skips the live-agent group when no
   # future-agent binary is present.
@@ -400,16 +398,16 @@ jobs:
             libssl-dev
 
       - name: cargo test (cli)
-        run: cargo test -p cli-rust
+        run: cargo test -p future-cli
 
       - name: Golden diff harness
-        run: bash cli/tests/diff-ts-rust.sh
+        run: bash cli/tests/golden-diff.sh
 
   # ─── TUI: Rust tests + golden harness ────────────────────────────────────
   # The TUI is a Rust workspace member (bin `future-tui`); the TypeScript
   # implementation was retired (2026-08, same as the CLI) and its render +
   # screen outputs are committed as goldens (tui/tests/golden/). The golden
-  # harness (tui/tests/diff-ts-rust.sh) byte-compares the Rust renderer
+  # harness (tui/tests/golden-diff.sh) byte-compares the Rust renderer
   # against the recorded TS outputs headlessly.
   # NOTE: job name is pinned by the "Protect Main" ruleset's required status
   # checks ("TUI typecheck + test") — renaming it would un-mergeable the PRs.
@@ -440,10 +438,10 @@ jobs:
           sudo apt-get install -y             build-essential             binutils             mold             pkg-config             libssl-dev
 
       - name: cargo test (tui)
-        run: cargo test -p tui-rust
+        run: cargo test -p future-tui
 
       - name: Golden render harness
-        run: bash tui/tests/diff-ts-rust.sh
+        run: bash tui/tests/golden-diff.sh
 
   # ─── GUI: typecheck + eslint + stylelint + vitest ─────────────────────────
   # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,

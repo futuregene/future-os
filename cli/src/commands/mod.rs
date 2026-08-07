@@ -6,7 +6,6 @@
 //! P2 (remote/gRPC commands).
 
 pub mod account;
-pub mod agent;
 pub mod auth;
 pub mod browser_tools;
 pub mod doctor;

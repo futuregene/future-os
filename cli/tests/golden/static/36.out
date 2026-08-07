@@ -1,7 +1,9 @@
-future agent status — show running agent state
+future session — manage agent sessions
 
 Usage:
-  future agent status [--json]
+  future session list [--json]                       List all sessions
+  future session info <id>                           Show session details + stats
+  future session rename <id> <name>                  Give a session a readable name
+  future session delete <id>                         Delete a session
 
-  --json    Output full state as JSON.
-  --help    Show this help.
+Session data is stored at ~/.future/agent/sessions/

@@ -417,26 +417,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "cli-rust"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "base64",
- "chrono",
- "dirs 5.0.1",
- "future-rpc",
- "futures-util",
- "indexmap 2.14.0",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-tungstenite",
- "tonic",
-]
-
-[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -923,6 +903,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-cli"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "chrono",
+ "dirs 5.0.1",
+ "future-agent",
+ "future-channel",
+ "future-loop",
+ "future-rpc",
+ "future-tui",
+ "futures-util",
+ "indexmap 2.14.0",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "tonic",
+]
+
+[[package]]
 name = "future-loop"
 version = "0.1.0"
 dependencies = [
@@ -952,6 +956,30 @@ dependencies = [
  "serde_json",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "future-tui"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "dirs 5.0.1",
+ "future-rpc",
+ "futures-util",
+ "libc",
+ "parking_lot",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "unicode-segmentation",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3305,30 +3333,6 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
-
-[[package]]
-name = "tui-rust"
-version = "0.0.0"
-dependencies = [
- "base64",
- "chrono",
- "dirs 5.0.1",
- "future-rpc",
- "futures-util",
- "libc",
- "parking_lot",
- "pulldown-cmark",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tonic",
- "unicode-segmentation",
- "uuid",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "tungstenite"

@@ -190,21 +190,22 @@ docs/wiki/
   - `tools`:列出/查看/调用工具(`tools list [--json]`、`tools describe <name>`、`tools call <name>`;参数用 `--key value`,复杂工具可用 `--args '<json>'`;部分工具另有 `--input <path>`、`--output <path>`、`--stdin` 等旗标)
   - `skills`:管理技能包(`list` / `install [<name>]` / `install-builtin` / `uninstall <name>` / `update`)
   - `models`:列出可用模型(`models [--json]`)
-  - `agent`:仅查看运行状态(`agent status [--json]`;**没有** `start`/`stop`,CLI 不能启停 agent)
+  - `agent`:启动 agent 服务(`future agent <args>`,参数同 `future-agent`;`future agent --help` 查看选项)
+  - `tui` / `channel` / `loop`:运行其他 Rust 组件(`future tui` / `future channel` / `future loop <cmd>`,分别等同 `future-tui` / `future-channel` / `future-loop`;独立二进制仍可用)
   - `session`:列出/查看/重命名/删除会话
   - `doctor`:环境诊断
-- **小贴士**:macOS 首次被拦 → 先右键打开应用清除拦截;"Connection refused" → agent 没运行,先打开桌面应用(或手动运行 `future-agent`)。
+- **小贴士**:macOS 首次被拦 → 先右键打开应用清除拦截;"Connection refused" → agent 没运行,先打开桌面应用(或运行 `future agent`)。
 
 ### Feishu
 **代码入口(先读再写):** `channels/src/feishu/bridge.rs`(消息处理与斜杠命令)、`channels/src/feishu/feishu_ws.rs`(WebSocket 长连接/心跳)、`channels/src/main.rs` + `channels/src/config.rs`(`~/.future/channels/config.json` 读取与启动)。**命令名、斜杠命令、配置项一律以代码为准。**
-- 定位:通过**渠道桥**把 FutureOS 接入飞书(Lark),在飞书聊天里和 agent 对话。渠道桥是独立服务(二进制 `future-channel`),**没有 `future channel` 命令**;启动/停止直接运行 `future-channel`(或 `make run-channels`),agent 需在运行(开着桌面应用即可)。
+- 定位:通过**渠道桥**把 FutureOS 接入飞书(Lark),在飞书聊天里和 agent 对话。渠道桥是独立服务(二进制 `future-channel`),用 `future channel` 或 `future-channel` 启动(或 `make run-channels`),agent 需在运行(开着桌面应用即可)。
 - 配置:首次运行自动在 `~/.future/channels/config.json` 生成默认配置,按需填入飞书应用的 App ID / App Secret 等并启用对应渠道。
 - 消息经 WebSocket(open.feishu.cn)推送,回复通过 CardKit 卡片流式更新;未知斜杠命令转发给 agent 当普通消息。
 - 斜杠命令(本地处理):`/new` `/status` `/stop` `/model` `/models` `/compact` `/effort` `/cwd` `/help`。
 
 ### DingTalk
 **代码入口(先读再写):** `channels/src/dingtalk/bridge.rs`(消息处理与斜杠命令)、`channels/src/main.rs` + `channels/src/config.rs`(启动与配置)。**命令名、斜杠命令、配置项一律以代码为准。**
-- 定位:通过**渠道桥**把 FutureOS 接入钉钉,在钉钉聊天里和 agent 对话。渠道桥是独立服务(二进制 `future-channel`),**没有 `future channel` 命令**;启动/停止直接运行 `future-channel`(或 `make run-channels`),agent 需在运行。
+- 定位:通过**渠道桥**把 FutureOS 接入钉钉,在钉钉聊天里和 agent 对话。渠道桥是独立服务(二进制 `future-channel`),用 `future channel` 或 `future-channel` 启动(或 `make run-channels`),agent 需在运行。
 - 配置:`~/.future/channels/config.json`(同上)。
 - 斜杠命令与飞书一致(本地处理,9 个);未知斜杠命令转发给 agent 当普通消息。
 

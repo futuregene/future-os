@@ -38,7 +38,7 @@ or from a native desktop window.
 
 One line, no source build required:
 
-**macOS** — installs the official signed app (arm64 / Intel auto-detected), then builds the `future-loop` control plane (CLI + skill) from source:
+**macOS** — installs the official signed app (arm64 / Intel auto-detected), then links the `/future-loop` skill (the control plane itself runs through the unified `future` CLI bundled with the app):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
@@ -50,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/i
 iex (irm https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.ps1)
 ```
 
-**Linux** — no prebuilt binaries yet; the script bootstraps the toolchain (apt deps + Rust + Node 24 + Bun) and builds the terminal stack (agent, TUI, CLI, IM channels, loop) from source:
+**Linux** — no prebuilt binaries yet; the script bootstraps the toolchain (apt deps + Rust + Node 24 + Bun) and builds the terminal stack — the unified `future` CLI (agent, TUI, IM channels, and loop are all embedded in it) plus skills — from source:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
@@ -107,15 +107,22 @@ The terminal and CLI clients are thin gRPC clients. **The agent must be running
 first**, listening on `127.0.0.1:50051`:
 
 ```bash
-future-agent      # start the agent in the terminal (logs to stdout; Ctrl-C to stop)
+future agent     # start the agent in the terminal (logs to stdout; Ctrl-C to stop)
 ```
 
-Then launch the terminal UI:
+Then launch the terminal UI — from the same `future` command or the standalone
+binary (both are equivalent):
 
 ```bash
-future-tui        # terminal UI
+future tui       # terminal UI (same as future-tui)
 ```
 
+> `future <cmd>` is the unified entry point for every Rust component: `future agent`,
+> `future tui`, `future channel`, `future loop`. The standalone binaries
+> (`future-agent`, `future-tui`, `future-channel`, `future-loop`) remain
+> installed and work exactly the same — `future <cmd> <args>` just runs them
+> in-process.
+>
 > A client that exits with a connection / gRPC error almost always means the agent isn't running yet — see [Troubleshooting](#troubleshooting).
 
 ### Essential Slash Commands (TUI)
@@ -157,7 +164,7 @@ future-tui        # terminal UI
 
 | Symptom | Fix |
 |---|---|
-| Client exits with a connection / gRPC error | The agent isn't running. Start it (`future-agent`) and check nothing else holds the port: `lsof -i :50051`. |
+| Client exits with a connection / gRPC error | The agent isn't running. Start it (`future agent`) and check nothing else holds the port: `lsof -i :50051`. |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future auth login`, or add a provider to `models.json` — see [Configure a model](#configure-a-model). |
 | Build / install problems | See [Build & Install](docs/build-and-install.md) (platform toolchains, linker, GUI packaging). |
 

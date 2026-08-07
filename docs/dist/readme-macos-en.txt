@@ -16,8 +16,8 @@ a "unidentified developer" or "damaged" warning. This is expected. Choose one:
 
 [Notes]
 · An internet connection is required for the first-time login (in the app).
-· Personal data is stored in ~/.future. The background future-agent service
-  stops automatically when you quit the app.
+· Personal data is stored in ~/.future. The background agent stops
+automatically when you quit the app.
 · The command-line tool future is included at
   FutureOS.app/Contents/MacOS/future.
 

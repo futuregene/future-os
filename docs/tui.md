@@ -1,14 +1,18 @@
 # FutureOS Terminal UI (TUI)
 
 The TUI is the terminal client: `future-tui`. It is a thin gRPC client — the
-**agent must be running first** (`future-agent`, listening on
+**agent must be running first** (`future agent`, listening on
 `127.0.0.1:50051`). A client that exits with a connection / gRPC error almost
 always means the agent isn't running yet.
 
 ```bash
-future-agent      # terminal 1: the agent
-future-tui        # terminal 2: the terminal UI
+future agent      # terminal 1: the agent
+future tui        # terminal 2: the terminal UI (same as future-tui)
 ```
+
+`future tui <args>` runs the TUI in-process; the standalone `future-tui`
+binary is equivalent and still installed. `future tui --help` lists all
+options (print mode, `--list-models`, `--session`, ...).
 
 - Build / install: see [Build & Install](build-and-install.md).
 - Session persistence, model config and tool approval all run through the
@@ -71,7 +75,7 @@ additionally logged to `~/.future/tui/write.log`.
 
 | Symptom | Fix |
 |---|---|
-| Connection / gRPC error on startup | The agent isn't running. Start `future-agent` and check nothing else holds the port: `lsof -i :50051`. |
+| Connection / gRPC error on startup | The agent isn't running. Start `future agent` and check nothing else holds the port: `lsof -i :50051`. |
 | Auth / "no model" error | No model configured. Run `future auth login`, or add a provider to `~/.future/agent/models.json` — see the repo README "Configure a model". |
 
 See also: [Directory layout](directory-layout.md) for what lives under

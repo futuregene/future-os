@@ -1,1 +1,1 @@
-run --help
+run --bogus-flag hi

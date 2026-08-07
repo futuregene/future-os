@@ -7,6 +7,10 @@ edition = "2021"
 name = "future-channel"
 path = "src/main.rs"
 
+[lib]
+name = "future_channel"
+path = "src/lib.rs"
+
 [dependencies]
 future-rpc = { path = "../future-rpc/rust" }
 tonic.workspace = true

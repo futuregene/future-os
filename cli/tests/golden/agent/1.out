@@ -1,5 +1,6 @@
 {
-  "version": "0.0.0",
-  "agentInstanceId": "agent_190d7d120b0f488eba698c09e83a9db8",
-  "skillsCount": 0
+  "providers": [],
+  "defaultModel": "",
+  "models": {},
+  "totalModels": 0
 }

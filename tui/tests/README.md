@@ -7,9 +7,9 @@ the streaming prefix-cache path) and the terminal-image helpers.
 ## Harness
 
 ```bash
-make test-tui-diff            # or: tui/tests/diff-ts-rust.sh
-tui/tests/diff-ts-rust.sh --verbose   # show the failing diff
-tui/tests/diff-ts-rust.sh --keep      # keep /tmp/future-tui-diff-* artifacts
+make test-tui-diff            # or: tui/tests/golden-diff.sh
+tui/tests/golden-diff.sh --verbose   # show the failing diff
+tui/tests/golden-diff.sh --keep      # keep /tmp/future-tui-diff-* artifacts
 ```
 
 The TypeScript TUI was retired (2026-08, same as the CLI): its render outputs

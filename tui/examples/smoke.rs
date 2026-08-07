@@ -3,7 +3,7 @@
 //! Exercises `Terminal::start` (raw mode, alt screen, bracketed paste, signal
 //! handlers, reader thread) under a real PTY. Run with:
 //!
-//!   cargo run -p tui-rust --example smoke
+//!   cargo run -p future-tui --example smoke
 //!
 //! and pipe input, e.g.:
 //!

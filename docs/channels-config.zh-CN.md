@@ -2,7 +2,8 @@
 
 渠道桥（`future-channel`，见 `channels/`）只读取一个配置文件：
 `~/.future/channels/config.json`。它通过 gRPC 连接 agent，并把 agent 暴露
-为飞书与钉钉机器人。
+为飞书与钉钉机器人。用 `future channel` 启动（统一 CLI 入口，与独立二进制
+`future-channel` 完全一致）。
 
 **首次运行：** 若文件不存在，桥会写入默认模板并**退出**——编辑该文件后
 重新启动。
