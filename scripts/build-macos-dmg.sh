@@ -170,7 +170,7 @@ fi
 if [[ "$SKIP_DEPS" != true ]]; then
   echo "==> Installing npm dependencies (gui, npm workspace)"
   (cd gui && npm ci)
-  npm ci  # root workspace: future-rpc/ts (+ tui; cli is Rust, no npm deps)
+  npm ci  # root workspace: future-rpc/ts only (tui + cli are Rust, no npm deps)
 fi
 
 echo "==> Building shared RPC package (@future-os/rpc)"

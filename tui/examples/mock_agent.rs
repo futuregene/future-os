@@ -22,8 +22,8 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
-use future_tui::generated::proto::future_agent_server::{FutureAgent, FutureAgentServer};
-use future_tui::generated::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
+use future_rpc::proto::future_agent_server::{FutureAgent, FutureAgentServer};
+use future_rpc::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
 
 // ─── Deterministic payloads (identical on the wire for both TUIs) ───────────
 
@@ -111,6 +111,7 @@ impl MockAgent {
             error: String::new(),
             error_code: String::new(),
             error_data: String::new(),
+            payload: None,
         }
     }
 

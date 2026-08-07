@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 #
-# Differential render harness: TypeScript TUI vs Rust TUI port — identical
-# corpus inputs, byte-identical ANSI render output.
+# Golden render harness: Rust TUI vs recorded TypeScript outputs.
 #
-# This is the P2 render-parity gate for the Rust TUI port (tui/rust). It
-# drives both implementations with the shared corpus
-# (tui/rust/tests/parity-corpus.json) and byte-compares their outputs:
+# The TypeScript TUI was retired (2026-08, same as the CLI): its render
+# outputs were recorded per corpus case into
+# `tui/tests/golden/parity-ts.golden` BEFORE the TS sources were deleted, so
+# the port keeps a byte-identical reference without a second implementation.
+# This harness drives the Rust implementation with the shared corpus
+# (`tui/tests/parity-corpus.json`) and byte-compares its output against the
+# golden:
 #
 #     <kind>|<name>|<base64(JSON.stringify(result))>
 #
@@ -15,14 +18,16 @@
 # (serde_json == JSON.stringify, verified) and the standard base64 alphabet
 # with padding (== Buffer.toString("base64")).
 #
+# Re-recording the golden is possible only from the pre-retirement TS tree
+# (`bun render-parity.ts <corpus>`); it is committed, not regenerated.
+#
 # Requirements:
-#   - bun (runs tui/render-parity.ts directly; resolves node_modules in tui/)
 #   - rustup with the pinned toolchain (rust-toolchain.toml) — the Rust
 #     side runs as `cargo run -p tui-rust --example render_parity`
 #
 # Usage:
 #   make test-tui-diff
-#   tui/rust/tests/diff-ts-rust.sh [--verbose] [--keep]
+#   tui/tests/diff-ts-rust.sh [--verbose] [--keep]
 #
 # Environment: output files land in /tmp/future-tui-diff-*; pass --keep to
 # keep them for inspection.
@@ -31,40 +36,38 @@ set -euo pipefail
 
 VERBOSE=0
 KEEP=0
+RECORD=0
 for arg in "$@"; do
   case "$arg" in
+    --record) RECORD=1 ;;
     --verbose) VERBOSE=1 ;;
     --keep) KEEP=1 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
 
-# Resolve repo root from this script's location: tui/rust/tests/.
+# Resolve repo root from this script's location: tui/tests/.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TUI_DIR="$ROOT/tui"
-RUST_DIR="$TUI_DIR/rust"
-CORPUS="$RUST_DIR/tests/parity-corpus.json"
+CORPUS="$TUI_DIR/tests/parity-corpus.json"
+GOLDEN="$TUI_DIR/tests/golden/parity-ts.golden"
 
 WORK="$(mktemp -d /tmp/future-tui-diff-XXXXXX)"
-TS_OUT="$WORK/ts.out"
 RUST_OUT="$WORK/rust.out"
 if [ "$KEEP" -eq 0 ]; then
   trap 'rm -rf "$WORK"' EXIT
 fi
 
-echo "== TUI render parity: TS vs Rust =="
+echo "== TUI render parity: Rust vs golden (recorded from TS) =="
 echo "corpus: $CORPUS"
+echo "golden: $GOLDEN"
 echo "work:   $WORK"
+[ "$RECORD" -eq 1 ] && echo "mode:   RECORD (golden <- Rust output)"
 
-# Sanity: corpus exists and both sides can read it.
+# Sanity: corpus + golden exist.
 [ -f "$CORPUS" ] || { echo "FATAL: corpus missing: $CORPUS" >&2; exit 1; }
-
-# ── TypeScript side (bun, direct execution) ────────────────────────────────
-echo "-- TS (bun render-parity.ts) --"
-(cd "$TUI_DIR" && bun render-parity.ts "$CORPUS") > "$TS_OUT"
-TS_LINES="$(wc -l < "$TS_OUT")"
-echo "   $TS_LINES cases"
+[ -f "$GOLDEN" ] || { echo "FATAL: golden missing: $GOLDEN" >&2; exit 1; }
 
 # ── Rust side (cargo run --example render_parity) ──────────────────────────
 echo "-- Rust (cargo run -p tui-rust --example render_parity) --"
@@ -72,14 +75,21 @@ echo "-- Rust (cargo run -p tui-rust --example render_parity) --"
 RUST_LINES="$(wc -l < "$RUST_OUT")"
 echo "   $RUST_LINES cases"
 
+if [ "$RECORD" -eq 1 ]; then
+  cp "$RUST_OUT" "$GOLDEN"
+  echo "RECORD: $GOLDEN rewritten from the Rust renderer ($RUST_LINES cases)"
+  exit 0
+fi
+
 # ── Byte compare ───────────────────────────────────────────────────────────
-if [ "$TS_LINES" -ne "$RUST_LINES" ]; then
-  echo "FAIL: line count differs (TS=$TS_LINES Rust=$RUST_LINES)" >&2
+GOLDEN_LINES="$(wc -l < "$GOLDEN")"
+if [ "$GOLDEN_LINES" -ne "$RUST_LINES" ]; then
+  echo "FAIL: line count differs (golden=$GOLDEN_LINES Rust=$RUST_LINES)" >&2
   exit 1
 fi
 
-if diff -u "$TS_OUT" "$RUST_OUT" > "$WORK/diff.txt"; then
-  echo "PASS: $TS_LINES/$TS_LINES cases byte-identical"
+if diff -u "$GOLDEN" "$RUST_OUT" > "$WORK/diff.txt"; then
+  echo "PASS: $RUST_LINES/$RUST_LINES cases byte-identical"
   exit 0
 fi
 

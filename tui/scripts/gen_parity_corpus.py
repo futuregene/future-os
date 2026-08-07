@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate tui/rust/tests/parity-corpus.json — the shared TS/Rust render corpus."""
+"""Generate tui/tests/parity-corpus.json — the shared render corpus (inputs only; the TS side is retired, its outputs are the committed goldens)."""
 import json, base64, struct, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))

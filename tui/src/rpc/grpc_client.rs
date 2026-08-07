@@ -18,11 +18,11 @@
 //! Like the TS client, transport failures and `success:false` responses
 //! surface as plain `String` messages.
 
-use crate::generated::proto::future_agent_client::FutureAgentClient;
-use crate::generated::proto::{RpcCommand, StreamEvent, StreamRequest};
 use crate::rpc::types::{
     AgentEvent, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck, SessionSummary,
 };
+use future_rpc::proto::future_agent_client::FutureAgentClient;
+use future_rpc::proto::{RpcCommand, StreamEvent, StreamRequest};
 use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -1079,8 +1079,8 @@ mod tests {
     // the reconnect / resubscribe / watchdog semantics are tested the way
     // they run: over an actual gRPC stream.
 
-    use crate::generated::proto::future_agent_server::{FutureAgent, FutureAgentServer};
-    use crate::generated::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
+    use future_rpc::proto::future_agent_server::{FutureAgent, FutureAgentServer};
+    use future_rpc::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
     use futures_util::stream;
     use futures_util::StreamExt;
     use std::net::TcpListener;
@@ -1113,6 +1113,7 @@ mod tests {
                 error: String::new(),
                 error_code: String::new(),
                 error_data: String::new(),
+                payload: None,
             }))
         }
 

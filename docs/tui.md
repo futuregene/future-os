@@ -43,7 +43,7 @@ command name.
 | `/import` | *Not available in the TUI* (stub, replies with a notice) |
 
 > The in-app help overlay (`/help`) lists a subset of these commands; the full
-> dispatch set above is authoritative (tui/src/app.ts `handleSubmit`).
+> dispatch set above is authoritative (tui/src/app.rs `handle_submit`).
 
 ## Keyboard shortcuts
 

@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-tui-rust build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills install-loop fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars node-workspace
+.PHONY: version build build-agent build-tui build-cli build-gui build-gui-dist build-channels build-mobile-android test test-mobile lint lint-agent lint-channels lint-tui lint-cli lint-gui lint-mobile stylelint-gui check-gui check-mobile clean run run-agent run-tui run-cli run-gui run-mobile-android run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills install-loop fmt fmt-mobile generate-models generate-proto help test-gui-rust gui-sidecars node-workspace
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -60,9 +60,9 @@ endif
 
 install-tui: build-tui
 ifeq ($(OS),windows)
-	$(SUDO) $(COPY_CMD) tui\dist\future-tui$(EXE_SUFFIX) "$(PREFIX)\future-tui$(EXE_SUFFIX)"
+	$(SUDO) $(COPY_CMD) target\release\future-tui$(EXE_SUFFIX) "$(PREFIX)\future-tui$(EXE_SUFFIX)"
 else
-	$(SUDO) cp tui/dist/future-tui "$(PREFIX)/future-tui"
+	$(SUDO) cp target/release/future-tui "$(PREFIX)/future-tui"
 endif
 
 install-cli: build-cli
@@ -171,11 +171,8 @@ endif
 build-agent:
 	cd agent && cargo build --release
 
-build-tui: node-workspace
-	cd tui && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
-
-build-tui-rust:
-	rustup run 1.97.0 cargo build -p tui-rust
+build-tui:
+	cd tui && cargo build --release
 
 build-cli:
 	cd cli && cargo build --release
@@ -238,17 +235,16 @@ test-cli-rust:
 test-cli-diff:
 	./cli/tests/diff-ts-rust.sh
 
-test-tui: node-workspace
-	cd tui && npm test
+test-tui: test-tui-rust
 
 test-tui-rust:
 	rustup run 1.97.0 cargo test -p tui-rust
 
 test-tui-diff:
-	tui/rust/tests/diff-ts-rust.sh
+	./tui/tests/diff-ts-rust.sh
 
 test-tui-tmux:
-	tui/rust/tests/tmux-diff.sh
+	./tui/tests/tmux-diff.sh
 
 test-gui:
 	$(call npm-install-if-needed,gui)
@@ -263,7 +259,7 @@ test-mobile:
 
 # ─── Lint ───────────────────────────────────────────────────────────────────
 
-lint: lint-agent lint-channels lint-tui lint-tui-rust lint-cli lint-gui stylelint-gui lint-mobile
+lint: lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui lint-mobile
 
 lint-agent:
 	cd agent && cargo fmt --check && cargo clippy
@@ -271,12 +267,10 @@ lint-agent:
 lint-channels:
 	cd channels && cargo fmt --check && cargo clippy
 
-lint-tui: node-workspace
-	cd tui && npm run gen-version && npx tsc --noEmit
+lint-tui:
+	cd tui && rustup run 1.97.0 cargo fmt --check
 	rustup run 1.97.0 cargo clippy -p tui-rust --all-targets -- -D warnings
 
-lint-tui-rust:
-	rustup run 1.97.0 cargo clippy -p tui-rust --all-targets -- -D warnings
 
 lint-cli:
 	cd cli && rustup run 1.97.0 cargo fmt --check
@@ -314,8 +308,8 @@ fmt-mobile:
 run-agent:
 	cd agent && cargo run -- --verbose --log-file
 
-run-tui: node-workspace
-	cd tui && npm run gen-version && npm run dev
+run-tui:
+	cd tui && cargo run
 
 run-cli:
 	cd cli && cargo run
@@ -449,10 +443,6 @@ ifeq ($(OS),windows)
 	@if exist target rmdir /s /q target
 	@if exist node_modules rmdir /s /q node_modules
 	@if exist future-rpc\ts\dist rmdir /s /q future-rpc\ts\dist
-	@if exist tui\dist rmdir /s /q tui\dist
-	@if exist tui\node_modules rmdir /s /q tui\node_modules
-	@if exist tui\future-tui del /q tui\future-tui
-	@if exist tui\src\version.generated.ts del /q tui\src\version.generated.ts
 	@if exist cli\dist rmdir /s /q cli\dist
 	@if exist cli\node_modules rmdir /s /q cli\node_modules
 	@if exist cli\src\version.generated.ts del /q cli\src\version.generated.ts
@@ -468,8 +458,7 @@ ifeq ($(OS),windows)
 else
 	rm -rf target
 	rm -rf node_modules future-rpc/ts/dist
-	rm -rf tui/dist tui/node_modules
-	rm -f tui/future-tui tui/src/version.generated.ts
+	rm -rf tui/node_modules
 	rm -rf gui/dist gui/node_modules gui/src-tauri/target gui/src-tauri/binaries
 	$(SUDO) rm -f $(PREFIX)/future-agent$(EXE_SUFFIX) $(PREFIX)/future$(EXE_SUFFIX) $(PREFIX)/future-tui$(EXE_SUFFIX) $(PREFIX)/future-gui$(EXE_SUFFIX) $(PREFIX)/future-channel$(EXE_SUFFIX)
 endif
@@ -479,24 +468,23 @@ endif
 help:
 	@echo "  build              Build agent, TUI, CLI, and GUI"
 	@echo "  build-agent        Build Rust agent"
-	@echo "  build-tui          Build standalone TUI binary"
-	@echo "  build-tui-rust     Build the Rust TUI port (future-tui + examples)"
-	@echo "  build-cli          Build TypeScript CLI"
+	@echo "  build-tui          Build standalone TUI binary (Rust: cargo build --release)"
+	@echo "  build-cli          Build Rust CLI (future)"
 	@echo "  build-gui          Build React/Tauri GUI frontend"
 	@echo "  build-channels      Build channel bridge"
 	@echo "  build-mobile-android Generate, build, and install the Android app"
 	@echo "  build-mobile-ios     Generate, build, and install the iOS app (requires Xcode)"
 	@echo "  check-mobile       Typecheck, lint, format-check, and test mobile"
 	@echo "  test               Run all tests (Rust crates + cli/tui/gui/mobile)"
-	@echo "  test-tui-rust      Run the Rust TUI port unit tests (cargo test -p tui-rust)"
-	@echo "  test-tui-diff      TS vs Rust render parity (byte-compare tui/rust/tests/diff-ts-rust.sh)"
-	@echo "  test-tui-tmux      TS vs Rust tmux screen consistency + goldens (tui/rust/tests/tmux-diff.sh)"
+	@echo "  test-tui-rust      Run the Rust TUI unit tests (cargo test -p tui-rust)"
+	@echo "  test-tui-diff      Rust render parity vs golden (byte-compare tui/tests/diff-ts-rust.sh)"
+	@echo "  test-tui-tmux      Rust tmux screen consistency vs golden (tui/tests/tmux-diff.sh)"
 	@echo "  test-cli-rust      Run the Rust CLI port unit tests (cargo test -p cli-rust)"
 	@echo "  test-cli-diff      Differential test: TS future vs Rust future, byte-identical output"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI + mobile)"
 	@echo "  fmt                Format Rust and mobile code"
 	@echo "  run-agent          Run agent directly (debug build)"
-	@echo "  run-tui            Run TUI in dev mode"
+	@echo "  run-tui            Run the Rust TUI (cargo run)"
 	@echo "  run-cli            Run CLI in dev mode"
 	@echo "  run-gui            Run GUI in dev mode"
 	@echo "  run-mobile-android Run the Android app on a selected device"

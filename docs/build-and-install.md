@@ -93,14 +93,14 @@ No `make` needed — the PowerShell commands below mirror the make targets step 
 cargo build --release --manifest-path agent/Cargo.toml
 cargo build --release --manifest-path channels/Cargo.toml
 
-# TypeScript component: TUI; Rust components: CLI  (make build-tui / build-cli)
-Push-Location tui; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future-tui.exe; Pop-Location
+# Rust components: TUI + CLI (make build-tui / build-cli)
+cargo build --release --manifest-path tui/Cargo.toml
 cargo build --release --manifest-path cli/Cargo.toml
 
 # Install to %USERPROFILE%\.future\bin             (the install-* copy steps)
 $bin = "$env:USERPROFILE\.future\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, tui\dist\future-tui.exe, target\release\future.exe $bin
+Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, target\release\future-tui.exe, target\release\future.exe $bin
 
 # Built-in skills — make install-skills uses symlinks; on Windows use the CLI instead
 & "$bin\future.exe" skills install

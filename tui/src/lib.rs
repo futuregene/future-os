@@ -31,11 +31,11 @@
 //!     overlays, diff-based render pipeline)
 //!   - `index`            — CLI arg parsing / print mode / list-models /
 //!     interactive wiring (`main.rs` calls `index::run`)
-//!   - `generated`        — checked-in prost codegen (proto/future.proto)
+//!   - `rpc`              — full types + tonic `GrpcClient` (wire types via
+//!     the future-rpc crate — the single proto codegen owner, PR #112)
 
 pub mod app;
 pub mod components;
-pub mod generated;
 pub mod help;
 pub mod help_screen;
 pub mod index;

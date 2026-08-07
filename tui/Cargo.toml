@@ -25,7 +25,9 @@ serde.workspace = true
 parking_lot.workspace = true
 tokio.workspace = true
 tonic.workspace = true
-prost.workspace = true
+# Single proto codegen owner (PR #112): generated proto code lives in the
+# future-rpc crate; the TUI consumes it instead of owning a generated copy.
+future-rpc = { path = "../future-rpc/rust" }
 chrono = { workspace = true, features = ["clock"] }
 dirs = "5"
 
@@ -43,6 +45,3 @@ windows-sys = { version = "0.61", features = [
 tempfile.workspace = true
 futures-util.workspace = true
 tokio-stream.workspace = true
-
-[build-dependencies]
-tonic-build.workspace = true

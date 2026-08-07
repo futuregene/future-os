@@ -1,14 +1,14 @@
 //! Render-parity driver (Rust side).
 //!
 //! Twin of `tui/render-parity.ts`: reads the shared corpus
-//! (`tui/rust/tests/parity-corpus.json`) and renders every case with the
+//! (`tui/tests/parity-corpus.json`) and renders every case with the
 //! Rust implementation — MarkdownRenderer, ChatArea (including the
 //! streaming prefix-cache path) and the terminal-image helpers — printing
 //! one line per case:
 //!
 //!     <kind>|<name>|<base64(JSON.stringify(result))>
 //!
-//! The TS twin does the same; the harness (`tui/rust/tests/diff-ts-rust.sh`)
+//! The TS twin was retired; the harness (`tui/tests/diff-ts-rust.sh`) byte-compares
 //! byte-compares the two outputs. serde_json escaping matches JS
 //! `JSON.stringify` exactly (verified), and the standard base64 alphabet
 //! with padding matches `Buffer.toString("base64")`.

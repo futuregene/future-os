@@ -9,10 +9,10 @@
 //!   - `run_interactive` — the App event loop (input/events/cmds/timers)
 
 use crate::app::{App, CliOptions, UiCmd, UiInput};
-use crate::generated::proto::future_agent_client::FutureAgentClient;
-use crate::generated::proto::{RpcCommand, RpcResponse, StreamRequest};
 use crate::rpc::grpc_client::GrpcClient;
 use crate::version::VERSION;
+use future_rpc::proto::future_agent_client::FutureAgentClient;
+use future_rpc::proto::{RpcCommand, RpcResponse, StreamRequest};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

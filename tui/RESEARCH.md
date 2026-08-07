@@ -1,7 +1,7 @@
 # future-tui Rust port — Research & Architecture (P0/P1)
 
 Goal (goal_6b1065901442): translate `tui/` (TypeScript, run by bun/node) 1:1 into a
-Rust crate at `tui/rust/` — identical UI rendering, key handling, interaction,
+Rust crate at `tui/` (promoted from `tui/rust/` when the TypeScript TUI was retired) — identical UI rendering, key handling, interaction,
 argument parsing, and help text — with a **self-implemented terminal backend**
 (no crossterm; `libc` on POSIX, `windows-sys` for the later Windows phase), TS
 unit tests ported, a render-diff harness, and tmux screen-consistency tests.
@@ -32,7 +32,7 @@ by "can it hand us raw bytes and let us write our own escape strings".
 
 ### Decision
 
-Self-implemented terminal backend in `tui/rust/src/terminal.rs`. Scope per
+Self-implemented terminal backend in `tui/src/terminal.rs` (POSIX half `terminal_posix.rs`, Windows half `terminal_windows.rs`). Scope per
 phase:
 
 - **P0 (this phase, POSIX-only):** raw mode via `tcgetattr`/`tcsetattr`
@@ -183,7 +183,7 @@ Caveats recorded for the markdown phase:
 
 ## 6. Build & versioning
 
-- `tui/rust` is a workspace member (bin `future-tui`, lib `future_tui`).
+- `tui` is a workspace member (bin `future-tui`, lib `future_tui`); the TS TUI is retired and its outputs are committed goldens under `tui/tests/golden/`.
 - `build.rs` injects the version via the same logic as
   `scripts/version.mjs` (port of the cli-rust `build.rs`), so
   `future-tui --version` prints `future-tui v<version>` exactly like TS
