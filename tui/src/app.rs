@@ -4253,6 +4253,131 @@ mod tests {
         assert_eq!(normalize_path("/tmp/foo"), "/tmp/foo");
     }
 
+    // ─── /cwd end-to-end (in-process mock agent) ──────────────────────
+
+    use future_rpc::proto::future_agent_server::{FutureAgent, FutureAgentServer};
+    use future_rpc::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
+    use futures_util::StreamExt;
+    use std::net::TcpListener;
+    use std::pin::Pin;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+    use tonic::transport::Server;
+
+    /// Minimal mock agent: answers unary commands, and on `set_cwd` echoes a
+    /// `cwd_changed` event carrying the stored (trailing-slash-trimmed) cwd —
+    /// the same behavior as the real agent (agent/src/rpc/commands.rs).
+    #[derive(Clone)]
+    struct CwdMockAgent {
+        subs: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<StreamEvent>>>>,
+    }
+
+    #[tonic::async_trait]
+    impl FutureAgent for CwdMockAgent {
+        async fn execute_command(
+            &self,
+            request: tonic::Request<RpcCommand>,
+        ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
+            let cmd = request.into_inner();
+            if cmd.r#type == "set_cwd" {
+                let cwd = cmd.cwd.trim().trim_end_matches(['/', '\\']).to_string();
+                let event = StreamEvent {
+                    r#type: "cwd_changed".into(),
+                    data: serde_json::json!({ "cwd": cwd }).to_string(),
+                    ..Default::default()
+                };
+                for sub in self.subs.lock().unwrap().iter() {
+                    let _ = sub.send(event.clone());
+                }
+            }
+            Ok(tonic::Response::new(RpcResponse {
+                id: cmd.id,
+                r#type: "response".into(),
+                command: cmd.r#type.clone(),
+                success: true,
+                data: "{}".into(),
+                error: String::new(),
+                error_code: String::new(),
+                error_data: String::new(),
+                payload: None,
+            }))
+        }
+
+        type StreamEventsStream =
+            Pin<Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>>;
+
+        async fn stream_events(
+            &self,
+            _request: tonic::Request<StreamRequest>,
+        ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+            let (tx, rx) = mpsc::unbounded_channel::<StreamEvent>();
+            self.subs.lock().unwrap().push(tx);
+            Ok(tonic::Response::new(Box::pin(
+                UnboundedReceiverStream::new(rx).map(Ok),
+            )))
+        }
+    }
+
+    async fn spawn_cwd_mock_agent() -> (tokio::task::JoinHandle<()>, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // tonic binds the same port below
+        let agent = CwdMockAgent {
+            subs: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let handle = tokio::spawn(async move {
+            let _ = Server::builder()
+                .add_service(FutureAgentServer::new(agent))
+                .serve(addr)
+                .await;
+        });
+        // Give the server a moment to start listening.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        (handle, format!("127.0.0.1:{}", addr.port()))
+    }
+
+    /// `app.state.cwd` is exactly what the footer renders (`data.cwd`). A
+    /// relative cwd like `a/b` with `/cwd ../` must land on a clean `a` —
+    /// not `a/b/../` and not `a/ ../`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cwd_dotdot_from_relative_cwd_renders_clean_parent() {
+        let (_server, addr) = spawn_cwd_mock_agent().await;
+        let (op_tx, mut op_rx) = mpsc::unbounded_channel();
+        let (client, mut events, _conn) = GrpcClient::new(&addr);
+        let mut app = App::new(
+            FakeTerminal {
+                writes: Rc::new(RefCell::new(Vec::new())),
+                cols: 80,
+                rows: 24,
+            },
+            Arc::new(client),
+            op_tx,
+            &CliOptions::default(),
+            std::env::temp_dir().join("tui-cwd-test-settings.json"),
+        );
+        app.state.cwd = "a/b".into();
+
+        app.handle_submit("/cwd ../");
+
+        // Apply the CwdSet UiCmd when it arrives.
+        let deadline = tokio::time::timeout(Duration::from_secs(5), op_rx.recv()).await;
+        if let Ok(Some(cmd)) = deadline {
+            app.handle_cmd(cmd);
+        }
+
+        // The agent's `cwd_changed` echo (best-effort — the stream may not be
+        // subscribed yet, but the real agent always emits it after set_cwd).
+        if let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(500), events.recv()).await
+        {
+            app.handle_agent_event(&ev);
+        }
+
+        assert_eq!(
+            app.state.cwd, "a",
+            "footer cwd must be a clean parent `a`, got {:?}",
+            app.state.cwd
+        );
+    }
+
     // ─── Welcome screen ─────────────────────────────────────────────────
 
     #[tokio::test]
