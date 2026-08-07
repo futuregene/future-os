@@ -322,7 +322,7 @@ def handle_cdp_ws(conn):
                 try:
                     conn.sendall(bytes([0x88, 0x00]))
                 except OSError:
-                    pass
+                    pass  # client already gone — closing frame is best-effort
                 break
             if opcode == 0x9:  # ping → pong
                 conn.sendall(bytes([0x8A]) + bytes([len(payload)]) + payload)
@@ -388,12 +388,12 @@ def handle_cdp_ws(conn):
                     # add/removeScriptToEvaluateOnNewDocument...
                     send_frame(json.dumps(cdp_reply(rid, {})))
     except Exception:
-        pass
+        pass  # mock: swallow any client-side disconnect mid-frame
     finally:
         try:
             conn.close()
         except OSError:
-            pass
+            pass  # already closed
 
 
 def start_cdp_ws_server(port):
@@ -539,7 +539,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1])
-    PORT = port
     if MODE == "browser":
         reset_cdp_state()
         WS_PORT = pick_free_port(avoid=port)
