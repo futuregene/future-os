@@ -10,6 +10,10 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 
 pub mod proto {
+    // The typed payload oneofs (ResponsePayload / EventPayload) mix large
+    // variants (a full SessionState) with small acks, which trips
+    // clippy::large_enum_variant; the spread is inherent to a wire oneof.
+    #![allow(clippy::large_enum_variant)]
     include!(concat!(env!("OUT_DIR"), "/proto.rs"));
 }
 

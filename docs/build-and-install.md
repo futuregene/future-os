@@ -197,12 +197,12 @@ make clean          # remove build artifacts + installed binaries
 
 ### Proto
 
-The canonical API is `proto/future.proto`. Generated Rust/TS code is checked
-into the repo — normal builds don't touch it. After editing a `.proto` file,
-regenerate:
+The canonical API is `future-rpc/proto/future.proto`. Generated Rust/TS code is
+checked into the repo — normal builds don't touch it. After editing a `.proto`
+file, regenerate:
 
 ```bash
-make generate-proto          # agent + channels + GUI (src-tauri) + TUI
+make generate-proto          # future-rpc/rust + channels + future-rpc/ts
 ```
 
 ## Development (from source)
@@ -219,10 +219,10 @@ make clean          # remove build artifacts + installed binaries
 
 ### Proto
 
-The canonical API is `proto/future.proto`. Generated Rust/TS code is checked
-into the repo — normal builds don't touch it. After editing a `.proto` file,
-regenerate:
+The canonical API is `future-rpc/proto/future.proto`. Generated Rust/TS code is
+checked into the repo — normal builds don't touch it. After editing a `.proto`
+file, regenerate:
 
 ```bash
-make generate-proto          # agent + channels + TUI
+make generate-proto          # future-rpc/rust + channels + future-rpc/ts
 ```

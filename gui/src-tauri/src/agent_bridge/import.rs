@@ -136,8 +136,7 @@ pub(crate) async fn list_agent_session_ids(
         )
         .into());
     }
-    let value: serde_json::Value = serde_json::from_str(&response.data)
-        .map_err(|error| format!("list_session_ids parse: {error}"))?;
+    let value: serde_json::Value = future_rpc::decode::response_data(&response);
     let mut ids = std::collections::HashSet::new();
     for id in value
         .get("ids")
@@ -500,8 +499,7 @@ pub(crate) async fn import_streaming_session(session_id: &str) -> Result<(), cra
     if !response.success {
         return Err(format!("agent rejected get_state: {}", response.error).into());
     }
-    let state: serde_json::Value =
-        serde_json::from_str(&response.data).map_err(|e| format!("get_state parse: {e}"))?;
+    let state: serde_json::Value = future_rpc::decode::response_data(&response);
     let summary = AgentSessionSummary {
         id: session_id.to_string(),
         // get_state emits canonical `sessionName` plus the legacy `session_name`

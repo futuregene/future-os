@@ -230,7 +230,7 @@ pub(super) async fn collect_agent_response(
                     .map(|projected| {
                         (
                             projected.r#type.clone(),
-                            projected.data.clone(),
+                            future_rpc::decode::projected_event_data_json(projected),
                             projected.idx,
                         )
                     })
@@ -241,9 +241,10 @@ pub(super) async fn collect_agent_response(
                 waiting_for_approval = false;
                 let mut snapshot_terminal = None;
                 for projected in &event.snapshot_events {
+                    let projected_data = future_rpc::decode::projected_event_data_json(projected);
                     match fold_response_event(
                         &projected.r#type,
-                        &projected.data,
+                        &projected_data,
                         &mut content,
                         &mut waiting_for_approval,
                     )? {
@@ -279,11 +280,15 @@ pub(super) async fn collect_agent_response(
             }
             last_idx = event.idx;
 
+            // Canonical event payload (byte-stable while the agent dual-writes
+            // `data`; the typed reconstruction takes over once `data` is
+            // retired). Persistence and the content fold read the same string.
+            let event_data = future_rpc::decode::event_data_json(&event);
             persist_run_event_off_thread(
                 thread_id,
                 local_run_id,
                 event.r#type.clone(),
-                event.data.clone(),
+                event_data.clone(),
                 event.idx,
             )
             .await;
@@ -292,7 +297,7 @@ pub(super) async fn collect_agent_response(
             // gap-free, which two independent publishers could not guarantee).
             match fold_response_event(
                 &event.r#type,
-                &event.data,
+                &event_data,
                 &mut content,
                 &mut waiting_for_approval,
             )? {

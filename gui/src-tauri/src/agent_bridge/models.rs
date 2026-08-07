@@ -51,8 +51,9 @@ pub async fn list_agent_models() -> Result<Vec<AgentModelOption>, crate::AppErro
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the model list request.")?;
 
-    let parsed = serde_json::from_str::<AgentModelsResponse>(&response.data)
-        .map_err(|error| format!("Future Agent returned invalid model data: {error}"))?;
+    let parsed =
+        serde_json::from_value::<AgentModelsResponse>(future_rpc::decode::response_data(&response))
+            .map_err(|error| format!("Future Agent returned invalid model data: {error}"))?;
     Ok(parsed.models)
 }
 
@@ -92,7 +93,9 @@ pub async fn list_builtin_providers(
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the provider catalog request.")?;
 
-    let parsed = serde_json::from_str::<BuiltinProvidersResponse>(&response.data)
-        .map_err(|error| format!("Future Agent returned invalid provider catalog data: {error}"))?;
+    let parsed = serde_json::from_value::<BuiltinProvidersResponse>(
+        future_rpc::decode::response_data(&response),
+    )
+    .map_err(|error| format!("Future Agent returned invalid provider catalog data: {error}"))?;
     Ok(parsed.builtin_providers)
 }

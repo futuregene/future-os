@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+// The prompt acknowledgement types live in the future-rpc crate (typed-RPC
+// milestone) so the wire encode/decode and the agent share one definition.
+pub use future_rpc::payloads_ext::{RunAcceptedState, RunAck};
+
 /// Atomic behavior requested when a session already owns an active run.
 ///
 /// Only `RejectIfBusy` is executable until the in-memory session scheduler is wired;
@@ -38,61 +42,6 @@ impl BusyPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunAcceptedState {
-    Existing,
-    Running,
-    Queued,
-}
-
-/// Canonical acknowledgement for every accepted prompt request.
-///
-/// `run_sequence` and `queue_position` remain absent until the session
-/// scheduler is the allocator; callers must not invent either value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunAck {
-    pub run_id: String,
-    pub run_epoch: u64,
-    pub accepted_state: RunAcceptedState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_sequence: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub queue_position: Option<u64>,
-}
-
-impl RunAck {
-    pub fn existing(run_id: String, run_epoch: u64) -> Self {
-        Self {
-            run_id,
-            run_epoch,
-            accepted_state: RunAcceptedState::Existing,
-            run_sequence: None,
-            queue_position: None,
-        }
-    }
-
-    pub fn running(run_id: String, run_epoch: u64) -> Self {
-        Self {
-            run_id,
-            run_epoch,
-            accepted_state: RunAcceptedState::Running,
-            run_sequence: None,
-            queue_position: None,
-        }
-    }
-
-    pub fn queued(run_id: String, run_sequence: u64, queue_position: u64) -> Self {
-        Self {
-            run_id,
-            run_epoch: 0,
-            accepted_state: RunAcceptedState::Queued,
-            run_sequence: Some(run_sequence),
-            queue_position: Some(queue_position),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,15 +74,5 @@ mod tests {
         for value in BusyPolicy::VALID_VALUES {
             assert!(error.contains(value));
         }
-    }
-
-    #[test]
-    fn run_ack_omits_unallocated_queue_identity() {
-        let value = serde_json::to_value(RunAck::running("run-a".into(), 7)).unwrap();
-        assert_eq!(value["run_id"], "run-a");
-        assert_eq!(value["run_epoch"], 7);
-        assert_eq!(value["accepted_state"], "running");
-        assert!(value.get("run_sequence").is_none());
-        assert!(value.get("queue_position").is_none());
     }
 }

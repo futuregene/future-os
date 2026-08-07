@@ -160,7 +160,7 @@ pub async fn reconcile_pending_approvals() {
             // settles the owning runs, and a later tick retries the approval.
             continue;
         }
-        let state: serde_json::Value = serde_json::from_str(&response.data).unwrap_or_default();
+        let state: serde_json::Value = future_rpc::decode::response_data(&response);
         let agent_payloads: Vec<&serde_json::Value> = state
             .get("pendingApprovals")
             .and_then(|value| value.as_array())

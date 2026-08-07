@@ -2,11 +2,14 @@
 
 mod approval;
 mod commands;
-pub(crate) mod payloads;
 mod prompt_helpers;
 mod protocol;
 mod session;
 mod session_prompt;
+
+// Wire payload carriers live in the future-rpc crate (typed-RPC milestone);
+// the agent keeps constructing them via these re-exports.
+pub(crate) use future_rpc::payloads;
 
 use crate::models::Registry as ModelRegistry;
 use parking_lot::RwLock;
@@ -18,6 +21,24 @@ pub use approval::{ApprovalDecision, ApprovalDecisionStatus, ApprovalGate};
 pub use commands::handle_command_internal;
 pub use protocol::{RpcCommand, RpcResponse, SseBroadcaster, SseEvent};
 pub use session::ServerSession;
+
+/// Map one broadcaster/journal event into its replay payload carrier. The
+/// wire type lives in the future-rpc crate; the mapping needs the
+/// agent-internal `SseEvent`, so this adapter stays on the agent side.
+pub(crate) fn replay_event_payload(event: &SseEvent) -> payloads::ReplayEventPayload {
+    payloads::ReplayEventPayload {
+        event_type: event.event_type.clone(),
+        data: event.data.clone(),
+        run_id: event.run_id.clone(),
+        idx: event.idx,
+        session_id: event.session_id.clone(),
+        epoch: event.epoch,
+        event_id: event.event_id.clone(),
+        timestamp: event.timestamp.clone(),
+        session_idx: event.session_idx,
+        run_sequence: event.run_sequence,
+    }
+}
 
 // ─── App State ─────────────────────────────────────────────────────────
 

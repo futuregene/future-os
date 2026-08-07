@@ -183,10 +183,10 @@ make clean          # 清理构建产物与已安装二进制
 
 ### Proto
 
-规范 API 是 `proto/future.proto`。生成的 Rust/TS 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
+规范 API 是 `future-rpc/proto/future.proto`。生成的 Rust/TS 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
 
 ```bash
-make generate-proto          # agent + channels + GUI（src-tauri）+ TUI
+make generate-proto          # future-rpc/rust + channels + future-rpc/ts
 ```
 
 ## 开发（源码方式）
@@ -203,8 +203,8 @@ make clean          # 清理构建产物与已安装二进制
 
 ### Proto
 
-规范 API 是 `proto/future.proto`。生成的 Rust/TS 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
+规范 API 是 `future-rpc/proto/future.proto`。生成的 Rust/TS 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
 
 ```bash
-make generate-proto          # agent + channels + TUI
+make generate-proto          # future-rpc/rust + channels + future-rpc/ts
 ```
