@@ -324,6 +324,14 @@ impl AutocompleteProvider for FilePathProvider {
     }
 
     fn r#match(&self, text: &str, cursor_pos: usize) -> Option<AutocompleteContext> {
+        // Slash commands are literal command lines — don't hijack their
+        // arguments with file-path completions. Without this, `/cwd ../`
+        // opens a parent-directory popup and Enter selects the highlighted
+        // entry instead of submitting the command, so the cwd lands on a
+        // wrong path (`a/ ../`-style artifacts) instead of the clean parent.
+        if text.starts_with('/') {
+            return None;
+        }
         // Detect file path patterns: starts with . or contains / at cursor
         let prefix = &text[..cursor_pos.min(text.len())];
         // Look for the last path-like token
@@ -1106,6 +1114,19 @@ mod tests {
     fn file_path_match_none_without_slash_or_dot() {
         let provider = FilePathProvider::new(Some("/tmp".into()));
         assert!(provider.r#match("hello world", 11).is_none());
+    }
+
+    #[test]
+    fn file_path_match_refuses_slash_command_context() {
+        let provider = FilePathProvider::new(Some("/tmp".into()));
+        // `/cwd ../` is a slash command — path completion must NOT hijack
+        // its argument (the popup would consume Enter and corrupt the cwd).
+        assert!(provider.r#match("/cwd ../", 8).is_none());
+        assert!(provider.r#match("/cwd /usr/lo", 13).is_none());
+        // Plain messages still complete paths (slashes at position 0 are
+        // reserved for slash commands).
+        assert!(provider.r#match("ls /usr/lo", 10).is_some());
+        assert!(provider.r#match("cat .git", 8).is_some());
     }
 
     #[test]
