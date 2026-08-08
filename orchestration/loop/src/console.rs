@@ -396,8 +396,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "run",
-        "drive one bounded gRPC turn",
-        "run --goal G [--model M] [--thinking-level L] [--max-turns N]",
+        "drive one bounded gRPC turn (requires --agent-id; auto-registers)",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N]",
     );
 
     let work_items = r.group("work-items", "attention / operator inbox (G-15)");
@@ -1808,21 +1808,76 @@ async fn cmd_models(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Default task-lease length for a `run` turn (4h — long LLM/compute turns
+/// routinely exceed the old 1h lease, which would let another worker steal
+/// the todo mid-turn once the lease expired).
+const DEFAULT_RUN_LEASE_SECS: u64 = 4 * 3600;
+
+/// Resolve run identity (G-27): `run` REQUIRES `--agent-id` so the lease
+/// mechanism actually engages — an anonymous run claims nothing and hides
+/// nothing, so two agentless runs deterministically race on the same todo.
+/// An id that is not yet registered is auto-registered on first use (replay
+/// is idempotent, so `run` never needs a separate `agent register` step).
+/// `--anonymous` opts back into the legacy uncoordinated one-shot path.
+/// Returns the resolved agent id (None for `--anonymous`).
+pub fn ensure_run_identity(
+    store: &mut Store,
+    goal_id: &str,
+    agent_id: Option<&str>,
+    anonymous: bool,
+) -> Result<Option<String>> {
+    match (agent_id, anonymous) {
+        (Some(aid), _) => {
+            let goal = store
+                .replay(goal_id)?
+                .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+            if !goal.is_registered_agent(Some(aid)) {
+                store.append(Event::AgentRegistered {
+                    goal_id: goal_id.to_string(),
+                    agent_id: aid.to_string(),
+                    ts: now_epoch(),
+                })?;
+                println!("agent `{aid}` auto-registered for {goal_id} ✔");
+            }
+            Ok(Some(aid.to_string()))
+        }
+        (None, true) => {
+            println!(
+                "⚠ anonymous run: no lease coordination — parallel runs may race on the same todo"
+            );
+            Ok(None)
+        }
+        (None, false) => bail!(
+            "run requires --agent-id <name> (or --anonymous for an uncoordinated one-shot run); \
+             check existing ids with `{} agent list --goal {goal_id}`",
+            prog()
+        ),
+    }
+}
+
 async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut model = None;
     let mut thinking = None;
     let mut max_turns = 6u32;
     let mut agent_id = None;
+    let mut anonymous = false;
+    let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--model" => model = Some(v),
         "--thinking-level" => thinking = Some(v),
         "--max-turns" => max_turns = v.parse().unwrap_or(6),
         "--agent-id" => agent_id = Some(v),
+        "--lease-secs" => lease_secs = v.parse().unwrap_or(DEFAULT_RUN_LEASE_SECS),
+        "--anonymous" => anonymous = true,
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+
+    // Identity gate BEFORE any gRPC/session work — fail fast with a hint
+    // (and stays unit-testable without an agent server).
+    let agent_id = ensure_run_identity(store, &goal_id, agent_id.as_deref(), anonymous)?;
 
     let mut client = crate::agent_client::AgentClient::connect("127.0.0.1:50051").await?;
     let goal0 = store
@@ -1847,6 +1902,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         &goal_id,
         &session_id,
         max_turns,
+        lease_secs,
         agent_id.as_deref(),
     )
     .await;
@@ -1865,6 +1921,7 @@ async fn run_turns(
     goal_id: &str,
     session_id: &str,
     max_turns: u32,
+    lease_secs: u64,
     agent_id: Option<&str>,
 ) -> Result<()> {
     let mut turn = 0u32;
@@ -1933,7 +1990,7 @@ async fn run_turns(
                         goal_id: goal_id.to_string(),
                         todo_id: todo_id.clone(),
                         agent_id: aid.to_string(),
-                        lease_expires_at: now + 3600,
+                        lease_expires_at: now + lease_secs,
                         ts: now,
                     })?;
                 }
@@ -2573,7 +2630,7 @@ fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
         let k = args[i].as_str();
         if k.starts_with("--") {
             // boolean flags (no value) are followed by another flag or end.
-            if matches!(k, "--no-follow-up" | "--help" | "-h") {
+            if matches!(k, "--no-follow-up" | "--anonymous" | "--help" | "-h") {
                 f(k, "true".to_string());
                 i += 1;
             } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {

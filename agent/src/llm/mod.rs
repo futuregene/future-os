@@ -15,9 +15,19 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
 
-const DEFAULT_TIMEOUT_SECS: u64 = 600;
+const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
 const STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS: u64 = 15;
+
+/// HTTP request timeout for a single LLM call. Defaults to 30 min (1800 s);
+/// override with the FUTURE_LLM_TIMEOUT_SECS env var without rebuilding.
+fn llm_timeout_secs() -> u64 {
+    std::env::var("FUTURE_LLM_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v >= 60)
+        .unwrap_or(DEFAULT_TIMEOUT_SECS)
+}
 
 /// Why the LLM SSE read loop exited before seeing a genuine terminal signal
 /// (`[DONE]` or `finish_reason`). Distinguishes abort/disconnect (expected —
@@ -63,7 +73,7 @@ impl Client {
         max_tokens: Option<i32>,
     ) -> Self {
         let http = HttpClient::builder()
-            .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
             .build()
             .unwrap_or_else(|_| HttpClient::new());
 
