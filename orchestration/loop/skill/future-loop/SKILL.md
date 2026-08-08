@@ -1,5 +1,5 @@
 ---
-version: 1.0.1
+version: 1.0.3
 name: future-loop
 description: FutureOS loop control plane — manage long-running goals, todo lists, human gates, monitors, and validated completion via the loop control plane. Use when the user wants a long-lived/multi-step/cross-session task tracked as a goal, asks to "keep working on X", "track this issue", "run this overnight", needs progress/status of ongoing agent work, or starts a message with "/future-loop" (treat everything after the prefix as the goal).
 allowed-tools: Bash(future-loop:*)
@@ -271,6 +271,16 @@ future loop run --goal <goal-id> --model <confirmed-model> \
 > overlapping turns, and the kernel expects one run at a time. If a blocking
 > run is interrupted, check `status` before re-running to see what completed.
 
+> **Agent ids — register once, reuse, never duplicate**: before registering
+> a new identity run `future loop agent list --goal <goal-id>` — it shows
+> every registered agent plus live execution status (`running` = holds a
+> live lease on a todo right now, with the lease time remaining; `idle` =
+> free to take work). Register/onboard ONLY ids that are missing: each
+> concurrent `run --agent-id` needs its own unique id, and re-registering an
+> existing id merely appends a redundant ledger event (replay is idempotent).
+> `agent list` also reveals who is mid-execution, so a fresh worker can pick
+> a different todo instead of racing the same one.
+
 After each `run`, before starting the next step:
 1. Report what was done (which todo, cost, new status).
 2. **Reflect & improve — run a deliberate reflection pass (not just a status
@@ -420,6 +430,7 @@ future loop todo complete --goal G --todo-id T [--no-follow-up | --successor T2]
 future loop todo supersede --goal G --todo-id T --reason "..."
 future loop gate resolve --goal G --todo-id T --decision "..." [--note "..."]
 future loop quota should-run --goal G [--agent-id A]
+future loop agent list --goal G      # registered agents + live execution status
 future loop heartbeat-prompt --goal G          # re-entry packet for the next turn
 future loop run --goal G [--model M] [--thinking-level L] [--max-turns N]
 future loop backup --goal G [--list | --restore DIR]
@@ -444,8 +455,10 @@ registry` for the authoritative list; the notable extras:
 - **gates & replan**: `gate resolve`; `replan ack` / `replan obligations`
   (kernel-injected plan-review checkpoints).
 - **agents**: `agent register|onboard` (onboard declares capabilities);
-  `scope` (identity-scoped frontier); `lane` (lane recommendation);
-  `supervisor propose|receipt|events`.
+  `agent list` (registered agents + live execution status — check this
+  BEFORE registering so parallel workers reuse existing ids instead of
+  re-registering the same one); `scope` (identity-scoped frontier);
+  `lane` (lane recommendation); `supervisor propose|receipt|events`.
 - **quota/scheduler**: `quota should-run|usage|spend`;
   `scheduler tick|show|record-host-failure`.
 - **ops**: `diagnose` (per-goal decision surface, supports `--format json`);

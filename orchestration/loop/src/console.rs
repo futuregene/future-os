@@ -13,6 +13,7 @@
 //! State lives under `--root` (default `~/.future/loop/`), one goal per
 //! directory, event-sourced: `loop status` replays the ledger each time.
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use crate::cli::registry::CommandRegistry;
@@ -232,6 +233,12 @@ fn build_cli_registry() -> CommandRegistry {
         "agent",
         "register/onboard agents",
         "agent onboard --goal G --agent-id A [--capabilities c1,c2]",
+    );
+    r.command(
+        agent,
+        "list",
+        "registered agents + live execution status (leases)",
+        "agent list --goal G",
     );
     r.command(
         agent,
@@ -878,6 +885,9 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     if args.first().map(|s| s.as_str()) == Some("onboard") {
         return cmd_agent_onboard(store, &args[1..]);
     }
+    if args.first().map(|s| s.as_str()) == Some("list") {
+        return cmd_agent_list(store, &args[1..]);
+    }
     let mut goal_id = None;
     let mut agent_id = None;
     parse_pairs(args, |k, v| match k {
@@ -909,7 +919,9 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
-        "--capability" => capabilities = v.split(',').map(|s| s.trim().to_string()).collect(),
+        "--capability" | "--capabilities" => {
+            capabilities = v.split(',').map(|s| s.trim().to_string()).collect()
+        }
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -925,6 +937,107 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     })?;
     println!("agent `{agent_id}` onboarded (capabilities={capabilities:?}) ✔");
     Ok(())
+}
+
+/// `future loop agent list --goal G` — registered agents + their current
+/// execution status. Status is derived from the live task-lease ledger:
+/// `running` = the agent holds a live lease on a todo right now (shown with
+/// the lease's remaining time); `idle` = registered but holding no lease.
+/// Also shows declared capabilities and the agent's most recent activity.
+/// Intended as the pre-flight check before `agent register`/`onboard`, so
+/// parallel workers reuse existing ids instead of re-registering the same
+/// one (each concurrent run needs its own unique id).
+fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+
+    // Event-derived metadata: most recent activity timestamp per agent
+    // (registration, onboarding, or any lease transition).
+    let now = now_epoch();
+    let mut last_active: HashMap<String, u64> = HashMap::new();
+    for ev in store.events(&goal_id).unwrap_or_default() {
+        let (agent, ts) = match &ev.event {
+            Event::AgentRegistered { agent_id, ts, .. }
+            | Event::AgentOnboarded { agent_id, ts, .. }
+            | Event::TodoClaimed { agent_id, ts, .. }
+            | Event::TodoRenewed { agent_id, ts, .. }
+            | Event::TodoReleased { agent_id, ts, .. } => (agent_id.as_str(), *ts),
+            _ => continue,
+        };
+        last_active
+            .entry(agent.to_string())
+            .and_modify(|t| *t = (*t).max(ts))
+            .or_insert(ts);
+    }
+
+    if goal.registered_agents.is_empty() {
+        println!("no agents registered for {goal_id}");
+        return Ok(());
+    }
+    println!(
+        "agents registered for {goal_id} ({}):",
+        goal.registered_agents.len()
+    );
+    println!(
+        "  {:<12} {:<8} {:<32} {:<14} {:<12}",
+        "agent_id", "status", "work-on", "capabilities", "last-active"
+    );
+    for aid in &goal.registered_agents {
+        let mut work: Vec<String> = Vec::new();
+        for t in goal.todos.iter() {
+            if t.claimed_by.as_deref() == Some(aid.as_str())
+                && t.lease_expires_at.map(|e| e > now).unwrap_or(false)
+            {
+                let left = t.lease_expires_at.unwrap().saturating_sub(now);
+                work.push(format!("{} (lease {} left)", t.id, human_dur(left)));
+            }
+        }
+        let status = if work.is_empty() { "idle" } else { "running" };
+        let work_label = if work.is_empty() {
+            "-".to_string()
+        } else {
+            work.join("; ")
+        };
+        let caps = goal
+            .agent_profiles
+            .iter()
+            .find(|p| p.id == *aid)
+            .map(|p| p.capabilities.join(","))
+            .unwrap_or_else(|| "-".to_string());
+        let last = last_active
+            .get(aid)
+            .map(|ts| format!("{} ago", human_dur(now.saturating_sub(*ts))))
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "  {:<12} {:<8} {:<32} {:<14} {:<12}",
+            aid, status, work_label, caps, last
+        );
+    }
+    println!(
+        "hint: agent ids are goal-scoped; check this list before `agent register`/`onboard` \
+         to avoid duplicate ids (each parallel worker needs its own unique id)"
+    );
+    Ok(())
+}
+
+/// Compact human duration ("59s" / "4m12s" / "3h59m") for lease/activity
+/// display in `agent list`.
+fn human_dur(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
