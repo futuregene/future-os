@@ -138,6 +138,7 @@ pub enum KeyAction {
     CycleModel,
     ShowSessions,
     CycleThinking,
+    ToggleThinking,
     ScrollChatUpPage,
     ScrollChatDownPage,
     ScrollChatUpLine,
@@ -883,6 +884,16 @@ impl<T: TerminalIo> App<T> {
                 true
             }),
             "Cycle thinking",
+            None,
+        );
+        let tx = self.op_tx.clone();
+        self.keybindings.add(
+            Key::CTRL_O,
+            Box::new(move || {
+                let _ = tx.send(UiCmd::KeyAction(KeyAction::ToggleThinking));
+                true
+            }),
+            "Expand/collapse thinking",
             None,
         );
         let tx = self.op_tx.clone();
@@ -2136,6 +2147,10 @@ impl<T: TerminalIo> App<T> {
                     let _ = tx.send(UiCmd::ThinkingCycled(client.cycle_thinking_level().await));
                 });
             }
+            KeyAction::ToggleThinking => {
+                self.chat.toggle_thinking_hidden();
+                self.request_render(false);
+            }
             KeyAction::ScrollChatUpPage => {
                 self.chat.scroll_up(self.terminal.rows() as usize);
                 self.request_render(false);
@@ -3000,7 +3015,7 @@ impl<T: TerminalIo> App<T> {
         // Shortcuts line (truncate to fit terminal width).
         let term_w = self.terminal.columns() as usize;
         let shortcuts = truncate_to_width(
-            "ctrl+c interrupt · ctrl+p model · ctrl+t thinking · / commands",
+            "ctrl+c interrupt · ctrl+p model · ctrl+t thinking · ctrl+o expand/collapse · / commands",
             term_w.saturating_sub(4),
             &TruncateOptions::default(),
         );

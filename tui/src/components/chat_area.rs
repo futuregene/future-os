@@ -573,6 +573,13 @@ impl ChatArea {
         }
     }
 
+    /// Flip thinking visibility for all messages (ctrl+o); returns the new
+    /// state (`true` = hidden). Re-renders on change.
+    pub fn toggle_thinking_hidden(&mut self) -> bool {
+        self.set_thinking_hidden(!self.thinking_hidden);
+        self.thinking_hidden
+    }
+
     pub fn clear_messages(&mut self) {
         self.messages = Vec::new();
         self.rerender();
@@ -859,7 +866,10 @@ impl ChatArea {
         if has_thinking {
             if self.thinking_hidden {
                 self.rendered_lines.push(RenderedLine {
-                    text: fg(self.theme.thinking_text as u8, &italic(" Thinking...")),
+                    text: fg(
+                        self.theme.thinking_text as u8,
+                        &italic(" Thinking... (ctrl+o to expand)"),
+                    ),
                     dim: true,
                 });
             } else {
@@ -1252,6 +1262,47 @@ mod tests {
 
     fn new_chat() -> ChatArea {
         ChatArea::new(W, None)
+    }
+
+    #[test]
+    fn toggle_thinking_hidden_collapses_and_expands() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![ChatMessage {
+                id: "m".into(),
+                role: ChatRole::Assistant,
+                thinking: Some("step by step reasoning".into()),
+                content: "final answer".into(),
+                ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
+            }],
+        );
+
+        // Expanded by default: full thinking text is rendered.
+        let expanded = chat.render_all(W);
+        assert!(expanded
+            .iter()
+            .any(|l| l.contains("step by step reasoning")));
+
+        // Collapse: placeholder with hint replaces the thinking block;
+        // the answer content stays visible.
+        assert!(chat.toggle_thinking_hidden());
+        let collapsed = chat.render_all(W);
+        assert!(collapsed
+            .iter()
+            .any(|l| l.contains("Thinking... (ctrl+o to expand)")));
+        assert!(!collapsed
+            .iter()
+            .any(|l| l.contains("step by step reasoning")));
+        assert!(collapsed.iter().any(|l| l.contains("final answer")));
+
+        // Expand again.
+        assert!(!chat.toggle_thinking_hidden());
+        let reexpanded = chat.render_all(W);
+        assert!(reexpanded
+            .iter()
+            .any(|l| l.contains("step by step reasoning")));
     }
 
     fn set_messages(chat: &mut ChatArea, messages: Vec<ChatMessage>) {
