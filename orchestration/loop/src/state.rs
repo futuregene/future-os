@@ -811,6 +811,38 @@ impl Goal {
         self.runnable_advancement_for(None)
     }
 
+    /// Whether `t` is held out of the frontier by an unresolved predecessor.
+    ///
+    /// `blocked_by_gate` carries predecessor ids (comma-joined). An id blocks
+    /// `t` when it names:
+    /// - an OPEN gate/blocker (existing behavior: gates freeze linked work
+    ///   until resolved), or
+    /// - a plain todo that has not reached Done/Superseded (todo→todo
+    ///   dependency — `--blocks` on `todo add`/`todo update`). Previously
+    ///   these ids were only ever compared against the open-gate set, so
+    ///   todo→todo blocks silently never took effect; they are now enforced.
+    ///
+    /// Unknown predecessor ids do NOT block here (liveness); the
+    /// `task-graph` projection fails closed on them instead.
+    pub fn is_blocked(&self, t: &Todo) -> bool {
+        let Some(ids) = t.blocked_by_gate.as_deref() else {
+            return false;
+        };
+        ids.split(',').any(|gid| {
+            let gid = gid.trim();
+            if gid.is_empty() {
+                return false;
+            }
+            match self.todo(gid) {
+                Some(pred) => match pred.class {
+                    TaskClass::UserGate | TaskClass::Blocker => pred.status == TodoStatus::Open,
+                    _ => !matches!(pred.status, TodoStatus::Done | TodoStatus::Superseded),
+                },
+                None => false,
+            }
+        })
+    }
+
     /// Identity-scoped frontier (LoopX: registered peers see their own slice;
     /// unclaimed work wakes every eligible peer; a live lease held by another
     /// agent hides the todo from this frontier). Also applies the capability
@@ -823,19 +855,12 @@ impl Goal {
         let now_sys = SystemTime::now();
         let now = now_epoch();
         let caps = agent_id.map(|a| self.agent_capabilities(a));
-        let open_gate_ids: Vec<&str> = self
-            .open_blocking_sources()
-            .map(|g| g.id.as_str())
-            .collect();
         self.todos.iter().filter(move |t| {
             // Open OR due-deferred (returns to the frontier) advancement.
             (t.class == TaskClass::Advancement
                 && (t.status == TodoStatus::Open || t.is_due_deferred(now_sys)))
                 && !t.claimed_by_other(agent_id, now)
-                && t.blocked_by_gate
-                    .as_deref()
-                    .map(|ids| ids.split(',').all(|gid| !open_gate_ids.contains(&gid)))
-                    .unwrap_or(true)
+                && !self.is_blocked(t)
                 && t.required_capability
                     .as_deref()
                     .map(|cap| {

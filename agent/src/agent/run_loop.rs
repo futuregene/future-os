@@ -149,13 +149,18 @@ impl Loop {
             // time-to-first-byte takes effect immediately instead of blocking
             // on the request to return (especially noticeable on Windows where
             // flaky connections make this phase slow).
+            // Drain any mid-turn steering notes and fold them into this step's
+            // system prompt (the frozen snapshot semantics for model/tools/
+            // config are unchanged — steering is an additive operator channel).
+            let step_system_prompt =
+                fold_steering_into_prompt(&ctx.system_prompt, &mut self.steering_notes.lock());
             let stream_result = match self
                 .await_or_interrupt(
                     self.provider.stream_chat(
                         ctx.model.clone(),
                         llm_messages,
                         tool_defs.clone(),
-                        ctx.system_prompt.clone(),
+                        step_system_prompt,
                     ),
                     interrupt_rx.as_mut(),
                 )
@@ -973,9 +978,49 @@ fn is_retryable_size_error(err_msg: &str) -> bool {
     err_msg.starts_with("[CTX_LIMIT]")
 }
 
+/// Drain pending mid-turn steering notes and fold them into the system prompt
+/// for the next LLM call. Notes are consumed exactly once; an empty queue
+/// returns the base prompt unchanged.
+fn fold_steering_into_prompt(
+    base: &str,
+    notes: &mut parking_lot::MutexGuard<'_, Vec<String>>,
+) -> String {
+    if notes.is_empty() {
+        return base.to_string();
+    }
+    let drained = std::mem::take(&mut **notes);
+    format!(
+        "{}\n\n── steering update (injected mid-turn by the orchestrator) ──\n{}",
+        base,
+        drained.join("\n\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steering_fold_returns_base_when_empty() {
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(vec![]));
+        let mut guard = cell.lock();
+        assert_eq!(
+            fold_steering_into_prompt("base prompt", &mut guard),
+            "base prompt"
+        );
+    }
+
+    #[test]
+    fn steering_fold_drains_once_and_appends() {
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(vec!["do X instead".to_string()]));
+        let mut guard = cell.lock();
+        let out = fold_steering_into_prompt("base", &mut guard);
+        assert!(out.contains("base"));
+        assert!(out.contains("do X instead"));
+        assert!(guard.is_empty(), "notes drained exactly once");
+        let out2 = fold_steering_into_prompt("base", &mut guard);
+        assert_eq!(out2, "base", "second call sees an empty queue");
+    }
 
     #[test]
     fn size_error_matches_context_limit_prefix() {

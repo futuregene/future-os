@@ -87,4 +87,71 @@ mod tests {
         assert_eq!(fp.monitors_open, 1);
         assert_eq!(fp.monitors_due, 1);
     }
+
+    #[test]
+    fn todo_blocks_todo_excluded_until_predecessor_done() {
+        let mut g = Goal::new("g", "o", "/tmp");
+        g.add(Todo::advancement("T1", "first"));
+        g.add(Todo::advancement("T2", "second").blocking(&["T1"]));
+        // T2 blocked while T1 open (todo→todo dependency enforced).
+        let ids: Vec<&str> = sorted_runnable(&g, None)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["T1"], "T2 must wait for T1");
+        // Completing T1 unblocks T2.
+        g.todo_mut("T1").unwrap().complete(true, vec![]);
+        let ids: Vec<&str> = sorted_runnable(&g, None)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["T2"]);
+    }
+
+    #[test]
+    fn superseded_predecessor_does_not_block() {
+        let mut g = Goal::new("g", "o", "/tmp");
+        g.add(Todo::advancement("T1", "obsolete route"));
+        g.add(Todo::advancement("T2", "second").blocking(&["T1"]));
+        g.todo_mut("T1").unwrap().status = crate::state::TodoStatus::Superseded;
+        let ids: Vec<&str> = sorted_runnable(&g, None)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["T2"],
+            "superseded predecessor must not wedge the goal"
+        );
+    }
+
+    #[test]
+    fn unknown_predecessor_does_not_block_frontier() {
+        let mut g = Goal::new("g", "o", "/tmp");
+        g.add(Todo::advancement("T2", "second").blocking(&["T-missing"]));
+        let ids: Vec<&str> = sorted_runnable(&g, None)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["T2"],
+            "unknown ids are flagged by task-graph, not wedged"
+        );
+    }
+
+    #[test]
+    fn gate_predecessor_blocks_until_resolved() {
+        let mut g = Goal::new("g", "o", "/tmp");
+        g.add(Todo::user_gate("G1", "approve?", &[]));
+        g.add(Todo::advancement("T2", "gated work").blocking(&["G1"]));
+        assert!(sorted_runnable(&g, None).is_empty(), "open gate blocks T2");
+        g.todo_mut("G1").unwrap().decision = Some("approved".to_string());
+        g.todo_mut("G1").unwrap().status = crate::state::TodoStatus::Done;
+        let ids: Vec<&str> = sorted_runnable(&g, None)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["T2"], "resolved gate releases T2");
+    }
 }

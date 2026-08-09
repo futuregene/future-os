@@ -136,6 +136,21 @@ impl AgentClient {
         Ok(())
     }
 
+    /// Queue a mid-turn steering note (drained by the running turn at its next
+    /// LLM step, unlike append_system_prompt which applies from the next run).
+    pub async fn steer(&mut self, session_id: &str, text: &str) -> Result<()> {
+        self.call(
+            "steer",
+            session_id,
+            RpcCommand {
+                system_prompt: text.to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Select the model for this session (e.g. "future/deepseek-v4-flash").
     pub async fn set_model(&mut self, session_id: &str, model: &str) -> Result<()> {
         self.call(
@@ -229,7 +244,15 @@ impl AgentClient {
     /// Subscribe to one canonical run from its beginning (atomic attach closes
     /// the prompt-ack -> subscribe loss window) and collect events until
     /// `agent_end` (or the stream closes / errors).
-    pub async fn run_turn(&mut self, session_id: &str, run_id: &str) -> Result<RunSummary> {
+    /// `live_log`: when set, every streamed event is teed to this JSONL file
+    /// so operators can watch a long turn live (`loop status` shows one line
+    /// otherwise).
+    pub async fn run_turn(
+        &mut self,
+        session_id: &str,
+        run_id: &str,
+        live_log: Option<&std::path::Path>,
+    ) -> Result<RunSummary> {
         let request = tonic::Request::new(StreamRequest {
             session_id: session_id.to_string(),
             run_id: run_id.to_string(),
@@ -265,6 +288,26 @@ impl AgentClient {
             let Some(data) = parse_data(&ev) else {
                 continue;
             };
+            if let Some(path) = live_log {
+                let mut line = serde_json::json!({
+                    "type": ev.r#type.as_str(),
+                    "idx": ev.idx,
+                    "wall_ts": crate::state::now_epoch(),
+                });
+                if ev.r#type == "tool_start" {
+                    if let Some(n) = data.get("tool_name").and_then(|v| v.as_str()) {
+                        line["tool"] = serde_json::Value::String(n.to_string());
+                    }
+                }
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{}", line);
+                }
+            }
             match ev.r#type.as_str() {
                 "tool_start" => {
                     if let Some(name) = data.get("tool_name").and_then(|v| v.as_str()) {
