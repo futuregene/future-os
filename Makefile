@@ -59,6 +59,7 @@ endif
 
 install-cli: build-cli
 ifeq ($(OS),windows)
+	@if not exist "$(USERPROFILE)\.future\bin" mkdir "$(USERPROFILE)\.future\bin"
 	$(SUDO) $(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
 else
 	$(SUDO) cp target/release/future "$(PREFIX)/future"

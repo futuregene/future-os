@@ -28,6 +28,10 @@ use crate::stdin_buffer::{StdinBuffer, StdinEvent};
 mod terminal_posix;
 #[cfg(unix)]
 use terminal_posix as platform;
+
+/// Panic-hook terminal restore, surfaced for `crash.rs`.
+#[cfg(unix)]
+pub(crate) use terminal_posix::panic_restore_raw;
 #[cfg(windows)]
 #[path = "terminal_windows.rs"]
 mod terminal_windows;
@@ -59,6 +63,8 @@ enum ReadWait {
     /// resize via `Signal(SIGWINCH)`.
     #[allow(dead_code)]
     Resize,
+    /// Constructed on POSIX only (self-pipe byte); Windows has no signals.
+    #[allow(dead_code)]
     Signal(i32),
 }
 
