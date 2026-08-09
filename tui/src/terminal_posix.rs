@@ -751,15 +751,19 @@ mod tests {
             let expected = filled + payload.len();
             // Target the writer thread with pthread_kill — a process-wide
             // raise() could land on any thread and never interrupt the write.
+            // The storm runs long enough that some signal lands while the
+            // writer is blocked, even under parallel test load.
             let writer = libc::pthread_self();
             let raiser = std::thread::spawn(move || {
-                for _ in 0..20 {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+                for _ in 0..100 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                     libc::pthread_kill(writer, libc::SIGUSR1);
                 }
             });
-            // Drain exactly filler + payload bytes so the writer finishes.
+            // Drain exactly filler + payload bytes so the writer finishes;
+            // starts late enough that the signal storm hits the blocked write.
             let drainer = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
                 let mut sink = vec![0u8; 65536];
                 let mut got = 0usize;
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);

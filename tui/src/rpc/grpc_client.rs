@@ -280,20 +280,13 @@ impl GrpcClient {
     /// Wait (bounded) for the event stream to deliver its first frame.
     async fn wait_connected(&self, max_ms: u64) {
         let mut rx = self.inner.conn_tx.subscribe();
-        let timeout = tokio::time::sleep(Duration::from_millis(max_ms));
-        tokio::pin!(timeout);
-        loop {
-            tokio::select! {
-                changed = rx.changed() => {
-                    // The sender outlives the client (the manager/heartbeat
-                    // tasks hold Arc<Inner>); Err → teardown → stop waiting.
-                    if changed.map(|()| *rx.borrow()).unwrap_or(true) {
-                        return;
-                    }
-                }
-                _ = &mut timeout => return,
-            }
-        }
+        // wait_for returns on the first `true`; a closed channel (teardown)
+        // errors out of it — either way the timeout caps the wait.
+        let _ = tokio::time::timeout(
+            Duration::from_millis(max_ms),
+            rx.wait_for(|connected| *connected),
+        )
+        .await;
     }
 
     // ─── Session management ────────────────────────────────────────────
@@ -1161,16 +1154,15 @@ mod tests {
 
     /// Wait until `conn` reports connected (first stream data).
     async fn wait_connected(conn: &mut watch::Receiver<bool>) {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                conn.changed().await.expect("conn channel closed");
-                if *conn.borrow() {
-                    return;
-                }
-            }
-        })
-        .await
-        .expect("never connected");
+        wait_conn(conn, true, "never connected").await;
+    }
+
+    /// Wait until `conn` reads `want` (bounded).
+    async fn wait_conn(conn: &mut watch::Receiver<bool>, want: bool, what: &str) {
+        tokio::time::timeout(Duration::from_secs(10), conn.wait_for(|v| *v == want))
+            .await
+            .expect(what)
+            .expect("conn channel closed");
     }
 
     /// Assert that no `false` (connection-lost) notification arrives within
@@ -1252,6 +1244,8 @@ mod tests {
         stream_ends: bool,
         /// The stream never emits anything (watchdog bait).
         stream_idle: bool,
+        /// Delay before answering unary calls (slow-agent scenarios).
+        unary_delay_ms: u64,
     }
 
     #[tonic::async_trait]
@@ -1264,6 +1258,9 @@ mod tests {
             self.seen.lock().unwrap().push(cmd.r#type.clone());
             if let Some(status) = self.status_errors.get(&cmd.r#type) {
                 return Err(status.clone());
+            }
+            if self.unary_delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(self.unary_delay_ms)).await;
             }
             let data = self
                 .data_by_type
@@ -1654,6 +1651,9 @@ mod tests {
 
         // Malformed data is dropped without disturbing the stream.
         tx.send(stream_event("text_chunk", "not json", "")).unwrap();
+        // A run-scoped event that is neither start nor end skips the
+        // bookkeeping arms.
+        tx.send(stream_event("text_chunk", "{\"text\":\"x\"}", "r0")).unwrap();
         // agent_start marks the run active…
         tx.send(stream_event("agent_start", "{}", "r1")).unwrap();
         assert!(spin_until_bool(&client, true).await);
@@ -1877,16 +1877,7 @@ mod tests {
         // Kill the server: the stream errors out → Lost → conn false, and
         // the reconnect poll runs tryConnect (fails while the server is down).
         server.abort();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                conn.changed().await.expect("conn channel closed");
-                if !*conn.borrow() {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("disconnect notification");
+        wait_conn(&mut conn, false, "disconnect notification").await;
         assert!(!client.is_connected());
         // Let the 1 s reconnect poll fire against the dead agent.
         tokio::time::sleep(Duration::from_millis(1_300)).await;
@@ -1905,16 +1896,7 @@ mod tests {
 
         // Kill → disconnect notification.
         server.abort();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                conn.changed().await.expect("conn channel closed");
-                if !*conn.borrow() {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("disconnect");
+        wait_conn(&mut conn, false, "disconnect").await;
         assert!(!client.is_connected());
 
         // Revive on the same address: the poll's tryConnect succeeds →
@@ -1926,16 +1908,7 @@ mod tests {
             event_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
         tokio::spawn(Server::builder().add_service(FutureAgentServer::new(agent)).serve(addr2));
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                conn.changed().await.expect("conn channel closed");
-                if *conn.borrow() {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("reconnect");
+        wait_conn(&mut conn, true, "reconnect").await;
         assert!(client.is_connected());
         client.disconnect();
     }
@@ -1965,6 +1938,60 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect_poll_pre_select_session_change() {
+        // A black-hole agent: accepts TCP, never answers. The session change
+        // lands while a subscribe/tryConnect is blocked mid-flight, so the
+        // reconnect poll's pre-select session check catches it.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            // Sockets are held open (never speaking) until the runtime ends.
+            let mut held = Vec::new();
+            loop {
+                let (sock, _) = listener.accept().await.unwrap();
+                held.push(sock);
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let addr = format!("127.0.0.1:{}", addr.port());
+
+        let (client, _e, _c) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        // The subscription hangs (no data). The 5 s watchdog ends it; the
+        // manager enters the reconnect poll, and its 1 s tick starts a
+        // (black-hole-slow) tryConnect — the black hole holds the TCP
+        // handshake, so it times out at 3 s.
+        tokio::time::sleep(Duration::from_millis(6_500)).await;
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect_poll_pre_select_check_fires() {
+        // Slow-failing agent: subscribe errors fast (Lost), then each
+        // tryConnect takes ~1 s to fail. Change the session while that call
+        // is in flight — the poll's pre-select check resubscribes.
+        let addr = spawn_api_mock(ApiMock {
+            stream_fails: true,
+            unary_delay_ms: 800,
+            fail_with: StdHashMap::from([("list_models".to_string(), String::new())]),
+            ..Default::default()
+        })
+        .await;
+        let (client, _e, _c) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        // Lost quickly (stream error) → poll; tick at ≈1 s starts the slow
+        // tryConnect; land the session change inside that window.
+        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        client.inner.state.lock().current_session_id = "s2".into();
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn manager_loop_top_stop_with_idle_manager() {
         // Manager idle (no session) + stop without notify + a poke to wake
         // it → the loop-top stop check returns.
@@ -1987,16 +2014,7 @@ mod tests {
         wait_connected(&mut conn).await;
         // A stream-level error → Lost → disconnect notification.
         tx.send(Err(tonic::Status::internal("mid-stream boom"))).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                conn.changed().await.expect("conn channel closed");
-                if !*conn.borrow() {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("disconnect on stream error");
+        wait_conn(&mut conn, false, "disconnect on stream error").await;
         client.disconnect();
     }
 
@@ -2042,16 +2060,7 @@ mod tests {
         client.connect_events();
         wait_connected(&mut conn).await;
         // The end of the stream flips the connection back off.
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                conn.changed().await.expect("conn channel closed");
-                if !*conn.borrow() {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("stream-end disconnect");
+        wait_conn(&mut conn, false, "stream-end disconnect").await;
         client.disconnect();
     }
 
@@ -2084,16 +2093,7 @@ mod tests {
 
         // Kill the agent: the next heartbeat's tryConnect fails → disconnect.
         server.abort();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                conn.changed().await.expect("conn channel closed");
-                if !*conn.borrow() {
-                    return;
-                }
-            }
-        })
-        .await
-        .expect("heartbeat disconnect");
+        wait_conn(&mut conn, false, "heartbeat disconnect").await;
         assert!(!client.is_connected());
         client.disconnect();
     }
@@ -2107,16 +2107,9 @@ mod tests {
         });
         wait_connected(&mut rx).await;
         flipper.abort();
-        // The loop-back edge: a change to false keeps waiting.
-        let (tx, mut rx) = watch::channel(true);
-        let flipper = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(30)).await;
-            let _ = tx.send(false);
-            tokio::time::sleep(Duration::from_millis(30)).await;
-            let _ = tx.send(true);
-        });
+        // Already-connected resolves immediately.
+        let (_tx, mut rx) = watch::channel(true);
         wait_connected(&mut rx).await;
-        flipper.abort();
     }
 
 }
