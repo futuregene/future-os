@@ -507,6 +507,7 @@ impl ChatArea {
                 role: ChatRole::Assistant,
                 content: String::new(),
                 thinking: Some(String::new()),
+                pending: true, // thinking streaming IS streaming in progress
                 ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
             });
             if self.last_render_width == -1 {
@@ -524,6 +525,7 @@ impl ChatArea {
             if last.thinking.is_none() {
                 last.thinking = Some(String::new());
             }
+            last.pending = true;
             self.rerender_message(last_idx);
         } else {
             self.messages.push(ChatMessage {
@@ -531,6 +533,7 @@ impl ChatArea {
                 role: ChatRole::Assistant,
                 content: String::new(),
                 thinking: Some(String::new()),
+                pending: true,
                 ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
             });
             if self.last_render_width == -1 {
@@ -1326,52 +1329,24 @@ mod tests {
         chat.render(W);
         chat.set_thinking_hidden(true);
 
-        // Thinking actively streaming (pending, no content yet): show the
-        // one-line placeholder, never the reasoning text.
-        set_messages(
-            &mut chat,
-            vec![ChatMessage {
-                id: "m".into(),
-                role: ChatRole::Assistant,
-                thinking: Some("secret reasoning".into()),
-                content: String::new(),
-                pending: true,
-                ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
-            }],
-        );
+        // Thinking actively streaming (start_thinking marks the message
+        // pending): one-line placeholder, never the reasoning text.
+        chat.start_thinking();
+        chat.append_thinking_delta("secret reasoning");
         let lines = chat.render_all(W);
         assert!(lines.iter().any(|l| l.contains("Thinking...")));
         assert!(!lines.iter().any(|l| l.contains("secret reasoning")));
 
-        // Content starts (thinking done) even while still pending: the
-        // placeholder is gone.
-        set_messages(
-            &mut chat,
-            vec![ChatMessage {
-                id: "m".into(),
-                role: ChatRole::Assistant,
-                thinking: Some("secret reasoning".into()),
-                content: "answer".into(),
-                pending: true,
-                ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
-            }],
-        );
+        // Content starts (thinking done): placeholder gone, answer visible,
+        // reasoning still hidden.
+        chat.append_to_last_message("answer");
         let lines = chat.render_all(W);
         assert!(!lines.iter().any(|l| l.contains("Thinking...")));
+        assert!(!lines.iter().any(|l| l.contains("secret reasoning")));
         assert!(lines.iter().any(|l| l.contains("answer")));
 
-        // Historical (completed) thinking: nothing at all.
-        set_messages(
-            &mut chat,
-            vec![ChatMessage {
-                id: "m".into(),
-                role: ChatRole::Assistant,
-                thinking: Some("secret reasoning".into()),
-                content: "answer".into(),
-                pending: false,
-                ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
-            }],
-        );
+        // Run complete: still nothing but the answer.
+        chat.mark_last_message_complete();
         let lines = chat.render_all(W);
         assert!(!lines.iter().any(|l| l.contains("Thinking...")));
         assert!(!lines.iter().any(|l| l.contains("secret reasoning")));
