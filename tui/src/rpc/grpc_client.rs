@@ -43,8 +43,12 @@ const TRY_CONNECT_TIMEOUT_SEC: u64 = 3;
 const CONNECT_WATCHDOG_MS: u64 = 5_000;
 /// Reconnect poll interval.
 const RECONNECT_POLL_MS: u64 = 1_000;
-/// Heartbeat interval (silent-disconnection detection).
+/// Heartbeat interval (silent-disconnection detection). Tests run it fast
+/// so the dead-agent path is exercisable without multi-second waits.
+#[cfg(not(test))]
 const HEARTBEAT_MS: u64 = 10_000;
+#[cfg(test)]
+const HEARTBEAT_MS: u64 = 50;
 /// How long `call` waits for the event stream to deliver its first frame.
 const CALL_CONNECT_WAIT_MS: u64 = 5_000;
 
@@ -282,8 +286,8 @@ impl GrpcClient {
             tokio::select! {
                 changed = rx.changed() => {
                     // The sender outlives the client (the manager/heartbeat
-                    // tasks hold Arc<Inner>), so Err only happens in teardown.
-                    if changed.is_err() || *rx.borrow() {
+                    // tasks hold Arc<Inner>); Err → teardown → stop waiting.
+                    if changed.map(|()| *rx.borrow()).unwrap_or(true) {
                         return;
                     }
                 }
@@ -1138,19 +1142,18 @@ mod tests {
     }
 
     /// Bind an ephemeral port, serve the mock agent, return (join handle, addr).
-    async fn spawn_mock_agent() -> (tokio::task::JoinHandle<()>, String) {
+    async fn spawn_mock_agent(
+    ) -> (tokio::task::JoinHandle<Result<(), tonic::transport::Error>>, String) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener); // tonic binds the same port below
         let agent = MockAgent {
             event_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
-        let handle = tokio::spawn(async move {
-            let _ = Server::builder()
-                .add_service(FutureAgentServer::new(agent))
-                .serve(addr)
-                .await;
-        });
+        // Spawn the serve future directly — no async-block tail that can
+        // never complete.
+        let handle =
+            tokio::spawn(Server::builder().add_service(FutureAgentServer::new(agent)).serve(addr));
         // Give the server a moment to start listening.
         tokio::time::sleep(Duration::from_millis(50)).await;
         (handle, format!("127.0.0.1:{}", addr.port()))
@@ -1234,13 +1237,21 @@ mod tests {
 
     use std::collections::HashMap as StdHashMap;
 
-    /// Mock with per-command-type canned response data and tonic Status
-    /// failures, plus a command log.
+    /// Mock with per-command-type canned response data (swappable at
+    /// runtime) and tonic Status failures, plus a command log.
     #[derive(Clone, Default)]
     struct ApiMock {
-        data_by_type: StdHashMap<String, String>,
+        data_by_type: Arc<std::sync::Mutex<StdHashMap<String, String>>>,
         status_errors: StdHashMap<String, tonic::Status>,
         seen: Arc<std::sync::Mutex<Vec<String>>>,
+        /// Answer success=false with this error string for these types.
+        fail_with: StdHashMap<String, String>,
+        /// stream_events returns a tonic error immediately.
+        stream_fails: bool,
+        /// The stream ends right after the first event.
+        stream_ends: bool,
+        /// The stream never emits anything (watchdog bait).
+        stream_idle: bool,
     }
 
     #[tonic::async_trait]
@@ -1256,16 +1267,19 @@ mod tests {
             }
             let data = self
                 .data_by_type
+                .lock()
+                .unwrap()
                 .get(&cmd.r#type)
                 .cloned()
                 .unwrap_or_else(|| "{}".to_string());
+            let fail = self.fail_with.get(&cmd.r#type);
             Ok(tonic::Response::new(RpcResponse {
                 id: cmd.id,
                 r#type: "response".into(),
                 command: cmd.r#type.clone(),
-                success: true,
+                success: fail.is_none(),
                 data,
-                error: String::new(),
+                error: fail.cloned().unwrap_or_default(),
                 error_code: String::new(),
                 error_data: String::new(),
                 payload: None,
@@ -1279,6 +1293,12 @@ mod tests {
             &self,
             _request: tonic::Request<StreamRequest>,
         ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+            if self.stream_fails {
+                return Err(tonic::Status::internal("stream boom"));
+            }
+            if self.stream_idle {
+                return Ok(tonic::Response::new(Box::pin(stream::pending())));
+            }
             // One event, then idle (stream stays open).
             let first = StreamEvent {
                 r#type: "ping".into(),
@@ -1286,9 +1306,11 @@ mod tests {
                 ..Default::default()
             };
             let idle = stream::pending();
-            Ok(tonic::Response::new(Box::pin(
-                stream::once(async move { Ok(first) }).chain(idle),
-            )))
+            let once = stream::once(async move { Ok(first) });
+            if self.stream_ends {
+                return Ok(tonic::Response::new(Box::pin(once)));
+            }
+            Ok(tonic::Response::new(Box::pin(once.chain(idle))))
         }
     }
 
@@ -1296,39 +1318,39 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
-        tokio::spawn(async move {
-            let _ = Server::builder()
-                .add_service(FutureAgentServer::new(mock))
-                .serve(addr)
-                .await;
-        });
+        // Spawn the serve future directly (no async block → no never-taken
+        // completion tail).
+        tokio::spawn(Server::builder().add_service(FutureAgentServer::new(mock)).serve(addr));
         tokio::time::sleep(Duration::from_millis(50)).await;
         format!("127.0.0.1:{}", addr.port())
-    }
-
-    #[allow(dead_code)]
-    fn seen_types(seen: &Arc<std::sync::Mutex<Vec<String>>>) -> Vec<String> {
-        seen.lock().unwrap().clone()
     }
 
     #[test]
     fn grpc_addr_env_override() {
         let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
+        fn restore(key: &str, old: Option<std::ffi::OsString>) {
+            match old {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
         let old = std::env::var_os("FUTURE_AGENT_GRPC_ADDR");
         std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
         assert_eq!(grpc_addr(), "localhost:50051");
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "example:1234");
         assert_eq!(grpc_addr(), "example:1234");
-        match old {
-            Some(v) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", v),
-            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
-        }
+        // Both restore arms.
+        restore("FUTURE_AGENT_GRPC_ADDR", Some("ambient".into()));
+        assert_eq!(grpc_addr(), "ambient");
+        restore("FUTURE_AGENT_GRPC_ADDR", None);
+        assert_eq!(grpc_addr(), "localhost:50051");
+        restore("FUTURE_AGENT_GRPC_ADDR", old);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn session_management_calls() {
         let addr = spawn_api_mock(ApiMock {
-            data_by_type: StdHashMap::from([
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
                 ("new_session".into(), "{\"sessionId\":\"s-new\"}".into()),
                 ("switch_session".into(), "{\"cancelled\":false}".into()),
                 ("fork".into(), "{\"sessionId\":\"s-fork\"}".into()),
@@ -1339,7 +1361,7 @@ mod tests {
                     "{\"sessions\":[{\"id\":\"s1\",\"cwd\":\"/tmp\",\"updatedAt\":\"2026-01-01\",\"model\":\"m\"}, {\"bad\":true}]}"
                         .into(),
                 ),
-            ]),
+            ]))),
             seen: Arc::new(std::sync::Mutex::new(Vec::new())),
             ..Default::default()
         })
@@ -1374,10 +1396,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn switch_session_cancelled_keeps_current() {
         let addr = spawn_api_mock(ApiMock {
-            data_by_type: StdHashMap::from([(
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([(
                 "switch_session".into(),
                 "{\"cancelled\":true}".into(),
-            )]),
+            )]))),
             ..Default::default()
         })
         .await;
@@ -1392,7 +1414,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn core_rpc_calls_and_run_bookkeeping() {
         let addr = spawn_api_mock(ApiMock {
-            data_by_type: StdHashMap::from([
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
                 (
                     "prompt".into(),
                     "{\"run_id\":\"r1\",\"run_epoch\":1,\"accepted_state\":\"running\"}".into(),
@@ -1411,7 +1433,7 @@ mod tests {
                 ("cycle_thinking_level".into(), "{\"level\":\"high\"}".into()),
                 ("compact".into(), "{\"summary\":\"shorter\"}".into()),
                 ("reload_config".into(), "{\"reloaded\":true}".into()),
-            ]),
+            ]))),
             ..Default::default()
         })
         .await;
@@ -1454,17 +1476,18 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn prompt_queued_state_and_lost_run_detection() {
+        let data = Arc::new(std::sync::Mutex::new(StdHashMap::from([
+            (
+                "prompt".to_string(),
+                "{\"run_id\":\"q1\",\"run_epoch\":1,\"accepted_state\":\"queued\",\"queue_position\":1}".to_string(),
+            ),
+            (
+                "get_state".to_string(),
+                "{\"sessionId\":\"s1\",\"agentInstanceId\":\"agent-1\",\"queuedRuns\":[{\"runId\":\"q1\",\"runSequence\":1,\"clientRequestId\":\"req-1\",\"queuePosition\":1,\"acceptedAt\":\"2026-01-01\",\"displayText\":\"hi\"}]}".to_string(),
+            ),
+        ])));
         let addr = spawn_api_mock(ApiMock {
-            data_by_type: StdHashMap::from([
-                (
-                    "prompt".into(),
-                    "{\"run_id\":\"q1\",\"run_epoch\":1,\"accepted_state\":\"queued\",\"queue_position\":1}".into(),
-                ),
-                (
-                    "get_state".into(),
-                    "{\"sessionId\":\"s1\",\"agentInstanceId\":\"agent-1\"}".into(),
-                ),
-            ]),
+            data_by_type: data.clone(),
             ..Default::default()
         })
         .await;
@@ -1475,53 +1498,17 @@ mod tests {
         assert_eq!(ack.accepted_state, "queued");
         assert!(!client.has_running_run());
 
-        // First get_state registers agent-1.
+        // First get_state registers agent-1 and the queued run.
         client.get_state().await.unwrap();
-        // Queue a run, then the agent restarts (instance id changes) → the
-        // queued run is reported lost.
-        client.inner.state.lock().runs.insert("q1".into(), RunStatus::Queued);
-        client
-            .inner
-            .state
-            .lock()
-            .runs
-            .insert("still-running".into(), RunStatus::Running);
-        let addr2 = addr.clone();
-        // Simulate restart by swapping the canned instance id is not
-        // possible; call the state update directly with a new id.
-        let _ = addr2;
-        let resp = execute_unary(
-            &client.inner.addr,
-            RpcCommand {
-                r#type: "get_state".into(),
-                ..Default::default()
-            },
-            5,
-        )
-        .await;
-        assert!(resp.is_ok());
-        // Directly drive the reconciliation with a changed instance id.
-        let state: RpcSessionState = serde_json::from_str(
-            "{\"sessionId\":\"s1\",\"agentInstanceId\":\"agent-2\",\"queuedRuns\":[]}",
-        )
-        .unwrap();
-        {
-            let mut st = client.inner.state.lock();
-            if let (Some(prev), Some(cur)) = (&st.agent_instance_id, &state.agent_instance_id) {
-                if prev != cur {
-                    let lost: Vec<String> = st
-                        .runs
-                        .iter()
-                        .filter(|(_, status)| **status == RunStatus::Queued)
-                        .map(|(run_id, _)| run_id.clone())
-                        .collect();
-                    st.lost_queued_run_ids.extend(lost);
-                }
-            }
-            if let Some(id) = &state.agent_instance_id {
-                st.agent_instance_id = Some(id.clone());
-            }
-        }
+        // The agent restarts (instance id changes) → the queued run the
+        // client still tracks is reported lost.
+        data.lock().unwrap().insert(
+            "get_state".to_string(),
+            "{\"sessionId\":\"s1\",\"agentInstanceId\":\"agent-2\",\"queuedRuns\":[]}".to_string(),
+        );
+        // Requeue the run locally so there is something to lose.
+        client.prompt("again", "queue").await.unwrap();
+        client.get_state().await.unwrap();
         assert_eq!(client.take_lost_queued_run_ids(), vec!["q1".to_string()]);
         // Second take drains.
         assert!(client.take_lost_queued_run_ids().is_empty());
@@ -1553,10 +1540,10 @@ mod tests {
 
         // Empty data → Null; non-JSON data → String.
         let addr = spawn_api_mock(ApiMock {
-            data_by_type: StdHashMap::from([
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
                 ("get_state".into(), String::new()),
                 ("get_messages".into(), "raw text".into()),
-            ]),
+            ]))),
             ..Default::default()
         })
         .await;
@@ -1584,86 +1571,99 @@ mod tests {
         assert_eq!(v, Value::String("raw text".into()));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn subscribe_stream_event_bookkeeping() {
-        // The test pushes events through a channel the mock serves as the
-        // event stream.
-        let (tx, rx) = mpsc::unbounded_channel::<StreamEvent>();
-        let shared_rx = Arc::new(tokio::sync::Mutex::new(Some(rx)));
+    /// Mock whose event stream is fed by a test-owned channel of Results
+    /// (so tests can inject stream errors).
+    #[derive(Clone)]
+    struct EventfulMock {
+        rx: Arc<
+            tokio::sync::Mutex<
+                Option<mpsc::UnboundedReceiver<Result<StreamEvent, tonic::Status>>>,
+            >,
+        >,
+    }
 
-        #[derive(Clone)]
-        struct EventfulMock {
-            rx: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<StreamEvent>>>>,
+    #[tonic::async_trait]
+    impl FutureAgent for EventfulMock {
+        async fn execute_command(
+            &self,
+            request: tonic::Request<RpcCommand>,
+        ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
+            let cmd = request.into_inner();
+            Ok(tonic::Response::new(RpcResponse {
+                id: cmd.id,
+                r#type: "response".into(),
+                command: cmd.r#type.clone(),
+                success: true,
+                data: "{}".into(),
+                error: String::new(),
+                error_code: String::new(),
+                error_data: String::new(),
+                payload: None,
+            }))
         }
-        #[tonic::async_trait]
-        impl FutureAgent for EventfulMock {
-            async fn execute_command(
-                &self,
-                request: tonic::Request<RpcCommand>,
-            ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
-                let cmd = request.into_inner();
-                Ok(tonic::Response::new(RpcResponse {
-                    id: cmd.id,
-                    r#type: "response".into(),
-                    command: cmd.r#type.clone(),
-                    success: true,
-                    data: "{}".into(),
-                    error: String::new(),
-                    error_code: String::new(),
-                    error_data: String::new(),
-                    payload: None,
-                }))
-            }
-            type StreamEventsStream = Pin<
-                Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>,
-            >;
-            async fn stream_events(
-                &self,
-                _request: tonic::Request<StreamRequest>,
-            ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
-                let rx = self.rx.lock().await.take();
-                match rx {
-                    Some(rx) => {
-                        let stream = UnboundedReceiverStream::new(rx);
-                        Ok(tonic::Response::new(Box::pin(stream.map(Ok))))
-                    }
-                    // Only one subscription gets the channel; resubscribes idle.
-                    None => Ok(tonic::Response::new(Box::pin(stream::pending()))),
+        type StreamEventsStream = Pin<
+            Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>,
+        >;
+        async fn stream_events(
+            &self,
+            _request: tonic::Request<StreamRequest>,
+        ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+            let rx = self.rx.lock().await.take();
+            match rx {
+                Some(rx) => {
+                    let stream = UnboundedReceiverStream::new(rx);
+                    Ok(tonic::Response::new(Box::pin(stream)))
                 }
+                // Only one subscription gets the channel; resubscribes idle.
+                None => Ok(tonic::Response::new(Box::pin(stream::pending()))),
             }
         }
+    }
+
+    async fn spawn_eventful_mock(
+    ) -> (mpsc::UnboundedSender<Result<StreamEvent, tonic::Status>>, String) {
+        let (tx, rx) = mpsc::unbounded_channel::<Result<StreamEvent, tonic::Status>>();
+        let shared_rx = Arc::new(tokio::sync::Mutex::new(Some(rx)));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
         let mock = EventfulMock { rx: shared_rx };
-        tokio::spawn(async move {
-            let _ = Server::builder()
-                .add_service(FutureAgentServer::new(mock))
-                .serve(addr)
-                .await;
-        });
+        tokio::spawn(Server::builder().add_service(FutureAgentServer::new(mock)).serve(addr));
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let addr = format!("127.0.0.1:{}", addr.port());
+        (tx, format!("127.0.0.1:{}", addr.port()))
+    }
 
-        let (client, mut events, _conn) = GrpcClient::new(&addr);
-        client.set_current_session_id("s1");
-        client.connect_events();
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let send = |t: &str, data: &str, run_id: &str| StreamEvent {
+    fn stream_event(t: &str, data: &str, run_id: &str) -> Result<StreamEvent, tonic::Status> {
+        Ok(StreamEvent {
             r#type: t.into(),
             data: data.into(),
             run_id: run_id.into(),
             ..Default::default()
-        };
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_stream_event_bookkeeping() {
+        let (tx, addr) = spawn_eventful_mock().await;
+        let (client, mut events, _conn) = GrpcClient::new(&addr);
+        // A unary call exercises the mock's execute_command.
+        assert!(client.try_connect().await);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
         // Malformed data is dropped without disturbing the stream.
-        tx.send(send("text_chunk", "not json", "")).unwrap();
+        tx.send(stream_event("text_chunk", "not json", "")).unwrap();
         // agent_start marks the run active…
-        tx.send(send("agent_start", "{}", "r1")).unwrap();
+        tx.send(stream_event("agent_start", "{}", "r1")).unwrap();
         assert!(spin_until_bool(&client, true).await);
         assert!(client.has_running_run());
-        // …and agent_end clears it.
-        tx.send(send("agent_end", "{}", "r1")).unwrap();
+        // agent_end for a DIFFERENT run keeps the active run…
+        tx.send(stream_event("agent_end", "{}", "r9")).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(client.has_running_run());
+        // …and agent_end for the active run clears it.
+        tx.send(stream_event("agent_end", "{}", "r1")).unwrap();
         assert!(spin_until_bool(&client, false).await);
         assert!(!client.has_running_run());
         // The events also flow to the app channel.
@@ -1672,6 +1672,63 @@ mod tests {
             received.push(ev.r#type.clone());
         }
         assert!(received.contains(&"agent_start".to_string()));
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_loop_top_session_check() {
+        let (tx, addr) = spawn_eventful_mock().await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        // The first delivered event flips the connection on.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        wait_connected(&mut conn).await;
+        assert!(client.is_connected());
+
+        // Session changed WITHOUT a poke (white-box): the next event drives
+        // the loop iteration whose top check silently resubscribes.
+        client.inner.state.lock().current_session_id = "s2".into();
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_event_channel_closed_is_lost() {
+        let (tx, addr) = spawn_eventful_mock().await;
+        let (client, events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        wait_connected(&mut conn).await;
+        assert!(client.is_connected());
+
+        // App event channel dropped → the next event send fails → Lost.
+        drop(events);
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!client.is_connected());
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_loop_top_stop_check() {
+        let (tx, addr) = spawn_eventful_mock().await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        wait_connected(&mut conn).await;
+        assert!(client.is_connected());
+
+        // Stop flag set directly (no notify) → the loop-top check exits.
+        client.inner.stop.store(true, Ordering::SeqCst);
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
         client.disconnect();
     }
 
@@ -1685,4 +1742,381 @@ mod tests {
         }
         false
     }
+
+    #[test]
+    fn parse_stream_event_maps_snapshot_events() {
+        let ev = StreamEvent {
+            r#type: "text_chunk".into(),
+            data: "{\"text\":\"hi\"}".into(),
+            projection_snapshot: true,
+            snapshot_cursor: 7,
+            snapshot_events: vec![
+                future_rpc::proto::ProjectedRunEvent {
+                    r#type: "agent_start".into(),
+                    data: "{}".into(),
+                    idx: 1,
+                    ..Default::default()
+                },
+                future_rpc::proto::ProjectedRunEvent {
+                    r#type: "agent_end".into(),
+                    data: "{}".into(),
+                    idx: 2,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let raw: Map<String, Value> = serde_json::from_str("{\"text\":\"hi\"}").unwrap();
+        let out = parse_stream_event(&ev, &raw);
+        assert!(out.projection_snapshot);
+        assert_eq!(out.snapshot_cursor, 7);
+        assert_eq!(out.snapshot_events.len(), 2);
+        assert_eq!(out.snapshot_events[0].r#type, "agent_start");
+        assert_eq!(out.snapshot_events[1].idx, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spin_until_bool_times_out() {
+        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        // has_running_run never becomes true → the helper times out.
+        assert!(!spin_until_bool(&client, true).await);
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unary_against_original_mock_agent() {
+        let (_server, addr) = spawn_mock_agent().await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        assert!(client.try_connect().await);
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_unary_more_edges() {
+        // Status with an empty message → rendered via to_string.
+        let addr = spawn_api_mock(ApiMock {
+            status_errors: StdHashMap::from([(
+                "get_state".into(),
+                tonic::Status::new(tonic::Code::Unknown, ""),
+            )]),
+            ..Default::default()
+        })
+        .await;
+        let err = execute_unary(
+            &addr,
+            RpcCommand {
+                r#type: "get_state".into(),
+                ..Default::default()
+            },
+            5,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("Unknown"));
+
+        // success=false with an empty error → "unknown error"; with an
+        // error string → the string.
+        let addr = spawn_api_mock(ApiMock {
+            fail_with: StdHashMap::from([
+                ("get_state".to_string(), String::new()),
+                ("get_messages".to_string(), "boom".to_string()),
+            ]),
+            ..Default::default()
+        })
+        .await;
+        let err = execute_unary(
+            &addr,
+            RpcCommand {
+                r#type: "get_state".into(),
+                ..Default::default()
+            },
+            5,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "unknown error");
+        let err = execute_unary(
+            &addr,
+            RpcCommand {
+                r#type: "get_messages".into(),
+                ..Default::default()
+            },
+            5,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "boom");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repeated_get_state_same_agent_is_stable() {
+        let addr = spawn_api_mock(ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([(
+                "get_state".to_string(),
+                "{\"sessionId\":\"s1\",\"agentInstanceId\":\"agent-1\"}".to_string(),
+            )]))),
+            ..Default::default()
+        })
+        .await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.get_state().await.unwrap();
+        client.get_state().await.unwrap(); // same instance id — no churn
+        assert!(client.take_lost_queued_run_ids().is_empty());
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn server_death_marks_disconnected_and_polls_reconnect() {
+        let (server, addr) = spawn_mock_agent().await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        wait_connected(&mut conn).await;
+        assert!(client.is_connected());
+
+        // Kill the server: the stream errors out → Lost → conn false, and
+        // the reconnect poll runs tryConnect (fails while the server is down).
+        server.abort();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                conn.changed().await.expect("conn channel closed");
+                if !*conn.borrow() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("disconnect notification");
+        assert!(!client.is_connected());
+        // Let the 1 s reconnect poll fire against the dead agent.
+        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        assert!(!client.is_connected());
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect_after_server_restart() {
+        // Bind the mock, keep the address for a later re-bind.
+        let (server, addr) = spawn_mock_agent().await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        wait_connected(&mut conn).await;
+
+        // Kill → disconnect notification.
+        server.abort();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                conn.changed().await.expect("conn channel closed");
+                if !*conn.borrow() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("disconnect");
+        assert!(!client.is_connected());
+
+        // Revive on the same address: the poll's tryConnect succeeds →
+        // resubscribe → connected again.
+        let listener = TcpListener::bind(&addr).unwrap();
+        let addr2 = listener.local_addr().unwrap();
+        drop(listener);
+        let agent = MockAgent {
+            event_tx: Arc::new(tokio::sync::Mutex::new(None)),
+        };
+        tokio::spawn(Server::builder().add_service(FutureAgentServer::new(agent)).serve(addr2));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                conn.changed().await.expect("conn channel closed");
+                if *conn.borrow() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("reconnect");
+        assert!(client.is_connected());
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect_poll_session_change_and_stop() {
+        // Dead agent → the manager sits in the reconnect poll.
+        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        client.set_current_session_id("s1");
+        client.connect_events();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!client.is_connected());
+
+        // Session change WITHOUT a poke (white-box): the poll's pre-select
+        // check breaks out to resubscribe.
+        client.inner.state.lock().current_session_id = "s2".into();
+        tokio::time::sleep(Duration::from_millis(1_300)).await;
+
+        // A poke wakes the poll's select; the post-select check breaks.
+        client.set_current_session_id("s3");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Stop without notify → the poll's loop-top check exits.
+        client.inner.stop.store(true, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn manager_loop_top_stop_with_idle_manager() {
+        // Manager idle (no session) + stop without notify + a poke to wake
+        // it → the loop-top stop check returns.
+        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        client.inner.stop.store(true, Ordering::SeqCst);
+        client.connect_events(); // poke
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_stream_error_is_lost() {
+        let (tx, addr) = spawn_eventful_mock().await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        wait_connected(&mut conn).await;
+        // A stream-level error → Lost → disconnect notification.
+        tx.send(Err(tonic::Status::internal("mid-stream boom"))).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                conn.changed().await.expect("conn channel closed");
+                if !*conn.borrow() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("disconnect on stream error");
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_failure_modes() {
+        // Bad endpoint (unparseable addr).
+        let (client, _e, _c) = GrpcClient::new("bad addr with spaces");
+        client.set_current_session_id("s1");
+        client.connect_events();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!client.is_connected());
+        client.disconnect();
+
+        // Connect failure (nothing listening).
+        let (client, _e, _c) = GrpcClient::new("127.0.0.1:1");
+        client.set_current_session_id("s1");
+        client.connect_events();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!client.is_connected());
+        client.disconnect();
+
+        // stream_events errors on the server side.
+        let addr = spawn_api_mock(ApiMock {
+            stream_fails: true,
+            ..Default::default()
+        })
+        .await;
+        let (client, _e, _c) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!client.is_connected());
+        client.disconnect();
+
+        // Stream ends immediately (after one event).
+        let addr = spawn_api_mock(ApiMock {
+            stream_ends: true,
+            ..Default::default()
+        })
+        .await;
+        let (client, _e, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        wait_connected(&mut conn).await;
+        // The end of the stream flips the connection back off.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                conn.changed().await.expect("conn channel closed");
+                if !*conn.borrow() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("stream-end disconnect");
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn watchdog_fires_on_dataless_stream() {
+        // A subscription with no events at all → the 5 s watchdog fires.
+        let addr = spawn_api_mock(ApiMock {
+            stream_idle: true,
+            ..Default::default()
+        })
+        .await;
+        let (client, _e, _c) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        // Watchdog is 5 s; wait past it.
+        tokio::time::sleep(Duration::from_millis(5_500)).await;
+        assert!(!client.is_connected());
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn heartbeat_marks_dead_agent_disconnected() {
+        // Tests run the heartbeat at 50 ms (cfg(test) HEARTBEAT_MS).
+        let (server, addr) = spawn_mock_agent().await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        wait_connected(&mut conn).await;
+        assert!(client.is_connected());
+
+        // Kill the agent: the next heartbeat's tryConnect fails → disconnect.
+        server.abort();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                conn.changed().await.expect("conn channel closed");
+                if !*conn.borrow() {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("heartbeat disconnect");
+        assert!(!client.is_connected());
+        client.disconnect();
+    }
+
+    #[tokio::test]
+    async fn wait_connected_helper_loops_until_true() {
+        let (tx, mut rx) = watch::channel(false);
+        let flipper = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = tx.send(true);
+        });
+        wait_connected(&mut rx).await;
+        flipper.abort();
+        // The loop-back edge: a change to false keeps waiting.
+        let (tx, mut rx) = watch::channel(true);
+        let flipper = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let _ = tx.send(false);
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let _ = tx.send(true);
+        });
+        wait_connected(&mut rx).await;
+        flipper.abort();
+    }
+
 }

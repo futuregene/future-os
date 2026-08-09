@@ -2448,4 +2448,254 @@ mod tests {
             "\x1b[38;5;221m\x1b[1m\x1b[1mSub\x1b[m\x1b[m\x1b[m\x1b[0m"
         );
     }
+
+    // ─── structural coverage ──────────────────────────────────────────
+
+    fn render_plain(md: &str) -> Vec<String> {
+        let mut r = MarkdownRenderer::new();
+        r.render_text(md, 80)
+            .iter()
+            .map(|l| strip_ansi_codes(l))
+            .collect()
+    }
+
+    #[test]
+    fn type_name_covers_every_block_variant() {
+        assert_eq!(
+            MdBlock::Heading { depth: 1, inline: vec![] }.type_name(),
+            "heading"
+        );
+        assert_eq!(MdBlock::Paragraph { inline: vec![] }.type_name(), "paragraph");
+        assert_eq!(
+            MdBlock::Code { text: String::new(), lang: String::new() }.type_name(),
+            "code"
+        );
+        assert_eq!(MdBlock::Blockquote { blocks: vec![] }.type_name(), "blockquote");
+        assert_eq!(
+            MdBlock::List { ordered: false, start: None, items: vec![] }.type_name(),
+            "list"
+        );
+        assert_eq!(MdBlock::Hr.type_name(), "hr");
+        assert_eq!(MdBlock::Html { raw: String::new() }.type_name(), "html");
+        assert_eq!(MdBlock::Space.type_name(), "space");
+        assert_eq!(
+            MdBlock::Table { header: vec![], rows: vec![], raw: String::new() }.type_name(),
+            "table"
+        );
+        assert_eq!(MdBlock::Text { inline: vec![] }.type_name(), "text");
+        assert_eq!(MdBlock::Def.type_name(), "def");
+    }
+
+    #[test]
+    fn markdown_theme_debug_is_brief() {
+        let theme = MarkdownTheme::default();
+        assert_eq!(format!("{theme:?}"), "MarkdownTheme { .. }");
+    }
+
+    #[test]
+    fn with_partial_applies_every_override() {
+        let f: StyleFn = std::rc::Rc::new(|s: &str| format!("B{s}B"));
+        let partial = MarkdownThemePartial {
+            heading: Some(f.clone()),
+            link: Some(f.clone()),
+            link_url: Some(f.clone()),
+            code: Some(f.clone()),
+            code_block: Some(f.clone()),
+            code_block_border: Some(f.clone()),
+            quote: Some(f.clone()),
+            quote_border: Some(f.clone()),
+            hr: Some(f.clone()),
+            list_bullet: Some(f.clone()),
+            bold: Some(f.clone()),
+            italic: Some(f.clone()),
+            strikethrough: Some(f.clone()),
+            underline: Some(f.clone()),
+            highlight_code: Some(std::rc::Rc::new(|text: &str, _lang| {
+                vec![format!("HL:{text}")]
+            })),
+            code_block_indent: Some(">>>".to_string()),
+        };
+        let theme = MarkdownTheme::default().with_partial(partial);
+        assert_eq!((theme.bold)("x"), "BxB");
+        assert_eq!((theme.italic)("x"), "BxB");
+        assert_eq!((theme.strikethrough)("x"), "BxB");
+        assert_eq!((theme.underline)("x"), "BxB");
+        assert_eq!(theme.highlight_code.unwrap()("x", None), vec!["HL:x"]);
+        assert_eq!(theme.code_block_indent.as_deref(), Some(">>>"));
+    }
+
+    #[test]
+    fn renders_all_heading_depths() {
+        let plain = render_plain("# H1\n\n## H2\n\n### H3\n\n#### H4\n\n##### H5\n\n###### H6");
+        for h in ["H1", "H2", "H3", "H4", "H5", "H6"] {
+            assert!(plain.iter().any(|l| l.contains(h)), "missing {h}");
+        }
+    }
+
+    #[test]
+    fn renders_indented_and_fenced_code() {
+        // Fenced with language.
+        let plain = render_plain("```rust\nfn main() {}\n```");
+        assert!(plain.iter().any(|l| l.contains("fn main() {}")));
+        // Indented code block (trailing blanks are trimmed).
+        let plain = render_plain("para\n\n    let x = 1;\n\n");
+        assert!(plain.iter().any(|l| l.contains("let x = 1;")));
+    }
+
+    #[test]
+    fn renders_code_with_custom_highlighter_and_indent() {
+        let mut r = MarkdownRenderer::with_theme(MarkdownThemePartial {
+            highlight_code: Some(std::rc::Rc::new(|text: &str, lang| {
+                vec![format!("[{lang:?}] {text}")]
+            })),
+            code_block_indent: Some(">>".to_string()),
+            ..Default::default()
+        });
+        let lines = r.render_text("```rs\nx\n```", 80);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain.iter().any(|l| l.contains(">>") && l.contains("x")));
+    }
+
+    #[test]
+    fn renders_blockquotes_tasklists_and_nested_lists() {
+        let plain = render_plain(
+            "> quoted *em*\n>\n> more\n\n- [ ] todo\n- [x] done\n\n1. first\n2. second\n",
+        );
+        assert!(plain.iter().any(|l| l.contains("quoted")));
+        assert!(plain.iter().any(|l| l.contains("todo")));
+        assert!(plain.iter().any(|l| l.contains("done")));
+        assert!(plain.iter().any(|l| l.contains("first")));
+        assert!(plain.iter().any(|l| l.contains("second")));
+        // Nested list inside a list item.
+        let plain = render_plain("- outer\n  - inner\n");
+        assert!(plain.iter().any(|l| l.contains("inner")));
+    }
+
+    #[test]
+    fn renders_tables_hr_html_and_defs() {
+        let plain = render_plain(
+            "| A | B |\n|---|---|\n| 1 | 2 |\n\n---\n\n<div>block</div>\n\n[x]: http://ref\n\nafter",
+        );
+        assert!(plain.iter().any(|l| l.contains('A')));
+        assert!(plain.iter().any(|l| l.contains('1')));
+        assert!(plain.iter().any(|l| l.contains("─")));
+        assert!(plain.iter().any(|l| l.contains("div")));
+        assert!(plain.iter().any(|l| l.contains("after")));
+        // The link definition itself renders nothing.
+        assert!(!plain.iter().any(|l| l.contains("http://ref")));
+    }
+
+    #[test]
+    fn renders_inline_features() {
+        let plain = render_plain(
+            "has **bold** *em* ~~gone~~ `code` [lnk](http://x) <span>inline</span> ![img](i.png) and  \na break",
+        );
+        let joined = plain.join("\n");
+        for needle in ["bold", "em", "gone", "code", "lnk", "span", "break"] {
+            assert!(joined.contains(needle), "missing {needle}");
+        }
+    }
+
+    #[test]
+    fn default_text_style_applies_color_bg_and_attributes() {
+        use crate::theme::{bg_raw, fg_raw};
+        let style = DefaultTextStyle {
+            color: Some(std::rc::Rc::new(|s: &str| fg_raw(196, s))),
+            bg_color: Some(std::rc::Rc::new(|s: &str| bg_raw(17, s))),
+            bold: true,
+            italic: true,
+            strikethrough: true,
+            underline: true,
+        };
+        let mut r = MarkdownRenderer::with_theme_and_style(
+            MarkdownThemePartial::default(),
+            Some(style),
+        );
+        let lines = r.render_text("styled text", 40);
+        let joined = lines.join("\n");
+        assert!(joined.contains("38;5;196"));
+        assert!(joined.contains("48;5;17"));
+        assert!(strip_ansi_codes(&joined).contains("styled text"));
+    }
+
+    #[test]
+    fn renderer_component_trait_and_caching() {
+        let mut r = MarkdownRenderer::default();
+        r.set_text("cached body");
+        let a = Component::render(&mut r, 60);
+        let b = r.render(60); // cache hit
+        assert_eq!(a, b);
+        r.set_padding(2, Some(1));
+        let c = r.render(60);
+        assert!(c.len() >= a.len()); // padding adds lines
+        r.invalidate();
+        Component::handle_input(&mut r, "ignored");
+        assert!(r.as_any().downcast_ref::<MarkdownRenderer>().is_some());
+        assert!(r.as_any_mut().downcast_mut::<MarkdownRenderer>().is_some());
+    }
+
+    #[test]
+    fn helpers_cover_their_branches() {
+        // reapply_quote_style re-arms after every reset form.
+        assert_eq!(
+            reapply_quote_style("a\x1b[0mb\x1b[mc"),
+            "a\x1b[0m\x1b[3m\x1b[38;5;244mb\x1b[0m\x1b[3m\x1b[38;5;244mc"
+        );
+        // extract_bg_num finds / misses the bg number.
+        assert_eq!(extract_bg_num("\x1b[48;5;17mx"), Some(17));
+        assert_eq!(extract_bg_num("\x1b[38;5;17mx"), None);
+        assert_eq!(extract_bg_num("48;5;abc"), None);
+        // apply_text_nl styles per line.
+        let out = apply_text_nl(&|s: &str| format!("<{s}>"), "a\nb");
+        assert_eq!(out, "<a>\n<b>");
+        // apply_default_style_fn: None style passes through; all flags apply.
+        let theme = MarkdownTheme::default();
+        assert_eq!(apply_default_style_fn(&theme, &None, "plain"), "plain");
+        let style = DefaultTextStyle {
+            color: Some(std::rc::Rc::new(|s: &str| format!("C{s}C"))),
+            bg_color: None,
+            bold: true,
+            italic: true,
+            strikethrough: true,
+            underline: true,
+        };
+        let out = apply_default_style_fn(&theme, &Some(style), "x");
+        assert!(out.contains('C'));
+        assert!(strip_ansi_codes(&out.replace('C', "")).contains('x'));
+    }
+
+    #[test]
+    fn blockquote_raw_text_reconstructs_content() {
+        let blocks = vec![
+            MdBlock::Paragraph {
+                inline: vec![
+                    MdInline::Text { text: "hello ".to_string() },
+                    MdInline::Strong { inline: vec![MdInline::Text { text: "bold".into() }] },
+                    MdInline::Codespan { text: "code".into() },
+                    MdInline::Br,
+                    MdInline::Em { inline: vec![MdInline::Text { text: "em".into() }] },
+                    MdInline::Del { inline: vec![MdInline::Text { text: "del".into() }] },
+                    MdInline::Link {
+                        inline: vec![MdInline::Text { text: "lnk".into() }],
+                        href: String::new(),
+                    },
+                    MdInline::Html { raw: "<b>raw</b>".into() },
+                    MdInline::Image,
+                    MdInline::Checkbox,
+                ],
+            },
+            MdBlock::Text { inline: vec![MdInline::Text { text: "txt".into() }] },
+            MdBlock::Code { text: "c1\nc2".into(), lang: String::new() },
+            MdBlock::Hr, // ignored
+        ];
+        let text = blockquote_raw_text(&blocks);
+        assert!(text.contains("hello boldcode"));
+        assert!(text.contains("em"));
+        assert!(text.contains("del"));
+        assert!(text.contains("lnk"));
+        assert!(text.contains("<b>raw</b>"));
+        assert!(text.contains("txt"));
+        assert!(text.contains("c1\nc2"));
+        assert!(!text.ends_with('\n'));
+    }
 }
