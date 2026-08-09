@@ -59,4 +59,10 @@ pub mod test_env {
     use std::sync::Mutex;
 
     pub static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Lock ignoring poisoning — a panicking test must not cascade-fail
+    /// every other test that mutates process-global state.
+    pub fn lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
 }

@@ -1307,7 +1307,7 @@ mod tests {
 
     #[test]
     fn restore_env_handles_set_and_unset() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let old = std::env::var_os("FUTURE_TUI_KEYS_PROBE");
         restore_env("FUTURE_TUI_KEYS_PROBE", Some("x".into()));
         assert_eq!(std::env::var("FUTURE_TUI_KEYS_PROBE").as_deref(), Ok("x"));
@@ -1634,7 +1634,7 @@ mod tests {
 
     #[test]
     fn windows_terminal_session_env_matrix() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let saved = clear_terminal_env();
         assert!(!is_windows_terminal_session()); // no WT_SESSION
         std::env::set_var("WT_SESSION", "1");
@@ -1736,7 +1736,7 @@ mod tests {
     #[test]
     fn parse_key_ctrl_backspace_on_windows_terminal() {
         let _g = reset_kitty();
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let saved = clear_terminal_env();
         std::env::set_var("WT_SESSION", "1");
         assert_eq!(parse_key("\x08").as_deref(), Some("ctrl+backspace"));
@@ -1811,7 +1811,7 @@ mod tests {
 
     #[test]
     fn raw_ctrl_char_and_backspace_matching() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         // Letters and the five symbol controls map; others don't.
         assert_eq!(raw_ctrl_char("a"), Some('\x01'));
         assert_eq!(raw_ctrl_char("["), Some('\x1b'));
@@ -2126,7 +2126,7 @@ mod tests {
     #[test]
     fn matches_key_ctrl_backspace_windows_terminal_raw() {
         let _g = reset_kitty();
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let saved = clear_terminal_env();
         std::env::set_var("WT_SESSION", "1");
         // On Windows Terminal, \x08 IS ctrl+backspace.

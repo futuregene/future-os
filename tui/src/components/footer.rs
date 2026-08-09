@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn renders_home_relative_cwd_with_tilde() {
         // Deterministic regardless of the ambient HOME: inject one under lock.
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let old = env::var_os("HOME");
         env::set_var("HOME", "/home/tester");
         let line = render_footer(
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn restore_home_handles_set_and_unset() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let old = env::var_os("HOME");
         restore_home(Some(std::ffi::OsString::from("/tmp/home-probe")));
         assert_eq!(env::var("HOME").as_deref(), Ok("/tmp/home-probe"));
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn renders_raw_cwd_when_home_unset() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let old = env::var_os("HOME");
         env::remove_var("HOME");
         let line = render_footer(

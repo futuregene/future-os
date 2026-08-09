@@ -447,7 +447,7 @@ mod tests {
     /// Serialize tests that touch process-global state (fd 0, signal
     /// handlers) against each other and other files' tests.
     fn posix_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        crate::test_env::ENV_LOCK.lock().unwrap()
+        crate::test_env::lock()
     }
 
     extern "C" fn noop_handler(_sig: libc::c_int) {}

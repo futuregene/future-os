@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn panic_hook_restores_terminal_and_writes_crash_log() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", home.path());
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn panic_hook_survives_unwritable_crash_log() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let old_home = std::env::var_os("HOME");
         // HOME is a regular file → create_dir_all under it fails.
         let dir = tempfile::tempdir().unwrap();
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn restore_env_handles_set_and_unset() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let old = std::env::var_os("FUTURE_TUI_CRASH_PROBE");
         restore_env("FUTURE_TUI_CRASH_PROBE", Some("1".into()));
         assert_eq!(std::env::var("FUTURE_TUI_CRASH_PROBE").as_deref(), Ok("1"));

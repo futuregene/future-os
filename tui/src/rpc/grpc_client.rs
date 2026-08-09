@@ -1324,7 +1324,7 @@ mod tests {
 
     #[test]
     fn grpc_addr_env_override() {
-        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env::lock();
         fn restore(key: &str, old: Option<std::ffi::OsString>) {
             match old {
                 Some(v) => std::env::set_var(key, v),

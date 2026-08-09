@@ -1165,7 +1165,7 @@ mod tests {
 
     #[test]
     fn restore_env_var_handles_set_and_unset() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let old = env::var_os("FUTURE_TUI_TEST_PROBE");
         restore_env_var("FUTURE_TUI_TEST_PROBE", Some("probe".into()));
         assert_eq!(env::var("FUTURE_TUI_TEST_PROBE").as_deref(), Ok("probe"));
@@ -1369,7 +1369,7 @@ mod tests {
 
     #[test]
     fn file_path_completions_expand_tilde_and_keep_absolute_display() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
         let home_str = home.path().to_str().unwrap().to_string();
         std::fs::write(home.path().join("note.txt"), "x").unwrap();
@@ -1430,7 +1430,7 @@ mod tests {
 
     #[cfg(unix)]
     fn with_stubbed_path(scripts: &[(&str, &str)], f: impl FnOnce()) {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let dir = tempfile::tempdir().unwrap();
         for (name, body) in scripts {
             let path = dir.path().join(name);

@@ -128,8 +128,19 @@ impl Default for Terminal {
     }
 }
 
+/// One-shot fault injection for `Terminal::new` (test seam: POSIX's
+/// Backend::new is infallible, so the error path is otherwise untestable).
+#[cfg(test)]
+pub(crate) static FORCE_NEW_FAILURE: AtomicBool = AtomicBool::new(false);
+
 impl Terminal {
     pub fn new() -> io::Result<Self> {
+        // Test-only fault injection for the POSIX-infallible Backend::new
+        // (Windows can genuinely fail on non-console handles).
+        #[cfg(test)]
+        if FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst) {
+            return Err(io::Error::new(io::ErrorKind::Other, "injected test failure"));
+        }
         let backend = Arc::new(platform::Backend::new()?);
         let size = Arc::new(Mutex::new(backend.size()));
         Ok(Self {
@@ -594,7 +605,7 @@ mod tests {
     /// Serialize tests that mutate process-global state (fd 0, signal
     /// handlers, env) against each other and against other files' tests.
     fn terminal_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        crate::test_env::ENV_LOCK.lock().unwrap()
+        crate::test_env::lock()
     }
 
     /// fd 0 redirected from /dev/null until dropped.
@@ -682,7 +693,7 @@ mod tests {
 
     #[test]
     fn columns_fallback_prefers_ioctl_then_env_then_80() {
-        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env::lock();
         assert_eq!(columns_with_ioctl(0), 80);
         unsafe {
             std::env::set_var("COLUMNS", "123");
@@ -701,7 +712,7 @@ mod tests {
 
     #[test]
     fn rows_fallback_prefers_ioctl_then_env_then_24() {
-        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env::lock();
         assert_eq!(rows_with_ioctl(0), 24);
         unsafe {
             std::env::set_var("LINES", "50");
@@ -745,7 +756,7 @@ mod tests {
 
     #[test]
     fn write_log_gated_by_env() {
-        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
         let old_log = std::env::var_os("PI_TUI_WRITE_LOG");
         let old_home = std::env::var_os("HOME");
@@ -771,7 +782,7 @@ mod tests {
 
     #[test]
     fn restore_env_handles_set_and_unset() {
-        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env::lock();
         let old = std::env::var_os("FUTURE_TUI_TERM_PROBE");
         restore_env("FUTURE_TUI_TERM_PROBE", Some("1".into()));
         assert_eq!(std::env::var("FUTURE_TUI_TERM_PROBE").as_deref(), Ok("1"));
@@ -782,7 +793,7 @@ mod tests {
 
     #[test]
     fn columns_rows_read_cached_size() {
-        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env::lock();
         let t = Terminal::new().unwrap();
         *t.size.lock() = (111, 44);
         assert_eq!(t.columns(), 111);

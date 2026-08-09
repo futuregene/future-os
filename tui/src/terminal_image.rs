@@ -616,13 +616,13 @@ pub fn delete_kitty_images(ids: &std::collections::BTreeSet<u32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_env::ENV_LOCK;
+    use crate::test_env::lock as env_lock;
     use base64::Engine as _;
 
     /// Deterministic env snapshot/restore under ENV_LOCK. Mirrors the TS
     /// tests which set process.env directly.
     fn with_env(caps_env: &[(&str, &str)], f: impl FnOnce()) {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         let keys = [
             "TERM_PROGRAM",
             "TERM",
@@ -665,7 +665,7 @@ mod tests {
         // Pre-set a managed variable so with_env's restore path (which
         // re-installs saved values) is exercised too.
         {
-            let _guard = ENV_LOCK.lock();
+            let _guard = env_lock();
             env::set_var("TERM_PROGRAM", "outer");
         }
         with_env(&[("TERM_PROGRAM", "alacritty")], || {
@@ -674,7 +674,7 @@ mod tests {
             assert!(caps.true_color);
             assert!(caps.hyperlinks);
         });
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         env::remove_var("TERM_PROGRAM");
     }
 
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn capabilities_cache_and_reset() {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         env::remove_var("TERM_PROGRAM");
         env::remove_var("TERM");
         env::remove_var("COLORTERM");
@@ -1135,7 +1135,7 @@ mod tests {
 
     #[test]
     fn render_image_kitty() {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         set_capabilities(TerminalCapabilities {
             images: ImageProtocol::Kitty,
             true_color: true,
@@ -1156,7 +1156,7 @@ mod tests {
 
     #[test]
     fn render_image_iterm2() {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         set_capabilities(TerminalCapabilities {
             images: ImageProtocol::Iterm2,
             true_color: true,
@@ -1176,7 +1176,7 @@ mod tests {
 
     #[test]
     fn render_image_none_capabilities_returns_null() {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         set_capabilities(TerminalCapabilities {
             images: ImageProtocol::None,
             true_color: true,
@@ -1254,7 +1254,7 @@ mod tests {
 
     #[test]
     fn cell_dimensions_global() {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         let saved = get_cell_dimensions();
         set_cell_dimensions(CellDimensions {
             width_px: 10,

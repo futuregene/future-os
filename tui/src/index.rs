@@ -849,10 +849,7 @@ async fn run_interactive(args: &CliArgs) -> u8 {
             return 1;
         }
     }
-    if !app.is_running() {
-        app.stop();
-        return 0;
-    }
+    // (No is_running gate here: the main loop's own check handles it.)
 
     // ── Main event loop ────────────────────────────────────────────────
     loop {
@@ -917,17 +914,12 @@ pub fn run(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Build the runtime (print mode + interactive both need one).
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
+    // Build the runtime (print mode + interactive both need one). A build
+    // failure means OS resource exhaustion — panic with the reason.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-    {
-        Ok(r) => r,
-        Err(err) => {
-            eprintln!("future-tui: failed to start runtime: {err}");
-            return ExitCode::from(1);
-        }
-    };
+        .expect("failed to start tokio runtime");
 
     // Handle --list-models.
     if let Some(search) = &args.list_models {
@@ -1212,6 +1204,29 @@ mod tests {
         assert!(path.ends_with(".future/tui/settings.json"));
     }
 
+    #[test]
+    fn build_initial_prompt_relative_path_uses_cwd() {
+        let _guard = crate::test_env::lock();
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize: current_dir resolves symlinks (/var → /private/var).
+        let dir_path = dir.path().canonicalize().unwrap();
+        std::fs::write(dir_path.join("rel.txt"), "relative contents").unwrap();
+        let old_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir_path).unwrap();
+        let result = build_initial_prompt(&["rel.txt".to_string()], &[]);
+        std::env::set_current_dir(old_cwd).unwrap();
+        let prompt = result.unwrap();
+        let expected = dir_path.join("rel.txt").display().to_string();
+        assert!(prompt.contains(&format!("<file name=\"{expected}\">")));
+        assert!(prompt.contains("relative contents"));
+    }
+
+    #[test]
+    fn args_helper_panics_on_non_args_outcome() {
+        let r = std::panic::catch_unwind(|| args(&["--help"]));
+        assert!(r.is_err());
+    }
+
     // ─── In-process mock agent ────────────────────────────────────────
 
     use future_rpc::proto::future_agent_server::{FutureAgent, FutureAgentServer};
@@ -1235,6 +1250,19 @@ mod tests {
         hold_open: bool,
         /// Every received command type, for synchronization in tests.
         seen_commands: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        /// Return success=false with an EMPTY error for these types.
+        fail_silent_types: HashSet<String>,
+        /// stream_events fails with this tonic Status.
+        stream_status_error: Option<tonic::Status>,
+        /// After the canned events, emit this stream-level error.
+        stream_error_after: bool,
+        /// Unary calls with these types fail with a tonic Status (empty
+        /// message variant for the to_string rendering).
+        unary_status_types: HashSet<String>,
+        /// Unary calls with these types fail with a message-bearing Status.
+        unary_status_message_types: HashSet<String>,
+        /// Delay before answering unary calls (slow-agent scenarios).
+        unary_delay_ms: u64,
     }
 
     #[tonic::async_trait]
@@ -1248,19 +1276,33 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(cmd.r#type.clone());
+            if self.unary_status_types.contains(&cmd.r#type) {
+                return Err(tonic::Status::new(tonic::Code::Unknown, ""));
+            }
+            if self.unary_status_message_types.contains(&cmd.r#type) {
+                return Err(tonic::Status::unavailable("transport down"));
+            }
+            if self.unary_delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(self.unary_delay_ms)).await;
+            }
             let data = match cmd.r#type.as_str() {
                 "get_state" => self.state_data.clone(),
                 "get_available_models" => self.models_data.clone(),
                 _ => "{}".to_string(),
             };
-            let success = !self.fail_types.contains(&cmd.r#type);
+            let success = !self.fail_types.contains(&cmd.r#type)
+                && !self.fail_silent_types.contains(&cmd.r#type);
             Ok(tonic::Response::new(RpcResponse {
                 id: cmd.id,
                 r#type: "response".into(),
                 command: cmd.r#type.clone(),
                 success,
                 data,
-                error: if success { String::new() } else { "boom".into() },
+                error: if success || self.fail_silent_types.contains(&cmd.r#type) {
+                    String::new()
+                } else {
+                    "boom".into()
+                },
                 error_code: String::new(),
                 error_data: String::new(),
                 payload: None,
@@ -1274,8 +1316,17 @@ mod tests {
             &self,
             _request: tonic::Request<future_rpc::proto::StreamRequest>,
         ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+            if let Some(status) = &self.stream_status_error {
+                return Err(status.clone());
+            }
             let events = self.events.clone();
             let canned = stream::iter(events.into_iter().map(Ok));
+            if self.stream_error_after {
+                let err = stream::once(async {
+                    Err(tonic::Status::internal("mid-stream boom"))
+                });
+                return Ok(tonic::Response::new(Box::pin(canned.chain(err))));
+            }
             if self.hold_open {
                 let idle =
                     stream::pending::<Result<future_rpc::proto::StreamEvent, tonic::Status>>();
@@ -1290,12 +1341,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
-        tokio::spawn(async move {
-            let _ = Server::builder()
-                .add_service(FutureAgentServer::new(agent))
-                .serve(addr)
-                .await;
-        });
+        // Spawn the serve future directly — no async-block tail that never
+        // completes.
+        tokio::spawn(Server::builder().add_service(FutureAgentServer::new(agent)).serve(addr));
         tokio::time::sleep(Duration::from_millis(50)).await;
         format!("127.0.0.1:{}", addr.port())
     }
@@ -1362,6 +1410,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_cli_options_each_block_error_arm() {
+        // Each cfg block has its own !success arm; walk all of them with
+        // both the "boom" and the empty-error (→ "unknown error") mocks.
+        let loud = spawn_mock(MockAgent {
+            fail_types: HashSet::from([String::new()]),
+            ..Default::default()
+        })
+        .await;
+        let silent = spawn_mock(MockAgent {
+            fail_silent_types: HashSet::from([String::new()]),
+            ..Default::default()
+        })
+        .await;
+        let arg_sets: &[&[&str]] = &[
+            &["--model", "m"],
+            &["--thinking", "high"],
+            &["--system-prompt", "sp"],
+            &["--tools", "read"],
+            &["--no-tools"],
+            &["--no-session"],
+            &["--no-builtin-tools"],
+            &["--append-system-prompt", "x"],
+        ];
+        for arg_set in arg_sets {
+            let a = args(arg_set);
+            assert_eq!(apply_cli_options(&loud, "s1", &a).await, Err("boom".into()));
+            assert_eq!(
+                apply_cli_options(&silent, "s1", &a).await,
+                Err("unknown error".into())
+            );
+        }
+        // Empty-list options skip their blocks entirely (white-box).
+        let a = CliArgs {
+            tools: Some(vec![]),
+            append_system_prompt: Some(vec![]),
+            ..Default::default()
+        };
+        apply_cli_options(&loud, "s1", &a).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn apply_cli_options_propagates_server_errors() {
         // Every cfg command shares the empty type; failing it errors out.
         let addr = spawn_mock(MockAgent {
@@ -1413,6 +1502,13 @@ mod tests {
         })
         .await;
         assert_eq!(list_models(&addr, None).await, Err("boom".into()));
+        // …and with an empty error → "unknown error".
+        let addr = spawn_mock(MockAgent {
+            fail_silent_types: HashSet::from(["get_available_models".to_string()]),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(list_models(&addr, None).await, Err("unknown error".into()));
         // Invalid JSON payload.
         let addr = spawn_mock(MockAgent {
             models_data: "not json".into(),
@@ -1460,6 +1556,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_unary_status_error_message_forms() {
+        let mock = MockAgent {
+            unary_status_types: HashSet::from(["get_state".to_string()]),
+            unary_status_message_types: HashSet::from(["get_messages".to_string()]),
+            ..Default::default()
+        };
+        let addr = spawn_mock(mock).await;
+        // Status with an empty message → to_string rendering.
+        let err = execute_unary(
+            &addr,
+            RpcCommand {
+                r#type: "get_state".into(),
+                ..Default::default()
+            },
+            5,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("Unknown"));
+        // Status with a message → the message itself.
+        let err = execute_unary(
+            &addr,
+            RpcCommand {
+                r#type: "get_messages".into(),
+                ..Default::default()
+            },
+            5,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "transport down");
+    }
+
+    #[tokio::test]
     async fn print_mode_error_paths() {
         // No prompt content.
         let a = args(&["-p"]);
@@ -1496,6 +1626,82 @@ mod tests {
             run_print_mode(&failing_prompt, &a).await,
             Err("boom".to_string())
         );
+        // …with an empty error → the "prompt failed" default.
+        let silent_prompt = spawn_mock(MockAgent {
+            state_data: "{\"sessionId\":\"s1\"}".into(),
+            fail_silent_types: HashSet::from(["prompt".to_string()]),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(
+            run_print_mode(&silent_prompt, &a).await,
+            Err("prompt failed".to_string())
+        );
+        // …and get_state with an empty error → "get_state failed".
+        let silent_state = spawn_mock(MockAgent {
+            fail_silent_types: HashSet::from(["get_state".to_string()]),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(
+            run_print_mode(&silent_state, &a).await,
+            Err("get_state failed".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn print_mode_stream_failures() {
+        // stream_events fails at subscribe time (message-bearing status).
+        let a = args(&["-p", "hi"]);
+        let mock = MockAgent {
+            state_data: "{\"sessionId\":\"s1\"}".into(),
+            stream_status_error: Some(tonic::Status::internal("stream boom")),
+            ..Default::default()
+        };
+        let addr = spawn_mock(mock).await;
+        assert!(run_print_mode(&addr, &a).await.is_err());
+
+        // Same failure with an empty status message.
+        let mock = MockAgent {
+            state_data: "{\"sessionId\":\"s1\"}".into(),
+            stream_status_error: Some(tonic::Status::new(tonic::Code::Unknown, "")),
+            ..Default::default()
+        };
+        let addr = spawn_mock(mock).await;
+        assert!(run_print_mode(&addr, &a).await.is_err());
+
+        // A stream-level error mid-run → "stream error".
+        let mock = MockAgent {
+            state_data: "{\"sessionId\":\"s1\"}".into(),
+            events: vec![stream_event("text_chunk", "{\"text\":\"partial\"}")],
+            stream_error_after: true,
+            ..Default::default()
+        };
+        let addr = spawn_mock(mock).await;
+        assert_eq!(
+            run_print_mode(&addr, &a).await,
+            Err("stream error".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn print_mode_event_data_edge_cases() {
+        // text_chunk with non-JSON data is skipped; an error event without
+        // an "error" key renders the default; empty text prints nothing.
+        let mock = MockAgent {
+            state_data: "{\"sessionId\":\"s1\"}".into(),
+            events: vec![
+                stream_event("text_chunk", "not json"),
+                stream_event("text_chunk", "{\"wrong\":1}"),
+                stream_event("tool_start", "{}"), // unrecognized type is skipped
+                stream_event("error", "{\"no_error_key\":true}"),
+                stream_event("agent_end", "{}"),
+            ],
+            ..Default::default()
+        };
+        let addr = spawn_mock(mock).await;
+        let a = args(&["-p", "hi"]);
+        run_print_mode(&addr, &a).await.unwrap();
     }
 
     // ─── run() top-level flow ─────────────────────────────────────────
@@ -1518,6 +1724,85 @@ mod tests {
     }
 
     #[test]
+    fn run_list_models_against_mock_succeeds() {
+        let mock_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let addr = mock_rt.block_on(spawn_mock(MockAgent {
+            models_data: models_json(),
+            ..Default::default()
+        }));
+        // With and without a search term.
+        let code = run(&["--list-models".to_string(), "--grpc-addr".to_string(), addr.clone()]);
+        assert_eq!(code, ExitCode::SUCCESS);
+        let code = run(&[
+            "--list-models".to_string(),
+            "gpt".to_string(),
+            "--grpc-addr".to_string(),
+            addr,
+        ]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn run_print_failure_json_mode_stays_quiet() {
+        // The error message is suppressed in json mode.
+        let code = run(&[
+            "-p".to_string(),
+            "hi".to_string(),
+            "--mode".to_string(),
+            "json".to_string(),
+            "--grpc-addr".to_string(),
+            "127.0.0.1:1".to_string(),
+        ]);
+        assert_eq!(code, ExitCode::from(1));
+    }
+
+    #[test]
+    fn run_print_failure_text_mode_prints_error() {
+        let code = run(&[
+            "-p".to_string(),
+            "hi".to_string(),
+            "--grpc-addr".to_string(),
+            "127.0.0.1:1".to_string(),
+        ]);
+        assert_eq!(code, ExitCode::from(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_interactive_terminal_init_failure() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", home.path());
+        // Injected Terminal::new failure → graceful exit 1.
+        crate::terminal::FORCE_NEW_FAILURE.store(true, std::sync::atomic::Ordering::SeqCst);
+        let code = run(&["--grpc-addr".to_string(), "127.0.0.1:1".to_string()]);
+        restore_env("HOME", old_home);
+        assert_eq!(code, ExitCode::from(1));
+    }
+
+    fn restore_env(key: &str, old: Option<std::ffi::OsString>) {
+        match old {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn restore_env_handles_set_and_unset() {
+        let _guard = crate::test_env::lock();
+        let old = std::env::var_os("FUTURE_TUI_INDEX_PROBE");
+        restore_env("FUTURE_TUI_INDEX_PROBE", Some("1".into()));
+        assert_eq!(std::env::var("FUTURE_TUI_INDEX_PROBE").as_deref(), Ok("1"));
+        restore_env("FUTURE_TUI_INDEX_PROBE", None);
+        assert!(std::env::var_os("FUTURE_TUI_INDEX_PROBE").is_none());
+        restore_env("FUTURE_TUI_INDEX_PROBE", old);
+    }
+
+    #[test]
     fn run_print_without_message_fails() {
         let code = run(&["-p".to_string()]);
         assert_eq!(code, ExitCode::from(1));
@@ -1525,7 +1810,7 @@ mod tests {
 
     #[test]
     fn run_print_against_mock_succeeds() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", home.path());
@@ -1544,27 +1829,21 @@ mod tests {
             ..Default::default()
         }));
         let code = run(&["-p".to_string(), "hello".to_string(), "--grpc-addr".to_string(), addr]);
-        match old_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        restore_env("HOME", old_home);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
     #[cfg(unix)]
     #[test]
     fn run_interactive_fails_fast_without_tty() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", home.path());
         // Make stdin deterministically not-a-TTY (a developer shell may have
         // a real one): swap fd 0 for /dev/null for the duration.
         let code = with_null_stdin(|| run(&["--grpc-addr".to_string(), "127.0.0.1:1".to_string()]));
-        match old_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        restore_env("HOME", old_home);
         assert_eq!(code, ExitCode::from(1));
     }
 
@@ -1639,7 +1918,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn interactive_loop_runs_and_ctrl_c_quits() {
-        let _guard = crate::test_env::ENV_LOCK.lock();
+        let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", home.path());
@@ -1662,12 +1941,8 @@ mod tests {
         let driver = async {
             // Wait for startup to finish (the last startup RPC is
             // new_session), then deliver ctrl+c through the terminal input.
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
-            loop {
+            for _ in 0..1200 {
                 if seen.lock().unwrap().iter().any(|t| t == "new_session") {
-                    break;
-                }
-                if std::time::Instant::now() > deadline {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
@@ -1683,6 +1958,179 @@ mod tests {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
+        assert_eq!(code, 0);
+    }
+
+    /// Shared setup for the PTY interactive scenarios: mock agent + scratch
+    /// HOME + PTY stdin. Returns the pieces the drivers need.
+    #[cfg(unix)]
+    struct InteractiveFixture {
+        addr: String,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        /// Kept for drop (cleanup); never read.
+        _home: tempfile::TempDir,
+        old_home: Option<std::ffi::OsString>,
+        pty: PtyStdin,
+        unary_delay_ms: u64,
+    }
+
+    #[cfg(unix)]
+    impl InteractiveFixture {
+        async fn new() -> Self {
+            Self::with_delay(0).await
+        }
+
+        async fn with_delay(unary_delay_ms: u64) -> Self {
+            let home = tempfile::tempdir().unwrap();
+            let old_home = std::env::var_os("HOME");
+            std::env::set_var("HOME", home.path());
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let addr = spawn_mock(MockAgent {
+                state_data: "{\"sessionId\":\"s1\"}".into(),
+                events: vec![stream_event("ping", "{}")],
+                hold_open: true,
+                seen_commands: seen.clone(),
+                unary_delay_ms,
+                ..Default::default()
+            })
+            .await;
+            let pty = PtyStdin::install();
+            Self { addr, seen, _home: home, old_home, pty, unary_delay_ms }
+        }
+
+        fn args(&self) -> CliArgs {
+            CliArgs {
+                grpc_addr: self.addr.clone(),
+                ..Default::default()
+            }
+        }
+
+        /// Wait until the mock sees `what` (bounded), then a grace beat.
+        async fn await_command(&self, what: &str) {
+            for _ in 0..400 {
+                if self.seen.lock().unwrap().iter().any(|t| t == what) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        /// Wait until startup has fully completed: the last startup RPCs
+        /// are `new_session` followed by apply_tui_defaults' `get_state`
+        /// (the second one). Commands are recorded when the mock RECEIVES
+        /// them, so the grace must outlast the unary delay.
+        async fn await_startup_complete(&self) {
+            for _ in 0..400 {
+                let done = {
+                    let seen = self.seen.lock().unwrap();
+                    let states = seen.iter().filter(|t| *t == "get_state").count();
+                    seen.iter().any(|t| t == "new_session") && states >= 2
+                };
+                if done {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(self.unary_delay_ms + 400)).await;
+        }
+
+        fn finish(self) {
+            let Self { old_home, pty, .. } = self;
+            drop(pty);
+            restore_env("HOME", old_home);
+        }
+    }
+
+    /// A real SIGINT quits via the exit-signal callback + ExitSignal arm.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interactive_sigint_quits_via_exit_signal() {
+        let _guard = crate::test_env::lock();
+        let fx = InteractiveFixture::new().await;
+        let driver = async {
+            fx.await_startup_complete().await;
+            unsafe { libc::raise(libc::SIGINT) };
+        };
+        let args = fx.args();
+        let (code, ()) = tokio::join!(run_interactive(&args), driver);
+        fx.finish();
+        assert_eq!(code, 0);
+    }
+
+    /// ctrl+c DURING startup interrupts it (exit 1 like the TS app). The
+    /// mock answers slowly so startup is guaranteed to be in flight.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interactive_ctrl_c_during_startup() {
+        let _guard = crate::test_env::lock();
+        let fx = InteractiveFixture::with_delay(500).await;
+        let driver = async {
+            // The byte sits in the PTY buffer until the reader starts.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            fx.pty.write_input("\x03");
+        };
+        let args = fx.args();
+        let (code, ()) = tokio::join!(run_interactive(&args), driver);
+        fx.finish();
+        assert_eq!(code, 1);
+    }
+
+    /// SIGINT during startup drives the ExitSignal startup arm.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interactive_sigint_during_startup() {
+        let _guard = crate::test_env::lock();
+        let fx = InteractiveFixture::with_delay(500).await;
+        let driver = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            unsafe { libc::raise(libc::SIGINT) };
+        };
+        let args = fx.args();
+        let (code, ()) = tokio::join!(run_interactive(&args), driver);
+        fx.finish();
+        assert_eq!(code, 1);
+    }
+
+    /// SIGWINCH during startup AND in the main loop (both Resize arms).
+    /// The mock is slow so startup is still in flight for the first raise.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interactive_resize_during_and_after_startup() {
+        let _guard = crate::test_env::lock();
+        let fx = InteractiveFixture::with_delay(400).await;
+        let driver = async {
+            // Resize during startup.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            unsafe { libc::raise(libc::SIGWINCH) };
+            // Resize in the main loop, then quit.
+            fx.await_startup_complete().await;
+            unsafe { libc::raise(libc::SIGWINCH) };
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            fx.pty.write_input("\x03");
+        };
+        let args = fx.args();
+        let (code, ()) = tokio::join!(run_interactive(&args), driver);
+        fx.finish();
+        assert_eq!(code, 0);
+    }
+
+    /// CLI messages become the initial prompt (sent after startup).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interactive_with_initial_prompt_message() {
+        let _guard = crate::test_env::lock();
+        let fx = InteractiveFixture::new().await;
+        let driver = async {
+            // The initial prompt goes out as a `prompt` command ~100 ms
+            // after startup.
+            fx.await_command("prompt").await;
+            fx.pty.write_input("\x03");
+        };
+        let mut args = fx.args();
+        args.messages = vec!["hello agent".to_string()];
+        let (code, ()) = tokio::join!(run_interactive(&args), driver);
+        fx.finish();
         assert_eq!(code, 0);
     }
 }
