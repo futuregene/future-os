@@ -56,10 +56,10 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
                 .collect::<Result<_, _>>()
                 .ok()?;
             let mut value = json!({ "sessions": rows });
-            if let Some(rows) = value.get_mut("sessions").and_then(Value::as_array_mut) {
-                for row in rows {
-                    inject_legacy_aliases(row, SESSION_SUMMARY_ALIASES);
-                }
+            // `sessions` was just built above, so the key is always an array;
+            // iterate infallibly rather than an if-let.
+            for row in value["sessions"].as_array_mut().into_iter().flatten() {
+                inject_legacy_aliases(row, SESSION_SUMMARY_ALIASES);
             }
             Some(value)
         }
@@ -96,11 +96,9 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
         }
         Kind::GetSessionEventsSince(response) => {
             serde_json::to_value(session_events_since_from_proto(response)).ok()
-        }
-        // Future members: fall through to the JSON `data` string until a
-        // decoder exists.
-        #[allow(unreachable_patterns)]
-        _ => None,
+        } // Exhaustive on purpose: a new oneof member fails the build here
+          // until it gets a decoder (or an explicit `=> None` to keep the JSON
+          // `data` fallback).
     }
 }
 
@@ -732,10 +730,9 @@ fn typed_event_json(kind: Option<&proto::event_payload::Kind>) -> String {
     let Some(kind) = kind else {
         return String::new();
     };
-    match typed_event_json_inner(kind) {
-        Some(value) => serde_json::to_string(&value).unwrap_or_default(),
-        None => String::new(),
-    }
+    typed_event_json_inner(kind)
+        .and_then(|value| serde_json::to_string(&value).ok())
+        .unwrap_or_default()
 }
 
 /// Reconstruct the canonical payload shape from the typed event form. The
@@ -833,4 +830,395 @@ fn inflate_optional_json(raw: &str) -> Option<Value> {
         return None;
     }
     Some(serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::response_payload::Kind;
+
+    fn resp_with_payload(kind: Kind) -> proto::RpcResponse {
+        proto::RpcResponse {
+            payload: Some(proto::ResponsePayload { kind: Some(kind) }),
+            ..Default::default()
+        }
+    }
+
+    fn resp_with_data(data: &str) -> proto::RpcResponse {
+        proto::RpcResponse {
+            data: data.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn typed_text_chunk(text: &str) -> Option<proto::EventPayload> {
+        Some(proto::EventPayload {
+            kind: Some(proto::event_payload::Kind::TextChunk(proto::TextChunk {
+                text: text.to_string(),
+            })),
+        })
+    }
+
+    #[test]
+    fn response_data_str_serializes_non_null_payloads() {
+        let resp = resp_with_data(r#"{"a":1}"#);
+        assert_eq!(response_data_str(&resp), r#"{"a":1}"#);
+        assert_eq!(response_data_str(&proto::RpcResponse::default()), "");
+    }
+
+    #[test]
+    fn typed_list_sessions_injects_legacy_aliases() {
+        let resp = resp_with_payload(Kind::ListSessions(proto::ListSessionsResponse {
+            sessions: vec![proto::SessionSummary {
+                id: "s1".to_string(),
+                session_name: Some("Demo".to_string()),
+                ..Default::default()
+            }],
+        }));
+        let value = response_data(&resp);
+        assert_eq!(value["sessions"][0]["sessionName"], json!("Demo"));
+        assert_eq!(value["sessions"][0]["session_name"], json!("Demo"));
+
+        let rows = decode_list_sessions(&resp).unwrap();
+        assert_eq!(rows[0].id, "s1");
+        assert_eq!(rows[0].session_name.as_deref(), Some("Demo"));
+    }
+
+    #[test]
+    fn typed_get_state_injects_aliases_and_decodes_subobjects() {
+        let state = proto::SessionState {
+            session_id: Some("s1".to_string()),
+            extensions: vec!["ext-a".to_string()],
+            recent_terminal_acks: vec![proto::TerminalAck {
+                run_id: "r0".to_string(),
+                run_sequence: 3,
+                client_request_id: "c0".to_string(),
+                state: "cancelled".to_string(),
+                reason: "superseded".to_string(),
+            }],
+            requested_run: Some(proto::RunTerminalInfo {
+                run_id: "r9".to_string(),
+                state: "failed".to_string(),
+                run_tokens: 10,
+                run_duration_ms: 20,
+                error: Some("boom".to_string()),
+            }),
+            ..Default::default()
+        };
+        let resp = resp_with_payload(Kind::GetState(state));
+
+        let value = response_data(&resp);
+        assert_eq!(value["sessionId"], json!("s1"));
+        assert_eq!(value["extensions"], json!(["ext-a"]));
+        let ack = &value["recentTerminalAcks"][0];
+        assert_eq!(ack["runId"], json!("r0"));
+        assert_eq!(ack["run_id"], json!("r0"));
+        assert_eq!(ack["run_sequence"], json!(3));
+        assert_eq!(value["requestedRun"]["error"], json!("boom"));
+
+        let payload = decode_get_state(&resp).unwrap();
+        assert_eq!(payload.session_id.as_deref(), Some("s1"));
+        assert_eq!(payload.extensions, Some(vec!["ext-a".to_string()]));
+    }
+
+    /// The alias-injection helper must no-op cleanly when the get_state value
+    /// carries no recentTerminalAcks array.
+    #[test]
+    fn inject_get_state_aliases_without_acks() {
+        let mut value = json!({"sessionName": "Demo"});
+        inject_get_state_aliases(&mut value);
+        assert_eq!(value["session_name"], json!("Demo"));
+        assert!(value.get("recentTerminalAcks").is_none());
+    }
+
+    /// The JSON fallback path strips the legacy duplicates before
+    /// deserializing — top-level aliases and per-ack snake_case keys.
+    #[test]
+    fn decode_get_state_fallback_strips_legacy_aliases() {
+        let resp = resp_with_data(
+            r#"{
+                "agentInstanceId": "a1", "model": "m", "imageSupport": false,
+                "thinkingLevel": "off", "isStreaming": false, "isCompacting": false,
+                "explicitSession": true, "autoCompactionEnabled": true,
+                "queryCount": 2, "version": "1", "cwd": "/w",
+                "skills": [], "contextFiles": [], "contextWindow": 1000,
+                "contextTokens": 10, "contextPercent": 1.0, "tokensIn": 1,
+                "tokensOut": 2, "tokensCacheR": 0, "tokensCacheW": 0,
+                "totalCost": 0.0, "permissionLevel": "all", "createdBy": "tui",
+                "sourceMeta": null, "queuedRuns": [], "queuedCount": 0,
+                "pendingApprovals": [],
+                "sessionName": "Demo", "session_name": "Demo",
+                "recentTerminalAcks": [{
+                    "runId": "r0", "run_id": "r0",
+                    "runSequence": 4, "run_sequence": 4,
+                    "clientRequestId": "c0", "client_request_id": "c0",
+                    "state": "cancelled", "reason": "superseded"
+                }]
+            }"#,
+        );
+        let payload = decode_get_state(&resp).unwrap();
+        assert_eq!(payload.session_name.as_deref(), Some("Demo"));
+        assert_eq!(payload.recent_terminal_acks[0].run_id, "r0");
+        assert_eq!(payload.recent_terminal_acks[0].run_sequence, 4);
+
+        // Absent-acks edge of the strip helper.
+        let mut bare = json!({"sessionName": "Demo", "session_name": "Demo"});
+        strip_for_get_state(&mut bare);
+        assert!(bare.get("session_name").is_none());
+        assert_eq!(bare["sessionName"], json!("Demo"));
+    }
+
+    #[test]
+    fn decode_session_entries_typed_fallback_and_missing() {
+        let resp = resp_with_payload(Kind::GetSessionEntries(proto::SessionEntriesResponse {
+            entries: vec![proto::SessionEntry {
+                id: "e1".to_string(),
+                role: "session_info".to_string(),
+                content: r#"{"schema":1}"#.to_string(),
+                content_is_object: true,
+                meta: Some(r#"{"m":2}"#.to_string()),
+                tool_calls: Some("[]".to_string()),
+                output_tokens: Some(9),
+                duration_ms: Some(11),
+                ..Default::default()
+            }],
+        }));
+        let entries = decode_session_entries(&resp).unwrap();
+        assert_eq!(entries[0].content, json!({"schema": 1}));
+        assert_eq!(entries[0].meta, Some(json!({"m": 2})));
+        assert_eq!(entries[0].output_tokens, Some(9));
+        assert_eq!(entries[0].duration_ms, Some(11));
+
+        let resp = resp_with_data(
+            r#"{"entries":[{"id":"e2","role":"user","content":"hi","name":"","tool_args":"","timestamp":"t"}]}"#,
+        );
+        let entries = decode_session_entries(&resp).unwrap();
+        assert_eq!(entries[0].content, Value::String("hi".to_string()));
+
+        // `entries` absent / no data at all → None.
+        assert!(decode_session_entries(&resp_with_data("{}")).is_none());
+        assert!(decode_session_entries(&proto::RpcResponse::default()).is_none());
+    }
+
+    #[test]
+    fn decode_events_since_typed_fallback_and_empty() {
+        let resp = resp_with_payload(Kind::GetEventsSince(proto::EventsSince {
+            run_id: "r1".to_string(),
+            events: vec![proto::ReplayEvent {
+                r#type: "text_chunk".to_string(),
+                data: "{}".to_string(),
+                ..Default::default()
+            }],
+            truncated: true,
+            projection: None,
+        }));
+        let payload = decode_events_since(&resp).unwrap();
+        assert_eq!(payload.run_id, "r1");
+        assert!(payload.truncated);
+        assert_eq!(payload.events.len(), 1);
+
+        let resp = resp_with_data(r#"{"runId":"r2","events":[],"truncated":false}"#);
+        assert_eq!(decode_events_since(&resp).unwrap().run_id, "r2");
+
+        // No typed payload and no data → None.
+        assert!(decode_events_since(&proto::RpcResponse::default()).is_none());
+    }
+
+    #[test]
+    fn inflate_json_value_handles_empty_invalid_and_valid() {
+        assert_eq!(inflate_json_value(""), Value::Null);
+        assert_eq!(
+            inflate_json_value("nope"),
+            Value::String("nope".to_string())
+        );
+        assert_eq!(inflate_json_value(r#"{"a":1}"#), json!({"a": 1}));
+
+        assert_eq!(inflate_optional_json(""), None);
+        assert_eq!(
+            inflate_optional_json("raw"),
+            Some(Value::String("raw".to_string()))
+        );
+        assert_eq!(inflate_optional_json("1"), Some(json!(1)));
+    }
+
+    #[test]
+    fn run_terminal_includes_error_only_on_failure() {
+        let info = proto::RunTerminalInfo {
+            run_id: "r1".to_string(),
+            state: "failed".to_string(),
+            run_tokens: 12,
+            run_duration_ms: 34,
+            error: Some("boom".to_string()),
+        };
+        let content = run_terminal_from_proto(&info);
+        assert_eq!(content["error"], json!("boom"));
+        assert_eq!(content["run_tokens"], json!(12));
+
+        let ok = proto::RunTerminalInfo::default();
+        assert!(run_terminal_from_proto(&ok).get("error").is_none());
+    }
+
+    #[test]
+    fn approval_card_null_save_suggestion_and_extras_merge() {
+        let info = proto::ApprovalRequestInfo {
+            approval_request_id: "ap1".to_string(),
+            title: "Modelled".to_string(),
+            requested_action: r#"{"command":"ls"}"#.to_string(),
+            save_suggestion: None,
+            extras: r#"{"type":"tool_call","title":"FromExtras"}"#.to_string(),
+            ..Default::default()
+        };
+        let card = approval_card_from_proto(&info);
+        // Unset save_suggestion reconstructs the wire's explicit null.
+        assert_eq!(card["save_suggestion"], Value::Null);
+        assert_eq!(card["requested_action"], json!({"command": "ls"}));
+        // Modelled keys win over extras; other extras merge in.
+        assert_eq!(card["title"], json!("Modelled"));
+        assert_eq!(card["type"], json!("tool_call"));
+    }
+
+    #[test]
+    fn approval_card_tolerates_unparseable_extras() {
+        let info = proto::ApprovalRequestInfo {
+            approval_request_id: "ap2".to_string(),
+            extras: "not json".to_string(),
+            ..Default::default()
+        };
+        let card = approval_card_from_proto(&info);
+        assert_eq!(card["approval_request_id"], json!("ap2"));
+        assert!(card.get("type").is_none());
+    }
+
+    #[test]
+    fn decode_prompt_ack_typed_fallback_and_unknown_state() {
+        let resp = resp_with_payload(Kind::Prompt(proto::PromptAck {
+            run_id: "r1".to_string(),
+            run_epoch: 7,
+            accepted_state: "queued".to_string(),
+            run_sequence: Some(3),
+            queue_position: Some(0),
+        }));
+        let ack = decode_prompt_ack(&resp).unwrap();
+        assert_eq!(
+            ack.accepted_state,
+            crate::payloads_ext::RunAcceptedState::Queued
+        );
+        assert_eq!(ack.run_sequence, Some(3));
+
+        let resp = resp_with_data(r#"{"run_id":"r2","run_epoch":1,"accepted_state":"existing"}"#);
+        let ack = decode_prompt_ack(&resp).unwrap();
+        assert_eq!(
+            ack.accepted_state,
+            crate::payloads_ext::RunAcceptedState::Existing
+        );
+
+        // An unrecognized wire state degrades to Running.
+        let resp = resp_with_payload(Kind::Prompt(proto::PromptAck {
+            accepted_state: "weird".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            decode_prompt_ack(&resp).unwrap().accepted_state,
+            crate::payloads_ext::RunAcceptedState::Running
+        );
+    }
+
+    #[test]
+    fn decode_list_models_typed_and_fallback() {
+        let resp = resp_with_payload(Kind::ListModels(proto::ListModelsResponse {
+            models: vec![proto::ModelEntry {
+                id: "m1".to_string(),
+                is_default: true,
+                ..Default::default()
+            }],
+            default_model: "m1".to_string(),
+            is_scoped: true,
+            builtin_providers: std::collections::HashMap::from([(
+                "future".to_string(),
+                proto::BuiltinProvider {
+                    name: "Future".to_string(),
+                    model_count: 2,
+                    base_url: "https://example".to_string(),
+                },
+            )]),
+        }));
+        let payload = decode_list_models(&resp).unwrap();
+        assert_eq!(payload.models[0].id, "m1");
+        assert!(payload.is_scoped);
+        assert_eq!(payload.builtin_providers.unwrap()["future"].model_count, 2);
+
+        let resp = resp_with_data(
+            r#"{
+                "models": [{
+                    "id": "m2", "label": "M2", "provider": "p",
+                    "supportsImages": false, "thinkingLevel": "off",
+                    "contextWindow": 8, "isDefault": false, "recommended": false
+                }],
+                "defaultModel": "m2", "isScoped": false
+            }"#,
+        );
+        let payload = decode_list_models(&resp).unwrap();
+        assert_eq!(payload.models[0].id, "m2");
+        assert!(payload.builtin_providers.is_none());
+    }
+
+    #[test]
+    fn event_data_json_typed_only_and_absent() {
+        let event = proto::StreamEvent {
+            r#type: "text_chunk".to_string(),
+            payload: typed_text_chunk("hi"),
+            ..Default::default()
+        };
+        assert_eq!(event_data_json(&event), r#"{"text":"hi"}"#);
+        assert_eq!(event_data(&event), json!({"text": "hi"}));
+
+        // Neither data nor payload: Null / empty string.
+        let bare = proto::StreamEvent::default();
+        assert_eq!(event_data(&bare), Value::Null);
+        assert_eq!(event_data_json(&bare), "");
+    }
+
+    #[test]
+    fn projected_event_data_variants() {
+        let with_data = proto::ProjectedRunEvent {
+            r#type: "text_chunk".to_string(),
+            data: r#"{"text":"a"}"#.to_string(),
+            ..Default::default()
+        };
+        assert_eq!(projected_event_data(&with_data), json!({"text": "a"}));
+        assert_eq!(projected_event_data_json(&with_data), r#"{"text":"a"}"#);
+
+        let typed_only = proto::ProjectedRunEvent {
+            payload: typed_text_chunk("b"),
+            ..Default::default()
+        };
+        assert_eq!(projected_event_data(&typed_only), json!({"text": "b"}));
+        assert_eq!(projected_event_data_json(&typed_only), r#"{"text":"b"}"#);
+
+        let bare = proto::ProjectedRunEvent::default();
+        assert_eq!(projected_event_data(&bare), Value::Null);
+        assert_eq!(projected_event_data_json(&bare), "");
+    }
+
+    #[test]
+    fn replay_event_data_variants() {
+        let with_data = proto::ReplayEvent {
+            r#type: "text_chunk".to_string(),
+            data: r#"{"text":"a"}"#.to_string(),
+            ..Default::default()
+        };
+        assert_eq!(replay_event_data(&with_data), json!({"text": "a"}));
+        assert_eq!(replay_event_data_json(&with_data), r#"{"text":"a"}"#);
+
+        let typed_only = proto::ReplayEvent {
+            payload: typed_text_chunk("b"),
+            ..Default::default()
+        };
+        assert_eq!(replay_event_data(&typed_only), json!({"text": "b"}));
+        assert_eq!(replay_event_data_json(&typed_only), r#"{"text":"b"}"#);
+
+        let bare = proto::ReplayEvent::default();
+        assert_eq!(replay_event_data(&bare), Value::Null);
+        assert_eq!(replay_event_data_json(&bare), "");
+    }
 }
