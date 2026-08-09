@@ -827,6 +827,15 @@ impl ChatArea {
             .rposition(|m| m.role == ChatRole::Assistant)
     }
 
+    /// Test-only view: (role, plain-text content) per message.
+    #[cfg(test)]
+    pub(crate) fn plain_messages(&self) -> Vec<(ChatRole, String)> {
+        self.messages
+            .iter()
+            .map(|m| (m.role.clone(), crate::utils::strip_ansi_codes(&m.content)))
+            .collect()
+    }
+
     fn find_tool_index(&self, tool_id: &str) -> Option<usize> {
         self.messages
             .iter()

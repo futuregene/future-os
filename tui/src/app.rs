@@ -1920,10 +1920,18 @@ impl<T: TerminalIo> App<T> {
                 return;
             }
             let owned = d.unwrap();
-            self.handle_input(&owned);
+            // Continue with the (possibly rewritten) data — NOT recursively,
+            // which would re-run the listeners and never terminate for a
+            // pass-through listener.
+            self.handle_input_continue(&owned);
             return;
         }
 
+        self.handle_input_continue(data);
+    }
+
+    /// The post-listener input flow: paste, interrupt, key parse, fallback.
+    fn handle_input_continue(&mut self, data: &str) {
         // Bracketed paste.
         if data.starts_with("\x1b[200~") {
             if let Some(end_idx) = data.find("\x1b[201~") {
@@ -4752,5 +4760,910 @@ mod tests {
         let (mut app, _rx) = make_app(100, 30);
         app.request_resize_render();
         assert!(app.resize_deadline.is_some());
+    }
+
+    // ─── Coverage driving harness ─────────────────────────────────────
+
+    /// Feed spawned-task results back into the app until quiescent.
+    async fn pump(app: &mut App<FakeTerminal>, op_rx: &mut mpsc::UnboundedReceiver<UiCmd>) {
+        let mut idle = 0;
+        for _ in 0..80 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let mut drained = Vec::new();
+            while let Ok(cmd) = op_rx.try_recv() {
+                drained.push(cmd);
+            }
+            if drained.is_empty() {
+                idle += 1;
+                if idle >= 3 {
+                    break;
+                }
+                continue;
+            }
+            idle = 0;
+            for cmd in drained {
+                app.handle_cmd(cmd);
+            }
+        }
+    }
+
+    /// System message contents, plain text.
+    fn system_messages(app: &App<FakeTerminal>) -> Vec<String> {
+        app.chat
+            .plain_messages()
+            .iter()
+            .filter(|(role, _)| *role == ChatRole::System)
+            .map(|(_, content)| content.clone())
+            .collect()
+    }
+
+    fn last_system(app: &App<FakeTerminal>) -> String {
+        system_messages(app).last().cloned().unwrap_or_default()
+    }
+
+    fn sample_models() -> Vec<ModelInfo> {
+        vec![
+            serde_json::from_value(json_parse(
+                r#"{"id":"gpt-4o","label":"GPT-4o","provider":"openai"}"#,
+            ))
+            .expect("model"),
+            serde_json::from_value(json_parse(
+                r#"{"id":"claude-sonnet-4","label":"Claude Sonnet 4","provider":"anthropic","supportsImages":true,"contextWindow":200000}"#,
+            ))
+            .expect("model"),
+        ]
+    }
+
+    fn sample_sessions() -> Vec<SessionSummary> {
+        vec![
+            serde_json::from_value(json_parse(
+                r#"{"id":"s1","cwd":"/tmp/a","updatedAt":"2026-01-02T00:00:00Z","model":"m1","sessionName":"first"}"#,
+            ))
+            .expect("session"),
+            serde_json::from_value(json_parse(
+                r#"{"id":"s2","cwd":"/tmp/a","updatedAt":"2026-01-01T00:00:00Z","model":"m1","parentSessionId":"s1"}"#,
+            ))
+            .expect("session"),
+        ]
+    }
+
+    // ─── handle_cmd matrix ────────────────────────────────────────────
+
+    fn make_event(t: &str, data: &str) -> AgentEvent {
+        AgentEvent {
+            r#type: t.to_string(),
+            session_id: None,
+            run_id: None,
+            epoch: 0,
+            idx: 0,
+            event_id: None,
+            timestamp: None,
+            projection_snapshot: false,
+            snapshot_cursor: 0,
+            snapshot_events: Vec::new(),
+            data: json_parse(data),
+        }
+    }
+
+    fn make_event_with_run(t: &str, data: &str, run_id: &str) -> AgentEvent {
+        let mut ev = make_event(t, data);
+        ev.run_id = Some(run_id.to_string());
+        ev
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_cmd_async_result_variants() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // Refreshed ok/err.
+        app.handle_cmd(UiCmd::Refreshed(Ok(sample_state())));
+        assert_eq!(app.state.model, "deepseek-v4-pro");
+        app.handle_cmd(UiCmd::Refreshed(Err("down".into())));
+
+        // ModelsLoaded → both overlay purposes + error.
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Selector,
+        });
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Scoped,
+        });
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Err("no models".into()),
+            purpose: ModelsPurpose::Selector,
+        });
+        assert!(last_system(&app).contains("Failed to load models"));
+
+        // SessionsLoaded → browse + tree + error.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Tree,
+        });
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Err("no sessions".into()),
+            purpose: SessionsPurpose::Browse,
+        });
+        assert!(last_system(&app).contains("Failed to load sessions"));
+
+        // ForkMessagesLoaded ok/err.
+        app.handle_cmd(UiCmd::ForkMessagesLoaded(Ok(json_parse(
+            r#"{"messages":[{"id":"e1","text":"hello","role":"user"}]}"#,
+        ))));
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+        app.handle_cmd(UiCmd::ForkMessagesLoaded(Err("nope".into())));
+        assert!(last_system(&app).contains("Failed to load fork messages"));
+
+        // SetModelDone: error, then ok.
+        app.handle_cmd(UiCmd::SetModelDone {
+            set_result: Err("bad model".into()),
+            state: None,
+        });
+        assert!(last_system(&app).contains("Failed to set model"));
+        app.handle_cmd(UiCmd::SetModelDone {
+            set_result: Ok(()),
+            state: Some(sample_state()),
+        });
+        assert!(last_system(&app).contains("Model:"));
+
+        // ModelCycled ok (with state) + err.
+        app.handle_cmd(UiCmd::ModelCycled {
+            result: Ok(json_parse(r#"{"model":"m2"}"#)),
+            state: Some(sample_state()),
+        });
+        app.handle_cmd(UiCmd::ModelCycled {
+            result: Err("x".into()),
+            state: None,
+        });
+
+        // ThinkingCycled ok/err.
+        app.handle_cmd(UiCmd::ThinkingCycled(Ok(json_parse(r#"{"level":"xhigh"}"#))));
+        assert_eq!(app.state.thinking, "xhigh");
+        app.handle_cmd(UiCmd::ThinkingCycled(Err("x".into())));
+
+        // CompactDone ok/err.
+        app.handle_cmd(UiCmd::CompactDone(Ok("done".into())));
+        assert!(last_system(&app).contains("Context compacted"));
+        app.handle_cmd(UiCmd::CompactDone(Err("bad".into())));
+        assert!(last_system(&app).contains("Compact failed"));
+
+        // ReloadDone ok (with skills + contextFiles) / err.
+        app.handle_cmd(UiCmd::ReloadDone {
+            result: Ok(json_parse(r#"{"skills":["a","b"],"contextFiles":["AGENTS.md"]}"#)),
+            state: Some(sample_state()),
+        });
+        assert!(last_system(&app).contains("Reloaded: 2 skills loaded"));
+        app.handle_cmd(UiCmd::ReloadDone {
+            result: Ok(json_parse(r#"{"skills":[],"contextFiles":[]}"#)),
+            state: None,
+        });
+        assert!(last_system(&app).contains("no skills found"));
+        app.handle_cmd(UiCmd::ReloadDone {
+            result: Err("x".into()),
+            state: None,
+        });
+        assert!(last_system(&app).contains("Reload failed"));
+
+        // SessionNamed ok/err.
+        app.pending_name_arg = Some("new name".into());
+        app.handle_cmd(UiCmd::SessionNamed(Ok(())));
+        assert!(last_system(&app).contains("new name"));
+        app.pending_name_arg = Some("n2".into());
+        app.handle_cmd(UiCmd::SessionNamed(Err("x".into())));
+        assert!(last_system(&app).contains("Failed to set session name"));
+
+        // CwdSet ok/err.
+        app.handle_cmd(UiCmd::CwdSet {
+            result: Ok(()),
+            resolved: "/tmp/xyz".into(),
+        });
+        assert_eq!(app.state.cwd, "/tmp/xyz");
+        assert!(last_system(&app).contains("/tmp/xyz"));
+        app.handle_cmd(UiCmd::CwdSet {
+            result: Err("nope".into()),
+            resolved: String::new(),
+        });
+        assert!(last_system(&app).contains("Failed to change directory"));
+
+        // ApprovalDone approved/rejected × ok/err.
+        app.handle_cmd(UiCmd::ApprovalDone {
+            result: Ok(()),
+            kind: "approved".into(),
+            request_id: "r1".into(),
+        });
+        assert!(last_system(&app).contains("Approved request: r1"));
+        app.handle_cmd(UiCmd::ApprovalDone {
+            result: Err("x".into()),
+            kind: "rejected".into(),
+            request_id: "r2".into(),
+        });
+        assert!(last_system(&app).contains("Failed to reject"));
+
+        // StopDone ok/err.
+        app.handle_cmd(UiCmd::StopDone(Ok(())));
+        assert!(last_system(&app).contains("Stopped current generation"));
+        app.handle_cmd(UiCmd::StopDone(Err("x".into())));
+        assert!(last_system(&app).contains("Failed to stop"));
+
+        // QueuedCancelled ok/err.
+        app.handle_cmd(UiCmd::QueuedCancelled {
+            result: Ok(()),
+            run_id: "q1".into(),
+        });
+        assert!(last_system(&app).contains("Cancelled queued run"));
+        app.handle_cmd(UiCmd::QueuedCancelled {
+            result: Err("x".into()),
+            run_id: "q1".into(),
+        });
+        assert!(last_system(&app).contains("Failed to cancel queued run"));
+
+        // StatusLoaded: both ok / models err / state err.
+        app.handle_cmd(UiCmd::StatusLoaded {
+            state: Ok(sample_state()),
+            models: Ok(sample_models()),
+        });
+        assert!(last_system(&app).contains("Queries"));
+        app.handle_cmd(UiCmd::StatusLoaded {
+            state: Ok(sample_state()),
+            models: Err("m".into()),
+        });
+        app.handle_cmd(UiCmd::StatusLoaded {
+            state: Err("s".into()),
+            models: Ok(vec![]),
+        });
+        assert!(last_system(&app).contains("Failed to get status"));
+
+        // InitialPromptDone is a no-op.
+        app.handle_cmd(UiCmd::InitialPromptDone(Ok(
+            crate::rpc::types::RunAck {
+                run_id: "r".into(),
+                run_epoch: 1,
+                accepted_state: "running".into(),
+                run_sequence: None,
+                queue_position: None,
+            },
+        )));
+
+        let _ = &mut rx;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_cmd_session_flow_variants() {
+        let (mut app, mut rx) = make_app(100, 30);
+        app.state.session_id = "current".into();
+
+        // SessionSwitched err.
+        app.handle_cmd(UiCmd::SessionSwitched {
+            result: Err("nope".into()),
+            state: None,
+            messages: Ok(Value::Null),
+            label: "l".into(),
+        });
+        assert!(last_system(&app).contains("Failed to switch session"));
+        // ok with state+messages.
+        app.handle_cmd(UiCmd::SessionSwitched {
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(
+                r#"{"messages":[{"id":"m1","role":"user","content":"hi"}]}"#,
+            )),
+            label: "target".into(),
+        });
+        assert!(last_system(&app).contains("Switched to session: target"));
+        // The refresh above set the client's session id; clear it so later
+        // dead-client calls skip the 5 s connect wait.
+        app.client.set_current_session_id("");
+
+        // TreeSelected: same session → just hides; different → switch flow.
+        app.handle_cmd(UiCmd::TreeSelected {
+            item: SelectItem {
+                value: "current".into(),
+                label: "cur".into(),
+                description: None,
+            },
+        });
+        app.handle_cmd(UiCmd::TreeSelected {
+            item: SelectItem {
+                value: "other".into(),
+                label: "oth".into(),
+                description: None,
+            },
+        });
+        pump(&mut app, &mut rx).await; // switch flow fails against dead client
+        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to switch session")));
+
+        // ForkSelected → ForkDone spawn chain (fails against dead client).
+        app.handle_cmd(UiCmd::ForkSelected {
+            item: SelectItem {
+                value: "e1".into(),
+                label: "entry".into(),
+                description: None,
+            },
+        });
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to fork")));
+
+        // ForkDone direct: cancelled, ok-not-cancelled, err.
+        app.handle_cmd(UiCmd::ForkDone {
+            fork_result: Ok(json_parse(r#"{"cancelled":true}"#)),
+            state: None,
+            messages: Ok(Value::Null),
+            label: "l".into(),
+        });
+        app.handle_cmd(UiCmd::ForkDone {
+            fork_result: Ok(json_parse(r#"{"cancelled":false}"#)),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(r#"{"messages":[]}"#)),
+            label: "l".into(),
+        });
+        assert!(last_system(&app).contains("Forked from l."));
+        app.handle_cmd(UiCmd::ForkDone {
+            fork_result: Err("x".into()),
+            state: None,
+            messages: Ok(Value::Null),
+            label: "l".into(),
+        });
+        assert!(last_system(&app).contains("Failed to fork"));
+
+        // NewSessionDone: with/without sessionId, err.
+        app.handle_cmd(UiCmd::NewSessionDone {
+            result: Ok(json_parse(r#"{"sessionId":"s-new"}"#)),
+            state: Some(sample_state()),
+        });
+        assert!(last_system(&app).contains("New session started"));
+        app.handle_cmd(UiCmd::NewSessionDone {
+            result: Ok(json_parse(r#"{}"#)),
+            state: None,
+        });
+        app.handle_cmd(UiCmd::NewSessionDone {
+            result: Err("x".into()),
+            state: None,
+        });
+        assert!(last_system(&app).contains("Not connected to agent"));
+
+        // CloneDone: cancelled, ok, err.
+        app.handle_cmd(UiCmd::CloneDone {
+            result: Ok(json_parse(r#"{"cancelled":true}"#)),
+            state: None,
+            messages: Ok(Value::Null),
+        });
+        app.handle_cmd(UiCmd::CloneDone {
+            result: Ok(json_parse(r#"{"cancelled":false}"#)),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(r#"{"messages":[]}"#)),
+        });
+        assert!(last_system(&app).contains("Session cloned"));
+        app.handle_cmd(UiCmd::CloneDone {
+            result: Err("x".into()),
+            state: None,
+            messages: Ok(Value::Null),
+        });
+        assert!(last_system(&app).contains("Failed to clone session"));
+
+        // ModelSelected → spawn (fails against dead client). Clear the
+        // client session first so the calls skip the 5 s connect wait.
+        app.client.set_current_session_id("");
+        app.handle_cmd(UiCmd::ModelSelected(SelectItem {
+            value: "openai/gpt-4o".into(),
+            label: "gpt".into(),
+            description: None,
+        }));
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to set model")));
+
+        // PromptAck: queued ack binds run; err (non-transport) adds message;
+        // err (transport) doesn't.
+        app.handle_cmd(UiCmd::PromptAck {
+            local_id: "does-not-exist".into(),
+            result: Ok(crate::rpc::types::RunAck {
+                run_id: "r1".into(),
+                run_epoch: 1,
+                accepted_state: "queued".into(),
+                run_sequence: None,
+                queue_position: Some(2),
+            }),
+        });
+        app.handle_cmd(UiCmd::PromptAck {
+            local_id: "x".into(),
+            result: Err("some random failure".into()),
+        });
+        assert!(last_system(&app).contains("Not connected to agent"));
+        let before = system_messages(&app).len();
+        app.handle_cmd(UiCmd::PromptAck {
+            local_id: "x".into(),
+            result: Err("transport error".into()),
+        });
+        assert_eq!(system_messages(&app).len(), before); // no message
+
+        // ScopedModelsSaved.
+        app.cached_models = sample_models()
+            .iter()
+            .map(|m| m.full_id())
+            .collect();
+        app.handle_cmd(UiCmd::ScopedModelsSaved(vec!["openai/gpt-4o".into()]));
+        assert!(last_system(&app).contains("1/2 enabled"));
+        assert_eq!(
+            app.enabled_model_ids.as_deref(),
+            Some(&["openai/gpt-4o".to_string()][..])
+        );
+
+        // InputEscape clears the input.
+        app.input.set_value("draft", None);
+        app.handle_cmd(UiCmd::InputEscape);
+        assert!(app.input.get_value().is_empty());
+
+        // AcItems show/hide.
+        app.handle_cmd(UiCmd::AcItems(vec![crate::components::autocomplete::AutocompleteItem {
+            value: "/model".into(),
+            label: "/model".into(),
+            description: None,
+        }]));
+        assert!(app.autocomplete.is_visible());
+        app.handle_cmd(UiCmd::AcItems(vec![]));
+        assert!(!app.autocomplete.is_visible());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn overlay_select_all_kinds() {
+        let (mut app, mut rx) = make_app(100, 30);
+        app.state.session_id = "current".into();
+
+        // Sessions kind → switch flow (fails on dead client).
+        app.handle_cmd(UiCmd::OverlaySelect {
+            kind: OverlayKind::Sessions,
+            item: SelectItem {
+                value: "s9".into(),
+                label: "nine".into(),
+                description: None,
+            },
+        });
+        pump(&mut app, &mut rx).await;
+
+        // Tree kind: same session → hide only.
+        app.handle_cmd(UiCmd::OverlaySelect {
+            kind: OverlayKind::Tree,
+            item: SelectItem {
+                value: "current".into(),
+                label: "cur".into(),
+                description: None,
+            },
+        });
+        // Tree kind: different session → switch flow.
+        app.handle_cmd(UiCmd::OverlaySelect {
+            kind: OverlayKind::Tree,
+            item: SelectItem {
+                value: "s9".into(),
+                label: "nine".into(),
+                description: None,
+            },
+        });
+        pump(&mut app, &mut rx).await;
+
+        // Fork + Model kinds delegate.
+        app.handle_cmd(UiCmd::OverlaySelect {
+            kind: OverlayKind::Fork,
+            item: SelectItem {
+                value: "e1".into(),
+                label: "e".into(),
+                description: None,
+            },
+        });
+        pump(&mut app, &mut rx).await;
+        app.handle_cmd(UiCmd::OverlaySelect {
+            kind: OverlayKind::Model,
+            item: SelectItem {
+                value: "openai/gpt-4o".into(),
+                label: "m".into(),
+                description: None,
+            },
+        });
+        pump(&mut app, &mut rx).await;
+
+        // Settings kind: sessions / reload / other.
+        app.handle_cmd(UiCmd::OverlaySelect {
+            kind: OverlayKind::Settings,
+            item: SelectItem {
+                value: "sessions".into(),
+                label: "s".into(),
+                description: None,
+            },
+        });
+        pump(&mut app, &mut rx).await;
+        app.handle_cmd(UiCmd::OverlaySelect {
+            kind: OverlayKind::Settings,
+            item: SelectItem {
+                value: "reload".into(),
+                label: "r".into(),
+                description: None,
+            },
+        });
+        assert!(last_system(&app).contains("Settings reloaded"));
+        app.handle_cmd(UiCmd::OverlaySelect {
+            kind: OverlayKind::Settings,
+            item: SelectItem {
+                value: "other".into(),
+                label: "o".into(),
+                description: None,
+            },
+        });
+    }
+
+    // ─── Agent events ─────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_event_all_types() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // user_message dedup: same text as the last user message is skipped.
+        app.handle_agent_event(&make_event("user_message", r#"{"text":"hello"}"#));
+        let count = app.chat.plain_messages().len();
+        app.handle_agent_event(&make_event("user_message", r#"{"text":"hello"}"#));
+        assert_eq!(app.chat.plain_messages().len(), count); // deduped
+        app.handle_agent_event(&make_event("user_message", r#"{"text":"different"}"#));
+        assert!(app.chat.plain_messages().len() > count);
+
+        // agent_start → assistant message + streaming; run state tracked.
+        app.handle_agent_event(&make_event_with_run("agent_start", "{}", "r1"));
+        assert!(app.state.streaming);
+        // thinking lifecycle.
+        app.handle_agent_event(&make_event("thinking_start", "{}"));
+        app.handle_agent_event(&make_event("thinking_delta", r#"{"text":"pondering"}"#));
+        app.handle_agent_event(&make_event("thinking_end", "{}"));
+        // text chunk.
+        app.handle_agent_event(&make_event("text_chunk", r#"{"text":"answer"}"#));
+        // tool lifecycle: start (with object args), delta, end.
+        app.handle_agent_event(&make_event(
+            "tool_start",
+            r#"{"tool_id":"t1","tool_name":"read","tool_args":{"path":"/x"}}"#,
+        ));
+        assert_eq!(app.state.active_tool_count, 1);
+        app.handle_agent_event(&make_event("tool_delta", r#"{"tool_id":"t1","text":"part"}"#));
+        app.handle_agent_event(&make_event("tool_end", r#"{"tool_id":"t1","text":"done"}"#));
+        assert_eq!(app.state.active_tool_count, 0);
+        // tool_start with string args.
+        app.handle_agent_event(&make_event(
+            "tool_start",
+            r#"{"tool_id":"t2","tool_name":"shell","tool_args":"{\"command\":\"ls\"}"}"#,
+        ));
+        app.handle_agent_event(&make_event("tool_end", r#"{"tool_id":"t2"}"#));
+        pump(&mut app, &mut rx).await; // tool_end's spawn_refresh fails silently
+
+        // approval_request → chat card + prefilled /approve command.
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"a1","tool_id":"t9","tool_name":"shell","kind":"exec","risk_level":"high","summary":"rm -rf","requested_action":"rm -rf /"}"#,
+        ));
+        assert!(last_system(&app).contains("Approval Required"));
+        assert!(app.input.get_value().contains("/approve a1"));
+        app.input.set_value("", None);
+
+        // error event.
+        app.handle_agent_event(&make_event("error", r#"{"error":"boom"}"#));
+        assert!(last_system(&app).contains("Error: boom"));
+        app.handle_agent_event(&make_event("error", r#"{"error_message":"other"}"#));
+        assert!(last_system(&app).contains("Error: other"));
+        app.handle_agent_event(&make_event("error", r#"{"x":1}"#));
+        assert!(last_system(&app).contains("unknown error"));
+
+        // usage event accumulates tokens.
+        app.handle_agent_event(&make_event(
+            "usage",
+            r#"{"usage":{"prompt_tokens":10,"completion_tokens":5,"cache_read_tokens":2,"cache_write_tokens":3}}"#,
+        ));
+        assert_eq!(app.state.tokens_in, 10);
+        assert_eq!(app.state.tokens_out, 5);
+        assert_eq!(app.state.context_tokens, 15);
+        pump(&mut app, &mut rx).await;
+
+        // settings-change events.
+        app.handle_agent_event(&make_event("model_changed", r#"{"model":"m9"}"#));
+        assert_eq!(app.state.model, "m9");
+        app.handle_agent_event(&make_event("thinking_level_changed", r#"{"level":"low"}"#));
+        assert_eq!(app.state.thinking, "low");
+        app.handle_agent_event(&make_event("cwd_changed", r#"{"cwd":"/tmp/z"}"#));
+        assert_eq!(app.state.cwd, "/tmp/z");
+        app.handle_agent_event(&make_event("auto_compaction_changed", r#"{"enabled":false}"#));
+        assert!(!app.state.auto_compaction_enabled);
+        app.handle_agent_event(&make_event("session_name_changed", r#"{"name":"n"}"#));
+        app.handle_agent_event(&make_event("permission_level_changed", "{}"));
+        app.handle_agent_event(&make_event("tools_changed", "{}"));
+        app.handle_agent_event(&make_event("sandbox_policy_changed", "{}"));
+        app.handle_agent_event(&make_event("ephemeral_changed", "{}"));
+        pump(&mut app, &mut rx).await;
+
+        // config_reloaded with skills + context files.
+        app.handle_agent_event(&make_event(
+            "config_reloaded",
+            r#"{"skills":["b","a"],"contextFiles":["CLAUDE.md"]}"#,
+        ));
+        assert_eq!(app.state.skills, vec!["a", "b"]);
+        assert!(last_system(&app).contains("Config reloaded: 2 skills, CLAUDE.md"));
+        // …and with empty lists.
+        app.handle_agent_event(&make_event("config_reloaded", r#"{"skills":[],"contextFiles":[]}"#));
+        assert!(last_system(&app).contains("no context files"));
+
+        // agent_end with terminal text.
+        app.handle_agent_event(&make_event_with_run("agent_end", r#"{"text":"final answer"}"#, "r1"));
+        assert!(!app.state.streaming);
+        pump(&mut app, &mut rx).await;
+
+        // Unknown event types are ignored.
+        app.handle_agent_event(&make_event("some_future_event", "{}"));
+    }
+
+    // ─── Key actions ──────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn key_actions_all() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // Scroll actions (need content to scroll).
+        app.handle_key_action(KeyAction::ScrollChatUpPage);
+        app.handle_key_action(KeyAction::ScrollChatDownPage);
+        app.handle_key_action(KeyAction::ScrollChatUpLine);
+        app.handle_key_action(KeyAction::ScrollChatDownLine);
+
+        // ToggleThinking flips visibility.
+        app.handle_key_action(KeyAction::ToggleThinking);
+        app.handle_key_action(KeyAction::ToggleThinking);
+
+        // ForceClear sets the flag.
+        app.handle_key_action(KeyAction::ForceClear);
+        assert!(app.force_clear_next_render);
+
+        // CycleModel not streaming → spawns (fails on dead client).
+        app.handle_key_action(KeyAction::CycleModel);
+        pump(&mut app, &mut rx).await;
+
+        // CycleModel while streaming → refused message.
+        app.state.streaming = true;
+        app.handle_key_action(KeyAction::CycleModel);
+        assert!(last_system(&app).contains("Cannot change model while agent is streaming"));
+        app.state.streaming = false;
+
+        // CycleModel with a scoped list cycles locally.
+        app.enabled_model_ids = Some(vec!["a/m1".into(), "b/m2".into()]);
+        app.state.model = "a/m1".into();
+        app.handle_key_action(KeyAction::CycleModel);
+        assert_eq!(app.state.model, "b/m2");
+        pump(&mut app, &mut rx).await;
+        // …and wrapping around / unknown current model.
+        app.state.model = "unlisted".into();
+        app.handle_key_action(KeyAction::CycleModel);
+        assert_eq!(app.state.model, "a/m1");
+        pump(&mut app, &mut rx).await;
+        app.enabled_model_ids = None;
+
+        // CycleThinking refused while streaming.
+        app.state.streaming = true;
+        app.handle_key_action(KeyAction::CycleThinking);
+        assert!(last_system(&app).contains("Cannot change thinking level"));
+        app.state.streaming = false;
+        app.handle_key_action(KeyAction::CycleThinking);
+        pump(&mut app, &mut rx).await;
+
+        // ShowSessions spawns a load.
+        app.handle_key_action(KeyAction::ShowSessions);
+        pump(&mut app, &mut rx).await;
+        assert!(last_system(&app).contains("Failed to load sessions"));
+
+        // Interrupt while streaming → abort spawn + stopped marker.
+        app.state.streaming = true;
+        app.handle_key_action(KeyAction::Interrupt);
+        assert!(!app.state.streaming);
+        pump(&mut app, &mut rx).await;
+        // Interrupt while idle → app stops running.
+        app.running = true;
+        app.handle_key_action(KeyAction::Interrupt);
+        assert!(!app.running);
+    }
+
+    // ─── handle_key / handle_input paths ──────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_key_paths() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // Escape on empty editor clears it.
+        app.input.set_value("text", None);
+        app.handle_key("escape");
+        assert!(app.input.get_value().is_empty());
+
+        // Plain keys go to the editor.
+        app.handle_key("left");
+        // ctrl+ combos pass through to the editor.
+        app.handle_key("ctrl+a");
+        // Tab triggers autocomplete machinery (slash prefix).
+        app.input.set_value("/mo", None);
+        app.handle_key("tab");
+        pump(&mut app, &mut rx).await;
+
+        // Autocomplete navigation.
+        app.autocomplete.show(vec![
+            crate::components::autocomplete::AutocompleteItem {
+                value: "/model".into(),
+                label: "/model".into(),
+                description: None,
+            },
+            crate::components::autocomplete::AutocompleteItem {
+                value: "/new".into(),
+                label: "/new".into(),
+                description: None,
+            },
+        ]);
+        app.handle_key("down");
+        app.handle_key("up");
+        app.handle_key("escape"); // hides autocomplete
+        assert!(!app.autocomplete.is_visible());
+
+        // shift+ctrl+d with a debug callback.
+        let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+        let cb = hits.clone();
+        app.on_debug = Some(Box::new(move || cb.set(cb.get() + 1)));
+        app.handle_key("shift+ctrl+d");
+        assert_eq!(hits.get(), 1);
+        app.on_debug = None;
+        app.handle_key("shift+ctrl+d"); // no callback — no panic
+
+        // Escape with an overlay closes it.
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Selector,
+        });
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_key("escape");
+        assert!(app.overlay_stack.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_input_paths() {
+        let (mut app, mut rx) = make_app(100, 30);
+        let _ = &mut rx;
+
+        // Bracketed paste into the editor.
+        app.handle_input("\x1b[200~pasted text\x1b[201~");
+        assert_eq!(app.input.get_value(), "pasted text");
+
+        // Key release events are dropped unless wanted.
+        app.handle_input("\x1b[97;1:3u"); // kitty release for 'a'
+        assert!(app.input.get_value().ends_with("pasted text"));
+
+        // ctrl+c byte → interrupt.
+        app.running = true;
+        app.handle_input("\x03");
+        assert!(!app.running);
+
+        // Printable fallback char.
+        app.handle_input("x");
+        assert!(app.input.get_value().contains('x'));
+
+        // Input listeners can rewrite/consume.
+        app.input_listeners.push(Box::new(|d| {
+            if d == "swallow" {
+                Some(InputListenerResult {
+                    consume: true,
+                    data: None,
+                })
+            } else if d == "rewrite" {
+                Some(InputListenerResult {
+                    consume: false,
+                    data: Some("z".to_string()),
+                })
+            } else {
+                None
+            }
+        }));
+        app.input.set_value("", None);
+        app.handle_input("swallow");
+        assert!(app.input.get_value().is_empty()); // consumed
+        app.handle_input("rewrite");
+        assert!(app.input.get_value().ends_with('z')); // rewritten path
+        app.input_listeners.clear();
+    }
+
+    // ─── Slash commands ───────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_commands_matrix() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // Empty submit is a no-op.
+        app.handle_cmd(UiCmd::Submit("   ".into()));
+
+        for cmd in [
+            "/help", "/sessions", "/tree", "/fork", "/clone", "/new", "/compact",
+            "/reload", "/scoped-models", "/status", "/stop", "/export", "/import",
+        ] {
+            app.handle_cmd(UiCmd::Submit(cmd.into()));
+        }
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app).iter().any(|m| m.contains("export is not available")));
+        assert!(system_messages(&app).iter().any(|m| m.contains("import is not available")));
+
+        // /model with arg (dead client → fails), and selector path.
+        app.handle_cmd(UiCmd::Submit("/model sonnet".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to set model")));
+        app.handle_cmd(UiCmd::Submit("/model".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to load models")));
+
+        // /model while streaming → refused.
+        app.state.streaming = true;
+        app.handle_cmd(UiCmd::Submit("/model x".into()));
+        assert!(last_system(&app).contains("Cannot change model while agent is streaming"));
+        app.state.streaming = false;
+
+        // /name with and without arg.
+        app.handle_cmd(UiCmd::Submit("/name".into()));
+        assert!(last_system(&app).contains("Usage: /name"));
+        app.handle_cmd(UiCmd::Submit("/name my session".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to set session name")));
+
+        // /cwd with no arg is not a command — it becomes a prompt.
+        let before = app.chat.plain_messages().len();
+        app.handle_cmd(UiCmd::Submit("/cwd".into()));
+        assert!(app.chat.plain_messages().len() > before);
+        app.state.streaming = false; // the prompt above set it
+        app.handle_cmd(UiCmd::Submit("/cwd /tmp".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to change directory")));
+        app.handle_cmd(UiCmd::Submit("/cwd ~".into()));
+        pump(&mut app, &mut rx).await;
+        app.handle_cmd(UiCmd::Submit("/cwd ~/sub".into()));
+        pump(&mut app, &mut rx).await;
+        app.handle_cmd(UiCmd::Submit("/cwd rel/path".into()));
+        pump(&mut app, &mut rx).await;
+        // /cwd while streaming → refused.
+        app.state.streaming = true;
+        app.handle_cmd(UiCmd::Submit("/cwd /tmp".into()));
+        assert!(last_system(&app).contains("Cannot change working directory"));
+        app.state.streaming = false;
+
+        // /approve, /reject (with and without arg).
+        app.handle_cmd(UiCmd::Submit("/approve".into()));
+        app.handle_cmd(UiCmd::Submit("/reject".into()));
+        app.handle_cmd(UiCmd::Submit("/approve req-1".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to approve")));
+        app.handle_cmd(UiCmd::Submit("/reject req-2".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to reject")));
+
+        // /cancel with and without arg.
+        app.handle_cmd(UiCmd::Submit("/cancel".into()));
+        assert!(last_system(&app).contains("Usage: /cancel"));
+        app.handle_cmd(UiCmd::Submit("/cancel run-9".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to cancel queued run")));
+
+        // Unknown slash command → falls through to a prompt.
+        app.handle_cmd(UiCmd::Submit("/not-a-command".into()));
+        pump(&mut app, &mut rx).await;
+
+        // A regular prompt adds a user message and sets streaming.
+        let before = app.chat.plain_messages().len();
+        app.handle_cmd(UiCmd::Submit("tell me something".into()));
+        assert!(app.chat.plain_messages().len() > before);
+        assert!(app.state.streaming);
+        pump(&mut app, &mut rx).await;
+        // Prompt while streaming uses the enqueue policy.
+        app.handle_cmd(UiCmd::Submit("another one".into()));
+        pump(&mut app, &mut rx).await;
+        app.state.streaming = false;
     }
 }
