@@ -34,6 +34,22 @@ pub(crate) const RESIZE_SIGNAL: libc::c_int = libc::SIGWINCH;
 /// Write end of the self-pipe, reachable from the async-signal-safe handler.
 static SIGNAL_PIPE_WRITE: AtomicI32 = AtomicI32::new(-1);
 
+/// Original termios snapshot while raw mode is active, kept outside the
+/// `Backend` instance so the panic hook (`crash.rs`) can restore the
+/// terminal even when it cannot reach the `Terminal`.
+static PANIC_TERMIOS: Mutex<Option<libc::termios>> = Mutex::new(None);
+
+/// Restore the saved termios if raw mode is active; called by the panic
+/// hook. Uses `try_lock` — if the panicking thread holds the lock, restoring
+/// is skipped rather than deadlocking the hook.
+pub(crate) fn panic_restore_raw() {
+    if let Some(mut guard) = PANIC_TERMIOS.try_lock() {
+        if let Some(orig) = guard.take() {
+            let _ = set_termios(STDIN_FD, &orig);
+        }
+    }
+}
+
 extern "C" fn signal_handler(sig: libc::c_int) {
     let fd = SIGNAL_PIPE_WRITE.load(Ordering::Relaxed);
     if fd >= 0 {
@@ -204,6 +220,7 @@ impl Backend {
         }
         st.orig_termios = Some(orig);
         st.raw_enabled = true;
+        *PANIC_TERMIOS.lock() = Some(orig);
         Ok(())
     }
 
@@ -214,6 +231,7 @@ impl Backend {
             return;
         }
         st.raw_enabled = false;
+        *PANIC_TERMIOS.lock() = None;
         if let Some(orig) = st.orig_termios.take() {
             let _ = set_termios(STDIN_FD, &orig);
         }

@@ -895,6 +895,10 @@ async fn run_interactive(args: &CliArgs) -> u8 {
 
 /// `main()` equivalent — mirrors index.ts's top-level flow and exit codes.
 pub fn run(args: &[String]) -> ExitCode {
+    // Restore the terminal + capture evidence on panic, before anything can
+    // enter raw mode / the alternate screen.
+    crate::crash::install();
+
     let args = match parse_args(args) {
         ParseOutcome::Args(a) => a,
         ParseOutcome::Help => {

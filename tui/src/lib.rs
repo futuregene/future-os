@@ -36,6 +36,7 @@
 
 pub mod app;
 pub mod components;
+pub mod crash;
 pub mod help;
 pub mod help_screen;
 pub mod index;
