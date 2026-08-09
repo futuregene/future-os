@@ -1028,12 +1028,11 @@ impl Bridge {
     }
 }
 
+/// Base dir for channel data (files etc.), anchored at the user's home
+/// directory via `dirs` (cross-platform: `USERPROFILE` on Windows, `$HOME`
+/// on POSIX).
 fn dirs_next_path() -> std::path::PathBuf {
-    std::env::var("HOME")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("~"))
-        .join(".future")
+    dirs::home_dir().unwrap_or_default().join(".future")
 }
 
 /// Save a downloaded file to ~/.future/channels/feishu/files/{filename}.
