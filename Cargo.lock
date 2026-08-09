@@ -954,6 +954,8 @@ dependencies = [
  "prost-build",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
 ]
@@ -3169,6 +3171,7 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
+ "flate2",
  "h2",
  "http",
  "http-body",
