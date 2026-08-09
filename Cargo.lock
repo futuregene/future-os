@@ -880,6 +880,7 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
+ "dirs 5.0.1",
  "future-rpc",
  "futures",
  "futures-util",

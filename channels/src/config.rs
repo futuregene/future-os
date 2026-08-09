@@ -95,7 +95,10 @@ fn default_grpc_addr() -> String {
     "http://127.0.0.1:50051".into()
 }
 fn default_cwd() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .to_string_lossy()
+        .into_owned()
 }
 fn default_model() -> String {
     "future/deepseek-v4-pro".into()
@@ -192,11 +195,13 @@ impl Default for FeishuChannelConfig {
     }
 }
 
+/// Home directory via the `dirs` crate (cross-platform): on Windows it
+/// resolves `USERPROFILE` (`C:\Users\<user>`), on POSIX `$HOME`. The old
+/// `$HOME`-only lookup fell back to a literal `~` directory on Windows
+/// (cmd/PowerShell set no `HOME`), silently writing the config into a
+/// `~` folder next to the working directory.
 fn home_dir() -> PathBuf {
-    std::env::var("HOME")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"))
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
 }
 
 #[cfg(test)]
