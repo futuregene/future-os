@@ -159,7 +159,9 @@ fn find_stream_cut(text: &str) -> usize {
                 in_fence = false;
             }
         } else if !in_fence && line.trim().is_empty() {
-            cut = nl + 1;
+            // A blank final line without a trailing newline yields nl ==
+            // text.len(); cut must stay within bounds (panic on slice).
+            cut = (nl + 1).min(text.len());
         }
         line_start = nl + 1;
     }
@@ -2020,6 +2022,22 @@ mod tests {
                 .join("\n");
             assert!(joined.contains("para one"), "frame {frame:?} lost content");
         }
+    }
+
+    #[test]
+    fn find_stream_cut_never_exceeds_len() {
+        // Blank final line with no trailing newline: cut must clamp to len
+        // (previously returned len+1 → byte-index slice panic).
+        let s = "para one\n\npara two\n ";
+        let cut = find_stream_cut(s);
+        assert!(cut <= s.len());
+        // Same with multi-byte UTF-8 (e.g. CJK streamed text on Windows).
+        let s = "第一段\n\n第二段\n ";
+        let cut = find_stream_cut(s);
+        assert!(cut <= s.len());
+        assert!(s.is_char_boundary(cut));
+        // Ends exactly with a newline is already at len.
+        assert_eq!(find_stream_cut("a\n\n"), 3);
     }
 
     #[test]
