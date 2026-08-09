@@ -30,6 +30,7 @@ cargo llvm-cov clean --workspace
 cargo llvm-cov --workspace --no-report "$@"
 
 cargo llvm-cov report --lcov --output-path "$out_dir/lcov.info"
-cargo llvm-cov report --html --output-dir "$out_dir/html"
+# NOTE: --html writes into <output-dir>/html/, so pass the base dir.
+cargo llvm-cov report --html --output-dir "$out_dir"
 cargo llvm-cov report --text --output-path "$out_dir/summary.txt"
 cargo llvm-cov report --summary-only
