@@ -25,12 +25,18 @@ use std::sync::Mutex;
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Console::{
-    GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle, SetConsoleMode,
-    CONSOLE_SCREEN_BUFFER_INFO, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
-    ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT,
-    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle, SetConsoleMode,
+    SetConsoleOutputCP, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT,
+    ENABLE_PROCESSED_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    ENABLE_WINDOW_INPUT, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+/// UTF-8 code page. The Rust renderer emits UTF-8 bytes (same as POSIX);
+/// Windows consoles default to the OEM/ANSI code page (e.g. 936/GBK on
+/// zh-CN systems), which renders UTF-8 as mojibake. We switch the output
+/// code page to UTF-8 while the TUI is active and restore it on exit.
+const CP_UTF8: u32 = 65001;
 
 use super::ReadWait;
 
@@ -58,6 +64,7 @@ fn console_output() -> HANDLE {
 struct RawState {
     orig_in_mode: u32,
     orig_out_mode: u32,
+    orig_out_cp: u32,
     raw_enabled: bool,
 }
 
@@ -104,6 +111,7 @@ impl Backend {
             state: Mutex::new(RawState {
                 orig_in_mode: in_mode,
                 orig_out_mode: out_mode,
+                orig_out_cp: unsafe { GetConsoleOutputCP() },
                 raw_enabled: false,
             }),
             last_size: Mutex::new(size),
@@ -117,7 +125,8 @@ impl Backend {
 
     /// Raw mode: clear the cooked-input flags, enable VT input (so keys arrive
     /// as ANSI escape sequences, exactly like POSIX) and window events; enable
-    /// VT processing on output so ANSI rendering works.
+    /// VT processing on output so ANSI rendering works. Also switches the
+    /// console output code page to UTF-8 (the renderer emits UTF-8 bytes).
     pub(crate) fn enable_raw(&self) -> io::Result<()> {
         let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if st.raw_enabled {
@@ -132,6 +141,7 @@ impl Backend {
         }
         st.orig_in_mode = in_mode;
         st.orig_out_mode = out_mode;
+        st.orig_out_cp = unsafe { GetConsoleOutputCP() };
         let raw_in = (in_mode & !INPUT_RAW_MASK) | INPUT_VT_FLAGS;
         let vt_out = out_mode | OUTPUT_VT_FLAG;
         if unsafe { SetConsoleMode(self.stdin.0, raw_in) } == 0
@@ -143,11 +153,40 @@ impl Backend {
             let _ = unsafe { SetConsoleMode(self.stdout.0, st.orig_out_mode) };
             return Err(err);
         }
+        // Read back the output mode to confirm VT processing actually took
+        // effect (a terminal that ignores ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        // would render every ANSI sequence as visible text — the exact
+        // "duplicated lines + mojibake" failure users see on old consoles).
+        let mut check: u32 = 0;
+        if unsafe { GetConsoleMode(self.stdout.0, &mut check) } == 0 || check & OUTPUT_VT_FLAG == 0
+        {
+            let _ = unsafe { SetConsoleMode(self.stdin.0, st.orig_in_mode) };
+            let _ = unsafe { SetConsoleMode(self.stdout.0, st.orig_out_mode) };
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this terminal does not support ANSI/VT processing — the TUI needs \
+                 Windows 10 (1703+) or Windows Terminal",
+            ));
+        }
+        // UTF-8 output code page (restored in `restore_raw`). A failed call is
+        // fatal here: without UTF-8 the interface text is unreadable mojibake.
+        if unsafe { SetConsoleOutputCP(CP_UTF8) } == 0 {
+            let cp_err = io::Error::last_os_error(); // capture BEFORE rolling back
+            let _ = unsafe { SetConsoleMode(self.stdin.0, st.orig_in_mode) };
+            let _ = unsafe { SetConsoleMode(self.stdout.0, st.orig_out_mode) };
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "failed to switch the console output code page to UTF-8 (error {cp_err}): \
+                     non-ASCII text would be garbled"
+                ),
+            ));
+        }
         st.raw_enabled = true;
         Ok(())
     }
 
-    /// Restore the original console modes (idempotent).
+    /// Restore the original console modes and output code page (idempotent).
     pub(crate) fn restore_raw(&self) {
         let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if !st.raw_enabled {
@@ -156,6 +195,7 @@ impl Backend {
         st.raw_enabled = false;
         let _ = unsafe { SetConsoleMode(self.stdin.0, st.orig_in_mode) };
         let _ = unsafe { SetConsoleMode(self.stdout.0, st.orig_out_mode) };
+        let _ = unsafe { SetConsoleOutputCP(st.orig_out_cp) };
     }
 
     fn read_size(stdout: HANDLE) -> (u16, u16) {
