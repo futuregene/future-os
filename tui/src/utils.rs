@@ -390,18 +390,15 @@ pub fn extract_ansi_code(s: &str, pos: usize) -> Option<AnsiCodeResult> {
         });
     }
 
-    // Meta/Alt: ESC + single char
-    if rest.len() >= 2 {
-        let ch = rest[1..].chars().next().unwrap();
-        let length = 1 + ch.len_utf8();
-        return Some(AnsiCodeResult {
-            length,
-            code: rest[..length].to_string(),
-            kind: AnsiKind::Other,
-        });
-    }
-
-    None
+    // Meta/Alt: ESC + single char (`rest.len() >= 2` is guaranteed by the
+    // early return above).
+    let ch = rest[1..].chars().next().unwrap();
+    let length = 1 + ch.len_utf8();
+    Some(AnsiCodeResult {
+        length,
+        code: rest[..length].to_string(),
+        kind: AnsiKind::Other,
+    })
 }
 
 // ─── ANSI Code Tracker ─────────────────────────────────────────────────────
@@ -465,9 +462,8 @@ impl AnsiCodeTracker {
         }
     }
 
-    /// The TS `feed` switch-default repeats the standard/bright SGR ranges
-    /// (dead in practice because the explicit arms above catch them first);
-    /// the duplication is kept verbatim for parity review.
+    /// The standard/bright SGR color ranges are handled by the catch-all arm
+    /// (the TS `feed` switch-default), which is the live path for them.
     #[allow(clippy::if_same_then_else)]
     pub fn feed(&mut self, code: &str) {
         if code == "\x1b[0m" || code == "\x1b[m" {
@@ -523,10 +519,6 @@ impl AnsiCodeTracker {
                 27 => self.state.inverse = false,
                 28 => self.state.hidden = false,
                 29 => self.state.strikethrough = false,
-                30..=37 => self.state.fg = Some(p.to_string()),
-                90..=97 => self.state.fg = Some(p.to_string()),
-                40..=47 => self.state.bg = Some(p.to_string()),
-                100..=107 => self.state.bg = Some(p.to_string()),
                 38 => {
                     if params.get(i + 1) == Some(&5) && params.get(i + 2).is_some() {
                         self.state.fg = Some(format!("38;5;{}", params[i + 2]));
@@ -781,11 +773,9 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
         lines.push(current_line + &finalize_line(&tracker));
     }
 
-    if lines.is_empty() {
-        vec![String::new()]
-    } else {
-        lines
-    }
+    // `lines` is never empty here: empty input takes the ASCII fast path,
+    // and any grapheme/escape processed above leaves a non-empty line.
+    lines
 }
 
 fn is_all_ansi(s: &str) -> bool {
@@ -1459,5 +1449,298 @@ mod tests {
         assert_eq!(seg.before, "a");
         assert_eq!(strip_ansi_codes(&seg.after), "中");
         assert_eq!(seg.after_width, 2);
+    }
+
+    // ─── emoji sequence classifiers ─────────────────────────────────────
+
+    #[test]
+    fn keycap_sequences_are_recognized() {
+        assert!(is_keycap_sequence("1\u{FE0F}\u{20E3}"));
+        assert!(is_keycap_sequence("#\u{FE0F}\u{20E3}"));
+        assert!(!is_keycap_sequence("1"));
+        assert!(!is_keycap_sequence("ab"));
+        assert!(!is_keycap_sequence("1\u{FE0F}")); // no keycap mark
+    }
+
+    #[test]
+    fn emoji_flags_are_recognized() {
+        // Regional indicator pair (🇺🇸).
+        assert!(is_emoji_flag("\u{1F1FA}\u{1F1F8}"));
+        // Flag tag sequence (🏴 + tags).
+        assert!(is_emoji_flag("\u{1F3F4}\u{E0067}\u{E0062}\u{E007F}"));
+        assert!(!is_emoji_flag("a"));
+    }
+
+    #[test]
+    fn clear_width_caches_empties_both() {
+        let _ = visible_width("prime the cache");
+        let _ = grapheme_width("x");
+        clear_visible_width_cache();
+        // Recompute after clearing — must still work.
+        assert_eq!(visible_width("abc"), 3);
+    }
+
+    #[test]
+    fn replace_tabs_width_zero_removes_tabs() {
+        assert_eq!(replace_tabs("a\tb", 0), "ab");
+        assert_eq!(replace_tabs("a\tb", 4), "a    b");
+    }
+
+    #[test]
+    fn normalize_decomposes_thai_lao_am_vowels() {
+        assert_eq!(normalize_terminal_output("plain"), "plain");
+        // Thai AM (U+0E33) → NIKHAHIT + SARA AA.
+        assert_eq!(normalize_terminal_output("\u{0e33}"), "\u{0e4d}\u{0e32}");
+        // Lao AM (U+0EB3) decomposes too.
+        assert_eq!(normalize_terminal_output("x\u{0eb3}y"), "x\u{0ecd}\u{0eb2}y");
+        // Tabs are replaced with 3 spaces along the way.
+        assert_eq!(normalize_terminal_output("a\tb"), "a   b");
+    }
+
+    // ─── extract_ansi_code ──────────────────────────────────────────────
+
+    #[test]
+    fn extract_ansi_code_osc_termination_variants() {
+        // BEL before ST → BEL wins (the earlier terminator).
+        let r = extract_ansi_code("\x1b]0;t\x07rest\x1b\\", 0).unwrap();
+        assert_eq!(r.code, "\x1b]0;t\x07");
+        assert_eq!(r.kind, AnsiKind::Osc);
+        // BEL only.
+        let r = extract_ansi_code("\x1b]0;t\x07", 0).unwrap();
+        assert_eq!(r.code, "\x1b]0;t\x07");
+        // ST only.
+        let r = extract_ansi_code("\x1b]0;t\x1b\\", 0).unwrap();
+        assert_eq!(r.code, "\x1b]0;t\x1b\\");
+        // Unterminated → None.
+        assert!(extract_ansi_code("\x1b]0;never-closed", 0).is_none());
+    }
+
+    #[test]
+    fn extract_ansi_code_apc_termination_variants() {
+        let r = extract_ansi_code("\x1b_Ga=b\x07\x1b\\", 0).unwrap();
+        assert_eq!(r.code, "\x1b_Ga=b\x07");
+        assert_eq!(r.kind, AnsiKind::Apc);
+        let r = extract_ansi_code("\x1b_Ga=b\x1b\\", 0).unwrap();
+        assert_eq!(r.code, "\x1b_Ga=b\x1b\\");
+        assert!(extract_ansi_code("\x1b_Gopen", 0).is_none());
+    }
+
+    #[test]
+    fn extract_ansi_code_csi_ss3_meta_and_edge_cases() {
+        // Lone ESC at the end → None.
+        assert!(extract_ansi_code("\x1b", 0).is_none());
+        // Positioning past the end / on a non-ESC byte → None.
+        assert!(extract_ansi_code("ab", 5).is_none());
+        assert!(extract_ansi_code("ab", 0).is_none());
+        // Non-SGR CSI is classified Csi.
+        let r = extract_ansi_code("\x1b[A", 0).unwrap();
+        assert_eq!(r.kind, AnsiKind::Csi);
+        // Invalid CSI parameter byte → unterminated → None.
+        assert!(extract_ansi_code("\x1b[\x01A", 0).is_none());
+        // SS3: ESC O + final char.
+        let r = extract_ansi_code("\x1bOA", 0).unwrap();
+        assert_eq!(r.length, 3);
+        assert_eq!(r.kind, AnsiKind::Csi);
+        // Meta/Alt: ESC + single char (multi-byte char stays whole).
+        let r = extract_ansi_code("\x1ba", 0).unwrap();
+        assert_eq!(r.code, "\x1ba");
+        assert_eq!(r.kind, AnsiKind::Other);
+        let r = extract_ansi_code("\x1bé", 0).unwrap();
+        assert_eq!(r.code, "\x1bé");
+    }
+
+    // ─── AnsiCodeTracker ────────────────────────────────────────────────
+
+    #[test]
+    fn tracker_default_push_pop_and_reset() {
+        let mut t = AnsiCodeTracker::default();
+        t.feed("\x1b[1m");
+        assert!(t.get_state().bold);
+        t.push_state();
+        t.feed("\x1b[4m");
+        assert!(t.get_state().underline);
+        t.pop_state();
+        assert!(t.get_state().bold);
+        assert!(!t.get_state().underline);
+        // Pop with an empty stack is a no-op.
+        t.pop_state();
+        assert!(t.get_state().bold);
+        t.reset();
+        assert!(!t.get_state().bold);
+    }
+
+    #[test]
+    fn feed_osc8_sets_and_clears_link() {
+        let mut t = AnsiCodeTracker::new();
+        t.feed("\x1b]8;;https://example.com\x07");
+        assert_eq!(
+            t.get_state().link.as_deref(),
+            Some("https://example.com")
+        );
+        t.feed("\x1b]8;;\x07");
+        assert_eq!(t.get_state().link.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn feed_sgr_attribute_switches() {
+        let mut t = AnsiCodeTracker::new();
+        t.feed("\x1b[5m");
+        assert!(t.get_state().blink);
+        t.feed("\x1b[7m");
+        assert!(t.get_state().inverse);
+        t.feed("\x1b[8m");
+        assert!(t.get_state().hidden);
+        t.feed("\x1b[9m");
+        assert!(t.get_state().strikethrough);
+        // Individual off-switches.
+        t.feed("\x1b[23m");
+        assert!(!t.get_state().italic);
+        t.feed("\x1b[24m");
+        assert!(!t.get_state().underline);
+        t.feed("\x1b[25m");
+        assert!(!t.get_state().blink);
+        t.feed("\x1b[27m");
+        assert!(!t.get_state().inverse);
+        t.feed("\x1b[28m");
+        assert!(!t.get_state().hidden);
+        t.feed("\x1b[29m");
+        assert!(!t.get_state().strikethrough);
+        // 22 clears bold+dim; empty param defaults to 0 (full reset).
+        t.feed("\x1b[1;2m");
+        assert!(t.get_state().bold && t.get_state().dim);
+        t.feed("\x1b[22m");
+        assert!(!t.get_state().bold && !t.get_state().dim);
+        t.feed("\x1b[3m");
+        t.feed("\x1b[;m");
+        assert!(!t.get_state().italic);
+        // An explicit 0 param resets too.
+        t.feed("\x1b[1m");
+        t.feed("\x1b[0;4m");
+        assert!(t.get_state().underline);
+        assert!(!t.get_state().bold);
+    }
+
+    #[test]
+    fn feed_sgr_color_forms() {
+        let mut t = AnsiCodeTracker::new();
+        // Standard + bright fg/bg (catch-all arm, the TS switch default).
+        t.feed("\x1b[31m");
+        assert_eq!(t.get_state().fg.as_deref(), Some("31"));
+        t.feed("\x1b[91m");
+        assert_eq!(t.get_state().fg.as_deref(), Some("91"));
+        t.feed("\x1b[41m");
+        assert_eq!(t.get_state().bg.as_deref(), Some("41"));
+        t.feed("\x1b[101m");
+        assert_eq!(t.get_state().bg.as_deref(), Some("101"));
+        // 256-color and truecolor fg.
+        t.feed("\x1b[38;5;45m");
+        assert_eq!(t.get_state().fg.as_deref(), Some("38;5;45"));
+        t.feed("\x1b[38;2;1;2;3m");
+        assert_eq!(t.get_state().fg.as_deref(), Some("38;2;1;2;3"));
+        // 256-color and truecolor bg.
+        t.feed("\x1b[48;5;200m");
+        assert_eq!(t.get_state().bg.as_deref(), Some("48;5;200"));
+        t.feed("\x1b[48;2;4;5;6m");
+        assert_eq!(t.get_state().bg.as_deref(), Some("48;2;4;5;6"));
+        // Default fg/bg.
+        t.feed("\x1b[39m");
+        assert!(t.get_state().fg.is_none());
+        t.feed("\x1b[49m");
+        assert!(t.get_state().bg.is_none());
+        // Malformed params parse to u32::MAX and hit no arm.
+        t.feed("\x1b[38;5m"); // incomplete extended form — ignored
+        assert!(t.get_state().fg.is_none());
+    }
+
+    #[test]
+    fn get_ansi_code_reconstructs_active_state() {
+        let mut t = AnsiCodeTracker::new();
+        t.feed("\x1b[1;2;3;4;5;7;8;9m");
+        t.feed("\x1b[31m");
+        t.feed("\x1b[41m");
+        let code = t.get_ansi_code();
+        assert!(code.starts_with("\x1b["));
+        assert!(code.ends_with('m'));
+        for part in ["1", "2", "3", "4", "5", "7", "8", "9", "31", "41"] {
+            assert!(code.contains(part));
+        }
+        // Empty state → hard reset.
+        let t2 = AnsiCodeTracker::new();
+        assert_eq!(t2.get_ansi_code(), "\x1b[0m");
+    }
+
+    #[test]
+    fn osc8_link_open_and_close_sequences() {
+        let mut t = AnsiCodeTracker::new();
+        assert_eq!(t.get_osc8_link(), "");
+        t.feed("\x1b]8;;https://x.example\x07");
+        assert_eq!(t.get_osc8_link(), "\x1b]8;id=future_tui;https://x.example\x07");
+        assert_eq!(t.get_osc8_close(), "\x1b]8;;\x07");
+    }
+
+    // ─── wrap paths ─────────────────────────────────────────────────────
+
+    #[test]
+    fn wrap_grapheme_hard_breaks_when_only_space_is_line_start_or_ansi() {
+        // The only space sits right after an ANSI run — not a usable word
+        // boundary (the "line up to the space" would be all escape codes),
+        // so the wrapper hard-breaks at width instead.
+        let lines = wrap_text_with_ansi("\x1b[31m abcdef", 3);
+        assert!(lines.len() > 1);
+        assert_eq!(strip_ansi_codes(&lines[0]), " ab");
+        // Empty input yields one empty line (grapheme path).
+        assert_eq!(wrap_text_with_ansi("", 10), vec![String::new()]);
+    }
+
+    #[test]
+    fn wrap_with_active_link_closes_osc8_at_line_end() {
+        let text = format!(
+            "\x1b]8;;https://example.com\x07{}\x1b]8;;\x07",
+            "word ".repeat(10)
+        );
+        let lines = wrap_text_with_ansi(&text, 12);
+        assert!(lines.len() > 1);
+        // Each wrapped line ends with the OSC8 close + reset while the link
+        // is active.
+        assert!(lines[0].contains("\x1b]8;;\x07"));
+        // …and re-opens the link on the continuation line.
+        assert!(lines[1].contains("\x1b]8;id=future_tui;https://example.com\x07"));
+    }
+
+    #[test]
+    fn is_all_ansi_directly() {
+        assert!(is_all_ansi("\x1b[1m\x1b[0m"));
+        assert!(!is_all_ansi("\x1b[1mx"));
+        assert!(is_all_ansi(""));
+    }
+
+    // ─── slice_by_column / extract_segments ─────────────────────────────
+
+    #[test]
+    fn slice_by_column_skips_and_preserves_ansi() {
+        // ANSI before `start` is skipped; ANSI inside the slice is kept.
+        let s = "\x1b[31mab\x1b[0mcd";
+        assert_eq!(slice_by_column(s, 1, Some(3)), "b\x1b[0mc");
+        // Grapheme wider than the remaining span ends the slice.
+        assert_eq!(slice_by_column("a中b", 0, Some(2)), "a");
+        // No end → everything from start.
+        assert_eq!(slice_by_column("\x1b[31mabc", 1, None), "bc");
+    }
+
+    #[test]
+    fn extract_segments_carries_ansi_into_after_region() {
+        // ANSI arriving after the after-region started is preserved in it.
+        let seg = extract_segments("abx\x1b[31mcde", 1, 2, 2, false);
+        assert_eq!(seg.before, "a");
+        assert!(seg.after.contains("\x1b[31m"));
+        assert!(strip_ansi_codes(&seg.after).starts_with("xc"));
+        // after_len 0: only the before segment is gathered (ANSI before the
+        // cut travels with `before`).
+        let seg = extract_segments("he\x1b[31mllo", 3, 3, 0, false);
+        assert_eq!(seg.before, "he\x1b[31ml");
+        assert_eq!(seg.after, "");
+        // strict_after clips a grapheme that would overrun after_end.
+        let seg = extract_segments("ab中cd", 1, 2, 1, true);
+        assert_eq!(strip_ansi_codes(&seg.after), "");
     }
 }

@@ -258,4 +258,11 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn pad_end_pads_and_leaves_long_strings_untouched() {
+        assert_eq!(pad_end("ab", 4), "ab  ");
+        assert_eq!(pad_end("abcde", 5), "abcde");
+        assert_eq!(pad_end("abcdef", 3), "abcdef");
+    }
 }

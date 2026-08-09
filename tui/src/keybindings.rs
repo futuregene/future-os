@@ -249,7 +249,7 @@ mod tests {
         let calls = Rc::new(Cell::new(0));
         let c1 = Rc::clone(&calls);
         let c2 = Rc::clone(&calls);
-        km.add(
+        let first_id = km.add(
             "a",
             Box::new(move || {
                 c1.set(c1.get() + 1);
@@ -269,6 +269,10 @@ mod tests {
         );
         km.dispatch("a", None);
         assert_eq!(calls.get(), 1);
+        // With the consumer gone, the second binding fires.
+        km.remove("a", Some(first_id));
+        km.dispatch("a", None);
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]
@@ -422,5 +426,198 @@ mod tests {
         km.clear();
         assert!(km.get_bindings().is_empty());
         assert!(km.get_overrides().is_empty());
+    }
+
+    #[test]
+    fn default_creates_empty_manager() {
+        let km = KeybindingManager::default();
+        assert!(km.get_bindings().is_empty());
+        assert!(km.get_overrides().is_empty());
+    }
+
+    #[test]
+    fn remove_without_id_removes_all_bindings_for_key() {
+        let mut km = KeybindingManager::new();
+        km.add("a", Box::new(|| true), "one", None);
+        km.add("a", Box::new(|| true), "two", None);
+        assert!(km.remove("a", None));
+        assert!(km.get_bindings().is_empty());
+        // Key already gone → false.
+        assert!(!km.remove("a", None));
+    }
+
+    #[test]
+    fn remove_with_id_reports_missing_key_and_missing_id() {
+        let mut km = KeybindingManager::new();
+        assert!(!km.remove("absent", Some(0)));
+        let id = km.add("a", Box::new(|| true), "one", None);
+        assert!(!km.remove("a", Some(id + 100)));
+        assert!(km.remove("a", Some(id)));
+        assert!(km.get_bindings().is_empty());
+    }
+
+    #[test]
+    fn dispatch_skips_entries_with_mismatched_context() {
+        let mut km = KeybindingManager::new();
+        km.add(
+            "a",
+            Box::new(|| true),
+            "editor-only",
+            Some(KeybindingContext::Editor),
+        );
+        assert!(!km.dispatch("a", Some(KeybindingContext::Overlay)));
+        assert!(km.dispatch("a", Some(KeybindingContext::Editor)));
+    }
+
+    #[test]
+    fn dispatch_with_override_fires_only_matching_description() {
+        let mut km = KeybindingManager::new();
+        let calls = Rc::new(Cell::new(0));
+        let c = Rc::clone(&calls);
+        km.add(
+            "a",
+            Box::new(move || {
+                c.set(c.get() + 1);
+                true
+            }),
+            "first",
+            None,
+        );
+        let c = Rc::clone(&calls);
+        km.add(
+            "a",
+            Box::new(move || {
+                c.set(c.get() + 10);
+                true
+            }),
+            "second",
+            None,
+        );
+        let mut overrides = UserOverrideMap::new();
+        overrides.insert("a".into(), "second".into());
+        km.apply_overrides(overrides.clone());
+        assert!(km.dispatch("a", None));
+        assert_eq!(calls.get(), 10);
+        // Retargeting the override at the other description fires it instead.
+        overrides.insert("a".into(), "first".into());
+        km.apply_overrides(overrides);
+        assert!(km.dispatch("a", None));
+        assert_eq!(calls.get(), 11);
+    }
+
+    #[test]
+    fn dispatch_continues_past_non_consuming_action() {
+        let mut km = KeybindingManager::new();
+        let calls = Rc::new(Cell::new(0));
+        let c = Rc::clone(&calls);
+        km.add(
+            "a",
+            Box::new(move || {
+                c.set(c.get() + 1);
+                false // does not consume — dispatch continues
+            }),
+            "first",
+            None,
+        );
+        let c = Rc::clone(&calls);
+        km.add(
+            "a",
+            Box::new(move || {
+                c.set(c.get() + 10);
+                true
+            }),
+            "second",
+            None,
+        );
+        assert!(km.dispatch("a", None));
+        assert_eq!(calls.get(), 11);
+    }
+
+    #[test]
+    fn dispatch_with_empty_entry_vec_is_false() {
+        // White-box: an empty entry vec (not reachable through the public
+        // remove API, which prunes it) is handled defensively.
+        let mut km = KeybindingManager::new();
+        km.bindings.insert("a".to_string(), Vec::new());
+        assert!(!km.dispatch("a", None));
+    }
+
+    #[test]
+    fn conflicts_fall_through_when_override_matches_nothing() {
+        let mut km = KeybindingManager::new();
+        km.add("a", Box::new(|| true), "one", None);
+        km.add("a", Box::new(|| true), "two", None);
+        let mut overrides = UserOverrideMap::new();
+        overrides.insert("a".into(), "no-such-description".into());
+        km.apply_overrides(overrides);
+        // Override resolves to zero entries → the key is still a conflict.
+        let conflicts = km.get_conflicts();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].0, "a");
+    }
+
+    #[test]
+    fn binding_map_skips_override_with_no_visible_entries() {
+        let mut km = KeybindingManager::new();
+        km.add("a", Box::new(|| true), "one", None);
+        let mut overrides = UserOverrideMap::new();
+        overrides.insert("a".into(), "no-such-description".into());
+        km.apply_overrides(overrides);
+        assert!(!km.get_binding_map().contains_key("a"));
+    }
+
+    #[test]
+    fn conflicts_skip_unbound_and_override_resolved_keys() {
+        let mut km = KeybindingManager::new();
+        km.add("a", Box::new(|| true), "one", None);
+        km.add("a", Box::new(|| true), "two", None);
+        km.add("b", Box::new(|| true), "x", None);
+        km.add("b", Box::new(|| true), "y", None);
+        km.add("c", Box::new(|| true), "solo", None);
+        let mut overrides = UserOverrideMap::new();
+        overrides.insert("a".into(), String::new()); // unbound — no conflict
+        overrides.insert("b".into(), "x".into()); // resolves to exactly one
+        km.apply_overrides(overrides);
+        assert!(km.get_conflicts().is_empty());
+        // A conflicting key with no override still shows up.
+        km.add("d", Box::new(|| true), "p", None);
+        km.add("d", Box::new(|| true), "q", None);
+        let conflicts = km.get_conflicts();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].0, "d");
+        assert_eq!(conflicts[0].1.len(), 2);
+    }
+
+    #[test]
+    fn binding_map_hides_unbound_and_filters_by_override() {
+        let mut km = KeybindingManager::new();
+        km.add("a", Box::new(|| true), "one", None);
+        km.add("a", Box::new(|| true), "two", None);
+        km.add("b", Box::new(|| true), "gone", None);
+        let mut overrides = UserOverrideMap::new();
+        overrides.insert("a".into(), "two".into());
+        overrides.insert("b".into(), String::new());
+        km.apply_overrides(overrides);
+        let map = km.get_binding_map();
+        assert_eq!(map.get("a").map(Vec::as_slice), Some(&["two".to_string()][..]));
+        assert!(!map.contains_key("b"));
+    }
+
+    #[test]
+    fn find_by_id_scans_every_key() {
+        let mut km = KeybindingManager::new();
+        km.add("a", Box::new(|| true), "one", None);
+        let id = km.add("b", Box::new(|| true), "two", None);
+        assert_eq!(km.find_by_id(id).map(|e| e.key.as_str()), Some("b"));
+        assert!(km.find_by_id(id + 100).is_none());
+    }
+
+    #[test]
+    fn get_overrides_returns_installed_map() {
+        let mut km = KeybindingManager::new();
+        let mut overrides = UserOverrideMap::new();
+        overrides.insert("a".into(), "x".into());
+        km.apply_overrides(overrides.clone());
+        assert_eq!(km.get_overrides(), overrides);
     }
 }

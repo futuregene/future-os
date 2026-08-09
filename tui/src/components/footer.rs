@@ -252,6 +252,14 @@ mod tests {
         footer.render(width).remove(0)
     }
 
+    /// Restore HOME to a saved value (None = the variable was absent).
+    fn restore_home(old: Option<std::ffi::OsString>) {
+        match old {
+            Some(v) => env::set_var("HOME", v),
+            None => env::remove_var("HOME"),
+        }
+    }
+
     #[test]
     fn renders_with_minimal_data() {
         let line = render_footer(FooterData::default(), 80);
@@ -284,13 +292,36 @@ mod tests {
             },
             80,
         );
-        if let Some(old) = old {
-            env::set_var("HOME", old);
-        } else {
-            env::remove_var("HOME");
-        }
+        restore_home(old);
         let text = strip_ansi_codes(&line);
         assert!(text.contains("~/projects/foo"));
+    }
+
+    #[test]
+    fn restore_home_handles_set_and_unset() {
+        let _guard = crate::test_env::ENV_LOCK.lock();
+        let old = env::var_os("HOME");
+        restore_home(Some(std::ffi::OsString::from("/tmp/home-probe")));
+        assert_eq!(env::var("HOME").as_deref(), Ok("/tmp/home-probe"));
+        restore_home(None);
+        assert!(env::var_os("HOME").is_none());
+        restore_home(old);
+    }
+
+    #[test]
+    fn renders_raw_cwd_when_home_unset() {
+        let _guard = crate::test_env::ENV_LOCK.lock();
+        let old = env::var_os("HOME");
+        env::remove_var("HOME");
+        let line = render_footer(
+            FooterData {
+                cwd: Some("/some/where".into()),
+                ..Default::default()
+            },
+            80,
+        );
+        restore_home(old);
+        assert!(strip_ansi_codes(&line).contains("/some/where"));
     }
 
     #[test]
@@ -539,5 +570,54 @@ mod tests {
         assert!(!text.contains("W0"));
         assert!(!text.contains("↑0"));
         assert!(!text.contains("↓0"));
+    }
+
+    #[test]
+    fn set_width_and_height_accessors() {
+        let mut footer = Footer::new(80);
+        footer.set_width(120);
+        assert_eq!(footer.get_height(), 1);
+        footer.invalidate(); // no cache — a documented no-op
+    }
+
+    #[test]
+    fn context_usage_color_follows_percent_thresholds() {
+        for (pct, color) in [(50usize, 71u8), (75, 226), (95, 204)] {
+            let line = render_footer(
+                FooterData {
+                    context_tokens: Some(100),
+                    context_window: Some(1000),
+                    context_percent: Some(pct),
+                    ..Default::default()
+                },
+                120,
+            );
+            assert!(
+                line.contains(&format!("\x1b[38;5;{color}m")),
+                "pct {pct} should use color {color}: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_compaction_appends_marker() {
+        let line = render_footer(
+            FooterData {
+                context_tokens: Some(100),
+                context_window: Some(1000),
+                context_percent: Some(10),
+                auto_compaction_enabled: true,
+                ..Default::default()
+            },
+            120,
+        );
+        assert!(strip_ansi_codes(&line).contains("(auto)"));
+    }
+
+    #[test]
+    fn as_any_downcasts_to_footer() {
+        let mut footer = Footer::new(80);
+        assert!(footer.as_any().downcast_ref::<Footer>().is_some());
+        assert!(footer.as_any_mut().downcast_mut::<Footer>().is_some());
     }
 }

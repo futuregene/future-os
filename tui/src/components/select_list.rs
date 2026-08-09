@@ -651,4 +651,191 @@ mod tests {
         list.handle_key("down");
         assert_eq!(selected_value(&list).as_deref(), Some("date"));
     }
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn list_with_callbacks(
+        log: &Rc<RefCell<Vec<String>>>,
+        max_visible: usize,
+    ) -> SelectList {
+        let events = Rc::clone(log);
+        let selected = Rc::clone(log);
+        let cancelled = Rc::clone(log);
+        SelectList::new(SelectListOptions {
+            title: "Callbacks".into(),
+            items: items(),
+            max_visible: Some(max_visible),
+            theme: None,
+            on_select: Some(Box::new(move |item| {
+                selected.borrow_mut().push(format!("select:{}", item.value));
+            })),
+            on_cancel: Some(Box::new(move || {
+                cancelled.borrow_mut().push("cancel".to_string());
+            })),
+            on_selection_change: None,
+            on_key: Some(Box::new(move |key| {
+                events.borrow_mut().push(format!("key:{key}"));
+                key == "x"
+            })),
+        })
+    }
+
+    #[test]
+    fn custom_on_key_can_consume_before_builtins() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut list = list_with_callbacks(&log, 5);
+        // "x" is consumed by the custom handler (never reaches filter input).
+        assert!(list.handle_key("x"));
+        assert_eq!(selected_value(&list).as_deref(), Some("apple"));
+        // Other keys pass through the handler to the builtins.
+        assert!(list.handle_key("down"));
+        assert_eq!(selected_value(&list).as_deref(), Some("banana"));
+        assert_eq!(
+            log.borrow().as_slice(),
+            &["key:x".to_string(), "key:down".to_string()]
+        );
+    }
+
+    #[test]
+    fn enter_and_escape_invoke_callbacks() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut list = list_with_callbacks(&log, 5);
+        list.handle_key("down");
+        assert!(list.handle_key("enter"));
+        assert!(list.handle_key("escape"));
+        assert_eq!(
+            log.borrow().as_slice(),
+            &[
+                "key:down".to_string(),
+                "key:enter".to_string(),
+                "select:banana".to_string(),
+                "key:escape".to_string(),
+                "cancel".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn render_shows_scroll_indicators_and_descriptions() {
+        // max_visible 2 with 5 items: scroll down so the window slides.
+        // Layout: [title, filter, top indicator, items..., bottom indicator].
+        let mut list = make_list(2);
+        list.handle_key("down");
+        list.handle_key("down"); // selected_index 2 → scroll_offset 1
+        let lines = list.render(60);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain[2].contains("↑ 1 more"));
+        // Visible window: items 1..=2 (banana, then cherry selected).
+        assert!(plain.iter().any(|l| l.contains("Banana")));
+        assert!(plain.iter().any(|l| l.contains("Cherry")));
+        // Non-selected rows carry their dimmed description.
+        let banana = plain.iter().find(|l| l.contains("Banana")).unwrap();
+        assert!(banana.contains("Yellow"));
+        // Bottom indicator for the 2 remaining items.
+        assert!(plain.last().unwrap().contains("↓ 2 more"));
+    }
+
+    #[test]
+    fn render_selected_row_omits_reset_between_label_and_desc() {
+        let mut list = make_list(3);
+        let lines = list.render(60);
+        // Selected row (first item row after title/filter/indicator).
+        let plain = strip_ansi_codes(&lines[3]);
+        assert!(plain.contains("▶"));
+        assert!(plain.contains("Apple"));
+        assert!(plain.contains("A fruit"));
+    }
+
+    #[test]
+    fn handle_input_delegates_to_handle_key() {
+        let mut list = make_list(5);
+        list.handle_input("down");
+        assert_eq!(selected_value(&list).as_deref(), Some("banana"));
+        list.handle_input("escape"); // no on_cancel installed — still consumed
+    }
+
+    #[test]
+    fn set_selected_index_scrolls_window_down() {
+        let mut list = make_list(2);
+        list.set_selected_index(4);
+        assert_eq!(selected_value(&list).as_deref(), Some("elderberry"));
+        let lines = list.render(60);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain[2].contains("↑ 3 more"));
+        assert!(plain.iter().any(|l| l.contains("Elderberry")));
+    }
+
+    #[test]
+    fn as_any_downcasts_to_select_list() {
+        let mut list = make_list(3);
+        assert!(list.as_any().downcast_ref::<SelectList>().is_some());
+        assert!(list.as_any_mut().downcast_mut::<SelectList>().is_some());
+        list.invalidate(); // documented no-op
+    }
+
+    #[test]
+    fn enter_without_on_select_callback_is_still_consumed() {
+        let mut list = make_list(3); // no callbacks installed
+        assert!(list.handle_key("enter"));
+    }
+
+    #[test]
+    fn filter_shrink_clamps_selection_index() {
+        let mut list = make_list(5);
+        list.set_selected_index(4); // elderberry
+        list.set_filter("apple"); // only one match left
+        assert_eq!(selected_value(&list).as_deref(), Some("apple"));
+    }
+
+    #[test]
+    fn filter_on_empty_list_stays_empty() {
+        let mut list = SelectList::new(SelectListOptions {
+            title: "Empty".into(),
+            items: vec![],
+            max_visible: Some(3),
+            theme: None,
+            on_select: None,
+            on_cancel: None,
+            on_selection_change: None,
+            on_key: None,
+        });
+        list.set_filter("x");
+        assert!(list.get_selected_item().is_none());
+        // enter on an empty list is consumed without a selection.
+        assert!(list.handle_key("enter"));
+        let lines = list.render(40);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain.iter().any(|l| l.contains("No matching items")));
+    }
+
+    #[test]
+    fn render_rows_without_descriptions() {
+        let bare = vec![
+            SelectItem {
+                value: "a".into(),
+                label: "Alpha".into(),
+                description: None,
+            },
+            SelectItem {
+                value: "b".into(),
+                label: "Beta".into(),
+                description: Some(String::new()),
+            },
+        ];
+        let mut list = SelectList::new(SelectListOptions {
+            title: "Bare".into(),
+            items: bare,
+            max_visible: Some(3),
+            theme: None,
+            on_select: None,
+            on_cancel: None,
+            on_selection_change: None,
+            on_key: None,
+        });
+        let lines = list.render(50);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain.iter().any(|l| l.contains("Alpha")));
+        assert!(plain.iter().any(|l| l.contains("Beta")));
+    }
 }

@@ -179,10 +179,7 @@ fn next_random_f64() -> f64 {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0x9e37_79b9_7f4a_7c15);
-        state = nanos ^ (&STATE as *const _ as u64).rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15;
-        if state == 0 {
-            state = 0x2545_f491_4f6c_dd1d;
-        }
+        state = seed_from_entropy(nanos, &STATE as *const _ as u64);
     }
     state ^= state >> 12;
     state ^= state << 25;
@@ -191,6 +188,16 @@ fn next_random_f64() -> f64 {
     let x = state.wrapping_mul(0x2545_f491_4f6c_dd1d);
     // 53-bit mantissa → [0, 1)
     (x >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// Initial xorshift state from time + address entropy, with a fixed nonzero
+/// fallback (xorshift degenerates at state 0).
+fn seed_from_entropy(nanos: u64, addr: u64) -> u64 {
+    let state = nanos ^ addr.rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15;
+    if state == 0 {
+        return 0x2545_f491_4f6c_dd1d;
+    }
+    state
 }
 
 fn new_id() -> String {
@@ -1720,9 +1727,7 @@ mod tests {
                     .find(|c: char| !c.is_ascii_digit())
                     .unwrap_or(after.len());
                 if num_end > 0 {
-                    if let Ok(n) = after[..num_end].parse::<u32>() {
-                        colors.push(n);
-                    }
+                    colors.extend(after[..num_end].parse::<u32>().ok());
                 }
                 rest = &after[num_end..];
             }
@@ -2068,5 +2073,361 @@ mod tests {
 
     fn strip(s: &str) -> String {
         crate::utils::strip_ansi_codes(s)
+    }
+
+    // ─── RunState labels / helpers ────────────────────────────────────
+
+    #[test]
+    fn run_state_labels_match_ts() {
+        assert_eq!(RunState::Queued.label(), "queued");
+        assert_eq!(RunState::Running.label(), "running");
+        assert_eq!(RunState::Terminal.label(), "terminal");
+        assert_eq!(RunState::Failed.label(), "failed");
+        assert_eq!(RunState::Cancelled.label(), "cancelled");
+        assert_eq!(RunState::Superseded.label(), "superseded");
+        assert_eq!(RunState::LostOnAgentRestart.label(), "lost_on_agent_restart");
+    }
+
+    #[test]
+    fn js_num_formats_like_js() {
+        assert_eq!(js_num(5.0), "5");
+        assert_eq!(js_num(5.5), "5.5");
+    }
+
+    #[test]
+    fn seed_from_entropy_has_nonzero_fallback() {
+        let nanos = 0x1234_5678_9abc_def0u64;
+        let addr = (nanos ^ 0x9e37_79b9_7f4a_7c15u64).rotate_right(17);
+        assert_eq!(seed_from_entropy(nanos, addr), 0x2545_f491_4f6c_dd1d);
+        assert_eq!(seed_from_entropy(1, 0), 1u64 ^ 0x9e37_79b9_7f4a_7c15u64);
+    }
+
+    #[test]
+    fn find_ansi_end_handles_invalid_and_unterminated() {
+        // Invalid CSI parameter byte stops before it.
+        assert_eq!(find_ansi_end("\x1b[\x01A", 0), 2);
+        // Unterminated sequence consumes the rest.
+        assert_eq!(find_ansi_end("x\x1b[1", 1), 4);
+    }
+
+    // ─── run binding / state update APIs ──────────────────────────────
+
+    #[test]
+    fn bind_user_run_guards_and_updates() {
+        let mut chat = new_chat();
+        // Unknown message id → no-op.
+        chat.bind_user_run("missing", "r1", RunState::Running, None);
+        // Non-user message → no-op.
+        chat.add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, "hi"));
+        chat.bind_user_run("a1", "r1", RunState::Running, None);
+        assert!(chat.messages[0].run_id.is_none());
+        // User message → binds run identity.
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "hello"));
+        chat.bind_user_run("u1", "r1", RunState::Running, Some(2));
+        let m = &chat.messages[1];
+        assert_eq!(m.id, "r1");
+        assert_eq!(m.run_id.as_deref(), Some("r1"));
+        assert_eq!(m.run_state, Some(RunState::Running));
+        assert_eq!(m.queue_position, Some(2));
+    }
+
+    #[test]
+    fn run_state_updates_by_run_id_and_message_id() {
+        let mut chat = new_chat();
+        // No matches → no-ops.
+        chat.update_run_state("nope", RunState::Failed);
+        chat.update_queue_position("nope", 3);
+        chat.set_message_run_state("nope", RunState::Failed);
+
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "hello"));
+        chat.bind_user_run("u1", "r1", RunState::Queued, Some(1));
+        chat.update_run_state("r1", RunState::Running);
+        assert_eq!(chat.messages[0].run_state, Some(RunState::Running));
+        chat.update_queue_position("r1", 5);
+        assert_eq!(chat.messages[0].queue_position, Some(5));
+        chat.set_message_run_state("r1", RunState::Terminal);
+        assert_eq!(chat.messages[0].run_state, Some(RunState::Terminal));
+    }
+
+    #[test]
+    fn update_last_message_without_assistant_is_noop() {
+        let mut chat = new_chat();
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "hello"));
+        chat.update_last_message("ignored");
+        assert_eq!(chat.messages[0].content, "hello");
+    }
+
+    // ─── on_change fan-out ────────────────────────────────────────────
+
+    #[test]
+    fn on_change_fires_across_mutation_paths() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let count = Rc::new(Cell::new(0));
+        let mut chat = new_chat();
+        let cb = Rc::clone(&count);
+        chat.set_on_change(move || cb.set(cb.get() + 1));
+
+        chat.render(W); // establishes the render width
+        assert_eq!(count.get(), 0);
+        // add_message fires via append_last_message AND its own callback.
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "q"));
+        assert_eq!(count.get(), 2);
+        chat.add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, ""));
+        assert_eq!(count.get(), 4);
+        chat.append_to_last_message("delta"); // mark_message_dirty
+        assert_eq!(count.get(), 5);
+        chat.render(W); // flush: in-flight rerender must not re-fire
+        assert_eq!(count.get(), 5);
+        chat.mark_last_message_complete(); // rerender_message (not flushing)
+        assert_eq!(count.get(), 6);
+    }
+
+    // ─── viewport / geometry APIs ─────────────────────────────────────
+
+    #[test]
+    fn width_viewport_and_scroll_accessors() {
+        let mut chat = new_chat();
+        for i in 0..5 {
+            chat.add_message(ChatMessage::new(
+                format!("u{i}"),
+                ChatRole::User,
+                "line one\nline two",
+            ));
+        }
+        chat.render(W);
+        let total = chat.render_all(W).len();
+        assert!(total > 2);
+
+        // set_width with a new width re-renders.
+        chat.set_width(W - 20);
+        chat.set_width(W - 20); // same width — no rerender
+        chat.render(W - 20);
+
+        // Viewport height clamp and scroll state.
+        chat.set_viewport_height(2);
+        chat.set_auto_scroll(true);
+        assert!(!chat.is_at_top());
+        assert!(chat.is_at_bottom());
+        assert_eq!(chat.get_height(), 2);
+        assert!(chat.scroll_up(1)); // leaves the bottom
+        assert!(!chat.is_at_bottom());
+        assert!(chat.scroll_down(1)); // back to the bottom → auto_scroll
+        chat.set_viewport_height(10_000); // clamps viewport_top to 0
+        chat.set_auto_scroll(false);
+        chat.invalidate();
+        assert_eq!(chat.last_render_width, -1);
+    }
+
+    #[test]
+    fn component_trait_impl_delegates() {
+        let mut chat = new_chat();
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "hi"));
+        let lines = Component::render(&mut chat, W);
+        assert!(!lines.is_empty());
+        Component::handle_input(&mut chat, "ignored");
+        Component::invalidate(&mut chat);
+        assert_eq!(chat.last_render_width, -1);
+        assert!(chat.as_any().downcast_ref::<ChatArea>().is_some());
+        assert!(chat.as_any_mut().downcast_mut::<ChatArea>().is_some());
+    }
+
+    // ─── tool call paths ──────────────────────────────────────────────
+
+    #[test]
+    fn tool_and_thinking_before_first_render_defer() {
+        // Without an established render width, mutations take the deferred
+        // full-rerender path.
+        let mut chat = new_chat();
+        chat.add_tool_start("c1", "shell", None);
+        chat.start_thinking(); // empty messages → fresh thinking message
+        assert_eq!(chat.messages.len(), 2);
+        assert!(chat.dirty);
+
+        // After rendering, a thinking section following a user message is
+        // appended incrementally.
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "q"));
+        chat.start_thinking();
+        assert_eq!(chat.messages.len(), 2);
+        assert_eq!(chat.messages[1].role, ChatRole::Assistant);
+        assert!(chat.messages[1].thinking.is_some());
+    }
+
+    #[test]
+    fn scroll_up_at_top_is_false() {
+        let mut chat = new_chat();
+        chat.render(W);
+        assert!(!chat.scroll_up(1));
+    }
+
+    #[test]
+    fn system_message_skips_blanks_and_dims_plain_lines() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new(
+            "s1".into(),
+            ChatRole::System,
+            "plain note\n\nanother note",
+        ));
+        let plain: Vec<String> = chat
+            .render_all(W)
+            .into_iter()
+            .map(|l| strip(&l))
+            .collect();
+        assert!(plain.iter().any(|l| l.contains("plain note")));
+        assert!(plain.iter().any(|l| l.contains("another note")));
+    }
+
+    #[test]
+    fn tool_start_update_delta_finish_cycle() {
+        let mut chat = new_chat();
+        chat.render(W);
+        // Empty tool id: no dedup, always appends.
+        chat.add_tool_start("", "shell", None);
+        chat.add_tool_start("", "shell", None);
+        assert_eq!(chat.messages.len(), 2);
+        // Duplicate id updates the existing bubble (name/args fill-in).
+        chat.add_tool_start("c1", "shell", None);
+        chat.add_tool_start("c1", "read", Some("{\"path\":\"/x\"}".into()));
+        assert_eq!(chat.messages.len(), 3);
+        assert_eq!(chat.messages[2].name.as_deref(), Some("read"));
+        assert_eq!(
+            chat.messages[2].tool_args.as_deref(),
+            Some("{\"path\":\"/x\"}")
+        );
+        // Streaming delta + finish.
+        chat.append_tool_delta("c1", "partial");
+        chat.append_tool_delta("unknown", "dropped");
+        chat.finish_tool("c1", None);
+        assert_eq!(chat.messages[2].tool_status, Some(ToolStatus::Complete));
+        chat.finish_tool("unknown", None); // no-op
+    }
+
+    #[test]
+    fn tool_error_status_uses_error_background() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_tool_start("c1", "shell", None);
+        chat.messages[0].tool_status = Some(ToolStatus::Error);
+        chat.invalidate();
+        let lines = chat.render_all(W);
+        assert!(lines.iter().any(|l| l.contains("48;5")));
+    }
+
+    #[test]
+    fn tool_formatting_covers_remaining_variants() {
+        let mut chat = new_chat();
+        chat.render(W);
+        // No args at all → bare bold tool name.
+        chat.add_tool_start("c0", "shell", None);
+        // shell with empty command → "..." placeholder.
+        chat.add_tool_start("c1", "shell", Some("{\"command\":\"\"}".into()));
+        // read with offset but no limit → open-ended range.
+        chat.add_tool_start("c2", "read", Some("{\"path\":\"/f\",\"offset\":3}".into()));
+        // read with no path → "..." placeholder.
+        chat.add_tool_start("c3", "read", Some("{}".into()));
+        // write / edit with and without paths.
+        chat.add_tool_start("c4", "write", Some("{\"path\":\"/w\"}".into()));
+        chat.add_tool_start("c5", "write", Some("{}".into()));
+        chat.add_tool_start("c6", "edit", Some("{\"path\":\"/e\"}".into()));
+        chat.add_tool_start("c7", "edit", Some("{}".into()));
+        let plain: Vec<String> = chat
+            .render_all(W)
+            .into_iter()
+            .map(|l| strip(&l))
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert!(plain.iter().any(|l| l.trim() == "shell"));
+        assert!(plain.iter().any(|l| l.contains("$ ...")));
+        assert!(plain.iter().any(|l| l.contains("/f") && l.contains(":3")));
+        assert!(plain.iter().any(|l| l.contains("read ...")));
+        assert!(plain.iter().any(|l| l.contains("write /w")));
+        assert!(plain.iter().any(|l| l.contains("write ...")));
+        assert!(plain.iter().any(|l| l.contains("edit /e")));
+        assert!(plain.iter().any(|l| l.contains("edit ...")));
+    }
+
+    // ─── thinking lifecycle ───────────────────────────────────────────
+
+    #[test]
+    fn thinking_lifecycle_edge_cases() {
+        let mut chat = new_chat();
+        // Deltas with no messages are dropped.
+        chat.append_thinking_delta("x");
+        chat.end_thinking();
+        assert!(chat.messages.is_empty());
+
+        // Thinking starts a fresh assistant message when the last message
+        // is not assistant (or none exists).
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "q"));
+        chat.start_thinking();
+        assert_eq!(chat.messages.len(), 2);
+        assert_eq!(chat.messages[1].role, ChatRole::Assistant);
+        chat.append_thinking_delta("think");
+        assert_eq!(chat.messages[1].thinking.as_deref(), Some("think"));
+        chat.end_thinking();
+
+        // A thinking delta on a non-assistant last message is dropped.
+        chat.add_message(ChatMessage::new("u2".into(), ChatRole::User, "q2"));
+        chat.append_thinking_delta("dropped");
+        assert!(chat.messages.last().unwrap().thinking.is_none());
+
+        // start_thinking on an assistant without thinking adds the section.
+        chat.append_to_last_message("answer");
+        chat.start_thinking();
+        let last = chat.messages.last().unwrap();
+        assert!(last.thinking.is_some());
+        chat.end_thinking(); // rerender with thinking present
+    }
+
+    // ─── user message run-state rendering ─────────────────────────────
+
+    #[test]
+    fn user_message_renders_terminal_run_states() {
+        let mut chat = new_chat();
+        chat.render(W);
+        let mut msg = ChatMessage::new("u1".into(), ChatRole::User, "question");
+        msg.run_state = Some(RunState::Cancelled);
+        chat.add_message(msg);
+        let plain: Vec<String> = chat
+            .render_all(W)
+            .into_iter()
+            .map(|l| strip(&l))
+            .collect();
+        assert!(plain.iter().any(|l| l.contains("cancelled")));
+
+        // Queued without a position renders a bare "queued" label.
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.upsert_queued_run("r9", "later work", 0);
+        let last = chat.messages.last().unwrap();
+        assert_eq!(last.run_state, Some(RunState::Queued));
+        // upsert on an existing run updates state + position in place.
+        let before = chat.messages.len();
+        chat.upsert_queued_run("r9", "later work", 4);
+        assert_eq!(chat.messages.len(), before);
+        assert_eq!(chat.messages.last().unwrap().queue_position, Some(4));
+    }
+
+    // ─── streaming cache invalidation ─────────────────────────────────
+
+    #[test]
+    fn streaming_cache_drops_when_prefix_changes() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, ""));
+        chat.append_to_last_message("first paragraph\n\nsecond");
+        chat.render(W);
+        // A rewrite that no longer starts with the cached prefix invalidates
+        // the streaming cache and still renders correctly.
+        chat.update_last_message("completely different content");
+        let plain: Vec<String> = chat
+            .render(W)
+            .into_iter()
+            .map(|l| strip(&l))
+            .collect();
+        assert!(plain.iter().any(|l| l.contains("completely different")));
     }
 }

@@ -452,13 +452,9 @@ impl Input {
             } else {
                 logical_line
             };
-            let wrapped = wrap_text_with_ansi(source, available_width);
-            // Skip empty result (shouldn't happen, but guard)
-            let sub_lines = if wrapped.is_empty() {
-                vec![" ".to_string()]
-            } else {
-                wrapped
-            };
+            // width ≥ 1 here (0 returns early above) and source is never ""
+            // — wrap_text_with_ansi always yields at least one line.
+            let sub_lines = wrap_text_with_ansi(source, available_width);
             for sub in sub_lines {
                 lines.push(sub);
                 line_map.push(li);
@@ -494,6 +490,7 @@ impl Input {
         let lines = self.build_visual_layout(w);
 
         let mut consumed = 0usize;
+        let mut result = None;
 
         for (vi, sub) in lines.iter().enumerate() {
             let plain = strip_ansi_codes(sub);
@@ -503,22 +500,20 @@ impl Input {
                 // Cursor is in (or at the end of) this visual sub-line
                 let offset_in_sub = self.cursor.saturating_sub(consumed);
                 let col_in_wrapped = visible_width(&slice_u16(&plain, 0, offset_in_sub));
-                return CursorVisualInfo {
+                result = Some(CursorVisualInfo {
                     visual_line: vi,
                     col_in_wrapped,
                     sub_line_text: sub.clone(),
-                };
+                });
+                break;
             }
 
             consumed += sub_len;
         }
 
-        // Fallback: cursor at end of last line
-        CursorVisualInfo {
-            visual_line: lines.len().saturating_sub(1),
-            col_in_wrapped: 0,
-            sub_line_text: String::new(),
-        }
+        // The layout always has ≥1 visual line, so the last iteration
+        // matches; the expect is unreachable in practice.
+        result.expect("visual layout always contains at least one line")
     }
 
     /// Map a (visualLine, column) pair back to a cursor position in the raw
@@ -562,21 +557,15 @@ impl Input {
         if info.visual_line == 0 {
             return;
         }
-        let w = if self.cached_visual_width > 0 {
-            self.cached_visual_width as usize
-        } else {
-            80
-        };
+        // get_cursor_visual_info populated the layout cache (width > 0).
+        let w = self.cached_visual_width as usize;
         self.cursor = self.cursor_from_visual(info.visual_line - 1, info.col_in_wrapped, w);
     }
 
     fn move_down_visual_line(&mut self) {
         let info = self.get_cursor_visual_info();
-        let w = if self.cached_visual_width > 0 {
-            self.cached_visual_width as usize
-        } else {
-            80
-        };
+        // get_cursor_visual_info populated the layout cache (width > 0).
+        let w = self.cached_visual_width as usize;
         let total = self.build_visual_layout(w).len();
         if info.visual_line >= total.saturating_sub(1) {
             return;
@@ -1512,5 +1501,371 @@ mod tests {
         input.handle_key("enter");
         input.handle_key("enter");
         assert_eq!(input.history, vec!["same"]);
+    }
+
+
+    // ─── UTF-16 helper edge cases ─────────────────────────────────────
+
+    #[test]
+    fn u16_helpers_handle_astral_chars() {
+        // Cursor positions inside/after an astral char (2 UTF-16 units).
+        assert_eq!(u16_to_byte("a\u{1F600}b", 1), 1); // first emoji unit
+        assert_eq!(u16_to_byte("a\u{1F600}b", 2), 1); // second emoji unit
+        assert_eq!(u16_to_byte("a\u{1F600}b", 3), 5); // just past it
+        assert_eq!(u16_to_byte("ab", 9), 2); // past the end → len
+        // Newline search across astral chars.
+        assert_eq!(last_newline_u16("\u{1F600}\n", 2), Some(2));
+        assert_eq!(last_newline_u16("ab", 5), None);
+        assert_eq!(first_newline_u16("\u{1F600}x\n", 0), Some(3));
+        assert_eq!(first_newline_u16("ab", 0), None);
+    }
+
+    // ─── key dispatch paths ───────────────────────────────────────────
+
+    #[test]
+    fn insert_text_empty_is_noop() {
+        let mut input = make_input();
+        input.insert_text("");
+        assert_eq!(input.value, "");
+    }
+
+    #[test]
+    fn escape_invokes_on_escape() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let hit = Rc::new(Cell::new(false));
+        let cb = Rc::clone(&hit);
+        let mut input = make_input();
+        input.onEscape = Some(Box::new(move || cb.set(true)));
+        assert!(input.handle_key("escape"));
+        assert!(hit.get());
+        // Without a callback, escape is still consumed.
+        let mut input = make_input();
+        assert!(input.handle_key("escape"));
+    }
+
+    #[test]
+    fn newline_insert_keys() {
+        for key in ["alt+enter", "shift+enter", "ctrl+enter", "ctrl+j"] {
+            let mut input = make_input();
+            input.set_value("ab", Some(1));
+            assert!(input.handle_key(key));
+            assert_eq!(input.value, "a\nb");
+        }
+    }
+
+    #[test]
+    fn up_down_single_line_drive_history() {
+        let mut input = make_input();
+        input.set_value("draft", None);
+        // Empty history: up/down are consumed no-ops.
+        assert!(input.handle_key("up"));
+        assert!(input.handle_key("down"));
+        assert_eq!(input.value, "draft");
+
+        // Two submissions → up twice walks deeper, down returns.
+        input.set_value("one", None);
+        input.handle_key("enter");
+        input.set_value("two", None);
+        input.handle_key("enter");
+        input.set_value("draft", None);
+        assert!(input.handle_key("up")); // → "two"
+        assert_eq!(input.value, "two");
+        assert!(input.handle_key("up")); // → "one"
+        assert_eq!(input.value, "one");
+        assert!(input.handle_key("up")); // stays at oldest
+        assert_eq!(input.value, "one");
+        assert!(input.handle_key("down")); // → "two"
+        assert_eq!(input.value, "two");
+        assert!(input.handle_key("down")); // → draft
+        assert_eq!(input.value, "draft");
+    }
+
+    #[test]
+    fn history_navigation_fires_on_change() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let cb = Rc::clone(&seen);
+        let mut input = make_input();
+        input.onChange = Some(Box::new(move |v| cb.borrow_mut().push(v.to_string())));
+        input.set_value("one", None);
+        input.handle_key("enter");
+        input.set_value("two", None);
+        input.handle_key("enter");
+        seen.borrow_mut().clear();
+        input.handle_key("up");
+        input.handle_key("up");
+        input.handle_key("down");
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &["two".to_string(), "one".to_string(), "two".to_string()]
+        );
+    }
+
+    #[test]
+    fn delete_key_forward_deletes() {
+        let mut input = make_input();
+        input.set_value("abc", Some(0));
+        assert!(input.handle_key("delete"));
+        assert_eq!(input.value, "bc");
+        assert_eq!(input.cursor, 0);
+        // At end: no-op.
+        input.set_value("abc", None);
+        assert!(input.handle_key("delete"));
+        assert_eq!(input.value, "abc");
+    }
+
+    #[test]
+    fn noop_stub_keys_are_consumed() {
+        let mut input = make_input();
+        assert!(input.handle_key("ctrl+y"));
+        assert!(input.handle_key("ctrl+z"));
+        assert!(input.handle_key("ctrl+-"));
+        assert!(input.handle_key("ctrl+/"));
+        assert!(input.handle_key("ctrl+_"));
+    }
+
+    #[test]
+    fn left_right_at_value_edges() {
+        let mut input = make_input();
+        input.set_value("ab", Some(0));
+        assert!(input.handle_key("left")); // at start — no movement
+        assert_eq!(input.cursor, 0);
+        assert!(input.handle_key("right"));
+        assert_eq!(input.cursor, 1);
+        input.set_value("ab", None);
+        assert!(input.handle_key("right")); // at end — no movement
+        assert_eq!(input.cursor, 2);
+    }
+
+    #[test]
+    fn home_end_single_and_multi_line() {
+        let mut input = make_input();
+        input.set_value("abc", Some(2));
+        input.handle_key("home");
+        assert_eq!(input.cursor, 0);
+        input.handle_key("end");
+        assert_eq!(input.cursor, 3);
+        // Multi-line: home/end act on the logical line first.
+        input.set_value("ab\ncd", Some(4));
+        input.handle_key("home");
+        assert_eq!(input.cursor, 3); // start of second line
+        input.handle_key("home");
+        assert_eq!(input.cursor, 0); // then value start
+        input.set_value("ab\ncd", Some(0));
+        input.handle_key("end");
+        assert_eq!(input.cursor, 2); // end of first line
+        input.handle_key("end");
+        assert_eq!(input.cursor, 5); // then value end
+    }
+
+    #[test]
+    fn ctrl_a_e_jump_value_edges() {
+        let mut input = make_input();
+        input.set_value("abc", None);
+        input.handle_key("ctrl+a");
+        assert_eq!(input.cursor, 0);
+        input.handle_key("ctrl+e");
+        assert_eq!(input.cursor, 3);
+    }
+
+    #[test]
+    fn space_and_shift_letter_insert() {
+        let mut input = make_input();
+        input.handle_key("space");
+        assert_eq!(input.value, " ");
+        input.handle_key("shift+a");
+        assert_eq!(input.value, " A");
+        // shift+1 is not a lowercase letter — falls through to false.
+        assert!(!input.handle_key("shift+1"));
+        // A single control character is not printable input.
+        assert!(!input.handle_key("\x01"));
+    }
+
+    #[test]
+    fn word_movement_paths() {
+        // Backwards: whitespace skip then word.
+        let mut input = make_input();
+        input.set_value("foo bar  ", None);
+        input.handle_key("ctrl+left");
+        assert_eq!(input.cursor, 4); // start of "bar"
+        // Backwards onto punctuation runs: first stop ends "bar", the
+        // second crosses the "..." run.
+        input.set_value("foo...bar", None);
+        input.handle_key("ctrl+left");
+        assert_eq!(input.cursor, 6);
+        input.handle_key("ctrl+left");
+        assert_eq!(input.cursor, 3);
+        // Backwards at 0: no-op.
+        input.set_value("ab", Some(0));
+        input.handle_key("ctrl+left");
+        assert_eq!(input.cursor, 0);
+        // Backwards through an all-whitespace head.
+        input.set_value("   ", None);
+        input.handle_key("ctrl+left");
+        assert_eq!(input.cursor, 0);
+        // Forwards: whitespace skip then word.
+        input.set_value("  foo bar", Some(0));
+        input.handle_key("ctrl+right");
+        assert_eq!(input.cursor, 5); // end of "foo"
+        // Forwards through punctuation.
+        input.set_value("..foo", Some(0));
+        input.handle_key("ctrl+right");
+        assert_eq!(input.cursor, 2);
+        // Forwards at end: no-op.
+        input.set_value("ab", None);
+        input.handle_key("ctrl+right");
+        assert_eq!(input.cursor, 2);
+        // Forwards through an all-whitespace tail.
+        input.set_value("  ", Some(0));
+        input.handle_key("ctrl+right");
+        assert_eq!(input.cursor, 2);
+    }
+
+    #[test]
+    fn delete_word_and_line_variants() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let cb = Rc::clone(&seen);
+        let mut input = make_input();
+        input.onChange = Some(Box::new(move |v| cb.borrow_mut().push(v.to_string())));
+
+        // ctrl+u mid-line deletes to line start.
+        input.set_value("hello", Some(3));
+        input.handle_key("ctrl+u");
+        assert_eq!(input.value, "lo");
+        assert_eq!(input.cursor, 0);
+
+        // ctrl+k mid-line deletes to line end.
+        input.set_value("hello", Some(2));
+        input.handle_key("ctrl+k");
+        assert_eq!(input.value, "he");
+
+        // ctrl+k at line end is a no-op.
+        input.set_value("hello", None);
+        input.handle_key("ctrl+k");
+        assert_eq!(input.value, "hello");
+
+        // alt+backspace / ctrl+w delete the previous word.
+        input.set_value("foo bar", None);
+        input.handle_key("ctrl+w");
+        assert_eq!(input.value, "foo ");
+        // …and at 0 it is a no-op.
+        input.set_value("foo", Some(0));
+        input.handle_key("alt+backspace");
+        assert_eq!(input.value, "foo");
+
+        // alt+d deletes the next word.
+        input.set_value("foo bar", Some(0));
+        input.handle_key("alt+d");
+        assert_eq!(input.value, " bar");
+        // …and at end it is a no-op.
+        input.set_value(" bar", None);
+        input.handle_key("alt+d");
+        assert_eq!(input.value, " bar");
+
+        assert!(!seen.borrow().is_empty());
+    }
+
+    #[test]
+    fn backspace_and_delete_fire_on_change() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let cb = Rc::clone(&seen);
+        let mut input = make_input();
+        input.onChange = Some(Box::new(move |v| cb.borrow_mut().push(v.to_string())));
+        input.set_value("ab", None);
+        input.handle_key("backspace");
+        input.set_value("ab", Some(0));
+        input.handle_key("delete");
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &["a".to_string(), "b".to_string()]
+        );
+        // backspace at the very start is a consumed no-op.
+        input.set_value("ab", Some(0));
+        input.handle_key("backspace");
+        assert_eq!(input.value, "ab");
+    }
+
+    #[test]
+    fn ctrl_u_at_line_start_joins_and_notifies() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let cb = Rc::clone(&seen);
+        let mut input = make_input();
+        input.onChange = Some(Box::new(move |v| cb.borrow_mut().push(v.to_string())));
+        input.set_value("ab\ncd", Some(3)); // start of the second line
+        input.handle_key("ctrl+u");
+        assert_eq!(input.value, "abcd");
+        assert_eq!(input.cursor, 2);
+        assert_eq!(seen.borrow().as_slice(), &["abcd".to_string()]);
+    }
+
+    // ─── visual-line internals (white-box) ────────────────────────────
+
+    #[test]
+    fn move_up_down_visual_line_guards() {
+        let mut input = make_input();
+        input.set_value("a\nb", Some(0));
+        input.move_up_visual_line(); // already on visual line 0
+        assert_eq!(input.cursor, 0);
+        input.set_value("a\nb", None); // cursor on the last visual line
+        input.move_down_visual_line();
+        assert_eq!(input.cursor, 3);
+    }
+
+    #[test]
+    fn line_col_helpers() {
+        let mut input = make_input();
+        input.set_value("a\nbcd", None);
+        assert_eq!(input.cursor_col_in_line(4), 2);
+        input.set_cursor_to_line_col(2, 2);
+        assert_eq!(input.cursor, 4);
+    }
+
+    // ─── render paths ─────────────────────────────────────────────────
+
+    #[test]
+    fn render_zero_width_outputs_bare_prompts() {
+        let mut input = make_input();
+        input.set_value("ab\ncd", None);
+        // available_width = 0 → a single empty visual line, prompt only.
+        let lines = input.render(2);
+        assert_eq!(lines, vec!["> ".to_string()]);
+    }
+
+    #[test]
+    fn render_cursor_line_skips_ansi_codes() {
+        let mut input = make_input();
+        // ANSI inside the text before the cursor.
+        input.set_value("\x1b[31mab", None);
+        input.render(20);
+        // ANSI immediately after the cursor offset.
+        input.set_value("ab\x1b[31m", Some(2));
+        input.render(20);
+        // Focused cursor paints the under-cursor cell.
+        input.set_value("ab", Some(1));
+        input.set_focused(true);
+        let lines = input.render(20);
+        assert!(lines[0].contains(CURSOR_MARKER));
+        assert!(lines[0].contains("\x1b[7m"));
+    }
+
+    #[test]
+    fn invalidate_and_focusable_trait() {
+        let mut input = make_input();
+        input.render(20);
+        input.invalidate();
+        assert_eq!(input.cached_visual_width, -1);
+        assert!(!input.focused());
+        input.set_focused(true);
+        assert!(input.focused());
+        assert!(input.as_any().downcast_ref::<Input>().is_some());
+        assert!(input.as_any_mut().downcast_mut::<Input>().is_some());
     }
 }

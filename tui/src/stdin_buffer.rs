@@ -534,6 +534,123 @@ mod tests {
     }
 
     #[test]
+    fn is_complete_sequence_classifies_all_families() {
+        use CompleteStatus::*;
+        // Non-escape input.
+        assert!(matches!(is_complete_sequence("a"), NotEscape));
+        // Lone ESC is incomplete; ESC + char is a complete meta sequence.
+        assert!(matches!(is_complete_sequence("\x1b"), Incomplete));
+        assert!(matches!(is_complete_sequence("\x1ba"), Complete));
+        // SS3: ESC O + one char.
+        assert!(matches!(is_complete_sequence("\x1bO"), Incomplete));
+        assert!(matches!(is_complete_sequence("\x1bOA"), Complete));
+        // Legacy X10 mouse: ESC [ M + 3 bytes.
+        assert!(matches!(is_complete_sequence("\x1b[M"), Incomplete));
+        assert!(matches!(is_complete_sequence("\x1b[Mabc"), Complete));
+        // DCS: ESC P ... ESC \.
+        assert!(matches!(is_complete_sequence("\x1bP1;2"), Incomplete));
+        assert!(matches!(is_complete_sequence("\x1bP1;2\x1b\\"), Complete));
+        // APC: ESC _ ... ESC \ (Kitty graphics).
+        assert!(matches!(is_complete_sequence("\x1b_Gf=24"), Incomplete));
+        assert!(matches!(is_complete_sequence("\x1b_Gf=24\x1b\\"), Complete));
+        // Multi-char non-CSI/OSC/DCS/APC/SS3 escape falls through complete.
+        assert!(matches!(is_complete_sequence("\x1bZZ"), Complete));
+    }
+
+    #[test]
+    fn csi_completeness_rules() {
+        use CompleteStatus::*;
+        // Wrong prefix → treated complete (defensive fallback).
+        assert!(matches!(is_complete_csi_sequence("\x1bX"), Complete));
+        // Too short to hold a final byte.
+        assert!(matches!(is_complete_csi_sequence("\x1b["), Incomplete));
+        // Ordinary CSI with a final byte in 0x40..=0x7e.
+        assert!(matches!(is_complete_csi_sequence("\x1b[A"), Complete));
+        // Parameter bytes only — still waiting for the final byte.
+        assert!(matches!(is_complete_csi_sequence("\x1b[1"), Incomplete));
+        // SGR mouse: complete only with M/m and three numeric fields.
+        assert!(matches!(is_complete_csi_sequence("\x1b[<0;10;20M"), Complete));
+        assert!(matches!(is_complete_csi_sequence("\x1b[<0;10;20m"), Complete));
+        assert!(matches!(is_complete_csi_sequence("\x1b[<0;10M"), Incomplete));
+        assert!(matches!(is_complete_csi_sequence("\x1b[<0;10;20"), Incomplete));
+        assert!(matches!(is_complete_csi_sequence("\x1b[<0;10;xyM"), Incomplete));
+        assert!(matches!(is_complete_csi_sequence("\x1b[<M"), Incomplete));
+        // '<' payload whose final byte is in 0x40..=0x7e but not M/m.
+        assert!(matches!(is_complete_csi_sequence("\x1b[<A"), Incomplete));
+    }
+
+    #[test]
+    fn osc_dcs_apc_completeness_rules() {
+        use CompleteStatus::*;
+        // Wrong prefix → defensive complete.
+        assert!(matches!(is_complete_osc_sequence("\x1bX"), Complete));
+        assert!(matches!(is_complete_dcs_sequence("\x1bX"), Complete));
+        assert!(matches!(is_complete_apc_sequence("\x1bX"), Complete));
+        // OSC terminates on BEL or ST.
+        assert!(matches!(is_complete_osc_sequence("\x1b]0;title\x07"), Complete));
+        assert!(matches!(is_complete_osc_sequence("\x1b]0;title\x1b\\"), Complete));
+        assert!(matches!(is_complete_osc_sequence("\x1b]0;title"), Incomplete));
+        // DCS/APC terminate on ST only.
+        assert!(matches!(is_complete_dcs_sequence("\x1bPq\x1b\\"), Complete));
+        assert!(matches!(is_complete_dcs_sequence("\x1bPq"), Incomplete));
+        assert!(matches!(is_complete_apc_sequence("\x1b_G\x1b\\"), Complete));
+        assert!(matches!(is_complete_apc_sequence("\x1b_G"), Incomplete));
+    }
+
+    #[test]
+    fn paste_continuation_with_trailing_data_recurses() {
+        // Paste END plus trailing bytes arrive while already in paste mode:
+        // the paste completes and the trailing text is processed as input.
+        let mut buf = StdinBuffer::with_timeout(10);
+        assert!(buf.process("\x1b[200~ab").is_empty());
+        let events = buf.process("cd\x1b[201~ef");
+        let pastes: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                StdinEvent::Paste(s) => Some(s.as_str()),
+                StdinEvent::Data(_) => None,
+            })
+            .collect();
+        assert_eq!(pastes, vec!["abcd"]);
+        assert_eq!(data_events(&events), vec!["e", "f"]);
+    }
+
+    #[test]
+    fn paste_spans_chunks_and_ends_without_trailing_data() {
+        let mut buf = StdinBuffer::with_timeout(10);
+        assert!(buf.process("\x1b[200~ab").is_empty());
+        // An intermediate chunk with no end marker keeps collecting.
+        assert!(buf.process("cd").is_empty());
+        assert!(!buf.pending());
+        let events = buf.process("ef\x1b[201~g");
+        let pastes: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                StdinEvent::Paste(s) => Some(s.as_str()),
+                StdinEvent::Data(_) => None,
+            })
+            .collect();
+        assert_eq!(pastes, vec!["abcdef"]);
+        assert_eq!(data_events(&events), vec!["g"]);
+    }
+
+    #[test]
+    fn timeout_ms_pending_buffer_and_destroy_accessors() {
+        let mut buf = StdinBuffer::with_timeout(42);
+        assert_eq!(buf.timeout_ms(), 42);
+        assert_eq!(StdinBuffer::new().timeout_ms(), DEFAULT_TIMEOUT_MS);
+        assert_eq!(StdinBuffer::default().timeout_ms(), DEFAULT_TIMEOUT_MS);
+
+        assert!(!buf.pending());
+        assert!(buf.process("\x1b[").is_empty()); // partial CSI is buffered
+        assert!(buf.pending());
+        assert_eq!(buf.get_buffer(), "\x1b[");
+        buf.destroy();
+        assert!(!buf.pending());
+        assert_eq!(buf.get_buffer(), "");
+    }
+
+    #[test]
     fn clear_resets_state() {
         let mut buf = StdinBuffer::new();
         buf.process("\x1b[200~paste");
