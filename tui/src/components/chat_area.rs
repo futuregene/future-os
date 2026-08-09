@@ -574,9 +574,13 @@ impl ChatArea {
     }
 
     /// Flip thinking visibility for all messages (ctrl+o); returns the new
-    /// state (`true` = hidden). Re-renders on change.
+    /// state (`true` = hidden). Re-renders on change and jumps to the
+    /// bottom — after expanding, the fresh content would otherwise grow
+    /// off-screen; after collapsing, the answer lands at the bottom anyway.
+    /// (Also keeps `viewport_top` valid: collapsing shrinks the line count.)
     pub fn toggle_thinking_hidden(&mut self) -> bool {
         self.set_thinking_hidden(!self.thinking_hidden);
+        self.set_auto_scroll(true);
         self.thinking_hidden
     }
 
@@ -661,6 +665,15 @@ impl ChatArea {
             self.rerender();
         }
         self.flush_pending_rerenders();
+        // Clamp after content shrink (collapsed thinking, /clear) — a stale
+        // viewport_top past the new end would slice out of range.
+        let max_top = self
+            .rendered_lines
+            .len()
+            .saturating_sub(self.viewport_height);
+        if self.viewport_top > max_top {
+            self.viewport_top = max_top;
+        }
         let end = (self.viewport_top + self.viewport_height).min(self.rendered_lines.len());
         self.rendered_lines[self.viewport_top..end]
             .iter()
@@ -862,50 +875,41 @@ impl ChatArea {
             .as_deref()
             .is_some_and(|t| !t.trim().is_empty());
 
-        // Render thinking block FIRST (before content).
-        if has_thinking {
-            if self.thinking_hidden {
-                self.rendered_lines.push(RenderedLine {
-                    text: fg(
-                        self.theme.thinking_text as u8,
-                        &italic(" Thinking... (ctrl+o to expand)"),
-                    ),
-                    dim: true,
-                });
+        // Render thinking block FIRST (before content). Hidden thinking is
+        // dropped entirely — no placeholder (ctrl+o toggles).
+        if has_thinking && !self.thinking_hidden {
+            let thinking = msg.thinking.as_deref().unwrap_or("");
+            let thinking_lines = if msg.pending {
+                Self::render_streaming_markdown(
+                    &mut self.stream_caches,
+                    &format!("{}:t", msg.id),
+                    thinking,
+                    self.width - 2,
+                    &mut self.md_thinking,
+                )
             } else {
-                let thinking = msg.thinking.as_deref().unwrap_or("");
-                let thinking_lines = if msg.pending {
-                    Self::render_streaming_markdown(
-                        &mut self.stream_caches,
-                        &format!("{}:t", msg.id),
-                        thinking,
-                        self.width - 2,
-                        &mut self.md_thinking,
-                    )
+                self.md_thinking.render_text(thinking, self.width - 2)
+            };
+            let think_prefix = format!("\x1b[3m\x1b[38;5;{}m", self.theme.thinking_text);
+            for line in thinking_lines {
+                if line.is_empty() {
+                    self.rendered_lines.push(RenderedLine {
+                        text: String::new(),
+                        dim: true,
+                    });
                 } else {
-                    self.md_thinking.render_text(thinking, self.width - 2)
-                };
-                let think_prefix = format!("\x1b[3m\x1b[38;5;{}m", self.theme.thinking_text);
-                for line in thinking_lines {
-                    if line.is_empty() {
-                        self.rendered_lines.push(RenderedLine {
-                            text: String::new(),
-                            dim: true,
-                        });
-                    } else {
-                        // Re-apply thinking style after EVERY ANSI reset.
-                        let styled = reapply_style(&format!(" {line}"), &think_prefix);
-                        self.rendered_lines.push(RenderedLine {
-                            text: format!("{think_prefix}{styled}{RESET}"),
-                            dim: true,
-                        });
-                    }
+                    // Re-apply thinking style after EVERY ANSI reset.
+                    let styled = reapply_style(&format!(" {line}"), &think_prefix);
+                    self.rendered_lines.push(RenderedLine {
+                        text: format!("{think_prefix}{styled}{RESET}"),
+                        dim: true,
+                    });
                 }
             }
         }
 
-        // Spacer between thinking and content.
-        if has_thinking && !msg.content.trim().is_empty() {
+        // Spacer between thinking and content (only when thinking is shown).
+        if has_thinking && !self.thinking_hidden && !msg.content.trim().is_empty() {
             self.rendered_lines.push(RenderedLine {
                 text: String::new(),
                 dim: true,
@@ -1285,24 +1289,48 @@ mod tests {
             .iter()
             .any(|l| l.contains("step by step reasoning")));
 
-        // Collapse: placeholder with hint replaces the thinking block;
-        // the answer content stays visible.
+        // Collapse: thinking block disappears entirely (no placeholder);
+        // the answer content stays visible and we stick to the bottom.
         assert!(chat.toggle_thinking_hidden());
         let collapsed = chat.render_all(W);
-        assert!(collapsed
-            .iter()
-            .any(|l| l.contains("Thinking... (ctrl+o to expand)")));
         assert!(!collapsed
             .iter()
             .any(|l| l.contains("step by step reasoning")));
+        assert!(!collapsed.iter().any(|l| l.contains("Thinking...")));
         assert!(collapsed.iter().any(|l| l.contains("final answer")));
+        assert!(chat.auto_scroll);
 
-        // Expand again.
+        // Expand again, still pinned to the bottom.
         assert!(!chat.toggle_thinking_hidden());
         let reexpanded = chat.render_all(W);
         assert!(reexpanded
             .iter()
             .any(|l| l.contains("step by step reasoning")));
+        assert!(chat.auto_scroll);
+    }
+
+    #[test]
+    fn render_clamps_stale_viewport_after_content_shrink() {
+        let mut chat = new_chat();
+        chat.set_viewport_height(5);
+        set_messages(
+            &mut chat,
+            (0..50)
+                .map(|i| ChatMessage::new(format!("m{i}"), ChatRole::User, &format!("prompt {i}")))
+                .collect(),
+        );
+        chat.render(W);
+        // Scrolled up (auto_scroll off), then the content shrinks to nearly
+        // nothing — render() must clamp the stale viewport instead of
+        // slicing out of range.
+        chat.set_auto_scroll(true); // jump to the bottom first
+        chat.scroll_up(3);
+        assert!(!chat.auto_scroll);
+        assert!(chat.viewport_top > 0);
+        chat.clear_messages();
+        let lines = chat.render(W); // must not panic
+        assert!(chat.viewport_top <= chat.rendered_lines.len());
+        assert_eq!(lines.len(), chat.rendered_lines.len().min(5));
     }
 
     fn set_messages(chat: &mut ChatArea, messages: Vec<ChatMessage>) {
