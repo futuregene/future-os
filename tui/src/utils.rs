@@ -1520,6 +1520,9 @@ mod tests {
         let r = extract_ansi_code("\x1b_Ga=b\x07\x1b\\", 0).unwrap();
         assert_eq!(r.code, "\x1b_Ga=b\x07");
         assert_eq!(r.kind, AnsiKind::Apc);
+        // BEL only.
+        let r = extract_ansi_code("\x1b_Ga=b\x07", 0).unwrap();
+        assert_eq!(r.code, "\x1b_Ga=b\x07");
         let r = extract_ansi_code("\x1b_Ga=b\x1b\\", 0).unwrap();
         assert_eq!(r.code, "\x1b_Ga=b\x1b\\");
         assert!(extract_ansi_code("\x1b_Gopen", 0).is_none());

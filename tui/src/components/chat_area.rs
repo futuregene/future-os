@@ -2239,8 +2239,8 @@ mod tests {
         // Without an established render width, mutations take the deferred
         // full-rerender path.
         let mut chat = new_chat();
-        chat.add_tool_start("c1", "shell", None);
         chat.start_thinking(); // empty messages → fresh thinking message
+        chat.add_tool_start("c1", "shell", None);
         assert_eq!(chat.messages.len(), 2);
         assert!(chat.dirty);
 

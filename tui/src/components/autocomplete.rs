@@ -1318,30 +1318,53 @@ mod tests {
 
     #[test]
     fn file_path_completions_sort_mixed_kinds() {
-        // Enough mixed file/dir entries that the directories-first sort must
-        // compare a file against a directory regardless of read_dir order.
+        // The directories-first sort must compare files against directories;
+        // which comparison arm fires depends on read_dir's order. Two layouts
+        // cover every consistent ordering: "fwd" has files first both in
+        // creation and alphabetical order, "rev" has dirs first in both.
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path().to_str().unwrap().to_string();
-        for i in 0..5 {
-            std::fs::write(dir.path().join(format!("f{i}.txt")), "x").unwrap();
-            std::fs::create_dir(dir.path().join(format!("d{i}"))).unwrap();
+        let fwd = dir.path().join("fwd");
+        std::fs::create_dir(&fwd).unwrap();
+        for i in 0..3 {
+            std::fs::write(fwd.join(format!("a{i}.txt")), "x").unwrap();
         }
+        for i in 0..3 {
+            std::fs::create_dir(fwd.join(format!("z{i}"))).unwrap();
+        }
+        let rev = dir.path().join("rev");
+        std::fs::create_dir(&rev).unwrap();
+        for i in 0..3 {
+            std::fs::create_dir(rev.join(format!("a{i}"))).unwrap();
+        }
+        for i in 0..3 {
+            std::fs::write(rev.join(format!("z{i}.txt")), "x").unwrap();
+        }
+
         let provider = FilePathProvider::new(Some(dir_path.clone()));
-        let ctx = AutocompleteContext {
-            text: format!("{dir_path}/"),
-            cursor_pos: dir_path.len() + 1,
-            token: format!("{dir_path}/"),
-            token_start: 0,
-        };
-        let items = provider.get_completions(&ctx);
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            vec![
-                "d0/", "d1/", "d2/", "d3/", "d4/", "f0.txt", "f1.txt", "f2.txt", "f3.txt",
-                "f4.txt"
-            ]
-        );
+        // (dir names, file names) per layout, as completed under each subdir.
+        let expected: [(&str, [&str; 3], [&str; 3]); 2] = [
+            ("fwd", ["z0/", "z1/", "z2/"], ["a0.txt", "a1.txt", "a2.txt"]),
+            ("rev", ["a0/", "a1/", "a2/"], ["z0.txt", "z1.txt", "z2.txt"]),
+        ];
+        for (sub, dirs, files) in expected {
+            let ctx = AutocompleteContext {
+                text: format!("{sub}/"),
+                cursor_pos: sub.len() + 1,
+                token: format!("{sub}/"),
+                token_start: 0,
+            };
+            let items = provider.get_completions(&ctx);
+            let prefix = format!("{sub}/");
+            let got: Vec<String> = items
+                .iter()
+                .map(|i| i.label.strip_prefix(&prefix).unwrap_or(&i.label).to_string())
+                .collect();
+            // Directories first, then files, alphabetical within each kind.
+            let want: Vec<String> =
+                dirs.iter().chain(files.iter()).map(|s| s.to_string()).collect();
+            assert_eq!(got, want);
+        }
     }
 
     #[test]

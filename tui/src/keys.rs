@@ -313,8 +313,8 @@ fn parse_kitty_sequence(data: &str) -> Option<ParsedKittySequence> {
             "A" => ARROW_UP,
             "B" => ARROW_DOWN,
             "C" => ARROW_RIGHT,
-            "D" => ARROW_LEFT,
-            _ => return None,
+            // The regex capture is restricted to [ABCD].
+            _ => ARROW_LEFT,
         };
         return Some(ParsedKittySequence {
             codepoint: arrow_codes,
@@ -331,8 +331,8 @@ fn parse_kitty_sequence(data: &str) -> Option<ParsedKittySequence> {
         let event_type = parse_event_type(caps.get(3).map(|m| m.as_str()));
         let normalized_codepoint = match caps.get(4)?.as_str() {
             "H" => FUNC_HOME,
-            "F" => FUNC_END,
-            _ => return None,
+            // The regex capture is restricted to [HF].
+            _ => FUNC_END,
         };
         return Some(ParsedKittySequence {
             codepoint: normalized_codepoint,
@@ -597,15 +597,15 @@ pub fn parse_key(data: &str) -> Option<String> {
         }
     }
 
-    // Raw Ctrl+letter
+    // Raw Ctrl+letter / printable char. Every other single-byte input is
+    // claimed above (control pictures, space, \x7f, ...); a len-1 &str is a
+    // single byte ≤ 0x7f by UTF-8 validity, so what remains is printable.
     if data.len() == 1 {
         let code = data.as_bytes()[0];
         if (1..=26).contains(&code) {
             return Some(format!("ctrl+{}", (code + 96) as char));
         }
-        if (32..=126).contains(&code) {
-            return Some(data.to_string());
-        }
+        return Some(data.to_string());
     }
 
     None
@@ -628,10 +628,8 @@ pub fn decode_kitty_printable(data: &str) -> Option<String> {
         .unwrap_or(1);
     let modifier = mod_value as u32 - 1;
 
+    // Anything beyond shift/lock (alt, ctrl, super, ...) is not printable.
     if (modifier & !(MOD_SHIFT | LOCK_MASK)) != 0 {
-        return None;
-    }
-    if (modifier & (MOD_ALT | MOD_CTRL)) != 0 {
         return None;
     }
 
@@ -1287,6 +1285,37 @@ mod tests {
         guard
     }
 
+    /// Restore an environment variable to a saved value (None = absent).
+    fn restore_env(key: &str, old: Option<std::ffi::OsString>) {
+        match old {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    /// Save + clear the terminal-identity env vars; restore with the
+    /// returned values via `restore_env`.
+    fn clear_terminal_env() -> Vec<(&'static str, Option<std::ffi::OsString>)> {
+        let keys = ["WT_SESSION", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"];
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> =
+            keys.iter().map(|k| (*k, std::env::var_os(k))).collect();
+        for k in keys {
+            std::env::remove_var(k);
+        }
+        saved
+    }
+
+    #[test]
+    fn restore_env_handles_set_and_unset() {
+        let _guard = crate::test_env::ENV_LOCK.lock();
+        let old = std::env::var_os("FUTURE_TUI_KEYS_PROBE");
+        restore_env("FUTURE_TUI_KEYS_PROBE", Some("x".into()));
+        assert_eq!(std::env::var("FUTURE_TUI_KEYS_PROBE").as_deref(), Ok("x"));
+        restore_env("FUTURE_TUI_KEYS_PROBE", None);
+        assert!(std::env::var_os("FUTURE_TUI_KEYS_PROBE").is_none());
+        restore_env("FUTURE_TUI_KEYS_PROBE", old);
+    }
+
     // ─── Legacy sequences ──────────────────────────────────────────────────
 
     #[test]
@@ -1505,5 +1534,654 @@ mod tests {
         let _g = reset_kitty();
         assert!(!matches_key("a", ""));
         assert!(!matches_key("a", "unknownkey"));
+    }
+
+    // ─── Codepoint tables ─────────────────────────────────────────────
+
+    #[test]
+    fn kitty_functional_equivalents_cover_the_whole_map() {
+        let expected: [(i64, i64); 27] = [
+            (57399, 48), (57400, 49), (57401, 50), (57402, 51), (57403, 52),
+            (57404, 53), (57405, 54), (57406, 55), (57407, 56), (57408, 57),
+            (57409, 46), (57410, 47), (57411, 42), (57412, 45), (57413, 43),
+            (57415, 61), (57416, 44), (57417, ARROW_LEFT), (57418, ARROW_RIGHT),
+            (57419, ARROW_UP), (57420, ARROW_DOWN), (57421, FUNC_PAGE_UP),
+            (57422, FUNC_PAGE_DOWN), (57423, FUNC_HOME), (57424, FUNC_END),
+            (57425, FUNC_INSERT), (57426, FUNC_DELETE),
+        ];
+        for (from, to) in expected {
+            assert_eq!(kitty_functional_equivalent(from), Some(to));
+            assert_eq!(normalize_kitty_functional_codepoint(from), to);
+        }
+        assert_eq!(kitty_functional_equivalent(57414), None);
+        assert_eq!(normalize_kitty_functional_codepoint(97), 97);
+    }
+
+    #[test]
+    fn shifted_letter_identity_drops_shift_for_uppercase() {
+        assert_eq!(normalize_shifted_letter_identity_codepoint(65, MOD_SHIFT), 97);
+        assert_eq!(normalize_shifted_letter_identity_codepoint(65, 0), 65);
+        // Lock modifiers are masked out before the shift check.
+        assert_eq!(
+            normalize_shifted_letter_identity_codepoint(65, MOD_SHIFT | 64),
+            97
+        );
+    }
+
+    #[test]
+    fn parse_event_type_and_js_int_variants() {
+        assert_eq!(parse_event_type(None), KeyEventType::Press);
+        assert_eq!(parse_event_type(Some("1")), KeyEventType::Press);
+        assert_eq!(parse_event_type(Some("2")), KeyEventType::Repeat);
+        assert_eq!(parse_event_type(Some("3")), KeyEventType::Release);
+        assert_eq!(parse_event_type(Some("x")), KeyEventType::Press);
+        assert_eq!(parse_js_int(""), None);
+        assert_eq!(parse_js_int("12"), Some(12));
+        assert_eq!(parse_js_int("x"), None);
+    }
+
+    // ─── Kitty parsing ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_kitty_arrow_home_end_and_func_forms() {
+        // Arrows with modifiers and event types.
+        let p = parse_kitty_sequence("\x1b[1;3B").unwrap();
+        assert_eq!(p.codepoint, ARROW_DOWN);
+        assert_eq!(p.modifier, MOD_ALT);
+        let p = parse_kitty_sequence("\x1b[1;5C").unwrap();
+        assert_eq!(p.codepoint, ARROW_RIGHT);
+        let p = parse_kitty_sequence("\x1b[1;2:3D").unwrap();
+        assert_eq!(p.codepoint, ARROW_LEFT);
+        assert_eq!(p.event_type, KeyEventType::Release);
+        // Home/End.
+        let p = parse_kitty_sequence("\x1b[1;1H").unwrap();
+        assert_eq!(p.codepoint, FUNC_HOME);
+        let p = parse_kitty_sequence("\x1b[1;1F").unwrap();
+        assert_eq!(p.codepoint, FUNC_END);
+        // Functional keys with ~.
+        for (seq, cp) in [
+            ("\x1b[2~", FUNC_INSERT),
+            ("\x1b[3~", FUNC_DELETE),
+            ("\x1b[5~", FUNC_PAGE_UP),
+            ("\x1b[6~", FUNC_PAGE_DOWN),
+            ("\x1b[7~", FUNC_HOME),
+            ("\x1b[8~", FUNC_END),
+        ] {
+            assert_eq!(parse_kitty_sequence(seq).unwrap().codepoint, cp);
+        }
+        // Unknown functional number / non-matching input → None.
+        assert!(parse_kitty_sequence("\x1b[4~").is_none());
+        assert!(parse_kitty_sequence("hello").is_none());
+        // Shifted/base key fields parse.
+        let p = parse_kitty_sequence("\x1b[97:65:98;2u").unwrap();
+        assert_eq!(p.shifted_key, Some(65));
+        assert_eq!(p.base_layout_key, Some(98));
+    }
+
+    #[test]
+    fn key_release_repeat_detection() {
+        assert!(is_key_release("\x1b[97;1:3u"));
+        assert!(is_key_release("\x1b[1;1:3A"));
+        assert!(!is_key_release("\x1b[97u"));
+        // Bracketed paste markers are never key events.
+        assert!(!is_key_release("\x1b[200~x:3u"));
+        assert!(is_key_repeat("\x1b[97;1:2u"));
+        assert!(!is_key_repeat("\x1b[200~x:2u"));
+        assert!(!is_key_repeat("\x1b[97u"));
+    }
+
+    // ─── is_windows_terminal_session ──────────────────────────────────
+
+    #[test]
+    fn windows_terminal_session_env_matrix() {
+        let _guard = crate::test_env::ENV_LOCK.lock();
+        let saved = clear_terminal_env();
+        assert!(!is_windows_terminal_session()); // no WT_SESSION
+        std::env::set_var("WT_SESSION", "1");
+        assert!(is_windows_terminal_session());
+        std::env::set_var("SSH_CONNECTION", "x");
+        assert!(!is_windows_terminal_session());
+        std::env::remove_var("SSH_CONNECTION");
+        std::env::set_var("SSH_CLIENT", "x");
+        assert!(!is_windows_terminal_session());
+        std::env::remove_var("SSH_CLIENT");
+        std::env::set_var("SSH_TTY", "x");
+        assert!(!is_windows_terminal_session());
+        for (k, v) in saved {
+            restore_env(k, v);
+        }
+    }
+
+    // ─── format_parsed_key ────────────────────────────────────────────
+
+    #[test]
+    fn format_parsed_key_names_all_special_keys() {
+        let cases: [(i64, &str); 16] = [
+            (CP_ESCAPE, "escape"),
+            (CP_TAB, "tab"),
+            (CP_ENTER, "enter"),
+            (CP_KP_ENTER, "enter"),
+            (CP_SPACE, "space"),
+            (CP_BACKSPACE, "backspace"),
+            (FUNC_DELETE, "delete"),
+            (FUNC_INSERT, "insert"),
+            (FUNC_HOME, "home"),
+            (FUNC_END, "end"),
+            (FUNC_PAGE_UP, "pageUp"),
+            (FUNC_PAGE_DOWN, "pageDown"),
+            (ARROW_UP, "up"),
+            (ARROW_DOWN, "down"),
+            (ARROW_LEFT, "left"),
+            (ARROW_RIGHT, "right"),
+        ];
+        for (cp, name) in cases {
+            assert_eq!(format_parsed_key(cp, 0, None).as_deref(), Some(name));
+        }
+        // Digits, letters, symbols.
+        assert_eq!(format_parsed_key(53, 0, None).as_deref(), Some("5"));
+        assert_eq!(format_parsed_key(122, 0, None).as_deref(), Some("z"));
+        assert_eq!(format_parsed_key(33, 0, None).as_deref(), Some("!"));
+        // Unknown codepoint without a base layout key → None.
+        assert_eq!(format_parsed_key(0x2603, 0, None), None);
+        // …but a base layout key rescues it.
+        assert_eq!(format_parsed_key(0x2603, 0, Some(99)).as_deref(), Some("c"));
+        // Modifiers: super joins the list; unsupported bits reject.
+        assert_eq!(
+            format_parsed_key(97, MOD_SHIFT | MOD_SUPER, None).as_deref(),
+            Some("shift+super+a")
+        );
+        assert_eq!(format_parsed_key(97, 16, None), None);
+    }
+
+    // ─── parse_key legacy singles ─────────────────────────────────────
+
+    #[test]
+    fn parse_key_legacy_control_and_alt_forms() {
+        let _g = reset_kitty();
+        assert_eq!(parse_key("\x1c").as_deref(), Some("ctrl+\\"));
+        assert_eq!(parse_key("\x1d").as_deref(), Some("ctrl+]"));
+        assert_eq!(parse_key("\x1f").as_deref(), Some("ctrl+-"));
+        assert_eq!(parse_key("\x1b\x1b").as_deref(), Some("ctrl+alt+["));
+        assert_eq!(parse_key("\x1b\x1c").as_deref(), Some("ctrl+alt+\\"));
+        assert_eq!(parse_key("\x1b\x1d").as_deref(), Some("ctrl+alt+]"));
+        assert_eq!(parse_key("\x1b\x1f").as_deref(), Some("ctrl+alt+-"));
+        assert_eq!(parse_key("\x1bOM").as_deref(), Some("enter"));
+        assert_eq!(parse_key("\n").as_deref(), Some("ctrl+j"));
+        assert_eq!(parse_key("\x00").as_deref(), Some("ctrl+space"));
+        assert_eq!(parse_key("\x08").as_deref(), Some("backspace"));
+        assert_eq!(parse_key("\x1b\x7f").as_deref(), Some("alt+backspace"));
+        assert_eq!(parse_key("\x1b\x08").as_deref(), Some("alt+backspace"));
+        assert_eq!(parse_key("\x1b ").as_deref(), Some("alt+space"));
+        // ESC + control letter → ctrl+alt+<letter>.
+        assert_eq!(parse_key("\x1b\x01").as_deref(), Some("ctrl+alt+a"));
+        // ESC + digit → alt+<digit>.
+        assert_eq!(parse_key("\x1b5").as_deref(), Some("alt+5"));
+        // Unrecognized → None.
+        assert_eq!(parse_key("\x1b[").as_deref(), None);
+    }
+
+    #[test]
+    fn parse_key_kitty_mode_changes_legacy_meanings() {
+        let _g = reset_kitty();
+        set_kitty_protocol_active(true);
+        // In kitty mode these take their protocol meanings instead.
+        assert_eq!(parse_key("\x1b\r").as_deref(), Some("shift+enter"));
+        assert_eq!(parse_key("\n").as_deref(), Some("shift+enter"));
+        // \x1b and space keep working.
+        assert_eq!(parse_key(" ").as_deref(), Some("space"));
+        set_kitty_protocol_active(false);
+        assert_eq!(parse_key("\x1b\r").as_deref(), Some("alt+enter"));
+    }
+
+    #[test]
+    fn parse_key_ctrl_backspace_on_windows_terminal() {
+        let _g = reset_kitty();
+        let _guard = crate::test_env::ENV_LOCK.lock();
+        let saved = clear_terminal_env();
+        std::env::set_var("WT_SESSION", "1");
+        assert_eq!(parse_key("\x08").as_deref(), Some("ctrl+backspace"));
+        for (k, v) in saved {
+            restore_env(k, v);
+        }
+    }
+
+    // ─── printable decoding ───────────────────────────────────────────
+
+    #[test]
+    fn decode_kitty_printable_variants() {
+        let _g = reset_kitty();
+        // Plain printable.
+        assert_eq!(decode_kitty_printable("\x1b[97u").as_deref(), Some("a"));
+        // Shift with an explicit shifted key uses it.
+        assert_eq!(decode_kitty_printable("\x1b[97:65;2u").as_deref(), Some("A"));
+        // Shift without a shifted key keeps the base codepoint.
+        assert_eq!(decode_kitty_printable("\x1b[97;2u").as_deref(), Some("a"));
+        // Ctrl/Alt modifiers are not printable.
+        assert_eq!(decode_kitty_printable("\x1b[97;5u"), None);
+        assert_eq!(decode_kitty_printable("\x1b[97;3u"), None);
+        // Control codepoints are not printable.
+        assert_eq!(decode_kitty_printable("\x1b[13u"), None);
+        // Functional codepoints normalize before the range check.
+        assert_eq!(decode_kitty_printable("\x1b[57399u").as_deref(), Some("0"));
+        // Non-kitty input → None.
+        assert_eq!(decode_kitty_printable("a"), None);
+    }
+
+    #[test]
+    fn decode_modify_other_keys_and_combined_printable() {
+        let _g = reset_kitty();
+        assert_eq!(
+            decode_modify_other_keys_printable("\x1b[27;2;97~").as_deref(),
+            Some("a")
+        );
+        // Beyond shift → not printable.
+        assert_eq!(decode_modify_other_keys_printable("\x1b[27;5;97~"), None);
+        // Control codepoint → None.
+        assert_eq!(decode_modify_other_keys_printable("\x1b[27;2;13~"), None);
+        // Unparseable → None.
+        assert!(decode_modify_other_keys_printable("x").is_none());
+        // The combined decoder tries kitty first, then modifyOtherKeys.
+        assert_eq!(decode_printable_key("\x1b[97u").as_deref(), Some("a"));
+        assert_eq!(decode_printable_key("\x1b[27;2;98~").as_deref(), Some("b"));
+        assert_eq!(decode_printable_key("\x1b[A"), None);
+    }
+
+    // ─── key-id helpers ───────────────────────────────────────────────
+
+    #[test]
+    fn key_id_builders_and_parsers() {
+        assert_eq!(modified_key("ctrl", "c"), "ctrl+c");
+        assert_eq!(ctrl_key("c"), "ctrl+c");
+        // parse_key_id: trailing empty key → None.
+        assert!(parse_key_id("ctrl+").is_none());
+        let p = parse_key_id("Ctrl+Shift+A").unwrap();
+        assert!(p.ctrl && p.shift && !p.alt && !p.super_modifier);
+        assert_eq!(p.key, "a");
+        // is_single_key_char.
+        assert!(is_single_key_char("a"));
+        assert!(is_single_key_char("5"));
+        assert!(is_single_key_char("!"));
+        assert!(!is_single_key_char("ab"));
+        assert!(!is_single_key_char("A"));
+        // is_digit_key.
+        assert!(is_digit_key("7"));
+        assert!(!is_digit_key("a"));
+        assert!(!is_digit_key("77"));
+    }
+
+    #[test]
+    fn raw_ctrl_char_and_backspace_matching() {
+        let _guard = crate::test_env::ENV_LOCK.lock();
+        // Letters and the five symbol controls map; others don't.
+        assert_eq!(raw_ctrl_char("a"), Some('\x01'));
+        assert_eq!(raw_ctrl_char("["), Some('\x1b'));
+        assert_eq!(raw_ctrl_char("\\"), Some('\x1c'));
+        assert_eq!(raw_ctrl_char("]"), Some('\x1d'));
+        assert_eq!(raw_ctrl_char("_"), Some('\x1f'));
+        assert_eq!(raw_ctrl_char("-"), Some('\r')); // '-' & 0x1f = 0x0d
+        assert_eq!(raw_ctrl_char("!"), None);
+        assert_eq!(raw_ctrl_char(""), None);
+
+        // matches_raw_backspace matrix.
+        assert!(matches_raw_backspace("\x7f", 0));
+        assert!(!matches_raw_backspace("\x7f", MOD_CTRL));
+        assert!(!matches_raw_backspace("x", 0));
+        let saved = clear_terminal_env();
+        assert!(matches_raw_backspace("\x08", 0));
+        std::env::set_var("WT_SESSION", "1");
+        assert!(matches_raw_backspace("\x08", MOD_CTRL));
+        assert!(!matches_raw_backspace("\x08", 0));
+        for (k, v) in saved {
+            restore_env(k, v);
+        }
+    }
+
+    #[test]
+    fn legacy_sequence_tables_are_complete() {
+        for (key, first) in [
+            ("insert", "\x1b[2~"),
+            ("delete", "\x1b[3~"),
+            ("clear", "\x1b[E"),
+            ("home", "\x1bOH"),
+            ("end", "\x1bOF"),
+            ("pageUp", "\x1b[5~"),
+            ("pageDown", "\x1b[6~"),
+            ("up", "\x1b[A"),
+            ("down", "\x1b[B"),
+            ("left", "\x1b[D"),
+            ("right", "\x1b[C"),
+            ("f1", "\x1bOP"),
+            ("f2", "\x1bOQ"),
+            ("f3", "\x1bOR"),
+            ("f4", "\x1bOS"),
+            ("f5", "\x1b[15~"),
+            ("f6", "\x1b[17~"),
+            ("f7", "\x1b[18~"),
+            ("f8", "\x1b[19~"),
+            ("f9", "\x1b[20~"),
+            ("f10", "\x1b[21~"),
+            ("f11", "\x1b[23~"),
+            ("f12", "\x1b[24~"),
+        ] {
+            assert!(legacy_key_sequences(key).contains(&first));
+            assert!(matches_legacy_sequence(first, legacy_key_sequences(key)));
+        }
+        assert!(legacy_key_sequences("nope").is_empty());
+        // Shift variants.
+        for (key, seq) in [
+            ("up", "\x1b[a"),
+            ("down", "\x1b[b"),
+            ("right", "\x1b[c"),
+            ("left", "\x1b[d"),
+            ("clear", "\x1b[e"),
+            ("insert", "\x1b[2$"),
+            ("delete", "\x1b[3$"),
+            ("pageUp", "\x1b[5$"),
+            ("pageDown", "\x1b[6$"),
+            ("home", "\x1b[7$"),
+            ("end", "\x1b[8$"),
+        ] {
+            assert!(legacy_shift_sequences(key).contains(&seq));
+            assert!(matches_legacy_modifier_sequence(seq, key, MOD_SHIFT));
+        }
+        assert!(legacy_shift_sequences("f1").is_empty());
+        // Ctrl variants.
+        for (key, seq) in [
+            ("up", "\x1bOa"),
+            ("down", "\x1bOb"),
+            ("right", "\x1bOc"),
+            ("left", "\x1bOd"),
+            ("clear", "\x1bOe"),
+            ("insert", "\x1b[2^"),
+            ("delete", "\x1b[3^"),
+            ("pageUp", "\x1b[5^"),
+            ("pageDown", "\x1b[6^"),
+            ("home", "\x1b[7^"),
+            ("end", "\x1b[8^"),
+        ] {
+            assert!(legacy_ctrl_sequences(key).contains(&seq));
+            assert!(matches_legacy_modifier_sequence(seq, key, MOD_CTRL));
+        }
+        assert!(legacy_ctrl_sequences("f1").is_empty());
+        // Other modifiers match nothing.
+        assert!(!matches_legacy_modifier_sequence("\x1b[a", "up", MOD_ALT));
+    }
+
+    // ─── matches_key ──────────────────────────────────────────────────
+
+    #[test]
+    fn matches_key_escape_space_tab() {
+        let _g = reset_kitty();
+        // escape: plain, kitty, mok forms; modified never matches.
+        assert!(matches_key("\x1b", "escape"));
+        assert!(matches_key("\x1b[27u", "escape"));
+        assert!(matches_key("\x1b[27;1;27~", "escape"));
+        assert!(!matches_key("\x1b", "ctrl+escape"));
+        assert!(matches_key("\x1b", "esc"));
+        // space: ctrl/alt legacy, kitty and mok forms.
+        assert!(matches_key(" ", "space"));
+        assert!(matches_key("\x1b[32u", "space"));
+        assert!(matches_key("\x1b[27;1;32~", "space"));
+        assert!(matches_key("\x00", "ctrl+space"));
+        assert!(matches_key("\x1b ", "alt+space"));
+        assert!(matches_key("\x1b[32;5u", "ctrl+space"));
+        assert!(matches_key("\x1b[27;5;32~", "ctrl+space"));
+        // tab: plain, shift, kitty/mok forms.
+        assert!(matches_key("\t", "tab"));
+        assert!(matches_key("\x1b[Z", "shift+tab"));
+        assert!(matches_key("\x1b[9;2u", "shift+tab"));
+        assert!(matches_key("\x1b[27;2;9~", "shift+tab"));
+        assert!(matches_key("\x1b[9u", "tab"));
+        assert!(matches_key("\x1b[9;5u", "ctrl+tab"));
+        assert!(matches_key("\x1b[27;5;9~", "ctrl+tab"));
+    }
+
+    #[test]
+    fn matches_key_enter_forms() {
+        let _g = reset_kitty();
+        assert!(matches_key("\r", "enter"));
+        assert!(matches_key("\x1bOM", "enter"));
+        assert!(matches_key("\x1b[13u", "enter"));
+        assert!(matches_key("\x1b[57414u", "enter")); // keypad enter
+        assert!(matches_key("\r", "return"));
+        // shift+enter: kitty (+ keypad), mok, and the kitty-mode legacy.
+        assert!(matches_key("\x1b[13;2u", "shift+enter"));
+        assert!(matches_key("\x1b[57414;2u", "shift+enter"));
+        assert!(matches_key("\x1b[27;2;13~", "shift+enter"));
+        assert!(!matches_key("\x1b\r", "shift+enter")); // kitty off
+        set_kitty_protocol_active(true);
+        assert!(matches_key("\x1b\r", "shift+enter"));
+        assert!(matches_key("\n", "shift+enter"));
+        set_kitty_protocol_active(false);
+        // alt+enter: kitty (+ keypad), mok, legacy when kitty is off.
+        assert!(matches_key("\x1b[13;3u", "alt+enter"));
+        assert!(matches_key("\x1b[57414;3u", "alt+enter"));
+        assert!(matches_key("\x1b[27;3;13~", "alt+enter"));
+        assert!(matches_key("\x1b\r", "alt+enter"));
+        set_kitty_protocol_active(true);
+        assert!(!matches_key("\x1b\r", "alt+enter"));
+        set_kitty_protocol_active(false);
+        // Other modifier combos go through kitty/mok matching.
+        assert!(matches_key("\x1b[13;5u", "ctrl+enter"));
+        assert!(matches_key("\x1b[57414;5u", "ctrl+enter"));
+        assert!(matches_key("\x1b[27;5;13~", "ctrl+enter"));
+        assert!(!matches_key("\r", "ctrl+enter"));
+    }
+
+    #[test]
+    fn matches_key_backspace_forms() {
+        let _g = reset_kitty();
+        assert!(matches_key("\x7f", "backspace"));
+        assert!(matches_key("\x08", "backspace"));
+        assert!(matches_key("\x1b[127u", "backspace"));
+        assert!(matches_key("\x1b[27;1;127~", "backspace"));
+        assert!(matches_key("\x1b\x7f", "alt+backspace"));
+        assert!(matches_key("\x1b\x08", "alt+backspace"));
+        assert!(matches_key("\x1b[127;3u", "alt+backspace"));
+        assert!(matches_key("\x1b[27;3;127~", "alt+backspace"));
+        assert!(matches_key("\x1b[127;5u", "ctrl+backspace"));
+        assert!(matches_key("\x1b[27;5;127~", "ctrl+backspace"));
+        // shift+backspace falls to the generic kitty/mok path.
+        assert!(matches_key("\x1b[127;2u", "shift+backspace"));
+        assert!(matches_key("\x1b[27;2;127~", "shift+backspace"));
+        assert!(!matches_key("x", "backspace"));
+    }
+
+    #[test]
+    fn matches_key_editing_and_navigation_keys() {
+        let _g = reset_kitty();
+        assert!(matches_key("\x1b[2~", "insert"));
+        assert!(matches_key("\x1b[57425u", "insert"));
+        assert!(matches_key("\x1b[57425;5u", "ctrl+insert"));
+        assert!(matches_key("\x1b[3~", "delete"));
+        assert!(matches_key("\x1b[57426u", "delete"));
+        assert!(matches_key("\x1b[57426;5u", "ctrl+delete"));
+        assert!(matches_key("\x1b[E", "clear"));
+        assert!(matches_key("\x1b[e", "shift+clear"));
+        assert!(matches_key("\x1bOe", "ctrl+clear"));
+        assert!(matches_key("\x1bOH", "home"));
+        assert!(matches_key("\x1b[1;1H", "home"));
+        assert!(matches_key("\x1b[7~", "home"));
+        assert!(matches_key("\x1b[1;5H", "ctrl+home"));
+        assert!(matches_key("\x1bOF", "end"));
+        assert!(matches_key("\x1b[1;1F", "end"));
+        assert!(matches_key("\x1b[8~", "end"));
+        assert!(matches_key("\x1b[1;5F", "ctrl+end"));
+        assert!(matches_key("\x1b[5~", "pageup"));
+        assert!(matches_key("\x1b[5;5~", "ctrl+pageup"));
+        assert!(matches_key("\x1b[6~", "pagedown"));
+        assert!(matches_key("\x1b[6;5~", "ctrl+pagedown"));
+    }
+
+    #[test]
+    fn matches_key_arrow_forms() {
+        let _g = reset_kitty();
+        assert!(matches_key("\x1b[A", "up"));
+        assert!(matches_key("\x1b[1;1A", "up"));
+        assert!(matches_key("\x1bp", "alt+up"));
+        assert!(matches_key("\x1b[1;3A", "alt+up"));
+        assert!(matches_key("\x1b[1;2A", "shift+up"));
+        assert!(matches_key("\x1b[B", "down"));
+        assert!(matches_key("\x1bn", "alt+down"));
+        assert!(matches_key("\x1b[1;3B", "alt+down"));
+        assert!(matches_key("\x1b[1;5B", "ctrl+down"));
+        assert!(matches_key("\x1b[D", "left"));
+        assert!(matches_key("\x1bb", "alt+left"));
+        assert!(matches_key("\x1bB", "alt+left")); // kitty off
+        assert!(matches_key("\x1b[1;3D", "alt+left"));
+        assert!(matches_key("\x1b[1;5D", "ctrl+left"));
+        assert!(matches_key("\x1b[1;2D", "shift+left"));
+        assert!(matches_key("\x1b[C", "right"));
+        assert!(matches_key("\x1bf", "alt+right"));
+        assert!(matches_key("\x1bF", "alt+right")); // kitty off
+        assert!(matches_key("\x1b[1;3C", "alt+right"));
+        assert!(matches_key("\x1b[1;5C", "ctrl+right"));
+        assert!(matches_key("\x1b[1;2C", "shift+right"));
+        // With kitty on, the bare alt+letter forms no longer match arrows.
+        set_kitty_protocol_active(true);
+        assert!(!matches_key("\x1bB", "alt+left"));
+        assert!(!matches_key("\x1bF", "alt+right"));
+        set_kitty_protocol_active(false);
+    }
+
+    #[test]
+    fn matches_key_function_key_matrix() {
+        let _g = reset_kitty();
+        for (key, seq) in [
+            ("f1", "\x1bOP"),
+            ("f2", "\x1bOQ"),
+            ("f3", "\x1bOR"),
+            ("f4", "\x1bOS"),
+            ("f5", "\x1b[15~"),
+            ("f6", "\x1b[17~"),
+            ("f7", "\x1b[18~"),
+            ("f8", "\x1b[19~"),
+            ("f9", "\x1b[20~"),
+            ("f10", "\x1b[21~"),
+            ("f11", "\x1b[23~"),
+            ("f12", "\x1b[24~"),
+        ] {
+            assert!(matches_key(seq, key));
+            assert!(!matches_key(seq, &format!("ctrl+{key}")));
+        }
+    }
+
+    #[test]
+    fn matches_key_single_char_forms() {
+        let _g = reset_kitty();
+        // Plain.
+        assert!(matches_key("a", "a"));
+        assert!(matches_key("\x1b[97u", "a"));
+        assert!(matches_key("5", "5"));
+        // Raw ctrl byte.
+        assert!(matches_key("\x03", "ctrl+c"));
+        assert!(matches_key("\x1b[99;5u", "ctrl+c"));
+        assert!(matches_key("\x1b[27;5;99~", "ctrl+c"));
+        // ctrl+alt raw byte (kitty off).
+        assert!(matches_key("\x1b\x03", "ctrl+alt+c"));
+        set_kitty_protocol_active(true);
+        assert!(!matches_key("\x1b\x03", "ctrl+alt+c"));
+        set_kitty_protocol_active(false);
+        // alt+letter / alt+digit raw.
+        assert!(matches_key("\x1bx", "alt+x"));
+        assert!(matches_key("\x1b7", "alt+7"));
+        // shift+letter matches the uppercase char directly.
+        assert!(matches_key("A", "shift+a"));
+        assert!(matches_key("\x1b[97;2u", "shift+a"));
+        assert!(matches_key("\x1b[27;2;97~", "shift+a"));
+        // shift+ctrl.
+        assert!(matches_key("\x1b[99;6u", "shift+ctrl+c"));
+        assert!(matches_key("\x1b[27;6;99~", "shift+ctrl+c"));
+        // Super / other modifier via the generic path.
+        assert!(matches_key("\x1b[97;9u", "super+a"));
+        assert!(matches_key("\x1b[27;9;97~", "super+a"));
+        // Symbol keys.
+        assert!(matches_key("!", "!"));
+        assert!(matches_key("\x1b[33u", "!"));
+        // A key that isn't a single char can't match char input.
+        assert!(!matches_key("a", "ab"));
+    }
+
+    #[test]
+    fn parse_key_accepts_modify_other_keys_input() {
+        let _g = reset_kitty();
+        assert_eq!(parse_key("\x1b[27;5;99~").as_deref(), Some("ctrl+c"));
+        assert_eq!(parse_key("\x1b[27;1;97~").as_deref(), Some("a"));
+        assert_eq!(parse_key("Q").as_deref(), Some("Q"));
+        assert_eq!(parse_key("~").as_deref(), Some("~"));
+    }
+
+    #[test]
+    fn matches_key_space_with_kitty_on() {
+        let _g = reset_kitty();
+        set_kitty_protocol_active(true);
+        // Plain space still matches; the legacy ctrl/alt forms don't.
+        assert!(matches_key(" ", "space"));
+        assert!(!matches_key("\x00", "ctrl+space"));
+        assert!(!matches_key("\x1b ", "alt+space"));
+        assert!(matches_key("\x1b[32;5u", "ctrl+space"));
+        set_kitty_protocol_active(false);
+    }
+
+    #[test]
+    fn matches_key_ctrl_backspace_windows_terminal_raw() {
+        let _g = reset_kitty();
+        let _guard = crate::test_env::ENV_LOCK.lock();
+        let saved = clear_terminal_env();
+        std::env::set_var("WT_SESSION", "1");
+        // On Windows Terminal, \x08 IS ctrl+backspace.
+        assert!(matches_key("\x08", "ctrl+backspace"));
+        assert!(!matches_key("\x08", "backspace"));
+        for (k, v) in saved {
+            restore_env(k, v);
+        }
+    }
+
+    #[test]
+    fn matches_key_kitty_mod_zero_forms() {
+        let _g = reset_kitty();
+        assert!(matches_key("\x1b[5;1~", "pageup"));
+        assert!(matches_key("\x1b[6;1~", "pagedown"));
+        assert!(matches_key("\x1b[1;1B", "down"));
+        assert!(matches_key("\x1b[1;1D", "left"));
+        assert!(matches_key("\x1b[1;1C", "right"));
+    }
+
+    #[test]
+    fn matches_key_raw_combo_negative_paths() {
+        let _g = reset_kitty();
+        // ctrl+alt raw byte for a different letter doesn't match.
+        assert!(!matches_key("\x1b\x04", "ctrl+alt+c"));
+        // ctrl+alt+<digit> has no raw byte form at all.
+        assert!(!matches_key("\x1b5", "ctrl+alt+5"));
+        // alt raw for a different letter doesn't match.
+        assert!(!matches_key("\x1by", "alt+x"));
+        // ctrl+<symbol> has no raw byte form.
+        assert!(!matches_key("\x01", "ctrl+!"));
+        // …but its kitty form matches.
+        assert!(matches_key("\x1b[33;5u", "ctrl+!"));
+    }
+
+    #[test]
+    fn matches_key_base_layout_and_mismatch_paths() {
+        let _g = reset_kitty();
+        // Modifier mismatch → no match.
+        assert!(!matches_key("\x1b[97;5u", "a"));
+        // Base layout fallback: non-latin codepoint with a latin base key.
+        assert!(matches_key("\x1b[8364::99;5u", "ctrl+c"));
+        // …but a latin letter codepoint does not fall back.
+        assert!(!matches_key("\x1b[109::99;5u", "ctrl+c"));
+        // …and a mismatched base key doesn't either.
+        assert!(!matches_key("\x1b[8364::100;5u", "ctrl+c"));
+        // modifyOtherKeys parse failure → false.
+        assert!(!matches_key("junk", "ctrl+c"));
+        // Printable mok requires a nonzero expected modifier path.
+        assert!(!matches_printable_modify_other_keys("\x1b[27;1;97~", 97, 0));
+        assert!(!matches_printable_modify_other_keys("junk", 97, MOD_CTRL));
+        assert!(!matches_printable_modify_other_keys(
+            "\x1b[27;2;97~",
+            97,
+            MOD_CTRL
+        ));
     }
 }

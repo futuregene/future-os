@@ -241,12 +241,14 @@ impl Backend {
     /// waitable; window-size events wake it too, so a size change is reported
     /// as `ReadWait::Resize` (checked before `Input` — a pending key survives
     /// to the next `wait`).
-    pub(crate) fn wait(&self, timeout_ms: i32) -> io::Result<ReadWait> {
+    /// Infallible (mirrors the POSIX contract): WaitForSingleObject errors
+    /// are timeout-equivalents — the loop re-waits.
+    pub(crate) fn wait(&self, timeout_ms: i32) -> ReadWait {
         let timeout = timeout_ms.max(0) as u32;
         let rc = unsafe { WaitForSingleObject(self.stdin.0, timeout) };
         if rc != WAIT_OBJECT_0 {
             // WAIT_TIMEOUT (or an error — treat as timeout, the loop re-waits).
-            return Ok(ReadWait::Timeout);
+            return ReadWait::Timeout;
         }
         let sz = self.size();
         let changed = {
@@ -259,9 +261,9 @@ impl Backend {
             }
         };
         if changed {
-            Ok(ReadWait::Resize)
+            ReadWait::Resize
         } else {
-            Ok(ReadWait::Input)
+            ReadWait::Input
         }
     }
 
