@@ -143,10 +143,12 @@ fn find_stream_cut(text: &str) -> usize {
     let mut fence_char = '\0';
     let mut line_start = 0;
     while line_start < text.len() {
-        let nl = text[line_start..]
-            .find('\n')
-            .map(|i| line_start + i)
-            .unwrap_or(text.len());
+        // Only newline-terminated lines are considered: the unterminated
+        // tail is still growing (a blank-looking tail could become a fence
+        // or content) — and cutting at len+1 would slice out of bounds.
+        let Some(nl) = text[line_start..].find('\n').map(|i| line_start + i) else {
+            break;
+        };
         let line = &text[line_start..nl];
         if let Some(cap) = stream_fence_re().captures(line) {
             let ch = cap.get(1).unwrap().as_str().chars().next().unwrap();
@@ -1988,6 +1990,36 @@ mod tests {
         // blank lines inside a fence don't cut
         let fenced = "```\ncode\n\nmore\n```\n\n";
         assert_eq!(find_stream_cut(fenced), fenced.len());
+        // The unterminated tail line is never a cut point — even when it
+        // looks blank. Regression: "foo\n\n " used to return len+1 and the
+        // incremental renderer then sliced out of bounds (exit 101).
+        assert_eq!(find_stream_cut("foo\n\n "), 5);
+        assert_eq!(find_stream_cut(" "), 0);
+        assert_eq!(find_stream_cut("para\n\n  \n"), 9);
+    }
+
+    #[test]
+    fn streaming_render_tolerates_whitespace_only_tail() {
+        // End-to-end: the exact panic path from the crash log —
+        // render_streaming_markdown with a trailing blank-but-unterminated
+        // line must not panic.
+        let mut caches = std::collections::HashMap::new();
+        let mut md = MarkdownRenderer::new();
+        let frames = [
+            "para one\n",
+            "para one\n\n",
+            "para one\n\n ",
+            "para one\n\n  \npara two",
+        ];
+        for frame in frames {
+            let lines = ChatArea::render_streaming_markdown(&mut caches, "k", frame, 78, &mut md);
+            let joined = lines
+                .iter()
+                .map(|l| crate::utils::strip_ansi_codes(l))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(joined.contains("para one"), "frame {frame:?} lost content");
+        }
     }
 
     #[test]
