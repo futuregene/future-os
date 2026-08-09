@@ -13,6 +13,7 @@
 //! State lives under `--root` (default `~/.future/loop/`), one goal per
 //! directory, event-sourced: `loop status` replays the ledger each time.
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use crate::cli::registry::CommandRegistry;
@@ -235,6 +236,12 @@ fn build_cli_registry() -> CommandRegistry {
     );
     r.command(
         agent,
+        "list",
+        "registered agents + live execution status (leases)",
+        "agent list --goal G",
+    );
+    r.command(
+        agent,
         "scope",
         "identity-scoped agent frontier (G-16)",
         "scope --goal G --agent-id A [--exclude X]",
@@ -389,8 +396,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "run",
-        "drive one bounded gRPC turn",
-        "run --goal G [--model M] [--thinking-level L] [--max-turns N]",
+        "drive one bounded gRPC turn (requires --agent-id; auto-registers)",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N]",
     );
 
     let work_items = r.group("work-items", "attention / operator inbox (G-15)");
@@ -878,6 +885,9 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     if args.first().map(|s| s.as_str()) == Some("onboard") {
         return cmd_agent_onboard(store, &args[1..]);
     }
+    if args.first().map(|s| s.as_str()) == Some("list") {
+        return cmd_agent_list(store, &args[1..]);
+    }
     let mut goal_id = None;
     let mut agent_id = None;
     parse_pairs(args, |k, v| match k {
@@ -909,7 +919,9 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
-        "--capability" => capabilities = v.split(',').map(|s| s.trim().to_string()).collect(),
+        "--capability" | "--capabilities" => {
+            capabilities = v.split(',').map(|s| s.trim().to_string()).collect()
+        }
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -925,6 +937,107 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     })?;
     println!("agent `{agent_id}` onboarded (capabilities={capabilities:?}) ✔");
     Ok(())
+}
+
+/// `future loop agent list --goal G` — registered agents + their current
+/// execution status. Status is derived from the live task-lease ledger:
+/// `running` = the agent holds a live lease on a todo right now (shown with
+/// the lease's remaining time); `idle` = registered but holding no lease.
+/// Also shows declared capabilities and the agent's most recent activity.
+/// Intended as the pre-flight check before `agent register`/`onboard`, so
+/// parallel workers reuse existing ids instead of re-registering the same
+/// one (each concurrent run needs its own unique id).
+fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+
+    // Event-derived metadata: most recent activity timestamp per agent
+    // (registration, onboarding, or any lease transition).
+    let now = now_epoch();
+    let mut last_active: HashMap<String, u64> = HashMap::new();
+    for ev in store.events(&goal_id).unwrap_or_default() {
+        let (agent, ts) = match &ev.event {
+            Event::AgentRegistered { agent_id, ts, .. }
+            | Event::AgentOnboarded { agent_id, ts, .. }
+            | Event::TodoClaimed { agent_id, ts, .. }
+            | Event::TodoRenewed { agent_id, ts, .. }
+            | Event::TodoReleased { agent_id, ts, .. } => (agent_id.as_str(), *ts),
+            _ => continue,
+        };
+        last_active
+            .entry(agent.to_string())
+            .and_modify(|t| *t = (*t).max(ts))
+            .or_insert(ts);
+    }
+
+    if goal.registered_agents.is_empty() {
+        println!("no agents registered for {goal_id}");
+        return Ok(());
+    }
+    println!(
+        "agents registered for {goal_id} ({}):",
+        goal.registered_agents.len()
+    );
+    println!(
+        "  {:<12} {:<8} {:<32} {:<14} {:<12}",
+        "agent_id", "status", "work-on", "capabilities", "last-active"
+    );
+    for aid in &goal.registered_agents {
+        let mut work: Vec<String> = Vec::new();
+        for t in goal.todos.iter() {
+            if t.claimed_by.as_deref() == Some(aid.as_str())
+                && t.lease_expires_at.map(|e| e > now).unwrap_or(false)
+            {
+                let left = t.lease_expires_at.unwrap().saturating_sub(now);
+                work.push(format!("{} (lease {} left)", t.id, human_dur(left)));
+            }
+        }
+        let status = if work.is_empty() { "idle" } else { "running" };
+        let work_label = if work.is_empty() {
+            "-".to_string()
+        } else {
+            work.join("; ")
+        };
+        let caps = goal
+            .agent_profiles
+            .iter()
+            .find(|p| p.id == *aid)
+            .map(|p| p.capabilities.join(","))
+            .unwrap_or_else(|| "-".to_string());
+        let last = last_active
+            .get(aid)
+            .map(|ts| format!("{} ago", human_dur(now.saturating_sub(*ts))))
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "  {:<12} {:<8} {:<32} {:<14} {:<12}",
+            aid, status, work_label, caps, last
+        );
+    }
+    println!(
+        "hint: agent ids are goal-scoped; check this list before `agent register`/`onboard` \
+         to avoid duplicate ids (each parallel worker needs its own unique id)"
+    );
+    Ok(())
+}
+
+/// Compact human duration ("59s" / "4m12s" / "3h59m") for lease/activity
+/// display in `agent list`.
+fn human_dur(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
@@ -1695,21 +1808,76 @@ async fn cmd_models(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Default task-lease length for a `run` turn (4h — long LLM/compute turns
+/// routinely exceed the old 1h lease, which would let another worker steal
+/// the todo mid-turn once the lease expired).
+const DEFAULT_RUN_LEASE_SECS: u64 = 4 * 3600;
+
+/// Resolve run identity (G-27): `run` REQUIRES `--agent-id` so the lease
+/// mechanism actually engages — an anonymous run claims nothing and hides
+/// nothing, so two agentless runs deterministically race on the same todo.
+/// An id that is not yet registered is auto-registered on first use (replay
+/// is idempotent, so `run` never needs a separate `agent register` step).
+/// `--anonymous` opts back into the legacy uncoordinated one-shot path.
+/// Returns the resolved agent id (None for `--anonymous`).
+pub fn ensure_run_identity(
+    store: &mut Store,
+    goal_id: &str,
+    agent_id: Option<&str>,
+    anonymous: bool,
+) -> Result<Option<String>> {
+    match (agent_id, anonymous) {
+        (Some(aid), _) => {
+            let goal = store
+                .replay(goal_id)?
+                .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+            if !goal.is_registered_agent(Some(aid)) {
+                store.append(Event::AgentRegistered {
+                    goal_id: goal_id.to_string(),
+                    agent_id: aid.to_string(),
+                    ts: now_epoch(),
+                })?;
+                println!("agent `{aid}` auto-registered for {goal_id} ✔");
+            }
+            Ok(Some(aid.to_string()))
+        }
+        (None, true) => {
+            println!(
+                "⚠ anonymous run: no lease coordination — parallel runs may race on the same todo"
+            );
+            Ok(None)
+        }
+        (None, false) => bail!(
+            "run requires --agent-id <name> (or --anonymous for an uncoordinated one-shot run); \
+             check existing ids with `{} agent list --goal {goal_id}`",
+            prog()
+        ),
+    }
+}
+
 async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut model = None;
     let mut thinking = None;
     let mut max_turns = 6u32;
     let mut agent_id = None;
+    let mut anonymous = false;
+    let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--model" => model = Some(v),
         "--thinking-level" => thinking = Some(v),
         "--max-turns" => max_turns = v.parse().unwrap_or(6),
         "--agent-id" => agent_id = Some(v),
+        "--lease-secs" => lease_secs = v.parse().unwrap_or(DEFAULT_RUN_LEASE_SECS),
+        "--anonymous" => anonymous = true,
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+
+    // Identity gate BEFORE any gRPC/session work — fail fast with a hint
+    // (and stays unit-testable without an agent server).
+    let agent_id = ensure_run_identity(store, &goal_id, agent_id.as_deref(), anonymous)?;
 
     let mut client = crate::agent_client::AgentClient::connect("127.0.0.1:50051").await?;
     let goal0 = store
@@ -1734,6 +1902,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         &goal_id,
         &session_id,
         max_turns,
+        lease_secs,
         agent_id.as_deref(),
     )
     .await;
@@ -1752,6 +1921,7 @@ async fn run_turns(
     goal_id: &str,
     session_id: &str,
     max_turns: u32,
+    lease_secs: u64,
     agent_id: Option<&str>,
 ) -> Result<()> {
     let mut turn = 0u32;
@@ -1820,7 +1990,7 @@ async fn run_turns(
                         goal_id: goal_id.to_string(),
                         todo_id: todo_id.clone(),
                         agent_id: aid.to_string(),
-                        lease_expires_at: now + 3600,
+                        lease_expires_at: now + lease_secs,
                         ts: now,
                     })?;
                 }
@@ -2460,7 +2630,7 @@ fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
         let k = args[i].as_str();
         if k.starts_with("--") {
             // boolean flags (no value) are followed by another flag or end.
-            if matches!(k, "--no-follow-up" | "--help" | "-h") {
+            if matches!(k, "--no-follow-up" | "--anonymous" | "--help" | "-h") {
                 f(k, "true".to_string());
                 i += 1;
             } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {

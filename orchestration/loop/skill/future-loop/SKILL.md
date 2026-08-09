@@ -1,5 +1,5 @@
 ---
-version: 1.0.1
+version: 1.0.3
 name: future-loop
 description: FutureOS loop control plane — manage long-running goals, todo lists, human gates, monitors, and validated completion via the loop control plane. Use when the user wants a long-lived/multi-step/cross-session task tracked as a goal, asks to "keep working on X", "track this issue", "run this overnight", needs progress/status of ongoing agent work, or starts a message with "/future-loop" (treat everything after the prefix as the goal).
 allowed-tools: Bash(future-loop:*)
@@ -239,6 +239,92 @@ report-generation todo. When executing it, copy files with `cp` (not mv)
 from `<cwd>/.future/loop/goals/<id>/` to `<cwd>/`, so the user can find
 results directly in the project root without digging into `.future/loop/`.
 
+### 6.0 Agent identity & parallel safety — `--agent-id` MANDATORY (enforced)
+
+Every `future loop run` MUST carry an `--agent-id` — **enforced by the CLI**
+(2026-08): `run` without it fails fast with a hint pointing at `agent list`;
+pass `--anonymous` only for a legacy uncoordinated one-shot run (prints a
+warning). This is the control plane's ONLY automatic mutual-exclusion
+mechanism:
+
+- **No separate registration step needed — `run` auto-registers on first
+  use:** the first `run --agent-id <name>` appends `AgentRegistered`
+  automatically (replay is idempotent).
+  `future loop agent onboard --goal <goal-id> --agent-id <name>
+  [--capabilities c1,c2]` is still available to declare capabilities;
+  `agent register` remains for plain registration.
+- **Use a unique name per parallel worker** (e.g. `<host>-<task>` /
+  `<user>-<workerN>`); never reuse one id for two concurrent runs — a run
+  sees its OWN leased todos as runnable, so two runs sharing one id both
+  pick the same todo and double-execute.
+- **Run with the id:**
+  ```bash
+  future loop run --goal <goal-id> --agent-id <unique-name> \
+    --model <confirmed-model> --thinking-level <confirmed-thinking> --max-turns 1
+  ```
+- **Why it matters (verified in code, 2026-08):** a run WITH `--agent-id`
+  claims a lease on the selected todo BEFORE executing
+  (`Event::TodoClaimed`; default 4h — `--lease-secs N` to override), and the
+  frontier filter hides todos leased by other agents (`claimed_by_other`) —
+  so parallel runs grab DIFFERENT todos and never double-execute. An
+  `--anonymous` run claims nothing and hides nothing — two agentless runs
+  deterministically pick the SAME next todo and race.
+- **Conflict-avoidance checklist before launching any run:**
+  1. `future loop agent list --goal <goal-id>` — who is registered and
+     currently running (reuse existing ids; don't re-register).
+  2. `ps aux | grep "future loop run"` — confirm no other run is active, or
+     that you WANT parallel workers (each with a distinct id).
+  3. `future loop status --goal <goal-id>` — confirm the expected next todo.
+  4. `future loop quota should-run --goal <goal-id> --agent-id <me>` —
+     preview which todo this agent would get.
+  5. `future loop lease status --goal <goal-id> --todo-id <T> --agent-id <me>`
+     — inspect a lease before claiming/repairing.
+- `lease claim` and `quota should-run --agent-id` REQUIRE the agent to be
+  registered first (error: `agent \`X\` is not registered for goal …`);
+  `run --agent-id` auto-registers instead of failing.
+- NOTE: `run`'s help text DOES list `--agent-id` — the flag is enforced,
+  not optional.
+
+### 6.1 Multi-agent parallel runs (scale-out on one goal)
+
+The loop supports N concurrent runs on the SAME goal — each `run --agent-id`
+is an independent process sharing the goal ledger (event appends are
+advisory-file-locked, so interleaving is safe). To avoid the decide→claim
+TOCTOU race (two fresh runs can both pick the same FREE todo in the same
+second; last claim wins in the ledger), ASSIGN todos deterministically
+BEFORE launching:
+
+1. **Register one agent per worker:**
+   ```bash
+   future loop agent register --goal <goal-id> --agent-id worker-1
+   # … worker-2, worker-3, …
+   ```
+2. **Pre-claim one open todo per agent (deterministic assignment):**
+   ```bash
+   future loop todo claim --goal <goal-id> --todo-id <T1> --agent-id worker-1 --lease-secs 14400
+   future loop todo claim --goal <goal-id> --todo-id <T2> --agent-id worker-2 --lease-secs 14400
+   ```
+   A worker still sees its OWN leased todo as runnable (`claimed_by_other`
+   excludes only OTHER agents) → each run picks exactly its assigned todo.
+3. **Launch one run per worker (background, distinct ids):**
+   ```bash
+   nohup future loop run --goal <goal-id> --agent-id worker-1 \
+     --model <M> --thinking-level <L> --max-turns 1 > logs/worker-1.log 2>&1 &
+   nohup future loop run --goal <goal-id> --agent-id worker-2 … &
+   ```
+4. **Verify no double-execution:** `future loop lease status --goal G --todo-id <T1> --agent-id worker-1`.
+
+- **Lease duration:** `todo claim` / `lease claim` default 3600s; `run`
+  defaults to 4h (14400s) and accepts `--lease-secs N`. An expired lease frees
+  the todo for other workers but does NOT abort a running turn.
+- **Keep working after a turn:** each run process executes `--max-turns 1`;
+  re-launch the same command (same agent-id) to continue — the worker keeps
+  its claim on its assigned todo and resumes.
+- **Resource rule:** worker count must fit the machine (heavy compute tasks
+  contend); agree the count with the user BEFORE launching (default 3).
+- **Priority caveat:** pre-claim overrides pure-priority ordering — assign
+  the highest-value open todos to workers first (e.g. P0/P1 before P2).
+
 ### 6. Run the agent — one turn at a time
 
 Use the confirmed model and thinking level from step 2. **Always use
@@ -247,8 +333,8 @@ user wait with no visibility; a turn-by-turn loop lets them see each step's
 progress, cost, and any issues as they happen:
 
 ```bash
-future loop run --goal <goal-id> --model <confirmed-model> \
-  --thinking-level <confirmed-thinking> --max-turns 1
+future loop run --goal <goal-id> --agent-id <unique-name> \
+  --model <confirmed-model> --thinking-level <confirmed-thinking> --max-turns 1
 ```
 
 > **Session lifecycle (no manual cleanup needed):** each `run` creates a
@@ -268,7 +354,8 @@ future loop run --goal <goal-id> --model <confirmed-model> \
 > usually NOT enough. Run **blocking** with an explicit longer timeout on the
 > shell call (e.g. `timeout: 1800`), and poll `future loop status` between
 > turns. Avoid backgrounding the run (nohup/&): it hides progress, risks
-> overlapping turns, and the kernel expects one run at a time. If a blocking
+> overlapping turns, and the kernel expects one run at a time (parallel runs
+> are supported ONLY with distinct `--agent-id`, §6.0). If a blocking
 > run is interrupted, check `status` before re-running to see what completed.
 
 After each `run`, before starting the next step:
@@ -324,7 +411,7 @@ acceptance gaps, succession obligation), it injects a `PLAN_REVIEW` user gate.
 3. resolve the gate and re-run:
    ```bash
    future loop gate resolve --goal G --todo-id <gate> --decision "agent replan: <summary>" --note "..."
-   future loop run --goal G ...
+   future loop run --goal G --agent-id <unique-name> ...   # ALWAYS --agent-id (§6.0)
    ```
 
 **Escalate to the user ONLY when absolutely necessary** — never guess a
@@ -421,7 +508,9 @@ future loop todo supersede --goal G --todo-id T --reason "..."
 future loop gate resolve --goal G --todo-id T --decision "..." [--note "..."]
 future loop quota should-run --goal G [--agent-id A]
 future loop heartbeat-prompt --goal G          # re-entry packet for the next turn
-future loop run --goal G [--model M] [--thinking-level L] [--max-turns N]
+future loop agent register --goal G --agent-id A    # optional — run auto-registers; onboard declares capabilities
+future loop agent list --goal G      # registered agents + live execution status (check before registering)
+future loop run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N]   # --agent-id MANDATORY (enforced §6.0); --anonymous = legacy uncoordinated
 future loop backup --goal G [--list | --restore DIR]
 future loop serve-status [--port 8791]         # browser dashboard
 
@@ -430,7 +519,7 @@ future loop serve-status [--port 8791]         # browser dashboard
 > automatic per `run`; for manual cleanup of leftover sessions use the
 > top-level `future session list` / `future session delete <id>`.
 
-### Full command surface (52 commands, 12 groups — `future loop registry`)
+### Full command surface (53 commands, 12 groups — `future loop registry`)
 
 Beyond the workflow commands above, the control plane ships a wider surface
 (verified 2026-08, v0.0.1574). Use `future loop --help` / `future loop
@@ -443,8 +532,12 @@ registry` for the authoritative list; the notable extras:
   agent to be `agent register`ed for the goal).
 - **gates & replan**: `gate resolve`; `replan ack` / `replan obligations`
   (kernel-injected plan-review checkpoints).
-- **agents**: `agent register|onboard` (onboard declares capabilities);
-  `scope` (identity-scoped frontier); `lane` (lane recommendation);
+- **agents**: `agent list` (registered agents + live execution status —
+  check this BEFORE registering so parallel workers reuse existing ids);
+  `agent register` (auto-registered by `run --agent-id` on first use; still a
+  prerequisite for `lease claim` / `quota should-run --agent-id`),
+  `agent onboard` (declares capabilities); `scope` (identity-scoped
+  frontier); `lane` (lane recommendation);
   `supervisor propose|receipt|events`.
 - **quota/scheduler**: `quota should-run|usage|spend`;
   `scheduler tick|show|record-host-failure`.
