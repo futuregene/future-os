@@ -875,8 +875,10 @@ impl ChatArea {
             .as_deref()
             .is_some_and(|t| !t.trim().is_empty());
 
-        // Render thinking block FIRST (before content). Hidden thinking is
-        // dropped entirely — no placeholder (ctrl+o toggles).
+        // Render thinking block FIRST (before content). Collapsed thinking
+        // (ctrl+o) renders nothing — except a one-line hint while thinking is
+        // actively streaming (pending, no content yet) so a live run doesn't
+        // look frozen; historical thinking stays fully hidden.
         if has_thinking && !self.thinking_hidden {
             let thinking = msg.thinking.as_deref().unwrap_or("");
             let thinking_lines = if msg.pending {
@@ -906,9 +908,18 @@ impl ChatArea {
                     });
                 }
             }
+        } else if has_thinking && msg.pending && msg.content.trim().is_empty() {
+            self.rendered_lines.push(RenderedLine {
+                text: fg(
+                    self.theme.thinking_text as u8,
+                    &italic(" Thinking... (ctrl+o to expand)"),
+                ),
+                dim: true,
+            });
         }
 
-        // Spacer between thinking and content (only when thinking is shown).
+        // Spacer between thinking and content (only when thinking is shown —
+        // the streaming placeholder never coexists with content).
         if has_thinking && !self.thinking_hidden && !msg.content.trim().is_empty() {
             self.rendered_lines.push(RenderedLine {
                 text: String::new(),
@@ -1307,6 +1318,64 @@ mod tests {
             .iter()
             .any(|l| l.contains("step by step reasoning")));
         assert!(chat.auto_scroll);
+    }
+
+    #[test]
+    fn collapsed_thinking_placeholder_only_while_streaming() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.set_thinking_hidden(true);
+
+        // Thinking actively streaming (pending, no content yet): show the
+        // one-line placeholder, never the reasoning text.
+        set_messages(
+            &mut chat,
+            vec![ChatMessage {
+                id: "m".into(),
+                role: ChatRole::Assistant,
+                thinking: Some("secret reasoning".into()),
+                content: String::new(),
+                pending: true,
+                ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
+            }],
+        );
+        let lines = chat.render_all(W);
+        assert!(lines.iter().any(|l| l.contains("Thinking...")));
+        assert!(!lines.iter().any(|l| l.contains("secret reasoning")));
+
+        // Content starts (thinking done) even while still pending: the
+        // placeholder is gone.
+        set_messages(
+            &mut chat,
+            vec![ChatMessage {
+                id: "m".into(),
+                role: ChatRole::Assistant,
+                thinking: Some("secret reasoning".into()),
+                content: "answer".into(),
+                pending: true,
+                ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
+            }],
+        );
+        let lines = chat.render_all(W);
+        assert!(!lines.iter().any(|l| l.contains("Thinking...")));
+        assert!(lines.iter().any(|l| l.contains("answer")));
+
+        // Historical (completed) thinking: nothing at all.
+        set_messages(
+            &mut chat,
+            vec![ChatMessage {
+                id: "m".into(),
+                role: ChatRole::Assistant,
+                thinking: Some("secret reasoning".into()),
+                content: "answer".into(),
+                pending: false,
+                ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
+            }],
+        );
+        let lines = chat.render_all(W);
+        assert!(!lines.iter().any(|l| l.contains("Thinking...")));
+        assert!(!lines.iter().any(|l| l.contains("secret reasoning")));
+        assert!(lines.iter().any(|l| l.contains("answer")));
     }
 
     #[test]
