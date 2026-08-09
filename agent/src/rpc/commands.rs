@@ -621,6 +621,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             session.write().append_system_prompt(&cmd.system_prompt);
             RpcResponse::ok(id, "append_system_prompt", serde_json::json!({}))
         }
+        "steer" => {
+            session.write().steer(&cmd.system_prompt);
+            RpcResponse::ok(id, "steer", serde_json::json!({}))
+        }
         "set_ephemeral" => {
             wlock!(session, id).set_ephemeral(cmd.ephemeral);
             RpcResponse::ok(

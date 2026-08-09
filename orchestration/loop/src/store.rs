@@ -487,6 +487,88 @@ impl Store {
             .collect())
     }
 
+    /// Atomically claim `todo_id` for `agent_id`: lease-state check and the
+    /// claim append happen under the SAME exclusive file lock, closing the
+    /// decide→claim TOCTOU race between concurrent `run --agent-id` processes
+    /// (previously both could pass the free-lease check and the last claim
+    /// won in the ledger → the same todo got executed twice).
+    /// Returns Ok(true) when the claim was appended, Ok(false) when another
+    /// agent holds a live lease.
+    pub fn try_claim_todo(
+        &self,
+        goal_id: &str,
+        todo_id: &str,
+        agent_id: &str,
+        lease_secs: u64,
+    ) -> Result<bool> {
+        use std::io::Write;
+        let now = crate::state::now_epoch();
+        let dir = self.ensure_goal_dir(goal_id)?;
+        let path = dir.join(EVENTS_FILE);
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&path)?;
+        file.lock_exclusive()?;
+        let result = (|| -> Result<bool> {
+            let existing = fs::read_to_string(&path).unwrap_or_default();
+            // Reconstruct the current lease for this todo from the ledger
+            // (StoredEvent flattens the Event payload to top level).
+            let mut lease: Option<(String, u64)> = None;
+            for line in existing.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if v.get("todo_id").and_then(|t| t.as_str()) != Some(todo_id) {
+                    continue;
+                }
+                match v.get("kind").and_then(|k| k.as_str()).unwrap_or("") {
+                    "todo_claimed" => {
+                        let agent = v
+                            .get("agent_id")
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let exp = v
+                            .get("lease_expires_at")
+                            .and_then(|e| e.as_u64())
+                            .unwrap_or(0);
+                        lease = Some((agent, exp));
+                    }
+                    "todo_released" => lease = None,
+                    _ => {}
+                }
+            }
+            if let Some((holder, exp)) = &lease {
+                if *exp > now && holder != agent_id {
+                    return Ok(false);
+                }
+            }
+            let event = Event::TodoClaimed {
+                goal_id: goal_id.to_string(),
+                todo_id: todo_id.to_string(),
+                agent_id: agent_id.to_string(),
+                lease_expires_at: now + lease_secs,
+                ts: now,
+            };
+            let stored = StoredEvent {
+                event_id: derive_event_id(&event),
+                producer: None,
+                source_ref: None,
+                source_section: None,
+                source_line: None,
+                privacy: None,
+                event,
+            };
+            let line = format!("{}\n", serde_json::to_string(&stored)?);
+            file.write_all(line.as_bytes())?;
+            Ok(true)
+        })();
+        let _ = file.unlock();
+        result
+    }
+
     /// The parsed ledger (G-3/G-6 read path): legacy lines are migrated
     /// in-memory to the current schema and get a content-derived id.
     pub fn events(&self, goal_id: &str) -> Result<Vec<StoredEvent>> {
