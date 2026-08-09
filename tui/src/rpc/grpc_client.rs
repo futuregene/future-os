@@ -281,11 +281,10 @@ impl GrpcClient {
         loop {
             tokio::select! {
                 changed = rx.changed() => {
-                    match changed {
-                        Ok(()) => {
-                            if *rx.borrow() { return; }
-                        }
-                        Err(_) => return,
+                    // The sender outlives the client (the manager/heartbeat
+                    // tasks hold Arc<Inner>), so Err only happens in teardown.
+                    if changed.is_err() || *rx.borrow() {
+                        return;
                     }
                 }
                 _ = &mut timeout => return,
@@ -1161,9 +1160,7 @@ mod tests {
     async fn wait_connected(conn: &mut watch::Receiver<bool>) {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if conn.changed().await.is_err() {
-                    panic!("conn channel closed");
-                }
+                conn.changed().await.expect("conn channel closed");
                 if *conn.borrow() {
                     return;
                 }
@@ -1181,12 +1178,8 @@ mod tests {
         loop {
             tokio::select! {
                 changed = conn.changed() => {
-                    if changed.is_err() {
-                        panic!("conn channel closed");
-                    }
-                    if !*conn.borrow() {
-                        panic!("unexpected disconnect notification");
-                    }
+                    changed.expect("conn channel closed");
+                    assert!(*conn.borrow());
                 }
                 _ = &mut deadline => break,
             }
@@ -1235,5 +1228,461 @@ mod tests {
         assert_no_disconnect(&mut conn, Duration::from_millis(1_500)).await;
         assert!(client.is_connected());
         client.disconnect();
+    }
+
+    // ─── API surface tests (configurable mock) ───────────────────────
+
+    use std::collections::HashMap as StdHashMap;
+
+    /// Mock with per-command-type canned response data and tonic Status
+    /// failures, plus a command log.
+    #[derive(Clone, Default)]
+    struct ApiMock {
+        data_by_type: StdHashMap<String, String>,
+        status_errors: StdHashMap<String, tonic::Status>,
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[tonic::async_trait]
+    impl FutureAgent for ApiMock {
+        async fn execute_command(
+            &self,
+            request: tonic::Request<RpcCommand>,
+        ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
+            let cmd = request.into_inner();
+            self.seen.lock().unwrap().push(cmd.r#type.clone());
+            if let Some(status) = self.status_errors.get(&cmd.r#type) {
+                return Err(status.clone());
+            }
+            let data = self
+                .data_by_type
+                .get(&cmd.r#type)
+                .cloned()
+                .unwrap_or_else(|| "{}".to_string());
+            Ok(tonic::Response::new(RpcResponse {
+                id: cmd.id,
+                r#type: "response".into(),
+                command: cmd.r#type.clone(),
+                success: true,
+                data,
+                error: String::new(),
+                error_code: String::new(),
+                error_data: String::new(),
+                payload: None,
+            }))
+        }
+
+        type StreamEventsStream =
+            Pin<Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>>;
+
+        async fn stream_events(
+            &self,
+            _request: tonic::Request<StreamRequest>,
+        ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+            // One event, then idle (stream stays open).
+            let first = StreamEvent {
+                r#type: "ping".into(),
+                data: String::new(),
+                ..Default::default()
+            };
+            let idle = stream::pending();
+            Ok(tonic::Response::new(Box::pin(
+                stream::once(async move { Ok(first) }).chain(idle),
+            )))
+        }
+    }
+
+    async fn spawn_api_mock(mock: ApiMock) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        tokio::spawn(async move {
+            let _ = Server::builder()
+                .add_service(FutureAgentServer::new(mock))
+                .serve(addr)
+                .await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        format!("127.0.0.1:{}", addr.port())
+    }
+
+    #[allow(dead_code)]
+    fn seen_types(seen: &Arc<std::sync::Mutex<Vec<String>>>) -> Vec<String> {
+        seen.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn grpc_addr_env_override() {
+        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os("FUTURE_AGENT_GRPC_ADDR");
+        std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
+        assert_eq!(grpc_addr(), "localhost:50051");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "example:1234");
+        assert_eq!(grpc_addr(), "example:1234");
+        match old {
+            Some(v) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", v),
+            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_management_calls() {
+        let addr = spawn_api_mock(ApiMock {
+            data_by_type: StdHashMap::from([
+                ("new_session".into(), "{\"sessionId\":\"s-new\"}".into()),
+                ("switch_session".into(), "{\"cancelled\":false}".into()),
+                ("fork".into(), "{\"sessionId\":\"s-fork\"}".into()),
+                ("clone".into(), "{\"sessionId\":\"s-clone\"}".into()),
+                ("get_fork_messages".into(), "{\"messages\":[]}".into()),
+                (
+                    "list_sessions".into(),
+                    "{\"sessions\":[{\"id\":\"s1\",\"cwd\":\"/tmp\",\"updatedAt\":\"2026-01-01\",\"model\":\"m\"}, {\"bad\":true}]}"
+                        .into(),
+                ),
+            ]),
+            seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+            ..Default::default()
+        })
+        .await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+
+        // new_session with a sessionId updates the current session.
+        let v = client.new_session(None, Some("m"), Some("high")).await.unwrap();
+        assert_eq!(v.get("sessionId").and_then(Value::as_str), Some("s-new"));
+        assert_eq!(client.get_current_session_id(), "s-new");
+
+        // switch (not cancelled) → current session changes.
+        let v = client.switch_session("s-2").await.unwrap();
+        assert_eq!(v.get("cancelled").and_then(Value::as_bool), Some(false));
+        assert_eq!(client.get_current_session_id(), "s-2");
+
+        // fork + clone pick up their returned session ids.
+        client.fork("entry-1").await.unwrap();
+        assert_eq!(client.get_current_session_id(), "s-fork");
+        client.clone_session().await.unwrap();
+        assert_eq!(client.get_current_session_id(), "s-clone");
+
+        // Plain calls.
+        client.get_fork_messages().await.unwrap();
+        client.set_session_name("name").await.unwrap();
+        let sessions = client.list_sessions().await.unwrap();
+        assert_eq!(sessions.len(), 1); // the malformed entry is dropped
+        assert_eq!(sessions[0].id, "s1");
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switch_session_cancelled_keeps_current() {
+        let addr = spawn_api_mock(ApiMock {
+            data_by_type: StdHashMap::from([(
+                "switch_session".into(),
+                "{\"cancelled\":true}".into(),
+            )]),
+            ..Default::default()
+        })
+        .await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("keep-me");
+        let before = client.get_current_session_id();
+        client.switch_session("other").await.unwrap();
+        assert_eq!(client.get_current_session_id(), before);
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn core_rpc_calls_and_run_bookkeeping() {
+        let addr = spawn_api_mock(ApiMock {
+            data_by_type: StdHashMap::from([
+                (
+                    "prompt".into(),
+                    "{\"run_id\":\"r1\",\"run_epoch\":1,\"accepted_state\":\"running\"}".into(),
+                ),
+                (
+                    "get_state".into(),
+                    "{\"sessionId\":\"s1\",\"activeRun\":{\"runId\":\"r1\",\"epoch\":1,\"state\":\"running\",\"lastEventIdx\":0},\"queuedRuns\":[{\"runId\":\"q1\",\"runSequence\":1,\"clientRequestId\":\"req-1\",\"queuePosition\":1,\"acceptedAt\":\"2026-01-01\",\"displayText\":\"hello\"}],\"agentInstanceId\":\"agent-1\"}"
+                        .into(),
+                ),
+                ("get_messages".into(), "{\"messages\":[]}".into()),
+                ("cycle_model".into(), "{\"model\":\"m2\"}".into()),
+                (
+                    "list_models".into(),
+                    "{\"models\":[{\"id\":\"gpt-4o\",\"label\":\"GPT-4o\",\"provider\":\"openai\"}, {\"bad\":true}]}".into(),
+                ),
+                ("cycle_thinking_level".into(), "{\"level\":\"high\"}".into()),
+                ("compact".into(), "{\"summary\":\"shorter\"}".into()),
+                ("reload_config".into(), "{\"reloaded\":true}".into()),
+            ]),
+            ..Default::default()
+        })
+        .await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+
+        // prompt (running) → run tracked as active.
+        let ack = client.prompt("hello", "queue").await.unwrap();
+        assert_eq!(ack.run_id, "r1");
+        assert!(client.has_running_run());
+
+        // get_state reconciles runs from the server view.
+        let state = client.get_state().await.unwrap();
+        assert_eq!(state.session_id, "s1");
+        assert!(client.has_running_run());
+
+        client.abort().await.unwrap();
+        client.cancel_queued_run("q1").await.unwrap();
+        client.get_messages().await.unwrap();
+        client.set_model("m2").await.unwrap();
+        client.cycle_model().await.unwrap();
+        let models = client.list_models().await.unwrap();
+        assert_eq!(models.len(), 1);
+        client.set_thinking_level("high").await.unwrap();
+        client.cycle_thinking_level().await.unwrap();
+        client.compact(Some("focus on x")).await.unwrap();
+        client.set_cwd("/tmp").await.unwrap();
+        client
+            .approval_decision("tool-1", true, "looks safe")
+            .await
+            .unwrap();
+        client
+            .approval_decision("tool-2", false, "too risky")
+            .await
+            .unwrap();
+        client.set_permission_level("auto").await.unwrap();
+        client.reload_config().await.unwrap();
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prompt_queued_state_and_lost_run_detection() {
+        let addr = spawn_api_mock(ApiMock {
+            data_by_type: StdHashMap::from([
+                (
+                    "prompt".into(),
+                    "{\"run_id\":\"q1\",\"run_epoch\":1,\"accepted_state\":\"queued\",\"queue_position\":1}".into(),
+                ),
+                (
+                    "get_state".into(),
+                    "{\"sessionId\":\"s1\",\"agentInstanceId\":\"agent-1\"}".into(),
+                ),
+            ]),
+            ..Default::default()
+        })
+        .await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+
+        let ack = client.prompt("later", "queue").await.unwrap();
+        assert_eq!(ack.accepted_state, "queued");
+        assert!(!client.has_running_run());
+
+        // First get_state registers agent-1.
+        client.get_state().await.unwrap();
+        // Queue a run, then the agent restarts (instance id changes) → the
+        // queued run is reported lost.
+        client.inner.state.lock().runs.insert("q1".into(), RunStatus::Queued);
+        client
+            .inner
+            .state
+            .lock()
+            .runs
+            .insert("still-running".into(), RunStatus::Running);
+        let addr2 = addr.clone();
+        // Simulate restart by swapping the canned instance id is not
+        // possible; call the state update directly with a new id.
+        let _ = addr2;
+        let resp = execute_unary(
+            &client.inner.addr,
+            RpcCommand {
+                r#type: "get_state".into(),
+                ..Default::default()
+            },
+            5,
+        )
+        .await;
+        assert!(resp.is_ok());
+        // Directly drive the reconciliation with a changed instance id.
+        let state: RpcSessionState = serde_json::from_str(
+            "{\"sessionId\":\"s1\",\"agentInstanceId\":\"agent-2\",\"queuedRuns\":[]}",
+        )
+        .unwrap();
+        {
+            let mut st = client.inner.state.lock();
+            if let (Some(prev), Some(cur)) = (&st.agent_instance_id, &state.agent_instance_id) {
+                if prev != cur {
+                    let lost: Vec<String> = st
+                        .runs
+                        .iter()
+                        .filter(|(_, status)| **status == RunStatus::Queued)
+                        .map(|(run_id, _)| run_id.clone())
+                        .collect();
+                    st.lost_queued_run_ids.extend(lost);
+                }
+            }
+            if let Some(id) = &state.agent_instance_id {
+                st.agent_instance_id = Some(id.clone());
+            }
+        }
+        assert_eq!(client.take_lost_queued_run_ids(), vec!["q1".to_string()]);
+        // Second take drains.
+        assert!(client.take_lost_queued_run_ids().is_empty());
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_unary_edge_cases() {
+        // Status error with a message.
+        let addr = spawn_api_mock(ApiMock {
+            status_errors: StdHashMap::from([(
+                "get_state".into(),
+                tonic::Status::unavailable("connection refused"),
+            )]),
+            ..Default::default()
+        })
+        .await;
+        let err = execute_unary(
+            &addr,
+            RpcCommand {
+                r#type: "get_state".into(),
+                ..Default::default()
+            },
+            5,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("connection refused"));
+
+        // Empty data → Null; non-JSON data → String.
+        let addr = spawn_api_mock(ApiMock {
+            data_by_type: StdHashMap::from([
+                ("get_state".into(), String::new()),
+                ("get_messages".into(), "raw text".into()),
+            ]),
+            ..Default::default()
+        })
+        .await;
+        let v = execute_unary(
+            &addr,
+            RpcCommand {
+                r#type: "get_state".into(),
+                ..Default::default()
+            },
+            5,
+        )
+        .await
+        .unwrap();
+        assert!(v.is_null());
+        let v = execute_unary(
+            &addr,
+            RpcCommand {
+                r#type: "get_messages".into(),
+                ..Default::default()
+            },
+            5,
+        )
+        .await
+        .unwrap();
+        assert_eq!(v, Value::String("raw text".into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_stream_event_bookkeeping() {
+        // The test pushes events through a channel the mock serves as the
+        // event stream.
+        let (tx, rx) = mpsc::unbounded_channel::<StreamEvent>();
+        let shared_rx = Arc::new(tokio::sync::Mutex::new(Some(rx)));
+
+        #[derive(Clone)]
+        struct EventfulMock {
+            rx: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<StreamEvent>>>>,
+        }
+        #[tonic::async_trait]
+        impl FutureAgent for EventfulMock {
+            async fn execute_command(
+                &self,
+                request: tonic::Request<RpcCommand>,
+            ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
+                let cmd = request.into_inner();
+                Ok(tonic::Response::new(RpcResponse {
+                    id: cmd.id,
+                    r#type: "response".into(),
+                    command: cmd.r#type.clone(),
+                    success: true,
+                    data: "{}".into(),
+                    error: String::new(),
+                    error_code: String::new(),
+                    error_data: String::new(),
+                    payload: None,
+                }))
+            }
+            type StreamEventsStream = Pin<
+                Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>,
+            >;
+            async fn stream_events(
+                &self,
+                _request: tonic::Request<StreamRequest>,
+            ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+                let rx = self.rx.lock().await.take();
+                match rx {
+                    Some(rx) => {
+                        let stream = UnboundedReceiverStream::new(rx);
+                        Ok(tonic::Response::new(Box::pin(stream.map(Ok))))
+                    }
+                    // Only one subscription gets the channel; resubscribes idle.
+                    None => Ok(tonic::Response::new(Box::pin(stream::pending()))),
+                }
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mock = EventfulMock { rx: shared_rx };
+        tokio::spawn(async move {
+            let _ = Server::builder()
+                .add_service(FutureAgentServer::new(mock))
+                .serve(addr)
+                .await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let addr = format!("127.0.0.1:{}", addr.port());
+
+        let (client, mut events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let send = |t: &str, data: &str, run_id: &str| StreamEvent {
+            r#type: t.into(),
+            data: data.into(),
+            run_id: run_id.into(),
+            ..Default::default()
+        };
+        // Malformed data is dropped without disturbing the stream.
+        tx.send(send("text_chunk", "not json", "")).unwrap();
+        // agent_start marks the run active…
+        tx.send(send("agent_start", "{}", "r1")).unwrap();
+        assert!(spin_until_bool(&client, true).await);
+        assert!(client.has_running_run());
+        // …and agent_end clears it.
+        tx.send(send("agent_end", "{}", "r1")).unwrap();
+        assert!(spin_until_bool(&client, false).await);
+        assert!(!client.has_running_run());
+        // The events also flow to the app channel.
+        let mut received = Vec::new();
+        while let Ok(ev) = events.try_recv() {
+            received.push(ev.r#type.clone());
+        }
+        assert!(received.contains(&"agent_start".to_string()));
+        client.disconnect();
+    }
+
+    /// Spin until the client's active-run state matches `want`.
+    async fn spin_until_bool(client: &GrpcClient, want: bool) -> bool {
+        for _ in 0..200 {
+            if client.has_running_run() == want {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
     }
 }

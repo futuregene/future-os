@@ -306,7 +306,10 @@ impl Backend {
         Ok(n as usize)
     }
 
-    /// POSIX: EOF on stdin is terminal — the reader loop breaks.
+    /// POSIX: EOF on stdin is terminal — the reader loop breaks. Only the
+    /// Windows backend's reader path consults this (zero reads there are
+    /// spurious); POSIX breaks unconditionally, so this exists for tests.
+    #[cfg(test)]
     pub(crate) fn eof_is_terminal(&self) -> bool {
         true
     }
@@ -752,7 +755,7 @@ mod tests {
             let raiser = std::thread::spawn(move || {
                 for _ in 0..20 {
                     std::thread::sleep(std::time::Duration::from_millis(20));
-                    unsafe { libc::pthread_kill(writer, libc::SIGUSR1) };
+                    libc::pthread_kill(writer, libc::SIGUSR1);
                 }
             });
             // Drain exactly filler + payload bytes so the writer finishes.
@@ -779,15 +782,13 @@ mod tests {
             // a late SIGUSR1 with SIG_DFL would terminate the process.
             raiser.join().unwrap();
             drainer.join().unwrap();
-            unsafe {
-                libc::dup2(saved, 1);
-                libc::close(saved);
-                let mut sa: libc::sigaction = std::mem::zeroed();
-                sa.sa_sigaction = libc::SIG_DFL;
-                libc::sigemptyset(&mut sa.sa_mask);
-                libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut());
-                libc::close(read_fd);
-            }
+            libc::dup2(saved, 1);
+            libc::close(saved);
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = libc::SIG_DFL;
+            libc::sigemptyset(&mut sa.sa_mask);
+            libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut());
+            libc::close(read_fd);
             assert_eq!(result.unwrap(), 200_000);
         }
     }
