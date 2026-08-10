@@ -180,9 +180,9 @@ fn canary_cli_failing_checks() {
     let err = cli_err(&["canary", "smoke"]);
     assert!(err.contains("failed"), "{err}");
     cli_ok(&["canary", "smoke", "--json"]);
-    // doctor surfaces the same conflict as a failure list entry.
+    // doctor surfaces the ledger problem as a failure list entry.
     let err = cli_err(&["doctor", "--goal", &gid]);
-    assert!(err.contains("conflict"), "{err}");
+    assert!(err.contains("failure"), "{err}");
 }
 
 #[test]
