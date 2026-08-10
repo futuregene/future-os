@@ -179,7 +179,12 @@ impl GrpcLoopxAdapter {
     }
 
     fn block_on<F: std::future::Future>(fut: F) -> F::Output {
-        tokio::runtime::Handle::current().block_on(fut)
+        // The adapter is sync but called from cmd_benchmark_run INSIDE the
+        // console runtime — a bare Handle::block_on would panic there
+        // ("cannot start a runtime from within a runtime"). block_in_place
+        // moves the current worker aside and drives the future to
+        // completion; the console runtime is always multi_thread.
+        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
     }
 }
 

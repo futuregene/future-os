@@ -148,7 +148,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "replay" => cmd_replay(&store, &args[1..]),
         "canary" => cmd_canary(&store, &args[1..]),
         "version" => cmd_version(&store, &args[1..]),
-        "doctor" => cmd_doctor(&store, &args[1..]),
+        "doctor" => cmd_doctor(&store, &args[1..]).await,
         "history" => cmd_history(&store, &args[1..]),
         "turn" => cmd_turn(&store, &args[1..]),
         "todo-event" => cmd_todo_event(&store, &args[1..]),
@@ -1811,7 +1811,8 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
 /// agent (auth.json / models.json merged with the built-in catalog).
 async fn cmd_models(args: &[String]) -> Result<()> {
     let json = args.iter().any(|a| a == "--format" || a == "--json");
-    let mut client = crate::agent_client::AgentClient::connect("127.0.0.1:50051").await?;
+    let mut client =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
     let data = client.list_models().await?;
     let models = data["models"].as_array().cloned().unwrap_or_default();
     let default_model = data["defaultModel"].as_str().unwrap_or("");
@@ -1918,7 +1919,8 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     // (and stays unit-testable without an agent server).
     let agent_id = ensure_run_identity(store, &goal_id, agent_id.as_deref(), anonymous)?;
 
-    let mut client = crate::agent_client::AgentClient::connect("127.0.0.1:50051").await?;
+    let mut client =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
     let goal0 = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
@@ -1952,65 +1954,80 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     result
 }
 
+/// One steer poll step: read newly appended ledger lines since `offset` and
+/// inject any `todo_updated` text for `todo_id` into the session. Returns
+/// the new offset. Extracted from the watch loop for testability.
+#[doc(hidden)] // test-visible seam for steer_todo_updates
+pub async fn steer_poll_once(
+    events_path: &std::path::Path,
+    offset: u64,
+    todo_id: &str,
+    client: &mut Option<crate::agent_client::AgentClient>,
+    session_id: &str,
+) -> u64 {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(meta) = std::fs::metadata(events_path) else {
+        return offset;
+    };
+    if meta.len() <= offset {
+        return offset;
+    }
+    let mut buf = String::new();
+    {
+        let Ok(mut f) = std::fs::File::open(events_path) else {
+            return offset;
+        };
+        if f.seek(SeekFrom::Start(offset)).is_err() {
+            return offset;
+        }
+        if f.read_to_string(&mut buf).is_err() {
+            return offset;
+        }
+    }
+    let new_offset = meta.len();
+    for line in buf.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("kind").and_then(|k| k.as_str()) != Some("todo_updated") {
+            continue;
+        }
+        if v.get("todo_id").and_then(|t| t.as_str()) != Some(todo_id) {
+            continue;
+        }
+        let Some(new_text) = v.get("text").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        if client.is_none() {
+            *client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr())
+                .await
+                .ok();
+        }
+        if let Some(c) = client.as_mut() {
+            let msg = format!(
+                "ORCHESTRATOR STEERING (todo {todo_id} updated mid-turn — new instructions below; adjust your current work accordingly):\n{new_text}"
+            );
+            if c.steer(session_id, &msg).await.is_err() {
+                *client = None; // reconnect on the next event
+            }
+        }
+    }
+    new_offset
+}
+
 /// Mid-turn steering watcher: tail the goal ledger; when the orchestrator
 /// updates the CURRENT todo's text mid-turn (`todo update --text`), inject the
 /// new instructions into the running session via the `steer` RPC (drained by
 /// the agent at its next step boundary). Runs as a background task for the
 /// duration of one turn; never completes on its own (all error paths retry).
 async fn steer_todo_updates(events_path: std::path::PathBuf, todo_id: String, session_id: String) {
-    use std::io::{Read, Seek, SeekFrom};
     let mut offset = std::fs::metadata(&events_path)
         .map(|m| m.len())
         .unwrap_or(0);
     let mut client: Option<crate::agent_client::AgentClient> = None;
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-        let Ok(meta) = std::fs::metadata(&events_path) else {
-            continue;
-        };
-        if meta.len() <= offset {
-            continue;
-        }
-        let mut buf = String::new();
-        {
-            let Ok(mut f) = std::fs::File::open(&events_path) else {
-                continue;
-            };
-            if f.seek(SeekFrom::Start(offset)).is_err() {
-                continue;
-            }
-            if f.read_to_string(&mut buf).is_err() {
-                continue;
-            }
-            offset = meta.len();
-        }
-        for line in buf.lines() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
-            if v.get("kind").and_then(|k| k.as_str()) != Some("todo_updated") {
-                continue;
-            }
-            if v.get("todo_id").and_then(|t| t.as_str()) != Some(todo_id.as_str()) {
-                continue;
-            }
-            let Some(new_text) = v.get("text").and_then(|t| t.as_str()) else {
-                continue;
-            };
-            if client.is_none() {
-                client = crate::agent_client::AgentClient::connect("127.0.0.1:50051")
-                    .await
-                    .ok();
-            }
-            if let Some(c) = client.as_mut() {
-                let msg = format!(
-                    "ORCHESTRATOR STEERING (todo {todo_id} updated mid-turn — new instructions below; adjust your current work accordingly):\n{new_text}"
-                );
-                if c.steer(&session_id, &msg).await.is_err() {
-                    client = None; // reconnect on the next event
-                }
-            }
-        }
+        offset = steer_poll_once(&events_path, offset, &todo_id, &mut client, &session_id).await;
     }
 }
 
@@ -2275,7 +2292,7 @@ async fn run_turns(
             })?;
             println!("   poll result: {result} (no_change_count={no_change_count})");
         }
-        if succeeded {
+        if succeeded && mode != crate::contract::TurnMode::MonitorPoll {
             store.append(Event::TodoCompleted {
                 goal_id: goal_id.to_string(),
                 todo_id: todo_id.clone(),
@@ -4155,7 +4172,7 @@ fn cmd_diagnose(store: &Store, args: &[String]) -> Result<()> {
 
 /// `loopx doctor [--goal G] [--agent-addr ADDR]` — run the diagnostic
 /// surface: canary release-gate + per-goal ledger/decision checks.
-fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
+async fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_filter = None;
     let mut agent_addr = None;
     parse_pairs(args, |k, v| match k {
@@ -4202,12 +4219,11 @@ fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
             Err(e) => failures.push(format!("goal {goal_id}: {e}")),
         }
     }
-    // gRPC reachability probe (only when --agent-addr is given).
+    // gRPC reachability probe (only when --agent-addr is given). Awaited
+    // directly — a nested block_on here would panic inside console::run's
+    // runtime (the probe used to build its own current_thread runtime).
     if let Some(addr) = &agent_addr {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let probe = runtime.block_on(async {
+        let probe = async {
             let mut client = crate::agent_client::AgentClient::connect(addr).await?;
             let session = client.new_session("/tmp").await?;
             let totals = client.session_totals(&session).await?;
@@ -4215,7 +4231,8 @@ fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
                 "session {session} live (tokens_in={} tokens_out={})",
                 totals.tokens_in, totals.tokens_out
             ))
-        });
+        }
+        .await;
         match probe {
             Ok(detail) => println!("  [ok] agent gRPC {addr}: {detail}"),
             Err(e) => {
@@ -4738,4 +4755,401 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     sync_compat(store, &goal_id)?;
     println!("todo {todo_id} updated ✔");
     Ok(())
+}
+
+// ── in-module coverage tests ───────────────────────────────────────────────
+// Helpers and render paths that the CLI surface cannot reach (private fns,
+// defensive arms, non-todo event descriptions, the `future loop` prog name).
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::state::{Goal, RunRecord, TaskClass, Todo, TodoStatus};
+    use crate::store::Event;
+
+    fn record(todo_id: &str) -> RunRecord {
+        RunRecord {
+            turn: 1,
+            todo_id: todo_id.to_string(),
+            run_id: "run-1".to_string(),
+            terminal_state: "completed".to_string(),
+            error: None,
+            tokens_in_delta: 1,
+            tokens_out_delta: 2,
+            cost_delta: 0.1,
+            tools: vec!["shell".to_string()],
+            evidence: "proof".to_string(),
+            recorded_at: 1_700_000_000,
+            spend_source: Some("run".to_string()),
+            validation: None,
+        }
+    }
+
+    fn all_events(todo_id: &str) -> Vec<Event> {
+        vec![
+            Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            },
+            Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement(todo_id, "task"),
+                ts: 1,
+            },
+            Event::TodoCompleted {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                no_follow_up: true,
+                successor_ids: vec!["s1".into()],
+                evidence: Some("e".into()),
+                ts: 1,
+            },
+            Event::TodoSuperseded {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                ts: 1,
+            },
+            Event::TodoUpdated {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                text: Some("t".into()),
+                status: None,
+                evidence: None,
+                note: None,
+                priority: None,
+                resume_when: None,
+                blocks: None,
+                ts: 1,
+            },
+            Event::GoalCancelled {
+                goal_id: "g".into(),
+                reason: "r".into(),
+                ts: 1,
+            },
+            Event::GateResolved {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                decision: "d".into(),
+                note: None,
+                ts: 1,
+            },
+            Event::GapSatisfied {
+                goal_id: "g".into(),
+                gap_id: "gap1".into(),
+                ts: 1,
+            },
+            Event::RunRecorded {
+                goal_id: "g".into(),
+                record: record(todo_id),
+                ts: 1,
+            },
+            Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: "a".into(),
+                lease_expires_at: 9,
+                ts: 1,
+            },
+            Event::AgentRegistered {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                ts: 1,
+            },
+            Event::AgentOnboarded {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                capabilities: vec!["shell".into()],
+                ts: 1,
+            },
+            Event::ReplanAcked {
+                goal_id: "g".into(),
+                delta_kinds: vec!["vision_patch".into()],
+                ts: 1,
+            },
+            Event::ProfileSet {
+                goal_id: "g".into(),
+                outcome_floor_streak_threshold: 2,
+                ts: 1,
+            },
+            Event::AuthoritySet {
+                goal_id: "g".into(),
+                write_scope: vec!["src".into()],
+                requires_approval: vec!["publish".into()],
+                ts: 1,
+            },
+            Event::TodoArchived {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                ts: 1,
+            },
+            Event::MonitorPolled {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                result: "changed".into(),
+                no_change_count: 0,
+                ts: 1,
+            },
+            Event::QuotaSpent {
+                goal_id: "g".into(),
+                run_id: "r1".into(),
+                todo_id: todo_id.into(),
+                source: "run".into(),
+                slots: 1,
+                ts: 1,
+            },
+            Event::EvidenceAttached {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                evidence: "e".into(),
+                ts: 1,
+            },
+            Event::TodoRenewed {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: "a".into(),
+                lease_expires_at: 9,
+                ts: 1,
+            },
+            Event::TodoReleased {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: "a".into(),
+                ts: 1,
+            },
+            Event::TodoExpired {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                ts: 1,
+            },
+            Event::SupervisorProposed {
+                goal_id: "g".into(),
+                supervisor_agent_id: "sup".into(),
+                decision_id: "d1".into(),
+                decision_kind: "observe".into(),
+                target_agent_id: "w1".into(),
+                required_host_capabilities: vec![],
+                decision: "watch".into(),
+                ts: 1,
+            },
+            Event::SupervisorReceiptRecorded {
+                goal_id: "g".into(),
+                decision_id: "d1".into(),
+                receipt_id: "r1".into(),
+                adapter_id: "ad".into(),
+                outcome: "executed".into(),
+                authority_ref: Some("auth".into()),
+                rollback_ref: None,
+                ts: 1,
+            },
+        ]
+    }
+
+    #[test]
+    fn describe_event_covers_every_variant() {
+        for ev in all_events("todo_1") {
+            let s = describe_event(&ev);
+            assert!(!s.is_empty(), "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn event_touches_todo_matrix() {
+        let mut wrongly_touched = false;
+        for ev in all_events("todo_1") {
+            let _touches = event_touches_todo(&ev, "todo_1");
+            // No event variant may match a different todo id.
+            wrongly_touched |= event_touches_todo(&ev, "todo_other");
+        }
+        assert!(!wrongly_touched);
+        assert!(event_touches_todo(
+            &Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("todo_1", "task"),
+                ts: 1,
+            },
+            "todo_1"
+        ));
+        assert!(!event_touches_todo(
+            &Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1
+            },
+            "todo_1"
+        ));
+    }
+
+    #[test]
+    fn human_dur_ranges() {
+        assert_eq!(human_dur(59), "59s");
+        assert_eq!(human_dur(90), "1m30s");
+        assert_eq!(human_dur(3600), "1h0m");
+        assert_eq!(human_dur(3705), "1h1m");
+    }
+
+    #[test]
+    fn status_label_matrix() {
+        let mut t = Todo::advancement("t", "x");
+        t.status = TodoStatus::Done;
+        t.no_follow_up = true;
+        assert_eq!(status_label(&t), "done(no-follow-up)");
+        t.no_follow_up = false;
+        t.successor_ids = vec!["s".into()];
+        assert_eq!(status_label(&t), "done(+successor)");
+        t.successor_ids = vec![];
+        assert_eq!(status_label(&t), "done");
+        t.status = TodoStatus::Superseded;
+        assert_eq!(status_label(&t), "superseded");
+        for (class, label) in [
+            (TaskClass::Advancement, "open"),
+            (TaskClass::UserGate, "GATE"),
+            (TaskClass::UserAction, "action"),
+            (TaskClass::Monitor, "monitor"),
+            (TaskClass::Blocker, "blocker"),
+        ] {
+            let mut t = Todo::advancement("t", "x");
+            t.class = class;
+            assert_eq!(status_label(&t), label);
+        }
+    }
+
+    #[test]
+    fn parse_pairs_edge_cases() {
+        let mut seen: Vec<(String, String)> = vec![];
+        parse_pairs(
+            &[
+                "--flag".to_string(),     // boolean-ish flag at end
+                "positional".to_string(), // skipped
+                "--key".to_string(),
+                "value".to_string(),
+                "--no-follow-up".to_string(), // known boolean, followed by value-less
+                "--after-bool".to_string(),
+            ],
+            |k, v| seen.push((k.to_string(), v)),
+        );
+        // "--flag" is followed by a non-flag arg → consumes it as its value
+        // (parse_pairs has no arity table; only the four known booleans are
+        // value-less).
+        assert!(seen.contains(&("--flag".to_string(), "positional".to_string())));
+        assert!(seen.contains(&("--key".to_string(), "value".to_string())));
+        assert!(seen.contains(&("--no-follow-up".to_string(), "true".to_string())));
+        // "--after-bool" at the end gets "true".
+        assert!(seen.contains(&("--after-bool".to_string(), "true".to_string())));
+        assert!(!seen.iter().any(|(k, _)| k == "positional"));
+    }
+
+    #[test]
+    fn join_ids_both() {
+        assert_eq!(join_ids(&[]), "(none)");
+        assert_eq!(join_ids(&["a".to_string(), "b".to_string()]), "a, b");
+    }
+
+    #[test]
+    fn print_goal_status_full() {
+        // Acceptance gaps (satisfied + open), monitor metadata, projection
+        // gap, history — every print arm.
+        let mut goal = Goal::new("g1", "objective", "/tmp")
+            .with_acceptance(vec![("gap1", "needs proof"), ("gap2", "more proof")]);
+        goal.satisfy_gap("gap2");
+        goal.todos.push(Todo::advancement("t1", "open task"));
+        let mut mon = Todo::monitor("m1", "watch", std::time::Duration::from_secs(60));
+        mon.monitor_target = Some("file:x".into());
+        mon.monitor_policy = Some("exists".into());
+        mon.monitor_cadence = Some("15m".into());
+        goal.todos.push(mon);
+        goal.history.push(record("t1"));
+        // No next_action → "-" arm; the frontier disagrees → projection gap.
+        print_goal_status(&goal);
+        goal.next_action = Some("open task".into());
+        print_goal_status(&goal);
+    }
+
+    #[test]
+    fn prog_and_help_surface() {
+        // prog() falls back to the standalone name before run() sets it, or
+        // reflects the OnceLock afterwards — either way it is exercised.
+        let _ = prog();
+        // cli_help adapts the USAGE line when invoked as `future loop`.
+        let _ = PROG.set("future loop".to_string());
+        let registry = build_cli_registry();
+        cli_help(&registry, false).unwrap();
+        cli_help(&registry, true).unwrap();
+    }
+
+    #[test]
+    fn root_dir_env_override() {
+        std::env::set_var("FUTURE_LOOP_ROOT", "/tmp/loop-root-dir-test");
+        assert_eq!(root_dir(), "/tmp/loop-root-dir-test");
+        std::env::remove_var("FUTURE_LOOP_ROOT");
+        assert!(root_dir().ends_with("/.future/loop"), "{}", root_dir());
+    }
+
+    #[test]
+    fn gen_id_format() {
+        let id = gen_id("todo");
+        assert!(id.starts_with("todo_"), "{id}");
+        assert_eq!(id.len(), "todo_".len() + 12);
+    }
+
+    #[test]
+    fn capability_hook_unknown_capability_bails() {
+        let err = cmd_capability_hook("ghost-cmd", "ghost_cap", &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("unknown capability"));
+    }
+
+    #[test]
+    fn print_status_json_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-console-json-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        let goal = Goal::new("gj", "json goal", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "gj".into(),
+                ts: 1,
+            })
+            .unwrap();
+        // No filter → iterates the registry; with filter → single goal;
+        // unknown filter → error.
+        print_status_json(&store, None).unwrap();
+        print_status_json(&store, Some("gj".to_string())).unwrap();
+        assert!(print_status_json(&store, Some("goal_nope".to_string())).is_err());
+    }
+
+    #[test]
+    fn sync_helpers_tolerate_missing_goals() {
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-console-sync-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        // sync_compat on a goal with no ledger → Ok no-op; refresh_next_action
+        // on the same → not-found error.
+        sync_compat(&store, "goal_ghost").unwrap();
+        assert!(refresh_next_action(&store, "goal_ghost").is_err());
+        // And the write path for a real goal (produces ACTIVE_GOAL_STATE.md).
+        let goal = Goal::new("gs", "sync goal", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "gs".into(),
+                ts: 1,
+            })
+            .unwrap();
+        refresh_next_action(&store, "gs").unwrap();
+        sync_compat(&store, "gs").unwrap();
+        assert!(store.goal_dir("gs").join("ACTIVE_GOAL_STATE.md").exists());
+    }
 }

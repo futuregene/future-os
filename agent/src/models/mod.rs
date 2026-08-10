@@ -1628,4 +1628,160 @@ mod tests {
             Some("https://test.api.com/v1")
         );
     }
+
+    // ── coverage batch: merge/override/scope arms ───────────────────────────
+
+    #[test]
+    fn provider_similarity_scores() {
+        assert_eq!(provider_similarity("openai", "OPENAI"), 1.0);
+        assert_eq!(provider_similarity("openai", "openai-azure"), 0.9);
+        assert_eq!(provider_similarity("gpt-4", "gpt4"), 0.8);
+        // Normalized containment without raw containment.
+        assert_eq!(provider_similarity("gpt4o", "gpt-4o-mini"), 0.7);
+        // Same known group → bonus over unrelated.
+        let grouped = provider_similarity("openai", "azure");
+        let unrelated = provider_similarity("openai", "zzz");
+        assert!(grouped > unrelated, "{grouped} vs {unrelated}");
+    }
+
+    #[test]
+    fn registry_merges_user_provider_models_and_overrides() {
+        let home = crate::test_support::TestHome::new();
+        let models_path = home.models_path();
+        std::fs::create_dir_all(models_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &models_path,
+            r#"{
+              "providers": {
+                "custom": {
+                  "api": "openai-completions",
+                  "baseUrl": "https://custom.example.com/v1",
+                  "apiKey": "sk-custom",
+                  "compat": {"providerFlag": true},
+                  "thinkingLevelMap": {"high": {"budget": 1234}},
+                  "models": [
+                    {
+                      "id": "custom-model",
+                      "name": "Custom Model",
+                      "supportedParameters": ["max_completion_tokens"],
+                      "compat": {"modelFlag": "on"},
+                      "limit": {"context": 99999, "output": 4096}
+                    }
+                  ]
+                },
+                "deepseek": {"baseUrl": "https://proxy.example.com/v1", "apiKey": "sk-override"}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let reg = super::Registry::new();
+        // User model via exact-id resolve.
+        let m = reg.resolve("custom-model").expect("user model resolves");
+        assert_eq!(m.provider, "custom");
+        assert_eq!(m.api, "openai-completions");
+        assert_eq!(m.api_key, "sk-custom");
+        assert_eq!(m.context_window, 99999);
+        assert_eq!(m.max_tokens, 4096);
+        // supportedParameters derived the maxTokensField compat…
+        assert_eq!(
+            m.compat.get("maxTokensField").and_then(|v| v.as_str()),
+            Some("max_completion_tokens")
+        );
+        // …model-level compat overrides per-key…
+        assert_eq!(
+            m.compat.get("modelFlag").and_then(|v| v.as_str()),
+            Some("on")
+        );
+        // …and provider-level compat / thinking map filled the rest.
+        assert_eq!(m.compat.get("providerFlag"), Some(&json!(true)));
+        assert_eq!(
+            m.thinking_level_map.get("high"),
+            Some(&json!({"budget": 1234}))
+        );
+
+        // Provider override rewrites the builtin model's endpoint + key.
+        let gpt = reg
+            .resolve("deepseek/deepseek-chat")
+            .expect("builtin resolves");
+        assert_eq!(gpt.base_url, "https://proxy.example.com/v1");
+        assert_eq!(gpt.api_key, "sk-override");
+    }
+
+    #[test]
+    fn registry_resolve_scope_matches_globs_and_providers() {
+        let home = crate::test_support::TestHome::new();
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            r#"{"openai": {"type": "api_key", "key": "sk-x"},
+                "deepseek": {"type": "api_key", "key": "sk-y"}}"#,
+        )
+        .unwrap();
+        let reg = super::Registry::new();
+        let auth = crate::AuthStore::load();
+
+        let scoped = reg.resolve_scope(&["deepseek/*".to_string()], &auth);
+        assert!(!scoped.is_empty());
+        assert!(scoped.iter().all(|id| !id.is_empty()));
+
+        let by_provider = reg.resolve_scope(&["deepseek".to_string()], &auth);
+        assert!(!by_provider.is_empty());
+
+        let exact = reg.resolve_scope(&["deepseek-chat".to_string()], &auth);
+        assert!(exact.contains(&"deepseek-chat".to_string()));
+
+        assert!(reg
+            .resolve_scope(&["no-such-provider/*".to_string()], &auth)
+            .is_empty());
+    }
+
+    #[test]
+    fn default_model_prefers_user_choice_when_credentialed() {
+        let home = crate::test_support::TestHome::new();
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            r#"{"deepseek": {"type": "api_key", "key": "sk-x"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            home.settings_path(),
+            r#"{"defaultModel": "deepseek/deepseek-chat"}"#,
+        )
+        .unwrap();
+        let reg = super::Registry::new();
+        let chosen = super::get_default_model_with(&reg).expect("a default resolves");
+        assert_eq!(chosen, "deepseek/deepseek-chat");
+    }
+
+    #[test]
+    fn enrich_user_models_fills_from_builtin_match() {
+        let builtins = vec![Model {
+            reasoning: true,
+            headers: [("X-Custom".to_string(), "v".to_string())]
+                .into_iter()
+                .collect(),
+            ..make_model("gpt-4", "openai")
+        }];
+        let mut user = vec![Model {
+            thinking_level_map: [("high".to_string(), json!({"budget": 5}))]
+                .into_iter()
+                .collect(),
+            ..make_model("gpt-4", "custom")
+        }];
+        enrich_user_models(&mut user, &builtins);
+        assert!(user[0].reasoning, "adopted from builtin");
+        assert_eq!(
+            user[0].headers.get("X-Custom").map(String::as_str),
+            Some("v")
+        );
+        // Existing thinking_level_map entries win; missing keys are merged.
+        assert_eq!(
+            user[0].thinking_level_map.get("high"),
+            Some(&json!({"budget": 5}))
+        );
+    }
 }
