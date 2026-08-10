@@ -34,7 +34,7 @@ const AT_LATEST_THRESHOLD = 32;
 // dock's visual footprint: the list's bottom padding must clear it too, or a
 // settled reply's footer ("time · tokens" + copy) rests under the
 // semi-transparent gradient.
-const COMPOSER_FADE_CLEARANCE = 80;
+const COMPOSER_FADE_CLEARANCE = 48;
 
 export function ChatScreen() {
   const { t } = useTranslation();
