@@ -109,3 +109,22 @@ pub fn first_todo_id(root: &str, goal: &str) -> String {
 pub fn open_store(cr: &CliRoot) -> future_loop::store::Store {
     future_loop::store::Store::open(&cr.root).unwrap()
 }
+
+/// A run record for seeding runs.jsonl / RunRecorded events.
+pub fn run_record(todo_id: &str, state: &str, recorded_at: u64) -> future_loop::state::RunRecord {
+    future_loop::state::RunRecord {
+        turn: 1,
+        todo_id: todo_id.to_string(),
+        run_id: format!("run-{todo_id}-{recorded_at}"),
+        terminal_state: state.to_string(),
+        error: None,
+        tokens_in_delta: 10,
+        tokens_out_delta: 20,
+        cost_delta: 0.001,
+        tools: vec!["shell".to_string()],
+        evidence: "artifact validated".to_string(),
+        recorded_at,
+        spend_source: Some("run".to_string()),
+        validation: None,
+    }
+}

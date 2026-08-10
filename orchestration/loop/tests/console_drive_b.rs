@@ -4,28 +4,9 @@
 
 mod common;
 
-use common::{add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store};
-use future_loop::state::{now_epoch, RunRecord};
+use common::{add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record};
+use future_loop::state::now_epoch;
 use future_loop::store::Event;
-
-/// A run record for seeding runs.jsonl / RunRecorded events.
-pub fn run_record(todo_id: &str, state: &str, recorded_at: u64) -> RunRecord {
-    RunRecord {
-        turn: 1,
-        todo_id: todo_id.to_string(),
-        run_id: format!("run-{todo_id}-{recorded_at}"),
-        terminal_state: state.to_string(),
-        error: None,
-        tokens_in_delta: 10,
-        tokens_out_delta: 20,
-        cost_delta: 0.001,
-        tools: vec!["shell".to_string()],
-        evidence: "artifact validated".to_string(),
-        recorded_at,
-        spend_source: Some("run".to_string()),
-        validation: None,
-    }
-}
 
 // ── status ─────────────────────────────────────────────────────────────────
 
