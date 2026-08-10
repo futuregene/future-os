@@ -180,6 +180,25 @@ mod tests {
     }
 
     #[test]
+    fn unknown_ref_with_refs_present_errors() {
+        // Refs exist but the requested key is not among them.
+        let config = base_config();
+        let err = resolve_target(Some("b9"), &config).unwrap_err();
+        assert_eq!(err.error.code, "unknown_ref");
+        assert_eq!(err.selector.as_deref(), Some("b9"));
+    }
+
+    #[test]
+    fn ref_shaped_token_detection() {
+        assert!(super::looks_like_ref("b1"));
+        assert!(super::looks_like_ref("A12"));
+        assert!(!super::looks_like_ref(""));
+        // Non-alphabetic first byte is not ref-shaped.
+        assert!(!super::looks_like_ref("1b"));
+        assert!(!super::looks_like_ref("#b1"));
+    }
+
+    #[test]
     fn ref_is_case_insensitive() {
         let config = base_config();
         let result = resolve_target(Some("B1"), &config).unwrap();

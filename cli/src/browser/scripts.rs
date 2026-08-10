@@ -207,3 +207,32 @@ pub struct SnapshotResult {
     pub url: String,
     pub items: Vec<SnapshotItem>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn console_hook_invocation_wraps_function_in_iife() {
+        let invocation = console_hook_invocation_source();
+        assert!(invocation.starts_with("(function() {"));
+        assert!(invocation.ends_with("})()"));
+        assert!(invocation.contains("__futureConsoleHookInstalled"));
+    }
+
+    #[test]
+    fn snapshot_result_deserializes_page_payload() {
+        let raw = r##"{
+            "title": "t", "url": "https://x",
+            "items": [{
+                "ref": "b1", "selector": "#go", "role": "button",
+                "name": "Go", "tag": "button", "disabled": false,
+                "checked": null, "href": null
+            }]
+        }"##;
+        let result: SnapshotResult = serde_json::from_str(raw).expect("parse");
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].r#ref, "b1");
+        assert_eq!(result.items[0].checked, None);
+    }
+}

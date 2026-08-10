@@ -43,3 +43,36 @@ pub fn create_default_session(
     let session = chromium::chromium_session::ChromiumSession::new(params);
     Ok(Box::new(session))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browser::types::DEFAULT_TIMEOUTS;
+
+    #[test]
+    fn creates_chromium_session_for_cdp_params() {
+        let params = BrowserSessionParams::Cdp {
+            browser_kind: "chrome".to_string(),
+            endpoint: "http://127.0.0.1:9222".to_string(),
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: None,
+            init_tab_order: None,
+        };
+        let session = create_default_session(params).expect("cdp session");
+        assert_eq!(session.protocol(), "cdp");
+        assert_eq!(session.kind(), "chromium");
+    }
+
+    #[test]
+    fn creates_safari_session_for_webdriver_params() {
+        let params = BrowserSessionParams::Webdriver {
+            endpoint: "http://127.0.0.1:4444".to_string(),
+            session_id: "s1".to_string(),
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: None,
+        };
+        let session = create_default_session(params).expect("webdriver session");
+        assert_eq!(session.protocol(), "webdriver");
+        assert_eq!(session.kind(), "safari");
+    }
+}

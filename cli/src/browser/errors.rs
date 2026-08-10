@@ -172,3 +172,119 @@ pub fn browser_closed_error(page_id: Option<&str>) -> BrowserError {
         "browser_closed",
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_error_display_and_conversion() {
+        let err = invalid_browser_config_error("bad kind");
+        assert_eq!(err.code, "invalid_config");
+        assert_eq!(err.to_string(), "Invalid browser config: bad kind");
+        // `std::error::Error` is implemented (source is None).
+        assert!(std::error::Error::source(&err).is_none());
+        // From<BrowserError> for String.
+        let s: String = err.into();
+        assert_eq!(s, "Invalid browser config: bad kind");
+    }
+
+    #[test]
+    fn browser_not_found_with_and_without_detail() {
+        let with = browser_not_found_error(Some("/opt/chrome"));
+        assert_eq!(with.code, "browser_not_found");
+        assert_eq!(with.to_string(), "Browser not found: /opt/chrome");
+        let without = browser_not_found_error(None);
+        assert!(without.to_string().starts_with("Could not find Chrome or Edge."));
+    }
+
+    #[test]
+    fn connection_error_message() {
+        let err = browser_connection_error("localhost:9222", "refused");
+        assert_eq!(err.code, "browser_connection_error");
+        assert_eq!(
+            err.to_string(),
+            "Cannot connect to browser at localhost:9222: refused"
+        );
+    }
+
+    #[test]
+    fn permission_error_display() {
+        let err = BrowserPermissionError {
+            error: BrowserError::new("denied", "browser_permission"),
+            remedy_command: "safaridriver --enable".to_string(),
+        };
+        assert_eq!(err.to_string(), "denied");
+        assert_eq!(err.remedy_command, "safaridriver --enable");
+        assert!(std::error::Error::source(&err).is_none());
+    }
+
+    #[test]
+    fn selector_error_variants() {
+        let unknown = unknown_ref_error("e5");
+        assert_eq!(unknown.error.code, "unknown_ref");
+        assert_eq!(unknown.selector.as_deref(), Some("e5"));
+        assert_eq!(
+            unknown.to_string(),
+            "Unknown browser ref \"e5\". Run browser command snapshot first."
+        );
+        assert!(std::error::Error::source(&unknown).is_none());
+
+        let not_found = element_not_found_error("#btn");
+        assert_eq!(not_found.error.code, "element_not_found");
+        assert_eq!(not_found.to_string(), "Element not found: \"#btn\"");
+
+        let not_interactable = element_not_interactable_error("#btn", "covered");
+        assert_eq!(not_interactable.error.code, "element_not_interactable");
+        assert_eq!(
+            not_interactable.to_string(),
+            "Element not interactable: \"#btn\" — covered"
+        );
+
+        let strict = strict_mode_violation_error(".item", 3);
+        assert_eq!(strict.error.code, "strict_mode_violation");
+        assert_eq!(
+            strict.to_string(),
+            "Strict mode violation: \".item\" resolved to 3 elements. Use a more specific selector."
+        );
+    }
+
+    #[test]
+    fn timeout_error_with_and_without_context() {
+        let plain = operation_timeout_error("navigation", 5000, None);
+        assert_eq!(plain.code, "operation_timeout");
+        assert_eq!(plain.to_string(), "Timed out after 5000ms waiting for navigation");
+        let ctx = operation_timeout_error("selector", 100, Some("iframe"));
+        assert_eq!(
+            ctx.to_string(),
+            "Timed out after 100ms waiting for selector (iframe)"
+        );
+    }
+
+    #[test]
+    fn unsupported_capability_with_and_without_alternative() {
+        let plain = unsupported_capability_error("safari", "PDF export", None);
+        assert_eq!(plain.code, "unsupported_capability");
+        assert_eq!(plain.to_string(), "PDF export is not supported on safari.");
+        let alt = unsupported_capability_error("safari", "PDF export", Some("use chromium"));
+        assert_eq!(
+            alt.to_string(),
+            "PDF export is not supported on safari.\nAlternative: use chromium"
+        );
+    }
+
+    #[test]
+    fn browser_closed_with_and_without_page() {
+        let plain = browser_closed_error(None);
+        assert_eq!(plain.code, "browser_closed");
+        assert_eq!(
+            plain.to_string(),
+            "Browser or page was closed during operation"
+        );
+        let paged = browser_closed_error(Some("p1"));
+        assert_eq!(
+            paged.to_string(),
+            "Browser or page was closed during operation (page: p1)"
+        );
+    }
+}

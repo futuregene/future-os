@@ -257,3 +257,52 @@ pub trait BrowserSession: Send {
 
     async fn disconnect(&mut self) -> Result<(), String>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browser::types::DEFAULT_TIMEOUTS;
+
+    #[test]
+    fn deadline_semantics() {
+        // Zero timeout expires immediately.
+        let expired = Deadline::new(0);
+        assert!(expired.expired());
+        assert_eq!(expired.remaining_ms(), 0);
+        // Generous timeout: not expired, remaining clamps near the timeout.
+        let pending = Deadline::new(60_000);
+        assert!(!pending.expired());
+        assert!(pending.remaining_ms() <= 60_000);
+        assert!(pending.remaining_ms() > 59_000);
+        assert!(pending.elapsed_ms() < 1_000);
+    }
+
+    #[test]
+    fn session_params_accessors() {
+        let cdp = BrowserSessionParams::Cdp {
+            browser_kind: "chrome".to_string(),
+            endpoint: "http://127.0.0.1:9222".to_string(),
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: Some("p1".to_string()),
+            init_tab_order: Some(vec!["p1".to_string()]),
+        };
+        assert_eq!(cdp.protocol(), "cdp");
+        assert_eq!(cdp.endpoint(), "http://127.0.0.1:9222");
+        assert_eq!(cdp.browser_kind(), "chrome");
+        assert_eq!(cdp.active_page_id().map(String::as_str), Some("p1"));
+        assert_eq!(cdp.timeouts().action_timeout_ms, 5_000);
+
+        let wd = BrowserSessionParams::Webdriver {
+            endpoint: "http://127.0.0.1:4444".to_string(),
+            session_id: "s1".to_string(),
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: None,
+        };
+        assert_eq!(wd.protocol(), "webdriver");
+        assert_eq!(wd.endpoint(), "http://127.0.0.1:4444");
+        // WebDriver params are always Safari.
+        assert_eq!(wd.browser_kind(), "safari");
+        assert!(wd.active_page_id().is_none());
+        assert_eq!(wd.timeouts().navigation_timeout_ms, 15_000);
+    }
+}
