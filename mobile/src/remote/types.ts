@@ -98,13 +98,22 @@ export interface HistoryAttachment {
 /**
  * Display-shaped session entry from `get_session_entries` (the agent's JSONL,
  * same source the desktop app renders). Content is plain text; user entries
- * carry attachments on `meta`.
+ * carry attachments on `meta`, and assistant entries may carry the model's
+ * thinking and the tool calls it introduced.
  */
 export interface HistoryEntry {
   id?: string;
   role: string;
   content?: string | null;
-  meta?: { attachments?: HistoryAttachment[] | null } | null;
+  /** Model reasoning for an assistant entry — rendered as a thinking row. */
+  thinking?: string | null;
+  /** Tool calls an assistant entry introduced — rendered as activity rows. */
+  tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[] | null;
+  meta?: {
+    /** Canonical Agent run identity (present on new entries). */
+    run_id?: string;
+    attachments?: HistoryAttachment[] | null;
+  } | null;
   /** Output tokens for the reply — only the final assistant entry of a run. */
   output_tokens?: number;
   /** Reply wall-clock duration in ms — paired with `output_tokens`. */

@@ -40,27 +40,114 @@ export function timelineFromHistory(messages: HistoryMessage[]): TimelineState {
   return { ...emptyTimeline(), items };
 }
 
-/** Display entries from `get_session_entries` — carries user attachments. */
+/** Accumulator for one user→assistant exchange (run) in history. */
+interface HistoryExchange {
+  user: TimelineItem | null;
+  /** id of the run's (last) assistant entry — the reply bubble's stable id. */
+  assistantId: string;
+  /** Thinking and tool rows for the run, in entry order. */
+  secondary: TimelineItem[];
+  /** All of the run's streamed text, merged into one bubble. */
+  finalText: string;
+  runId?: string;
+  durationMs?: number;
+  outputTokens?: number;
+}
+
+function newHistoryExchange(user: TimelineItem | null): HistoryExchange {
+  return { user, assistantId: "", secondary: [], finalText: "" };
+}
+
+/**
+ * Display entries from `get_session_entries` — mirrors the desktop
+ * entryProjection so history reads like the live transcript: each exchange
+ * renders the user message, the run's thinking/tool rows, then the merged
+ * reply bubble. The agent's JSONL groups a run as one user entry followed by
+ * assistant entries (text + thinking + tool_calls) and tool result entries.
+ */
 export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
   const items: TimelineItem[] = [];
+  let exchange: HistoryExchange | null = null;
+  const flush = () => {
+    if (!exchange) return;
+    if (exchange.user) items.push(exchange.user);
+    items.push(...exchange.secondary);
+    const hasReply =
+      exchange.finalText.trim().length > 0 ||
+      exchange.durationMs != null ||
+      exchange.outputTokens != null;
+    if (hasReply) {
+      items.push({
+        id: exchange.assistantId || `history:assistant:${items.length}`,
+        kind: "message",
+        role: "assistant",
+        text: exchange.finalText,
+        ...(exchange.runId ? { runId: exchange.runId } : {}),
+        ...(exchange.durationMs != null ? { durationMs: exchange.durationMs } : {}),
+        ...(exchange.outputTokens != null ? { outputTokens: exchange.outputTokens } : {}),
+      });
+    }
+    exchange = null;
+  };
   entries.forEach((entry, index) => {
-    if (entry.role !== "user" && entry.role !== "assistant") return;
-    const text = typeof entry.content === "string" ? entry.content : "";
-    const attachments = (entry.meta?.attachments ?? []).filter(
-      (attachment): attachment is HistoryAttachment =>
-        !!attachment && typeof attachment.path === "string" && attachment.path.length > 0,
-    );
-    if (!text.trim() && attachments.length === 0) return;
-    items.push({
-      id: `history:${entry.id ?? index}`,
-      kind: "message",
-      role: entry.role,
-      text,
-      ...(attachments.length > 0 ? { attachments } : {}),
-      ...(typeof entry.duration_ms === "number" ? { durationMs: entry.duration_ms } : {}),
-      ...(typeof entry.output_tokens === "number" ? { outputTokens: entry.output_tokens } : {}),
-    });
+    if (entry.role === "user") {
+      flush();
+      const text = typeof entry.content === "string" ? entry.content : "";
+      const attachments = (entry.meta?.attachments ?? []).filter(
+        (attachment): attachment is HistoryAttachment =>
+          !!attachment && typeof attachment.path === "string" && attachment.path.length > 0,
+      );
+      const user =
+        text.trim().length > 0 || attachments.length > 0
+          ? {
+              id: `history:${entry.id ?? index}`,
+              kind: "message" as const,
+              role: "user" as const,
+              text,
+              ...(attachments.length > 0 ? { attachments } : {}),
+            }
+          : null;
+      exchange = newHistoryExchange(user);
+      return;
+    }
+    if (entry.role !== "assistant") return;
+    if (!exchange) exchange = newHistoryExchange(null);
+    const key = entry.id ?? `assistant:${index}`;
+    exchange.assistantId = `history:${key}`;
+    if (typeof entry.meta?.run_id === "string" && entry.meta.run_id)
+      exchange.runId = entry.meta.run_id;
+    if (typeof entry.output_tokens === "number") exchange.outputTokens = entry.output_tokens;
+    if (typeof entry.duration_ms === "number") exchange.durationMs = entry.duration_ms;
+    if (typeof entry.thinking === "string" && entry.thinking.trim().length > 0) {
+      exchange.secondary.push({
+        id: `history:${key}:thinking`,
+        kind: "thinking",
+        text: entry.thinking,
+        complete: true,
+        ...(exchange.runId ? { runId: exchange.runId } : {}),
+      });
+    }
+    if (typeof entry.content === "string" && entry.content.trim().length > 0) {
+      exchange.finalText = exchange.finalText
+        ? `${exchange.finalText}\n\n${entry.content}`
+        : entry.content;
+    }
+    if (entry.tool_calls?.length) {
+      for (const [toolIndex, call] of entry.tool_calls.entries()) {
+        const name = call.function?.name ?? "";
+        if (!name) continue;
+        exchange.secondary.push({
+          id: `history:${key}:tool:${call.id ?? toolIndex}`,
+          kind: "tool",
+          toolId: call.id ?? `history-tool:${toolIndex}`,
+          name,
+          complete: true,
+          ...(exchange.runId ? { runId: exchange.runId } : {}),
+        });
+      }
+    }
   });
+  flush();
   return { ...emptyTimeline(), items };
 }
 

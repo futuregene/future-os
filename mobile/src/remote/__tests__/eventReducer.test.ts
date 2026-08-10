@@ -69,6 +69,60 @@ describe("entry reducer", () => {
       attachments: [{ path: "/tmp/a.png", name: "a.png" }],
     });
   });
+
+  test("projects thinking and tool rows above the merged reply per exchange", () => {
+    // History must read like the live transcript (desktop entryProjection
+    // parity): user bubble, then the run's thinking/tool rows, then the merged
+    // reply with its run stats.
+    const timeline = timelineFromEntries([
+      { id: "u1", role: "user", content: "check this" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "interim analysis",
+        thinking: "reasoning…",
+        tool_calls: [{ id: "call_0", function: { name: "read", arguments: { path: "/tmp/x" } } }],
+      },
+      { id: "t1", role: "tool", content: "ok" },
+      {
+        id: "a2",
+        role: "assistant",
+        content: "done",
+        meta: { run_id: "run-9" },
+        output_tokens: 12,
+        duration_ms: 3400,
+      },
+      { id: "u2", role: "user", content: "thanks" },
+    ]);
+    expect(timeline.items.map(item => item.kind)).toEqual([
+      "message",
+      "thinking",
+      "tool",
+      "message",
+      "message",
+    ]);
+    expect(timeline.items[1]).toMatchObject({
+      kind: "thinking",
+      text: "reasoning…",
+      complete: true,
+    });
+    expect(timeline.items[2]).toMatchObject({ kind: "tool", name: "read", complete: true });
+    const reply = timeline.items[3];
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply).toMatchObject({
+      role: "assistant",
+      text: "interim analysis\n\ndone",
+      runId: "run-9",
+      durationMs: 3400,
+      outputTokens: 12,
+    });
+    // A reply-less run (empty assistant entry) renders nothing extra.
+    const divider = timelineFromEntries([
+      { id: "u3", role: "user", content: "next" },
+      { id: "a3", role: "assistant", content: "" },
+    ]);
+    expect(divider.items.map(item => item.kind)).toEqual(["message"]);
+  });
 });
 
 describe("stream event reducer", () => {

@@ -11,7 +11,7 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react-native";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
@@ -258,9 +258,31 @@ function AttachmentChip({ attachment }: { attachment: HistoryAttachment }) {
   );
 }
 
+// Copy feedback parity with the desktop CopyButton: flash a check while the
+// clipboard write is in flight/just-done, then settle back to the copy glyph
+// after a beat. Only the success path flips the icon — a failed write must
+// not masquerade as a copied reply.
+function useCopyState(resetMs = 1400) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copy = () => {
+    setCopied(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), resetMs);
+  };
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+  return { copied, copy };
+}
+
 export function TimelineCard({ item }: TimelineCardProps) {
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const { copied, copy } = useCopyState();
 
   if (item.kind === "message") {
     if (item.role === "assistant") {
@@ -290,10 +312,18 @@ export function TimelineCard({ item }: TimelineCardProps) {
                 accessibilityLabel={t("chat.copyResponse")}
                 accessibilityRole="button"
                 hitSlop={8}
-                onPress={() => Clipboard.setStringAsync(item.text)}
+                onPress={() => {
+                  Clipboard.setStringAsync(item.text)
+                    .then(() => copy())
+                    .catch(() => {});
+                }}
                 style={styles.copyButton}
               >
-                <Copy color={colors.inkMuted} size={15} />
+                {copied ? (
+                  <Check color={colors.accent} size={15} />
+                ) : (
+                  <Copy color={colors.inkMuted} size={15} />
+                )}
               </Pressable>
               {footerStats.length > 0 && <Text style={styles.messageDuration}>{footerStats}</Text>}
             </View>
