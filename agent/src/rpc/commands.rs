@@ -2234,78 +2234,8 @@ mod tests {
 
     // ── Config-write commands (set_auth / upsert_provider / delete_provider) ──
     // Success paths write auth.json/models.json under $HOME, so they run under
-    // a redirected HOME. The guard is process-global (HOME is global) and
-    // serialized on crate::HOME_ENV_LOCK so parallel tests never observe each
-    // other's redirection.
-    fn home_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        crate::HOME_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-    }
-
-    struct TestHome {
-        previous_home: Option<std::ffi::OsString>,
-        previous_userprofile: Option<std::ffi::OsString>,
-        dir: tempfile::TempDir,
-        _guard: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl TestHome {
-        fn new() -> Self {
-            let guard = home_env_lock();
-            let previous_home = std::env::var_os("HOME");
-            let previous_userprofile = std::env::var_os("USERPROFILE");
-            // NOT under the system temp dir: parallel sandbox tests evaluate
-            // `$HOME/...` paths against rules that allow the temp dir — a
-            // tempdir-based HOME flips their "outside" fixtures to Allow
-            // whenever a TestHome window overlaps. Anchor under the workspace
-            // target/ dir instead (no sandbox rule allows it; CARGO_MANIFEST_DIR
-            // is compile-time so this works for lib tests, unlike
-            // CARGO_TARGET_TMPDIR which is integration-test only).
-            let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("workspace root")
-                .join("target/test-homes");
-            std::fs::create_dir_all(&base).expect("create test-homes dir");
-            let dir = tempfile::tempdir_in(base).expect("tempdir");
-            // Use the CANONICAL tempdir as $HOME: on macOS /var -> /private/var
-            // is a symlink, and sandbox rules canonicalize their bases — a raw
-            // (non-canonical) $HOME would make raw dirs::home_dir() paths never
-            // match canonicalized rule bases, flaking any test that compares
-            // them (e.g. the credential-guard sandbox tests) under parallel
-            // test execution.
-            let canonical_home = crate::sandbox::paths::canonicalize_lenient(dir.path());
-            std::env::set_var("HOME", &canonical_home);
-            std::env::set_var("USERPROFILE", &canonical_home);
-            Self {
-                previous_home,
-                previous_userprofile,
-                dir,
-                _guard: guard,
-            }
-        }
-
-        fn auth_path(&self) -> std::path::PathBuf {
-            self.dir.path().join(".future/agent/auth.json")
-        }
-
-        fn models_path(&self) -> std::path::PathBuf {
-            self.dir.path().join(".future/agent/models.json")
-        }
-    }
-
-    impl Drop for TestHome {
-        fn drop(&mut self) {
-            match &self.previous_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match &self.previous_userprofile {
-                Some(value) => std::env::set_var("USERPROFILE", value),
-                None => std::env::remove_var("USERPROFILE"),
-            }
-        }
-    }
+    // a redirected HOME (shared TestHome, serialized on crate::HOME_ENV_LOCK).
+    use crate::test_support::TestHome;
 
     fn read_json(path: &std::path::Path) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
@@ -3634,7 +3564,7 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert_eq!(resp["data"]["defaultModel"], candidate);
-        let settings = read_json(&home.dir.path().join(".future/agent/settings.json"));
+        let settings = read_json(&home.settings_path());
         assert_eq!(settings["defaultModel"], candidate);
     }
 
@@ -3643,7 +3573,7 @@ mod tests {
         let home = TestHome::new();
         let state = make_app_state();
         // Corrupt settings.json so load_settings fails.
-        let settings_path = home.dir.path().join(".future/agent/settings.json");
+        let settings_path = home.settings_path();
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
         std::fs::write(&settings_path, "{not json").unwrap();
         let candidate = {
@@ -5026,10 +4956,7 @@ mod tests {
     #[test]
     fn get_commands_lists_discovered_skills() {
         let home = TestHome::new();
-        let skill_dir = home
-            .dir
-            .path()
-            .join(".future/agent/skills/cov-skill");
+        let skill_dir = home.path().join(".future/agent/skills/cov-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
@@ -5049,7 +4976,7 @@ mod tests {
     #[test]
     fn new_session_applies_user_settings() {
         let home = TestHome::new();
-        let settings_path = home.dir.path().join(".future/agent/settings.json");
+        let settings_path = home.settings_path();
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
         std::fs::write(
             &settings_path,

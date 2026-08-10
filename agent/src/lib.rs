@@ -43,3 +43,81 @@ pub use utils::{default_config_dir, default_session_dir, generate_id};
 /// home-derived expectations under parallel execution.
 #[cfg(test)]
 pub(crate) static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Shared test scaffolding (unit tests only).
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// Take the process-global HOME lock (poison-tolerant).
+    pub(crate) fn home_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// Redirect HOME/USERPROFILE to an isolated directory for the duration of
+    /// a test. The directory is anchored under the workspace target/ dir —
+    /// never the system temp dir, whose writes sandbox rules allow (a temp
+    /// HOME would flip parallel sandbox tests' "outside" fixtures to Allow).
+    pub(crate) struct TestHome {
+        previous_home: Option<std::ffi::OsString>,
+        previous_userprofile: Option<std::ffi::OsString>,
+        dir: tempfile::TempDir,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestHome {
+        pub(crate) fn new() -> Self {
+            let guard = home_env_lock();
+            let previous_home = std::env::var_os("HOME");
+            let previous_userprofile = std::env::var_os("USERPROFILE");
+            let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("workspace root")
+                .join("target/test-homes");
+            std::fs::create_dir_all(&base).expect("create test-homes dir");
+            let dir = tempfile::tempdir_in(base).expect("tempdir");
+            // Use the CANONICAL dir as $HOME: on macOS /var -> /private/var
+            // is a symlink, and sandbox rules canonicalize their bases — a raw
+            // (non-canonical) $HOME would make raw dirs::home_dir() paths never
+            // match canonicalized rule bases.
+            let canonical_home = crate::sandbox::paths::canonicalize_lenient(dir.path());
+            std::env::set_var("HOME", &canonical_home);
+            std::env::set_var("USERPROFILE", &canonical_home);
+            Self {
+                previous_home,
+                previous_userprofile,
+                dir,
+                _guard: guard,
+            }
+        }
+
+        pub(crate) fn path(&self) -> &std::path::Path {
+            self.dir.path()
+        }
+
+        pub(crate) fn auth_path(&self) -> std::path::PathBuf {
+            self.dir.path().join(".future/agent/auth.json")
+        }
+
+        pub(crate) fn models_path(&self) -> std::path::PathBuf {
+            self.dir.path().join(".future/agent/models.json")
+        }
+
+        pub(crate) fn settings_path(&self) -> std::path::PathBuf {
+            self.dir.path().join(".future/agent/settings.json")
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            match &self.previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.previous_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+    }
+}
