@@ -4740,12 +4740,9 @@ mod tests {
         app.handle_input("\x0c");
         // Ctrl+L routes through the keybinding manager, which sends the
         // action as a UiCmd (the loop applies it).
-        match rx.try_recv().expect("keybinding action queued") {
-            UiCmd::KeyAction(KeyAction::ForceClear) => {
-                app.handle_cmd(UiCmd::KeyAction(KeyAction::ForceClear))
-            }
-            other => panic!("expected ForceClear, got {other:?}"),
-        }
+        let cmd = rx.try_recv().expect("keybinding action queued");
+        assert!(matches!(cmd, UiCmd::KeyAction(KeyAction::ForceClear)));
+        app.handle_cmd(cmd);
         assert!(app.force_clear_next_render);
     }
 
@@ -4819,6 +4816,25 @@ mod tests {
             found,
             "timed out waiting for system message containing {needle:?}"
         );
+    }
+
+    /// Pump until an overlay is on the stack (same budget as pump_until_msg).
+    async fn pump_until_overlay(
+        app: &mut App<FakeTerminal>,
+        op_rx: &mut mpsc::UnboundedReceiver<UiCmd>,
+    ) {
+        let mut found = false;
+        for _ in 0..1200 {
+            while let Ok(cmd) = op_rx.try_recv() {
+                app.handle_cmd(cmd);
+            }
+            if !app.overlay_stack.is_empty() {
+                found = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(found, "timed out waiting for an overlay");
     }
 
     /// System message contents, plain text.
@@ -6399,20 +6415,17 @@ mod tests {
 
         // /tree with sessions → tree overlay.
         app.handle_cmd(UiCmd::Submit("/tree".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(!app.overlay_stack.is_empty());
+        pump_until_overlay(&mut app, &mut rx).await;
         app.handle_cmd(UiCmd::OverlayCancel);
 
         // /fork loads messages → fork overlay.
         app.handle_cmd(UiCmd::Submit("/fork".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(!app.overlay_stack.is_empty());
+        pump_until_overlay(&mut app, &mut rx).await;
         app.handle_cmd(UiCmd::OverlayCancel);
 
         // /sessions overlay.
         app.handle_cmd(UiCmd::Submit("/sessions".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(!app.overlay_stack.is_empty());
+        pump_until_overlay(&mut app, &mut rx).await;
         app.handle_cmd(UiCmd::OverlayCancel);
 
         // /reload succeeds.
@@ -6643,6 +6656,19 @@ mod tests {
         app.do_render();
         assert_eq!(app.get_full_redraw_count(), before);
         restore_env2("TERMUX_VERSION", old_termux);
+
+        // Debug dump with an overlay focused: the editor has no cursor
+        // marker → the dump records cursorPos=null.
+        let old_debug2 = std::env::var_os("PI_TUI_DEBUG");
+        std::env::set_var("PI_TUI_DEBUG", "1");
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        app.terminal.cols = 75; // width change → full render → dump
+        app.do_render();
+        app.hide_overlay();
+        restore_env2("PI_TUI_DEBUG", old_debug2);
     }
 
     fn restore_env2(key: &str, old: Option<std::ffi::OsString>) {
@@ -7136,8 +7162,7 @@ mod tests {
 
         // /model selector with models loaded → overlay with "current".
         app.handle_cmd(UiCmd::Submit("/model".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(!app.overlay_stack.is_empty());
+        pump_until_overlay(&mut app, &mut rx).await;
         app.handle_cmd(UiCmd::OverlayCancel);
 
         // Selecting a session in the overlay drives the full switch flow.
@@ -7978,6 +8003,42 @@ mod tests {
         assert_eq!(app.previous_lines.len(), 30);
         app.overlay_stack.clear();
         app.do_render();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn final_closure_arms() {
+        let (mut app, mut rx) = running_app(100, 30);
+        let _ = &mut rx;
+
+        // Model/session argument completions invoke the cache closures.
+        app.input.set_value("/model g", None);
+        app.trigger_autocomplete();
+        app.input.set_value("/clone s", None);
+        app.trigger_autocomplete();
+
+        // Footer tool_elapsed Some arm.
+        app.state.tool_start_time = Some(Instant::now());
+        app.do_render();
+        app.state.tool_start_time = None;
+
+        // Two visible overlays → the focus-order sort closure runs.
+        for (id, focus_order) in [(991, 2), (992, 1)] {
+            app.overlay_stack.push(OverlayEntry {
+                id,
+                component: Box::new(ProbeComponent {
+                    lines: 1,
+                    wants_release: false,
+                    render_only_at: None,
+                }),
+                options: OverlayOptions::default(),
+                pre_focus: FocusTarget::Input,
+                hidden: false,
+                focus_order,
+            });
+        }
+        let base = vec!["row".to_string(); 30];
+        let _ = app.composite_overlays(base, 100, 30);
+        app.overlay_stack.clear();
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -1635,6 +1635,18 @@ mod tests {
         // Unknown functional number / non-matching input → None.
         assert!(parse_kitty_sequence("\x1b[4~").is_none());
         assert!(parse_kitty_sequence("hello").is_none());
+        // Home/End and functional keys with an explicit :event suffix.
+        let p = parse_kitty_sequence("\x1b[1;1:3H").unwrap();
+        assert_eq!(p.codepoint, FUNC_HOME);
+        assert_eq!(p.event_type, KeyEventType::Release);
+        let p = parse_kitty_sequence("\x1b[1;5:1F").unwrap();
+        assert_eq!(p.codepoint, FUNC_END);
+        assert_eq!(p.event_type, KeyEventType::Press);
+        let p = parse_kitty_sequence("\x1b[3;2:3~").unwrap();
+        assert_eq!(p.codepoint, FUNC_DELETE);
+        assert_eq!(p.event_type, KeyEventType::Release);
+        let p = parse_kitty_sequence("\x1b[2;1:1~").unwrap();
+        assert_eq!(p.codepoint, FUNC_INSERT);
         // Shifted/base key fields parse.
         let p = parse_kitty_sequence("\x1b[97:65:98;2u").unwrap();
         assert_eq!(p.shifted_key, Some(65));
