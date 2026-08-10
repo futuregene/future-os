@@ -1013,4 +1013,21 @@ mod tests {
         let err = write_auth_file(&json!({})).await.unwrap_err();
         assert!(!err.is_empty());
     }
+
+    #[tokio::test]
+    async fn write_auth_file_write_failure() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvGuard::set(&[(
+            "HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        // auth.json as a DIRECTORY: mkdir succeeds, the file write fails.
+        let agent_dir = dir.path().join(".future").join("agent");
+        tokio::fs::create_dir_all(agent_dir.join("auth.json"))
+            .await
+            .unwrap();
+        let err = write_auth_file(&json!({})).await.unwrap_err();
+        assert!(!err.is_empty());
+    }
 }

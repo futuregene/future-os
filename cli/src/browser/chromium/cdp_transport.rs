@@ -207,8 +207,10 @@ mod tests {
                         // Delay the reply so the client's close() has time to
                         // subscribe before the Close event arrives (otherwise
                         // the reader can win the race and close() hits its
-                        // 500 ms bound even on a healthy peer).
+                        // 500 ms bound even on a healthy peer). The text frame
+                        // exercises close()'s non-Close-event continue arm.
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        let _ = ws.send(Message::Text("late".to_string())).await;
                         let _ = ws.send(Message::Close(None)).await;
                         break;
                     }

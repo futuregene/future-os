@@ -203,4 +203,27 @@ mod tests {
             std::fs::set_permissions(path, perms).expect("chmod");
         }
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn which_empty_output_is_none() {
+        let _guard = crate::test_env::lock_env().await;
+        // A fake `which` that succeeds with EMPTY stdout → None.
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("which");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut paths = vec![dir.path().to_path_buf()];
+        if let Some(p) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&p));
+        }
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "PATH",
+            std::env::join_paths(paths).unwrap().into(),
+        )]);
+        assert_eq!(which("anything").await, None);
+    }
 }
