@@ -13,6 +13,9 @@ pub mod feishu;
 pub mod grpc_client;
 pub mod tls;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::info;
@@ -28,9 +31,10 @@ pub fn run(args: &[String]) -> Result<()> {
     // rustls-platform-verifier shares a rustls instance with reqwest and
     // tokio-tungstenite.  Both enable different default features on rustls
     // (aws-lc-rs vs. ring), so we must pin one provider explicitly.
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .expect("install rustls aws-lc-rs crypto provider");
+    // install_default only errors when a provider is ALREADY installed —
+    // e.g. when the channel bridge is embedded in the `future` CLI whose
+    // agent set one up first — which is fine, so ignore the result.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -76,9 +80,12 @@ async fn run_async() -> Result<()> {
             let fcfg = feishu_cfg.clone();
             let sd = shutdown.clone();
             handles.push(tokio::spawn(async move {
-                if let Err(e) = feishu::FeishuChannel::run(agent, fcfg, sd).await {
-                    tracing::error!("Feishu channel exited: {}", e);
-                }
+                // inspect_err, not if-let: rustfmt explodes single-line
+                // if-lets and the Ok-edge brace is unreachable in tests
+                // (a channel run only returns on error or shutdown abort).
+                let _ = feishu::FeishuChannel::run(agent, fcfg, sd)
+                    .await
+                    .inspect_err(|e| tracing::error!("Feishu channel exited: {}", e));
             }));
         }
     }
@@ -95,9 +102,9 @@ async fn run_async() -> Result<()> {
             let dcfg = dt_cfg.clone();
             let sd = shutdown.clone();
             handles.push(tokio::spawn(async move {
-                if let Err(e) = dingtalk::DingtalkChannel::run(agent, dcfg, sd).await {
-                    tracing::error!("DingTalk channel exited: {}", e);
-                }
+                let _ = dingtalk::DingtalkChannel::run(agent, dcfg, sd)
+                    .await
+                    .inspect_err(|e| tracing::error!("DingTalk channel exited: {}", e));
             }));
         }
     }
@@ -116,4 +123,34 @@ async fn run_async() -> Result<()> {
         h.abort();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_flag_prints_and_exits_ok() {
+        for flag in ["--version", "-V"] {
+            run(&[flag.to_string()]).expect("--version is Ok");
+        }
+        // Mixed with other args still wins.
+        run(&["--verbose".to_string(), "-V".to_string()]).expect("Ok");
+    }
+
+    /// The one in-process full run: crypto provider install + tracing init +
+    /// runtime + config load are all process-global one-shots.
+    #[test]
+    fn run_with_enabled_channel_missing_credentials_bails() {
+        let _guard = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("lib-run");
+        let dir = home.path.join(".future").join("channels");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"feishu": {"enabled": true}}"#).unwrap();
+        let err = run(&[]).unwrap_err();
+        assert!(
+            err.to_string().contains("app_id/app_secret missing"),
+            "{err}"
+        );
+    }
 }
