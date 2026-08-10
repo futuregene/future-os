@@ -473,6 +473,9 @@ mod tests {
     /// Redirect fd 0 to `fd` until the returned guard drops.
     struct Fd0Guard {
         saved: RawFd,
+        /// Write end of an idle pipe, kept open (and unwritten) so the read
+        /// end on fd 0 is never readable. Closed on drop.
+        idle_pipe_write: Option<RawFd>,
     }
 
     impl Fd0Guard {
@@ -481,7 +484,26 @@ mod tests {
                 let saved = libc::dup(0);
                 assert!(saved >= 0);
                 assert_ne!(libc::dup2(fd, 0), -1);
-                Self { saved }
+                Self {
+                    saved,
+                    idle_pipe_write: None,
+                }
+            }
+        }
+
+        /// Redirect fd 0 to the read end of a fresh pipe whose write end
+        /// stays open but unwritten — poll() on fd 0 then never reports
+        /// readable, unlike /dev/null which is instantly EOF-readable (CI
+        /// runners have no tty stdin, so tests asserting wait() timeouts
+        /// would see Input instead of Timeout there).
+        fn redirect_to_idle_pipe() -> Self {
+            let mut fds = [0 as RawFd; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            let guard = Self::redirect_to(fds[0]);
+            unsafe { libc::close(fds[0]) };
+            Self {
+                idle_pipe_write: Some(fds[1]),
+                ..guard
             }
         }
     }
@@ -491,6 +513,9 @@ mod tests {
             unsafe {
                 libc::dup2(self.saved, 0);
                 libc::close(self.saved);
+                if let Some(w) = self.idle_pipe_write {
+                    libc::close(w);
+                }
             }
         }
     }
@@ -581,6 +606,7 @@ mod tests {
     #[test]
     fn wait_reports_signal_input_and_timeout() {
         let _g = posix_test_lock();
+        let _fd0 = Fd0Guard::redirect_to_idle_pipe();
         let (read_fd, write_fd) = create_pipe().unwrap();
         let backend = Backend {
             state: Mutex::new(RawState {
@@ -636,6 +662,7 @@ mod tests {
     #[test]
     fn wait_eintr_maps_to_timeout() {
         let _g = posix_test_lock();
+        let _fd0 = Fd0Guard::redirect_to_idle_pipe();
         let (read_fd, write_fd) = create_pipe().unwrap();
         let backend = Backend {
             state: Mutex::new(RawState {

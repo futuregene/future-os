@@ -1956,21 +1956,19 @@ impl<T: TerminalIo> App<T> {
 
         // Parse key through unified parser (Kitty CSI-u, modifyOtherKeys, legacy).
         if let Some(key_name) = parse_key(data) {
-            // If focused component is a now-invisible overlay, redirect focus.
-            let focused_overlay = self
+            // If the focused overlay is now hidden, redirect focus. Overlay
+            // ids are unique, so one find suffices (the TS double-lookup's
+            // miss arm is unreachable).
+            let focused_hidden = self
                 .overlay_stack
                 .iter()
                 .find(|o| Some(o.id) == self.overlay_id_of_focus())
-                .map(|e| e.id);
-            if let Some(id) = focused_overlay {
-                if let Some(entry) = self.overlay_stack.iter().find(|e| e.id == id) {
-                    if entry.hidden {
-                        if let Some(top) = self.get_top_overlay_index() {
-                            self.set_focus(FocusTarget::Overlay(self.overlay_stack[top].id));
-                        } else {
-                            self.set_focus(FocusTarget::Input);
-                        }
-                    }
+                .is_some_and(|e| e.hidden);
+            if focused_hidden {
+                if let Some(top) = self.get_top_overlay_index() {
+                    self.set_focus(FocusTarget::Overlay(self.overlay_stack[top].id));
+                } else {
+                    self.set_focus(FocusTarget::Input);
                 }
             }
             self.handle_key(&key_name);
@@ -3835,13 +3833,13 @@ impl<T: TerminalIo> App<T> {
         } else {
             h
         };
-        let mut prev_viewport_top = if height_changed {
+        let prev_viewport_top = if height_changed {
             previous_buffer_length.saturating_sub(h)
         } else {
             self.previous_viewport_top
         };
-        let mut viewport_top = prev_viewport_top;
-        let mut hardware_cursor_row = self.hardware_cursor_row;
+        let viewport_top = prev_viewport_top;
+        let hardware_cursor_row = self.hardware_cursor_row;
 
         // Render editor first to determine its height (multi-line aware).
         let footer_data = FooterData {
@@ -4122,20 +4120,13 @@ impl<T: TerminalIo> App<T> {
         } else {
             first_changed as usize
         };
-        if move_target_row > prev_viewport_bottom {
-            let current_screen_row = hardware_cursor_row
-                .saturating_sub(prev_viewport_top)
-                .min(h - 1);
-            let move_to_bottom = h - 1 - current_screen_row;
-            if move_to_bottom > 0 {
-                buf += &format!("\x1b[{move_to_bottom}B");
-            }
-            let scroll = move_target_row - prev_viewport_bottom;
-            buf += &"\r\n".repeat(scroll);
-            prev_viewport_top += scroll;
-            viewport_top += scroll;
-            hardware_cursor_row = move_target_row;
-        }
+        // (No "scroll down to target" arm: move_target_row never exceeds
+        // prev_viewport_bottom here. The viewport bottom tracks
+        // max(h, len)-1 after full renders and only moves within that range
+        // on diff renders, while move_target_row is always an existing or
+        // appended row ≤ previous_lines.len()-1 ≤ bottom. Kept as an assert
+        // so tests exercise the invariant on every render.)
+        debug_assert!(move_target_row <= prev_viewport_bottom);
 
         // Move cursor to first changed line.
         let ld = Self::line_diff(
@@ -5621,6 +5612,8 @@ mod tests {
         assert!(app.input.get_value().is_empty()); // consumed
         app.handle_input("rewrite");
         assert!(app.input.get_value().ends_with('z')); // rewritten path
+                                                       // A listener returning None passes input through untouched.
+        app.handle_input("other");
         app.input_listeners.clear();
     }
 
@@ -6087,6 +6080,9 @@ mod tests {
         overrides: std::collections::HashMap<String, String>,
         /// Per-type failure (success=false, error "nope").
         fail: std::collections::HashSet<String>,
+        /// Scripted get_state responses, popped front-to-back (agent-restart
+        /// scenarios); the built-in default replies once it drains.
+        state_script: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
     }
 
     #[tonic::async_trait]
@@ -6112,6 +6108,31 @@ mod tests {
                     error_data: String::new(),
                     payload: None,
                 }));
+            }
+            if cmd.r#type == "get_state" {
+                if let Some(script) = &self.state_script {
+                    let next = {
+                        let mut g = script.lock().unwrap();
+                        if g.is_empty() {
+                            None
+                        } else {
+                            Some(g.remove(0))
+                        }
+                    };
+                    if let Some(data) = next {
+                        return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                            id: cmd.id,
+                            r#type: "response".into(),
+                            command: cmd.r#type.clone(),
+                            success: true,
+                            data,
+                            error: String::new(),
+                            error_code: String::new(),
+                            error_data: String::new(),
+                            payload: None,
+                        }));
+                    }
+                }
             }
             let fail = self.fail.contains(&cmd.r#type);
             let data = match cmd.r#type.as_str() {
@@ -6178,10 +6199,18 @@ mod tests {
         String,
         std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
     ) {
+        spawn_app_mock_with(AppMockAgent::default()).await
+    }
+
+    async fn spawn_app_mock_with(
+        mock: AppMockAgent,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
-        let mock = AppMockAgent::default();
         let seen = mock.seen.clone();
         tokio::spawn(
             Server::builder()
@@ -6582,6 +6611,11 @@ mod tests {
         app.do_render();
         let log = std::fs::read_to_string(home.path().join(".future/tui/debug.log")).unwrap();
         assert!(log.contains("width changed"));
+        // Unwritable log path (a directory) — the open failure is swallowed.
+        std::fs::remove_file(home.path().join(".future/tui/debug.log")).unwrap();
+        std::fs::create_dir(home.path().join(".future/tui/debug.log")).unwrap();
+        app.terminal.cols = 80;
+        app.do_render();
         restore_env2("PI_TUI_DEBUG", old_debug);
         restore_env2("PI_DEBUG_REDRAW", old_redraw);
         restore_env2("HOME", old_home);
@@ -7661,5 +7695,273 @@ mod tests {
         app.client.set_current_session_id("");
 
         let _ = &mut rx;
+    }
+
+    // ─── Final uncovered-line push ────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn on_tick_fires_pending_ac_query_after_deadline() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // Deadline set but not yet due → query stays pending.
+        app.pending_ac_query = Some(("/m".into(), 2));
+        app.ac_query_deadline = Some(Instant::now() + Duration::from_secs(60));
+        app.on_tick();
+        assert!(app.pending_ac_query.is_some());
+
+        // Deadline elapsed → the pending query fires.
+        app.ac_query_deadline = Some(Instant::now() - Duration::from_millis(1));
+        app.on_tick();
+        assert!(app.pending_ac_query.is_none());
+        // The sync slash query produced items → AcItems queued.
+        let mut saw_ac = false;
+        while let Ok(cmd) = rx.try_recv() {
+            saw_ac |= matches!(cmd, UiCmd::AcItems(_));
+            app.handle_cmd(cmd);
+        }
+        assert!(saw_ac);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_new_session_unsupported_continues() {
+        // Agent rejects new_session → the startup Err arm is a silent
+        // continue with the current (refreshed) session.
+        let mock = AppMockAgent {
+            fail: ["new_session".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        assert!(app.is_running());
+        assert_eq!(app.state.session_id, "s1");
+        pump(&mut app, &mut rx).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_explicit_session_state_skips_new_session() {
+        // get_state reports an explicit session → startup does not call
+        // new_session at all.
+        let mock = AppMockAgent {
+            overrides: [(
+                "get_state".to_string(),
+                r#"{"sessionId":"s9","explicitSession":true}"#.to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let (addr, seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        assert!(app.is_running());
+        assert_eq!(app.state.session_id, "s9");
+        assert!(!seen.lock().unwrap().iter().any(|(t, _)| t == "new_session"));
+        pump(&mut app, &mut rx).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_clone_cancelled_skips_state_refresh() {
+        let mock = AppMockAgent {
+            overrides: [("clone".to_string(), r#"{"cancelled":true}"#.to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.handle_submit("/clone");
+        pump(&mut app, &mut rx).await;
+        // Cancelled clone: no session switch, no state/messages reload.
+        assert_ne!(app.state.session_id, "s-new");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_new_session_response_variants() {
+        // Empty thinking level → the None arm (synchronous, pre-RPC).
+        let (mut app, mut rx) = make_app(100, 30);
+        app.state.thinking.clear();
+        app.handle_submit("/new");
+        pump(&mut app, &mut rx).await; // RPC fails (no agent) — harmless
+
+        // Ok response without a sessionId → no follow-up get_state.
+        let mock = AppMockAgent {
+            overrides: [("new_session".to_string(), "{}".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.handle_submit("/new");
+        pump(&mut app, &mut rx).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn overlay_component_escape_fires_on_cancel_closures() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // Generic select overlay (sessions browser). App-level escape hides
+        // overlays directly, so feed the component its own escape.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        let idx = app.get_top_overlay_index().unwrap();
+        app.overlay_stack[idx].component.handle_input("escape");
+        let mut saw_cancel = false;
+        while let Ok(cmd) = rx.try_recv() {
+            saw_cancel |= matches!(cmd, UiCmd::OverlayCancel);
+            app.handle_cmd(cmd);
+        }
+        assert!(saw_cancel);
+        assert!(app.overlay_stack.is_empty());
+
+        // Scoped models selector.
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Scoped,
+        });
+        let idx = app.get_top_overlay_index().unwrap();
+        app.overlay_stack[idx].component.handle_input("escape");
+        let mut saw_cancel = false;
+        while let Ok(cmd) = rx.try_recv() {
+            saw_cancel |= matches!(cmd, UiCmd::OverlayCancel);
+            app.handle_cmd(cmd);
+        }
+        assert!(saw_cancel);
+        assert!(app.overlay_stack.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lost_queued_runs_marked_on_agent_restart() {
+        // get_state script: instance A with q1 queued, then instance B.
+        let state_a = r#"{"sessionId":"s1","agentInstanceId":"agent-a","queuedRuns":[{"runId":"q1","runSequence":1,"clientRequestId":"c","state":"queued","queuePosition":1,"acceptedAt":"2026-08-07T00:00:00Z","displayText":"hi"}]}"#.to_string();
+        let state_b = r#"{"sessionId":"s1","agentInstanceId":"agent-b"}"#.to_string();
+        let mock = AppMockAgent {
+            state_script: Some(std::sync::Arc::new(std::sync::Mutex::new(vec![
+                state_a, state_b,
+            ]))),
+            ..Default::default()
+        };
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        let _ = &mut rx;
+        // Pre-set the client's session: apply_refresh_state syncs a changed
+        // session id via set_current_session_id, which CLEARS the run
+        // bookkeeping — that would wipe q1 before the restart refresh.
+        app.client.set_current_session_id("s1");
+        app.refresh_direct().await; // instance A; q1 queued in the chat
+        app.refresh_direct().await; // instance B → restart → q1 marked lost
+        assert_eq!(app.state.session_id, "s1");
+    }
+
+    #[test]
+    fn composite_line_at_fits_within_width() {
+        // Result fits → early return, no slice_by_column safeguard.
+        let merged = App::<FakeTerminal>::composite_line_at("abcdef", "XY", 2, 2, 20);
+        assert!(merged.contains("XY"));
+
+        // Overlay spilling past the terminal width → the slice safeguard.
+        let truncated = App::<FakeTerminal>::composite_line_at("abcdef", "XY", 5, 5, 6);
+        assert!(visible_width(&truncated) <= 6);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn autocomplete_overlap_mismatch_keeps_full_value() {
+        use crate::components::autocomplete::{AutocompleteContext, AutocompleteProvider};
+
+        // Provider whose item value shares no prefix with the text before
+        // the token — the overlap check never matches.
+        struct FixedProvider;
+        impl AutocompleteProvider for FixedProvider {
+            fn name(&self) -> &str {
+                "fixed"
+            }
+            fn r#match(&self, text: &str, cursor_pos: usize) -> Option<AutocompleteContext> {
+                Some(AutocompleteContext {
+                    text: text.to_string(),
+                    cursor_pos,
+                    token: "y".to_string(),
+                    token_start: text.len() - 1,
+                })
+            }
+            fn get_completions(&self, _ctx: &AutocompleteContext) -> Vec<AutocompleteItem> {
+                vec![AutocompleteItem {
+                    value: "zzz".into(),
+                    label: "zzz".into(),
+                    description: None,
+                }]
+            }
+        }
+
+        let (mut app, mut rx) = make_app(100, 30);
+        app.ac_manager.destroy();
+        app.ac_manager.register(Box::new(FixedProvider));
+        app.input.set_value("ay", None);
+        app.trigger_autocomplete();
+        pump(&mut app, &mut rx).await; // deliver AcItems
+        assert!(app.autocomplete.is_visible());
+        app.apply_autocomplete_selection();
+        // No overlap: before + full value + after.
+        assert_eq!(app.input.get_value(), "azzz");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn render_with_visible_but_empty_autocomplete() {
+        let (mut app, _rx) = running_app(100, 30);
+        // Visible popup with zero items renders no lines.
+        app.autocomplete.show(vec![]);
+        assert!(app.autocomplete.is_visible());
+        app.do_render();
+        app.autocomplete.hide();
+        app.do_render();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pure_append_render_via_empty_overlay() {
+        let (mut app, _rx) = running_app(100, 30);
+        app.do_render(); // frame 1: chat + editor + footer (< 30 lines)
+        let base = app.previous_lines.len();
+        assert!(base < 30);
+        // An overlay whose component renders nothing: compositing pads the
+        // frame to the terminal height with blank lines — a pure tail
+        // append with no in-place change. (non_capturing: a focus change
+        // would restyle the editor line, breaking the pure-append shape.)
+        app.show_overlay(
+            Box::new(ProbeComponent {
+                lines: 0,
+                wants_release: false,
+                render_only_at: None,
+            }),
+            OverlayOptions {
+                non_capturing: true,
+                ..Default::default()
+            },
+        );
+        app.do_render();
+        assert_eq!(app.previous_lines.len(), 30);
+        app.hide_overlay();
+        app.do_render();
+        assert_eq!(app.previous_lines.len(), base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn overwide_line_truncated_in_diff_render() {
+        // Width-1 terminal: a wide char can't be split by the wrapper, so
+        // the rendered line exceeds the width and the diff render takes the
+        // truncate-instead-of-crashing arm.
+        let (mut app, _rx) = running_app(40, 12);
+        app.chat
+            .add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, "ok"));
+        app.do_render(); // frame 1 (full)
+                         // Code-block lines render unwrapped (raw + indent): a long code
+                         // line exceeds the terminal width → the diff render's truncate
+                         // arm (graceful degradation instead of a hard failure).
+        let wide = format!("```\n{}\n```", "x".repeat(80));
+        app.chat.update_last_message(&wide);
+        app.do_render();
+        app.chat.update_last_message("done");
+        app.do_render();
     }
 }

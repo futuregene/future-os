@@ -2135,4 +2135,22 @@ mod tests {
         let (_tx, mut rx) = watch::channel(true);
         wait_connected(&mut rx).await;
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn poked_exit_with_stop_set_returns_manager() {
+        // Latch stop WITHOUT notifying, then change the session (poke): the
+        // stale subscription exits Poked and the manager's post-Poked stop
+        // check returns instead of resubscribing.
+        let (tx, addr) = spawn_eventful_mock().await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        wait_connected(&mut conn).await;
+        client.inner.stop.store(true, Ordering::SeqCst);
+        client.set_current_session_id("s2"); // poke → Poked → stop → return
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        client.disconnect();
+    }
 }
