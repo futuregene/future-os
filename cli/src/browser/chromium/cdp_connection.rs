@@ -424,3 +424,436 @@ impl CdpSession {
         self.connection.on(None, method, handler)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_cdp::MockCdp;
+    use serde_json::json;
+
+    fn params(json: Value) -> Map<String, Value> {
+        json.as_object().expect("object").clone()
+    }
+
+    // ── Error Display impls ───────────────────────────────────────────
+
+    #[test]
+    fn error_display_impls() {
+        let e = CdpError {
+            code: -32000,
+            message: "msg".to_string(),
+        };
+        assert_eq!(format!("{e}"), "msg");
+        assert_eq!(
+            format!("{}", CdpConnectionError("closed!".to_string())),
+            "closed!"
+        );
+        let t = CdpTimeoutError {
+            method: "Page.navigate".to_string(),
+            timeout_ms: 42,
+        };
+        assert_eq!(
+            format!("{t}"),
+            "CDP command \"Page.navigate\" timed out after 42ms"
+        );
+        assert_eq!(format!("{}", CdpSendError::Protocol(e.clone())), "msg");
+        assert!(format!("{}", CdpSendError::Timeout(t)).contains("timed out"));
+        assert_eq!(format!("{}", CdpSendError::Closed), "Connection is closed");
+    }
+
+    // ── connect / send / receive ──────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_failure_and_handshake_timeout() {
+        // Nothing listening → handshake fails fast.
+        let err = CdpConnection::connect("ws://127.0.0.1:1", 500)
+            .await
+            .err()
+            .unwrap();
+        assert!(err.contains("WebSocket connection failed"), "err: {err}");
+
+        // TCP listener that never answers the WS handshake → timeout.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _hold = tokio::spawn(async move {
+            let _s = listener.accept().await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+        let err = CdpConnection::connect(&format!("ws://{addr}"), 150)
+            .await
+            .err()
+            .unwrap();
+        assert!(err.contains("WebSocket connection timeout"), "err: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn send_result_and_error_variants() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Fail.method".to_string());
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        assert!(conn.is_connected());
+
+        // Success: result payload is returned verbatim; params + sessionId
+        // are transmitted.
+        let session = CdpSession::new("S-1", conn.clone());
+        let result = session
+            .send("Page.enable", Some(&params(json!({"x": 1}))))
+            .await
+            .unwrap();
+        assert_eq!(result, json!({}));
+        let seen = mock.state.lock().unwrap().commands.clone();
+        let (m, sid, p) = seen.iter().find(|(m, _, _)| m == "Page.enable").unwrap();
+        assert_eq!(m, "Page.enable");
+        assert_eq!(sid.as_deref(), Some("S-1"));
+        assert_eq!(p, &json!({"x": 1}));
+
+        // Protocol error: code + message preserved.
+        let err = conn.send("Fail.method", None, None).await.unwrap_err();
+        match err {
+            CdpSendError::Protocol(e) => {
+                assert_eq!(e.code, -32000);
+                assert_eq!(e.message, "mock failure");
+            }
+            other => panic!("expected protocol error, got {other}"),
+        }
+
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn send_after_disconnect_is_closed_and_double_disconnect_is_noop() {
+        let mock = MockCdp::start().await;
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        conn.disconnect().await;
+        assert!(!conn.is_connected());
+        let err = conn.send("Page.enable", None, None).await.unwrap_err();
+        assert!(matches!(err, CdpSendError::Closed));
+        // Second disconnect returns early.
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn send_timeout_removes_pending() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .no_reply_methods
+            .insert("Slow.method".to_string());
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+
+        let err = conn
+            .send_with_timeout("Slow.method", None, None, 50)
+            .await
+            .unwrap_err();
+        match err {
+            CdpSendError::Timeout(t) => {
+                assert_eq!(t.method, "Slow.method");
+                assert_eq!(t.timeout_ms, 50);
+            }
+            other => panic!("expected timeout, got {other}"),
+        }
+        assert!(conn.pending.lock().unwrap().is_empty());
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn server_close_rejects_pending_and_marks_disconnected() {
+        let mock = MockCdp::start().await;
+        {
+            let mut state = mock.state.lock().unwrap();
+            state
+                .close_connection_on
+                .insert("Kill.switch".to_string());
+            state
+                .no_reply_methods
+                .insert("Never.answered".to_string());
+        }
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+
+        // A no-reply request stays pending; the Kill.switch command then
+        // drops the socket server-side.
+        let pending_conn = conn.clone();
+        let pending = tokio::spawn(async move {
+            pending_conn
+                .send_with_timeout("Never.answered", None, None, 60_000)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        conn.send("Kill.switch", None, None).await.ok();
+
+        let err = pending.await.unwrap().unwrap_err();
+        match err {
+            CdpSendError::Protocol(e) => assert_eq!(e.message, "Connection closed"),
+            other => panic!("expected closed-protocol error, got {other}"),
+        }
+        // handle_close marks the connection closed.
+        for _ in 0..50 {
+            if !conn.is_connected() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!conn.is_connected());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn malformed_and_stale_frames_are_ignored() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::accept_async;
+        use tokio_tungstenite::tungstenite::protocol::Message;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            // Garbage frames that must not break the dispatch loop.
+            let junk = [
+                "not json at all",
+                "[1,2,3]",
+                r#"{"id": 99, "method": "Both.idAndMethod"}"#,
+                r#"{"id": 12345, "result": {"stale": true}}"#, // unknown id
+                r#"{"method": 42}"#,                            // non-string method
+            ];
+            for frame in junk {
+                let _ = ws.send(Message::Text(frame.to_string())).await;
+            }
+            // Now answer real commands forever.
+            while let Some(frame) = ws.next().await {
+                let Ok(Message::Text(text)) = frame else { break };
+                let v: Value = serde_json::from_str(&text).unwrap();
+                let id = v.get("id").and_then(Value::as_u64).unwrap();
+                let _ = ws
+                    .send(Message::Text(
+                        json!({"id": id, "result": {"ok": true}}).to_string(),
+                    ))
+                    .await;
+            }
+        });
+
+        let conn = CdpConnection::connect(&format!("ws://{addr}"), 5_000)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // The connection survived the junk and still answers commands.
+        let result = conn.send("Page.enable", None, None).await.unwrap();
+        assert_eq!(result, json!({"ok": true}));
+        conn.disconnect().await;
+    }
+
+    // ── Events ────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn events_route_to_session_and_browser_handlers() {
+        let mock = MockCdp::start().await;
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+
+        let got: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let g = got.clone();
+        let _unsub = conn.on(
+            Some("SID-X"),
+            "Target.targetCreated",
+            Arc::new(move |p| g.lock().unwrap().push(p.clone())),
+        );
+        let browser_got: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let bg = browser_got.clone();
+        let session = CdpSession::new("", conn.clone());
+        let _unsub2 = session.on_browser(
+            "Target.targetCreated",
+            Arc::new(move |p| bg.lock().unwrap().push(p.clone())),
+        );
+
+        // createTarget → browser-level targetCreated event.
+        conn.send(
+            "Target.createTarget",
+            Some(&params(json!({"url": "http://x/"}))),
+            None,
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..50 {
+            if !browser_got.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(browser_got.lock().unwrap().len(), 1);
+        // The session-scoped handler did NOT receive the browser-level event.
+        assert!(got.lock().unwrap().is_empty());
+        conn.disconnect().await;
+    }
+
+    // ── Target registry + pending rejection ───────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn target_registry_and_session_pending_rejection() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .no_reply_methods
+            .insert("Never.answered".to_string());
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+
+        conn.register_target(AttachedTarget {
+            target_id: "T-1".to_string(),
+            session_id: "S-1".to_string(),
+            r#type: "page".to_string(),
+        });
+        assert_eq!(
+            conn.get_target_by_session_id("S-1").map(|t| t.target_id),
+            Some("T-1".to_string())
+        );
+        assert!(conn.get_target_by_session_id("nope").is_none());
+
+        // A pending request on S-1 gets rejected when the session is torn down.
+        let pending_conn = conn.clone();
+        let pending = tokio::spawn(async move {
+            pending_conn
+                .send_with_timeout("Never.answered", None, Some("S-1"), 60_000)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        conn.reject_pending_for_session(
+            "S-1",
+            CdpSendError::Protocol(CdpError {
+                code: -1,
+                message: "Target T-1 destroyed".to_string(),
+            }),
+        );
+        let err = pending.await.unwrap().unwrap_err();
+        assert_eq!(err.to_string(), "Target T-1 destroyed");
+
+        // Detach by session id and target id.
+        assert_eq!(
+            conn.detach_target_by_session_id("S-1").map(|t| t.target_id),
+            Some("T-1".to_string())
+        );
+        assert!(conn.detach_target_by_session_id("S-1").is_none());
+        conn.register_target(AttachedTarget {
+            target_id: "T-2".to_string(),
+            session_id: "S-2".to_string(),
+            r#type: "page".to_string(),
+        });
+        assert_eq!(
+            conn.detach_target_by_target_id("T-2").map(|t| t.session_id),
+            Some("S-2".to_string())
+        );
+        conn.disconnect().await;
+    }
+
+    // ── CdpSession surface ────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cdp_session_surface() {
+        let mock = MockCdp::start().await;
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        let session = CdpSession::new("S-9", conn.clone());
+        assert_eq!(session.session_id, "S-9");
+        assert!(Arc::ptr_eq(session.connection(), &conn));
+
+        // send_with_timeout happy path.
+        let v = session
+            .send_with_timeout("Page.enable", None, 1_000)
+            .await
+            .unwrap();
+        assert_eq!(v, json!({}));
+
+        // on() with a non-empty session id scopes the handler.
+        let got = Arc::new(AtomicU64::new(0));
+        let g = got.clone();
+        let _u = session.on(
+            "Some.event",
+            Arc::new(move |_| {
+                g.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        conn.dispatch_test(Some("S-9"), "Some.event", &json!({}));
+        conn.dispatch_test(Some("other"), "Some.event", &json!({}));
+        assert_eq!(got.load(Ordering::SeqCst), 1);
+
+        // on() with the EMPTY session id normalizes to the browser key.
+        let browser_got = Arc::new(AtomicU64::new(0));
+        let b = browser_got.clone();
+        let browser_session = CdpSession::new("", conn.clone());
+        let _u2 = browser_session.on(
+            "Browser.event",
+            Arc::new(move |_| {
+                b.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        conn.dispatch_test(None, "Browser.event", &json!({}));
+        assert_eq!(browser_got.load(Ordering::SeqCst), 1);
+
+        conn.disconnect().await;
+    }
+
+    // ── Error response edge shapes ────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn error_response_with_missing_fields_uses_defaults() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::accept_async;
+        use tokio_tungstenite::tungstenite::protocol::Message;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            while let Some(frame) = ws.next().await {
+                let Ok(Message::Text(text)) = frame else { break };
+                let v: Value = serde_json::from_str(&text).unwrap();
+                let id = v.get("id").and_then(Value::as_u64).unwrap();
+                // Error object without code/message → defaults kick in.
+                let _ = ws
+                    .send(Message::Text(
+                        json!({"id": id, "error": {"something": "else"}}).to_string(),
+                    ))
+                    .await;
+            }
+        });
+
+        let conn = CdpConnection::connect(&format!("ws://{addr}"), 5_000)
+            .await
+            .unwrap();
+        let err = conn.send("Any.method", None, None).await.unwrap_err();
+        match err {
+            CdpSendError::Protocol(e) => {
+                assert_eq!(e.code, -1);
+                assert_eq!(e.message, "Unknown CDP error");
+            }
+            other => panic!("expected protocol error, got {other}"),
+        }
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn disconnect_rejects_all_pending() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .no_reply_methods
+            .insert("Never.answered".to_string());
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        let pending_conn = conn.clone();
+        let pending = tokio::spawn(async move {
+            pending_conn
+                .send_with_timeout("Never.answered", None, None, 60_000)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        conn.disconnect().await;
+        let err = pending.await.unwrap().unwrap_err();
+        assert_eq!(err.to_string(), "Connection closed");
+    }
+}
