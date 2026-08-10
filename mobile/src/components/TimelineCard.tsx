@@ -372,8 +372,8 @@ export function TimelineCard({ item }: TimelineCardProps) {
   if (item.kind === "tool") {
     const kind = toolKind(item.name);
     // Desktop parity (AgentActivityList): the row carries the call's target —
-    // the command for shell, the file path otherwise. Collapsed shows it
-    // truncated after the label; tapping expands the full path/command.
+    // the command for shell, the file path otherwise — but keeps it hidden
+    // until tapped; the chevron signals the row is expandable.
     const detail = item.detail?.trim() ? item.detail.trim() : null;
     return (
       <View style={styles.tool}>
@@ -385,11 +385,6 @@ export function TimelineCard({ item }: TimelineCardProps) {
         >
           <ToolGlyph kind={kind} />
           <Text style={styles.toolText}>{toolLabel(t, kind, item.complete)}</Text>
-          {detail ? (
-            <Text numberOfLines={1} style={styles.toolDetail}>
-              {detail}
-            </Text>
-          ) : null}
           {detail ? (
             expanded ? (
               <ChevronUp color={colors.inkMuted} size={15} />
@@ -490,7 +485,6 @@ const styles = StyleSheet.create({
   tool: { paddingHorizontal: spacing.xs, paddingVertical: spacing.xs },
   toolHeader: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   toolText: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
-  toolDetail: { flexShrink: 1, color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
   toolDetailText: {
     marginTop: 2,
     paddingLeft: spacing.md + spacing.sm,
