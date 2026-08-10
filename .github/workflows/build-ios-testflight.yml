@@ -7,11 +7,11 @@ permissions: read-all
 # Expo prebuild + xcodebuild, uploads it to TestFlight via altool, and mirrors
 # the .ipa to OSS.
 #
-# TestFlight requires a plain numeric marketing version — the workflow injects
-# `0.0.<commit-count>` via FUTURE_VERSION (the app's own dev-channel marker is
-# `0.0.<commit-count>-<hash>`, but the suffix would be rejected). The commit
-# count also becomes CFBundleVersion / Android versionCode via
-# FUTURE_BUILD_NUMBER, so every build has a monotonic store build number.
+# TestFlight requires a plain numeric marketing version, so this workflow pins it
+# at `0.0.1` (constant across builds; bumped only for real releases). The store
+# build number (CFBundleVersion / Android versionCode) comes from `github.run_id`
+# via FUTURE_BUILD_NUMBER — a monotonic per-repo counter that never resets on
+# workflow renames and is immune to shallow-checkout commit counts.
 #
 # Keep this workflow restricted to trusted triggers: it imports signing
 # credentials and submits software to Apple's TestFlight service. Do not add
@@ -34,10 +34,12 @@ jobs:
       - name: Resolve build number
         id: v
         run: |
-          count="$(git rev-list --count HEAD)"
-          echo "version=0.0.${count}" >> "$GITHUB_OUTPUT"
-          echo "build_number=${count}" >> "$GITHUB_OUTPUT"
-          echo "TestFlight version: 0.0.${count} (build ${count})"
+          # Marketing version stays pinned at 0.0.1 for dev/TestFlight; bump it
+          # here only when cutting a real release. The store build number is the
+          # repo-wide run counter (monotonic, never resets, not git-dependent).
+          echo "version=0.0.1" >> "$GITHUB_OUTPUT"
+          echo "build_number=${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+          echo "TestFlight version: 0.0.1 (build ${{ github.run_id }})"
 
   build:
     name: Build and upload TestFlight
