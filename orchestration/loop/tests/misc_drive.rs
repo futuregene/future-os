@@ -33,7 +33,11 @@ fn scope_frontier_arms() {
     goal.todos.push(lapsed);
     // Unclaimed advancement + a monitor + a blocker (agent-work classes).
     goal.todos.push(Todo::advancement("t3", "free"));
-    goal.todos.push(Todo::monitor("m1", "watch", std::time::Duration::from_secs(60)));
+    goal.todos.push(Todo::monitor(
+        "m1",
+        "watch",
+        std::time::Duration::from_secs(60),
+    ));
     goal.todos.push(Todo::blocker("b1", "blocker", &[]));
     // An open gate for the gates list.
     goal.todos.push(Todo::user_gate("g1", "q?", &[]));
@@ -63,7 +67,10 @@ fn capability_gate_arms() {
     let mut t = Todo::advancement("t1", "x");
     t.required_capability = Some("shell".into());
     assert!(cg::missing_required_capabilities(&t, &avail).is_empty());
-    assert_eq!(cg::missing_required_capabilities(&t, &[]), vec!["shell".to_string()]);
+    assert_eq!(
+        cg::missing_required_capabilities(&t, &[]),
+        vec!["shell".to_string()]
+    );
     let plain = Todo::advancement("t2", "y");
     assert!(cg::missing_required_capabilities(&plain, &[]).is_empty());
     // todo_is_runnable (note: the DEFAULT available set includes shell, so
@@ -81,8 +88,14 @@ fn capability_gate_arms() {
     let todos = vec![needs_shell, needs_custom, Todo::advancement("t3", "free")];
     let gate = cg::build_capability_gate(&todos, &[]).expect("gate with blocked todos");
     assert!(gate.runnable_todo_ids.contains(&"t3".to_string()));
-    assert!(gate.runnable_todo_ids.contains(&"t1".to_string()), "shell is default-available");
-    assert!(gate.blocked_todo_ids.contains(&"t2".to_string()), "custom-xyz missing");
+    assert!(
+        gate.runnable_todo_ids.contains(&"t1".to_string()),
+        "shell is default-available"
+    );
+    assert!(
+        gate.blocked_todo_ids.contains(&"t2".to_string()),
+        "custom-xyz missing"
+    );
     // Everything runnable → None.
     let free = vec![Todo::advancement("t9", "free")];
     assert!(cg::build_capability_gate(&free, &[]).is_none());
@@ -103,7 +116,8 @@ fn lane_recommendation_arms() {
     let rec = compact_agent_lane_recommendation(&goal, "w1").unwrap();
     assert!(rec.recommended_action.is_none());
     // With evidence → truncated action.
-    goal.history.push(run_record("t1", "completed", now_epoch()));
+    goal.history
+        .push(run_record("t1", "completed", now_epoch()));
     let rec = compact_agent_lane_recommendation(&goal, "w1").unwrap();
     assert!(rec.recommended_action.is_some());
 }
@@ -129,7 +143,11 @@ fn loop_protocol_comparison_contract() {
         "r1",
         lp::LOOPX_PRODUCT_MODE_ROUTE,
     );
-    assert_eq!(c3.max_rounds_budget, lp::BLIND_LOOP_DEFAULT_MAX_ROUNDS, "0 → default");
+    assert_eq!(
+        c3.max_rounds_budget,
+        lp::BLIND_LOOP_DEFAULT_MAX_ROUNDS,
+        "0 → default"
+    );
     // Route classifiers.
     assert!(!lp::blind_loop_routes().is_empty());
     assert!(!lp::product_mode_routes().is_empty());
@@ -143,11 +161,17 @@ fn auto_research_parse_arms() {
     let registry = CapabilityRegistry::with_builtin();
     let cap = registry.get("auto_research").unwrap();
     // Structured with all keys.
-    let ps = cap.propose("question: does X beat Y on metric Z?\nhypothesis: X wins\nmethod: ablation");
+    let ps =
+        cap.propose("question: does X beat Y on metric Z?\nhypothesis: X wins\nmethod: ablation");
     assert!(!ps.is_empty());
     // A non-question → clarify successor.
     let ps = cap.propose("question: just a statement");
-    assert!(ps.iter().any(|p| p.reason.contains("not shaped as a research question") || p.reason.contains("Clarify")), "{ps:?}");
+    assert!(
+        ps.iter()
+            .any(|p| p.reason.contains("not shaped as a research question")
+                || p.reason.contains("Clarify")),
+        "{ps:?}"
+    );
     // Empty.
     assert!(!cap.propose("").is_empty());
 }
@@ -164,9 +188,18 @@ fn periodic_report_parse_arms() {
     assert_eq!(p.cadence, "every friday with details");
     // Cadence tokens → (class, seconds).
     use future_loop::capabilities::periodic_report::cadence_due_secs;
-    assert_eq!(cadence_due_secs("hourly"), Some(("hourly".to_string(), 3600)));
-    assert_eq!(cadence_due_secs("every-6h"), Some(("every-6h".to_string(), 21600)));
-    assert_eq!(cadence_due_secs("every-2d"), Some(("every-2d".to_string(), 172800)));
+    assert_eq!(
+        cadence_due_secs("hourly"),
+        Some(("hourly".to_string(), 3600))
+    );
+    assert_eq!(
+        cadence_due_secs("every-6h"),
+        Some(("every-6h".to_string(), 21600))
+    );
+    assert_eq!(
+        cadence_due_secs("every-2d"),
+        Some(("every-2d".to_string(), 172800))
+    );
     assert_eq!(cadence_due_secs("every-0h"), None);
     assert_eq!(cadence_due_secs("fortnightly"), None);
     let _ = &p;
@@ -203,14 +236,20 @@ fn compat_write_run_and_active_state() {
     t.status = TodoStatus::Done;
     t.completed_at = Some(1_700_000_000);
     goal.todos.push(t);
-    goal.todos.push(Todo::monitor("m1", "watch", std::time::Duration::from_secs(60)));
+    goal.todos.push(Todo::monitor(
+        "m1",
+        "watch",
+        std::time::Duration::from_secs(60),
+    ));
     // write_active_state with evidence/completed anchors.
     future_loop::compat::write_active_state(goal_dir, &goal).unwrap();
     let md = std::fs::read_to_string(goal_dir.join("ACTIVE_GOAL_STATE.md")).unwrap();
     assert!(md.contains("t1"), "{md}");
     // write_run twice (json + md artifacts).
-    future_loop::compat::write_run(goal_dir, "g", &run_record("t1", "completed", now_epoch())).unwrap();
-    future_loop::compat::write_run(goal_dir, "g", &run_record("t1", "completed", now_epoch())).unwrap();
+    future_loop::compat::write_run(goal_dir, "g", &run_record("t1", "completed", now_epoch()))
+        .unwrap();
+    future_loop::compat::write_run(goal_dir, "g", &run_record("t1", "completed", now_epoch()))
+        .unwrap();
     let runs = goal_dir.join("runs");
     assert!(runs.exists());
 }
@@ -247,7 +286,8 @@ fn heartbeat_render_arms() {
     gate.gate_question = None;
     goal.todos.push(gate);
     goal.todos.push(Todo::advancement("t1", "fallback work"));
-    goal.history.push(run_record("t0", "completed", now_epoch()));
+    goal.history
+        .push(run_record("t0", "completed", now_epoch()));
     let packet = future_loop::decision::decide_for(&goal, std::time::SystemTime::now(), None);
     let out = render_heartbeat_prompt(&goal, &packet);
     assert!(out.contains("USER ACTION REQUIRED"), "{out}");
@@ -289,15 +329,18 @@ fn migration_arms() {
     assert!(report.migrated_lines >= 1);
     // Bridge status: rollback_plan_recorded flips once a backup exists.
     let store = open_store(&cr);
-    let before = future_loop::migration::migration_bridge_status(&store, &gid, &store.goal_dir(&gid));
+    let before =
+        future_loop::migration::migration_bridge_status(&store, &gid, &store.goal_dir(&gid));
     assert!(!before.checks.rollback_plan_recorded);
     store.backup_goal(&gid).unwrap();
-    let after = future_loop::migration::migration_bridge_status(&store, &gid, &store.goal_dir(&gid));
+    let after =
+        future_loop::migration::migration_bridge_status(&store, &gid, &store.goal_dir(&gid));
     assert!(after.checks.rollback_plan_recorded);
     // dual_read_parity: ACTIVE_GOAL_STATE.md with anchors matching the replay.
     let goal = store.replay(&gid).unwrap().unwrap();
     future_loop::compat::write_active_state(&store.goal_dir(&gid), &goal).unwrap();
-    let with_state = future_loop::migration::migration_bridge_status(&store, &gid, &store.goal_dir(&gid));
+    let with_state =
+        future_loop::migration::migration_bridge_status(&store, &gid, &store.goal_dir(&gid));
     let _ = with_state.checks.dual_read_parity_clean;
     // migration_steps registry is non-empty and ordered.
     assert!(!future_loop::migration::migration_steps().is_empty());
@@ -319,7 +362,13 @@ fn quota_slot_accounting_arms() {
     assert_eq!(sa::SlotSpendSource::parse("bogus"), None);
     // stall repair: kind() + is_stalled_mode arms.
     use future_loop::quota::stall_repair::{detect_stall, is_stalled_mode};
-    for kind in ["outcome_floor", "repair_budget_exhausted", "monitor_stalled", "succession_obligation", "acceptance_gap"] {
+    for kind in [
+        "outcome_floor",
+        "repair_budget_exhausted",
+        "monitor_stalled",
+        "succession_obligation",
+        "acceptance_gap",
+    ] {
         assert!(is_stalled_mode(kind), "{kind}");
     }
     assert!(!is_stalled_mode("normal_run"));
@@ -356,9 +405,10 @@ fn runtime_run_history_and_index_arms() {
         ),
     )
     .unwrap();
-    let projection = future_loop::runtime::run_history::build_run_history(&cr.root, &gid, now_epoch())
-        .unwrap()
-        .expect("rows present");
+    let projection =
+        future_loop::runtime::run_history::build_run_history(&cr.root, &gid, now_epoch())
+            .unwrap()
+            .expect("rows present");
     assert!(projection.sample_run_count >= 2);
     // detect_duplicates: duplicate identity rows are repairable.
     let dup_index = runs_dir.join("dup.jsonl");
@@ -378,11 +428,19 @@ fn runtime_run_history_and_index_arms() {
     let report = future_loop::runtime::run_index::detect_duplicates(&missing).unwrap();
     assert_eq!(report.total_rows, 0);
     // rebuild over an EXISTING index → pre-rebuild backup is written.
-    future_loop::compat::write_run(&store.goal_dir(&gid), &gid, &run_record("t", "completed", now_epoch())).unwrap();
+    future_loop::compat::write_run(
+        &store.goal_dir(&gid),
+        &gid,
+        &run_record("t", "completed", now_epoch()),
+    )
+    .unwrap();
     let report = future_loop::runtime::run_index::rebuild_index(&cr.root, &gid).unwrap();
     assert!(report.rows_written >= 1);
     let report2 = future_loop::runtime::run_index::rebuild_index(&cr.root, &gid).unwrap();
-    assert!(!report2.backup_path.is_empty(), "second rebuild backs up the prior index");
+    assert!(
+        !report2.backup_path.is_empty(),
+        "second rebuild backs up the prior index"
+    );
 }
 
 #[test]
@@ -395,19 +453,29 @@ fn run_compaction_arms() {
     // Two run files with real timestamp payloads (rows derive epochs from
     // file content, not filenames).
     let old_file = runs_dir.join("2020-01-01T00-00-00-00-00.json");
-    std::fs::write(&old_file, "{\"timestamp\":\"2020-01-01T00:00:00+00:00\",\"turn\":1,\"terminal_state\":\"completed\"}").unwrap();
+    std::fs::write(
+        &old_file,
+        "{\"timestamp\":\"2020-01-01T00:00:00+00:00\",\"turn\":1,\"terminal_state\":\"completed\"}",
+    )
+    .unwrap();
     let new_file = runs_dir.join("2030-01-01T00-00-00-00-00.json");
-    std::fs::write(&new_file, "{\"timestamp\":\"2030-01-01T00:00:00+00:00\",\"turn\":2,\"terminal_state\":\"completed\"}").unwrap();
+    std::fs::write(
+        &new_file,
+        "{\"timestamp\":\"2030-01-01T00:00:00+00:00\",\"turn\":2,\"terminal_state\":\"completed\"}",
+    )
+    .unwrap();
     future_loop::runtime::run_index::rebuild_index(&cr.root, &gid).unwrap();
     // archive_runs_before: cutoff between the two → old one moves to archive/.
     let cutoff = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00+00:00")
         .unwrap()
         .timestamp() as u64;
-    let report = future_loop::runtime::run_compaction::archive_runs_before(&cr.root, &gid, cutoff).unwrap();
+    let report =
+        future_loop::runtime::run_compaction::archive_runs_before(&cr.root, &gid, cutoff).unwrap();
     assert_eq!(report.archived.len(), 1, "{report:?}");
     assert!(!old_file.exists());
     // Second run: the file is gone (already archived) — row re-pointed only.
-    let report = future_loop::runtime::run_compaction::archive_runs_before(&cr.root, &gid, cutoff).unwrap();
+    let report =
+        future_loop::runtime::run_compaction::archive_runs_before(&cr.root, &gid, cutoff).unwrap();
     assert!(report.archived.is_empty());
     // archive_keeping_latest on a fresh goal with 3 runs: keep=1 → the
     // cutoff is the second-newest row → the single oldest run archives.
@@ -417,9 +485,18 @@ fn run_compaction_arms() {
         let runs_dir = store.goal_dir(&gid3).join("runs");
         std::fs::create_dir_all(&runs_dir).unwrap();
         for (name, ts) in [
-            ("2020-01-01T00-00-00-00-00.json", "2020-01-01T00:00:00+00:00"),
-            ("2025-01-01T00-00-00-00-00.json", "2025-01-01T00:00:00+00:00"),
-            ("2030-01-01T00-00-00-00-00.json", "2030-01-01T00:00:00+00:00"),
+            (
+                "2020-01-01T00-00-00-00-00.json",
+                "2020-01-01T00:00:00+00:00",
+            ),
+            (
+                "2025-01-01T00-00-00-00-00.json",
+                "2025-01-01T00:00:00+00:00",
+            ),
+            (
+                "2030-01-01T00-00-00-00-00.json",
+                "2030-01-01T00:00:00+00:00",
+            ),
         ] {
             std::fs::write(
                 runs_dir.join(name),
@@ -429,7 +506,8 @@ fn run_compaction_arms() {
         }
     }
     future_loop::runtime::run_index::rebuild_index(&cr.root, &gid3).unwrap();
-    let report = future_loop::runtime::run_compaction::archive_keeping_latest(&cr.root, &gid3, 1).unwrap();
+    let report =
+        future_loop::runtime::run_compaction::archive_keeping_latest(&cr.root, &gid3, 1).unwrap();
     assert_eq!(report.archived.len(), 1, "{report:?}");
     // No index → error.
     let gid2 = init_goal(&cr, "no index goal");
@@ -474,7 +552,11 @@ fn cli_projection_arms() {
     let mut m = Todo::monitor("m1", "watch", std::time::Duration::from_secs(60));
     m.monitor_target = Some("file:x".into());
     goal.todos.push(m);
-    goal.todos.push(Todo::monitor("m2", "plain", std::time::Duration::from_secs(60)));
+    goal.todos.push(Todo::monitor(
+        "m2",
+        "plain",
+        std::time::Duration::from_secs(60),
+    ));
     let lines = future_loop::cli_projection::monitor_metadata_lines(&goal);
     assert_eq!(lines.len(), 2);
     assert!(lines[0].contains("target=file:x"), "{lines:?}");
@@ -502,12 +584,18 @@ fn task_graph_and_lease_arms() {
     let mut dependent = Todo::advancement("dep", "d");
     dependent.blocked_by_gate = Some("gate1".into());
     goal.todos.push(dependent);
-    assert_eq!(tg::successors_of(&goal, "gate1"), vec!["x".to_string(), "y".to_string()]);
+    assert_eq!(
+        tg::successors_of(&goal, "gate1"),
+        vec!["x".to_string(), "y".to_string()]
+    );
     let mut adv = Todo::advancement("plain", "p");
     adv.blocked_by_gate = None;
     goal.todos.push(adv);
     let succ = tg::successors_of(&goal, "dep");
-    assert!(succ.is_empty(), "nothing lists dep as predecessor: {succ:?}");
+    assert!(
+        succ.is_empty(),
+        "nothing lists dep as predecessor: {succ:?}"
+    );
     assert!(tg::successors_of(&goal, "ghost").is_empty());
 
     // task_lease: claim on a non-open todo bails; release after expiry is a
@@ -534,9 +622,15 @@ fn store_projection_gap_and_guard_arms() {
     goal.next_action = Some("waiting for the host".into());
     assert!(future_loop::store::projection_gap(&goal).is_none());
     goal.next_action = Some("please decide the scope".into());
-    assert!(future_loop::store::projection_gap(&goal).is_some(), "decide without gate");
+    assert!(
+        future_loop::store::projection_gap(&goal).is_some(),
+        "decide without gate"
+    );
     goal.next_action = Some(String::new());
-    assert!(future_loop::store::projection_gap(&goal).is_none(), "empty → no gap");
+    assert!(
+        future_loop::store::projection_gap(&goal).is_none(),
+        "empty → no gap"
+    );
     goal.next_action = None;
     assert!(future_loop::store::projection_gap(&goal).is_none());
 
@@ -596,7 +690,10 @@ fn store_projection_gap_and_guard_arms() {
             })
             .unwrap();
         let g = store.replay(&gid).unwrap().unwrap();
-        assert_eq!(g.todo(&first).unwrap().priority, future_loop::state::Priority::P2);
+        assert_eq!(
+            g.todo(&first).unwrap().priority,
+            future_loop::state::Priority::P2
+        );
     }
 }
 
@@ -612,7 +709,9 @@ fn replan_obligation_cleared_arms() {
     m.updated_at = 1_000;
     goal.todos.push(m);
     let obligations = ro::unfulfilled_obligations(&goal);
-    assert!(obligations.iter().any(|o| o.kind == "monitor_no_change_streak"));
+    assert!(obligations
+        .iter()
+        .any(|o| o.kind == "monitor_no_change_streak"));
     assert!(ro::has_unfulfilled_obligation(&goal));
     // A ReplanAck with a frontier-changing delta recorded AFTER raised_at
     // clears the obligation (has_frontier_delta accepts only these kinds).
@@ -622,7 +721,12 @@ fn replan_obligation_cleared_arms() {
         at: 2_000,
     });
     let obligations = ro::unfulfilled_obligations(&goal);
-    assert!(obligations.iter().all(|o| o.kind != "monitor_no_change_streak"), "{obligations:?}");
+    assert!(
+        obligations
+            .iter()
+            .all(|o| o.kind != "monitor_no_change_streak"),
+        "{obligations:?}"
+    );
 }
 
 // ── operator inbox load arms ───────────────────────────────────────────────
@@ -636,7 +740,11 @@ fn operator_inbox_load_arms() {
     std::fs::create_dir_all(&inbox).unwrap();
     // Events with missing optional fields get defaults; entries without a
     // message_id or content are skipped; non-objects are skipped.
-    std::fs::write(inbox.join("a.json"), "{\"message_id\":\"m1\",\"content\":\"hi\"}").unwrap();
+    std::fs::write(
+        inbox.join("a.json"),
+        "{\"message_id\":\"m1\",\"content\":\"hi\"}",
+    )
+    .unwrap();
     std::fs::write(inbox.join("b.json"), "\"just a string\"").unwrap();
     std::fs::write(inbox.join("c.json"), "[{\"message_id\":\"m2\"}]").unwrap();
     std::fs::write(inbox.join("d.json"), "{\"message_id\":\"m3\"}").unwrap();
@@ -647,5 +755,9 @@ fn operator_inbox_load_arms() {
     assert!(load_pending_inbox_events(&project, "/abs").is_err());
     // Missing inbox dir → empty.
     let empty = tempfile::tempdir().unwrap();
-    assert!(load_pending_inbox_events(&empty.path().to_string_lossy(), "inbox").unwrap().is_empty());
+    assert!(
+        load_pending_inbox_events(&empty.path().to_string_lossy(), "inbox")
+            .unwrap()
+            .is_empty()
+    );
 }

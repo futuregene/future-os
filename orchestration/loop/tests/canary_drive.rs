@@ -26,13 +26,27 @@ fn smoke_on_healthy_populated_store() {
     let _gid = init_goal(&cr, "healthy canary");
     let store = open_store(&cr);
     let result = run_smoke(&store, "release-gate").unwrap();
-    assert!(result.all_passed, "{:?}", result.checks.iter().map(|c| (&c.id, c.passed, &c.detail)).collect::<Vec<_>>());
+    assert!(
+        result.all_passed,
+        "{:?}",
+        result
+            .checks
+            .iter()
+            .map(|c| (&c.id, c.passed, &c.detail))
+            .collect::<Vec<_>>()
+    );
     // Non-vacuous detail arms (a goal exists → checks actually examined it).
     assert!(check(&result, "ledger_integrity").detail.contains("goal"));
-    assert!(check(&result, "decision_determinism").detail.contains("deterministic"));
+    assert!(check(&result, "decision_determinism")
+        .detail
+        .contains("deterministic"));
     assert!(check(&result, "quota_should_run").detail.contains("goal"));
-    assert!(check(&result, "todo_frontier").detail.contains("frontier consistent"));
-    assert!(check(&result, "status_projection").detail.contains("status consistent"));
+    assert!(check(&result, "todo_frontier")
+        .detail
+        .contains("frontier consistent"));
+    assert!(check(&result, "status_projection")
+        .detail
+        .contains("status consistent"));
     assert!(check(&result, "canary_self").passed);
 }
 
@@ -42,7 +56,9 @@ fn smoke_empty_and_corrupt_ledgers_fail() {
     // Registered goal with NO events file → empty-ledger failure.
     {
         let mut store = open_store(&cr);
-        store.register(&Goal::new("goal_empty", "no events", "/tmp")).unwrap();
+        store
+            .register(&Goal::new("goal_empty", "no events", "/tmp"))
+            .unwrap();
     }
     let store = open_store(&cr);
     let result = run_smoke(&store, "release-gate").unwrap();
@@ -103,7 +119,9 @@ fn smoke_projection_gap_fails_frontier() {
                 ts: future_loop::state::now_epoch(),
             })
             .unwrap();
-        store.set_next_action(&gid, "phantom work with no todo").unwrap();
+        store
+            .set_next_action(&gid, "phantom work with no todo")
+            .unwrap();
     }
     let store = open_store(&cr);
     let result = run_smoke(&store, "release-gate").unwrap();

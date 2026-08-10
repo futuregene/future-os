@@ -9,10 +9,9 @@ mod common;
 
 use common::mock_agent::{completed_events, ev, spawn_mock, MockState};
 use common::{
-    add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store,
-    todo_id_by_text,
+    add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, todo_id_by_text,
 };
-use future_loop::state::{TodoStatus, now_epoch};
+use future_loop::state::{now_epoch, TodoStatus};
 
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
@@ -113,30 +112,34 @@ fn run_max_turns_bails() {
     let goal = init_goal(&cr, "many todos");
     add_todo(&cr, &goal, "task two");
     add_todo(&cr, &goal, "task three");
-    let err = cli_err(&[
-        "run",
-        "--goal",
-        &goal,
-        "--anonymous",
-        "--max-turns",
-        "2",
-    ]);
+    let err = cli_err(&["run", "--goal", &goal, "--anonymous", "--max-turns", "2"]);
     assert!(err.contains("max-turns"), "{err}");
 }
 
 #[test]
 fn run_failing_turns_exhaust_repair_budget() {
     let cr = cli_root();
-    let events = vec![
-        ev("mock-run-1", 0, "agent_end", "{\"state\":\"error\",\"error\":\"boom\"}"),
-    ];
+    let events = vec![ev(
+        "mock-run-1",
+        0,
+        "agent_end",
+        "{\"state\":\"error\",\"error\":\"boom\"}",
+    )];
     let (_rt, shared) = mock_env(MockState {
         events,
         ..Default::default()
     });
     let goal = init_goal(&cr, "failing turns");
     let onboarding = first_todo_id(&cr.root, &goal);
-    cli_ok(&["todo", "complete", "--goal", &goal, "--todo-id", &onboarding, "--no-follow-up"]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &goal,
+        "--todo-id",
+        &onboarding,
+        "--no-follow-up",
+    ]);
     // Pre-seed a todo that already consumed one repair attempt (the ledger
     // does not persist failed_attempts from failed runs — see coverage
     // report), so this turn's failure crosses MAX_REPAIR_ATTEMPTS(=1).
@@ -157,7 +160,11 @@ fn run_failing_turns_exhaust_repair_budget() {
     // seeded value — so assert the LOOP BEHAVIOR: exactly one prompt, i.e.
     // the budget break fired instead of the max-turns bail.)
     cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "6"]);
-    assert_eq!(shared.lock().unwrap().prompts, 1, "repair budget break after one turn");
+    assert_eq!(
+        shared.lock().unwrap().prompts,
+        1,
+        "repair budget break after one turn"
+    );
 }
 
 #[test]
@@ -181,7 +188,11 @@ fn run_open_gate_breaks_with_ask_user() {
         "approve the plan?",
     ]);
     cli_ok(&["run", "--goal", &goal, "--anonymous"]);
-    assert_eq!(shared.lock().unwrap().prompts, 0, "no turn executed behind a gate");
+    assert_eq!(
+        shared.lock().unwrap().prompts,
+        0,
+        "no turn executed behind a gate"
+    );
 }
 
 /// Append a hand-crafted monitor todo directly to the ledger (due_in=0 →
@@ -210,9 +221,19 @@ fn run_monitor_poll_changed_and_no_change() {
     // and turn 2 is the poll; script the EXISTS evidence for the poll turn.
     let (_rt, _shared) = mock_env(MockState {
         events: vec![
-            ev("mock-run-1", 0, "text_chunk", "{\"text\":\"onboarding done\"}"),
+            ev(
+                "mock-run-1",
+                0,
+                "text_chunk",
+                "{\"text\":\"onboarding done\"}",
+            ),
             ev("mock-run-1", 1, "agent_end", "{\"state\":\"completed\"}"),
-            ev("mock-run-2", 0, "text_chunk", "{\"text\":\"the file EXISTS now\"}"),
+            ev(
+                "mock-run-2",
+                0,
+                "text_chunk",
+                "{\"text\":\"the file EXISTS now\"}",
+            ),
             ev("mock-run-2", 1, "agent_end", "{\"state\":\"completed\"}"),
         ],
         ..Default::default()
@@ -223,7 +244,11 @@ fn run_monitor_poll_changed_and_no_change() {
     let store = open_store(&cr);
     let g = store.replay(&goal).unwrap().unwrap();
     let m = g.todos.iter().find(|t| t.id == "mon_due").unwrap();
-    assert_eq!(m.status, TodoStatus::Done, "changed poll closes the monitor: {m:?}");
+    assert_eq!(
+        m.status,
+        TodoStatus::Done,
+        "changed poll closes the monitor: {m:?}"
+    );
 }
 
 #[test]
@@ -231,9 +256,19 @@ fn run_monitor_poll_no_change_never_spends() {
     let cr = cli_root();
     let (_rt, _shared) = mock_env(MockState {
         events: vec![
-            ev("mock-run-1", 0, "text_chunk", "{\"text\":\"nothing new yet\"}"),
+            ev(
+                "mock-run-1",
+                0,
+                "text_chunk",
+                "{\"text\":\"nothing new yet\"}",
+            ),
             ev("mock-run-1", 1, "agent_end", "{\"state\":\"completed\"}"),
-            ev("mock-run-2", 0, "text_chunk", "{\"text\":\"onboarding done\"}"),
+            ev(
+                "mock-run-2",
+                0,
+                "text_chunk",
+                "{\"text\":\"onboarding done\"}",
+            ),
             ev("mock-run-2", 1, "agent_end", "{\"state\":\"completed\"}"),
         ],
         ..Default::default()
@@ -267,7 +302,15 @@ fn run_monitor_not_due_waits() {
     // Complete the only advancement todo so the (not-due) monitor is all that
     // remains → WaitMonitor → graceful "waiting…" stop.
     let onboarding = first_todo_id(&cr.root, &goal);
-    cli_ok(&["todo", "complete", "--goal", &goal, "--todo-id", &onboarding, "--no-follow-up"]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &goal,
+        "--todo-id",
+        &onboarding,
+        "--no-follow-up",
+    ]);
     append_monitor(&cr, &goal, "mon_future", 3600);
     cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
     assert_eq!(shared.lock().unwrap().prompts, 0, "no turn while waiting");
@@ -283,9 +326,24 @@ fn run_validator_pass_completes_todo() {
     });
     let goal = init_goal(&cr, "validator pass");
     let onboarding = first_todo_id(&cr.root, &goal);
-    cli_ok(&["todo", "complete", "--goal", &goal, "--todo-id", &onboarding, "--no-follow-up"]);
     cli_ok(&[
-        "todo", "add", "--goal", &goal, "--text", "validated real task", "--verify", "exit 0",
+        "todo",
+        "complete",
+        "--goal",
+        &goal,
+        "--todo-id",
+        &onboarding,
+        "--no-follow-up",
+    ]);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &goal,
+        "--text",
+        "validated real task",
+        "--verify",
+        "exit 0",
     ]);
     let vt = todo_id_by_text(&cr.root, &goal, "validated real task");
     cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
@@ -306,19 +364,43 @@ fn run_validator_budget_exhaustion_stops_run() {
     });
     let goal = init_goal(&cr, "validator budget");
     let onboarding = first_todo_id(&cr.root, &goal);
-    cli_ok(&["todo", "complete", "--goal", &goal, "--todo-id", &onboarding, "--no-follow-up"]);
     cli_ok(&[
-        "todo", "add", "--goal", &goal, "--text", "never validates", "--verify",
-        "exit 1", "--max-validation-attempts", "1",
+        "todo",
+        "complete",
+        "--goal",
+        &goal,
+        "--todo-id",
+        &onboarding,
+        "--no-follow-up",
+    ]);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &goal,
+        "--text",
+        "never validates",
+        "--verify",
+        "exit 1",
+        "--max-validation-attempts",
+        "1",
     ]);
     // Validation budget (1) hit after the first failed validation → stop, Ok.
     // Assert the loop stopped after exactly one turn (the budget branch
     // fired); the ledger keeps the todo open.
     cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "6"]);
-    assert_eq!(shared.lock().unwrap().prompts, 1, "validation budget break after one turn");
+    assert_eq!(
+        shared.lock().unwrap().prompts,
+        1,
+        "validation budget break after one turn"
+    );
     let store = open_store(&cr);
     let g = store.replay(&goal).unwrap().unwrap();
-    let todo = g.todos.iter().find(|t| t.text.contains("never validates")).unwrap();
+    let todo = g
+        .todos
+        .iter()
+        .find(|t| t.text.contains("never validates"))
+        .unwrap();
     assert_eq!(todo.status, TodoStatus::Open, "todo stays open: {todo:?}");
 }
 

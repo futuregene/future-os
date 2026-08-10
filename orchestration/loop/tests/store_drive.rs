@@ -6,9 +6,9 @@
 mod common;
 
 use common::run_record;
-use std::io::Write;
 use future_loop::state::{now_epoch, Goal, Todo, TodoStatus};
 use future_loop::store::{Event, Store};
+use std::io::Write;
 
 fn fresh_store(tag: &str) -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
@@ -73,7 +73,15 @@ fn append_requires_registration_and_dedupes() {
         ts: 2,
     };
     assert!(store
-        .append_with_meta(conflicting, Some("evt-fixed".into()), None, None, None, None, None)
+        .append_with_meta(
+            conflicting,
+            Some("evt-fixed".into()),
+            None,
+            None,
+            None,
+            None,
+            None
+        )
         .is_err());
     // raw_ledger_lines on a goal with no ledger file → empty.
     let store2 = Store::open(&root).unwrap();
@@ -152,7 +160,10 @@ fn goal_schema_version_variants() {
         "{\"event_store_schema_version\":\"loopx_event_store_v1\"}",
     )
     .unwrap();
-    assert_ne!(store.goal_schema_version("g1").as_deref(), Some("loopx_event_store_v1"));
+    assert_ne!(
+        store.goal_schema_version("g1").as_deref(),
+        Some("loopx_event_store_v1")
+    );
     std::fs::write(
         dir.join("schema.json"),
         "{\"event_store_schema_version\":\"loopx_event_store_v0\"}",
@@ -215,7 +226,9 @@ fn replay_skips_malformed_run_lines() {
     registered_goal(&mut store, "g1");
     let runs = store.goal_dir("g1").join("runs.jsonl");
     std::fs::write(&runs, "{broken\n").unwrap();
-    store.append_run("g1", &run_record("t1", "completed", now_epoch())).unwrap();
+    store
+        .append_run("g1", &run_record("t1", "completed", now_epoch()))
+        .unwrap();
     let goal = store.replay("g1").unwrap().unwrap();
     assert_eq!(goal.history.len(), 1, "malformed line skipped");
 }
@@ -235,7 +248,10 @@ fn registry_loader_formats() {
     )
     .unwrap();
     let store = Store::open(&root).unwrap();
-    assert!(store.registered("g_legacy"), "id→goal_id, repo→cwd aliasing");
+    assert!(
+        store.registered("g_legacy"),
+        "id→goal_id, repo→cwd aliasing"
+    );
     // Neither array nor {goals} → bail.
     let (_d2, root2) = fresh_store("s7");
     std::fs::write(
@@ -265,7 +281,9 @@ fn backup_restore_delete_arms() {
     let (_d, root) = fresh_store("s10");
     let mut store = Store::open(&root).unwrap();
     // Backup a goal with no state → bail.
-    store.register(&Goal::new("g_nostate", "x", "/tmp")).unwrap();
+    store
+        .register(&Goal::new("g_nostate", "x", "/tmp"))
+        .unwrap();
     assert!(store.backup_goal("g_nostate").is_err());
     // Full backup including scheduler-state + registry entry.
     registered_goal(&mut store, "g1");
@@ -273,8 +291,12 @@ fn backup_restore_delete_arms() {
     std::fs::create_dir_all(&sched).unwrap();
     std::fs::write(sched.join("state.json"), "{}").unwrap();
     let dest = store.backup_goal("g1").unwrap();
-    assert!(std::path::Path::new(&dest).join("scheduler-state/state.json").exists());
-    assert!(std::path::Path::new(&dest).join("registry-entry.json").exists());
+    assert!(std::path::Path::new(&dest)
+        .join("scheduler-state/state.json")
+        .exists());
+    assert!(std::path::Path::new(&dest)
+        .join("registry-entry.json")
+        .exists());
     // Restore from a dir without events.jsonl → bail; from the real backup → ok.
     assert!(store.restore_goal("g1", "/nonexistent-backup").is_err());
     store.restore_goal("g1", &dest).unwrap();
@@ -298,8 +320,10 @@ fn verify_ledger_reports() {
     let events_path = store.goal_dir("g1").join("events.jsonl");
     let legacy = serde_json::json!({"kind":"goal_started","goal_id":"g1","ts":1});
     let dup = serde_json::json!({"event_id":"e1","kind":"goal_started","goal_id":"g1","ts":1});
-    let conflict_a = serde_json::json!({"event_id":"e2","kind":"goal_started","goal_id":"g1","ts":1});
-    let conflict_b = serde_json::json!({"event_id":"e2","kind":"goal_started","goal_id":"g1","ts":9});
+    let conflict_a =
+        serde_json::json!({"event_id":"e2","kind":"goal_started","goal_id":"g1","ts":1});
+    let conflict_b =
+        serde_json::json!({"event_id":"e2","kind":"goal_started","goal_id":"g1","ts":9});
     std::fs::write(
         &events_path,
         format!(
@@ -327,7 +351,9 @@ fn delete_dirless_goal_and_append_skip_arms() {
     let (_d, root) = fresh_store("s13");
     let mut store = Store::open(&root).unwrap();
     // Registered but no goal dir on disk → delete skips the remove.
-    store.register(&Goal::new("g_dirless", "x", "/tmp")).unwrap();
+    store
+        .register(&Goal::new("g_dirless", "x", "/tmp"))
+        .unwrap();
     store.delete_goal("g_dirless").unwrap();
     assert!(!store.registered("g_dirless"));
     // A garbage ledger line is skipped by the append dedup scan.
@@ -359,11 +385,7 @@ fn verify_conflict_dedup_arm() {
     let a = serde_json::json!({"event_id":"e3","kind":"goal_started","goal_id":"g1","ts":1});
     let b = serde_json::json!({"event_id":"e3","kind":"goal_started","goal_id":"g1","ts":2});
     let c = serde_json::json!({"event_id":"e3","kind":"goal_started","goal_id":"g1","ts":3});
-    std::fs::write(
-        &events_path,
-        format!("{}\n{}\n{}\n", a, b, c),
-    )
-    .unwrap();
+    std::fs::write(&events_path, format!("{}\n{}\n{}\n", a, b, c)).unwrap();
     let report = store.verify("g1").unwrap();
     assert_eq!(report.conflicts.len(), 1, "{report:?}");
 }
@@ -685,7 +707,10 @@ fn apply_matrix() {
     let profile = goal.agent_profiles.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(profile.capabilities, vec!["web".to_string()]);
     assert_eq!(goal.quota_spent_slots, 2);
-    assert_eq!(goal.todo("t_preset").unwrap().status, TodoStatus::Superseded);
+    assert_eq!(
+        goal.todo("t_preset").unwrap().status,
+        TodoStatus::Superseded
+    );
     assert_eq!(goal.todo("t_preset").unwrap().index, 7);
     assert_eq!(goal.todo("m1").unwrap().status, TodoStatus::Done);
 }

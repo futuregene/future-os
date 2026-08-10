@@ -1811,7 +1811,8 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
 /// agent (auth.json / models.json merged with the built-in catalog).
 async fn cmd_models(args: &[String]) -> Result<()> {
     let json = args.iter().any(|a| a == "--format" || a == "--json");
-    let mut client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
+    let mut client =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
     let data = client.list_models().await?;
     let models = data["models"].as_array().cloned().unwrap_or_default();
     let default_model = data["defaultModel"].as_str().unwrap_or("");
@@ -1918,7 +1919,8 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     // (and stays unit-testable without an agent server).
     let agent_id = ensure_run_identity(store, &goal_id, agent_id.as_deref(), anonymous)?;
 
-    let mut client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
+    let mut client =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
     let goal0 = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
@@ -4786,7 +4788,10 @@ mod coverage_tests {
 
     fn all_events(todo_id: &str) -> Vec<Event> {
         vec![
-            Event::GoalStarted { goal_id: "g".into(), ts: 1 },
+            Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            },
             Event::TodoAdded {
                 goal_id: "g".into(),
                 todo: Todo::advancement(todo_id, "task"),
@@ -4800,7 +4805,11 @@ mod coverage_tests {
                 evidence: Some("e".into()),
                 ts: 1,
             },
-            Event::TodoSuperseded { goal_id: "g".into(), todo_id: todo_id.into(), ts: 1 },
+            Event::TodoSuperseded {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                ts: 1,
+            },
             Event::TodoUpdated {
                 goal_id: "g".into(),
                 todo_id: todo_id.into(),
@@ -4813,7 +4822,11 @@ mod coverage_tests {
                 blocks: None,
                 ts: 1,
             },
-            Event::GoalCancelled { goal_id: "g".into(), reason: "r".into(), ts: 1 },
+            Event::GoalCancelled {
+                goal_id: "g".into(),
+                reason: "r".into(),
+                ts: 1,
+            },
             Event::GateResolved {
                 goal_id: "g".into(),
                 todo_id: todo_id.into(),
@@ -4821,8 +4834,16 @@ mod coverage_tests {
                 note: None,
                 ts: 1,
             },
-            Event::GapSatisfied { goal_id: "g".into(), gap_id: "gap1".into(), ts: 1 },
-            Event::RunRecorded { goal_id: "g".into(), record: record(todo_id), ts: 1 },
+            Event::GapSatisfied {
+                goal_id: "g".into(),
+                gap_id: "gap1".into(),
+                ts: 1,
+            },
+            Event::RunRecorded {
+                goal_id: "g".into(),
+                record: record(todo_id),
+                ts: 1,
+            },
             Event::TodoClaimed {
                 goal_id: "g".into(),
                 todo_id: todo_id.into(),
@@ -4830,22 +4851,38 @@ mod coverage_tests {
                 lease_expires_at: 9,
                 ts: 1,
             },
-            Event::AgentRegistered { goal_id: "g".into(), agent_id: "a".into(), ts: 1 },
+            Event::AgentRegistered {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                ts: 1,
+            },
             Event::AgentOnboarded {
                 goal_id: "g".into(),
                 agent_id: "a".into(),
                 capabilities: vec!["shell".into()],
                 ts: 1,
             },
-            Event::ReplanAcked { goal_id: "g".into(), delta_kinds: vec!["vision_patch".into()], ts: 1 },
-            Event::ProfileSet { goal_id: "g".into(), outcome_floor_streak_threshold: 2, ts: 1 },
+            Event::ReplanAcked {
+                goal_id: "g".into(),
+                delta_kinds: vec!["vision_patch".into()],
+                ts: 1,
+            },
+            Event::ProfileSet {
+                goal_id: "g".into(),
+                outcome_floor_streak_threshold: 2,
+                ts: 1,
+            },
             Event::AuthoritySet {
                 goal_id: "g".into(),
                 write_scope: vec!["src".into()],
                 requires_approval: vec!["publish".into()],
                 ts: 1,
             },
-            Event::TodoArchived { goal_id: "g".into(), todo_id: todo_id.into(), ts: 1 },
+            Event::TodoArchived {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                ts: 1,
+            },
             Event::MonitorPolled {
                 goal_id: "g".into(),
                 todo_id: todo_id.into(),
@@ -4880,7 +4917,11 @@ mod coverage_tests {
                 agent_id: "a".into(),
                 ts: 1,
             },
-            Event::TodoExpired { goal_id: "g".into(), todo_id: todo_id.into(), ts: 1 },
+            Event::TodoExpired {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                ts: 1,
+            },
             Event::SupervisorProposed {
                 goal_id: "g".into(),
                 supervisor_agent_id: "sup".into(),
@@ -4921,13 +4962,19 @@ mod coverage_tests {
             wrongly_touched |= event_touches_todo(&ev, "todo_other");
         }
         assert!(!wrongly_touched);
-        assert!(event_touches_todo(&Event::TodoAdded {
-            goal_id: "g".into(),
-            todo: Todo::advancement("todo_1", "task"),
-            ts: 1,
-        }, "todo_1"));
+        assert!(event_touches_todo(
+            &Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("todo_1", "task"),
+                ts: 1,
+            },
+            "todo_1"
+        ));
         assert!(!event_touches_todo(
-            &Event::GoalStarted { goal_id: "g".into(), ts: 1 },
+            &Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1
+            },
             "todo_1"
         ));
     }
@@ -4971,8 +5018,8 @@ mod coverage_tests {
         let mut seen: Vec<(String, String)> = vec![];
         parse_pairs(
             &[
-                "--flag".to_string(),       // boolean-ish flag at end
-                "positional".to_string(),   // skipped
+                "--flag".to_string(),     // boolean-ish flag at end
+                "positional".to_string(), // skipped
                 "--key".to_string(),
                 "value".to_string(),
                 "--no-follow-up".to_string(), // known boolean, followed by value-less
@@ -5065,7 +5112,10 @@ mod coverage_tests {
         let goal = Goal::new("gj", "json goal", "/tmp");
         store.register(&goal).unwrap();
         store
-            .append(Event::GoalStarted { goal_id: "gj".into(), ts: 1 })
+            .append(Event::GoalStarted {
+                goal_id: "gj".into(),
+                ts: 1,
+            })
             .unwrap();
         // No filter → iterates the registry; with filter → single goal;
         // unknown filter → error.
@@ -5094,7 +5144,10 @@ mod coverage_tests {
         let goal = Goal::new("gs", "sync goal", "/tmp");
         store.register(&goal).unwrap();
         store
-            .append(Event::GoalStarted { goal_id: "gs".into(), ts: 1 })
+            .append(Event::GoalStarted {
+                goal_id: "gs".into(),
+                ts: 1,
+            })
             .unwrap();
         refresh_next_action(&mut store, "gs").unwrap();
         sync_compat(&store, "gs").unwrap();

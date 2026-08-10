@@ -42,14 +42,24 @@ fn parse_markdown_full_branch_matrix() {
     let done = &records[1];
     assert_eq!(done.status, "done");
     assert!(done.no_followup);
-    assert_eq!(done.evidence.as_deref(), Some("great success"), "url-decoded");
+    assert_eq!(
+        done.evidence.as_deref(),
+        Some("great success"),
+        "url-decoded"
+    );
     assert_eq!(done.note.as_deref(), Some("check+plus"));
     assert_eq!(records[2].status, "deferred");
     // Continuation text joins the todo text.
-    let cont = records.iter().find(|r| r.text.contains("continuation text")).unwrap();
+    let cont = records
+        .iter()
+        .find(|r| r.text.contains("continuation text"))
+        .unwrap();
     assert!(cont.text.contains("Continued task"));
     // User-role records.
-    let user_action = records.iter().find(|r| r.text.contains("Decide scope")).unwrap();
+    let user_action = records
+        .iter()
+        .find(|r| r.text.contains("Decide scope"))
+        .unwrap();
     assert_eq!(user_action.role, "user");
     assert_eq!(user_action.task_class.as_deref(), Some("user_action"));
 }
@@ -96,7 +106,9 @@ fn backfill_events_class_priority_and_privacy() {
     assert_eq!(p0, Some(future_loop::state::Priority::P0));
     // A record without todo_id gets a content-derived id (deterministic).
     let digest_todo = outcome.events.iter().find_map(|e| match &e.event {
-        future_loop::store::Event::TodoAdded { todo, .. } if todo.text.contains("Deferred task") => {
+        future_loop::store::Event::TodoAdded { todo, .. }
+            if todo.text.contains("Deferred task") =>
+        {
             Some(todo.id.clone())
         }
         _ => None,
@@ -133,9 +145,7 @@ fn active_state_markdown_read_paths() {
     // Missing file → error mentioning the path.
     assert!(active_state_markdown(&cwd, "goal_x").is_err());
     // Present file → contents.
-    let p = dir
-        .path()
-        .join(".future/loop/goals/goal_x");
+    let p = dir.path().join(".future/loop/goals/goal_x");
     std::fs::create_dir_all(&p).unwrap();
     std::fs::write(p.join("ACTIVE_GOAL_STATE.md"), "# state").unwrap();
     assert_eq!(active_state_markdown(&cwd, "goal_x").unwrap(), "# state");

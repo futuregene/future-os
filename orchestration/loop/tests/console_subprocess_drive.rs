@@ -66,7 +66,16 @@ fn init_goal(root: &str, objective: &str) -> String {
     std::fs::create_dir_all(&cwd).unwrap();
     let (_, _, code) = run(
         root,
-        &["goal", "init", "--objective", objective, "--goal-id", &gid, "--cwd", &cwd],
+        &[
+            "goal",
+            "init",
+            "--objective",
+            objective,
+            "--goal-id",
+            &gid,
+            "--cwd",
+            &cwd,
+        ],
     );
     assert_eq!(code, 0);
     gid
@@ -127,9 +136,17 @@ fn worker_bridge_completed_turn_to_terminal() {
     let json_start = line.find('{').unwrap();
     let packet: serde_json::Value = serde_json::from_str(&line[json_start..]).unwrap();
     let todo_id = packet["todo_id"].as_str().unwrap().to_string();
-    assert!(packet["todo_text"].as_str().unwrap().contains(onboarding_text));
+    assert!(packet["todo_text"]
+        .as_str()
+        .unwrap()
+        .contains(onboarding_text));
     let answer = result.replace("TODO", &todo_id);
-    child.stdin.as_mut().unwrap().write_all(answer.as_bytes()).unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(answer.as_bytes())
+        .unwrap();
     // writeback line, then the next decide reports terminal.
     let mut line2 = String::new();
     reader.read_line(&mut line2).unwrap();
@@ -161,7 +178,10 @@ fn worker_bridge_successor_chain_on_non_final_todo() {
     let root = tmp_root("bridge-succ");
     let gid = init_goal(&root, "bridge successors");
     // A second open todo → completing the selected one names it as successor.
-    let (_, _, code) = run(&root, &["todo", "add", "--goal", &gid, "--text", "second task"]);
+    let (_, _, code) = run(
+        &root,
+        &["todo", "add", "--goal", &gid, "--text", "second task"],
+    );
     assert_eq!(code, 0);
     let mut child = Command::new(bin())
         .env("FUTURE_LOOP_ROOT", &root)
@@ -181,7 +201,12 @@ fn worker_bridge_successor_chain_on_non_final_todo() {
     let answer = format!(
         "{{\"todo_id\":\"{todo_id}\",\"terminal_state\":\"completed\",\"evidence\":\"done\",\"tools\":[\"shell\"]}}\n"
     );
-    child.stdin.as_mut().unwrap().write_all(answer.as_bytes()).unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(answer.as_bytes())
+        .unwrap();
     // writeback print, then EOF (stdin closed) → worker finished close.
     drop(child.stdin.take());
     let mut rest = String::new();
@@ -209,7 +234,15 @@ fn worker_bridge_stops_when_should_run_false() {
     drop(store);
     let (_, _, code) = run(
         &root,
-        &["todo", "complete", "--goal", &gid, "--todo-id", &onboarding, "--no-follow-up"],
+        &[
+            "todo",
+            "complete",
+            "--goal",
+            &gid,
+            "--todo-id",
+            &onboarding,
+            "--no-follow-up",
+        ],
     );
     assert_eq!(code, 0);
     let mut store = future_loop::store::Store::open(&root).unwrap();

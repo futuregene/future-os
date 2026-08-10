@@ -3,7 +3,8 @@
 //! decision-replay per-group mismatch arms.
 
 use future_loop::replay::corpus::{
-    build_model_behavior_corpus, run_model_behavior_corpus, ModelBehaviorCorpus, PatchCase, StubActor,
+    build_model_behavior_corpus, run_model_behavior_corpus, ModelBehaviorCorpus, PatchCase,
+    StubActor,
 };
 use future_loop::replay::decision_replay::{
     reduce_public_safe_decision, replay_public_safe_decision_case,
@@ -25,7 +26,12 @@ fn corpus_json_with(cases: Vec<serde_json::Value>) -> serde_json::Value {
     })
 }
 
-fn case_json(id: &str, expected: &str, full: serde_json::Value, candidate: Option<serde_json::Value>) -> serde_json::Value {
+fn case_json(
+    id: &str,
+    expected: &str,
+    full: serde_json::Value,
+    candidate: Option<serde_json::Value>,
+) -> serde_json::Value {
     serde_json::json!({
         "schema_version": "model_behavior_corpus_case_v0",
         "case_id": id,
@@ -43,10 +49,22 @@ fn corpus_run_full_packet_fail_closed() {
     let case = case_json("c-fail", "fail_closed", serde_json::json!({}), None);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("corpus.json");
-    std::fs::write(&path, serde_json::to_string(&corpus_json_with(vec![case])).unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::to_string(&corpus_json_with(vec![case])).unwrap(),
+    )
+    .unwrap();
     let corpus = ModelBehaviorCorpus::load(&path).unwrap();
     let result = run_model_behavior_corpus(&corpus, &StubActor, 2, 0).unwrap();
-    assert!(result.all_cases_passed, "{:?}", result.cases.iter().map(|c| (&c.case_id, c.passed)).collect::<Vec<_>>());
+    assert!(
+        result.all_cases_passed,
+        "{:?}",
+        result
+            .cases
+            .iter()
+            .map(|c| (&c.case_id, c.passed))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -64,7 +82,11 @@ fn corpus_run_semantic_drift_fails_gate() {
     let case = case_json("c-drift", "equivalent", full, Some(candidate));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("corpus.json");
-    std::fs::write(&path, serde_json::to_string(&corpus_json_with(vec![case])).unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::to_string(&corpus_json_with(vec![case])).unwrap(),
+    )
+    .unwrap();
     let corpus = ModelBehaviorCorpus::load(&path).unwrap();
     let result = run_model_behavior_corpus(&corpus, &StubActor, 2, 0).unwrap();
     assert!(!result.all_cases_passed);
@@ -111,27 +133,49 @@ fn decision_replay_mismatch_groups() {
     let mut t1 = case.clone();
     t1.decision.effective_action = "tampered".to_string();
     let cmp = replay_public_safe_decision_case(&t1).unwrap();
-    assert!(cmp.mismatches.iter().any(|m| m.contains("decision.effective_action")));
+    assert!(cmp
+        .mismatches
+        .iter()
+        .any(|m| m.contains("decision.effective_action")));
 
     let mut t2 = case.clone();
     t2.expected.scheduler_action = "tampered".to_string();
     let cmp = replay_public_safe_decision_case(&t2).unwrap();
-    assert!(cmp.mismatches.iter().any(|m| m.contains("expected.scheduler_action")));
+    assert!(cmp
+        .mismatches
+        .iter()
+        .any(|m| m.contains("expected.scheduler_action")));
 
     let mut t3 = case.clone();
     t3.interaction_contract.mode = "terminal".to_string();
     let cmp = replay_public_safe_decision_case(&t3).unwrap();
-    assert!(cmp.mismatches.iter().any(|m| m.contains("interaction.mode")));
+    assert!(cmp
+        .mismatches
+        .iter()
+        .any(|m| m.contains("interaction.mode")));
 
     let mut t4 = case.clone();
     t4.interaction_contract.user_channel.notify = Some("tampered".to_string());
     let cmp = replay_public_safe_decision_case(&t4).unwrap();
-    assert!(cmp.mismatches.iter().any(|m| m.contains("user_channel.notify")));
+    assert!(cmp
+        .mismatches
+        .iter()
+        .any(|m| m.contains("user_channel.notify")));
 
     let mut t5 = case.clone();
-    t5.interaction_contract.agent_channel.must_attempt = Some(!case.interaction_contract.agent_channel.must_attempt.unwrap_or(false));
+    t5.interaction_contract.agent_channel.must_attempt = Some(
+        !case
+            .interaction_contract
+            .agent_channel
+            .must_attempt
+            .unwrap_or(false),
+    );
     let cmp = replay_public_safe_decision_case(&t5).unwrap();
-    assert!(cmp.mismatches.iter().any(|m| m.contains("must_attempt")), "{:?}", cmp.mismatches);
+    assert!(
+        cmp.mismatches.iter().any(|m| m.contains("must_attempt")),
+        "{:?}",
+        cmp.mismatches
+    );
 }
 
 #[test]
@@ -153,7 +197,11 @@ fn corpus_run_actor_error_propagates() {
     let case = case_json("c-err", "equivalent", full, None);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("corpus.json");
-    std::fs::write(&path, serde_json::to_string(&corpus_json_with(vec![case])).unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::to_string(&corpus_json_with(vec![case])).unwrap(),
+    )
+    .unwrap();
     let corpus = ModelBehaviorCorpus::load(&path).unwrap();
     assert!(run_model_behavior_corpus(&corpus, &ErrActor, 2, 0).is_err());
 }

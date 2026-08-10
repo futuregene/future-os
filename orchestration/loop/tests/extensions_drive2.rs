@@ -13,7 +13,11 @@ use future_loop::extensions::runtime::{
 
 static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn manifest_with_entrypoint(id: &str, version: &str, entrypoint: &str) -> future_loop::extensions::manifest::ExtensionManifest {
+fn manifest_with_entrypoint(
+    id: &str,
+    version: &str,
+    entrypoint: &str,
+) -> future_loop::extensions::manifest::ExtensionManifest {
     let raw = serde_json::json!({
         "schema_version": EXTENSION_MANIFEST_SCHEMA_VERSION,
         "id": id,
@@ -75,16 +79,35 @@ fn doctor_gated_lifecycle_errors() {
     install_extension(&good, &state_file, "install", true).unwrap();
     // Now corrupt the installed entry's manifest by hand so enable's doctor
     // fails: point the stored manifest at a missing entrypoint.
-    install_extension(&manifest_with_entrypoint("ext-good", "1.1.0", "sh"), &state_file, "upgrade", true).unwrap();
+    install_extension(
+        &manifest_with_entrypoint("ext-good", "1.1.0", "sh"),
+        &state_file,
+        "upgrade",
+        true,
+    )
+    .unwrap();
     // enable on an already-enabled extension → changed=false arm.
     let op = enable_extension("ext-good", &state_file, true).unwrap();
     assert!(!op.changed, "already enabled → unchanged");
     // disable → changed; disable again → unchanged arm.
-    assert!(disable_extension("ext-good", &state_file, true).unwrap().changed);
-    assert!(!disable_extension("ext-good", &state_file, true).unwrap().changed);
+    assert!(
+        disable_extension("ext-good", &state_file, true)
+            .unwrap()
+            .changed
+    );
+    assert!(
+        !disable_extension("ext-good", &state_file, true)
+            .unwrap()
+            .changed
+    );
     // status filter: miss → error; hit → one row.
     assert!(extension_status(&state_file, Some("ghost")).is_err());
-    assert_eq!(extension_status(&state_file, Some("ext-good")).unwrap().len(), 1);
+    assert_eq!(
+        extension_status(&state_file, Some("ext-good"))
+            .unwrap()
+            .len(),
+        1
+    );
     // rollback: the rollback target exists (1.0.0); doctor-gated rollback on
     // a broken target errors — craft by installing a broken rollback target.
     let good2 = manifest_with_entrypoint("ext-good", "1.2.0", "sh");
@@ -112,8 +135,20 @@ fn doctor_gated_enable_and_rollback_via_state_surgery() {
     // directly: v1 broken on disk, v2 good active.
     let dir2 = tempfile::tempdir().unwrap();
     let state_file2 = dir2.path().join("state.json");
-    install_extension(&manifest_with_entrypoint("ext-rb", "1.0.0", "sh"), &state_file2, "install", true).unwrap();
-    install_extension(&manifest_with_entrypoint("ext-rb", "1.1.0", "sh"), &state_file2, "upgrade", true).unwrap();
+    install_extension(
+        &manifest_with_entrypoint("ext-rb", "1.0.0", "sh"),
+        &state_file2,
+        "install",
+        true,
+    )
+    .unwrap();
+    install_extension(
+        &manifest_with_entrypoint("ext-rb", "1.1.0", "sh"),
+        &state_file2,
+        "upgrade",
+        true,
+    )
+    .unwrap();
     // Break ONLY the rollback target (the 1.0.0 revision) in the state file.
     let text = std::fs::read_to_string(&state_file2).unwrap();
     // The first "sh" occurrence belongs to the older revision payload.
@@ -144,8 +179,15 @@ fn revision_retention_overflow() {
     }
     let rows = extension_status(&state_file, Some("ext-churn")).unwrap();
     assert_eq!(rows.len(), 1);
-    assert!(rows[0].revision_count <= 10, "bounded: {}", rows[0].revision_count);
-    assert!(rows[0].rollback_available, "required rollback revision retained");
+    assert!(
+        rows[0].revision_count <= 10,
+        "bounded: {}",
+        rows[0].revision_count
+    );
+    assert!(
+        rows[0].rollback_available,
+        "required rollback revision retained"
+    );
     // catalog entries include the lifecycle row.
     let entries = extension_catalog_entries(&state_file).unwrap();
     assert!(entries.iter().any(|e| e.id == "ext-churn"));
@@ -159,13 +201,22 @@ fn extension_api_version_and_catalog_skip_arm() {
     // is skipped in the catalog projection.
     let dir = tempfile::tempdir().unwrap();
     let state_file = dir.path().join("state.json");
-    install_extension(&manifest_with_entrypoint("ext-skip", "1.0.0", "sh"), &state_file, "install", true).unwrap();
+    install_extension(
+        &manifest_with_entrypoint("ext-skip", "1.0.0", "sh"),
+        &state_file,
+        "install",
+        true,
+    )
+    .unwrap();
     let mut value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state_file).unwrap()).unwrap();
     value["extensions"]["ext-skip"]
         .as_object_mut()
         .unwrap()
-        .insert("active_revision".into(), serde_json::json!("nonexistent-revision"));
+        .insert(
+            "active_revision".into(),
+            serde_json::json!("nonexistent-revision"),
+        );
     std::fs::write(&state_file, serde_json::to_string(&value).unwrap()).unwrap();
     let entries = extension_catalog_entries(&state_file).unwrap();
     assert!(entries.is_empty(), "invalid manifest skipped: {entries:?}");
@@ -180,9 +231,21 @@ fn retain_revisions_reinserts_required_rollback() {
     // window, then upgrade once: retain must re-insert it at the head.
     let dir = tempfile::tempdir().unwrap();
     let state_file = dir.path().join("state.json");
-    install_extension(&manifest_with_entrypoint("ext-deep", "1.0.0", "sh"), &state_file, "install", true).unwrap();
+    install_extension(
+        &manifest_with_entrypoint("ext-deep", "1.0.0", "sh"),
+        &state_file,
+        "install",
+        true,
+    )
+    .unwrap();
     for v in 1..6 {
-        install_extension(&manifest_with_entrypoint("ext-deep", &format!("1.0.{v}"), "sh"), &state_file, "upgrade", true).unwrap();
+        install_extension(
+            &manifest_with_entrypoint("ext-deep", &format!("1.0.{v}"), "sh"),
+            &state_file,
+            "upgrade",
+            true,
+        )
+        .unwrap();
     }
     // State surgery: rewrite the rollback pointer to the OLDEST revision and
     // truncate the revision list to the window, so the required target is
@@ -192,11 +255,23 @@ fn retain_revisions_reinserts_required_rollback() {
         serde_json::from_str(&std::fs::read_to_string(&state_file).unwrap()).unwrap();
     let entry = value["extensions"]["ext-deep"].as_object_mut().unwrap();
     let revisions = entry["revisions"].as_array().unwrap();
-    let oldest = revisions.first().unwrap()["revision"].as_str().unwrap().to_string();
+    let oldest = revisions.first().unwrap()["revision"]
+        .as_str()
+        .unwrap()
+        .to_string();
     entry.insert("rollback_revision".into(), serde_json::json!(oldest));
     std::fs::write(&state_file, serde_json::to_string(&value).unwrap()).unwrap();
     // One more upgrade pushes the window past the oldest; retain re-inserts it.
-    install_extension(&manifest_with_entrypoint("ext-deep", "1.0.9", "sh"), &state_file, "upgrade", true).unwrap();
+    install_extension(
+        &manifest_with_entrypoint("ext-deep", "1.0.9", "sh"),
+        &state_file,
+        "upgrade",
+        true,
+    )
+    .unwrap();
     let rows = extension_status(&state_file, Some("ext-deep")).unwrap();
-    assert!(rows[0].rollback_available, "required rollback retained: {rows:?}");
+    assert!(
+        rows[0].rollback_available,
+        "required rollback retained: {rows:?}"
+    );
 }

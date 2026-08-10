@@ -54,7 +54,12 @@ pub struct MockAgent {
     state: SharedState,
 }
 
-fn response(cmd: &RpcCommand, success: bool, data: String, error: String) -> tonic::Response<RpcResponse> {
+fn response(
+    cmd: &RpcCommand,
+    success: bool,
+    data: String,
+    error: String,
+) -> tonic::Response<RpcResponse> {
     tonic::Response::new(RpcResponse {
         id: cmd.id.clone(),
         r#type: "response".to_string(),
@@ -62,7 +67,11 @@ fn response(cmd: &RpcCommand, success: bool, data: String, error: String) -> ton
         success,
         data,
         error,
-        error_code: if success { String::new() } else { "mock_error".to_string() },
+        error_code: if success {
+            String::new()
+        } else {
+            "mock_error".to_string()
+        },
         error_data: String::new(),
         payload: None,
     })
@@ -120,8 +129,9 @@ impl FutureAgent for MockAgent {
         Ok(response(&cmd, true, data, String::new()))
     }
 
-    type StreamEventsStream =
-        std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>>;
+    type StreamEventsStream = std::pin::Pin<
+        Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>,
+    >;
 
     async fn stream_events(
         &self,

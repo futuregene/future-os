@@ -4,7 +4,9 @@
 
 mod common;
 
-use common::{add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record};
+use common::{
+    add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record,
+};
 use future_loop::state::now_epoch;
 use future_loop::store::Event;
 
@@ -67,25 +69,66 @@ fn scheduler_surface() {
     cli_ok(&["scheduler", "tick", "--goal", &gid]);
     // custom progression / cadence class / action on a second agent.
     cli_ok(&[
-        "scheduler", "tick", "--goal", &gid, "--agent-id", "agent-b", "--cadence-class", "hourly",
-        "--progression", "15,30,60", "--action", "custom_reset",
+        "scheduler",
+        "tick",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "agent-b",
+        "--cadence-class",
+        "hourly",
+        "--progression",
+        "15,30,60",
+        "--action",
+        "custom_reset",
     ]);
     cli_ok(&["scheduler", "tick", "--goal", &gid, "--agent-id", "agent-b"]);
     // record-host-failure with and without existing state.
     cli_ok(&[
-        "scheduler", "record-host-failure", "--goal", &gid, "--target-rrule",
-        "FREQ=MINUTELY;INTERVAL=15", "--observed-rrule", "FREQ=MINUTELY;INTERVAL=30",
-        "--failure-kind", "host_stale_rrule", "--failure-count", "2",
+        "scheduler",
+        "record-host-failure",
+        "--goal",
+        &gid,
+        "--target-rrule",
+        "FREQ=MINUTELY;INTERVAL=15",
+        "--observed-rrule",
+        "FREQ=MINUTELY;INTERVAL=30",
+        "--failure-kind",
+        "host_stale_rrule",
+        "--failure-count",
+        "2",
     ]);
     cli_ok(&[
-        "scheduler", "record-host-failure", "--goal", &gid, "--agent-id", "agent-fresh",
-        "--target-rrule", "FREQ=HOURLY", "--failure-kind", "host_stale_rrule",
+        "scheduler",
+        "record-host-failure",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "agent-fresh",
+        "--target-rrule",
+        "FREQ=HOURLY",
+        "--failure-kind",
+        "host_stale_rrule",
     ]);
     // errors.
-    assert!(cli_err(&["scheduler", "record-host-failure", "--goal", &gid, "--failure-kind", "k"])
-        .contains("--target-rrule"));
-    assert!(cli_err(&["scheduler", "record-host-failure", "--goal", &gid, "--target-rrule", "R"])
-        .contains("--failure-kind"));
+    assert!(cli_err(&[
+        "scheduler",
+        "record-host-failure",
+        "--goal",
+        &gid,
+        "--failure-kind",
+        "k"
+    ])
+    .contains("--target-rrule"));
+    assert!(cli_err(&[
+        "scheduler",
+        "record-host-failure",
+        "--goal",
+        &gid,
+        "--target-rrule",
+        "R"
+    ])
+    .contains("--failure-kind"));
     assert!(cli_err(&["scheduler", "bogus", "--goal", &gid]).contains("tick"));
     assert!(cli_err(&["scheduler"]).contains("tick"));
     assert!(cli_err(&["scheduler", "tick"]).contains("--goal required"));
@@ -132,22 +175,49 @@ fn backfill_surface() {
     let md = std::path::Path::new(&cr.cwd).join("state.md");
     std::fs::write(&md, BACKFILL_MD).unwrap();
     // dry-run first, then the real append (idempotent producer).
-    cli_ok(&["backfill", "--goal", &gid, "--from", md.to_str().unwrap(), "--dry-run"]);
+    cli_ok(&[
+        "backfill",
+        "--goal",
+        &gid,
+        "--from",
+        md.to_str().unwrap(),
+        "--dry-run",
+    ]);
     cli_ok(&["backfill", "--goal", &gid, "--from", md.to_str().unwrap()]);
     cli_ok(&[
-        "backfill", "--goal", &gid, "--from", md.to_str().unwrap(), "--privacy", "public_safe",
+        "backfill",
+        "--goal",
+        &gid,
+        "--from",
+        md.to_str().unwrap(),
+        "--privacy",
+        "public_safe",
     ]);
     // default --from: <cwd>/.future/loop/goals/<gid>/ACTIVE_GOAL_STATE.md? No —
     // the goal cwd's ACTIVE_GOAL_STATE.md; missing here → error.
     assert!(cli_err(&["backfill", "--goal", &gid]).contains(""));
     // bad privacy level / missing file / empty markdown.
-    assert!(cli_err(&["backfill", "--goal", &gid, "--from", md.to_str().unwrap(), "--privacy", "bogus"])
-        .contains(""));
+    assert!(cli_err(&[
+        "backfill",
+        "--goal",
+        &gid,
+        "--from",
+        md.to_str().unwrap(),
+        "--privacy",
+        "bogus"
+    ])
+    .contains(""));
     assert!(cli_err(&["backfill", "--goal", &gid, "--from", "/nonexistent.md"]).contains("read"));
     let empty = std::path::Path::new(&cr.cwd).join("empty.md");
     std::fs::write(&empty, "# nothing here\n").unwrap();
-    assert!(cli_err(&["backfill", "--goal", &gid, "--from", empty.to_str().unwrap()])
-        .contains("no todo records"));
+    assert!(cli_err(&[
+        "backfill",
+        "--goal",
+        &gid,
+        "--from",
+        empty.to_str().unwrap()
+    ])
+    .contains("no todo records"));
     assert!(cli_err(&["backfill"]).contains("--goal required"));
     assert!(cli_err(&["backfill", "--goal", "goal_nope"]).contains("not found"));
 }
@@ -183,8 +253,12 @@ fn runs_surface() {
     {
         let store = open_store(&cr);
         let first = first_todo_id(&cr.root, &gid);
-        store.append_run(&gid, &run_record(&first, "completed", now_epoch())).unwrap();
-        store.append_run(&gid, &run_record(&first, "completed", now_epoch())).unwrap();
+        store
+            .append_run(&gid, &run_record(&first, "completed", now_epoch()))
+            .unwrap();
+        store
+            .append_run(&gid, &run_record(&first, "completed", now_epoch()))
+            .unwrap();
         future_loop::compat::write_run(
             &store.goal_dir(&gid),
             &gid,
@@ -209,18 +283,31 @@ fn runs_surface() {
     {
         let store = open_store(&cr);
         let first = first_todo_id(&cr.root, &gid2);
-        store.append_run(&gid2, &run_record(&first, "completed", 1)).unwrap();
+        store
+            .append_run(&gid2, &run_record(&first, "completed", 1))
+            .unwrap();
     }
     let first = first_todo_id(&cr.root, &gid2);
-    cli_ok(&["todo", "update", "--goal", &gid2, "--todo-id", &first, "--note", "state moved"]);
+    cli_ok(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid2,
+        "--todo-id",
+        &first,
+        "--note",
+        "state moved",
+    ]);
     cli_ok(&["runs", "stale", "--goal", &gid2]);
     // errors.
     assert!(cli_err(&["runs", "bogus", "--goal", &gid]).contains("history|compact"));
     assert!(cli_err(&["runs"]).contains("history|compact"));
     assert!(cli_err(&["runs", "history"]).contains("--goal required"));
     assert!(cli_err(&["runs", "history", "--goal", "goal_nope"]).contains("not found"));
-    assert!(cli_err(&["runs", "compact", "--goal", &gid, "--cutoff", "notanumber"])
-        .contains("epoch secs"));
+    assert!(
+        cli_err(&["runs", "compact", "--goal", &gid, "--cutoff", "notanumber"])
+            .contains("epoch secs")
+    );
 }
 
 // ── heartbeat-prompt ───────────────────────────────────────────────────────
@@ -235,7 +322,14 @@ fn heartbeat_prompt_surface() {
     cli_ok(&["heartbeat-prompt", "--goal", &gid, "--agent-id", "w1"]);
     // Open gate → user-action-required branch (+ fallback todo line).
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "approve?", "--class", "user_gate",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "approve?",
+        "--class",
+        "user_gate",
     ]);
     cli_ok(&["heartbeat-prompt", "--goal", &gid]);
     // A seeded failed todo → "repair attempt N" line, plus run history.
@@ -250,12 +344,23 @@ fn heartbeat_prompt_surface() {
                 ts: now_epoch(),
             })
             .unwrap();
-        store.append_run(&gid, &run_record("todo_failed", "error", now_epoch())).unwrap();
+        store
+            .append_run(&gid, &run_record("todo_failed", "error", now_epoch()))
+            .unwrap();
         store.set_next_action(&gid, "failed once").unwrap();
     }
     // Resolve the gate so the failed todo becomes the selected frontier.
     let gate = common::todo_id_by_text(&cr.root, &gid, "approve?");
-    cli_ok(&["gate", "resolve", "--goal", &gid, "--todo-id", &gate, "--decision", "go"]);
+    cli_ok(&[
+        "gate",
+        "resolve",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &gate,
+        "--decision",
+        "go",
+    ]);
     cli_ok(&["heartbeat-prompt", "--goal", &gid]);
     // Terminal mode: cancel the goal (cancelled → terminal packet).
     let gid2 = init_goal(&cr, "terminal heartbeat");
@@ -274,7 +379,15 @@ fn turn_surface() {
     let gid = init_goal(&cr, "turn goal");
     let first = first_todo_id(&cr.root, &gid);
     cli_ok(&["turn", "--goal", &gid, "--todo-id", &first]);
-    cli_ok(&["turn", "--goal", &gid, "--todo-id", &first, "--agent-id", "w1"]);
+    cli_ok(&[
+        "turn",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--agent-id",
+        "w1",
+    ]);
     assert!(cli_err(&["turn", "--goal", &gid]).contains("--todo-id required"));
     assert!(cli_err(&["turn", "--todo-id", &first]).contains("--goal required"));
     assert!(cli_err(&["turn", "--goal", &gid, "--todo-id", "todo_nope"]).contains("not found"));
@@ -288,31 +401,146 @@ fn todo_event_surface() {
     let first = first_todo_id(&cr.root, &gid);
     // Rich event trail for one todo: claim/renew/release/expire/complete…
     cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w1"]);
-    cli_ok(&["todo", "claim", "--goal", &gid, "--todo-id", &first, "--agent-id", "w1"]);
-    cli_ok(&["lease", "renew", "--goal", &gid, "--todo-id", &first, "--agent-id", "w1", "--lease-secs", "30"]);
-    cli_ok(&["lease", "release", "--goal", &gid, "--todo-id", &first, "--agent-id", "w1"]);
+    cli_ok(&[
+        "todo",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--agent-id",
+        "w1",
+    ]);
+    cli_ok(&[
+        "lease",
+        "renew",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--agent-id",
+        "w1",
+        "--lease-secs",
+        "30",
+    ]);
+    cli_ok(&[
+        "lease",
+        "release",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--agent-id",
+        "w1",
+    ]);
     cli_ok(&["lease", "expire", "--goal", &gid, "--todo-id", &first]);
-    cli_ok(&["todo", "update", "--goal", &gid, "--todo-id", &first, "--note", "n"]);
-    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &first, "--no-follow-up", "--evidence", "done"]);
+    cli_ok(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--note",
+        "n",
+    ]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+        "--evidence",
+        "done",
+    ]);
     cli_ok(&["todo-event", "--goal", &gid, "--todo-id", &first]);
     // Craft the remaining todo-touching variants (supersede/archive/monitor/
     // quota/evidence/run + a gate resolve on a second todo).
     {
         let mut store = open_store(&cr);
         let t2 = future_loop::state::Todo::advancement("todo_crafted", "crafted trail");
-        store.append(Event::TodoAdded { goal_id: gid.clone(), todo: t2, ts: now_epoch() }).unwrap();
-        store.append(Event::TodoSuperseded { goal_id: gid.clone(), todo_id: "todo_crafted".into(), ts: now_epoch() }).unwrap();
-        store.append(Event::TodoArchived { goal_id: gid.clone(), todo_id: "todo_crafted".into(), ts: now_epoch() }).unwrap();
-        store.append(Event::MonitorPolled { goal_id: gid.clone(), todo_id: "todo_crafted".into(), result: "no_change".into(), no_change_count: 1, ts: now_epoch() }).unwrap();
-        store.append(Event::QuotaSpent { goal_id: gid.clone(), run_id: "r1".into(), todo_id: "todo_crafted".into(), source: "run".into(), slots: 1, ts: now_epoch() }).unwrap();
-        store.append(Event::EvidenceAttached { goal_id: gid.clone(), todo_id: "todo_crafted".into(), evidence: "e".into(), ts: now_epoch() }).unwrap();
-        store.append(Event::GateResolved { goal_id: gid.clone(), todo_id: "todo_crafted".into(), decision: "d".into(), note: None, ts: now_epoch() }).unwrap();
-        store.append_run(&gid, &run_record("todo_crafted", "completed", now_epoch())).unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: gid.clone(),
+                todo: t2,
+                ts: now_epoch(),
+            })
+            .unwrap();
+        store
+            .append(Event::TodoSuperseded {
+                goal_id: gid.clone(),
+                todo_id: "todo_crafted".into(),
+                ts: now_epoch(),
+            })
+            .unwrap();
+        store
+            .append(Event::TodoArchived {
+                goal_id: gid.clone(),
+                todo_id: "todo_crafted".into(),
+                ts: now_epoch(),
+            })
+            .unwrap();
+        store
+            .append(Event::MonitorPolled {
+                goal_id: gid.clone(),
+                todo_id: "todo_crafted".into(),
+                result: "no_change".into(),
+                no_change_count: 1,
+                ts: now_epoch(),
+            })
+            .unwrap();
+        store
+            .append(Event::QuotaSpent {
+                goal_id: gid.clone(),
+                run_id: "r1".into(),
+                todo_id: "todo_crafted".into(),
+                source: "run".into(),
+                slots: 1,
+                ts: now_epoch(),
+            })
+            .unwrap();
+        store
+            .append(Event::EvidenceAttached {
+                goal_id: gid.clone(),
+                todo_id: "todo_crafted".into(),
+                evidence: "e".into(),
+                ts: now_epoch(),
+            })
+            .unwrap();
+        store
+            .append(Event::GateResolved {
+                goal_id: gid.clone(),
+                todo_id: "todo_crafted".into(),
+                decision: "d".into(),
+                note: None,
+                ts: now_epoch(),
+            })
+            .unwrap();
+        store
+            .append_run(&gid, &run_record("todo_crafted", "completed", now_epoch()))
+            .unwrap();
         let mut s2 = open_store(&cr);
-        s2.append(Event::RunRecorded { goal_id: gid.clone(), record: run_record("todo_crafted", "completed", now_epoch()), ts: now_epoch() }).unwrap();
+        s2.append(Event::RunRecorded {
+            goal_id: gid.clone(),
+            record: run_record("todo_crafted", "completed", now_epoch()),
+            ts: now_epoch(),
+        })
+        .unwrap();
         // Non-todo events for the _ => false filter arms.
-        s2.append(Event::ReplanAcked { goal_id: gid.clone(), delta_kinds: vec!["vision_patch".into()], ts: now_epoch() }).unwrap();
-        s2.append(Event::GoalCancelled { goal_id: gid.clone(), reason: "r".into(), ts: now_epoch() }).unwrap();
+        s2.append(Event::ReplanAcked {
+            goal_id: gid.clone(),
+            delta_kinds: vec!["vision_patch".into()],
+            ts: now_epoch(),
+        })
+        .unwrap();
+        s2.append(Event::GoalCancelled {
+            goal_id: gid.clone(),
+            reason: "r".into(),
+            ts: now_epoch(),
+        })
+        .unwrap();
     }
     cli_ok(&["todo-event", "--goal", &gid, "--todo-id", "todo_crafted"]);
     // A todo id with no events.
@@ -329,16 +557,47 @@ fn evidence_log_surface() {
     cli_ok(&["evidence-log", "--goal", &gid]);
     cli_ok(&["evidence-log", "--goal", &gid, "--todo-id", "todo_ghost"]);
     let first = first_todo_id(&cr.root, &gid);
-    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &first, "--no-follow-up", "--evidence", "shipped"]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+        "--evidence",
+        "shipped",
+    ]);
     {
         let mut store = open_store(&cr);
-        store.append(Event::EvidenceAttached { goal_id: gid.clone(), todo_id: "todo_x".into(), evidence: "attached proof".into(), ts: now_epoch() }).unwrap();
-        store.append_run(&gid, &run_record("todo_x", "completed", now_epoch())).unwrap();
-        store.append(Event::RunRecorded { goal_id: gid.clone(), record: run_record("todo_x", "completed", now_epoch()), ts: now_epoch() }).unwrap();
+        store
+            .append(Event::EvidenceAttached {
+                goal_id: gid.clone(),
+                todo_id: "todo_x".into(),
+                evidence: "attached proof".into(),
+                ts: now_epoch(),
+            })
+            .unwrap();
+        store
+            .append_run(&gid, &run_record("todo_x", "completed", now_epoch()))
+            .unwrap();
+        store
+            .append(Event::RunRecorded {
+                goal_id: gid.clone(),
+                record: run_record("todo_x", "completed", now_epoch()),
+                ts: now_epoch(),
+            })
+            .unwrap();
         // A run with EMPTY evidence is skipped by the run-evidence arm.
         let mut r = run_record("todo_y", "completed", now_epoch());
         r.evidence = String::new();
-        store.append(Event::RunRecorded { goal_id: gid.clone(), record: r, ts: now_epoch() }).unwrap();
+        store
+            .append(Event::RunRecorded {
+                goal_id: gid.clone(),
+                record: r,
+                ts: now_epoch(),
+            })
+            .unwrap();
     }
     cli_ok(&["evidence-log", "--goal", &gid]);
     cli_ok(&["evidence-log", "--goal", &gid, "--todo-id", "todo_x"]);
@@ -358,7 +617,9 @@ fn diagnose_and_history_surface() {
     {
         let store = open_store(&cr);
         let first = first_todo_id(&cr.root, &gid);
-        store.append_run(&gid, &run_record(&first, "completed", now_epoch())).unwrap();
+        store
+            .append_run(&gid, &run_record(&first, "completed", now_epoch()))
+            .unwrap();
         let mut bare = run_record(&first, "error", now_epoch());
         bare.evidence = String::new();
         bare.tools = vec![];

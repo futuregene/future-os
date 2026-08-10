@@ -25,7 +25,14 @@ fn mock_env(state: MockState) -> (tokio::runtime::Runtime, common::mock_agent::S
 fn goal_init_default_cwd_and_delete_errors() {
     let cr = cli_root();
     // No --cwd → falls back to the process current dir.
-    cli_ok(&["goal", "init", "--objective", "default cwd", "--goal-id", "goal_defcwd"]);
+    cli_ok(&[
+        "goal",
+        "init",
+        "--objective",
+        "default cwd",
+        "--goal-id",
+        "goal_defcwd",
+    ]);
     // delete --force on an unknown goal → store error surfaces.
     assert!(cli_err(&["goal", "delete", "--goal", "goal_ghost", "--force"]).contains("not found"));
     let _ = cr;
@@ -36,14 +43,52 @@ fn agent_list_with_lease_events() {
     let cr = cli_root();
     let gid = init_goal(&cr, "agent list lease events");
     let first = first_todo_id(&cr.root, &gid);
-    cli_ok(&["agent", "onboard", "--goal", &gid, "--agent-id", "w1", "--capability", "shell"]);
-    cli_ok(&["todo", "claim", "--goal", &gid, "--todo-id", &first, "--agent-id", "w1"]);
-    cli_ok(&["lease", "renew", "--goal", &gid, "--todo-id", &first, "--agent-id", "w1", "--lease-secs", "90"]);
+    cli_ok(&[
+        "agent",
+        "onboard",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "w1",
+        "--capability",
+        "shell",
+    ]);
+    cli_ok(&[
+        "todo",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--agent-id",
+        "w1",
+    ]);
+    cli_ok(&[
+        "lease",
+        "renew",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--agent-id",
+        "w1",
+        "--lease-secs",
+        "90",
+    ]);
     // w1 shows a live lease; a second registered agent shows idle.
     cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w2"]);
     cli_ok(&["agent", "list", "--goal", &gid]);
     // Release then list (released event in the scan).
-    cli_ok(&["lease", "release", "--goal", &gid, "--todo-id", &first, "--agent-id", "w1"]);
+    cli_ok(&[
+        "lease",
+        "release",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--agent-id",
+        "w1",
+    ]);
     cli_ok(&["agent", "list", "--goal", &gid]);
 }
 
@@ -76,7 +121,11 @@ fn run_replan_self_repair_then_stop() {
         store.set_next_action(&gid, "phantom work").unwrap();
     }
     cli_ok(&["run", "--goal", &gid, "--anonymous", "--max-turns", "4"]);
-    assert_eq!(shared.lock().unwrap().prompts, 0, "no turn executed during replan");
+    assert_eq!(
+        shared.lock().unwrap().prompts,
+        0,
+        "no turn executed during replan"
+    );
     // The repair pass re-synced the next action.
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
@@ -108,7 +157,14 @@ fn backfill_dry_run_claim_print() {
     )
     .unwrap();
     // Dry-run prints the add/claim/complete event preview lines.
-    cli_ok(&["backfill", "--goal", &gid, "--from", md.to_str().unwrap(), "--dry-run"]);
+    cli_ok(&[
+        "backfill",
+        "--goal",
+        &gid,
+        "--from",
+        md.to_str().unwrap(),
+        "--dry-run",
+    ]);
 }
 
 #[test]
@@ -126,7 +182,16 @@ fn scope_with_open_gate() {
     let cr = cli_root();
     let gid = init_goal(&cr, "scope gate");
     cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w1"]);
-    cli_ok(&["todo", "add", "--goal", &gid, "--text", "approve?", "--class", "user_gate"]);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "approve?",
+        "--class",
+        "user_gate",
+    ]);
     cli_ok(&["scope", "--goal", &gid, "--agent-id", "w1"]);
 }
 
@@ -134,8 +199,16 @@ fn scope_with_open_gate() {
 fn benchmark_run_unreachable_agent() {
     let cr = cli_root();
     let err = cli_err(&[
-        "benchmark", "run", "--benchmark-id", "b", "--case-id", "c", "--task", "t",
-        "--agent-addr", "127.0.0.1:1",
+        "benchmark",
+        "run",
+        "--benchmark-id",
+        "b",
+        "--case-id",
+        "c",
+        "--task",
+        "t",
+        "--agent-addr",
+        "127.0.0.1:1",
     ]);
     assert!(err.contains(""), "{err}");
     let _ = cr;
@@ -146,11 +219,20 @@ fn replay_run_mismatch_prints_and_bails() {
     let cr = cli_root();
     let gid = init_goal(&cr, "replay mismatch");
     let case_file = std::path::Path::new(&cr.cwd).join("cases.json");
-    cli_ok(&["replay", "record", "--goal", &gid, "--out", case_file.to_str().unwrap()]);
+    cli_ok(&[
+        "replay",
+        "record",
+        "--goal",
+        &gid,
+        "--out",
+        case_file.to_str().unwrap(),
+    ]);
     // Tamper the recorded case: flip a decision field.
     let mut value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&case_file).unwrap()).unwrap();
-    let should_run = value["cases"][0]["decision"]["should_run"].as_bool().unwrap();
+    let should_run = value["cases"][0]["decision"]["should_run"]
+        .as_bool()
+        .unwrap();
     value["cases"][0]["decision"]
         .as_object_mut()
         .unwrap()
@@ -159,7 +241,13 @@ fn replay_run_mismatch_prints_and_bails() {
     let err = cli_err(&["replay", "run", "--case", case_file.to_str().unwrap()]);
     assert!(err.contains("drifted"), "{err}");
     // JSON mode prints the comparison object.
-    let err = cli_err(&["replay", "run", "--case", case_file.to_str().unwrap(), "--json"]);
+    let err = cli_err(&[
+        "replay",
+        "run",
+        "--case",
+        case_file.to_str().unwrap(),
+        "--json",
+    ]);
     assert!(err.contains("drifted"), "{err}");
 }
 
@@ -210,7 +298,13 @@ fn capability_commands_experimental_note() {
     // pr_review_queue is experimental: without the flag its commands are
     // hidden and the note prints; with the flag they list.
     cli_ok(&["capability", "commands", "--name", "pr_review_queue"]);
-    cli_ok(&["capability", "commands", "--name", "pr_review_queue", "--include-experimental"]);
+    cli_ok(&[
+        "capability",
+        "commands",
+        "--name",
+        "pr_review_queue",
+        "--include-experimental",
+    ]);
     cli_ok(&["catalog", "--name", "pr_review_queue"]);
 }
 
@@ -221,7 +315,15 @@ fn diagnose_and_doctor_with_projection_gap() {
     // Complete the only todo so agent_open == 0, then point next_action at
     // phantom work → a real projection gap.
     let first = first_todo_id(&cr.root, &gid);
-    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &first, "--no-follow-up"]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+    ]);
     {
         let store = open_store(&cr);
         store.set_next_action(&gid, "phantom work").unwrap();
@@ -234,14 +336,23 @@ fn diagnose_and_doctor_with_projection_gap() {
 #[test]
 fn benchmark_protocol_blind_route() {
     let _cr = cli_root();
-    cli_ok(&["benchmark", "protocol", "--route", "raw-codex-autonomous-max5"]);
+    cli_ok(&[
+        "benchmark",
+        "protocol",
+        "--route",
+        "raw-codex-autonomous-max5",
+    ]);
 }
 
 #[test]
 fn capability_propose_gate_print_arm() {
     let _cr = cli_root();
     cli_ok(&[
-        "capability", "propose", "--name", "issue_fix", "--input",
+        "capability",
+        "propose",
+        "--name",
+        "issue_fix",
+        "--input",
         "title: bug\nerror: crash\nrepro: steps\nauthority: read-only",
     ]);
 }
@@ -251,7 +362,11 @@ fn privacy_private_fields_print_arm() {
     let cr = cli_root();
     let home = std::env::var("HOME").unwrap_or_default();
     let gid = init_goal(&cr, "privacy fields");
-    common::add_todo(&cr, &gid, &format!("read {home}/.ssh/id_rsa and rotate the key"));
+    common::add_todo(
+        &cr,
+        &gid,
+        &format!("read {home}/.ssh/id_rsa and rotate the key"),
+    );
     cli_ok(&["privacy", "--goal", &gid]);
 }
 
@@ -260,7 +375,9 @@ fn corpus_build_trailing_flag_arms() {
     let cr = cli_root();
     let gid = init_goal(&cr, "corpus trailing");
     // --ablate / --patch at the very end with no value → skipped arms.
-    cli_ok(&["replay", "corpus", "build", "--goal", &gid, "--patch", "{}", "--ablate"]);
+    cli_ok(&[
+        "replay", "corpus", "build", "--goal", &gid, "--patch", "{}", "--ablate",
+    ]);
     let _ = cr;
 }
 
@@ -273,9 +390,18 @@ fn runs_retention_with_candidates() {
         let runs_dir = store.goal_dir(&gid).join("runs");
         std::fs::create_dir_all(&runs_dir).unwrap();
         for (name, ts) in [
-            ("2020-01-01T00-00-00-00-00.json", "2020-01-01T00:00:00+00:00"),
-            ("2021-01-01T00-00-00-00-00.json", "2021-01-01T00:00:00+00:00"),
-            ("2022-01-01T00-00-00-00-00.json", "2022-01-01T00:00:00+00:00"),
+            (
+                "2020-01-01T00-00-00-00-00.json",
+                "2020-01-01T00:00:00+00:00",
+            ),
+            (
+                "2021-01-01T00-00-00-00-00.json",
+                "2021-01-01T00:00:00+00:00",
+            ),
+            (
+                "2022-01-01T00-00-00-00-00.json",
+                "2022-01-01T00:00:00+00:00",
+            ),
         ] {
             std::fs::write(
                 runs_dir.join(name),
@@ -290,7 +416,12 @@ fn runs_retention_with_candidates() {
 #[test]
 fn benchmark_protocol_blind_route_print() {
     let _cr = cli_root();
-    cli_ok(&["benchmark", "protocol", "--route", "future-loop-blind-loop-treatment"]);
+    cli_ok(&[
+        "benchmark",
+        "protocol",
+        "--route",
+        "future-loop-blind-loop-treatment",
+    ]);
 }
 
 #[test]
@@ -302,9 +433,18 @@ fn runs_retention_candidates_print() {
         let runs_dir = store.goal_dir(&gid).join("runs");
         std::fs::create_dir_all(&runs_dir).unwrap();
         for (name, ts) in [
-            ("2020-01-01T00-00-00-00-00.json", "2020-01-01T00:00:00+00:00"),
-            ("2021-01-01T00-00-00-00-00.json", "2021-01-01T00:00:00+00:00"),
-            ("2022-01-01T00-00-00-00-00.json", "2022-01-01T00:00:00+00:00"),
+            (
+                "2020-01-01T00-00-00-00-00.json",
+                "2020-01-01T00:00:00+00:00",
+            ),
+            (
+                "2021-01-01T00-00-00-00-00.json",
+                "2021-01-01T00:00:00+00:00",
+            ),
+            (
+                "2022-01-01T00-00-00-00-00.json",
+                "2022-01-01T00:00:00+00:00",
+            ),
         ] {
             std::fs::write(
                 runs_dir.join(name),
@@ -323,8 +463,17 @@ fn benchmark_run_stub_flag() {
     let cr = cli_root();
     let ledger_dir = std::path::Path::new(&cr.cwd).join("bench-stub");
     cli_ok(&[
-        "benchmark", "run", "--benchmark-id", "bs", "--case-id", "cs", "--task", "t",
-        "--stub", "--ledger-dir", ledger_dir.to_str().unwrap(),
+        "benchmark",
+        "run",
+        "--benchmark-id",
+        "bs",
+        "--case-id",
+        "cs",
+        "--task",
+        "t",
+        "--stub",
+        "--ledger-dir",
+        ledger_dir.to_str().unwrap(),
     ]);
 }
 
@@ -332,7 +481,16 @@ fn benchmark_run_stub_flag() {
 fn corpus_build_positional_arg_arm() {
     let cr = cli_root();
     let gid = init_goal(&cr, "corpus positional");
-    cli_ok(&["replay", "corpus", "build", "--goal", &gid, "positional-junk", "--patch", "{}"]);
+    cli_ok(&[
+        "replay",
+        "corpus",
+        "build",
+        "--goal",
+        &gid,
+        "positional-junk",
+        "--patch",
+        "{}",
+    ]);
 }
 
 #[test]
@@ -344,10 +502,26 @@ fn run_validator_inconclusive_print() {
     });
     let gid = init_goal(&cr, "validator inconclusive");
     let first = first_todo_id(&cr.root, &gid);
-    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &first, "--no-follow-up"]);
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "validated task", "--verify", "exit 0",
-        "--max-validation-attempts", "1",
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+    ]);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "validated task",
+        "--verify",
+        "exit 0",
+        "--max-validation-attempts",
+        "1",
     ]);
     // With an empty PATH the validator's `sh` cannot spawn → Inconclusive.
     let saved = std::env::var_os("PATH");

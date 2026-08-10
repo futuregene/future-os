@@ -40,19 +40,34 @@ fn qualification_flow_control() {
         fn id(&self) -> &str {
             "pre-err"
         }
-        fn preflight(&mut self, _: &future_loop::benchmark::adapter::BenchmarkRequest) -> anyhow::Result<PreflightResult> {
+        fn preflight(
+            &mut self,
+            _: &future_loop::benchmark::adapter::BenchmarkRequest,
+        ) -> anyhow::Result<PreflightResult> {
             anyhow::bail!("preflight exploded")
         }
-        fn launch(&mut self, _: &future_loop::benchmark::adapter::BenchmarkRequest) -> anyhow::Result<LaunchResult> {
+        fn launch(
+            &mut self,
+            _: &future_loop::benchmark::adapter::BenchmarkRequest,
+        ) -> anyhow::Result<LaunchResult> {
             unreachable!()
         }
         fn observe(&mut self, _: &RunHandle) -> anyhow::Result<Observation> {
             unreachable!()
         }
-        fn ingest(&mut self, _: &future_loop::benchmark::adapter::BenchmarkRequest, _: &RunHandle, _: &Observation) -> anyhow::Result<IngestResult> {
+        fn ingest(
+            &mut self,
+            _: &future_loop::benchmark::adapter::BenchmarkRequest,
+            _: &RunHandle,
+            _: &Observation,
+        ) -> anyhow::Result<IngestResult> {
             unreachable!()
         }
-        fn classify(&mut self, _: &future_loop::benchmark::adapter::BenchmarkRequest, _: &IngestResult) -> anyhow::Result<AdapterClassification> {
+        fn classify(
+            &mut self,
+            _: &future_loop::benchmark::adapter::BenchmarkRequest,
+            _: &IngestResult,
+        ) -> anyhow::Result<AdapterClassification> {
             unreachable!()
         }
         fn ledger(
@@ -104,7 +119,13 @@ fn scripted_adapter_edges() {
 
 // ── ledger ─────────────────────────────────────────────────────────────────
 
-fn run_with(bench: &str, status: &str, passed: bool, final_round: u32, budget: u32) -> BenchmarkRun {
+fn run_with(
+    bench: &str,
+    status: &str,
+    passed: bool,
+    final_round: u32,
+    budget: u32,
+) -> BenchmarkRun {
     BenchmarkRun {
         benchmark_id: bench.to_string(),
         case_ids: vec!["c1".to_string()],
@@ -128,15 +149,30 @@ fn run_with(bench: &str, status: &str, passed: bool, final_round: u32, budget: u
 
 #[test]
 fn classify_failure_matrix() {
-    assert_eq!(classify_failure(&run_with("b", "runner_error", false, 1, 5)).0, "runner_error");
-    assert_eq!(classify_failure(&run_with("b", "aborted", false, 1, 5)).0, "aborted");
-    assert_eq!(classify_failure(&run_with("b", "completed", true, 1, 5)).0, "success");
+    assert_eq!(
+        classify_failure(&run_with("b", "runner_error", false, 1, 5)).0,
+        "runner_error"
+    );
+    assert_eq!(
+        classify_failure(&run_with("b", "aborted", false, 1, 5)).0,
+        "aborted"
+    );
+    assert_eq!(
+        classify_failure(&run_with("b", "completed", true, 1, 5)).0,
+        "success"
+    );
     assert_eq!(
         classify_failure(&run_with("b", "completed", false, 5, 5)).0,
         "budget_exhausted"
     );
-    assert_eq!(classify_failure(&run_with("b", "completed", false, 1, 5)).0, "case_failure");
-    assert_eq!(classify_failure(&run_with("b", "mystery", false, 1, 5)).0, "unknown");
+    assert_eq!(
+        classify_failure(&run_with("b", "completed", false, 1, 5)).0,
+        "case_failure"
+    );
+    assert_eq!(
+        classify_failure(&run_with("b", "mystery", false, 1, 5)).0,
+        "unknown"
+    );
     // Empty trace → runner_error regardless.
     let mut run = run_with("b", "completed", false, 1, 5);
     run.round_reward_trace = RoundRewardTrace::default();
@@ -156,7 +192,10 @@ fn ledger_entry_builder_and_store() {
     // derive id stable + distinct on content change.
     assert_eq!(derive_benchmark_run_id(&run), derive_benchmark_run_id(&run));
     let other = run_with("bench-y", "completed", true, 1, 5);
-    assert_ne!(derive_benchmark_run_id(&run), derive_benchmark_run_id(&other));
+    assert_ne!(
+        derive_benchmark_run_id(&run),
+        derive_benchmark_run_id(&other)
+    );
     // Trace with declared done.
     let trace = RoundRewardTrace::from_records(vec![], 5).with_declared_done(2, 1.0);
     assert!(trace.agent_declared_done);
@@ -167,7 +206,10 @@ fn ledger_entry_builder_and_store() {
     let dir = tempfile::tempdir().unwrap();
     let mut ledger = BenchmarkLedger::open(dir.path()).unwrap();
     assert!(ledger.append(entry.clone()).unwrap());
-    assert!(!ledger.append(entry.clone()).unwrap(), "duplicate run_id is a no-op");
+    assert!(
+        !ledger.append(entry.clone()).unwrap(),
+        "duplicate run_id is a no-op"
+    );
     assert_eq!(ledger.entries().len(), 1);
     assert!(!ledger.path().as_os_str().is_empty());
     assert_eq!(ledger.query(Some("bench-x"), Some("c1"), None).len(), 1);
@@ -219,7 +261,9 @@ fn grpc_adapter_full_surface() {
 fn grpc_adapter_error_paths() {
     rt().block_on(async {
         // connect failure.
-        assert!(GrpcLoopxAdapter::connect("127.0.0.1:1", "/tmp").await.is_err());
+        assert!(GrpcLoopxAdapter::connect("127.0.0.1:1", "/tmp")
+            .await
+            .is_err());
         // preflight: empty task → ok:false.
         let (addr, _) = spawn_mock(MockState::default()).await;
         let mut adapter = GrpcLoopxAdapter::connect(&addr, "/tmp").await.unwrap();
@@ -241,7 +285,12 @@ fn grpc_adapter_error_paths() {
         assert!(run_qualification_case(&mut adapter, &case("gb", "cb", 1), None).is_err());
         // terminal error round → runner_error classification.
         let (addr, _) = spawn_mock(MockState {
-            events: vec![ev("mock-run-1", 0, "agent_end", "{\"state\":\"error\",\"error\":\"dead\"}")],
+            events: vec![ev(
+                "mock-run-1",
+                0,
+                "agent_end",
+                "{\"state\":\"error\",\"error\":\"dead\"}",
+            )],
             ..Default::default()
         })
         .await;

@@ -70,7 +70,10 @@ fn session_and_command_happy_paths() {
         let session = client.new_session("/tmp").await.unwrap();
         assert_eq!(session, "mock-session-1");
 
-        client.append_system_prompt(&session, "boundary").await.unwrap();
+        client
+            .append_system_prompt(&session, "boundary")
+            .await
+            .unwrap();
         client.steer(&session, "note").await.unwrap();
         client.set_model(&session, "future/k3").await.unwrap();
         client.set_thinking_level(&session, "low").await.unwrap();
@@ -98,7 +101,10 @@ fn session_and_command_happy_paths() {
             "list_models",
             "delete_session",
         ] {
-            assert!(recorded.contains(&expected.to_string()), "missing {expected}");
+            assert!(
+                recorded.contains(&expected.to_string()),
+                "missing {expected}"
+            );
         }
     });
 }
@@ -140,7 +146,8 @@ fn command_error_paths() {
 
         // prompt payload without run_id.
         let mut st = MockState::default();
-        st.raw.insert("prompt".to_string(), "{\"nope\":1}".to_string());
+        st.raw
+            .insert("prompt".to_string(), "{\"nope\":1}".to_string());
         let (addr, _) = spawn_mock(st).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let err = client.prompt("s", "m", "r").await.unwrap_err();
@@ -191,7 +198,12 @@ fn run_turn_skips_foreign_and_malformed_events() {
         let events = vec![
             // Stale tail from another run — ignored.
             ev("other-run", 0, "text_chunk", "{\"text\":\"foreign\"}"),
-            ev("other-run", 1, "tool_start", "{\"tool_name\":\"foreign_tool\"}"),
+            ev(
+                "other-run",
+                1,
+                "tool_start",
+                "{\"tool_name\":\"foreign_tool\"}",
+            ),
             // Empty data → parse_data None → skipped.
             ev("mine", 2, "ping", ""),
             // Invalid JSON data → skipped.
@@ -405,7 +417,12 @@ fn execute_turn_with_decision_summary_and_prev() {
 #[test]
 fn execute_turn_error_turn_skips_validator() {
     rt().block_on(async {
-        let events = vec![ev("mock-run-1", 0, "agent_end", "{\"state\":\"error\",\"error\":\"x\"}")];
+        let events = vec![ev(
+            "mock-run-1",
+            0,
+            "agent_end",
+            "{\"state\":\"error\",\"error\":\"x\"}",
+        )];
         let (addr, _) = spawn_mock(MockState {
             events,
             ..Default::default()

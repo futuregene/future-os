@@ -4,12 +4,12 @@
 
 use future_loop::replay::corpus::ModelBehaviorActor;
 use future_loop::replay::corpus::{
-    build_model_behavior_corpus, delete_path, get_path, run_model_behavior_corpus, ModelBehaviorCorpus,
-    PatchCase, RetainedPacket, StubActor,
+    build_model_behavior_corpus, delete_path, get_path, run_model_behavior_corpus,
+    ModelBehaviorCorpus, PatchCase, RetainedPacket, StubActor,
 };
 use future_loop::replay::decision_replay::{
-    reduce_public_safe_decision, replay_public_safe_decision_case, validate_public_safe_decision_case,
-    walk_public_safe_violations, DecisionReplay,
+    reduce_public_safe_decision, replay_public_safe_decision_case,
+    validate_public_safe_decision_case, walk_public_safe_violations, DecisionReplay,
 };
 use future_loop::state::{Goal, TaskClass, Todo, TodoStatus};
 
@@ -37,9 +37,20 @@ fn corpus_load_errors() {
     // Empty case list.
     let goal = base_goal();
     let packet = packet_for(&goal);
-    let corpus = build_model_behavior_corpus(&packet, &[PatchCase::new("p", serde_json::json!({}))], &[], &[], &[]).unwrap();
+    let corpus = build_model_behavior_corpus(
+        &packet,
+        &[PatchCase::new("p", serde_json::json!({}))],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
     let empty = dir.path().join("empty.json");
-    std::fs::write(&empty, "{\"schema_version\":\"model_behavior_corpus_v0\",\"cases\":[]}").unwrap();
+    std::fs::write(
+        &empty,
+        "{\"schema_version\":\"model_behavior_corpus_v0\",\"cases\":[]}",
+    )
+    .unwrap();
     assert!(ModelBehaviorCorpus::load(&empty).is_err());
     // Case schema mismatch.
     let mut value = serde_json::to_value(&corpus).unwrap();
@@ -94,7 +105,10 @@ fn corpus_build_matrix() {
             PatchCase::new("a", serde_json::json!({"quota": {"extra": 1}})),
             PatchCase::new("b", serde_json::json!({"decision": "replaced"})),
         ],
-        &[PatchCase::new("cf", serde_json::json!({"should_run": false}))],
+        &[PatchCase::new(
+            "cf",
+            serde_json::json!({"should_run": false}),
+        )],
         &["decision".to_string()],
         &[retained],
     )
@@ -102,20 +116,39 @@ fn corpus_build_matrix() {
     assert_eq!(corpus.cases.len(), 5);
     // Ablation of a hard-invariant path → candidate invalid → fail_closed ✓.
     let result = run_model_behavior_corpus(&corpus, &StubActor, 2, 0).unwrap();
-    assert!(result.all_cases_passed, "{:#?}", result.cases.iter().map(|c| (&c.case_id, c.passed)).collect::<Vec<_>>());
+    assert!(
+        result.all_cases_passed,
+        "{:#?}",
+        result
+            .cases
+            .iter()
+            .map(|c| (&c.case_id, c.passed))
+            .collect::<Vec<_>>()
+    );
     assert!(result.corpus_gate_passed);
     assert!(result.promotion_eligible);
     // Ablation of a nonexistent path → build error.
-    assert!(build_model_behavior_corpus(&packet, &[], &[], &["nope.nope".to_string()], &[]).is_err());
+    assert!(
+        build_model_behavior_corpus(&packet, &[], &[], &["nope.nope".to_string()], &[]).is_err()
+    );
     // Duplicate ablation paths → duplicate case ids → error.
-    assert!(build_model_behavior_corpus(&packet, &[], &[], &["decision".to_string(), "decision".to_string()], &[]).is_err());
+    assert!(build_model_behavior_corpus(
+        &packet,
+        &[],
+        &[],
+        &["decision".to_string(), "decision".to_string()],
+        &[]
+    )
+    .is_err());
     // No cases at all → error.
     assert!(build_model_behavior_corpus(&packet, &[], &[], &[], &[]).is_err());
     // Oversized case id (patch name > 120 chars) → case gate error.
     assert!(build_model_behavior_corpus(
         &packet,
         &[PatchCase::new(&"x".repeat(130), serde_json::json!({}))],
-        &[], &[], &[],
+        &[],
+        &[],
+        &[],
     )
     .is_err());
     // StubActor identity.
@@ -136,7 +169,11 @@ fn decision_replay_load_errors() {
     std::fs::write(&schema, "{\"schema_version\":\"nope\",\"cases\":[]}").unwrap();
     assert!(DecisionReplay::load(&schema).is_err());
     let empty = dir.path().join("empty.json");
-    std::fs::write(&empty, "{\"schema_version\":\"public_safe_decision_replay_v0\",\"cases\":[]}").unwrap();
+    std::fs::write(
+        &empty,
+        "{\"schema_version\":\"public_safe_decision_replay_v0\",\"cases\":[]}",
+    )
+    .unwrap();
     assert!(DecisionReplay::load(&empty).is_err());
     // A case whose case_id is an absolute path fails the public-safety walk.
     let goal = base_goal();
@@ -148,7 +185,10 @@ fn decision_replay_load_errors() {
     replay.add(case);
     let p = dir.path().join("violating.json");
     replay.save(&p).unwrap();
-    assert!(DecisionReplay::load(&p).is_err(), "load validates each case");
+    assert!(
+        DecisionReplay::load(&p).is_err(),
+        "load validates each case"
+    );
     // Bad case schema inside the file.
     let mut value = serde_json::to_value(&replay).unwrap();
     value["cases"][0]
@@ -172,9 +212,20 @@ fn walk_violations_matrix() {
         "items": [{"path": "/abs/file"}, {"ref": "file://x"}, {"ok": "fine"}],
     });
     let violations = walk_public_safe_violations(&v);
-    assert!(violations.iter().any(|s| s.contains("banned key: credential")), "{violations:?}");
-    assert!(violations.iter().any(|s| s.contains("nested.trajectory")), "{violations:?}");
-    assert!(violations.iter().any(|s| s.contains("local path")), "{violations:?}");
+    assert!(
+        violations
+            .iter()
+            .any(|s| s.contains("banned key: credential")),
+        "{violations:?}"
+    );
+    assert!(
+        violations.iter().any(|s| s.contains("nested.trajectory")),
+        "{violations:?}"
+    );
+    assert!(
+        violations.iter().any(|s| s.contains("local path")),
+        "{violations:?}"
+    );
     assert!(walk_public_safe_violations(&serde_json::json!({"clean": "yes"})).is_empty());
 }
 
@@ -214,7 +265,10 @@ fn reduce_covers_todo_matrix() {
     // Gate-open packet → AskUser interaction arms.
     let packet = packet_for(&goal);
     let case = reduce_public_safe_decision(&packet, &goal, "rich-case", None);
-    assert!(!case.user_todos.is_empty(), "gate/action populate user todos");
+    assert!(
+        !case.user_todos.is_empty(),
+        "gate/action populate user todos"
+    );
     validate_public_safe_decision_case(&case).unwrap();
     // Replay it (kernel should reproduce the ask_user decision).
     let comparison = replay_public_safe_decision_case(&case).unwrap();
@@ -232,7 +286,10 @@ fn replay_mismatch_diff_arms() {
     tampered.decision.should_run = !case.decision.should_run;
     let comparison = replay_public_safe_decision_case(&tampered).unwrap();
     assert!(!comparison.matched);
-    assert!(comparison.mismatches.iter().any(|m| m.contains("should_run")));
+    assert!(comparison
+        .mismatches
+        .iter()
+        .any(|m| m.contains("should_run")));
     // Save/load roundtrip through DecisionReplay::add.
     let mut replay = DecisionReplay::default();
     replay.add(case);

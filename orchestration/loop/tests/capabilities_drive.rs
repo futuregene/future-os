@@ -10,7 +10,9 @@ use future_loop::capabilities::{CapabilityRegistry, ProposalKind};
 
 fn propose(name: &str, input: &str) -> Vec<future_loop::capabilities::TypedProposal> {
     let registry = CapabilityRegistry::with_builtin();
-    let cap = registry.get(name).unwrap_or_else(|| panic!("{name} registered"));
+    let cap = registry
+        .get(name)
+        .unwrap_or_else(|| panic!("{name} registered"));
     cap.propose(input)
 }
 
@@ -24,17 +26,32 @@ fn kinds(ps: &[future_loop::capabilities::TypedProposal]) -> Vec<ProposalKind> {
 fn simple_router_capabilities() {
     // (capability, [inputs that hit each rule arm])
     let cases: &[(&str, &[&str])] = &[
-        ("material_lifecycle", &["archive it", "归档", "废弃", "nothing relevant", ""]),
-        ("change_quality", &["all pass + diff written", "tests fail", "all pass", ""]),
+        (
+            "material_lifecycle",
+            &["archive it", "归档", "废弃", "nothing relevant", ""],
+        ),
+        (
+            "change_quality",
+            &["all pass + diff written", "tests fail", "all pass", ""],
+        ),
         ("explore", &["hypothesis here", "假设", "探索", "none", ""]),
         ("integration_branch", &["branch it", "集成", "none", ""]),
         ("value_connectors", &["connector plan", "连接", "none", ""]),
         ("reward_memory", &["reward this", "评价", "none", ""]),
-        ("semantic_preference", &["prefer dark mode", "偏好", "none", ""]),
+        (
+            "semantic_preference",
+            &["prefer dark mode", "偏好", "none", ""],
+        ),
         ("decision_context", &["decide this", "决策", "none", ""]),
-        ("agent_turn_recall", &["recall the turn", "回忆", "none", ""]),
+        (
+            "agent_turn_recall",
+            &["recall the turn", "回忆", "none", ""],
+        ),
         ("content_ops", &["content publish", "发布", "none", ""]),
-        ("context_providers", &["provider context", "上下文", "none", ""]),
+        (
+            "context_providers",
+            &["provider context", "上下文", "none", ""],
+        ),
         ("periodic_report", &["report weekly", "报告", "none", ""]),
         ("auto_research", &["research this", "调研", "none", ""]),
     ];
@@ -51,7 +68,10 @@ fn simple_router_capabilities() {
 #[test]
 fn issue_fix_branch_matrix() {
     // Empty.
-    assert_eq!(kinds(&propose("issue_fix", "")), vec![ProposalKind::NoFollowUp]);
+    assert_eq!(
+        kinds(&propose("issue_fix", "")),
+        vec![ProposalKind::NoFollowUp]
+    );
     // Full signal (repro+error+expected) → investigate/fix/validate trio.
     let ps = propose(
         "issue_fix",
@@ -61,7 +81,10 @@ fn issue_fix_branch_matrix() {
     // The `scope`/`expected` metadata keys parse into the observation.
     // Authority read-only gates BEFORE any fix.
     assert_eq!(
-        kinds(&propose("issue_fix", "title: t\nerror: e\nrepro: r\nauthority: read-only")),
+        kinds(&propose(
+            "issue_fix",
+            "title: t\nerror: e\nrepro: r\nauthority: read-only"
+        )),
         vec![ProposalKind::Gate]
     );
     // Regression with repro+error → bounded repair.
@@ -79,7 +102,10 @@ fn issue_fix_branch_matrix() {
     assert!(ps[0].reason.contains("investigate"), "{ps:?}");
     // Too little signal → triage.
     let ps = propose("issue_fix", "it broke");
-    assert!(ps[0].todo.as_ref().unwrap().text.contains("Triage"), "{ps:?}");
+    assert!(
+        ps[0].todo.as_ref().unwrap().text.contains("Triage"),
+        "{ps:?}"
+    );
 }
 
 // ── provider lifecycle ─────────────────────────────────────────────────────

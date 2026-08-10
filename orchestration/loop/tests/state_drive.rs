@@ -1,9 +1,7 @@
 //! Coverage drive for `state.rs` — Todo builders, claim/lease primitives,
 //! Goal query/mutation arms that no command path exercises directly.
 
-use future_loop::state::{
-    default_goal_status, Goal, Priority, TaskClass, Todo, TodoStatus,
-};
+use future_loop::state::{default_goal_status, Goal, Priority, TaskClass, Todo, TodoStatus};
 
 #[test]
 fn todo_builders() {
@@ -29,12 +27,33 @@ fn todo_builders() {
 
     // monitor_with derives the first due time from a cadence (or keeps the
     // explicit delay for `once`/unknown cadences).
-    let m = Todo::monitor_with("m1", "watch", Some("file:x"), Some("exists"), Some("15m"), std::time::Duration::from_secs(5));
+    let m = Todo::monitor_with(
+        "m1",
+        "watch",
+        Some("file:x"),
+        Some("exists"),
+        Some("15m"),
+        std::time::Duration::from_secs(5),
+    );
     assert!(m.resume_when.is_some());
     assert_eq!(m.monitor_target.as_deref(), Some("file:x"));
-    let m2 = Todo::monitor_with("m2", "watch", None, None, Some("bogus"), std::time::Duration::from_secs(5));
+    let m2 = Todo::monitor_with(
+        "m2",
+        "watch",
+        None,
+        None,
+        Some("bogus"),
+        std::time::Duration::from_secs(5),
+    );
     assert!(m2.resume_when.is_some(), "explicit delay kept");
-    let m3 = Todo::monitor_with("m3", "watch", None, None, None, std::time::Duration::from_secs(5));
+    let m3 = Todo::monitor_with(
+        "m3",
+        "watch",
+        None,
+        None,
+        None,
+        std::time::Duration::from_secs(5),
+    );
     assert!(m3.resume_when.is_some());
 
     // user_gate default question / blocks; blocker; user_action.
@@ -69,8 +88,8 @@ fn todo_claim_and_complete_primitives() {
 #[test]
 fn goal_query_and_mutation_arms() {
     assert_eq!(default_goal_status(), "active");
-    let mut goal = Goal::new("g", "obj", "/tmp")
-        .with_acceptance(vec![("gap1", "d1"), ("gap2", "d2")]);
+    let mut goal =
+        Goal::new("g", "obj", "/tmp").with_acceptance(vec![("gap1", "d1"), ("gap2", "d2")]);
     // register_agent dedup + profile replacement.
     goal.register_agent("a1", vec!["shell".into()]);
     goal.register_agent("a1", vec!["web".into()]);

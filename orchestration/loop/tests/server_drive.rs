@@ -76,7 +76,13 @@ fn status_server_serves_dashboard_and_json() {
         deferred.status = future_loop::state::TodoStatus::Deferred;
         let mut blocked = Todo::advancement("todo_blk", "blocked task");
         blocked.status = future_loop::state::TodoStatus::Blocked;
-        for t in [done, superseded, deferred, blocked, Todo::advancement("todo_open", "open task")] {
+        for t in [
+            done,
+            superseded,
+            deferred,
+            blocked,
+            Todo::advancement("todo_open", "open task"),
+        ] {
             store
                 .append(Event::TodoAdded {
                     goal_id: "goal_srv".to_string(),

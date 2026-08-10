@@ -57,7 +57,8 @@ fn attention_labels_and_queue() {
 fn goal_attention_item_branches() {
     // Gate with a question → high-severity gate item.
     let mut goal = Goal::new("g1", "attn", "/tmp");
-    goal.todos.push(Todo::user_gate("tg", "approve the plan?", &[]));
+    goal.todos
+        .push(Todo::user_gate("tg", "approve the plan?", &[]));
     let item = goal_attention_item(&goal).unwrap();
     assert_eq!(item.status, "operator_gate");
     assert!(item.recommended_action.contains("approve the plan?"));
@@ -67,11 +68,14 @@ fn goal_attention_item_branches() {
     g.gate_question = None;
     goal.todos.push(g);
     let item = goal_attention_item(&goal).unwrap();
-    assert!(item.recommended_action.contains("resolve the open user gate"));
+    assert!(item
+        .recommended_action
+        .contains("resolve the open user gate"));
     // Projection gap → codex self-repair item (goal must be non-terminal:
     // an open user_action keeps it open while leaving agent_open == 0).
     let mut goal = Goal::new("g1", "attn", "/tmp");
-    goal.todos.push(Todo::user_action("ua", "pending user action"));
+    goal.todos
+        .push(Todo::user_action("ua", "pending user action"));
     goal.next_action = Some("totally stale action".into());
     let item = goal_attention_item(&goal).unwrap();
     assert_eq!(item.status, "projection_gap");
@@ -85,8 +89,13 @@ fn goal_attention_item_branches() {
     // without an open advancement, and a "waiting" next-action avoids a
     // projection gap).
     let mut goal = Goal::new("g1", "attn", "/tmp");
-    goal.todos.push(Todo::user_action("ua", "pending user action"));
-    goal.todos.push(Todo::monitor("m1", "watch it", std::time::Duration::from_secs(0)));
+    goal.todos
+        .push(Todo::user_action("ua", "pending user action"));
+    goal.todos.push(Todo::monitor(
+        "m1",
+        "watch it",
+        std::time::Duration::from_secs(0),
+    ));
     goal.next_action = Some("waiting on the user".into());
     let item = goal_attention_item(&goal).unwrap();
     assert_eq!(item.status, "monitor_due");
@@ -128,8 +137,14 @@ fn delivery_labels_and_classifiers() {
         delivery_batch_scale_for_run(&r)
     };
     assert_eq!(scale("unit test passed"), DeliveryBatchScale::TestOnly);
-    assert_eq!(scale("changes across surfaces"), DeliveryBatchScale::MultiSurface);
-    assert_eq!(scale("implementation landed"), DeliveryBatchScale::Implementation);
+    assert_eq!(
+        scale("changes across surfaces"),
+        DeliveryBatchScale::MultiSurface
+    );
+    assert_eq!(
+        scale("implementation landed"),
+        DeliveryBatchScale::Implementation
+    );
     // NOTE: the Unknown arm is unreachable through delivery_batch_scale_for_run
     // (evidence_text always contains the "<state> " separator); a non-empty
     // non-matching text is a single surface.
@@ -144,10 +159,22 @@ fn delivery_labels_and_classifiers() {
         r.evidence = evidence.to_string();
         delivery_outcome_for_run(&r, m, s)
     };
-    assert_eq!(outcome("anything", &[], &[]), DeliveryOutcome::NotConfigured);
-    assert_eq!(outcome("docs only tweak", &markers, &surface), DeliveryOutcome::SurfaceOnly);
-    assert_eq!(outcome("shipped it", &markers, &surface), DeliveryOutcome::OutcomeProgress);
-    assert_eq!(outcome("nothing relevant", &markers, &surface), DeliveryOutcome::OutcomeGap);
+    assert_eq!(
+        outcome("anything", &[], &[]),
+        DeliveryOutcome::NotConfigured
+    );
+    assert_eq!(
+        outcome("docs only tweak", &markers, &surface),
+        DeliveryOutcome::SurfaceOnly
+    );
+    assert_eq!(
+        outcome("shipped it", &markers, &surface),
+        DeliveryOutcome::OutcomeProgress
+    );
+    assert_eq!(
+        outcome("nothing relevant", &markers, &surface),
+        DeliveryOutcome::OutcomeGap
+    );
     assert!(outcome_floor_configured(&markers, &[]));
     assert!(!outcome_floor_configured(&[], &[]));
 
@@ -172,7 +199,10 @@ fn delivery_labels_and_classifiers() {
     small.evidence = "unit test ok".to_string();
     let mut big = run_record("t", "completed", 1);
     big.evidence = "changes across surfaces".to_string();
-    assert_eq!(small_delivery_batch_scale_streak(&[small.clone(), small.clone()]), 2);
+    assert_eq!(
+        small_delivery_batch_scale_streak(&[small.clone(), small.clone()]),
+        2
+    );
     assert_eq!(small_delivery_batch_scale_streak(&[small, big]), 1);
 }
 
@@ -204,50 +234,90 @@ fn operator_inbox_kinds() {
     );
     // Question mark (ASCII + full-width).
     assert_eq!(
-        operator_inbox_attention_kind(&inbox_event("@operator ready?", false, false), "operator", "addressed_only"),
+        operator_inbox_attention_kind(
+            &inbox_event("@operator ready?", false, false),
+            "operator",
+            "addressed_only"
+        ),
         Some(OperatorAttentionKind::DirectQuestion)
     );
     assert_eq!(
-        operator_inbox_attention_kind(&inbox_event("@operator ready？", false, false), "operator", "addressed_only"),
+        operator_inbox_attention_kind(
+            &inbox_event("@operator ready？", false, false),
+            "operator",
+            "addressed_only"
+        ),
         Some(OperatorAttentionKind::DirectQuestion)
     );
     // Mention without question.
     assert_eq!(
-        operator_inbox_attention_kind(&inbox_event("@operator FYI", false, false), "operator", "addressed_only"),
+        operator_inbox_attention_kind(
+            &inbox_event("@operator FYI", false, false),
+            "operator",
+            "addressed_only"
+        ),
         Some(OperatorAttentionKind::DirectMention)
     );
     // future-loop mention.
     assert_eq!(
-        operator_inbox_attention_kind(&inbox_event("@future-loop ping", false, false), "operator", "addressed_only"),
+        operator_inbox_attention_kind(
+            &inbox_event("@future-loop ping", false, false),
+            "operator",
+            "addressed_only"
+        ),
         Some(OperatorAttentionKind::DirectMention)
     );
     // Scope semantics (as implemented, mirroring the reference): in
     // configured_chat_all a message WITHOUT any mention is dropped; in
     // addressed_only a bare question still counts (the '?' heuristic).
     assert_eq!(
-        operator_inbox_attention_kind(&inbox_event("random chatter", false, false), "operator", "addressed_only"),
+        operator_inbox_attention_kind(
+            &inbox_event("random chatter", false, false),
+            "operator",
+            "addressed_only"
+        ),
         None
     );
     assert_eq!(
-        operator_inbox_attention_kind(&inbox_event("random chatter", false, false), "operator", "configured_chat_all"),
+        operator_inbox_attention_kind(
+            &inbox_event("random chatter", false, false),
+            "operator",
+            "configured_chat_all"
+        ),
         None
     );
     assert_eq!(
-        operator_inbox_attention_kind(&inbox_event("is this on?", false, false), "operator", "configured_chat_all"),
+        operator_inbox_attention_kind(
+            &inbox_event("is this on?", false, false),
+            "operator",
+            "configured_chat_all"
+        ),
         None
     );
     assert_eq!(
-        operator_inbox_attention_kind(&inbox_event("is this on?", false, false), "operator", "addressed_only"),
+        operator_inbox_attention_kind(
+            &inbox_event("is this on?", false, false),
+            "operator",
+            "addressed_only"
+        ),
         Some(OperatorAttentionKind::DirectQuestion)
     );
     // Unverified reply flag without verification → not a reply.
     assert_eq!(
-        operator_inbox_attention_kind(&inbox_event("no marks", false, true), "operator", "addressed_only"),
+        operator_inbox_attention_kind(
+            &inbox_event("no marks", false, true),
+            "operator",
+            "addressed_only"
+        ),
         None
     );
     // Empty operator name: no explicit mention arm.
     assert_eq!(
-        operator_inbox_attention_kind(&inbox_event("@someone hi", false, false), "", "addressed_only"),
+        operator_inbox_attention_kind(
+            &inbox_event("@someone hi", false, false),
+            "",
+            "addressed_only"
+        ),
         None
     );
 }
@@ -262,7 +332,10 @@ fn operator_inbox_urgency_projection() {
         reply_enabled: true,
     };
     // Disabled → zeroed projection.
-    let u = project_operator_inbox_urgency(&config(false, "addressed_only"), &[inbox_event("@operator q?", false, false)]);
+    let u = project_operator_inbox_urgency(
+        &config(false, "addressed_only"),
+        &[inbox_event("@operator q?", false, false)],
+    );
     assert!(!u.enabled);
     assert_eq!(u.pending_count, 0);
     // Enabled with a mix.

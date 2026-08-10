@@ -5,8 +5,7 @@
 mod common;
 
 use common::{
-    add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store,
-    todo_id_by_text,
+    add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, todo_id_by_text,
 };
 use future_loop::state::{now_epoch, TodoStatus};
 use future_loop::store::{Event, Store};
@@ -25,8 +24,16 @@ fn goal_init_variants_and_errors() {
     // --goal-doc writes GOAL.md into the goal cwd.
     let gid = init_goal(&cr, "doc goal");
     cli_ok(&[
-        "goal", "init", "--objective", "with doc", "--goal-id", "goal_withdoc", "--cwd", &cr.cwd,
-        "--goal-doc", "# Hello",
+        "goal",
+        "init",
+        "--objective",
+        "with doc",
+        "--goal-id",
+        "goal_withdoc",
+        "--cwd",
+        &cr.cwd,
+        "--goal-doc",
+        "# Hello",
     ]);
     let doc = std::path::Path::new(&cr.cwd).join("GOAL.md");
     assert_eq!(std::fs::read_to_string(doc).unwrap(), "# Hello\n");
@@ -37,7 +44,14 @@ fn goal_init_variants_and_errors() {
 fn goal_cancel_and_delete() {
     let cr = cli_root();
     let gid = init_goal(&cr, "cancel me");
-    cli_ok(&["goal", "cancel", "--goal", &gid, "--reason", "no longer needed"]);
+    cli_ok(&[
+        "goal",
+        "cancel",
+        "--goal",
+        &gid,
+        "--reason",
+        "no longer needed",
+    ]);
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
     assert_eq!(g.status, "cancelled");
@@ -50,7 +64,10 @@ fn goal_cancel_and_delete() {
     assert!(cli_err(&["goal", "delete", "--goal", &gid2]).contains("--force"));
     cli_ok(&["goal", "delete", "--goal", &gid2, "--force"]);
     let store = open_store(&cr);
-    assert!(store.replay(&gid2).unwrap().is_none(), "deleted goal is gone");
+    assert!(
+        store.replay(&gid2).unwrap().is_none(),
+        "deleted goal is gone"
+    );
     assert!(cli_err(&["goal", "delete"]).contains("--goal required"));
 }
 
@@ -63,30 +80,82 @@ fn todo_add_class_matrix() {
 
     // user_gate via (user, user_gate) and via (_, user_gate).
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--role", "user", "--class", "user_gate", "--text",
-        "gate one", "--gate-question", "q1?",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--role",
+        "user",
+        "--class",
+        "user_gate",
+        "--text",
+        "gate one",
+        "--gate-question",
+        "q1?",
     ]);
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--class", "user_gate", "--text", "gate two",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--class",
+        "user_gate",
+        "--text",
+        "gate two",
     ]);
     // user_action / blocker / monitor / unknown-class fallback.
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--role", "user", "--class", "user_action", "--text",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--role",
+        "user",
+        "--class",
+        "user_action",
+        "--text",
         "user does this",
     ]);
     let blocker = {
         cli_ok(&[
-            "todo", "add", "--goal", &gid, "--class", "blocker", "--text", "blocked on ext",
-            "--blocks", "todo_later",
+            "todo",
+            "add",
+            "--goal",
+            &gid,
+            "--class",
+            "blocker",
+            "--text",
+            "blocked on ext",
+            "--blocks",
+            "todo_later",
         ]);
         todo_id_by_text(&cr.root, &gid, "blocked on ext")
     };
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--class", "monitor", "--text", "watch it",
-        "--cadence", "15m", "--monitor-target", "file:x", "--monitor-policy", "exists",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--class",
+        "monitor",
+        "--text",
+        "watch it",
+        "--cadence",
+        "15m",
+        "--monitor-target",
+        "file:x",
+        "--monitor-policy",
+        "exists",
     ]);
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--class", "bogus-class", "--text", "falls back",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--class",
+        "bogus-class",
+        "--text",
+        "falls back",
     ]);
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
@@ -107,45 +176,149 @@ fn todo_add_flag_matrix() {
 
     // Full flag cocktail.
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "kitchen sink", "--priority", "P0",
-        "--action-kind", "deploy", "--required-capability", "shell", "--title", "Sink",
-        "--task-repository", "repo-1", "--continuation-policy", "resume",
-        "--required-write-scope", "src, tests", "--capability-binding-ref", "bind-1",
-        "--note", "a note", "--goal-bound", "--verify", "exit 0",
-        "--max-validation-attempts", "2",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "kitchen sink",
+        "--priority",
+        "P0",
+        "--action-kind",
+        "deploy",
+        "--required-capability",
+        "shell",
+        "--title",
+        "Sink",
+        "--task-repository",
+        "repo-1",
+        "--continuation-policy",
+        "resume",
+        "--required-write-scope",
+        "src, tests",
+        "--capability-binding-ref",
+        "bind-1",
+        "--note",
+        "a note",
+        "--goal-bound",
+        "--verify",
+        "exit 0",
+        "--max-validation-attempts",
+        "2",
     ]);
     // Priority prefix retitles a default title but not a custom one.
-    cli_ok(&["todo", "add", "--goal", &gid, "--text", "plain P2", "--priority", "P2"]);
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "titled P0", "--priority", "P0", "--title",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "plain P2",
+        "--priority",
+        "P2",
+    ]);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "titled P0",
+        "--priority",
+        "P0",
+        "--title",
         "Custom Title",
     ]);
     // Bogus priority falls back to P1.
-    cli_ok(&["todo", "add", "--goal", &gid, "--text", "odd priority", "--priority", "P9"]);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "odd priority",
+        "--priority",
+        "P9",
+    ]);
     // Defer paths: numeric --resume-when, textual --resume-when, --defer-secs.
-    cli_ok(&["todo", "add", "--goal", &gid, "--text", "deferred num", "--resume-when", "30"]);
-    cli_ok(&["todo", "add", "--goal", &gid, "--text", "deferred text", "--resume-when", "later"]);
-    cli_ok(&["todo", "add", "--goal", &gid, "--text", "deferred secs", "--defer-secs", "5"]);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "deferred num",
+        "--resume-when",
+        "30",
+    ]);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "deferred text",
+        "--resume-when",
+        "later",
+    ]);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "deferred secs",
+        "--defer-secs",
+        "5",
+    ]);
     // --max-validation-attempts clamps to >= 1.
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "clamped", "--max-validation-attempts", "0",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "clamped",
+        "--max-validation-attempts",
+        "0",
     ]);
     // --blocks on an advancement todo (dependency chain applies to all classes).
-    cli_ok(&["todo", "add", "--goal", &gid, "--text", "chained", "--blocks", "a,b"]);
+    cli_ok(&[
+        "todo", "add", "--goal", &gid, "--text", "chained", "--blocks", "a,b",
+    ]);
     // global-gate user_gate forces goal_bound.
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "global gate", "--class", "user_gate",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "global gate",
+        "--class",
+        "user_gate",
         "--global-gate",
     ]);
     // Bad cadence string: no resume derivation (stays monitor default).
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "bad cadence", "--class", "monitor",
-        "--cadence", "whenever",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "bad cadence",
+        "--class",
+        "monitor",
+        "--cadence",
+        "whenever",
     ]);
 
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
-    let sink = g.todos.iter().find(|t| t.text.contains("kitchen sink")).unwrap();
+    let sink = g
+        .todos
+        .iter()
+        .find(|t| t.text.contains("kitchen sink"))
+        .unwrap();
     assert_eq!(sink.priority, future_loop::state::Priority::P0);
     assert!(sink.text.starts_with("[P0] "), "{}", sink.text);
     assert_eq!(sink.title, "Sink", "custom title is kept");
@@ -153,19 +326,38 @@ fn todo_add_flag_matrix() {
     assert_eq!(sink.required_capability.as_deref(), Some("shell"));
     assert_eq!(sink.task_repository.as_deref(), Some("repo-1"));
     assert_eq!(sink.continuation_policy.as_deref(), Some("resume"));
-    assert_eq!(sink.required_write_scope, vec!["src".to_string(), "tests".to_string()]);
+    assert_eq!(
+        sink.required_write_scope,
+        vec!["src".to_string(), "tests".to_string()]
+    );
     assert_eq!(sink.capability_binding_ref.as_deref(), Some("bind-1"));
     assert_eq!(sink.note.as_deref(), Some("a note"));
     assert!(sink.goal_bound);
     assert_eq!(sink.validator.as_deref(), Some("exit 0"));
     assert_eq!(sink.max_validation_attempts, 2);
 
-    let plain = g.todos.iter().find(|t| t.text.contains("plain P2")).unwrap();
+    let plain = g
+        .todos
+        .iter()
+        .find(|t| t.text.contains("plain P2"))
+        .unwrap();
     assert!(plain.text.starts_with("[P2] "), "{}", plain.text);
-    assert!(plain.title.starts_with("[P2] "), "default title retitled: {}", plain.title);
-    let titled = g.todos.iter().find(|t| t.text.contains("titled P0")).unwrap();
+    assert!(
+        plain.title.starts_with("[P2] "),
+        "default title retitled: {}",
+        plain.title
+    );
+    let titled = g
+        .todos
+        .iter()
+        .find(|t| t.text.contains("titled P0"))
+        .unwrap();
     assert_eq!(titled.title, "Custom Title");
-    let odd = g.todos.iter().find(|t| t.text.contains("odd priority")).unwrap();
+    let odd = g
+        .todos
+        .iter()
+        .find(|t| t.text.contains("odd priority"))
+        .unwrap();
     assert_eq!(odd.priority, future_loop::state::Priority::P1);
     for needle in ["deferred num", "deferred text", "deferred secs"] {
         let t = g.todos.iter().find(|t| t.text.contains(needle)).unwrap();
@@ -176,8 +368,15 @@ fn todo_add_flag_matrix() {
     assert_eq!(clamped.max_validation_attempts, 1);
     let chained = g.todos.iter().find(|t| t.text.contains("chained")).unwrap();
     assert_eq!(chained.blocked_by_gate.as_deref(), Some("a,b"));
-    let gg = g.todos.iter().find(|t| t.text.contains("global gate")).unwrap();
-    assert!(gg.global_gate && gg.goal_bound, "global gate implies goal_bound");
+    let gg = g
+        .todos
+        .iter()
+        .find(|t| t.text.contains("global gate"))
+        .unwrap();
+    assert!(
+        gg.global_gate && gg.goal_bound,
+        "global gate implies goal_bound"
+    );
 
     // Error paths.
     assert!(cli_err(&["todo", "add", "--text", "x"]).contains("--goal required"));
@@ -195,20 +394,69 @@ fn todo_claim_paths() {
     let gid = init_goal(&cr, "claim paths");
     let t = first_todo_id(&cr.root, &gid);
     // Unregistered agent is rejected.
-    let err = cli_err(&["todo", "claim", "--goal", &gid, "--todo-id", &t, "--agent-id", "ghost"]);
+    let err = cli_err(&[
+        "todo",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "ghost",
+    ]);
     assert!(err.contains("not registered"), "{err}");
     cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w1"]);
     cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w2"]);
-    cli_ok(&["todo", "claim", "--goal", &gid, "--todo-id", &t, "--agent-id", "w1", "--lease-secs", "120"]);
+    cli_ok(&[
+        "todo",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w1",
+        "--lease-secs",
+        "120",
+    ]);
     // Same-agent re-claim is idempotent (renew)…
-    cli_ok(&["todo", "claim", "--goal", &gid, "--todo-id", &t, "--agent-id", "w1"]);
+    cli_ok(&[
+        "todo",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w1",
+    ]);
     // …but a DIFFERENT agent cannot take a live lease.
-    assert!(cli_err(&["todo", "claim", "--goal", &gid, "--todo-id", &t, "--agent-id", "w2"])
-        .contains("cannot be claimed"));
+    assert!(cli_err(&[
+        "todo",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w2"
+    ])
+    .contains("cannot be claimed"));
     // Missing todo / goal.
-    assert!(cli_err(&["todo", "claim", "--goal", &gid, "--todo-id", "todo_nope", "--agent-id", "w1"])
-        .contains("cannot be claimed"));
-    assert!(cli_err(&["todo", "claim", "--goal", "goal_nope", "--todo-id", &t]).contains("not found"));
+    assert!(cli_err(&[
+        "todo",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        "todo_nope",
+        "--agent-id",
+        "w1"
+    ])
+    .contains("cannot be claimed"));
+    assert!(
+        cli_err(&["todo", "claim", "--goal", "goal_nope", "--todo-id", &t]).contains("not found")
+    );
     assert!(cli_err(&["todo", "claim", "--goal", &gid]).contains("--todo-id required"));
     assert!(cli_err(&["todo", "claim"]).contains("--goal required"));
 }
@@ -219,13 +467,23 @@ fn todo_complete_contract() {
     let gid = init_goal(&cr, "complete contract");
     let first = first_todo_id(&cr.root, &gid);
     // Silent completion is rejected.
-    assert!(cli_err(&["todo", "complete", "--goal", &gid, "--todo-id", &first])
-        .contains("--no-follow-up or --successor"));
+    assert!(
+        cli_err(&["todo", "complete", "--goal", &gid, "--todo-id", &first])
+            .contains("--no-follow-up or --successor")
+    );
     // Completion with a successor.
     let s = add_todo(&cr, &gid, "successor task");
     cli_ok(&[
-        "todo", "complete", "--goal", &gid, "--todo-id", &first, "--successor", &s,
-        "--evidence", "did the thing",
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--successor",
+        &s,
+        "--evidence",
+        "did the thing",
     ]);
     {
         let store = open_store(&cr);
@@ -237,23 +495,74 @@ fn todo_complete_contract() {
     }
     // Gate freeze: an open user gate blocks completing other todos.
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "approval", "--class", "user_gate",
-        "--gate-question", "ok?",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "approval",
+        "--class",
+        "user_gate",
+        "--gate-question",
+        "ok?",
     ]);
-    let err = cli_err(&["todo", "complete", "--goal", &gid, "--todo-id", &s, "--no-follow-up"]);
+    let err = cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &s,
+        "--no-follow-up",
+    ]);
     assert!(err.contains("open gate"), "{err}");
     // Resolve the gate, then completion succeeds (a gate's text IS the
     // question — Todo::user_gate takes the question as the todo text).
     let gate = todo_id_by_text(&cr.root, &gid, "ok?");
-    cli_ok(&["gate", "resolve", "--goal", &gid, "--todo-id", &gate, "--decision", "approved", "--note", "stamp"]);
-    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &s, "--no-follow-up"]);
+    cli_ok(&[
+        "gate",
+        "resolve",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &gate,
+        "--decision",
+        "approved",
+        "--note",
+        "stamp",
+    ]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &s,
+        "--no-follow-up",
+    ]);
     // Unknown todo / goal.
-    assert!(cli_err(&["todo", "complete", "--goal", &gid, "--todo-id", "todo_nope", "--no-follow-up"])
-        .contains("not found"));
+    assert!(cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        "todo_nope",
+        "--no-follow-up"
+    ])
+    .contains("not found"));
     assert!(cli_err(&["todo", "complete", "--todo-id", &s]).contains("--goal required"));
     assert!(cli_err(&["todo", "complete", "--goal", &gid]).contains("--todo-id required"));
-    assert!(cli_err(&["todo", "complete", "--goal", "goal_nope", "--todo-id", &s, "--no-follow-up"])
-        .contains("not found"));
+    assert!(cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        "goal_nope",
+        "--todo-id",
+        &s,
+        "--no-follow-up"
+    ])
+    .contains("not found"));
 }
 
 #[test]
@@ -261,17 +570,42 @@ fn todo_complete_gate_class_bypasses_freeze() {
     let cr = cli_root();
     let gid = init_goal(&cr, "gate class complete");
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "gate A", "--class", "user_gate",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "gate A",
+        "--class",
+        "user_gate",
     ]);
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "gate B", "--class", "user_gate",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "gate B",
+        "--class",
+        "user_gate",
     ]);
     let a = todo_id_by_text(&cr.root, &gid, "gate A");
     // Completing a GATE-class todo is allowed even while another gate is open.
-    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &a, "--no-follow-up"]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &a,
+        "--no-follow-up",
+    ]);
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
-    assert_eq!(g.todos.iter().find(|t| t.id == a).unwrap().status, TodoStatus::Done);
+    assert_eq!(
+        g.todos.iter().find(|t| t.id == a).unwrap().status,
+        TodoStatus::Done
+    );
 }
 
 // ── todo archive / supersede / update ──────────────────────────────────────
@@ -284,10 +618,27 @@ fn todo_archive_supersede_update() {
     cli_ok(&["todo", "archive", "--goal", &gid, "--todo-id", &victim]);
     assert!(cli_err(&["todo", "archive", "--goal", &gid]).contains("--todo-id required"));
     assert!(cli_err(&["todo", "archive", "--todo-id", &victim]).contains("--goal required"));
-    assert!(cli_err(&["todo", "archive", "--goal", "goal_nope", "--todo-id", &victim]).contains("not found"));
+    assert!(cli_err(&[
+        "todo",
+        "archive",
+        "--goal",
+        "goal_nope",
+        "--todo-id",
+        &victim
+    ])
+    .contains("not found"));
 
     let sup = add_todo(&cr, &gid, "supersede me");
-    cli_ok(&["todo", "supersede", "--goal", &gid, "--todo-id", &sup, "--reason", "obsolete"]);
+    cli_ok(&[
+        "todo",
+        "supersede",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &sup,
+        "--reason",
+        "obsolete",
+    ]);
     {
         let store = open_store(&cr);
         let g = store.replay(&gid).unwrap().unwrap();
@@ -296,18 +647,54 @@ fn todo_archive_supersede_update() {
             TodoStatus::Superseded
         );
     }
-    assert!(cli_err(&["todo", "supersede", "--goal", &gid, "--todo-id", "todo_nope"]).contains("not found"));
+    assert!(cli_err(&[
+        "todo",
+        "supersede",
+        "--goal",
+        &gid,
+        "--todo-id",
+        "todo_nope"
+    ])
+    .contains("not found"));
     // Supersede a done todo is rejected.
     let done = add_todo(&cr, &gid, "done one");
-    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &done, "--no-follow-up"]);
-    assert!(cli_err(&["todo", "supersede", "--goal", &gid, "--todo-id", &done]).contains("already done"));
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &done,
+        "--no-follow-up",
+    ]);
+    assert!(
+        cli_err(&["todo", "supersede", "--goal", &gid, "--todo-id", &done])
+            .contains("already done")
+    );
 
     // update: full field set.
     let u = add_todo(&cr, &gid, "update me");
     cli_ok(&[
-        "todo", "update", "--goal", &gid, "--todo-id", &u, "--text", "updated text",
-        "--status", "blocked", "--evidence", "half done", "--note", "n", "--priority", "P0",
-        "--resume-when", "45", "--blocks", "x,y",
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &u,
+        "--text",
+        "updated text",
+        "--status",
+        "blocked",
+        "--evidence",
+        "half done",
+        "--note",
+        "n",
+        "--priority",
+        "P0",
+        "--resume-when",
+        "45",
+        "--blocks",
+        "x,y",
     ]);
     {
         let store = open_store(&cr);
@@ -318,12 +705,42 @@ fn todo_archive_supersede_update() {
         assert_eq!(t.note.as_deref(), Some("n"));
         assert_eq!(t.priority, future_loop::state::Priority::P0);
         assert_eq!(t.blocked_by_gate.as_deref(), Some("x,y"));
-        assert!(t.resume_when.is_some(), "numeric resume-when sets a real deadline");
+        assert!(
+            t.resume_when.is_some(),
+            "numeric resume-when sets a real deadline"
+        );
     }
     // Clear blocks, textual resume-when, unknown status ignored.
-    cli_ok(&["todo", "update", "--goal", &gid, "--todo-id", &u, "--blocks", ""]);
-    cli_ok(&["todo", "update", "--goal", &gid, "--todo-id", &u, "--resume-when", "when ready"]);
-    cli_ok(&["todo", "update", "--goal", &gid, "--todo-id", &u, "--status", "bogus"]);
+    cli_ok(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &u,
+        "--blocks",
+        "",
+    ]);
+    cli_ok(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &u,
+        "--resume-when",
+        "when ready",
+    ]);
+    cli_ok(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &u,
+        "--status",
+        "bogus",
+    ]);
     {
         let store = open_store(&cr);
         let g = store.replay(&gid).unwrap().unwrap();
@@ -332,12 +749,35 @@ fn todo_archive_supersede_update() {
         assert_eq!(t.resume_when_text.as_deref(), Some("when ready"));
     }
     // --status done is rejected; unknown flags hard-error.
-    assert!(cli_err(&["todo", "update", "--goal", &gid, "--todo-id", &u, "--status", "done"])
-        .contains("not allowed"));
-    assert!(cli_err(&["todo", "update", "--goal", &gid, "--todo-id", &u, "--frobnicate", "1"])
-        .contains("unknown flag"));
-    assert!(cli_err(&["todo", "update", "--goal", &gid, "--todo-id", "todo_nope"]).contains("not found"));
-    assert!(cli_err(&["todo", "update", "--goal", "goal_nope", "--todo-id", &u]).contains("not found"));
+    assert!(cli_err(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &u,
+        "--status",
+        "done"
+    ])
+    .contains("not allowed"));
+    assert!(cli_err(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &u,
+        "--frobnicate",
+        "1"
+    ])
+    .contains("unknown flag"));
+    assert!(
+        cli_err(&["todo", "update", "--goal", &gid, "--todo-id", "todo_nope"])
+            .contains("not found")
+    );
+    assert!(
+        cli_err(&["todo", "update", "--goal", "goal_nope", "--todo-id", &u]).contains("not found")
+    );
     assert!(cli_err(&["todo", "update", "--goal", &gid]).contains("--todo-id required"));
 }
 
@@ -349,12 +789,33 @@ fn gate_resolve_errors() {
     let gid = init_goal(&cr, "gate errors");
     assert!(cli_err(&["gate", "resolve", "--goal", &gid]).contains("--todo-id required"));
     assert!(cli_err(&["gate", "resolve", "--todo-id", "t"]).contains("--goal required"));
-    assert!(cli_err(&["gate", "resolve", "--goal", &gid, "--todo-id", "t"]).contains("--decision required"));
-    assert!(cli_err(&["gate", "resolve", "--goal", "goal_nope", "--todo-id", "t", "--decision", "x"])
-        .contains("not found"));
+    assert!(
+        cli_err(&["gate", "resolve", "--goal", &gid, "--todo-id", "t"])
+            .contains("--decision required")
+    );
+    assert!(cli_err(&[
+        "gate",
+        "resolve",
+        "--goal",
+        "goal_nope",
+        "--todo-id",
+        "t",
+        "--decision",
+        "x"
+    ])
+    .contains("not found"));
     // Resolving a non-gate todo still records the decision (no class check).
     let first = first_todo_id(&cr.root, &gid);
-    cli_ok(&["gate", "resolve", "--goal", &gid, "--todo-id", &first, "--decision", "fine"]);
+    cli_ok(&[
+        "gate",
+        "resolve",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--decision",
+        "fine",
+    ]);
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
     let t = g.todos.iter().find(|t| t.id == first).unwrap();
@@ -373,34 +834,125 @@ fn lease_lifecycle() {
     // status on a free todo.
     cli_ok(&["lease", "status", "--goal", &gid, "--todo-id", &t]);
     // claim / renew / release / expire.
-    cli_ok(&["lease", "claim", "--goal", &gid, "--todo-id", &t, "--agent-id", "w1", "--lease-secs", "60"]);
+    cli_ok(&[
+        "lease",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w1",
+        "--lease-secs",
+        "60",
+    ]);
     cli_ok(&["lease", "status", "--goal", &gid, "--todo-id", &t]);
-    cli_ok(&["lease", "renew", "--goal", &gid, "--todo-id", &t, "--agent-id", "w1", "--lease-secs", "120"]);
-    cli_ok(&["lease", "release", "--goal", &gid, "--todo-id", &t, "--agent-id", "w1"]);
+    cli_ok(&[
+        "lease",
+        "renew",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w1",
+        "--lease-secs",
+        "120",
+    ]);
+    cli_ok(&[
+        "lease",
+        "release",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w1",
+    ]);
     // release again → missing-lease path (no event, still ok).
-    cli_ok(&["lease", "release", "--goal", &gid, "--todo-id", &t, "--agent-id", "w1"]);
+    cli_ok(&[
+        "lease",
+        "release",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w1",
+    ]);
     // expire with no lease → had_lease=false path.
     cli_ok(&["lease", "expire", "--goal", &gid, "--todo-id", &t]);
     // Minimum TTL is 1s (0 normalizes to the 45min default); lease timestamps
     // have epoch-second resolution, so cross the boundary with a real sleep.
-    cli_ok(&["lease", "claim", "--goal", &gid, "--todo-id", &t, "--agent-id", "w1", "--lease-secs", "1"]);
+    cli_ok(&[
+        "lease",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w1",
+        "--lease-secs",
+        "1",
+    ]);
     std::thread::sleep(std::time::Duration::from_millis(1200));
     // status now reports EXPIRED; expire records the event (had_lease=true).
     cli_ok(&["lease", "status", "--goal", &gid, "--todo-id", &t]);
     cli_ok(&["lease", "expire", "--goal", &gid, "--todo-id", &t]);
     // Steal path: w2 claims, lease lapses, w3 takes it (TodoExpired+TodoClaimed).
-    cli_ok(&["lease", "claim", "--goal", &gid, "--todo-id", &t, "--agent-id", "w2", "--lease-secs", "1"]);
+    cli_ok(&[
+        "lease",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w2",
+        "--lease-secs",
+        "1",
+    ]);
     std::thread::sleep(std::time::Duration::from_millis(1200));
-    cli_ok(&["lease", "claim", "--goal", &gid, "--todo-id", &t, "--agent-id", "w3", "--lease-secs", "30"]);
+    cli_ok(&[
+        "lease",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w3",
+        "--lease-secs",
+        "30",
+    ]);
     // renew by the non-owner errors.
-    assert!(cli(&["lease", "renew", "--goal", &gid, "--todo-id", &t, "--agent-id", "w1"]).is_err());
+    assert!(cli(&[
+        "lease",
+        "renew",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w1"
+    ])
+    .is_err());
     // Errors.
     assert!(cli_err(&["lease"]).contains("subcommand"));
     assert!(cli_err(&["lease", "claim", "--goal", &gid]).contains("--todo-id required"));
     assert!(cli_err(&["lease", "claim", "--todo-id", &t]).contains("--goal required"));
-    assert!(cli_err(&["lease", "claim", "--goal", "goal_nope", "--todo-id", &t]).contains("not found"));
-    assert!(cli_err(&["lease", "status", "--goal", &gid, "--todo-id", "todo_nope"]).contains("not found"));
-    assert!(cli_err(&["lease", "frobnicate", "--goal", &gid, "--todo-id", &t]).contains("claim|renew|release|expire|status"));
+    assert!(
+        cli_err(&["lease", "claim", "--goal", "goal_nope", "--todo-id", &t]).contains("not found")
+    );
+    assert!(
+        cli_err(&["lease", "status", "--goal", &gid, "--todo-id", "todo_nope"])
+            .contains("not found")
+    );
+    assert!(
+        cli_err(&["lease", "frobnicate", "--goal", &gid, "--todo-id", &t])
+            .contains("claim|renew|release|expire|status")
+    );
 }
 
 // ── agent register / onboard / list ────────────────────────────────────────
@@ -412,18 +964,61 @@ fn agent_registry_surface() {
     // list with no agents.
     cli_ok(&["agent", "list", "--goal", &gid]);
     cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w1"]);
-    cli_ok(&["agent", "onboard", "--goal", &gid, "--agent-id", "w2", "--capability", "shell,github"]);
-    cli_ok(&["agent", "onboard", "--goal", &gid, "--agent-id", "w3", "--capabilities", "web"]);
+    cli_ok(&[
+        "agent",
+        "onboard",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "w2",
+        "--capability",
+        "shell,github",
+    ]);
+    cli_ok(&[
+        "agent",
+        "onboard",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "w3",
+        "--capabilities",
+        "web",
+    ]);
     // w1 holds a live lease → running row in `agent list`.
     let t = first_todo_id(&cr.root, &gid);
-    cli_ok(&["todo", "claim", "--goal", &gid, "--todo-id", &t, "--agent-id", "w1"]);
+    cli_ok(&[
+        "todo",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--agent-id",
+        "w1",
+    ]);
     cli_ok(&["agent", "list", "--goal", &gid]);
     // Errors.
     assert!(cli_err(&["agent", "register", "--goal", &gid]).contains("--agent-id required"));
     assert!(cli_err(&["agent", "register", "--agent-id", "w1"]).contains("--goal required"));
-    assert!(cli_err(&["agent", "register", "--goal", "goal_nope", "--agent-id", "w1"]).contains("not found"));
+    assert!(cli_err(&[
+        "agent",
+        "register",
+        "--goal",
+        "goal_nope",
+        "--agent-id",
+        "w1"
+    ])
+    .contains("not found"));
     assert!(cli_err(&["agent", "onboard", "--goal", &gid]).contains("--agent-id required"));
-    assert!(cli_err(&["agent", "onboard", "--goal", "goal_nope", "--agent-id", "w1"]).contains("not found"));
+    assert!(cli_err(&[
+        "agent",
+        "onboard",
+        "--goal",
+        "goal_nope",
+        "--agent-id",
+        "w1"
+    ])
+    .contains("not found"));
     assert!(cli_err(&["agent", "list"]).contains("--goal required"));
     assert!(cli_err(&["agent", "list", "--goal", "goal_nope"]).contains("not found"));
 }
@@ -444,7 +1039,14 @@ fn backup_create_list_restore() {
         cli_ok(&["backup", "--goal", &gid, "--restore", &backups[0]]);
     }
     assert!(cli_err(&["backup"]).contains("--goal required"));
-    assert!(cli_err(&["backup", "--goal", &gid, "--restore", "/nonexistent-dir-xyz"]).contains(""));
+    assert!(cli_err(&[
+        "backup",
+        "--goal",
+        &gid,
+        "--restore",
+        "/nonexistent-dir-xyz"
+    ])
+    .contains(""));
 }
 
 // ── authority / profile ────────────────────────────────────────────────────
@@ -454,13 +1056,21 @@ fn authority_and_profile() {
     let cr = cli_root();
     let gid = init_goal(&cr, "authority");
     cli_ok(&[
-        "authority", "--goal", &gid, "--write-scope", "src,docs", "--require-approval",
+        "authority",
+        "--goal",
+        &gid,
+        "--write-scope",
+        "src,docs",
+        "--require-approval",
         "publish,deploy",
     ]);
     {
         let store = open_store(&cr);
         let g = store.replay(&gid).unwrap().unwrap();
-        assert_eq!(g.authority.write_scope, vec!["src".to_string(), "docs".to_string()]);
+        assert_eq!(
+            g.authority.write_scope,
+            vec!["src".to_string(), "docs".to_string()]
+        );
         assert_eq!(
             g.authority.requires_approval,
             vec!["publish".to_string(), "deploy".to_string()]
@@ -475,7 +1085,9 @@ fn authority_and_profile() {
         let g = store.replay(&gid).unwrap().unwrap();
         assert_eq!(g.execution_profile.outcome_floor_streak_threshold, 3);
     }
-    assert!(cli_err(&["profile", "set", "--goal", &gid, "--outcome-floor", "x"]).contains("number"));
+    assert!(
+        cli_err(&["profile", "set", "--goal", &gid, "--outcome-floor", "x"]).contains("number")
+    );
     assert!(cli_err(&["profile", "bogus", "--goal", &gid]).contains("must be `set`"));
     assert!(cli_err(&["profile", "set"]).contains("--goal required"));
     assert!(cli_err(&["profile", "set", "--goal", "goal_nope"]).contains("not found"));
@@ -514,13 +1126,28 @@ fn replan_ack_and_obligations() {
     }
     cli_ok(&["replan", "obligations", "--goal", &gid]);
     // ack variants.
-    cli_ok(&["replan", "ack", "--goal", &gid, "--delta-kind", "vision_patch"]);
+    cli_ok(&[
+        "replan",
+        "ack",
+        "--goal",
+        &gid,
+        "--delta-kind",
+        "vision_patch",
+    ]);
     assert!(cli_err(&["replan", "ack", "--goal", &gid]).contains("--delta-kind"));
-    assert!(cli_err(&["replan", "ack", "--goal", &gid, "--delta-kind", "nope"])
-        .contains("frontier"));
+    assert!(
+        cli_err(&["replan", "ack", "--goal", &gid, "--delta-kind", "nope"]).contains("frontier")
+    );
     assert!(cli_err(&["replan", "ack"]).contains("--goal required"));
-    assert!(cli_err(&["replan", "ack", "--goal", "goal_nope", "--delta-kind", "vision_patch"])
-        .contains("not found"));
+    assert!(cli_err(&[
+        "replan",
+        "ack",
+        "--goal",
+        "goal_nope",
+        "--delta-kind",
+        "vision_patch"
+    ])
+    .contains("not found"));
     assert!(cli_err(&["replan", "obligations"]).contains("--goal required"));
     assert!(cli_err(&["replan", "obligations", "--goal", "goal_nope"]).contains("not found"));
 }

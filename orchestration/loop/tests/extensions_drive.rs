@@ -9,7 +9,9 @@ use future_loop::extensions::manifest::{
     load_extension_manifest, require_compatible_future_loop_api, validate_manifest_value,
     validate_protocol_token, ExtensionManifest, EXTENSION_MANIFEST_SCHEMA_VERSION,
 };
-use future_loop::extensions::readiness::{extension_doctor, resolve_runtime_entrypoint, DoctorStatus};
+use future_loop::extensions::readiness::{
+    extension_doctor, resolve_runtime_entrypoint, DoctorStatus,
+};
 use future_loop::extensions::runtime::{
     disable_extension, enable_extension, extension_catalog_entries, extension_status,
     install_extension, manifest_revision, rollback_extension,
@@ -17,7 +19,9 @@ use future_loop::extensions::runtime::{
 
 static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn manifest_json(overrides: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) -> serde_json::Value {
+fn manifest_json(
+    overrides: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) -> serde_json::Value {
     let raw = serde_json::json!({
         "schema_version": EXTENSION_MANIFEST_SCHEMA_VERSION,
         "id": "ext-x",
@@ -52,35 +56,64 @@ fn manifest_top_level_errors() {
     // Not an object.
     assert!(validate_manifest_value(&serde_json::json!([]), "t").is_err());
     // Bad / legacy schema.
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.insert("schema_version".into(), "nope".into());
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m.insert("schema_version".into(), "nope".into());
+        }),
+        "t"
+    )
     .is_err());
-    validate_manifest_value(&manifest_json(|m| {
-        m.insert("schema_version".into(), "loopx_extension_manifest_v0".into());
-    }), "t")
+    validate_manifest_value(
+        &manifest_json(|m| {
+            m.insert(
+                "schema_version".into(),
+                "loopx_extension_manifest_v0".into(),
+            );
+        }),
+        "t",
+    )
     .unwrap();
     // Missing required strings.
-    for key in ["schema_version", "id", "version", "requires_future_loop_api"] {
-        assert!(validate_manifest_value(&manifest_json(|m| {
-            m.remove(key);
-        }), "t")
-        .is_err(), "{key}");
+    for key in [
+        "schema_version",
+        "id",
+        "version",
+        "requires_future_loop_api",
+    ] {
+        assert!(
+            validate_manifest_value(
+                &manifest_json(|m| {
+                    m.remove(key);
+                }),
+                "t"
+            )
+            .is_err(),
+            "{key}"
+        );
     }
     // permissions not an array / non-string items.
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.insert("permissions".into(), "shell".into());
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m.insert("permissions".into(), "shell".into());
+        }),
+        "t"
+    )
     .is_err());
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.insert("permissions".into(), serde_json::json!(["shell", 7]));
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m.insert("permissions".into(), serde_json::json!(["shell", 7]));
+        }),
+        "t"
+    )
     .is_err());
     // Empty manifest (no runtime/provides/implements) → error.
-    assert!(validate_manifest_value(&serde_json::json!({
-        "schema_version": EXTENSION_MANIFEST_SCHEMA_VERSION,
-        "id": "e", "version": "1", "requires_future_loop_api": ">=1",
-    }), "t")
+    assert!(validate_manifest_value(
+        &serde_json::json!({
+            "schema_version": EXTENSION_MANIFEST_SCHEMA_VERSION,
+            "id": "e", "version": "1", "requires_future_loop_api": ">=1",
+        }),
+        "t"
+    )
     .is_err());
 }
 
@@ -88,40 +121,71 @@ fn manifest_top_level_errors() {
 fn manifest_runtime_errors() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Bad protocol token.
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m["runtime"].as_object_mut().unwrap().insert("protocol".into(), "NOPE".into());
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m["runtime"]
+                .as_object_mut()
+                .unwrap()
+                .insert("protocol".into(), "NOPE".into());
+        }),
+        "t"
+    )
     .is_err());
     // Both entrypoint and python_module.
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m["runtime"].as_object_mut().unwrap().insert("python_module".into(), "mod".into());
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m["runtime"]
+                .as_object_mut()
+                .unwrap()
+                .insert("python_module".into(), "mod".into());
+        }),
+        "t"
+    )
     .is_err());
     // Neither entrypoint nor python_module.
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m["runtime"].as_object_mut().unwrap().remove("entrypoint");
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m["runtime"].as_object_mut().unwrap().remove("entrypoint");
+        }),
+        "t"
+    )
     .is_err());
     // python_module-only runtime is valid.
-    validate_manifest_value(&manifest_json(|m| {
-        let rt = m["runtime"].as_object_mut().unwrap();
-        rt.remove("entrypoint");
-        rt.insert("python_module".into(), "ext_mod".into());
-    }), "t")
+    validate_manifest_value(
+        &manifest_json(|m| {
+            let rt = m["runtime"].as_object_mut().unwrap();
+            rt.remove("entrypoint");
+            rt.insert("python_module".into(), "ext_mod".into());
+        }),
+        "t",
+    )
     .unwrap();
     // Undeclared required_permissions.
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m["runtime"].as_object_mut().unwrap()
-            .insert("required_permissions".into(), serde_json::json!(["shell", "net"]));
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m["runtime"].as_object_mut().unwrap().insert(
+                "required_permissions".into(),
+                serde_json::json!(["shell", "net"]),
+            );
+        }),
+        "t"
+    )
     .is_err());
     // timeout out of range.
     for t in [0, 121] {
-        assert!(validate_manifest_value(&manifest_json(|m| {
-            m["runtime"].as_object_mut().unwrap()
-                .insert("timeout_seconds".into(), serde_json::json!(t));
-        }), "t")
-        .is_err(), "{t}");
+        assert!(
+            validate_manifest_value(
+                &manifest_json(|m| {
+                    m["runtime"]
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("timeout_seconds".into(), serde_json::json!(t));
+                }),
+                "t"
+            )
+            .is_err(),
+            "{t}"
+        );
     }
 }
 
@@ -129,41 +193,83 @@ fn manifest_runtime_errors() {
 fn manifest_provides_implements_errors() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // provides not an array / item not an object / missing fields.
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.insert("provides".into(), "x".into());
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m.insert("provides".into(), "x".into());
+        }),
+        "t"
+    )
     .is_err());
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.insert("provides".into(), serde_json::json!(["x"]));
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m.insert("provides".into(), serde_json::json!(["x"]));
+        }),
+        "t"
+    )
     .is_err());
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.insert("provides".into(), serde_json::json!([{"kind": "domain_rule"}]));
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m.insert(
+                "provides".into(),
+                serde_json::json!([{"kind": "domain_rule"}]),
+            );
+        }),
+        "t"
+    )
     .is_err());
     // implements: not array / item not object / bad protocol / no runtime /
     // protocol mismatch.
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.insert("implements".into(), "x".into());
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m.insert("implements".into(), "x".into());
+        }),
+        "t"
+    )
     .is_err());
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.insert("implements".into(), serde_json::json!(["x"]));
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m.insert("implements".into(), serde_json::json!(["x"]));
+        }),
+        "t"
+    )
     .is_err());
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.insert("implements".into(), serde_json::json!([{"capability_id": "c", "protocol": "BAD"}]));
-    }), "t")
+    assert!(validate_manifest_value(
+        &manifest_json(|m| {
+            m.insert(
+                "implements".into(),
+                serde_json::json!([{"capability_id": "c", "protocol": "BAD"}]),
+            );
+        }),
+        "t"
+    )
     .is_err());
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.remove("runtime");
-        m.insert("implements".into(), serde_json::json!([{"capability_id": "c", "protocol": "command_json_v0"}]));
-    }), "t")
-    .is_err(), "implements without runtime");
-    assert!(validate_manifest_value(&manifest_json(|m| {
-        m.insert("implements".into(), serde_json::json!([{"capability_id": "c", "protocol": "other_proto_v1"}]));
-    }), "t")
-    .is_err(), "protocol mismatch");
+    assert!(
+        validate_manifest_value(
+            &manifest_json(|m| {
+                m.remove("runtime");
+                m.insert(
+                    "implements".into(),
+                    serde_json::json!([{"capability_id": "c", "protocol": "command_json_v0"}]),
+                );
+            }),
+            "t"
+        )
+        .is_err(),
+        "implements without runtime"
+    );
+    assert!(
+        validate_manifest_value(
+            &manifest_json(|m| {
+                m.insert(
+                    "implements".into(),
+                    serde_json::json!([{"capability_id": "c", "protocol": "other_proto_v1"}]),
+                );
+            }),
+            "t"
+        )
+        .is_err(),
+        "protocol mismatch"
+    );
     // load_extension_manifest: unreadable + invalid JSON.
     assert!(load_extension_manifest(std::path::Path::new("/nonexistent.json")).is_err());
     let dir = tempfile::tempdir().unwrap();
@@ -194,7 +300,10 @@ fn api_version_clause_matrix() {
     assert!(require_compatible_future_loop_api(">=1,<3").is_ok());
     assert!(require_compatible_future_loop_api("<=1").is_ok());
     assert!(require_compatible_future_loop_api("==1").is_ok());
-    assert!(require_compatible_future_loop_api("1").is_ok(), "bare number means ==");
+    assert!(
+        require_compatible_future_loop_api("1").is_ok(),
+        "bare number means =="
+    );
     assert!(require_compatible_future_loop_api(">0").is_ok());
     assert!(require_compatible_future_loop_api("<2").is_ok());
     assert!(require_compatible_future_loop_api(">=2").is_err());
@@ -220,49 +329,69 @@ fn readiness_branches() {
     };
     assert_eq!(report.status, expected);
     // Missing entrypoint → entrypoint_missing (both doctor-args arms).
-    let missing = validate_manifest_value(&manifest_json(|m| {
-        m["runtime"].as_object_mut().unwrap()
-            .insert("entrypoint".into(), "definitely-not-a-real-cmd-xyz".into());
-    }), "t")
+    let missing = validate_manifest_value(
+        &manifest_json(|m| {
+            m["runtime"]
+                .as_object_mut()
+                .unwrap()
+                .insert("entrypoint".into(), "definitely-not-a-real-cmd-xyz".into());
+        }),
+        "t",
+    )
     .unwrap();
-    assert_eq!(extension_doctor(&missing).status, DoctorStatus::EntrypointMissing.label());
-    let missing_with_doctor_args = validate_manifest_value(&manifest_json(|m| {
-        let rt = m["runtime"].as_object_mut().unwrap();
-        rt.insert("entrypoint".into(), "definitely-not-a-real-cmd-xyz".into());
-        rt.insert("doctor_args".into(), serde_json::json!(["--check"]));
-    }), "t")
+    assert_eq!(
+        extension_doctor(&missing).status,
+        DoctorStatus::EntrypointMissing.label()
+    );
+    let missing_with_doctor_args = validate_manifest_value(
+        &manifest_json(|m| {
+            let rt = m["runtime"].as_object_mut().unwrap();
+            rt.insert("entrypoint".into(), "definitely-not-a-real-cmd-xyz".into());
+            rt.insert("doctor_args".into(), serde_json::json!(["--check"]));
+        }),
+        "t",
+    )
     .unwrap();
     assert_eq!(
         extension_doctor(&missing_with_doctor_args).status,
         DoctorStatus::EntrypointMissing.label()
     );
     // resolve_runtime_entrypoint: absolute-path fallback and None arm.
-    let abs = validate_manifest_value(&manifest_json(|m| {
-        m["runtime"].as_object_mut().unwrap().insert(
-            "entrypoint".into(),
-            if cfg!(unix) { "/bin/sh" } else { "sh" }.into(),
-        );
-    }), "t")
+    let abs = validate_manifest_value(
+        &manifest_json(|m| {
+            m["runtime"].as_object_mut().unwrap().insert(
+                "entrypoint".into(),
+                if cfg!(unix) { "/bin/sh" } else { "sh" }.into(),
+            );
+        }),
+        "t",
+    )
     .unwrap();
     let resolved = resolve_runtime_entrypoint(abs.runtime.as_ref().unwrap());
     if cfg!(unix) {
         assert!(resolved.is_some());
     }
     // No runtime at all → None.
-    let no_rt = validate_manifest_value(&serde_json::json!({
-        "schema_version": EXTENSION_MANIFEST_SCHEMA_VERSION,
-        "id": "e", "version": "1", "requires_future_loop_api": ">=1",
-        "provides": [{"id": "c", "kind": "k"}],
-    }), "t")
+    let no_rt = validate_manifest_value(
+        &serde_json::json!({
+            "schema_version": EXTENSION_MANIFEST_SCHEMA_VERSION,
+            "id": "e", "version": "1", "requires_future_loop_api": ">=1",
+            "provides": [{"id": "c", "kind": "k"}],
+        }),
+        "t",
+    )
     .unwrap();
     assert!(no_rt.runtime.is_none());
     // python_module resolution (needs python3/python on PATH — whatever the
     // host has; both arms acceptable).
-    let py = validate_manifest_value(&manifest_json(|m| {
-        let rt = m["runtime"].as_object_mut().unwrap();
-        rt.remove("entrypoint");
-        rt.insert("python_module".into(), "ext_mod".into());
-    }), "t")
+    let py = validate_manifest_value(
+        &manifest_json(|m| {
+            let rt = m["runtime"].as_object_mut().unwrap();
+            rt.remove("entrypoint");
+            rt.insert("python_module".into(), "ext_mod".into());
+        }),
+        "t",
+    )
     .unwrap();
     let _ = resolve_runtime_entrypoint(py.runtime.as_ref().unwrap());
     // PATH removed entirely → which() returns None (process-global: locked).
@@ -298,9 +427,12 @@ fn runtime_lifecycle_errors() {
     // rollback with no prior upgrade → no rollback revision.
     assert!(rollback_extension("ext-x", &state_file, false).is_err());
     // Upgrade to a new revision, then rollback works (execute + dry-run).
-    let m2 = validate_manifest_value(&manifest_json(|mm| {
-        mm.insert("version".into(), "1.1.0".into());
-    }), "t")
+    let m2 = validate_manifest_value(
+        &manifest_json(|mm| {
+            mm.insert("version".into(), "1.1.0".into());
+        }),
+        "t",
+    )
     .unwrap();
     install_extension(&m2, &state_file, "upgrade", true).unwrap();
     rollback_extension("ext-x", &state_file, false).unwrap();
@@ -309,7 +441,11 @@ fn runtime_lifecycle_errors() {
     std::fs::write(&state_file, "{corrupt").unwrap();
     assert!(extension_status(&state_file, None).is_err());
     // Bad schema token in state.
-    std::fs::write(&state_file, "{\"schema_version\":\"nope\",\"extensions\":{}}").unwrap();
+    std::fs::write(
+        &state_file,
+        "{\"schema_version\":\"nope\",\"extensions\":{}}",
+    )
+    .unwrap();
     assert!(extension_status(&state_file, None).is_err());
     // status/catalog on a missing state file → empty.
     let missing = dir.path().join("absent.json");

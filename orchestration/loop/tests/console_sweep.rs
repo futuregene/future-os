@@ -44,7 +44,16 @@ fn unknown_flags_are_swallowed_everywhere() {
         vec!["store", "verify", "--goal", &gid, "--zz", "1"],
         vec!["store", "bridge", "--goal", &gid, "--zz", "1"],
         vec!["privacy", "--goal", &gid, "--zz", "1"],
-        vec!["lease", "status", "--goal", &gid, "--todo-id", &first, "--zz", "1"],
+        vec![
+            "lease",
+            "status",
+            "--goal",
+            &gid,
+            "--todo-id",
+            &first,
+            "--zz",
+            "1",
+        ],
         vec!["runs", "history", "--goal", &gid, "--zz", "1"],
         vec!["runs", "index", "--goal", &gid, "--zz", "1"],
         vec!["runs", "retention", "--goal", &gid, "--zz", "1"],
@@ -69,7 +78,15 @@ fn unknown_flags_are_swallowed_everywhere() {
         vec!["doctor", "--goal", &gid, "--zz", "1"],
         vec!["history", "--goal", &gid, "--zz", "1"],
         vec!["turn", "--goal", &gid, "--todo-id", &first, "--zz", "1"],
-        vec!["todo-event", "--goal", &gid, "--todo-id", &first, "--zz", "1"],
+        vec![
+            "todo-event",
+            "--goal",
+            &gid,
+            "--todo-id",
+            &first,
+            "--zz",
+            "1",
+        ],
         vec!["evidence-log", "--goal", &gid, "--zz", "1"],
         vec!["benchmark", "protocol", "--route", "r", "--zz", "1"],
         vec!["benchmark", "ledger", "--zz", "1"],
@@ -82,34 +99,186 @@ fn unknown_flags_are_swallowed_everywhere() {
         cli_ok(&args);
     }
     // Mutating commands with an unknown flag.
-    cli_ok(&["goal", "init", "--objective", "g2", "--goal-id", "goal_zz", "--cwd", &cr.cwd, "--zz", "1"]);
-    cli_ok(&["goal", "cancel", "--goal", "goal_zz", "--zz", "1"]);
-    cli_ok(&["goal", "delete", "--goal", "goal_zz", "--force", "--zz", "1"]);
-    cli_ok(&["todo", "add", "--goal", &gid, "--text", "zz flag", "--zz", "1"]);
-    let zz = common::todo_id_by_text(&cr.root, &gid, "zz flag");
-    cli_ok(&["todo", "claim", "--goal", &gid, "--todo-id", &zz, "--agent-id", "w1", "--zz", "1"]);
-    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &zz, "--no-follow-up", "--zz", "1"]);
-    cli_ok(&["todo", "archive", "--goal", &gid, "--todo-id", &zz, "--zz", "1"]);
-    let sup = common::add_todo(&cr, &gid, "zz supersede");
-    cli_ok(&["todo", "supersede", "--goal", &gid, "--todo-id", &sup, "--zz", "1"]);
-    cli_ok(&["gate", "resolve", "--goal", &gid, "--todo-id", &first, "--decision", "d", "--zz", "1"]);
-    cli_ok(&["backup", "--goal", &gid, "--zz", "1"]);
-    cli_ok(&["authority", "--goal", &gid, "--write-scope", "src", "--zz", "1"]);
-    cli_ok(&["profile", "set", "--goal", &gid, "--outcome-floor", "2", "--zz", "1"]);
-    cli_ok(&["replan", "ack", "--goal", &gid, "--delta-kind", "vision_patch", "--zz", "1"]);
-    cli_ok(&["agent", "onboard", "--goal", &gid, "--agent-id", "w9", "--zz", "1"]);
-    cli_ok(&["lease", "expire", "--goal", &gid, "--todo-id", &first, "--zz", "1"]);
-    cli_ok(&["supervisor", "propose", "--goal", &gid, "--agent-id", "s", "--decision-id", "dz", "--target-agent-id", "w1", "--kind", "execute", "--capabilities", "shell", "--zz", "1"]);
     cli_ok(&[
-        "supervisor", "receipt", "--goal", &gid, "--decision-id", "dz", "--receipt-id", "rz",
-        "--adapter-id", "a", "--outcome", "executed", "--host-capabilities", "shell",
-        "--authority-ref", "auth-1", "--zz", "1",
+        "goal",
+        "init",
+        "--objective",
+        "g2",
+        "--goal-id",
+        "goal_zz",
+        "--cwd",
+        &cr.cwd,
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&["goal", "cancel", "--goal", "goal_zz", "--zz", "1"]);
+    cli_ok(&[
+        "goal", "delete", "--goal", "goal_zz", "--force", "--zz", "1",
+    ]);
+    cli_ok(&[
+        "todo", "add", "--goal", &gid, "--text", "zz flag", "--zz", "1",
+    ]);
+    let zz = common::todo_id_by_text(&cr.root, &gid, "zz flag");
+    cli_ok(&[
+        "todo",
+        "claim",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &zz,
+        "--agent-id",
+        "w1",
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &zz,
+        "--no-follow-up",
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&[
+        "todo",
+        "archive",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &zz,
+        "--zz",
+        "1",
+    ]);
+    let sup = common::add_todo(&cr, &gid, "zz supersede");
+    cli_ok(&[
+        "todo",
+        "supersede",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &sup,
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&[
+        "gate",
+        "resolve",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--decision",
+        "d",
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&["backup", "--goal", &gid, "--zz", "1"]);
+    cli_ok(&[
+        "authority",
+        "--goal",
+        &gid,
+        "--write-scope",
+        "src",
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&[
+        "profile",
+        "set",
+        "--goal",
+        &gid,
+        "--outcome-floor",
+        "2",
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&[
+        "replan",
+        "ack",
+        "--goal",
+        &gid,
+        "--delta-kind",
+        "vision_patch",
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&[
+        "agent",
+        "onboard",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "w9",
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&[
+        "lease",
+        "expire",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&[
+        "supervisor",
+        "propose",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "s",
+        "--decision-id",
+        "dz",
+        "--target-agent-id",
+        "w1",
+        "--kind",
+        "execute",
+        "--capabilities",
+        "shell",
+        "--zz",
+        "1",
+    ]);
+    cli_ok(&[
+        "supervisor",
+        "receipt",
+        "--goal",
+        &gid,
+        "--decision-id",
+        "dz",
+        "--receipt-id",
+        "rz",
+        "--adapter-id",
+        "a",
+        "--outcome",
+        "executed",
+        "--host-capabilities",
+        "shell",
+        "--authority-ref",
+        "auth-1",
+        "--zz",
+        "1",
     ]);
     let md = std::path::Path::new(&cr.cwd).join("bf.md");
     std::fs::write(&md, "## Agent Todo\n\n- [ ] Task one\n").unwrap();
-    cli_ok(&["backfill", "--goal", &gid, "--from", md.to_str().unwrap(), "--dry-run", "--zz", "1"]);
+    cli_ok(&[
+        "backfill",
+        "--goal",
+        &gid,
+        "--from",
+        md.to_str().unwrap(),
+        "--dry-run",
+        "--zz",
+        "1",
+    ]);
     cli_ok(&["replay", "record", "--goal", &gid, "--zz", "1"]);
-    cli_ok(&["replay", "corpus", "build", "--goal", &gid, "--patch", "{}", "--zz", "1"]);
+    cli_ok(&[
+        "replay", "corpus", "build", "--goal", &gid, "--patch", "{}", "--zz", "1",
+    ]);
 }
 
 // ── steer poll seam ────────────────────────────────────────────────────────
@@ -136,7 +305,14 @@ fn steer_poll_once_arms() {
         assert_eq!(off, 0);
         // Fresh append beyond the current length → poll processes new lines.
         let meta_len = std::fs::metadata(&events_path).unwrap().len();
-        let off = future_loop::console::steer_poll_once(&events_path, meta_len, "t1", &mut client, "sess").await;
+        let off = future_loop::console::steer_poll_once(
+            &events_path,
+            meta_len,
+            "t1",
+            &mut client,
+            "sess",
+        )
+        .await;
         assert_eq!(off, meta_len, "no new content");
         // Append a mix: bad json, wrong kind, wrong todo, no text, and a hit.
         let mut store = open_store(&cr);
@@ -171,21 +347,37 @@ fn steer_poll_once_arms() {
             .unwrap();
         let before = std::fs::metadata(&events_path).unwrap().len();
         assert!(before > off);
-        let off2 = future_loop::console::steer_poll_once(&events_path, off, "t1", &mut client, "sess").await;
+        let off2 =
+            future_loop::console::steer_poll_once(&events_path, off, "t1", &mut client, "sess")
+                .await;
         assert_eq!(off2, before);
         // The todo_updated hit connected to the mock and steered.
-        assert!(shared.lock().unwrap().recorded.contains(&"steer".to_string()));
+        assert!(shared
+            .lock()
+            .unwrap()
+            .recorded
+            .contains(&"steer".to_string()));
         // A poll against a DIFFERENT todo id: no new steer call.
         let n = shared.lock().unwrap().recorded.len();
-        let _ = future_loop::console::steer_poll_once(&events_path, off, "other-todo", &mut client, "sess").await;
-        let _ = future_loop::console::steer_poll_once(&events_path, off, "t1", &mut client, "sess").await;
+        let _ = future_loop::console::steer_poll_once(
+            &events_path,
+            off,
+            "other-todo",
+            &mut client,
+            "sess",
+        )
+        .await;
+        let _ = future_loop::console::steer_poll_once(&events_path, off, "t1", &mut client, "sess")
+            .await;
         // steer failure → client reset (next matching event reconnects).
         let mut st = MockState::default();
         st.fail_commands.insert("steer".to_string());
         let (addr2, _shared2) = spawn_mock(st).await;
         std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr2);
         let mut client2 = None;
-        let _ = future_loop::console::steer_poll_once(&events_path, off, "t1", &mut client2, "sess2").await;
+        let _ =
+            future_loop::console::steer_poll_once(&events_path, off, "t1", &mut client2, "sess2")
+                .await;
         assert!(client2.is_none(), "failed steer resets the client");
         let _ = n;
     });
@@ -206,7 +398,11 @@ fn run_monitor_claim_race_stops_without_selection() {
     // the replayed struct).
     {
         let mut store = open_store(&cr);
-        let mon = Todo::monitor("mon_raced", "raced monitor", std::time::Duration::from_secs(0));
+        let mon = Todo::monitor(
+            "mon_raced",
+            "raced monitor",
+            std::time::Duration::from_secs(0),
+        );
         store
             .append(future_loop::store::Event::TodoAdded {
                 goal_id: goal.clone(),
@@ -227,8 +423,20 @@ fn run_monitor_claim_race_stops_without_selection() {
     }
     // Turn 1 completes the onboarding todo; turn 2 selects the due monitor,
     // loses the atomic claim 3×, and stops without executing it.
-    cli_ok(&["run", "--goal", &goal, "--agent-id", "racer", "--max-turns", "5"]);
-    assert_eq!(shared.lock().unwrap().prompts, 1, "only the onboarding turn ran");
+    cli_ok(&[
+        "run",
+        "--goal",
+        &goal,
+        "--agent-id",
+        "racer",
+        "--max-turns",
+        "5",
+    ]);
+    assert_eq!(
+        shared.lock().unwrap().prompts,
+        1,
+        "only the onboarding turn ran"
+    );
     let store = open_store(&cr);
     let g = store.replay(&goal).unwrap().unwrap();
     let m = g.todos.iter().find(|t| t.id == "mon_raced").unwrap();
@@ -246,7 +454,14 @@ fn run_with_time_budget_success_path() {
     });
     let goal = init_goal(&cr, "budget success");
     cli_ok(&[
-        "run", "--goal", &goal, "--anonymous", "--max-turn-secs", "600", "--max-turns", "3",
+        "run",
+        "--goal",
+        &goal,
+        "--anonymous",
+        "--max-turn-secs",
+        "600",
+        "--max-turns",
+        "3",
     ]);
 }
 
@@ -272,7 +487,15 @@ fn status_closure_and_gap_arms() {
     // All todos done with closure intent → closure_proof "valid".
     let gid = init_goal(&cr, "closure valid");
     let first = first_todo_id(&cr.root, &gid);
-    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &first, "--no-follow-up"]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+    ]);
     cli_ok(&["status", "--goal", &gid]);
     // Projection gap → the ⚠ line.
     {
@@ -285,7 +508,9 @@ fn status_closure_and_gap_arms() {
     {
         // A registry entry pointing at a deleted goal dir: replay fails → skipped.
         let mut store = open_store(&cr);
-        store.register(&future_loop::state::Goal::new("goal_ghost", "x", "/tmp")).unwrap();
+        store
+            .register(&future_loop::state::Goal::new("goal_ghost", "x", "/tmp"))
+            .unwrap();
         cr2_dir = store.goal_dir("goal_ghost");
         let _ = cr2_dir;
     }
@@ -328,8 +553,16 @@ fn capability_hook_kind_arms() {
     // NoFollowUp via empty input; Gate via read-only authority (prints the
     // gate question line).
     cli_ok(&["issue-fix"]);
-    cli_ok(&["issue-fix", "--input", "title: bug\nerror: crash\nrepro: steps\nauthority: read-only"]);
-    cli_ok(&["issue-fix", "--input", "title: crash\nerror: panicked\nrepro: run it\nexpected: works fine\nscope: cli"]);
+    cli_ok(&[
+        "issue-fix",
+        "--input",
+        "title: bug\nerror: crash\nrepro: steps\nauthority: read-only",
+    ]);
+    cli_ok(&[
+        "issue-fix",
+        "--input",
+        "title: crash\nerror: panicked\nrepro: run it\nexpected: works fine\nscope: cli",
+    ]);
 }
 
 // ── runs index duplicate-group print arms ──────────────────────────────────
@@ -388,7 +621,11 @@ fn serve_status_command_arm() {
     std::thread::spawn(move || {
         let _ = future_loop::console::run(
             "future-loop",
-            vec!["serve-status".to_string(), "--port".to_string(), port.to_string()],
+            vec![
+                "serve-status".to_string(),
+                "--port".to_string(),
+                port.to_string(),
+            ],
         );
     });
     // Wait for the server, then hit it.
