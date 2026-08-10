@@ -720,6 +720,116 @@ async fn prompt_abort_produces_cancelled_terminal() {
     assert!(session.runtime.snapshot().is_none());
 }
 
+// ─── batch 3: rare error arms ──────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_with_unaccessible_cwd_fails_fast() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "bad-cwd");
+    // Point the session at a plain file — not a directory.
+    let file = fixture.workspace().join("plain.txt");
+    std::fs::write(&file, "x").unwrap();
+    let mut session = fixture.session;
+    session.set_cwd(file.to_string_lossy().as_ref());
+    let result = session.prompt("hi", &[], &[], None, None);
+    assert!(result.is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scheduled_run_with_broken_transcript_reports_error() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("unused")]), "sched-fail");
+    let transcript = fixture.transcript_file();
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(&transcript).unwrap(); // dir where the file belongs
+    let mut session = fixture.session;
+    let result = session.enqueue_prompt(
+        "hi",
+        &[],
+        &[],
+        None,
+        "req-broken",
+        crate::runtime::BusyPolicy::EnqueueIfBusy,
+    );
+    assert!(result.is_err());
+    let _ = std::fs::remove_dir_all(&transcript);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_derives_session_name_from_string_content_entry() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("ok")]), "string-name");
+    let mut session = fixture.session;
+    // A pre-existing user entry with plain-string content takes the as_str
+    // arm of the name derivation.
+    session
+        .messages
+        .write()
+        .push(crate::types::AgentMessage::new_user(
+            "user",
+            serde_json::json!("the earlier question"),
+        ));
+    session.prompt("hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    let loaded = session.session_manager.load("s1").unwrap();
+    assert!(!loaded.name.is_empty());
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::await_holding_lock)] // HOME must stay pinned across awaits
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_sandbox_denial_escalates_through_session_wiring() {
+    let _home_guard = crate::test_support::home_env_lock();
+    let outside = dirs::home_dir()
+        .unwrap()
+        .join(format!("futureos-run-escalate-{}.txt", std::process::id()));
+    let provider = ScriptedProvider::new(vec![
+        Script::Events(vec![
+            event_with_tool_call(
+                "toolcall_start",
+                "call-1",
+                "shell",
+                serde_json::json!({"command": format!("touch {}", outside.display())}),
+            ),
+            simple_event("toolcall_end"),
+            simple_event("stop"),
+        ]),
+        text_turn("done"),
+    ]);
+    let fixture = run_fixture(provider, "run-escalate");
+    let gate = fixture.session.approval_gate.clone();
+    let mut session = fixture.session;
+    session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+        tier: crate::sandbox::SandboxTier::Sandbox,
+    });
+    if !crate::sandbox::platform_sandbox_available() {
+        return;
+    }
+    // The escalation approval arrives from a decider thread.
+    let decider = std::thread::spawn(move || {
+        for _ in 0..2000 {
+            let pending = gate.pending_for_session("s1");
+            if let Some(first) = pending.first() {
+                let request_id = first["approval_request_id"].as_str().unwrap().to_string();
+                let _ = gate.decide(
+                    &request_id,
+                    "s1",
+                    crate::rpc::ApprovalDecision {
+                        approved: true,
+                        note: String::new(),
+                        status: crate::rpc::ApprovalDecisionStatus::Approved,
+                    },
+                );
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("escalation request never appeared");
+    });
+    session.prompt("touch outside", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    decider.join().unwrap();
+    assert!(outside.exists(), "approved re-run created the file");
+    let _ = std::fs::remove_file(&outside);
+}
+
 // ─── batch 2: enqueue/persist/finalize edge arms ───────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
