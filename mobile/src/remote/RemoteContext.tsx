@@ -13,10 +13,12 @@ import {
   applyStreamEvent,
   emptyTimeline,
   markApprovalDecision,
+  normalizeReplayEvents,
   timelineFromEntries,
   timelineFromHistory,
   timelineFromProjection,
   stripRunItems,
+  type ReplayEventWire,
   type TimelineState,
 } from "./eventReducer";
 import { RemoteClient } from "./client";
@@ -74,11 +76,12 @@ interface EntriesData {
 }
 
 interface EventsData {
-  events: StreamEvent[];
+  /** Raw replay events — the RPC serializes them with snake_case `run_id`. */
+  events?: ReplayEventWire[];
   truncated?: boolean;
   /** Coalesced replica of a run whose event ring overflowed — replaces the
    *  session's timeline wholesale (see `timelineFromProjection`). */
-  projection?: { run_id?: string; cursor?: number; events?: StreamEvent[] } | null;
+  projection?: { run_id?: string; cursor?: number; events?: ReplayEventWire[] } | null;
 }
 
 interface PromptAck {
@@ -647,14 +650,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       }
       if (response.projection?.events?.length) {
         // The ring overflowed; the projection is the whole run and replaces
-        // the run's partial items (cache or history alike).
+        // the run's partial items — the cache's live events for this run (the
+        // replayed ones carry the run_id) and history's partial entries alike.
+        // User bubbles survive stripRunItems, so the transcript order holds.
         const baseStripped = stripRunItems(baseForReplay, activeRunId);
-        const projected = timelineFromProjection(response.projection.events);
+        const projectionEvents = normalizeReplayEvents(response.projection.events);
+        const projected = timelineFromProjection(projectionEvents);
         const cursorIdx =
           response.projection.cursor ??
-          response.projection.events.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
+          projectionEvents.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
         advanceCursor(cursor, activeRunId, cursorIdx);
-        const settled = response.projection.events.some(ev => ev.type === "agent_end");
+        const settled = projectionEvents.some(ev => ev.type === "agent_end");
         return {
           ...baseStripped,
           items: [...baseStripped.items, ...projected.items],
@@ -662,7 +668,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         };
       }
       let next = baseForReplay;
-      const events = response.events ?? [];
+      const events = normalizeReplayEvents(response.events);
       for (const ev of events) next = applyStreamEvent(next, ev);
       for (const ev of events) {
         if (ev.runId && ev.idx != null) advanceCursor(cursor, ev.runId, ev.idx);
@@ -748,7 +754,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             sessionId,
           )
         ).data;
-        const events = response.events ?? [];
+        const events = normalizeReplayEvents(response.events);
         const firstIdx = events.length > 0 ? events[0]!.idx : undefined;
         // If the agent buffer overflowed (dropped head), firstIdx will be > fromIdx+1.
         if (events.length > 0 && firstIdx != null && firstIdx > fromIdx + 1) {

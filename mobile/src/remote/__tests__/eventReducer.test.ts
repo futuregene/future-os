@@ -1,6 +1,7 @@
 import {
   applyStreamEvent,
   emptyTimeline,
+  normalizeReplayEvents,
   stripRunItems,
   timelineFromEntries,
   timelineFromHistory,
@@ -193,6 +194,34 @@ describe("projection reducer", () => {
     };
     const stripped = stripRunItems(base, "run-1");
     expect(stripped.items.map(item => item.id)).toEqual(["u1", "a2"]);
+  });
+});
+
+describe("replay event normalization", () => {
+  test("maps snake_case run_id to the camelCase StreamEvent shape", () => {
+    const events = normalizeReplayEvents([
+      { type: "agent_start", data: "{}", run_id: "run-1", idx: 0 },
+      { type: "text_chunk", data: '{"text":"hi"}', run_id: "run-1", idx: 1 },
+    ]);
+    expect(events).toEqual([
+      { type: "agent_start", data: "{}", runId: "run-1", idx: 0 },
+      { type: "text_chunk", data: '{"text":"hi"}', runId: "run-1", idx: 1 },
+    ]);
+  });
+
+  test("drops malformed entries and tolerates missing run_id/idx", () => {
+    const events = normalizeReplayEvents([
+      null as never,
+      { type: "agent_start", data: "{}" },
+      42 as never,
+    ]);
+    expect(events).toEqual([{ type: "agent_start", data: "{}", runId: "", idx: undefined }]);
+  });
+
+  test("empty or undefined input yields no events", () => {
+    expect(normalizeReplayEvents(undefined)).toEqual([]);
+    expect(normalizeReplayEvents(null)).toEqual([]);
+    expect(normalizeReplayEvents([])).toEqual([]);
   });
 });
 
