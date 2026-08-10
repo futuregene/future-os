@@ -3464,6 +3464,67 @@ mod tests {
     }
 
     #[test]
+    fn set_default_model_reports_unsaveable_settings() {
+        let home = TestHome::new();
+        let state = make_app_state();
+        // A valid but READ-ONLY settings.json: load succeeds, save fails.
+        let settings_path = home.settings_path();
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(&settings_path, "{}").unwrap();
+        let mut perms = std::fs::metadata(&settings_path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&settings_path, perms).unwrap();
+        let candidate = {
+            let registry = state.model_registry.read();
+            let model = registry.all_models().first().unwrap().clone();
+            format!("{}/{}", model.provider, model.id)
+        };
+        let mut cmd = make_cmd("set_default_model");
+        cmd.model_id = candidate;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        let mut perms = std::fs::metadata(&settings_path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&settings_path, perms).unwrap();
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("failed to save settings"));
+    }
+
+    #[test]
+    fn reload_config_reports_busy_loop_and_skips_locked_update() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        let agent_loop = session.read().agent_loop.clone();
+        {
+            // A held WRITE guard makes the first try_read fail.
+            let _write_guard = agent_loop.try_write().unwrap();
+            let resp = parse_response(&handle_command_internal(&state, make_cmd("reload_config")));
+            assert_eq!(resp["success"], false);
+            assert!(resp["error"].as_str().unwrap().contains("agent is busy"));
+        }
+        // A held READ guard passes the try_read but blocks the final try_write
+        // — the command still succeeds, just without updating the prompt.
+        let _read_guard = agent_loop.try_read().unwrap();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("reload_config")));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn reload_config_tolerates_unreadable_context_file() {
+        let state = make_app_state();
+        // A CLAUDE.md that is a DIRECTORY exists but cannot be read.
+        let cwd = state.welcome_cwd.clone();
+        std::fs::create_dir_all(std::path::Path::new(&cwd).join("CLAUDE.md")).unwrap();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("reload_config")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["contextFiles"], serde_json::json!([]));
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
     fn get_commands_returns_list() {
         let state = make_app_state();
         let cmd = make_cmd("get_commands");

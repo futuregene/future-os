@@ -3748,6 +3748,189 @@ mod tests {
             messages[0].content
         );
     }
+
+    // ── coverage batch 2 ────────────────────────────────────────────────────
+
+    #[test]
+    fn entries_to_agent_messages_skips_non_image_and_missing_attachments() {
+        let mut user = SessionEntry::new_user("user", serde_json::json!("look"));
+        user.meta = Some(serde_json::json!({
+            "attachments": [
+                {"kind": "file", "path": "/tmp/x.pdf", "name": "x.pdf"},
+                {"kind": "image", "path": "/definitely/missing.png", "name": "m.png"},
+                {"kind": "image"}
+            ]
+        }));
+        let messages = entries_to_agent_messages(&[user], true);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            !messages[0]
+                .content
+                .iter()
+                .any(|b| matches!(b, crate::types::ContentBlock::Image { .. })),
+            "no image blocks from file/missing/unreadable attachments"
+        );
+        // Text-only models never rehydrate even valid images.
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("pic.png");
+        image::RgbImage::from_fn(8, 8, |_, _| image::Rgb([1u8, 2, 3]))
+            .save(&image)
+            .unwrap();
+        let mut user = SessionEntry::new_user("user", serde_json::json!("look"));
+        user.meta = Some(serde_json::json!({
+            "attachments": [{"kind": "image", "path": image.to_string_lossy(), "name": "pic.png"}]
+        }));
+        let messages = entries_to_agent_messages(&[user], false);
+        assert!(
+            !messages[0]
+                .content
+                .iter()
+                .any(|b| matches!(b, crate::types::ContentBlock::Image { .. })),
+            "text-only model keeps no image blocks"
+        );
+    }
+
+    #[test]
+    fn load_reads_model_from_model_change_entries() {
+        let (_dir, manager) = temp_manager("load-model-change");
+        let snapshot = Session::snapshot(
+            "s1".to_string(),
+            "/tmp".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            vec![
+                SessionEntry::new_user("user", serde_json::json!("hi")),
+                SessionEntry {
+                    id: generate_id(),
+                    entry_type: ENTRY_TYPE_MODEL_CHANGE.to_string(),
+                    role: ENTRY_TYPE_SYSTEM.to_string(),
+                    content: Some(serde_json::json!({"model": "deepseek/deepseek-chat"})),
+                    tool_calls: vec![],
+                    timestamp: Local::now(),
+                    tool_call_id: String::new(),
+                    name: String::new(),
+                    tool_args: String::new(),
+                    thinking: String::new(),
+                    meta: None,
+                },
+            ],
+        );
+        manager.save(&snapshot).unwrap();
+        let loaded = manager.load("s1").unwrap();
+        assert_eq!(loaded.model, "deepseek/deepseek-chat");
+    }
+
+    #[test]
+    fn load_skips_blank_lines_and_rejects_all_corrupt_files() {
+        let (_dir, manager) = temp_manager("load-blanks");
+        let snapshot = Session::snapshot(
+            "s1".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![SessionEntry::new_user("user", serde_json::json!("x"))],
+        );
+        manager.save(&snapshot).unwrap();
+        let path = manager.find("s1").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("\n\n{content}\n")).unwrap();
+        let loaded = manager.load("s1").unwrap();
+        assert_eq!(loaded.entries.len(), 1);
+
+        // A file whose only line is corrupt-but-last degrades to "no entries".
+        std::fs::write(&path, "{corrupt\n").unwrap();
+        assert!(manager.load("s1").is_err());
+    }
+
+    #[test]
+    fn list_all_uses_parallel_workers_for_many_sessions() {
+        let (dir, manager) = temp_manager("list-parallel");
+        for i in 0..12 {
+            let snapshot = Session::snapshot(
+                format!("s-{i}"),
+                "/tmp".to_string(),
+                "mock".to_string(),
+                String::new(),
+                String::new(),
+                vec![SessionEntry::new_user("user", serde_json::json!("hi"))],
+            );
+            manager.save(&snapshot).unwrap();
+        }
+        let all = manager.list_all().unwrap();
+        assert_eq!(all.len(), 12);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn summary_reads_name_parent_and_first_message() {
+        let (dir, manager) = temp_manager("summary-rich");
+        let snapshot = Session::snapshot(
+            "s1".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                SessionEntry::session_info(
+                    serde_json::json!({
+                        "cwd": "/tmp",
+                        "model": "mock",
+                        "session_name": "Rich Name",
+                        "parent_session_id": "parent-1"
+                    }),
+                    "mock".to_string(),
+                    "low".to_string(),
+                ),
+                SessionEntry::new_user("user", serde_json::json!("the first question")),
+            ],
+        );
+        manager.save(&snapshot).unwrap();
+        let summaries = manager.list_summaries("").unwrap();
+        let s = summaries.iter().find(|s| s.id == "s1").unwrap();
+        assert_eq!(s.name.as_deref(), Some("Rich Name"));
+        assert_eq!(s.parent_session_id, "parent-1");
+        assert_eq!(s.first_message.as_deref(), Some("the first question"));
+        // cwd filter narrows the list.
+        assert!(manager.list_summaries("/tmp").unwrap().iter().any(|s| s.id == "s1"));
+        assert!(manager.list_summaries("/elsewhere").unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dedupe_placeholder_detects_array_content_form() {
+        let (_dir, manager) = temp_manager("dedupe-array");
+        let mut placeholder = SessionEntry::new_tool("call-1", "ignored");
+        placeholder.content = Some(serde_json::json!([
+            {"type": "text", "text": "[Tool execution lost — worker crashed]"}
+        ]));
+        let real = SessionEntry::new_tool("call-1", "real output");
+        let snapshot = Session::snapshot(
+            "s1".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                SessionEntry::new_user("user", serde_json::json!("hi")),
+                placeholder,
+                real,
+            ],
+        );
+        manager.save(&snapshot).unwrap();
+        let loaded = manager.load("s1").unwrap();
+        let tools: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .collect();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].content.as_ref().unwrap(),
+            &serde_json::json!("real output")
+        );
+    }
 }
 
 #[cfg(test)]
