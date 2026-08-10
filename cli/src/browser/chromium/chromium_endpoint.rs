@@ -112,3 +112,121 @@ pub fn identify_browser(data: &Value) -> String {
 
     "chromium".to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_cdp::MockCdp;
+    use crate::test_server::{spawn_http, HttpRoute};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn resolve_success_full_identity() {
+        let mock = MockCdp::start().await;
+        let info = resolve_cdp_endpoint(&mock.http_url, 5_000)
+            .await
+            .expect("resolve");
+        assert_eq!(info.web_socket_debugger_url, mock.ws_url);
+        assert_eq!(info.browser_kind, "chrome");
+        assert_eq!(info.browser_version.as_deref(), Some("Chrome/126.0.0.0"));
+        assert_eq!(info.http_endpoint, mock.http_url);
+    }
+
+    #[tokio::test]
+    async fn resolve_edge_and_lowercase_browser_field() {
+        for (body, kind) in [
+            (r#"{"Browser":"Edg/120","webSocketDebuggerUrl":"ws://x/ws"}"#, "edge"),
+            (
+                r#"{"browser":"Chromium/119","webSocketDebuggerUrl":"ws://x/ws"}"#,
+                "chromium",
+            ),
+        ] {
+            let base = spawn_http(vec![HttpRoute::json("/json/version", 200, body)]).await;
+            let info = resolve_cdp_endpoint(&base, 5_000).await.expect("resolve");
+            assert_eq!(info.browser_kind, kind);
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_timeout_against_slow_server() {
+        let base = spawn_http(vec![HttpRoute::slow(
+            "/json/version",
+            std::time::Duration::from_secs(2),
+        )])
+        .await;
+        let err = resolve_cdp_endpoint(&base, 50).await.unwrap_err();
+        assert_eq!(err, "CDP /json/version timed out");
+    }
+
+    #[tokio::test]
+    async fn resolve_http_error_status() {
+        let base = spawn_http(vec![HttpRoute::json("/json/version", 500, "{}")]).await;
+        let err = resolve_cdp_endpoint(&base, 5_000).await.unwrap_err();
+        assert!(
+            err.contains("CDP /json/version returned HTTP 500"),
+            "err: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_connection_refused() {
+        let err = resolve_cdp_endpoint("http://127.0.0.1:1", 5_000)
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_invalid_json_body() {
+        let base = spawn_http(vec![HttpRoute::json("/json/version", 200, "not json")]).await;
+        let err = resolve_cdp_endpoint(&base, 5_000).await.unwrap_err();
+        assert_eq!(err, "Invalid /json/version response");
+    }
+
+    #[tokio::test]
+    async fn resolve_missing_or_non_ws_debugger_url() {
+        for body in [
+            r#"{"Browser":"Chrome/1"}"#,
+            r#"{"webSocketDebuggerUrl":"http://x/notws"}"#,
+        ] {
+            let base = spawn_http(vec![HttpRoute::json("/json/version", 200, body)]).await;
+            let err = resolve_cdp_endpoint(&base, 5_000).await.unwrap_err();
+            assert!(
+                err.contains("Invalid webSocketDebuggerUrl in /json/version"),
+                "body={body} err={err}"
+            );
+        }
+    }
+
+    #[test]
+    fn identify_browser_from_browser_field() {
+        assert_eq!(
+            identify_browser(&json!({"Browser": "Microsoft Edge/120"})),
+            "edge"
+        );
+        assert_eq!(identify_browser(&json!({"Browser": "Chrome/126"})), "chrome");
+        assert_eq!(
+            identify_browser(&json!({"Browser": "Chromium/119"})),
+            "chromium"
+        );
+    }
+
+    #[test]
+    fn identify_browser_user_agent_fallbacks() {
+        assert_eq!(
+            identify_browser(&json!({"User-Agent": "Mozilla/5.0 Edg/120.0"})),
+            "edge"
+        );
+        assert_eq!(
+            identify_browser(&json!({"user-agent": "Mozilla/5.0 Chrome/126.0 Safari/537.36"})),
+            "chrome"
+        );
+        assert_eq!(
+            identify_browser(&json!({"User-Agent": "Mozilla/5.0 Chromium/119.0"})),
+            "chromium"
+        );
+        // No recognizable marker → default chromium.
+        assert_eq!(identify_browser(&json!({})), "chromium");
+        assert_eq!(identify_browser(&json!({"Browser": "Safari/17"})), "chromium");
+    }
+}

@@ -60,7 +60,23 @@ pub fn is_browser_tool(name: &str) -> bool {
     name == "browser"
 }
 
+/// Test-only override for the browser-launcher lookup (dev machines with a
+/// real Chrome install can never reach the no-launcher error arm).
+#[cfg(test)]
+static BROWSER_LAUNCHER_OVERRIDE: std::sync::Mutex<Option<Option<(String, String)>>> =
+    std::sync::Mutex::new(None);
+
+/// `findBrowserLauncher`, honoring the test override.
+fn launcher_for(executable_path: Option<&str>) -> Option<(String, String)> {
+    #[cfg(test)]
+    if let Some(value) = BROWSER_LAUNCHER_OVERRIDE.lock().unwrap().clone() {
+        return value;
+    }
+    find_browser_launcher(executable_path)
+}
+
 /// `LocalToolResult` — `{text?, structuredContent?}`.
+#[derive(Debug)]
 pub struct LocalToolResult {
     pub text: Option<String>,
     pub structured_content: Option<Value>,
@@ -134,7 +150,7 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     }
 
     let executable_path = string_arg(args, "executablePath");
-    let launcher = find_browser_launcher(executable_path.as_deref());
+    let launcher = launcher_for(executable_path.as_deref());
     let Some((command, _kind)) = launcher else {
         return Err(
             "Could not find Chrome or Edge. Pass executablePath to browser with command=start."
@@ -992,19 +1008,23 @@ async fn ensure_browser(args: &Map<String, Value>) -> Result<String, String> {
     wait_for_saved_endpoint(DEFAULT_ENDPOINT, 10_000).await
 }
 
+/// The endpoint `browser_start` saved to the config, or the fallback when
+/// the config carries none (defensive — validated configs always have one).
+fn started_endpoint_or(config: &BrowserConfig, fallback_endpoint: &str) -> String {
+    let ep = config.connection.endpoint();
+    if ep.is_empty() {
+        fallback_endpoint.to_string()
+    } else {
+        ep.to_string()
+    }
+}
+
 async fn wait_for_saved_endpoint(
     fallback_endpoint: &str,
     timeout_ms: u64,
 ) -> Result<String, String> {
     let config = load_browser_config().await?;
-    let started_endpoint = {
-        let ep = config.connection.endpoint();
-        if ep.is_empty() {
-            fallback_endpoint.to_string()
-        } else {
-            ep.to_string()
-        }
-    };
+    let started_endpoint = started_endpoint_or(&config, fallback_endpoint);
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     while std::time::Instant::now() < deadline {
         if endpoint_reachable(&started_endpoint).await {
@@ -1051,3 +1071,4 @@ fn boolean_arg(args: &Map<String, Value>, key: &str) -> Option<bool> {
         _ => None,
     }
 }
+

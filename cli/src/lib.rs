@@ -11,6 +11,8 @@ pub mod help;
 pub mod output;
 pub mod rpc;
 #[cfg(test)]
+pub mod test_cdp;
+#[cfg(test)]
 pub mod test_env;
 #[cfg(test)]
 pub mod test_server;
