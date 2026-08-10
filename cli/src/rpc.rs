@@ -828,6 +828,134 @@ mod tests {
 
     // ── execute_command surface ─────────────────────────────────────
 
+    /// Every one-shot wrapper surfaces a command failure as Err.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn one_shot_methods_propagate_failures() {
+        let fail_all: &[&str] = &[
+            "set_session_name",
+            "delete_session",
+            "set_model",
+            "set_thinking_level",
+            "set_tools",
+            "disable_tools",
+            "disable_builtin_tools",
+            "set_system_prompt",
+            "append_system_prompt",
+            "set_ephemeral",
+            "set_permission_level",
+            "set_cwd",
+        ];
+        let mut agent = MockAgent::default();
+        for t in fail_all {
+            agent.fail_types.insert(t.to_string());
+        }
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+
+        assert!(client.rename_session("s", "n").await.is_err());
+        assert!(client.delete_session("s").await.is_err());
+        assert!(client.set_model("m", "s").await.is_err());
+        assert!(client.set_thinking_level("high", "s").await.is_err());
+        assert!(client.set_tools(&["a".to_string()], "s").await.is_err());
+        assert!(client.disable_tools("s").await.is_err());
+        assert!(client.disable_builtin_tools("s").await.is_err());
+        assert!(client.set_system_prompt("p", "s").await.is_err());
+        assert!(client.append_system_prompt("p", "s").await.is_err());
+        assert!(client.set_ephemeral(true, "s").await.is_err());
+        assert!(client.set_permission_level("auto", "s").await.is_err());
+        assert!(client.set_cwd("/tmp", "s").await.is_err());
+    }
+
+    /// await_stream: a dropped stream task aborts the join handle and
+    /// surfaces the fixed message.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn await_stream_handles_dropped_sender() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(Vec<Value>, String), String>>();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        drop(tx);
+        let err = await_stream(rx, handle).await.unwrap_err();
+        assert_eq!(err, "Event stream task was dropped");
+    }
+
+    /// run --continue verbose labels: unnamed session falls back to the id,
+    /// named session uses the name.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_continue_verbose_labels() {
+        for (name, expect_label) in [("", "s1"), ("Work", "Work")] {
+            let mut agent = MockAgent::default();
+            agent.responses.insert(
+                "list_sessions".into(),
+                format!(
+                    "{{\"sessions\":[{{\"id\":\"s1\",\"updated_at\":\"2026-08-06 12:00:00\",\"session_name\":\"{name}\"}}]}}"
+                ),
+            );
+            agent.responses.insert(
+                "new_session".into(),
+                "{\"sessionId\":\"s-new\"}".into(),
+            );
+            let addr = crate::test_server::spawn_mock(agent.clone()).await;
+            let client = RunClient::new(&addr);
+            let (out, cap) = Output::memory();
+            let config = RunConfig {
+                message: "hi".to_string(),
+                continue_last: true,
+                verbose: true,
+                ..Default::default()
+            };
+            let _ = client.run(&config, &out).await;
+            let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+            assert!(
+                stderr.contains(&format!("Continuing session {expect_label}")),
+                "name={name:?} stderr: {stderr}"
+            );
+        }
+    }
+
+    /// run --continue when list_sessions succeeds but the array is empty.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_continue_empty_sessions_list_errors() {
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("list_sessions".into(), "{\"sessions\":[]}".into());
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _cap) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            continue_last: true,
+            ..Default::default()
+        };
+        let err = client.run(&config, &out).await.unwrap_err();
+        assert!(err.contains("No previous session to continue"), "{err}");
+    }
+
+    /// run --no-session verbose: the ephemeral-session notice prints.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_no_session_verbose_notice() {
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-e\"}".into());
+        agent.fail_types.insert("prompt".into());
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            no_session: true,
+            verbose: true,
+            ..Default::default()
+        };
+        let _ = client.run(&config, &out).await;
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Created ephemeral session s-e"), "{stderr}");
+    }
+
+    // ── execute_command surface ─────────────────────────────────────
+
     #[tokio::test]
     async fn one_shot_methods_roundtrip() {
         let mut agent = MockAgent::default();
