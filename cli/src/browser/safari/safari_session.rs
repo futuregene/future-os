@@ -446,3 +446,415 @@ impl BrowserSession for SafariSession {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browser::types::DEFAULT_TIMEOUTS;
+    use crate::test_server::{spawn_http, HttpRoute};
+    use serde_json::json;
+
+    fn session(endpoint: &str) -> SafariSession {
+        SafariSession::new(BrowserSessionParams::Webdriver {
+            endpoint: endpoint.to_string(),
+            session_id: "s1".to_string(),
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: None,
+        })
+        .expect("session")
+    }
+
+    fn target(selector: &str) -> ResolvedTarget {
+        crate::browser::selector::resolve_target(
+            Some(selector),
+            &crate::browser::types::BrowserConfig::default(),
+        )
+        .expect("resolve")
+    }
+
+    async fn mock(routes: Vec<HttpRoute>) -> String {
+        spawn_http(routes).await
+    }
+
+    #[tokio::test]
+    async fn new_rejects_cdp_params() {
+        let err = SafariSession::new(BrowserSessionParams::Cdp {
+            browser_kind: "chrome".to_string(),
+            endpoint: "http://x".to_string(),
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: None,
+            init_tab_order: None,
+        })
+        .err()
+        .expect("cdp params must fail");
+        assert_eq!(err, "SafariSession requires webdriver protocol");
+    }
+
+    #[tokio::test]
+    async fn kind_and_protocol() {
+        let s = session("http://127.0.0.1:1");
+        assert_eq!(s.kind(), "safari");
+        assert_eq!(s.protocol(), "webdriver");
+    }
+
+    #[tokio::test]
+    async fn open_navigates_and_reports_title_url() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"http://page/"}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"Page T"}"#),
+            HttpRoute::json("/session/s1/execute/sync", 200, r#"{"value":null}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let info = s
+            .open("http://page/", OpenPageOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(info.page_id, "h1");
+        assert_eq!(info.title, "Page T");
+        assert_eq!(info.url, "http://page/");
+    }
+
+    #[tokio::test]
+    async fn click_detects_navigation_via_url_change() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/element", 200, r#"{"value":"e1"}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            HttpRoute::sequence(
+                "/session/s1/url",
+                vec![
+                    (200, r#"{"value":"http://old/"}"#),
+                    (200, r#"{"value":"http://new/"}"#),
+                ],
+            ),
+            HttpRoute::json("/session/s1/element/e1/click", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"New T"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s
+            .click(&target("#go"), ClickOptions::default())
+            .await
+            .unwrap();
+        assert!(result.did_navigate);
+        assert_eq!(result.url, "http://new/");
+        assert_eq!(result.title, "New T");
+        assert_eq!(result.page_id, "h1");
+    }
+
+    #[tokio::test]
+    async fn click_without_navigation() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/element", 200, r#"{"value":"e1"}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"http://same/"}"#),
+            HttpRoute::json("/session/s1/element/e1/click", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"Same"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s
+            .click(&target("#stay"), ClickOptions::default())
+            .await
+            .unwrap();
+        assert!(!result.did_navigate);
+        assert_eq!(result.url, "http://same/");
+    }
+
+    #[tokio::test]
+    async fn click_missing_element_maps_to_not_found() {
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/element",
+            404,
+            r#"{"value":{"error":"no such element","message":"nope"}}"#,
+        )])
+        .await;
+        let mut s = session(&base);
+        let err = s
+            .click(&target("#ghost"), ClickOptions::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Element not found: \"#ghost\"");
+    }
+
+    #[tokio::test]
+    async fn find_one_translates_xpath_and_text_prefixes() {
+        let base =
+            mock(vec![HttpRoute::json("/session/s1/element", 200, r#"{"value":"e9"}"#)]).await;
+        let s = session(&base);
+        assert_eq!(s.find_one("xpath=//div").await.unwrap(), "e9");
+        assert_eq!(s.find_one("text=Hello").await.unwrap(), "e9");
+        assert_eq!(s.find_one("#css").await.unwrap(), "e9");
+    }
+
+    #[tokio::test]
+    async fn find_one_non_element_error_passthrough() {
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/element",
+            500,
+            r#"{"value":{"error":"unknown error","message":"driver exploded"}}"#,
+        )])
+        .await;
+        let s = session(&base);
+        let err = s.find_one("#x").await.unwrap_err();
+        assert!(err.contains("driver exploded"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn type_clear_and_submit_sequences() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/element", 200, r#"{"value":"e1"}"#),
+            HttpRoute::json("/session/s1/element/e1/clear", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/element/e1/value", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        // clear (default) + submit.
+        let r = s
+            .r#type(
+                &target("#in"),
+                "hello",
+                TypeOptions {
+                    clear: None,
+                    submit: Some(true),
+                    timeout_ms: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.typed, "#in");
+        assert!(r.submitted);
+        assert_eq!(r.page_id, "h1");
+
+        // clear: false, submit: false.
+        let r = s
+            .r#type(
+                &target("#in"),
+                "x",
+                TypeOptions {
+                    clear: Some(false),
+                    submit: None,
+                    timeout_ms: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!r.submitted);
+    }
+
+    #[tokio::test]
+    async fn press_maps_keys_and_sends_to_body_without_target() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/element", 200, r#"{"value":"e-body"}"#),
+            HttpRoute::json("/session/s1/element/e-body/value", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"T"}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"http://u/"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        // Mapped key without a target → sent to body element.
+        let r = s.press("Enter", None, PressOptions::default()).await.unwrap();
+        assert!(!r.did_navigate);
+        assert_eq!(r.page_id, "h1");
+        // Unmapped key passes through verbatim; with target.
+        let r = s
+            .press("F5", Some(&target("#btn")), PressOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(r.url, "http://u/");
+    }
+
+    #[tokio::test]
+    async fn tabs_list_switches_through_handles() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/window/handles", 200, r#"{"value":["h1","h2"]}"#),
+            HttpRoute::sequence(
+                "/session/s1/window",
+                vec![
+                    (200, r#"{"value":"h1"}"#), // current handle
+                    (200, r#"{"value":null}"#), // switch h1
+                    (200, r#"{"value":null}"#), // switch h2
+                    (200, r#"{"value":null}"#), // switch back
+                ],
+            ),
+            HttpRoute::sequence(
+                "/session/s1/title",
+                vec![(200, r#"{"value":"T1"}"#), (200, r#"{"value":"T2"}"#)],
+            ),
+            HttpRoute::sequence(
+                "/session/s1/url",
+                vec![(200, r#"{"value":"u1"}"#), (200, r#"{"value":"u2"}"#)],
+            ),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s.tabs(&TabsAction::List).await.unwrap();
+        match result {
+            InternalTabsResult::List { tabs } => {
+                assert_eq!(tabs.len(), 2);
+                assert_eq!(tabs[0].title, "T1");
+                assert!(tabs[0].active);
+                assert_eq!(tabs[1].title, "T2");
+                assert!(!tabs[1].active);
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tabs_new_with_and_without_url() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/window/new", 200, r#"{"value":{"handle":"h2"}}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"http://new/"}"#),
+            HttpRoute::json("/session/s1/execute/sync", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/window/handles", 200, r#"{"value":["h1","h2"]}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"NT"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s
+            .tabs(&TabsAction::New {
+                url: Some("http://new/".to_string()),
+            })
+            .await
+            .unwrap();
+        match result {
+            InternalTabsResult::New { page, index } => {
+                assert_eq!(page.page_id, "h2");
+                assert_eq!(index, 1);
+                assert_eq!(page.url, "http://new/");
+            }
+            other => panic!("expected new, got {other:?}"),
+        }
+        // No url → skip navigate.
+        let result = s.tabs(&TabsAction::New { url: None }).await.unwrap();
+        assert!(matches!(result, InternalTabsResult::New { .. }));
+    }
+
+    #[tokio::test]
+    async fn tabs_select_and_invalid_index() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/window/handles", 200, r#"{"value":["h1","h2"]}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/execute/sync", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"T2"}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"u2"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s.tabs(&TabsAction::Select { index: 1 }).await.unwrap();
+        match result {
+            InternalTabsResult::Select { page } => {
+                assert_eq!(page.page_id, "h2");
+                assert_eq!(page.title, "T2");
+            }
+            other => panic!("expected select, got {other:?}"),
+        }
+        let err = s.tabs(&TabsAction::Select { index: 9 }).await.unwrap_err();
+        assert_eq!(err, "Invalid tab index: 9");
+    }
+
+    #[tokio::test]
+    async fn tabs_close_switches_back_to_last_remaining() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/window/handles", 200, r#"{"value":["h1","h2"]}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"u1"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s.tabs(&TabsAction::Close { index: 0 }).await.unwrap();
+        match result {
+            InternalTabsResult::Close { url, index } => {
+                assert_eq!(url, "u1");
+                assert_eq!(index, 0);
+            }
+            other => panic!("expected close, got {other:?}"),
+        }
+        // Close with an empty remaining list.
+        let base = mock(vec![
+            HttpRoute::sequence(
+                "/session/s1/window/handles",
+                vec![(200, r#"{"value":["h1"]}"#), (200, r#"{"value":[]}"#)],
+            ),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"u1"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s.tabs(&TabsAction::Close { index: 0 }).await.unwrap();
+        assert!(matches!(result, InternalTabsResult::Close { .. }));
+    }
+
+    #[tokio::test]
+    async fn evaluate_expression_and_function() {
+        let base =
+            mock(vec![HttpRoute::json("/session/s1/execute/sync", 200, r#"{"value":{"k":2}}"#)])
+                .await;
+        let mut s = session(&base);
+        let v = s
+            .evaluate(&EvaluateRequest::Expression {
+                expression: "1+1".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(v, json!({"k": 2}));
+        let v = s
+            .evaluate(&EvaluateRequest::Function {
+                function_declaration: "function(a){return a;}".to_string(),
+                arguments: vec![json!(1)],
+            })
+            .await
+            .unwrap();
+        assert_eq!(v, json!({"k": 2}));
+    }
+
+    #[tokio::test]
+    async fn capture_screenshot_full_page_unsupported_and_viewport_ok() {
+        use base64::Engine;
+        let mut s = session("http://127.0.0.1:1");
+        let err = s
+            .capture_screenshot(&CaptureScreenshotOptions {
+                full_page: true,
+                format: "png",
+                quality: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("Full-page screenshot is not supported on safari"),
+            "{err}"
+        );
+        assert!(
+            err.contains("Use viewport screenshot or a Chrome/Edge browser."),
+            "{err}"
+        );
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"img");
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/screenshot",
+            200,
+            &format!(r#"{{"value":"{b64}"}}"#),
+        )])
+        .await;
+        let mut s = session(&base);
+        let bytes = s
+            .capture_screenshot(&CaptureScreenshotOptions {
+                full_page: false,
+                format: "png",
+                quality: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"img".to_vec());
+    }
+
+    #[tokio::test]
+    async fn disconnect_is_ok() {
+        let mut s = session("http://127.0.0.1:1");
+        s.disconnect().await.unwrap();
+    }
+}
