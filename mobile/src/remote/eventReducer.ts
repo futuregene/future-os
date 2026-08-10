@@ -136,12 +136,14 @@ export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
       for (const [toolIndex, call] of entry.tool_calls.entries()) {
         const name = call.function?.name ?? "";
         if (!name) continue;
+        const detail = toolDetail(name, call.function?.arguments);
         exchange.secondary.push({
           id: `history:${key}:tool:${call.id ?? toolIndex}`,
           kind: "tool",
           toolId: call.id ?? `history-tool:${toolIndex}`,
           name,
           complete: true,
+          ...(detail ? { detail } : {}),
           ...(exchange.runId ? { runId: exchange.runId } : {}),
         });
       }
@@ -218,6 +220,33 @@ function textValue(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/**
+ * The tool call's display target — mirrors the desktop `toolActivityModel.
+ * targetFromArgs`: the command for shell, the file path otherwise. Args may
+ * arrive as an object (live `tool_args`, history `function.arguments`) or as
+ * a JSON string.
+ */
+function toolDetail(name: string, argsValue: unknown): string | undefined {
+  let args: Record<string, unknown> | null = null;
+  if (isRecord(argsValue)) {
+    args = argsValue;
+  } else if (typeof argsValue === "string") {
+    try {
+      const parsed: unknown = JSON.parse(argsValue);
+      if (isRecord(parsed)) args = parsed;
+    } catch {
+      args = null;
+    }
+  }
+  if (!args) return undefined;
+  if (name === "shell") return stringValue(args.command);
+  return stringValue(args.path) ?? stringValue(args.file_path) ?? stringValue(args.filePath);
 }
 
 // Output (completion) tokens from a usage-bearing event — mirrors the desktop
@@ -414,14 +443,19 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
         items,
         assistantId,
         id,
-        () => ({
-          id,
-          kind: "tool",
-          toolId,
-          name: textValue(data.tool_name) || "tool",
-          complete: false,
-          runId,
-        }),
+        () => {
+          const name = textValue(data.tool_name) || "tool";
+          const detail = toolDetail(name, data.tool_args);
+          return {
+            id,
+            kind: "tool" as const,
+            toolId,
+            name,
+            complete: false,
+            runId,
+            ...(detail ? { detail } : {}),
+          };
+        },
         item => item,
       );
       items = ensureAssistantItem(items, assistantId, runId, Date.now());
@@ -529,6 +563,13 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
         if (next.kind === "message" && endTokens > 0) next.outputTokens = endTokens;
         return next;
       });
+      // NATS is at-most-once: a dropped thinking_end must not leave the row
+      // reading "thinking" forever — the run's end closes it.
+      items = items.map(item =>
+        item.kind === "thinking" && !item.complete && item.runId === runId
+          ? { ...item, complete: true }
+          : item,
+      );
       break;
     }
     default:

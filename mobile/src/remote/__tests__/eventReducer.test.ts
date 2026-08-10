@@ -109,7 +109,12 @@ describe("entry reducer", () => {
       text: "reasoning…",
       complete: true,
     });
-    expect(timeline.items[2]).toMatchObject({ kind: "tool", name: "read", complete: true });
+    expect(timeline.items[2]).toMatchObject({
+      kind: "tool",
+      name: "read",
+      complete: true,
+      detail: "/tmp/x",
+    });
     const reply = timeline.items[3];
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply).toMatchObject({
@@ -490,6 +495,36 @@ describe("stream event reducer", () => {
     expect(settled.streaming).toBe(false);
     expect(settled.durationMs).toBe(85_000);
     expect(settled.outputTokens).toBe(2965);
+  });
+
+  test("tool rows carry the call target from tool_args (object or JSON string)", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", tool_args: { command: "ls -la" } }),
+      runId: "run-1",
+      idx: 0,
+    });
+    expect(state.items[0]).toMatchObject({ kind: "tool", detail: "ls -la" });
+    state = applyStreamEvent(state, {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t2", tool_name: "read", tool_args: '{"path":"/tmp/x"}' }),
+      runId: "run-1",
+      idx: 1,
+    });
+    expect(state.items[1]).toMatchObject({ kind: "tool", detail: "/tmp/x" });
+  });
+
+  test("agent_end closes an unfinished thinking row", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "thinking_delta",
+      data: JSON.stringify({ text: "hmm" }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, { type: "agent_end", data: "{}", runId: "run-1", idx: 1 });
+    const thinking = state.items.find(item => item.kind === "thinking");
+    if (!thinking || thinking.kind !== "thinking") throw new Error("thinking row missing");
+    expect(thinking.complete).toBe(true);
   });
 
   test("settle falls back to receipt-clock duration and accumulated usage on older agents", () => {

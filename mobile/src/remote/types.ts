@@ -178,6 +178,9 @@ export type TimelineItem =
       name: string;
       complete: boolean;
       runId?: string;
+      /** The call's display target (desktop parity): the shell command or
+       *  file path, shown on the row and expandable on tap. */
+      detail?: string;
     }
   | {
       id: string;
