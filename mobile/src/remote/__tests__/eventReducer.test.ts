@@ -206,9 +206,8 @@ describe("stream event reducer", () => {
 
   test("keeps thinking and tool rows above the answer bubble in event order", () => {
     // From-start flow: the placeholder exists from agent_start, so secondary
-    // items must insert *before* it while it is still empty — otherwise the
-    // answer would render above its own reasoning (desktop renders inline,
-    // chronologically).
+    // items must insert *before* it — otherwise the answer would render above
+    // its own reasoning (desktop renders inline, chronologically).
     let state = applyStreamEvent(emptyTimeline(), {
       type: "agent_start",
       data: "{}",
@@ -237,6 +236,46 @@ describe("stream event reducer", () => {
     const answer = state.items[2];
     if (!answer || answer.kind !== "message") throw new Error("assistant message missing");
     expect(answer).toMatchObject({ text: "answer", streaming: true });
+  });
+
+  test("keeps tool rows above the reply when text streams before the first tool call", () => {
+    // Regression: a model may stream an interim remark ahead of its first tool
+    // call; the merged reply bubble must still settle below the run's tool
+    // rows, not above them (the desktop shows the final answer last).
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "interim " }),
+      runId: "run-1",
+      idx: 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "read" }),
+      runId: "run-1",
+      idx: 2,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1" }),
+      runId: "run-1",
+      idx: 3,
+    });
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "answer" }),
+      runId: "run-1",
+      idx: 4,
+    });
+    expect(state.items.map(item => item.kind)).toEqual(["tool", "message"]);
+    const answer = state.items[1];
+    if (!answer || answer.kind !== "message") throw new Error("assistant message missing");
+    expect(answer.text).toBe("interim answer");
   });
 
   test("settle prefers the authoritative agent_end totals over partial late-join stats", () => {

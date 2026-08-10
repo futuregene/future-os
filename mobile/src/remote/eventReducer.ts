@@ -141,16 +141,16 @@ function ensureAssistantItem(
 }
 
 /**
- * Upsert a secondary item (thinking / tool) while keeping the run's assistant
- * placeholder last as long as it is still empty. The placeholder hosts the live
- * indicator and, eventually, the reply text — and chronologically the reasoning
- * and tool work precedes the answer, the order the desktop renders inline.
- * Without this the placeholder, created first by agent_start, would sit *above*
- * the thinking/tool cards and the answer text would appear over its own
- * reasoning. Once the placeholder holds text, new secondary items append (the
- * phone merges a run's text into one bubble, so true interleave isn't modeled).
+ * Upsert a secondary item (thinking / tool) before the run's assistant
+ * placeholder. The phone merges a run's streamed text into one bubble and
+ * always renders it last — reasoning and tool work read above the answer,
+ * the same overall shape the desktop renders inline — so the insertion
+ * applies even once the placeholder holds text: a model that streams an
+ * interim remark before its first tool call would otherwise push every
+ * tool row below the reply. Without any placeholder (late join) the item
+ * appends and ensureAssistantItem recreates the bubble after it.
  */
-function upsertBeforeEmptyPlaceholder(
+function upsertBeforeAssistant(
   items: TimelineItem[],
   placeholderId: string,
   id: string,
@@ -160,7 +160,7 @@ function upsertBeforeEmptyPlaceholder(
   const index = items.findIndex(item => item.id === id);
   if (index >= 0) return items.map((item, i) => (i === index ? update(item) : item));
   const placeholderIndex = items.findIndex(
-    item => item.id === placeholderId && item.kind === "message" && item.text.trim().length === 0,
+    item => item.id === placeholderId && item.kind === "message",
   );
   const item = create();
   if (placeholderIndex < 0) return [...items, item];
@@ -247,7 +247,7 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       const assistantId = `assistant:${idKey}`;
       const id = `thinking:${idKey}`;
       const chunk = textValue(data.text);
-      items = upsertBeforeEmptyPlaceholder(
+      items = upsertBeforeAssistant(
         items,
         assistantId,
         id,
@@ -268,8 +268,9 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       const toolId = textValue(data.tool_id) || `tool-${event.idx ?? items.length}`;
       const id = `tool:${toolId}`;
       const assistantId = `assistant:${runId ?? event.idx ?? items.length}`;
-      // Same ordering rule as thinking: tool rows precede the answer bubble.
-      items = upsertBeforeEmptyPlaceholder(
+      // Same ordering rule as thinking: tool rows precede the answer bubble,
+      // even when the bubble already holds streamed text.
+      items = upsertBeforeAssistant(
         items,
         assistantId,
         id,
