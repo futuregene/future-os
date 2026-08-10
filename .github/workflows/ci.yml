@@ -63,6 +63,7 @@ jobs:
               - 'channels/**'
               - 'tui/**'
               - 'cli/**'
+              - 'orchestration/**'
             desktop_tauri:
               - 'desktop/src-tauri/**'
               - '.cargo/**'
