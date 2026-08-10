@@ -1952,65 +1952,81 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     result
 }
 
+/// One steer poll step: read newly appended ledger lines since `offset` and
+/// inject any `todo_updated` text for `todo_id` into the session. Returns
+/// the new offset. Extracted from the watch loop for testability.
+#[doc(hidden)] // test-visible seam for steer_todo_updates
+pub async fn steer_poll_once(
+    events_path: &std::path::Path,
+    offset: u64,
+    todo_id: &str,
+    client: &mut Option<crate::agent_client::AgentClient>,
+    session_id: &str,
+) -> u64 {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(meta) = std::fs::metadata(events_path) else {
+        return offset;
+    };
+    if meta.len() <= offset {
+        return offset;
+    }
+    let mut buf = String::new();
+    let mut new_offset = offset;
+    {
+        let Ok(mut f) = std::fs::File::open(events_path) else {
+            return offset;
+        };
+        if f.seek(SeekFrom::Start(offset)).is_err() {
+            return offset;
+        }
+        if f.read_to_string(&mut buf).is_err() {
+            return offset;
+        }
+        new_offset = meta.len();
+    }
+    for line in buf.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("kind").and_then(|k| k.as_str()) != Some("todo_updated") {
+            continue;
+        }
+        if v.get("todo_id").and_then(|t| t.as_str()) != Some(todo_id) {
+            continue;
+        }
+        let Some(new_text) = v.get("text").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        if client.is_none() {
+            *client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr())
+                .await
+                .ok();
+        }
+        if let Some(c) = client.as_mut() {
+            let msg = format!(
+                "ORCHESTRATOR STEERING (todo {todo_id} updated mid-turn — new instructions below; adjust your current work accordingly):\n{new_text}"
+            );
+            if c.steer(session_id, &msg).await.is_err() {
+                *client = None; // reconnect on the next event
+            }
+        }
+    }
+    new_offset
+}
+
 /// Mid-turn steering watcher: tail the goal ledger; when the orchestrator
 /// updates the CURRENT todo's text mid-turn (`todo update --text`), inject the
 /// new instructions into the running session via the `steer` RPC (drained by
 /// the agent at its next step boundary). Runs as a background task for the
 /// duration of one turn; never completes on its own (all error paths retry).
 async fn steer_todo_updates(events_path: std::path::PathBuf, todo_id: String, session_id: String) {
-    use std::io::{Read, Seek, SeekFrom};
     let mut offset = std::fs::metadata(&events_path)
         .map(|m| m.len())
         .unwrap_or(0);
     let mut client: Option<crate::agent_client::AgentClient> = None;
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-        let Ok(meta) = std::fs::metadata(&events_path) else {
-            continue;
-        };
-        if meta.len() <= offset {
-            continue;
-        }
-        let mut buf = String::new();
-        {
-            let Ok(mut f) = std::fs::File::open(&events_path) else {
-                continue;
-            };
-            if f.seek(SeekFrom::Start(offset)).is_err() {
-                continue;
-            }
-            if f.read_to_string(&mut buf).is_err() {
-                continue;
-            }
-            offset = meta.len();
-        }
-        for line in buf.lines() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
-            if v.get("kind").and_then(|k| k.as_str()) != Some("todo_updated") {
-                continue;
-            }
-            if v.get("todo_id").and_then(|t| t.as_str()) != Some(todo_id.as_str()) {
-                continue;
-            }
-            let Some(new_text) = v.get("text").and_then(|t| t.as_str()) else {
-                continue;
-            };
-            if client.is_none() {
-                client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr())
-                    .await
-                    .ok();
-            }
-            if let Some(c) = client.as_mut() {
-                let msg = format!(
-                    "ORCHESTRATOR STEERING (todo {todo_id} updated mid-turn — new instructions below; adjust your current work accordingly):\n{new_text}"
-                );
-                if c.steer(&session_id, &msg).await.is_err() {
-                    client = None; // reconnect on the next event
-                }
-            }
-        }
+        offset = steer_poll_once(&events_path, offset, &todo_id, &mut client, &session_id).await;
     }
 }
 
