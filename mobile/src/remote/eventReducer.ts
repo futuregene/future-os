@@ -151,6 +151,33 @@ export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
   return { ...emptyTimeline(), items };
 }
 
+/**
+ * Rebuild a session's timeline from a folded run projection (`projection.events`
+ * returned by `get_events_since`). The projection is a coalesced replica of a
+ * run whose event ring overflowed — individual events are in-order and carry
+ * their own idx, so folding them through the normal reducer reproduces the
+ * same transcript as if the run had streamed live. Each project contains the
+ * whole run, so the caller replaces the session's cache wholesale.
+ */
+export function timelineFromProjection(events: StreamEvent[]): TimelineState {
+  return events.reduce((state, event) => applyStreamEvent(state, event), emptyTimeline());
+}
+
+/**
+ * Drop a run's timeline items so a replay of that run (from `get_events_since`)
+ * can supersede them without duplicating the reply. History carries the run's
+ * partial persisted entries (the agent appends them as it streams); the event
+ * replay is authoritative. User bubbles and items of other runs are kept.
+ */
+export function stripRunItems(timeline: TimelineState, runId: string): TimelineState {
+  return {
+    ...timeline,
+    items: timeline.items.filter(item =>
+      item.kind === "message" && item.role === "user" ? true : item.runId !== runId,
+    ),
+  };
+}
+
 function eventData(event: StreamEvent): Record<string, unknown> {
   try {
     return JSON.parse(event.data) as Record<string, unknown>;

@@ -77,6 +77,9 @@ export function modelProviderFromReference(modelReference: string): string | und
 export interface RemoteSessionState {
   model?: string;
   thinkingLevel?: ThinkingLevel;
+  /** The session's active (in-flight) run, if any — the tail of its events
+   *  can be backfilled from `get_events_since` to resync on open/reconnect. */
+  activeRun?: { runId?: string } | null;
 }
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";

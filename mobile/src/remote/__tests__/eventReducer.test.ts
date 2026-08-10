@@ -1,8 +1,10 @@
 import {
   applyStreamEvent,
   emptyTimeline,
+  stripRunItems,
   timelineFromEntries,
   timelineFromHistory,
+  timelineFromProjection,
 } from "../eventReducer";
 
 describe("history reducer", () => {
@@ -122,6 +124,75 @@ describe("entry reducer", () => {
       { id: "a3", role: "assistant", content: "" },
     ]);
     expect(divider.items.map(item => item.kind)).toEqual(["message"]);
+  });
+});
+
+describe("projection reducer", () => {
+  test("folds a run projection into a timeline like the live stream", () => {
+    // The projection replaces the run's partial persisted entries wholesale,
+    // so folding it reproduces the same transcript as the live events.
+    const timeline = timelineFromProjection([
+      { type: "agent_start", data: "{}", runId: "run-1", idx: 0 },
+      {
+        type: "tool_start",
+        data: JSON.stringify({ tool_id: "t1", tool_name: "read" }),
+        runId: "run-1",
+        idx: 1,
+      },
+      {
+        type: "tool_end",
+        data: JSON.stringify({ tool_id: "t1" }),
+        runId: "run-1",
+        idx: 2,
+      },
+      { type: "text_chunk", data: JSON.stringify({ text: "answer" }), runId: "run-1", idx: 3 },
+      { type: "agent_end", data: "{}", runId: "run-1", idx: 4 },
+    ]);
+    expect(timeline.items.map(item => item.kind)).toEqual(["tool", "message"]);
+    const reply = timeline.items.find(item => item.kind === "message");
+    expect(reply).toMatchObject({ kind: "message", role: "assistant", text: "answer" });
+    expect(timeline.streaming).toBe(false);
+  });
+
+  test("empty projection is an empty timeline", () => {
+    const timeline = timelineFromProjection([]);
+    expect(timeline.items).toEqual([]);
+    expect(timeline.streaming).toBe(false);
+  });
+
+  test("stripRunItems drops a run's items but keeps user bubbles and other runs", () => {
+    const base = {
+      items: [
+        { id: "u1", kind: "message" as const, role: "user" as const, text: "hi" },
+        {
+          id: "a1",
+          kind: "message" as const,
+          role: "assistant" as const,
+          text: "run-1 reply",
+          runId: "run-1",
+        },
+        {
+          id: "t1",
+          kind: "tool" as const,
+          toolId: "t1",
+          name: "read" as const,
+          complete: true,
+          runId: "run-1",
+        },
+        {
+          id: "a2",
+          kind: "message" as const,
+          role: "assistant" as const,
+          text: "run-2 reply",
+          runId: "run-2",
+        },
+      ],
+      seenEvents: new Set<string>(),
+      currentRunId: null,
+      streaming: false,
+    };
+    const stripped = stripRunItems(base, "run-1");
+    expect(stripped.items.map(item => item.id)).toEqual(["u1", "a2"]);
   });
 });
 

@@ -24,6 +24,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
 import { useRemote } from "../remote/RemoteContext";
+import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
 
@@ -33,22 +34,34 @@ type Tab = "workspace" | "chat";
 // unmounted when entering a chat and remounted when returning).
 let lastTab: Tab = "chat";
 
-function SessionStatusIndicator({ status, unread }: { status?: string; unread?: boolean }) {
-  if (status === "queued" || status === "running" || status === "waiting_approval") {
+function SessionStatusIndicator({
+  status,
+  streaming,
+  unread,
+}: {
+  status?: string;
+  streaming?: boolean;
+  unread?: boolean;
+}) {
+  // Desktop parity (ThreadListItem): a local running/queued status wins, but a
+  // session the agent reports as streaming with no local run row (a prompt
+  // started by the TUI/CLI/another machine) still reads as running.
+  const effective = effectiveRunStatus(status, streaming);
+  if (effective === "queued" || effective === "running" || effective === "waiting_approval") {
     return (
       <View style={styles.indicator}>
         <ActivityIndicator color={colors.accent} size={14} />
       </View>
     );
   }
-  if (unread && status === "completed") {
+  if (unread && effective === "completed") {
     return (
       <View style={styles.indicator}>
         <View style={[styles.statusDot, styles.statusCompleted]} />
       </View>
     );
   }
-  if (unread && status === "failed") {
+  if (unread && effective === "failed") {
     return (
       <View style={styles.indicator}>
         <View style={[styles.statusDot, styles.statusFailed]} />
@@ -124,6 +137,7 @@ export function SessionsScreen() {
       </Text>
       <SessionStatusIndicator
         status={item.status}
+        streaming={item.streaming}
         unread={remote.unreadSessions.has(item.sessionId)}
       />
     </Pressable>
