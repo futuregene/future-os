@@ -34,6 +34,9 @@ pub struct MockState {
     pub fail_silent: HashSet<String>,
     /// Types that fail the unary call with a tonic transport Status.
     pub status_error: HashSet<String>,
+    /// Fail the next N calls of this type with a tonic Status, then succeed
+    /// (transient-error retry paths).
+    pub fail_times: HashMap<String, u64>,
     /// Canned events for stream_events.
     pub events: Vec<StreamEvent>,
     /// stream_events RPC fails immediately with a tonic Status.
@@ -88,6 +91,12 @@ impl FutureAgent for MockAgent {
         if st.status_error.contains(&cmd.r#type) {
             return Err(tonic::Status::unavailable("mock transport failure"));
         }
+        if let Some(n) = st.fail_times.get_mut(&cmd.r#type) {
+            if *n > 0 {
+                *n -= 1;
+                return Err(tonic::Status::unavailable("mock transient failure"));
+            }
+        }
         if st.fail_commands.contains(&cmd.r#type) {
             return Ok(response(
                 &cmd,
@@ -127,7 +136,7 @@ impl FutureAgent for MockAgent {
                     .get(&cmd.session_id)
                     .map(|r| {
                         format!(
-                            "\"activeRun\":{{\"runId\":\"{}\",\"state\":\"running\"}},",
+                            ",\"activeRun\":{{\"runId\":\"{}\",\"state\":\"running\"}}",
                             r
                         )
                     })
@@ -137,7 +146,7 @@ impl FutureAgent for MockAgent {
                      \"permissionLevel\":\"all\",\"cwd\":\"/tmp\",\"imageSupport\":true,\
                      \"contextTokens\":100,\"contextWindow\":1000,\"tokensIn\":10,\
                      \"tokensOut\":20,\"queryCount\":3,\"totalCost\":0.01,\
-                     \"autoCompactionEnabled\":true,\"isStreaming\":false,{}}}",
+                     \"autoCompactionEnabled\":true,\"isStreaming\":false{}}}",
                     cmd.session_id, active
                 )
             }

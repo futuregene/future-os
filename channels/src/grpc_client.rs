@@ -113,7 +113,8 @@ impl AgentClient {
             id: uuid::Uuid::new_v4().to_string(),
             r#type: cmd_type.to_string(),
             session_id: session_id.to_string(),
-            entry_id: String::new(),
+            // entry_id comes from `extra` (approval_decision passes the
+            // request id through it) — an explicit field here would shadow it.
             ..extra
         });
 
@@ -720,5 +721,373 @@ mod tests {
             ImageData::Url(u) => assert!(u.starts_with("https://")),
             _ => panic!("expected Url"),
         }
+    }
+
+    // ─── Live calls against the mock gRPC agent ──────────────────────────────
+
+    use crate::test_support::{self as ts, MockState};
+
+    async fn connect_to(state: MockState) -> (AgentClient, ts::SharedState) {
+        let (addr, shared) = ts::spawn_mock_grpc(state).await;
+        let client = AgentClient::connect(&addr).await.expect("connect");
+        (client, shared)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_variants() {
+        // Plain host:port works.
+        let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
+        assert!(AgentClient::connect(&addr).await.is_ok());
+        // http:// prefix is stripped.
+        assert!(AgentClient::connect(&format!("http://{}", addr)).await.is_ok());
+        // Unreachable → error mentioning the address.
+        let err = AgentClient::connect("127.0.0.1:1").await.err().unwrap();
+        assert!(err.to_string().contains("127.0.0.1:1"), "{err}");
+        // Garbage URI → endpoint parse error.
+        assert!(AgentClient::connect("%%not a uri%%").await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn call_error_variants() {
+        // success=false with a message
+        let mut state = MockState::default();
+        state.fail_commands.insert("compact".to_string());
+        state.fail_silent.insert("abort".to_string());
+        state.status_error.insert("set_cwd".to_string());
+        let (mut c, _) = connect_to(state).await;
+
+        let err = c.compact("s").await.unwrap_err();
+        assert!(err.to_string().contains("mock failure: compact"), "{err}");
+        let err = c.abort("s").await.unwrap_err();
+        assert!(err.to_string().contains("unknown error"), "{err}");
+        let err = c.set_cwd("s", "/x").await.unwrap_err();
+        assert!(err.to_string().contains("gRPC call 'set_cwd' failed"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_session_ok_and_missing_id() {
+        let (mut c, _) = connect_to(MockState::default()).await;
+        let sid = c.new_session("/tmp", "test").await.unwrap();
+        assert_eq!(sid, "mock-session-1");
+
+        let mut state = MockState::default();
+        state.responses.insert("new_session".into(), "{}".into());
+        let (mut c, _) = connect_to(state).await;
+        let err = c.new_session("/tmp", "test").await.unwrap_err();
+        assert!(err.to_string().contains("missing sessionId"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prompt_tracks_run_and_maps_images() {
+        let (mut c, shared) = connect_to(MockState::default()).await;
+        let images = vec![
+            ImageInput {
+                content_type: "image_url".into(),
+                data: ImageData::Url("https://x/img.png".into()),
+                file_path: None,
+            },
+            ImageInput {
+                content_type: "image_url".into(),
+                data: ImageData::Base64("data:image/png;base64,AA==".into()),
+                file_path: Some("/tmp/i.png".into()),
+            },
+        ];
+        let run = c.prompt("sess", "hello", images).await.unwrap();
+        assert_eq!(run, "mock-run-1");
+        // prompt_superseding uses the busy_policy override.
+        let run2 = c.prompt_superseding("sess", "again", vec![]).await.unwrap();
+        assert_eq!(run2, "mock-run-2");
+
+        let prompts = ts::recorded_of(&shared, "prompt");
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0].busy_policy, "reject_if_busy");
+        assert_eq!(prompts[1].busy_policy, "supersede_session");
+        assert_eq!(prompts[0].images.len(), 2);
+        assert!(matches!(
+            prompts[0].images[0].content,
+            Some(proto::image_content::Content::Url(_))
+        ));
+        assert!(matches!(
+            prompts[0].images[1].content,
+            Some(proto::image_content::Content::Base64(_))
+        ));
+        assert_eq!(prompts[0].images[1].file_path, "/tmp/i.png");
+        assert!(!prompts[0].client_request_id.is_empty());
+        assert!(!prompts[0].requested_run_id.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prompt_run_id_variants() {
+        // camelCase runId fallback.
+        let mut state = MockState::default();
+        state.responses.insert("prompt".into(), r#"{"runId":"r-camel"}"#.into());
+        let (mut c, _) = connect_to(state).await;
+        assert_eq!(c.prompt("s", "m", vec![]).await.unwrap(), "r-camel");
+
+        // Missing run id entirely → error.
+        let mut state = MockState::default();
+        state.responses.insert("prompt".into(), "{}".into());
+        let (mut c, _) = connect_to(state).await;
+        let err = c.prompt("s", "m", vec![]).await.unwrap_err();
+        assert!(err.to_string().contains("missing canonical run id"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_until_run_active_paths() {
+        // Already active (mock default: prompt registers the active run).
+        let (mut c, _) = connect_to(MockState::default()).await;
+        let run = c.prompt("sess", "m", vec![]).await.unwrap();
+        c.wait_until_run_active("sess", &run, Duration::from_secs(2))
+            .await
+            .unwrap();
+
+        // Queued first, then active.
+        let mut state = MockState::default();
+        state.sequences.insert(
+            "get_state".into(),
+            vec![
+                r#"{"queuedRuns":[{"runId":"r-q"}]}"#.to_string(),
+                r#"{"activeRun":{"runId":"r-q","state":"running"}}"#.to_string(),
+            ],
+        );
+        let (mut c, _) = connect_to(state).await;
+        c.wait_until_run_active("sess", "r-q", Duration::from_secs(2))
+            .await
+            .unwrap();
+
+        // Neither active nor queued → superseded run cancelled before start.
+        let mut state = MockState::default();
+        state
+            .responses
+            .insert("get_state".into(), r#"{"queuedRuns":[]}"#.into());
+        let (mut c, _) = connect_to(state).await;
+        let err = c
+            .wait_until_run_active("sess", "r-gone", Duration::from_secs(2))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cancelled before start"), "{err}");
+
+        // Always queued → times out.
+        let mut state = MockState::default();
+        state.responses.insert(
+            "get_state".into(),
+            r#"{"queuedRuns":[{"runId":"r-slow"}]}"#.into(),
+        );
+        let (mut c, _) = connect_to(state).await;
+        let err = c
+            .wait_until_run_active("sess", "r-slow", Duration::from_millis(250))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abort_sends_tracked_run_id() {
+        let (mut c, shared) = connect_to(MockState::default()).await;
+        // No prompt yet → empty run_id.
+        c.abort("sess").await.unwrap();
+        let run = c.prompt("sess", "m", vec![]).await.unwrap();
+        c.abort("sess").await.unwrap();
+        let aborts = ts::recorded_of(&shared, "abort");
+        assert_eq!(aborts.len(), 2);
+        assert_eq!(aborts[0].run_id, "");
+        assert_eq!(aborts[1].run_id, run);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_until_idle_paths() {
+        // No active run → immediately idle.
+        let (mut c, _) = connect_to(MockState::default()).await;
+        c.wait_until_idle("sess", Duration::from_secs(2)).await.unwrap();
+
+        // Stuck states → explicit error.
+        for stuck in ["cancellation_stuck", "persistence_degraded"] {
+            let mut state = MockState::default();
+            state.responses.insert(
+                "get_state".into(),
+                format!(r#"{{"activeRun":{{"runId":"r","state":"{stuck}"}}}}"#),
+            );
+            let (mut c, _) = connect_to(state).await;
+            let err = c
+                .wait_until_idle("sess", Duration::from_secs(2))
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains(stuck), "{err}");
+        }
+
+        // Busy forever → timeout error.
+        let mut state = MockState::default();
+        state.responses.insert(
+            "get_state".into(),
+            r#"{"activeRun":{"runId":"r","state":"running"}}"#.into(),
+        );
+        let (mut c, _) = connect_to(state).await;
+        let err = c
+            .wait_until_idle("sess", Duration::from_millis(250))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
+
+        // Transient transport failure, then idle → retries succeed.
+        let mut state = MockState::default();
+        state.fail_times.insert("get_state".into(), 1);
+        let (mut c, _) = connect_to(state).await;
+        c.wait_until_idle("sess", Duration::from_secs(2)).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_state_parses_all_fields() {
+        let (mut c, _) = connect_to(MockState::default()).await;
+        let s = c.get_state("sess").await.unwrap();
+        assert_eq!(s.model, "future/k3");
+        assert!(s.image_support);
+        assert_eq!(s.thinking_level, "high");
+        assert_eq!(s.context_tokens, 100);
+        assert_eq!(s.context_window, 1000);
+        assert_eq!(s.tokens_in, 10);
+        assert_eq!(s.tokens_out, 20);
+        assert_eq!(s.query_count, 3);
+        assert_eq!(s.session_id, "sess");
+        assert_eq!(s.cwd, "/tmp");
+        assert!(s.auto_compaction);
+        assert!((s.total_cost - 0.01).abs() < 1e-9);
+        assert_eq!(s.permission_level, "all");
+
+        // Legacy session_name fallback + field defaults on an empty payload.
+        let mut state = MockState::default();
+        state
+            .responses
+            .insert("get_state".into(), r#"{"session_name":"legacy"}"#.into());
+        let (mut c, _) = connect_to(state).await;
+        let s = c.get_state("x").await.unwrap();
+        assert_eq!(s.model, "?");
+        assert_eq!(s.session_name, "legacy");
+        assert_eq!(s.thinking_level, "off");
+        assert_eq!(s.permission_level, "all");
+
+        // Canonical sessionName wins over the legacy key.
+        let mut state = MockState::default();
+        state.responses.insert(
+            "get_state".into(),
+            r#"{"sessionName":"canon","session_name":"legacy"}"#.into(),
+        );
+        let (mut c, _) = connect_to(state).await;
+        assert_eq!(c.get_state("x").await.unwrap().session_name, "canon");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_available_models_ok_and_empty() {
+        let (mut c, _) = connect_to(MockState::default()).await;
+        let models = c.get_available_models("sess").await.unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "k3");
+        assert_eq!(models[0].name, "K3");
+        assert_eq!(models[0].provider, "future");
+        assert!(models[0].image);
+        assert_eq!(models[0].context_window, 256000);
+        assert_eq!(models[0].max_tokens, 0);
+        assert!(!models[0].reasoning);
+
+        // No models key → empty vec.
+        let mut state = MockState::default();
+        state
+            .responses
+            .insert("list_models".into(), "{}".into());
+        let (mut c, _) = connect_to(state).await;
+        assert!(c.get_available_models("sess").await.unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn simple_command_wrappers_send_right_fields() {
+        let (mut c, shared) = connect_to(MockState::default()).await;
+        c.set_model("s", "future/k3").await.unwrap();
+        c.set_thinking_level("s", "high").await.unwrap();
+        c.set_permission_level("s", "workspace").await.unwrap();
+        c.set_cwd("s", "/work").await.unwrap();
+        c.switch_session("s").await.unwrap();
+        c.approval_decision("s", "req_1", true, "ok via card").await.unwrap();
+        c.approval_decision("s", "req_2", false, "no").await.unwrap();
+
+        let set_model = ts::recorded_of(&shared, "set_model");
+        assert_eq!(set_model[0].model_id, "future/k3");
+        let thinking = ts::recorded_of(&shared, "set_thinking_level");
+        assert_eq!(thinking[0].level, "high");
+        let perm = ts::recorded_of(&shared, "set_permission_level");
+        assert_eq!(perm[0].level, "workspace");
+        let cwd = ts::recorded_of(&shared, "set_cwd");
+        assert_eq!(cwd[0].cwd, "/work");
+        let switch = ts::recorded_of(&shared, "switch_session");
+        assert_eq!(switch[0].session_id, "s");
+        let approvals = ts::recorded_of(&shared, "approval_decision");
+        assert_eq!(approvals[0].mode, "approved");
+        assert_eq!(approvals[0].entry_id, "req_1");
+        assert_eq!(approvals[0].message, "ok via card");
+        assert_eq!(approvals[1].mode, "rejected");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_run_events_ok_and_attach_failure() {
+        // Attach failure surfaces as an error.
+        let mut state = MockState::default();
+        state.stream_status_error = true;
+        let (mut c, _) = connect_to(state).await;
+        let err = c.stream_run_events("sess", "r").await.err().unwrap();
+        assert!(err.to_string().contains("Failed to attach"), "{err}");
+
+        // Happy path: events flow, stream ends with None.
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("r", 0, "agent_start", "{}"),
+            ts::ev("r", 1, "text_chunk", r#"{"text":"hi"}"#),
+        ];
+        let (mut c, _) = connect_to(state).await;
+        let mut stream = c.stream_run_events("sess", "r").await.unwrap();
+        let e1 = stream.message().await.unwrap().expect("event 1");
+        assert_eq!(e1.r#type, "agent_start");
+        let e2 = stream.message().await.unwrap().expect("event 2");
+        assert_eq!(e2.r#type, "text_chunk");
+        assert!(stream.message().await.unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_expands_projection_snapshots_in_place() {
+        let mut snapshot = ts::ev("r", 0, "run_snapshot", "");
+        snapshot.projection_snapshot = true;
+        snapshot.snapshot_events = vec![
+            proto::ProjectedRunEvent {
+                r#type: "text_chunk".into(),
+                data: r#"{"text":"a"}"#.into(),
+                idx: 7,
+                payload: None,
+            },
+            proto::ProjectedRunEvent {
+                r#type: "text_chunk".into(),
+                data: r#"{"text":"b"}"#.into(),
+                idx: 8,
+                payload: None,
+            },
+        ];
+        let mut state = MockState::default();
+        state.events = vec![ts::ev("r", 0, "agent_start", "{}"), snapshot];
+        let (mut c, _) = connect_to(state).await;
+        let mut stream = c.stream_run_events("sess", "r").await.unwrap();
+        assert_eq!(stream.message().await.unwrap().unwrap().r#type, "agent_start");
+        let a = stream.message().await.unwrap().unwrap();
+        let b = stream.message().await.unwrap().unwrap();
+        assert_eq!((a.r#type.as_str(), a.idx), ("text_chunk", 7));
+        assert_eq!((b.r#type.as_str(), b.idx), ("text_chunk", 8));
+        assert!(stream.message().await.unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_mid_error_surfaces() {
+        let mut state = MockState::default();
+        state.events = vec![ts::ev("r", 0, "agent_start", "{}")];
+        state.stream_mid_error_after = Some(1);
+        let (mut c, _) = connect_to(state).await;
+        let mut stream = c.stream_run_events("sess", "r").await.unwrap();
+        assert!(stream.message().await.unwrap().is_some());
+        let err = stream.message().await.unwrap_err();
+        assert!(err.to_string().contains("event stream failed"), "{err}");
     }
 }
