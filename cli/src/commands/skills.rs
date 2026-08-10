@@ -1768,4 +1768,209 @@ mod tests {
             .unwrap();
         assert_eq!(read_skill_md_version(&path).await, None);
     }
+
+    // ── Remainder coverage ────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_install_builtin_update_and_bare_install() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let zip = make_zip(&[("SKILL.md", "---\nversion: 1.0\n---\n")]);
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/skills",
+                200,
+                &catalog(&[("future-a", Some("1.0"), "a")]),
+            ),
+            crate::test_server::HttpRoute::binary(
+                "/client/v1/skills/future-a/versions/1.0/download",
+                200,
+                zip,
+            ),
+        ])
+        .await;
+        point_platform_at(&base).await;
+        // notify_agent_refresh_skills is fire-and-forget: point at a dead
+        // port so it fails fast and silently.
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
+
+        // install-builtin dispatch arm.
+        let (out, cap) = Output::memory();
+        skills("install-builtin", &[], &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Installing 1 builtin skills"), "{stdout}");
+
+        // Second run: everything installed → early return line.
+        let (out, cap) = Output::memory();
+        skills("install-builtin", &[], &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("already installed"), "{stdout}");
+
+        // Bare "install" (no name) == install-builtin.
+        let (out, _cap) = Output::memory();
+        skills("install", &[], &out).await.unwrap();
+
+        // update dispatch arm (nothing to update).
+        let (out, cap) = Output::memory();
+        skills("update", &[], &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("up to date") || stdout.contains("Up to date"), "{stdout}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_install_strips_leading_v() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let zip = make_zip(&[("future-x/", ""), ("future-x/SKILL.md", "---\nversion: 1.0\n---\n")]);
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::binary(
+            // The v-stripped version must be used in the download path.
+            "/client/v1/skills/future-x/versions/1.0/download",
+            200,
+            zip,
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
+        let (out, cap) = Output::memory();
+        skills(
+            "install",
+            &["future-x".to_string(), "--version".to_string(), "v1.0".to_string()],
+            &out,
+        )
+        .await
+        .unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Downloading future-x v1.0"), "{stdout}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn update_skips_catalog_entries_without_version() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Installed skill whose catalog entry has NO latest_version → skip.
+        plant_skill("future-a", "0.9").await;
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("future-a", None, "a")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        update_skills(&out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("up to date") || stdout.contains("Up to date"), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn list_ignores_skills_without_version() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // One skill with a version, one whose SKILL.md has none (excluded
+        // from the installed set), one dir with no SKILL.md at all.
+        plant_skill("future-a", "1.0").await;
+        let plain = skills_dir().join("future-plain");
+        tokio::fs::create_dir_all(&plain).await.unwrap();
+        tokio::fs::write(plain.join("SKILL.md"), "# no frontmatter\n")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(skills_dir().join("future-empty"))
+            .await
+            .unwrap();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("future-a", Some("1.0"), "a")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        list_skills(&out).await;
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("future-a"), "{stdout}");
+        // The unversioned/SKILL.md-less dirs are not in the installed set.
+        assert!(!stdout.contains("future-plain"), "{stdout}");
+        assert!(!stdout.contains("future-empty"), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn read_skill_md_version_numeric_and_yaml_edge_arms() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+
+        // Metadata JSON with a NUMERIC version → f64 stringification.
+        let path = dir.path().join("SKILL.md");
+        tokio::fs::write(
+            &path,
+            "---\nname: x\nmetadata: {\"version\": 1.5}\n---\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_skill_md_version(&path).await, Some("1.5".to_string()));
+
+        // Metadata JSON with an EMPTY version → falls through to None.
+        tokio::fs::write(&path, "---\nmetadata: {\"version\": \"\"}\n---\n")
+            .await
+            .unwrap();
+        assert_eq!(read_skill_md_version(&path).await, None);
+
+        // YAML metadata block: comment lines skipped; a non-indented line
+        // terminates the block scan (no version anywhere → None).
+        tokio::fs::write(
+            &path,
+            "---\nmetadata:\n  # comment\n  other: 1\nnext: 2\n---\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_skill_md_version(&path).await, None);
+
+        // YAML block with the version before any terminator → found.
+        tokio::fs::write(
+            &path,
+            "---\nmetadata:\n  # comment\n  version: '2.3'\n---\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_skill_md_version(&path).await, Some("2.3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn flatten_single_subdir_vanishing_entry_is_ok() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        // Single entry that is a BROKEN SYMLINK: metadata fails → Ok(()).
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                dir.path().join("missing-target"),
+                dir.path().join("dangling"),
+            )
+            .unwrap();
+            flatten_single_subdir(dir.path()).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_across_device_fallback_copies_when_rename_fails() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        tokio::fs::create_dir_all(&src).await.unwrap();
+        tokio::fs::write(src.join("f.txt"), "data").await.unwrap();
+        // dest's PARENT does not exist → rename fails with ENOENT → the
+        // copy+delete fallback runs (copy_recursive creates parents).
+        let dest = dir.path().join("no-such-parent").join("dest");
+        rename_across_device(&src, &dest).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(dest.join("f.txt")).await.unwrap(),
+            "data"
+        );
+        assert!(!src.exists());
+    }
 }
