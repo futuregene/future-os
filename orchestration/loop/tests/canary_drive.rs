@@ -7,6 +7,7 @@ mod common;
 use common::{cli_root, init_goal, open_store, CliRoot};
 use future_loop::canary::run_smoke;
 use future_loop::state::Goal;
+#[cfg(unix)]
 use future_loop::store::Store;
 
 fn check<'a>(

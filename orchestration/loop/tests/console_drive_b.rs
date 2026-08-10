@@ -4,9 +4,7 @@
 
 mod common;
 
-use common::{
-    add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record,
-};
+use common::{cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record};
 use future_loop::state::now_epoch;
 use future_loop::store::Event;
 

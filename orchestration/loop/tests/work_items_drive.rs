@@ -179,7 +179,7 @@ fn delivery_labels_and_classifiers() {
     assert!(!outcome_floor_configured(&[], &[]));
 
     // Streaks over run history.
-    let mut gap_run = || {
+    let gap_run = || {
         let mut r = run_record("t", "completed", 1);
         r.evidence = "nothing relevant".to_string();
         r

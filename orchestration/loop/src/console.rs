@@ -1973,7 +1973,6 @@ pub async fn steer_poll_once(
         return offset;
     }
     let mut buf = String::new();
-    let mut new_offset = offset;
     {
         let Ok(mut f) = std::fs::File::open(events_path) else {
             return offset;
@@ -1984,8 +1983,8 @@ pub async fn steer_poll_once(
         if f.read_to_string(&mut buf).is_err() {
             return offset;
         }
-        new_offset = meta.len();
     }
+    let new_offset = meta.len();
     for line in buf.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -5139,7 +5138,7 @@ mod coverage_tests {
         // sync_compat on a goal with no ledger → Ok no-op; refresh_next_action
         // on the same → not-found error.
         sync_compat(&store, "goal_ghost").unwrap();
-        assert!(refresh_next_action(&mut store, "goal_ghost").is_err());
+        assert!(refresh_next_action(&store, "goal_ghost").is_err());
         // And the write path for a real goal (produces ACTIVE_GOAL_STATE.md).
         let goal = Goal::new("gs", "sync goal", "/tmp");
         store.register(&goal).unwrap();
@@ -5149,7 +5148,7 @@ mod coverage_tests {
                 ts: 1,
             })
             .unwrap();
-        refresh_next_action(&mut store, "gs").unwrap();
+        refresh_next_action(&store, "gs").unwrap();
         sync_compat(&store, "gs").unwrap();
         assert!(store.goal_dir("gs").join("ACTIVE_GOAL_STATE.md").exists());
     }

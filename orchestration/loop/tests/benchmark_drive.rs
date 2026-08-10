@@ -278,8 +278,10 @@ fn grpc_adapter_error_paths() {
         let mut adapter = GrpcLoopxAdapter::connect(&addr, "/tmp").await.unwrap();
         assert!(run_qualification_case(&mut adapter, &case("gb", "cb", 1), None).is_err());
         // observe: stream attach failure.
-        let mut st = MockState::default();
-        st.stream_error = true;
+        let st = MockState {
+            stream_error: true,
+            ..Default::default()
+        };
         let (addr, _) = spawn_mock(st).await;
         let mut adapter = GrpcLoopxAdapter::connect(&addr, "/tmp").await.unwrap();
         assert!(run_qualification_case(&mut adapter, &case("gb", "cb", 1), None).is_err());

@@ -6,7 +6,7 @@
 mod common;
 
 use common::mock_agent::{completed_events, spawn_mock, MockState};
-use common::{cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record};
+use common::{cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record};
 use future_loop::state::{now_epoch, Todo, TodoStatus};
 
 fn rt() -> tokio::runtime::Runtime {
@@ -370,8 +370,10 @@ fn steer_poll_once_arms() {
         let _ = future_loop::console::steer_poll_once(&events_path, off, "t1", &mut client, "sess")
             .await;
         // steer failure → client reset (next matching event reconnects).
-        let mut st = MockState::default();
-        st.fail_commands.insert("steer".to_string());
+        let st = MockState {
+            fail_commands: ["steer".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
         let (addr2, _shared2) = spawn_mock(st).await;
         std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr2);
         let mut client2 = None;

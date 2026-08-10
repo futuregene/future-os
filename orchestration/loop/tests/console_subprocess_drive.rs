@@ -113,9 +113,8 @@ fn worker_bridge_completed_turn_to_terminal() {
     let gid = init_goal(&root, "bridge completes");
     // One completed result for the onboarding todo → next decide is terminal.
     let onboarding_text = "future loop status";
-    let result = format!(
-        "{{\"todo_id\":\"TODO\",\"terminal_state\":\"completed\",\"evidence\":\"validated\",\"tools\":[\"shell\"]}}\n"
-    );
+    let result =
+        "{\"todo_id\":\"TODO\",\"terminal_state\":\"completed\",\"evidence\":\"validated\",\"tools\":[\"shell\"]}\n".to_string();
     // The bridge selects the todo; we must answer with ITS id. Read the first
     // packet line to learn the id? Simpler: complete every todo via two
     // turns — but we only have one todo. Use a two-phase exchange.
@@ -338,6 +337,7 @@ fn serve_status_dashboard_and_json() {
         assert!(buf.contains("200 OK"), "{buf}");
     }
     child.kill().unwrap();
+    child.wait().unwrap();
 
     // Empty registry → "no goals" dashboard.
     let root2 = tmp_root("serve-empty");
@@ -346,6 +346,7 @@ fn serve_status_dashboard_and_json() {
     let dash = http_get(port2, "/");
     assert!(dash.contains("no goals"), "{dash}");
     child2.kill().unwrap();
+    child2.wait().unwrap();
 }
 
 // ── todo update --help (process exit) ──────────────────────────────────────

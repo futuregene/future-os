@@ -5,7 +5,7 @@
 mod common;
 
 use common::{cli_root, init_goal, open_store, run_record};
-use future_loop::state::{now_epoch, Goal, TaskClass, Todo, TodoStatus};
+use future_loop::state::{now_epoch, Goal, Todo, TodoStatus};
 use future_loop::store::{Event, Store};
 
 // ── agents/scope ───────────────────────────────────────────────────────────

@@ -172,7 +172,7 @@ fn revision_retention_overflow() {
     let state_file = dir.path().join("state.json");
     // MAX_REVISIONS is small (bounded history) — exceed it and confirm the
     // rollback target survives trimming.
-    let mut version = |v: u32| manifest_with_entrypoint("ext-churn", &format!("1.0.{v}"), "sh");
+    let version = |v: u32| manifest_with_entrypoint("ext-churn", &format!("1.0.{v}"), "sh");
     install_extension(&version(0), &state_file, "install", true).unwrap();
     for v in 1..10 {
         install_extension(&version(v), &state_file, "upgrade", true).unwrap();

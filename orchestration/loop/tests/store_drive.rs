@@ -203,7 +203,7 @@ fn replay_edge_paths() {
             "goal_id": "g1",
             "ts": 1,
         });
-        format!("{}\n", se.to_string())
+        format!("{}\n", se)
     };
     std::fs::write(&events_path, format!("{line}{line}")).unwrap();
     let goal = store.replay("g1").unwrap();
@@ -211,11 +211,7 @@ fn replay_edge_paths() {
     // Conflicting: same id, different payload.
     let a = serde_json::json!({"event_id":"evt-c","kind":"goal_started","goal_id":"g1","ts":1});
     let b = serde_json::json!({"event_id":"evt-c","kind":"goal_started","goal_id":"g1","ts":2});
-    std::fs::write(
-        &events_path,
-        format!("{}\n{}\n", a.to_string(), b.to_string()),
-    )
-    .unwrap();
+    std::fs::write(&events_path, format!("{}\n{}\n", a, b)).unwrap();
     assert!(store.replay("g1").is_err(), "conflicting ids fail closed");
 }
 
@@ -328,11 +324,7 @@ fn verify_ledger_reports() {
         &events_path,
         format!(
             "{}\n{}\n{}\n{}\n{}\n",
-            legacy.to_string(),
-            dup.to_string(),
-            dup.to_string(),
-            conflict_a.to_string(),
-            conflict_b.to_string(),
+            legacy, dup, dup, conflict_a, conflict_b,
         ),
     )
     .unwrap();

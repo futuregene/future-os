@@ -11,7 +11,7 @@ use future_loop::replay::decision_replay::{
     reduce_public_safe_decision, replay_public_safe_decision_case,
     validate_public_safe_decision_case, walk_public_safe_violations, DecisionReplay,
 };
-use future_loop::state::{Goal, TaskClass, Todo, TodoStatus};
+use future_loop::state::{Goal, Todo, TodoStatus};
 
 fn packet_for(goal: &Goal) -> future_loop::contract::ShouldRunPacket {
     future_loop::decision::decide_for(goal, std::time::SystemTime::now(), None)

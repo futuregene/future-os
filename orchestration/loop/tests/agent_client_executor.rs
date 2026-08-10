@@ -121,33 +121,44 @@ fn command_error_paths() {
         assert!(msg.contains("mock failure for new_session"), "{msg}");
 
         // Transport-level gRPC error (tonic status).
-        let mut st = MockState::default();
-        st.grpc_error = true;
+        let st = MockState {
+            grpc_error: true,
+            ..Default::default()
+        };
         let (addr, _) = spawn_mock(st).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let err = client.list_models().await.unwrap_err();
         assert!(format!("{err:#}").contains("gRPC 'list_models' failed"));
 
         // invalid JSON payload.
-        let mut st = MockState::default();
-        st.invalid_json.insert("list_models".to_string());
+        let st = MockState {
+            invalid_json: ["list_models".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
         let (addr, _) = spawn_mock(st).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let err = client.list_models().await.unwrap_err();
         assert!(format!("{err:#}").contains("invalid JSON"));
 
         // new_session payload without sessionId.
-        let mut st = MockState::default();
-        st.raw.insert("new_session".to_string(), "{}".to_string());
+        let st = MockState {
+            raw: [("new_session".to_string(), "{}".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
         let (addr, _) = spawn_mock(st).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let err = client.new_session("/tmp").await.unwrap_err();
         assert!(format!("{err:#}").contains("missing sessionId"));
 
         // prompt payload without run_id.
-        let mut st = MockState::default();
-        st.raw
-            .insert("prompt".to_string(), "{\"nope\":1}".to_string());
+        let st = MockState {
+            raw: [("prompt".to_string(), "{\"nope\":1}".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
         let (addr, _) = spawn_mock(st).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let err = client.prompt("s", "m", "r").await.unwrap_err();
@@ -295,8 +306,10 @@ fn run_turn_error_event_and_stream_failure() {
         assert!(format!("{err:#}").contains("stream error"));
 
         // Attach failure.
-        let mut st = MockState::default();
-        st.stream_error = true;
+        let st = MockState {
+            stream_error: true,
+            ..Default::default()
+        };
         let (addr, _) = spawn_mock(st).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let err = client.run_turn("sess", "mine", None).await.unwrap_err();

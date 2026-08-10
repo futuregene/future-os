@@ -5,7 +5,7 @@
 mod common;
 
 use common::mock_agent::{completed_events, spawn_mock, MockState};
-use common::{cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record};
+use common::{cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store};
 use future_loop::state::now_epoch;
 
 fn rt() -> tokio::runtime::Runtime {

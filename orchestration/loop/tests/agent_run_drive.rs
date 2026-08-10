@@ -8,9 +8,9 @@
 mod common;
 
 use common::mock_agent::{completed_events, ev, spawn_mock, MockState};
-use common::{
-    add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, todo_id_by_text,
-};
+#[cfg(unix)]
+use common::todo_id_by_text;
+use common::{add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store};
 use future_loop::state::{now_epoch, TodoStatus};
 
 fn rt() -> tokio::runtime::Runtime {
@@ -430,8 +430,10 @@ fn run_with_model_and_thinking_flags() {
 #[test]
 fn run_max_turn_secs_graceful_timeout() {
     let cr = cli_root();
-    let mut st = MockState::default();
-    st.hang_stream = true;
+    let st = MockState {
+        hang_stream: true,
+        ..Default::default()
+    };
     let (_rt, _shared) = mock_env(st);
     let goal = init_goal(&cr, "hanging turn");
     // The turn stream never yields; the wall-clock budget stops the run gracefully.
@@ -462,8 +464,10 @@ fn models_text_and_json() {
 #[test]
 fn models_sparse_payload_defaults() {
     let _cr = cli_root();
-    let mut st = MockState::default();
-    st.models_payload = Some("{\"models\":[{\"id\":\"bare\"}]}".to_string());
+    let st = MockState {
+        models_payload: Some("{\"models\":[{\"id\":\"bare\"}]}".to_string()),
+        ..Default::default()
+    };
     let (_rt, _shared) = mock_env(st);
     cli_ok(&["models"]);
 }

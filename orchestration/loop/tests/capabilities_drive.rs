@@ -172,7 +172,7 @@ fn record(id: &str) -> CapabilityRecord {
 fn catalog_registration_errors() {
     let mut catalog = CapabilityCatalog::with_builtin();
     // Empty id.
-    let mut r = record("");
+    let r = record("");
     assert!(catalog.register_capability(r.clone()).is_err());
     // Empty required field (title).
     let mut r = record("cap-x");
