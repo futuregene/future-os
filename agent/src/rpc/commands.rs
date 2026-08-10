@@ -3562,4 +3562,852 @@ mod tests {
             assert!(payload.is_some(), "{cmd_type}: typed payload must encode");
         }
     }
+
+    // ── coverage batch 1: sessionless dispatch + config-write paths ─────────
+
+    #[test]
+    fn sync_future_models_without_credentials_reports_not_synced() {
+        let _home = TestHome::new();
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("sync_future_models")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["synced"], false);
+        assert!(resp["data"]["modelCount"].is_number());
+    }
+
+    #[test]
+    fn set_default_model_rejects_empty_and_unknown_ids() {
+        let _home = TestHome::new();
+        let state = make_app_state();
+
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("set_default_model"),
+        ));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("model_id is empty"));
+
+        let mut cmd = make_cmd("set_default_model");
+        cmd.model_id = "no-such-provider/no-such-model".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("not in the catalog"));
+    }
+
+    #[test]
+    fn set_default_model_persists_catalog_entry() {
+        let home = TestHome::new();
+        let state = make_app_state();
+        let candidate = {
+            let registry = state.model_registry.read();
+            let model = registry
+                .all_models()
+                .first()
+                .expect("builtin catalog is never empty")
+                .clone();
+            format!("{}/{}", model.provider, model.id)
+        };
+        let mut cmd = make_cmd("set_default_model");
+        cmd.model_id = candidate.clone();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["defaultModel"], candidate);
+        let settings = read_json(&home.dir.path().join(".future/agent/settings.json"));
+        assert_eq!(settings["defaultModel"], candidate);
+    }
+
+    #[test]
+    fn set_default_model_reports_unloadable_settings() {
+        let home = TestHome::new();
+        let state = make_app_state();
+        // Corrupt settings.json so load_settings fails.
+        let settings_path = home.dir.path().join(".future/agent/settings.json");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(&settings_path, "{not json").unwrap();
+        let candidate = {
+            let registry = state.model_registry.read();
+            let model = registry.all_models().first().unwrap().clone();
+            format!("{}/{}", model.provider, model.id)
+        };
+        let mut cmd = make_cmd("set_default_model");
+        cmd.model_id = candidate;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("failed to load settings"));
+    }
+
+    // ── coverage batch 1: prompt-adjacent dispatch arms ─────────────────────
+
+    #[test]
+    fn prompt_generates_client_request_id_when_omitted() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "hello".to_string();
+        cmd.busy_policy = "enqueue_if_busy".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let session = state.get_session("default").unwrap();
+        let request_id = session.read().scheduler.queued()[0].client_request_id.clone();
+        assert!(
+            request_id.starts_with("request_"),
+            "generated client_request_id, got {request_id:?}"
+        );
+    }
+
+    #[test]
+    fn prompt_reports_duplicate_request_conflict() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+
+        let mut first = make_cmd("prompt");
+        first.message = "one".to_string();
+        first.busy_policy = "enqueue_if_busy".to_string();
+        first.client_request_id = "dup-req".to_string();
+        let resp = parse_response(&handle_command_internal(&state, first));
+        assert_eq!(resp["success"], true);
+
+        let mut second = make_cmd("prompt");
+        second.message = "two — different body, same request id".to_string();
+        second.busy_policy = "enqueue_if_busy".to_string();
+        second.client_request_id = "dup-req".to_string();
+        let resp = parse_response(&handle_command_internal(&state, second));
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "duplicate_request_conflict");
+    }
+
+    #[test]
+    fn prompt_rejects_unsafe_requested_run_id() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "hello".to_string();
+        cmd.busy_policy = "enqueue_if_busy".to_string();
+        cmd.requested_run_id = "bad run id!".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "invalid_run_id");
+    }
+
+    #[test]
+    fn prune_run_events_validates_run_id() {
+        let state = make_app_state();
+
+        let mut cmd = make_cmd("prune_run_events");
+        cmd.run_id = String::new();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "invalid_run_id");
+
+        let mut cmd = make_cmd("prune_run_events");
+        cmd.run_id = "../escape".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "invalid_run_id");
+    }
+
+    #[test]
+    fn prune_run_events_removes_journal_and_tolerates_missing_file() {
+        let state = make_app_state();
+        let run_data = state.session_manager.run_data_path("default");
+        std::fs::create_dir_all(&run_data).unwrap();
+        std::fs::write(run_data.join("run-prune.jsonl"), "{}").unwrap();
+
+        let mut cmd = make_cmd("prune_run_events");
+        cmd.run_id = "run-prune".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["pruned"], true);
+        assert!(!run_data.join("run-prune.jsonl").exists());
+
+        // Already gone → still pruned (NotFound is success).
+        let mut cmd = make_cmd("prune_run_events");
+        cmd.run_id = "run-prune".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["pruned"], true);
+    }
+
+    #[test]
+    fn abort_session_on_idle_session_cancels_nothing() {
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("abort_session")));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["active_run_id"].is_null());
+        assert_eq!(resp["data"]["queued_cancelled"], 0);
+        assert_eq!(resp["data"]["state"], "cancelling");
+    }
+
+    #[test]
+    fn abort_session_cancels_queued_runs() {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "queued".to_string();
+        cmd.busy_policy = "enqueue_if_busy".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("abort_session")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["queued_cancelled"], 1);
+        assert_eq!(resp["data"]["active_run_id"], "run-active");
+    }
+
+    #[test]
+    fn retry_persistence_on_healthy_session_fails() {
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("retry_persistence"),
+        ));
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "persistence_recovery_failed");
+    }
+
+    // ── coverage batch 1: approval_decision ─────────────────────────────────
+
+    #[test]
+    fn approval_decision_unknown_request_fails() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("approval_decision");
+        cmd.mode = "approved".to_string();
+        cmd.entry_id = "no-such-request".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("not pending"));
+    }
+
+    #[test]
+    fn approval_decision_rejects_wrong_session_and_approves_owning_session() {
+        let state = make_app_state();
+        let rx = state
+            .approval_gate
+            .insert_pending_for_test("ap-own", "default");
+
+        // Ownership is keyed on cmd.session_id: a decision naming a pending
+        // entry owned by a *different* session is rejected.
+        let _rx_other = state
+            .approval_gate
+            .insert_pending_for_test("ap-other", "other-session");
+        let mut cmd = make_cmd_for("approval_decision", "default");
+        cmd.entry_id = "ap-other".to_string();
+        cmd.mode = "approved".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("does not belong"));
+
+        // …and the owning session's decision lands on the waiting channel.
+        let mut cmd = make_cmd_for("approval_decision", "default");
+        cmd.entry_id = "ap-own".to_string();
+        cmd.mode = "approved".to_string();
+        cmd.message = "looks fine".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["approvalRequestId"], "ap-own");
+        assert_eq!(resp["data"]["status"], "approved");
+        let decision = rx.try_recv().expect("decision delivered");
+        assert!(decision.approved);
+        assert_eq!(decision.note, "looks fine");
+    }
+
+    #[test]
+    fn approval_decision_rejected_and_cancelled_modes() {
+        let state = make_app_state();
+        for (mode, expected) in [
+            ("rejected", ApprovalDecisionStatus::Rejected),
+            ("cancelled", ApprovalDecisionStatus::Cancelled),
+        ] {
+            let request_id = format!("ap-{mode}");
+            let _rx = state.approval_gate.insert_pending_for_test(&request_id, "default");
+            let mut cmd = make_cmd("approval_decision");
+            cmd.entry_id = request_id;
+            cmd.mode = mode.to_string();
+            let resp = parse_response(&handle_command_internal(&state, cmd));
+            assert_eq!(resp["success"], true, "{mode}");
+            let decision = _rx.try_recv().expect("decision delivered");
+            assert!(!decision.approved);
+            assert_eq!(decision.status, expected);
+        }
+    }
+
+    // ── coverage batch 1: simple session-scoped setters ─────────────────────
+
+    #[test]
+    fn set_model_updates_session_and_broadcasts() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_model");
+        cmd.model_id = "mock".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["model"], "mock");
+    }
+
+    #[test]
+    fn set_tools_broadcasts_new_tool_list() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_tools");
+        cmd.tools = vec!["read".to_string(), "write".to_string()];
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["tools"], serde_json::json!(["read", "write"]));
+    }
+
+    #[test]
+    fn steer_and_set_ephemeral_and_last_assistant_text() {
+        let state = make_app_state();
+
+        let mut cmd = make_cmd("steer");
+        cmd.system_prompt = "be terse".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+
+        // No assistant reply yet → null text.
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("get_last_assistant_text"),
+        ));
+        assert_eq!(resp["success"], true);
+        assert!(resp["data"]["text"].is_null());
+    }
+
+    #[test]
+    fn set_session_name_on_unpersisted_session_broadcasts() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("set_session_name");
+        cmd.name = "my session".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let session = state.get_session("default").unwrap();
+        assert_eq!(session.read().session_name, "my session");
+    }
+
+    #[test]
+    fn set_session_name_persists_to_disk_session_info() {
+        let state = make_app_state();
+        // Persist the session (with a session_info entry) so the update_info
+        // branch fires and the name lands on disk.
+        save_via(
+            &state,
+            "default",
+            "mock",
+            vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": state.welcome_cwd, "model": "mock"}),
+                "mock".to_string(),
+                "low".to_string(),
+            )],
+        );
+
+        let mut cmd = make_cmd("set_session_name");
+        cmd.name = "persisted name".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let loaded = state.session_manager.load("default").unwrap();
+        assert_eq!(loaded.name, "persisted name");
+    }
+
+    #[test]
+    fn cycle_model_with_no_credentialled_models_returns_empty() {
+        let _home = TestHome::new();
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("cycle_model")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["model"], "");
+        assert_eq!(resp["data"]["thinkingLevel"], "");
+    }
+
+    #[test]
+    fn cycle_model_advances_to_next_credentialled_model() {
+        let home = TestHome::new();
+        let state = make_app_state();
+        // Credential the provider of the first two catalog models so cycling
+        // has somewhere to go.
+        let providers: Vec<String> = {
+            let registry = state.model_registry.read();
+            let models = registry.all_models();
+            let mut providers: Vec<String> = models.iter().map(|m| m.provider.clone()).collect();
+            providers.sort();
+            providers.dedup();
+            providers.truncate(2);
+            providers
+        };
+        assert!(!providers.is_empty(), "builtin catalog is never empty");
+        let mut auth = serde_json::json!({});
+        for provider in &providers {
+            auth[provider] = serde_json::json!({"type": "api_key", "key": "k"});
+        }
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(&auth_path, serde_json::to_string_pretty(&auth).unwrap()).unwrap();
+
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("cycle_model")));
+        assert_eq!(resp["success"], true);
+        let next = resp["data"]["model"].as_str().unwrap();
+        assert!(!next.is_empty());
+        assert_eq!(resp["data"]["isScoped"], false);
+    }
+
+    #[test]
+    fn export_html_writes_file() {
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("export_html")));
+        if cfg!(windows) {
+            // The export path is a hardcoded /tmp (pre-existing limitation).
+            return;
+        }
+        assert_eq!(resp["success"], true);
+        let path = resp["data"]["path"].as_str().unwrap();
+        assert!(path.contains("future_agent_export_"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn get_session_events_since_returns_empty_tail() {
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("get_session_events_since"),
+        ));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["events"], serde_json::json!([]));
+    }
+
+    // ── coverage batch 1: switch/delete session ─────────────────────────────
+
+    #[test]
+    fn switch_session_validates_and_succeeds() {
+        let state = make_app_state();
+
+        let mut cmd = make_cmd_for("switch_session", "");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("No session selected"));
+
+        let mut cmd = make_cmd_for("switch_session", "ghost");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("not found"));
+
+        let mut cmd = make_cmd_for("switch_session", "default");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["cancelled"], false);
+    }
+
+    #[test]
+    fn delete_session_requires_session_id() {
+        let state = make_app_state();
+        let mut cmd = make_cmd_for("delete_session", "");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("No session selected to delete"));
+    }
+
+    #[test]
+    fn delete_session_reports_unremovable_disk_file() {
+        let state = make_app_state();
+        save_via(
+            &state,
+            "ghost",
+            "mock",
+            vec![crate::session::SessionEntry::new_user(
+                "user",
+                serde_json::json!("x"),
+            )],
+        );
+        // Replace the JSONL file with a directory so remove_file fails.
+        let path = state.session_manager.find("ghost").expect("saved session");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir_all(&path).unwrap();
+
+        let mut cmd = make_cmd_for("delete_session", "ghost");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "delete_failed");
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    // ── coverage batch 1: get_fork_messages ─────────────────────────────────
+
+    fn save_via(
+        state: &AppState,
+        session_id: &str,
+        model: &str,
+        entries: Vec<crate::session::SessionEntry>,
+    ) {
+        let snapshot = crate::session::Session::snapshot(
+            session_id.to_string(),
+            state.welcome_cwd.clone(),
+            model.to_string(),
+            String::new(),
+            String::new(),
+            entries,
+        );
+        state.session_manager.save(&snapshot).unwrap();
+    }
+
+    #[test]
+    fn get_fork_messages_unknown_session_returns_empty() {
+        let state = make_app_state();
+        let mut cmd = make_cmd_for("get_fork_messages", "ghost");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["messages"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn get_fork_messages_extracts_first_text_block_only() {
+        let state = make_app_state();
+        let user_plain = crate::session::SessionEntry::new_user("user", serde_json::json!("plain"));
+        let user_blocks = crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!([
+                {"type": "text", "text": "visible question"},
+                {"type": "text", "text": "agent-injected attachment list"},
+            ]),
+        );
+        let assistant = crate::session::SessionEntry::new_assistant(
+            serde_json::json!("answer"),
+            vec![],
+        );
+        save_via(
+            &state,
+            "fork-src",
+            "mock",
+            vec![user_plain, user_blocks, assistant],
+        );
+
+        let mut cmd = make_cmd_for("get_fork_messages", "fork-src");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let messages = resp["data"]["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2, "only user entries are fork points");
+        assert_eq!(messages[0]["content"], "plain");
+        assert_eq!(messages[1]["content"], "visible question");
+        assert!(messages[0]["timestamp"].is_string());
+    }
+
+    // ── coverage batch 1: new_session variants ──────────────────────────────
+
+    #[test]
+    fn new_session_generates_id_and_registers() {
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("new_session")));
+        assert_eq!(resp["success"], true);
+        let new_id = resp["data"]["sessionId"].as_str().unwrap();
+        assert!(!new_id.is_empty());
+        assert!(state.get_session(new_id).is_some());
+    }
+
+    #[test]
+    fn new_session_honors_explicit_id_cwd_model_level_and_provenance() {
+        let state = make_app_state();
+        let mut cmd = make_cmd_for("new_session", "ns-explicit");
+        cmd.cwd = "/tmp/some-workspace/ ".to_string();
+        cmd.model_id = "explicit/model".to_string();
+        cmd.level = "low".to_string();
+        cmd.created_by = "gui".to_string();
+        cmd.source_meta = "{\"thread\":\"t1\"}".to_string();
+        cmd.parent_session = "parent-1".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["sessionId"], "ns-explicit");
+        let session = state.get_session("ns-explicit").unwrap();
+        let sess = session.read();
+        assert_eq!(sess.created_by, "gui");
+        assert_eq!(sess.source_meta, serde_json::json!({"thread": "t1"}));
+        assert_eq!(sess.parent_session_id, "parent-1");
+        assert_eq!(sess.model, "explicit/model");
+        assert_eq!(sess.thinking_level, "low");
+        assert_eq!(sess.cwd, "/tmp/some-workspace");
+    }
+
+    #[test]
+    fn new_session_legacy_provenance_via_custom_instructions() {
+        let state = make_app_state();
+        let mut cmd = make_cmd_for("new_session", "ns-legacy");
+        cmd.custom_instructions =
+            r#"{"createdBy":"mobile","sourceMeta":{"chat":"c1"}}"#.to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let session = state.get_session("ns-legacy").unwrap();
+        let sess = session.read();
+        assert_eq!(sess.created_by, "mobile");
+        assert_eq!(sess.source_meta, serde_json::json!({"chat": "c1"}));
+    }
+
+    #[test]
+    fn new_session_restores_entries_from_disk() {
+        let state = make_app_state();
+        save_via(
+            &state,
+            "ns-restore",
+            "mock",
+            vec![
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": state.welcome_cwd, "model": "disk/model-x"}),
+                    "disk/model-x".to_string(),
+                    "low".to_string(),
+                ),
+                crate::session::SessionEntry::new_user("user", serde_json::json!("restored hi")),
+                crate::session::SessionEntry::new_assistant(
+                    serde_json::json!("restored reply"),
+                    vec![],
+                ),
+            ],
+        );
+        let mut cmd = make_cmd_for("new_session", "ns-restore");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let session = state.get_session("ns-restore").unwrap();
+        let sess = session.read();
+        assert_eq!(sess.model, "disk/model-x");
+        assert_eq!(sess.messages.read().len(), 2);
+    }
+
+    // ── coverage batch 1: get_session_entries ───────────────────────────────
+
+    #[test]
+    fn get_session_entries_empty_for_unknown_live_session() {
+        let state = make_app_state();
+        // "default" is live but has nothing on disk.
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("get_session_entries"),
+        ));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["entries"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn get_session_entries_renders_roles_and_run_stats() {
+        let state = make_app_state();
+        let info_old = crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": "old", "model": "mock", "session_name": "old"}),
+            "mock".to_string(),
+            "low".to_string(),
+        );
+        let user = crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!([
+                {"type": "text", "text": "question"},
+                {"type": "text", "text": "attachment paths"},
+            ]),
+        );
+        let mut assistant = crate::session::SessionEntry::new_assistant(
+            serde_json::json!([{"type": "text", "text": "answer"}]),
+            vec![],
+        );
+        assistant.thinking = "deep thought".to_string();
+        let tool = crate::session::SessionEntry::new_tool("call-1", "tool output");
+        let terminal = crate::session::SessionEntry::run_terminal(
+            "run-1",
+            crate::session::RUN_STATE_COMPLETED,
+            42,
+            1500,
+            None,
+        );
+        let info_new = crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": "new", "model": "mock", "session_name": "fresh"}),
+            "mock".to_string(),
+            "xhigh".to_string(),
+        );
+        save_via(
+            &state,
+            "default",
+            "mock",
+            vec![info_old, user, assistant, tool, terminal, info_new],
+        );
+
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("get_session_entries"),
+        ));
+        assert_eq!(resp["success"], true);
+        let entries = resp["data"]["entries"].as_array().unwrap();
+        // session_info (deduped to one), user, assistant, tool.
+        assert_eq!(entries.len(), 4);
+        let info = &entries[0];
+        assert_eq!(info["content"]["session_name"], "fresh");
+        let user_entry = &entries[1];
+        assert_eq!(user_entry["content"], "question");
+        let assistant_entry = &entries[2];
+        assert_eq!(assistant_entry["content"], "answer");
+        assert_eq!(assistant_entry["thinking"], "deep thought");
+        assert_eq!(assistant_entry["output_tokens"], 42);
+        assert_eq!(assistant_entry["duration_ms"], 1500);
+        let tool_entry = &entries[3];
+        assert_eq!(tool_entry["content"], "tool output");
+    }
+
+    // ── coverage batch 1: fork / clone ──────────────────────────────────────
+
+    #[test]
+    fn fork_requires_entry_id() {
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("fork")));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("No message selected"));
+    }
+
+    #[test]
+    fn fork_fails_when_parent_not_on_disk() {
+        let state = make_app_state();
+        let mut cmd = make_cmd("fork");
+        cmd.entry_id = "entry-1".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("not found on disk"));
+    }
+
+    #[test]
+    fn fork_creates_new_session_from_entry_point() {
+        let state = make_app_state();
+        let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork here"));
+        let entry_id = user.id.clone();
+        save_via(
+            &state,
+            "default",
+            "mock",
+            vec![
+                user,
+                crate::session::SessionEntry::new_assistant(serde_json::json!("reply"), vec![]),
+            ],
+        );
+
+        let mut cmd = make_cmd("fork");
+        cmd.entry_id = entry_id;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let fork_id = resp["data"]["sessionId"].as_str().unwrap().to_string();
+        assert!(!fork_id.is_empty());
+        assert!(state.get_session(&fork_id).is_some());
+        // Forked history was loaded into memory so a later save cannot
+        // truncate it.
+        let session = state.get_session(&fork_id).unwrap();
+        assert!(!session.read().messages.read().is_empty());
+    }
+
+    #[test]
+    fn fork_from_explicit_parent_session() {
+        let state = make_app_state();
+        let user = crate::session::SessionEntry::new_user("user", serde_json::json!("parent msg"));
+        let entry_id = user.id.clone();
+        save_via(&state, "parent-disk", "mock", vec![user]);
+
+        let mut cmd = make_cmd("fork");
+        cmd.entry_id = entry_id;
+        cmd.parent_session = "parent-disk".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let fork_id = resp["data"]["sessionId"].as_str().unwrap();
+        assert!(state.get_session(fork_id).is_some());
+    }
+
+    #[test]
+    fn clone_rejects_empty_session() {
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("Nothing to clone"));
+    }
+
+    #[test]
+    fn clone_fails_when_disk_session_missing() {
+        let state = make_app_state();
+        {
+            let session = state.get_session("default").unwrap();
+            session
+                .read()
+                .messages
+                .write()
+                .push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!("in-memory only"),
+                ));
+        }
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"].as_str().unwrap().contains("not found on disk"));
+    }
+
+    #[test]
+    fn clone_succeeds_from_leaf_entry() {
+        let state = make_app_state();
+        {
+            let session = state.get_session("default").unwrap();
+            session
+                .read()
+                .messages
+                .write()
+                .push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!("clone me"),
+                ));
+        }
+        save_via(
+            &state,
+            "default",
+            "mock",
+            vec![
+                crate::session::SessionEntry::new_user("user", serde_json::json!("clone me")),
+                crate::session::SessionEntry::new_assistant(serde_json::json!("reply"), vec![]),
+            ],
+        );
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["cancelled"], false);
+    }
+
+    // ── coverage batch 1: reload_config ─────────────────────────────────────
+
+    #[test]
+    fn reload_config_without_context_file_returns_empty_list() {
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("reload_config")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["contextFiles"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn reload_config_picks_up_context_file() {
+        let state = make_app_state();
+        let cwd = state.welcome_cwd.clone();
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(std::path::Path::new(&cwd).join("CLAUDE.md"), "# context").unwrap();
+
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("reload_config")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(
+            resp["data"]["contextFiles"],
+            serde_json::json!(["CLAUDE.md"])
+        );
+        assert_eq!(
+            state.welcome_context.read().as_slice(),
+            &["# context".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
 }
