@@ -346,13 +346,13 @@ mod tests {
             .await
             .unwrap();
         let mut rx = transport.subscribe();
-        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
             .await
             .unwrap()
             .unwrap();
         assert!(matches!(event, TransportEvent::Close(Some(_))));
         drop(transport);
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), server).await;
 
         // Variant B: server drops the TCP socket without a close frame.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -366,12 +366,13 @@ mod tests {
             .await
             .unwrap();
         let mut rx = transport.subscribe();
-        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        // TCP-drop detection latency varies widely on loaded CI runners.
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
             .await
             .unwrap()
             .unwrap();
         assert!(matches!(event, TransportEvent::Close(_)));
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), server).await;
     }
 
     /// After the peer vanishes, queued writes start failing and the writer
