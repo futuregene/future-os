@@ -19,6 +19,19 @@ const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
 const STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS: u64 = 15;
 
+/// Stream-read idle timeout. Tests override it (a stalled-mock test cannot
+/// wait 45 s of real time) via FUTURE_TEST_STREAM_IDLE_SECS.
+fn stream_idle_timeout_secs() -> u64 {
+    #[cfg(test)]
+    if let Some(secs) = std::env::var("FUTURE_TEST_STREAM_IDLE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return secs;
+    }
+    STREAM_IDLE_TIMEOUT_SECS
+}
+
 /// HTTP request timeout for a single LLM call. Defaults to 30 min (1800 s);
 /// override with the FUTURE_LLM_TIMEOUT_SECS env var without rebuilding.
 fn llm_timeout_secs() -> u64 {
@@ -532,7 +545,7 @@ impl crate::types::LLMProvider for Client {
                 let idle_timeout_secs = if in_tool_call {
                     STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS
                 } else {
-                    STREAM_IDLE_TIMEOUT_SECS
+                    stream_idle_timeout_secs()
                 };
                 let chunk_result = tokio::select! {
                     // The consumer dropped the receiver — e.g. the user hit stop
@@ -726,6 +739,7 @@ impl crate::types::LLMProvider for Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::LLMProvider;
 
     // ─── Client construction ────────────────────────────────────────────────
 
@@ -861,5 +875,331 @@ mod tests {
         assert!(c.compat_thinking_format.read().is_empty());
         assert!(!*c.compat_supports_reasoning_effort.read());
         assert!(!*c.compat_requires_reasoning_on_assistant.read());
+    }
+
+    // ─── mock HTTP server for stream_chat ───────────────────────────────────
+
+    /// One-shot HTTP server: accepts a single request, records its body, and
+    /// replies with a canned (status, content_type, body).
+    struct MockServer {
+        base_url: String,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    fn mock_server(
+        respond: impl Fn(&str) -> (u16, &'static str, String) + Send + 'static,
+    ) -> MockServer {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+            let mut buf: Vec<u8> = Vec::new();
+            let mut chunk = [0u8; 8192];
+            // Read until end of headers.
+            let header_end = loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => return,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(pos) = buf
+                            .windows(4)
+                            .position(|w| w == b"\r\n\r\n")
+                            .map(|p| p + 4)
+                        {
+                            break pos;
+                        }
+                    }
+                    Err(_) => return,
+                }
+            };
+            let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+            let content_length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .and_then(|v| v.trim().parse().ok())
+                })
+                .unwrap_or(0);
+            // Read the remaining body bytes.
+            while buf.len() < header_end + content_length {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
+            captured.lock().unwrap().push(body.clone());
+            let (status, content_type, response_body) = respond(&body);
+            let response = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        MockServer {
+            base_url: format!("http://127.0.0.1:{port}"),
+            requests,
+        }
+    }
+
+    fn one_user_message() -> Vec<Message> {
+        vec![serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap()]
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_flows_text_usage_and_terminal_stop() {
+        let sse = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let text: String = events
+            .iter()
+            .filter(|e| e.event_type == "text_delta")
+            .map(|e| e.text.clone())
+            .collect();
+        assert_eq!(text, "Hello world");
+        // The final chunk carries both finish_reason=stop and the usage block.
+        let stop = events
+            .iter()
+            .find(|e| e.event_type == "stop" && e.stop_reason == "stop")
+            .expect("finish_reason stop event");
+        let usage = stop.usage.as_ref().expect("usage on the stop chunk");
+        assert_eq!(usage.prompt_tokens, 10);
+        let last = events.last().unwrap();
+        assert_eq!(last.event_type, "stop");
+        assert_eq!(last.stop_reason, "", "[DONE] is the genuine terminal");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_thinking_and_toolcall_bookends() {
+        let sse = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\" think\"}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"a\\\":\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        assert!(types.contains(&"thinking_start"));
+        assert!(types.contains(&"thinking_delta"));
+        assert!(types.contains(&"thinking_end"));
+        assert!(types.contains(&"toolcall_start"));
+        assert!(types.contains(&"toolcall_end"));
+        assert!(types.contains(&"stop"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_maps_http_errors() {
+        let cases: Vec<(u16, &str, &str)> = vec![
+            (401, r#"{"error":{"code":"x","message":"bad key"}}"#, "Authentication failed (401)"),
+            (429, r#"{"error":{"code":"x","message":"slow down"}}"#, "Rate limited (429)"),
+            (
+                404,
+                r#"{"error":{"code":"DeploymentNotFound","message":"gone"}}"#,
+                "Azure deployment not found",
+            ),
+            (
+                400,
+                r#"{"error":{"code":"content_filter","message":"blocked"}}"#,
+                "flagged by the provider's safety system",
+            ),
+            (
+                400,
+                r#"{"error":{"code":"context_length_exceeded","message":"maximum context exceeded"}}"#,
+                "[CTX_LIMIT] Request exceeds the model's maximum context length",
+            ),
+            (
+                400,
+                r#"{"error":{"code":"some_other","message":"weird"}}"#,
+                "API request failed (HTTP 400): code=some_other",
+            ),
+        ];
+        for (status, body, expected) in cases {
+            let server = mock_server(move |_| (status, "application/json", body.to_string()));
+            let client = Client::new(&server.base_url, "sk-test", None, None);
+            let result = client
+                .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+                .await;
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains(expected), "status {status}: {error}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_empty_400_body_is_ctx_limit() {
+        let server = mock_server(move |_| (400, "text/plain", String::new()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let result = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await;
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("[CTX_LIMIT]"), "{error}");
+        assert!(error.contains("No response body"), "{error}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_generic_error_status() {
+        let server = mock_server(move |_| {
+            (500, "application/json", r#"{"error":{"code":"x","message":"boom"}}"#.to_string())
+        });
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let result = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_reports_response_via_callback() {
+        let server = mock_server(move |_| {
+            (401, "application/json", r#"{"error":{"code":"x","message":"no"}}"#.to_string())
+        });
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let seen2 = seen.clone();
+        let mut client = Client::new(&server.base_url, "sk-test", None, None);
+        client.on_response = Some(std::sync::Arc::new(
+            move |status: u16, _headers: &HashMap<String, String>| {
+                *seen2.lock().unwrap() = Some(status);
+            },
+        ));
+        let _ = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await;
+        assert_eq!(*seen.lock().unwrap(), Some(401));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_enables_tool_stream_only_for_zhipu_hosts() {
+        let tool = ToolDef {
+            tool_type: "function".to_string(),
+            function: crate::types::FunctionDef {
+                name: "echo".to_string(),
+                description: "echo".to_string(),
+                parameters: serde_json::json!({"type":"object"}),
+            },
+        };
+        let sse = "data: [DONE]\n\n";
+        // Direct ZhipuAI hosts get tool_stream=true. The host check is a
+        // substring match on the configured base_url, so embedding the marker
+        // in the mock's URL path exercises it against the local listener.
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(
+            &format!("{}/bigmodel", server.base_url),
+            "sk-test",
+            None,
+            None,
+        );
+        let rx = client
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![tool.clone()],
+                String::new(),
+            )
+            .await
+            .unwrap();
+        let _: Vec<StreamEvent> = rx.collect().await;
+        let body = server.requests.lock().unwrap()[0].clone();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["tool_stream"], true);
+        assert_eq!(parsed["tools"][0]["function"]["name"], "echo");
+
+        // Other hosts (the bare mock URL) do not get tool_stream.
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![tool], String::new())
+            .await
+            .unwrap();
+        let _: Vec<StreamEvent> = rx.collect().await;
+        let body = server.requests.lock().unwrap()[0].clone();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed.get("tool_stream").is_none());
+        assert!(parsed["tools"][0]["function"]["name"] == "echo");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_sends_temperature_max_tokens_and_thinking_params() {
+        let sse = "data: [DONE]\n\n";
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", Some(0.5), Some(4096))
+            .with_max_tokens_field("max_completion_tokens")
+            .with_thinking_level("high")
+            .with_thinking_budget(8192)
+            .with_compat("deepseek", true, false);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], "sys".to_string())
+            .await
+            .unwrap();
+        let _: Vec<StreamEvent> = rx.collect().await;
+        let body = server.requests.lock().unwrap()[0].clone();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["temperature"], 0.5);
+        assert_eq!(parsed["max_completion_tokens"], 4096);
+        assert!(parsed.get("max_tokens").is_none());
+        // thinking params emitted per the deepseek compat format
+        assert!(parsed.get("thinking").is_some() || parsed.get("reasoning_effort").is_some());
+        // system prompt is folded into the messages array (content blocks)
+        let messages = parsed["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "system");
+        assert!(messages[0]["content"].to_string().contains("sys"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_idle_timeout_marks_stream_truncated() {
+        std::env::set_var("FUTURE_TEST_STREAM_IDLE_SECS", "1");
+        // The server sends one partial SSE event (no \n\n terminator) and then
+        // holds the connection open forever.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut sink = [0u8; 4096];
+            let _ = stream.read(&mut sink); // headers + body (best effort)
+            let partial = "HTTP/1.1 200 X\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n7\r\ndata: x\r\n";
+            let _ = stream.write_all(partial.as_bytes());
+            let _ = stream.flush();
+            // Hold the socket open; the test process kills this thread on exit.
+            let _ = stream.read(&mut sink);
+        });
+        let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let last = events.last().unwrap();
+        assert_eq!(last.event_type, "stop");
+        assert_eq!(last.stop_reason, "truncated");
+        std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
     }
 }
