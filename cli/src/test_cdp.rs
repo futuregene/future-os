@@ -124,7 +124,7 @@ pub struct MockCdp {
 impl MockCdp {
     /// Start the mock with one initial page target ("about:blank").
     pub async fn start() -> Self {
-        Self::start_with(vec![], "Chrome/126.0.0.0").await
+        Self::start_with(vec![target("T-1", "about:blank", "")], "Chrome/126.0.0.0").await
     }
 
     /// Start with explicit initial targets and a Browser identity string.
@@ -133,8 +133,10 @@ impl MockCdp {
         let ws_addr = listener.local_addr().expect("local_addr");
         let ws_url = format!("ws://{ws_addr}/devtools/browser/mock");
 
+        let seeded = initial_targets.len() as u64;
         let state = Arc::new(Mutex::new(MockCdpState {
             targets: initial_targets,
+            next_target: seeded,
             ..MockCdpState::default()
         }));
 

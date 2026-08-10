@@ -1072,3 +1072,1264 @@ fn boolean_arg(args: &Map<String, Value>, key: &str) -> Option<bool> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browser::backend::{
+        InternalActionResult, InternalPageInfo, InternalTabInfo, InternalTabsResult,
+        InternalTypeResult,
+    };
+    use crate::browser::browser_state::load_browser_config;
+
+    // ── MockSession ───────────────────────────────────────────────────
+
+    /// Canned BrowserSession for command-body tests: each method returns the
+    /// configured result (or a sane default) and records the call.
+    struct MockSession {
+        tabs_new: Option<Result<InternalTabsResult, String>>,
+        tabs_list: Option<Result<InternalTabsResult, String>>,
+        tabs_select: Option<Result<InternalTabsResult, String>>,
+        tabs_close: Option<Result<InternalTabsResult, String>>,
+        open_result: Option<Result<InternalPageInfo, String>>,
+        click_result: Option<Result<InternalActionResult, String>>,
+        type_result: Option<Result<InternalTypeResult, String>>,
+        press_result: Option<Result<InternalActionResult, String>>,
+        screenshot_result: Option<Result<Vec<u8>, String>>,
+        /// Custom evaluate responder (checked before the defaults).
+        on_eval: Option<Box<dyn Fn(&EvaluateRequest) -> Result<Value, String> + Send + Sync>>,
+        /// Snapshot function result (items etc.).
+        snapshot_value: Value,
+        /// Console-logs expression result.
+        console_logs: Value,
+        /// Recorded evaluate expressions (function source markers).
+        eval_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Default for MockSession {
+        fn default() -> Self {
+            MockSession {
+                tabs_new: None,
+                tabs_list: None,
+                tabs_select: None,
+                tabs_close: None,
+                open_result: None,
+                click_result: None,
+                type_result: None,
+                press_result: None,
+                screenshot_result: None,
+                on_eval: None,
+                snapshot_value: json!({"title": "Snap T", "url": "http://snap/", "items": []}),
+                console_logs: json!([]),
+                eval_log: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    fn page_info(id: &str) -> InternalPageInfo {
+        InternalPageInfo {
+            page_id: id.to_string(),
+            title: format!("Title {id}"),
+            url: format!("http://{id}/"),
+        }
+    }
+
+    fn action_result(id: &str) -> InternalActionResult {
+        InternalActionResult {
+            page_id: id.to_string(),
+            title: format!("Title {id}"),
+            url: format!("http://{id}/"),
+            did_navigate: false,
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl BrowserSession for MockSession {
+        fn kind(&self) -> &'static str {
+            "mock"
+        }
+        fn protocol(&self) -> &'static str {
+            "cdp"
+        }
+
+        async fn open(
+            &mut self,
+            _url: &str,
+            _options: OpenPageOptions,
+        ) -> Result<InternalPageInfo, String> {
+            match &self.open_result {
+                Some(Ok(v)) => Ok(v.clone()),
+                Some(Err(e)) => Err(e.clone()),
+                None => Ok(page_info("p1")),
+            }
+        }
+
+        async fn click(
+            &mut self,
+            _target: &ResolvedTarget,
+            _options: ClickOptions,
+        ) -> Result<InternalActionResult, String> {
+            match &self.click_result {
+                Some(Ok(v)) => Ok(v.clone()),
+                Some(Err(e)) => Err(e.clone()),
+                None => Ok(action_result("p1")),
+            }
+        }
+
+        async fn r#type(
+            &mut self,
+            target: &ResolvedTarget,
+            _text: &str,
+            options: TypeOptions,
+        ) -> Result<InternalTypeResult, String> {
+            match &self.type_result {
+                Some(Ok(v)) => Ok(v.clone()),
+                Some(Err(e)) => Err(e.clone()),
+                None => Ok(InternalTypeResult {
+                    page_id: "p1".to_string(),
+                    typed: target.selector.clone(),
+                    submitted: options.submit.unwrap_or(false),
+                }),
+            }
+        }
+
+        async fn press(
+            &mut self,
+            _key: &str,
+            _target: Option<&ResolvedTarget>,
+            _options: PressOptions,
+        ) -> Result<InternalActionResult, String> {
+            match &self.press_result {
+                Some(Ok(v)) => Ok(v.clone()),
+                Some(Err(e)) => Err(e.clone()),
+                None => Ok(action_result("p1")),
+            }
+        }
+
+        async fn tabs(&mut self, action: &TabsAction) -> Result<InternalTabsResult, String> {
+            let canned = match action {
+                TabsAction::List => &self.tabs_list,
+                TabsAction::New { .. } => &self.tabs_new,
+                TabsAction::Select { .. } => &self.tabs_select,
+                TabsAction::Close { .. } => &self.tabs_close,
+            };
+            match canned {
+                Some(Ok(v)) => Ok(v.clone()),
+                Some(Err(e)) => Err(e.clone()),
+                None => Ok(match action {
+                    TabsAction::List => InternalTabsResult::List { tabs: vec![] },
+                    TabsAction::New { .. } => InternalTabsResult::New {
+                        page: page_info("p-new"),
+                        index: 0,
+                    },
+                    TabsAction::Select { .. } => InternalTabsResult::Select {
+                        page: page_info("p-sel"),
+                    },
+                    TabsAction::Close { .. } => InternalTabsResult::Close {
+                        url: "http://closed/".to_string(),
+                        index: 0,
+                    },
+                }),
+            }
+        }
+
+        async fn evaluate(&mut self, request: &EvaluateRequest) -> Result<Value, String> {
+            let marker = match request {
+                EvaluateRequest::Expression { expression } => expression.clone(),
+                EvaluateRequest::Function {
+                    function_declaration,
+                    ..
+                } => function_declaration.clone(),
+            };
+            self.eval_log.lock().unwrap().push(marker.clone());
+            if let Some(f) = &self.on_eval {
+                return f(request);
+            }
+            // Marker order matters: the snapshot source mentions
+            // document.title/location.href in its body.
+            if marker.contains("escapeCss") {
+                return Ok(self.snapshot_value.clone());
+            }
+            if marker.contains("__futureConsoleLogs") {
+                return Ok(self.console_logs.clone());
+            }
+            if marker.contains("document.title") {
+                return Ok(json!("Eval Title"));
+            }
+            if marker.contains("location.href") {
+                return Ok(json!("http://eval/"));
+            }
+            Ok(Value::Null)
+        }
+
+        async fn capture_screenshot(
+            &mut self,
+            _options: &CaptureScreenshotOptions,
+        ) -> Result<Vec<u8>, String> {
+            match &self.screenshot_result {
+                Some(Ok(v)) => Ok(v.clone()),
+                Some(Err(e)) => Err(e.clone()),
+                None => Ok(b"png".to_vec()),
+            }
+        }
+
+        async fn disconnect(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    // ── Test scaffolding ──────────────────────────────────────────────
+
+    /// Isolated FUTURE_HOME (browser config) + the shared env lock.
+    async fn isolated_home() -> (
+        tokio::sync::MutexGuard<'static, ()>,
+        crate::test_env::EnvGuard,
+        tempfile::TempDir,
+    ) {
+        let guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        (guard, env, dir)
+    }
+
+    fn args(pairs: &[(&str, Value)]) -> Map<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    fn ctx_with(
+        session: MockSession,
+        config: BrowserConfig,
+        a: Map<String, Value>,
+    ) -> SessionContext {
+        SessionContext {
+            session: Box::new(session),
+            config,
+            args: a,
+        }
+    }
+
+    fn structured(result: &LocalToolResult) -> Value {
+        result.structured_content.clone().unwrap_or(Value::Null)
+    }
+
+    // ── Catalog / dispatch ────────────────────────────────────────────
+
+    #[test]
+    fn catalog_and_predicate() {
+        let catalog = browser_tool_catalog();
+        assert_eq!(catalog.len(), 1);
+        let (name, entry) = &catalog[0];
+        assert_eq!(*name, "browser");
+        assert!(entry.description.contains("browser"));
+        assert!(entry.args.iter().any(|(k, _)| *k == "command"));
+        assert!(entry.example.contains("open"));
+        assert!(is_browser_tool("browser"));
+        assert!(!is_browser_tool("web_search"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_requires_command_and_rejects_unknown() {
+        let (out, _cap) = Output::memory();
+        let err = call_browser_tool("browser", &Map::new(), &out)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "browser tool requires \"command\" argument.");
+
+        let err = call_browser_tool("browser", &args(&[("command", json!("bogus"))]), &out)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Unknown browser command: \"bogus\""), "{err}");
+        assert!(err.contains("start, status, tabs, open"), "{err}");
+    }
+
+    // ── tabs ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn tabs_list_and_default_action() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mut session = MockSession::default();
+        session.tabs_list = Some(Ok(InternalTabsResult::List {
+            tabs: vec![
+                InternalTabInfo {
+                    page_id: "a".to_string(),
+                    index: 0,
+                    title: "TA".to_string(),
+                    url: "http://a/".to_string(),
+                    active: true,
+                },
+                InternalTabInfo {
+                    page_id: "b".to_string(),
+                    index: 1,
+                    title: "TB".to_string(),
+                    url: "http://b/".to_string(),
+                    active: false,
+                },
+            ],
+        }));
+        // No "action" arg → defaults to list.
+        let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
+        let result = browser_tabs(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["tabCount"], json!(2));
+        assert_eq!(sc["tabs"][0]["title"], json!("TA"));
+        assert_eq!(sc["tabs"][0]["active"], json!(true));
+        assert_eq!(sc["tabs"][1]["active"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn tabs_list_unexpected_variant_yields_empty() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mut session = MockSession::default();
+        // List answered with a non-List variant → empty tabs vec.
+        session.tabs_list = Some(Ok(InternalTabsResult::Close {
+            url: "u".to_string(),
+            index: 0,
+        }));
+        let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
+        let result = browser_tabs(&mut ctx).await.unwrap();
+        assert_eq!(structured(&result)["tabCount"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn tabs_new_select_close_happy_paths() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mut ctx = ctx_with(
+            MockSession {
+                tabs_new: Some(Ok(InternalTabsResult::New {
+                    page: page_info("p9"),
+                    index: 2,
+                })),
+                ..MockSession::default()
+            },
+            BrowserConfig::default(),
+            args(&[("action", json!("new"))]),
+        );
+        let result = browser_tabs(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["created"]["index"], json!(2));
+        assert_eq!(sc["created"]["url"], json!("http://p9/"));
+        // Active page persisted to config.
+        let saved = load_browser_config().await.unwrap();
+        assert_eq!(saved.active_page_id.as_deref(), Some("p9"));
+        assert_eq!(saved.active_url.as_deref(), Some("http://p9/"));
+
+        let mut ctx = ctx_with(
+            MockSession {
+                tabs_select: Some(Ok(InternalTabsResult::Select {
+                    page: page_info("p7"),
+                })),
+                ..MockSession::default()
+            },
+            BrowserConfig::default(),
+            args(&[("action", json!("select")), ("index", json!(1))]),
+        );
+        let result = browser_tabs(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["selected"]["index"], json!(1));
+        assert_eq!(sc["selected"]["url"], json!("http://p7/"));
+
+        let mut ctx = ctx_with(
+            MockSession {
+                tabs_close: Some(Ok(InternalTabsResult::Close {
+                    url: "http://gone/".to_string(),
+                    index: 1,
+                })),
+                ..MockSession::default()
+            },
+            BrowserConfig::default(),
+            args(&[("action", json!("close")), ("index", json!(1))]),
+        );
+        let result = browser_tabs(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["closed"]["index"], json!(1));
+        assert_eq!(sc["closed"]["url"], json!("http://gone/"));
+    }
+
+    #[tokio::test]
+    async fn tabs_error_paths() {
+        let (_g, _e, _d) = isolated_home().await;
+        // Unknown action WITHOUT an index hits the index validation first.
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[("action", json!("sideways"))]),
+        );
+        let err = browser_tabs(&mut ctx).await.unwrap_err();
+        assert!(err.contains("requires a valid 0-based index"), "{err}");
+        // Unknown action WITH an index reaches the action validation.
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[("action", json!("sideways")), ("index", json!(0))]),
+        );
+        let err = browser_tabs(&mut ctx).await.unwrap_err();
+        assert!(
+            err.contains("action must be \"list\", \"new\", \"select\", or \"close\""),
+            "{err}"
+        );
+
+        // select/close without index.
+        for action in ["select", "close"] {
+            let mut ctx = ctx_with(
+                MockSession::default(),
+                BrowserConfig::default(),
+                args(&[("action", json!(action))]),
+            );
+            let err = browser_tabs(&mut ctx).await.unwrap_err();
+            assert!(err.contains("requires a valid 0-based index"), "{err}");
+            // Negative index.
+            let mut ctx = ctx_with(
+                MockSession::default(),
+                BrowserConfig::default(),
+                args(&[("action", json!(action)), ("index", json!(-1))]),
+            );
+            let err = browser_tabs(&mut ctx).await.unwrap_err();
+            assert!(err.contains("requires a valid 0-based index"), "{err}");
+        }
+
+        // Mismatched result variants → "Unexpected tabs result".
+        let mut ctx = ctx_with(
+            MockSession {
+                tabs_new: Some(Ok(InternalTabsResult::List { tabs: vec![] })),
+                ..MockSession::default()
+            },
+            BrowserConfig::default(),
+            args(&[("action", json!("new"))]),
+        );
+        assert_eq!(
+            browser_tabs(&mut ctx).await.unwrap_err(),
+            "Unexpected tabs result"
+        );
+
+        let mut ctx = ctx_with(
+            MockSession {
+                tabs_select: Some(Ok(InternalTabsResult::List { tabs: vec![] })),
+                ..MockSession::default()
+            },
+            BrowserConfig::default(),
+            args(&[("action", json!("select")), ("index", json!(0))]),
+        );
+        assert_eq!(
+            browser_tabs(&mut ctx).await.unwrap_err(),
+            "Unexpected tabs result"
+        );
+
+        let mut ctx = ctx_with(
+            MockSession {
+                tabs_close: Some(Ok(InternalTabsResult::List { tabs: vec![] })),
+                ..MockSession::default()
+            },
+            BrowserConfig::default(),
+            args(&[("action", json!("close")), ("index", json!(0))]),
+        );
+        assert_eq!(
+            browser_tabs(&mut ctx).await.unwrap_err(),
+            "Unexpected tabs result"
+        );
+    }
+
+    // ── open ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn open_requires_url_and_saves_active_page() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mut ctx = ctx_with(MockSession::default(), BrowserConfig::default(), Map::new());
+        let err = browser_open(&mut ctx).await.unwrap_err();
+        assert_eq!(err, "browser command open requires url.");
+
+        // Seed refs so we can verify open() clears them.
+        let mut seeded = BrowserConfig {
+            version: 2,
+            ..Default::default()
+        };
+        seeded.refs = Some(args(&[("a1", json!("#x"))]));
+        save_browser_config(&seeded).await.unwrap();
+
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[("url", json!("http://dest/"))]),
+        );
+        let result = browser_open(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["title"], json!("Title p1"));
+        assert_eq!(sc["url"], json!("http://p1/"));
+        let saved = load_browser_config().await.unwrap();
+        assert_eq!(saved.refs.unwrap().len(), 0);
+        assert_eq!(saved.active_page_id.as_deref(), Some("p1"));
+    }
+
+    // ── snapshot ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn snapshot_formats_lines_refs_and_states() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mut session = MockSession::default();
+        session.snapshot_value = json!({
+            "title": "Snap T", "url": "http://snap/",
+            "items": [
+                {"ref": "b1", "selector": "#go", "role": "button", "name": "Go",
+                 "tag": "button", "disabled": true, "checked": null, "href": null},
+                {"ref": "c1", "selector": "#chk", "role": "checkbox", "name": "Agree",
+                 "tag": "input", "disabled": false, "checked": true, "href": null},
+                {"ref": "a1", "selector": "a.docs", "role": "link", "name": "Docs",
+                 "tag": "a", "disabled": false, "checked": null, "href": "https://d/"},
+                {"ref": "t4", "selector": "p", "role": "text", "name": "hello"},
+            ],
+        });
+        let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
+        let result = browser_snapshot(&mut ctx).await.unwrap();
+        let text = result.text.as_ref().expect("text");
+        assert!(text.starts_with("Page: Snap T\nURL: http://snap/\n\n"), "{text}");
+        assert!(text.contains("- button \"Go\" [ref=b1] disabled"), "{text}");
+        assert!(text.contains("- checkbox \"Agree\" [ref=c1] checked=true"), "{text}");
+        assert!(text.contains("- link \"Docs\" [ref=a1] href=https://d/"), "{text}");
+        assert!(text.contains("- text \"hello\" [ref=t4]"), "{text}");
+        let sc = structured(&result);
+        let elements = sc["elements"].as_array().unwrap();
+        assert_eq!(elements.len(), 4);
+        assert_eq!(elements[1]["checked"], json!(true));
+        assert_eq!(elements[2]["href"], json!("https://d/"));
+        assert_eq!(elements[3]["tag"], Value::Null);
+        // Refs persisted for later click-by-ref.
+        let saved = load_browser_config().await.unwrap();
+        let refs = saved.refs.unwrap();
+        assert_eq!(refs.get("b1").and_then(Value::as_str), Some("#go"));
+        assert_eq!(saved.active_url.as_deref(), Some("http://snap/"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_limit_arg_is_serialized_js_style() {
+        let (_g, _e, _d) = isolated_home().await;
+        let session = MockSession::default();
+        let log = session.eval_log.clone();
+        let mut ctx = ctx_with(
+            session,
+            BrowserConfig::default(),
+            args(&[("limit", json!(5))]),
+        );
+        browser_snapshot(&mut ctx).await.unwrap();
+        // The snapshot function ran (limit serialized as an integer).
+        assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    // ── click ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn click_requires_a_target_and_reports_result() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mut ctx = ctx_with(MockSession::default(), BrowserConfig::default(), Map::new());
+        let err = browser_click(&mut ctx).await.unwrap_err();
+        assert_eq!(err, "Expected ref, selector, or target.");
+
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[("selector", json!("#go"))]),
+        );
+        let result = browser_click(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["clicked"], json!("#go"));
+        assert_eq!(sc["selector"], json!("#go"));
+        assert_eq!(sc["title"], json!("Title p1"));
+        let saved = load_browser_config().await.unwrap();
+        assert_eq!(saved.active_page_id.as_deref(), Some("p1"));
+    }
+
+    #[tokio::test]
+    async fn click_by_ref_uses_saved_refs() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mut config = BrowserConfig::default();
+        config.refs = Some(args(&[("b1", json!("#saved-sel"))]));
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            config,
+            args(&[("ref", json!("b1"))]),
+        );
+        let result = browser_click(&mut ctx).await.unwrap();
+        assert_eq!(structured(&result)["selector"], json!("#saved-sel"));
+    }
+
+    // ── type ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn type_requires_text_and_reports_submitted() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[("selector", json!("#in"))]),
+        );
+        let err = browser_type(&mut ctx).await.unwrap_err();
+        assert_eq!(err, "browser command type requires text.");
+
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[
+                ("selector", json!("#in")),
+                ("text", json!("hello")),
+                ("submit", json!(true)),
+                ("clear", json!(false)),
+            ]),
+        );
+        let result = browser_type(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["typed"], json!("#in"));
+        assert_eq!(sc["submitted"], json!(true));
+    }
+
+    // ── press ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn press_requires_key_and_allows_page_level() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mut ctx = ctx_with(MockSession::default(), BrowserConfig::default(), Map::new());
+        let err = browser_press(&mut ctx).await.unwrap_err();
+        assert_eq!(err, "browser command press requires key.");
+
+        // No target → page-level press.
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[("key", json!("Enter"))]),
+        );
+        let result = browser_press(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["key"], json!("Enter"));
+        assert_eq!(sc["url"], json!("http://p1/"));
+
+        // With a target selector.
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[("key", json!("Tab")), ("selector", json!("#f"))]),
+        );
+        browser_press(&mut ctx).await.unwrap();
+    }
+
+    // ── screenshot ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn screenshot_writes_file_and_reports_metadata() {
+        let (_g, _e, dir) = isolated_home().await;
+        let explicit = dir.path().join("shot.png");
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[("path", json!(explicit.to_string_lossy()))]),
+        );
+        let result = browser_screenshot(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["title"], json!("Eval Title"));
+        assert_eq!(sc["url"], json!("http://eval/"));
+        assert_eq!(sc["filename"], json!("shot.png"));
+        assert!(explicit.exists());
+
+        // "output" alias + default path under FUTURE_HOME artifacts.
+        let mut ctx = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[("output", json!(explicit.to_string_lossy()))]),
+        );
+        browser_screenshot(&mut ctx).await.unwrap();
+        let mut ctx = ctx_with(MockSession::default(), BrowserConfig::default(), Map::new());
+        let result = browser_screenshot(&mut ctx).await.unwrap();
+        let path = structured(&result)["path"].as_str().unwrap().to_string();
+        assert!(path.contains("artifacts"), "{path}");
+    }
+
+    // ── scroll ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn scroll_directions_and_targets() {
+        let (_g, _e, _d) = isolated_home().await;
+        // Page-level scroll: down/up/left/right.
+        for direction in ["down", "up", "left", "right"] {
+            let session = MockSession::default();
+            let log = session.eval_log.clone();
+            let mut ctx = ctx_with(
+                session,
+                BrowserConfig::default(),
+                args(&[("direction", json!(direction))]),
+            );
+            let result = browser_scroll(&mut ctx).await.unwrap();
+            let sc = structured(&result);
+            assert_eq!(sc["scrolled"]["direction"], json!(direction));
+            assert_eq!(sc["scrolled"]["amount"], json!(300));
+            assert_eq!(sc["scrolled"]["target"], json!("page"));
+            // The page-scroll function (window.scrollBy) ran.
+            let calls = log.lock().unwrap().clone();
+            assert_eq!(calls.len(), 1);
+            assert!(calls[0].contains("window.scrollBy"), "{:?}", calls[0]);
+        }
+
+        // Element scroll with explicit amount.
+        let session = MockSession::default();
+        let log = session.eval_log.clone();
+        let mut ctx = ctx_with(
+            session,
+            BrowserConfig::default(),
+            args(&[
+                ("direction", json!("up")),
+                ("amount", json!(50)),
+                ("selector", json!("#pane")),
+            ]),
+        );
+        let result = browser_scroll(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["scrolled"]["target"], json!("#pane"));
+        assert_eq!(sc["scrolled"]["amount"], json!(50));
+        let calls = log.lock().unwrap().clone();
+        assert!(calls[0].contains("document.querySelector"), "{:?}", calls[0]);
+    }
+
+    // ── console ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn console_filters_by_level_and_notes_empty() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mut session = MockSession::default();
+        session.console_logs = json!([
+            {"level": "log", "text": "hi", "time": "t1"},
+            {"level": "error", "text": "boom", "time": "t2"},
+            "not-an-object",
+        ]);
+        let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
+        let result = browser_console(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["logs"].as_array().unwrap().len(), 2);
+        assert!(sc.get("note").is_none());
+
+        // Level filter.
+        let mut session = MockSession::default();
+        session.console_logs = json!([
+            {"level": "log", "text": "hi", "time": "t1"},
+            {"level": "error", "text": "boom", "time": "t2"},
+        ]);
+        let mut ctx = ctx_with(
+            session,
+            BrowserConfig::default(),
+            args(&[("level", json!("error"))]),
+        );
+        let result = browser_console(&mut ctx).await.unwrap();
+        let logs = structured(&result)["logs"].as_array().unwrap().clone();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["text"], json!("boom"));
+
+        // Empty → explanatory note.
+        let mut ctx = ctx_with(MockSession::default(), BrowserConfig::default(), Map::new());
+        let result = browser_console(&mut ctx).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["logs"].as_array().unwrap().len(), 0);
+        assert!(sc["note"]
+            .as_str()
+            .unwrap()
+            .contains("No buffered console messages"));
+
+        // Non-array value → empty + note.
+        let mut session = MockSession::default();
+        session.console_logs = json!("junk");
+        let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
+        let result = browser_console(&mut ctx).await.unwrap();
+        assert!(structured(&result).get("note").is_some());
+    }
+
+    // ── helpers ───────────────────────────────────────────────────────
+
+    #[test]
+    fn arg_helper_edge_shapes() {
+        let a = args(&[
+            ("empty", json!("")),
+            ("s", json!("v")),
+            ("n", json!(2.5)),
+            ("ns", json!("3")),
+            ("b", json!(true)),
+            ("bn", json!(1)),
+        ]);
+        assert_eq!(string_arg(&a, "empty"), None);
+        assert_eq!(string_arg(&a, "s"), Some("v".to_string()));
+        assert_eq!(string_arg(&a, "missing"), None);
+        assert_eq!(number_arg(&a, "n"), Some(2.5));
+        assert_eq!(number_arg(&a, "ns"), None);
+        assert_eq!(boolean_arg(&a, "b"), Some(true));
+        assert_eq!(boolean_arg(&a, "bn"), None);
+    }
+
+    #[test]
+    fn js_number_serialization() {
+        assert_eq!(js_number(300.0), json!(300));
+        assert_eq!(js_number(0.5), json!(0.5));
+        assert_eq!(js_number(-4.0), json!(-4));
+        // Beyond the safe-integer range → float fallback.
+        let big = js_number(9_007_199_254_740_993.0);
+        assert!(big.is_f64() || big.is_i64() || big.is_u64());
+        // Non-finite → from_f64 fails → Null.
+        assert_eq!(js_number(f64::NAN), Value::Null);
+    }
+
+    #[test]
+    fn port_from_endpoint_variants() {
+        assert_eq!(port_from_endpoint("http://127.0.0.1:9222"), Some(9222));
+        assert_eq!(port_from_endpoint("https://h:443/"), Some(443));
+        assert_eq!(port_from_endpoint("http://:80"), None);
+        assert_eq!(port_from_endpoint("ftp://h:21"), None);
+        assert_eq!(port_from_endpoint("http://host"), None);
+        assert_eq!(port_from_endpoint("http://h:abc"), None);
+        assert_eq!(port_from_endpoint("http://h:"), None);
+    }
+
+    #[tokio::test]
+    async fn endpoint_for_resolution_order() {
+        let (_g, _e, _d) = isolated_home().await;
+        // Args win.
+        let a = args(&[("endpoint", json!("http://arg/"))]);
+        assert_eq!(endpoint_for(&a).await, "http://arg/");
+        // Config endpoint next.
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: "http://cfg/".to_string(),
+            },
+            ..Default::default()
+        };
+        save_browser_config(&config).await.unwrap();
+        assert_eq!(endpoint_for(&Map::new()).await, "http://cfg/");
+    }
+
+    #[tokio::test]
+    async fn endpoint_for_default_when_config_absent() {
+        let (_g, _e, _d) = isolated_home().await;
+        assert_eq!(endpoint_for(&Map::new()).await, DEFAULT_ENDPOINT);
+    }
+
+    #[tokio::test]
+    async fn wait_for_saved_endpoint_timeout_and_reachable() {
+        let (_g, _e, _d) = isolated_home().await;
+        // Nothing reachable at the saved endpoint → bounded timeout error.
+        let err = wait_for_saved_endpoint("http://127.0.0.1:1", 50)
+            .await
+            .unwrap_err();
+        assert!(err.contains("not reachable after auto-start"), "{err}");
+
+        // Saved endpoint reachable → returned immediately.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/json/version",
+            200,
+            "{}",
+        )])
+        .await;
+        save_browser_config(&BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: base.clone(),
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let ep = wait_for_saved_endpoint("http://unused/", 2_000).await.unwrap();
+        assert_eq!(ep, base);
+    }
+
+    #[test]
+    fn started_endpoint_or_fallback_for_empty_config_endpoint() {
+        // Validated configs always carry an endpoint, but a hand-built one
+        // can be empty → the fallback kicks in.
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: String::new(),
+            },
+            ..Default::default()
+        };
+        assert_eq!(started_endpoint_or(&config, "http://fb/"), "http://fb/");
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: "http://real/".to_string(),
+            },
+            ..Default::default()
+        };
+        assert_eq!(started_endpoint_or(&config, "http://fb/"), "http://real/");
+    }
+
+    #[tokio::test]
+    async fn ensure_browser_rejects_unreachable_explicit_endpoint() {
+        let (_g, _e, _d) = isolated_home().await;
+        let a = args(&[("endpoint", json!("http://127.0.0.1:1"))]);
+        let err = ensure_browser(&a).await.unwrap_err();
+        assert!(err.contains("Local browser endpoint is not reachable"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn resolve_target_optional_falls_back_on_bad_ref() {
+        let config = BrowserConfig::default();
+        // A ref-shaped input with no saved refs → None (not an error).
+        let a = args(&[("ref", json!("a1"))]);
+        assert!(resolve_target_from_args_optional(&a, &config)
+            .unwrap()
+            .is_none());
+        // Direct selector resolves.
+        let a = args(&[("selector", json!("#x"))]);
+        let t = resolve_target_from_args_optional(&a, &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.selector, "#x");
+        // Nothing at all → None.
+        assert!(resolve_target_from_args_optional(&Map::new(), &config)
+            .unwrap()
+            .is_none());
+    }
+
+    // ── status ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn status_reachable_http_error_and_unreachable() {
+        let (_g, _e, _d) = isolated_home().await;
+        // Reachable with a version payload.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/json/version",
+            200,
+            r#"{"Browser":"Chrome/126"}"#,
+        )])
+        .await;
+        let a = args(&[("endpoint", json!(base))]);
+        let result = browser_status(&a).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["reachable"], json!(true));
+        assert_eq!(sc["version"]["Browser"], json!("Chrome/126"));
+        assert_eq!(sc["endpoint"], json!(base));
+
+        // HTTP error status.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/json/version",
+            500,
+            "{}",
+        )])
+        .await;
+        let a = args(&[("endpoint", json!(base))]);
+        let result = browser_status(&a).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["reachable"], json!(false));
+        assert_eq!(sc["status"], json!(500));
+
+        // Connection refused.
+        let a = args(&[("endpoint", json!("http://127.0.0.1:1"))]);
+        let result = browser_status(&a).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["reachable"], json!(false));
+        assert_eq!(
+            sc["error"],
+            json!("Local browser endpoint is not reachable.")
+        );
+    }
+
+    // ── is_permission_error ───────────────────────────────────────────
+
+    #[test]
+    fn permission_error_marker_match() {
+        assert!(is_permission_error("Safari remote automation is disabled."));
+        assert!(!is_permission_error("something else"));
+    }
+
+    // ── with_session integration (mock CDP) ───────────────────────────
+
+    /// Save a v2 CDP config pointing at the mock browser.
+    async fn save_cdp_config(endpoint: &str, browser_kind: &str) {
+        save_browser_config(&BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: browser_kind.to_string(),
+                endpoint: endpoint.to_string(),
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_session_full_cdp_roundtrip_and_kind_refinement() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mock = crate::test_cdp::MockCdp::start().await;
+        save_cdp_config(&mock.http_url, "chromium").await;
+
+        let (out, _cap) = Output::memory();
+        let result = call_browser_tool(
+            "browser",
+            &args(&[("command", json!("tabs")), ("action", json!("list"))]),
+            &out,
+        )
+        .await
+        .unwrap();
+        let sc = structured(&result);
+        // The mock browser has one initial page target.
+        assert_eq!(sc["tabCount"], json!(1));
+        // browserKind "chromium" was refined to "chrome" and persisted.
+        let saved = load_browser_config().await.unwrap();
+        assert_eq!(saved.connection.browser_kind(), "chrome");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_session_webdriver_config_creates_safari_session() {
+        let (_g, _e, _d) = isolated_home().await;
+        // WebDriver config + a mock that answers /json/version (for
+        // endpoint_reachable) and the webdriver calls (for tabs list).
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json("/json/version", 200, "{}"),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1"]}"#,
+            ),
+            crate::test_server::HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            crate::test_server::HttpRoute::json("/session/s1/title", 200, r#"{"value":"T"}"#),
+            crate::test_server::HttpRoute::json("/session/s1/url", 200, r#"{"value":"u"}"#),
+        ])
+        .await;
+        save_browser_config(&BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Webdriver {
+                browser_kind: "safari".to_string(),
+                endpoint: base,
+                session_id: "s1".to_string(),
+                driver_pid: None,
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let (out, _cap) = Output::memory();
+        let result = call_browser_tool("browser", &args(&[("command", json!("tabs"))]), &out)
+            .await
+            .unwrap();
+        assert_eq!(structured(&result)["tabCount"], json!(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_session_explicit_endpoint_error_surfaces() {
+        let (_g, _e, _d) = isolated_home().await;
+        // Explicit endpoint arg + unreachable → ensure_browser error
+        // propagates without any auto-start attempt.
+        let (out, _cap) = Output::memory();
+        let err = call_browser_tool(
+            "browser",
+            &args(&[
+                ("command", json!("tabs")),
+                ("endpoint", json!("http://127.0.0.1:1")),
+            ]),
+            &out,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("not reachable"), "{err}");
+    }
+
+    // ── browser_start ─────────────────────────────────────────────────
+
+    /// Serve `GET /json/version` on a FIXED port with a hand-rolled HTTP
+    /// responder (spawn_http only binds ephemeral ports).
+    async fn serve_json_version_on(port: i64, ws_url: &str) -> tokio::task::JoinHandle<()> {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
+            .await
+            .expect("bind fixed port");
+        let body =
+            format!(r#"{{"Browser":"Chrome/126.0.0.0","webSocketDebuggerUrl":"{ws_url}"}}"#);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let body = body.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 2048];
+                    let _ = socket.read(&mut buf).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        })
+    }
+
+    /// Find a currently-free port.
+    fn free_port() -> i64 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port() as i64;
+        drop(listener);
+        port
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_already_running_notes_and_config_update() {
+        let (_g, _e, _d) = isolated_home().await;
+        let port = free_port();
+        let _server = serve_json_version_on(port, "ws://127.0.0.1:1/ws").await;
+        let endpoint = format!("http://127.0.0.1:{port}");
+
+        // First call: existing endpoint (default 9222) differs → update note.
+        let result = browser_start(&args(&[("port", json!(port))])).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["status"], json!("already_running"));
+        assert_eq!(sc["endpoint"], json!(endpoint));
+        assert!(sc["note"].as_str().unwrap().contains("was updated"), "{sc}");
+
+        // Second call: config now points at the same endpoint → plain note.
+        let result = browser_start(&args(&[("port", json!(port))])).await.unwrap();
+        let sc = structured(&result);
+        assert_eq!(
+            sc["note"],
+            json!("Browser is already running at this endpoint.")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_without_any_browser_binary_errors() {
+        let (_g, _e, _d) = isolated_home().await;
+        // Force the no-launcher outcome (this dev machine has a real Chrome,
+        // so platform discovery would otherwise always succeed).
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = Some(None);
+        let port = free_port();
+        let err = browser_start(&args(&[("port", json!(port))]))
+            .await
+            .unwrap_err();
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
+        assert!(err.contains("Could not find Chrome or Edge"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_launch_becomes_reachable_reports_started() {
+        let (_g, _e, dir) = isolated_home().await;
+        // Fake chrome: a python script serving /json/version on the port
+        // given via --remote-debugging-port.
+        let py = dir.path().join("fake_chrome.py");
+        std::fs::write(
+            &py,
+            r#"import http.server, socketserver, sys, json, time
+port = 0
+for a in sys.argv:
+    if a.startswith("--remote-debugging-port="):
+        port = int(a.split("=")[1])
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"Browser": "FakeChrome/1", "webSocketDebuggerUrl": "ws://127.0.0.1:1/ws"}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+time.sleep(0.3)
+socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
+"#,
+        )
+        .unwrap();
+        let sh = dir.path().join("chrome");
+        std::fs::write(
+            &sh,
+            format!("#!/bin/sh\nexec python3 {} \"$@\"\n", py.display()),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let port = free_port();
+        let result = browser_start(&args(&[
+            ("port", json!(port)),
+            ("executablePath", json!(sh.to_string_lossy().to_string())),
+            ("url", json!("http://home/")),
+        ]))
+        .await
+        .unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["status"], json!("started"));
+        assert_eq!(sc["port"], json!(port));
+        assert_eq!(sc["requestedPort"], json!(port));
+        assert!(sc["profileDir"].as_str().unwrap().contains("profile"), "{sc}");
+        // Config saved with the active url.
+        let saved = load_browser_config().await.unwrap();
+        assert_eq!(saved.active_url.as_deref(), Some("http://home/"));
+        assert_eq!(
+            saved.connection.endpoint(),
+            format!("http://127.0.0.1:{port}")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_launch_never_reachable_reports_starting() {
+        let (_g, _e, dir) = isolated_home().await;
+        // Occupy the requested port with a NON-HTTP listener → resolve_port
+        // scans to a free port; /bin/true exits immediately → the endpoint
+        // never comes up → 10 s wait → "starting".
+        let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = holder.local_addr().unwrap().port() as i64;
+        let profile = dir.path().join("custom-profile");
+        let result = browser_start(&args(&[
+            ("port", json!(taken)),
+            ("executablePath", json!("/bin/true")),
+            ("profileDir", json!(profile.to_string_lossy())),
+        ]))
+        .await
+        .unwrap();
+        drop(holder);
+        let sc = structured(&result);
+        assert_eq!(sc["status"], json!("starting"));
+        assert!(sc["note"].as_str().unwrap().contains("did not answer"), "{sc}");
+        // The scanned port differs from the occupied requested one.
+        assert_ne!(sc["port"], json!(taken));
+        assert_eq!(sc["requestedPort"], json!(taken));
+        // Explicit profileDir is honored.
+        assert_eq!(
+            sc["profileDir"],
+            json!(profile.to_string_lossy().to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_default_profile_dir_uses_scanned_port() {
+        let (_g, _e, _d) = isolated_home().await;
+        // Occupied requested port + no explicit profileDir → profile-N dir.
+        let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = holder.local_addr().unwrap().port() as i64;
+        let result = browser_start(&args(&[
+            ("port", json!(taken)),
+            ("executablePath", json!("/bin/true")),
+        ]))
+        .await
+        .unwrap();
+        drop(holder);
+        let sc = structured(&result);
+        let resolved = sc["port"].as_i64().unwrap();
+        assert_ne!(resolved, taken);
+        assert!(
+            sc["profileDir"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!("profile-{resolved}")),
+            "{sc}"
+        );
+    }
+}
+
