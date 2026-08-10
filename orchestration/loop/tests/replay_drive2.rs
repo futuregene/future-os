@@ -133,3 +133,27 @@ fn decision_replay_mismatch_groups() {
     let cmp = replay_public_safe_decision_case(&t5).unwrap();
     assert!(cmp.mismatches.iter().any(|m| m.contains("must_attempt")), "{:?}", cmp.mismatches);
 }
+
+#[test]
+fn corpus_run_actor_error_propagates() {
+    // NOTE: the semantic-drift else-branch in the pair evaluator is
+    // unreachable — render_actor_request always emits the schema header,
+    // "TODO " and the completion-contract lines, so the contract is complete
+    // for every packet (documented in the coverage report).
+    struct ErrActor;
+    impl future_loop::replay::corpus::ModelBehaviorActor for ErrActor {
+        fn id(&self) -> &str {
+            "err"
+        }
+        fn respond(&self, _arm: &str, _request: &str) -> anyhow::Result<String> {
+            anyhow::bail!("actor exploded")
+        }
+    }
+    let full = base_packet_json();
+    let case = case_json("c-err", "equivalent", full, None);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("corpus.json");
+    std::fs::write(&path, serde_json::to_string(&corpus_json_with(vec![case])).unwrap()).unwrap();
+    let corpus = ModelBehaviorCorpus::load(&path).unwrap();
+    assert!(run_model_behavior_corpus(&corpus, &ErrActor, 2, 0).is_err());
+}

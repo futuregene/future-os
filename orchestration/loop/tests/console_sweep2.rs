@@ -213,3 +213,76 @@ fn capability_commands_experimental_note() {
     cli_ok(&["capability", "commands", "--name", "pr_review_queue", "--include-experimental"]);
     cli_ok(&["catalog", "--name", "pr_review_queue"]);
 }
+
+#[test]
+fn diagnose_and_doctor_with_projection_gap() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "gap surfaces");
+    // Complete the only todo so agent_open == 0, then point next_action at
+    // phantom work → a real projection gap.
+    let first = first_todo_id(&cr.root, &gid);
+    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &first, "--no-follow-up"]);
+    {
+        let store = open_store(&cr);
+        store.set_next_action(&gid, "phantom work").unwrap();
+    }
+    cli_ok(&["diagnose", "--goal", &gid]);
+    let err = cli_err(&["doctor", "--goal", &gid]);
+    assert!(err.contains("gap") || err.contains("failure"), "{err}");
+}
+
+#[test]
+fn benchmark_protocol_blind_route() {
+    let _cr = cli_root();
+    cli_ok(&["benchmark", "protocol", "--route", "raw-codex-autonomous-max5"]);
+}
+
+#[test]
+fn capability_propose_gate_print_arm() {
+    let _cr = cli_root();
+    cli_ok(&[
+        "capability", "propose", "--name", "issue_fix", "--input",
+        "title: bug\nerror: crash\nrepro: steps\nauthority: read-only",
+    ]);
+}
+
+#[test]
+fn privacy_private_fields_print_arm() {
+    let cr = cli_root();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let gid = init_goal(&cr, "privacy fields");
+    common::add_todo(&cr, &gid, &format!("read {home}/.ssh/id_rsa and rotate the key"));
+    cli_ok(&["privacy", "--goal", &gid]);
+}
+
+#[test]
+fn corpus_build_trailing_flag_arms() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "corpus trailing");
+    // --ablate / --patch at the very end with no value → skipped arms.
+    cli_ok(&["replay", "corpus", "build", "--goal", &gid, "--patch", "{}", "--ablate"]);
+    let _ = cr;
+}
+
+#[test]
+fn runs_retention_with_candidates() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "retention candidates");
+    {
+        let store = open_store(&cr);
+        let runs_dir = store.goal_dir(&gid).join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        for (name, ts) in [
+            ("2020-01-01T00-00-00-00-00.json", "2020-01-01T00:00:00+00:00"),
+            ("2021-01-01T00-00-00-00-00.json", "2021-01-01T00:00:00+00:00"),
+            ("2022-01-01T00-00-00-00-00.json", "2022-01-01T00:00:00+00:00"),
+        ] {
+            std::fs::write(
+                runs_dir.join(name),
+                format!("{{\"timestamp\":\"{ts}\",\"turn\":1,\"terminal_state\":\"completed\"}}"),
+            )
+            .unwrap();
+        }
+    }
+    cli_ok(&["runs", "retention", "--goal", &gid, "--keep", "1"]);
+}
