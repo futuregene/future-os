@@ -257,7 +257,8 @@ impl ChatArea {
             code: Some(std::rc::Rc::new(think_fg)),
             code_block: Some(std::rc::Rc::new(move |s: &str| fg(tc, &dim(s)))),
             code_block_border: Some(std::rc::Rc::new(move |s: &str| fg(tc, &dim(s)))),
-            quote: Some(std::rc::Rc::new(move |s: &str| fg(tc, &italic(s)))),
+            // (No quote/quote_border override: the renderer never invokes
+            // those style fns — they exist for TS shape parity only.)
             quote_border: Some(std::rc::Rc::new(think_fg)),
             hr: Some(std::rc::Rc::new(think_fg)),
             list_bullet: Some(std::rc::Rc::new(think_fg)),

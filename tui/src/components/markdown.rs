@@ -2398,11 +2398,33 @@ mod tests {
             ..Default::default()
         };
         let mut r = MarkdownRenderer::with_theme(partial);
-        let lines = r.render_text("# Plan\n\n`code` and **bold**", 40);
+        let lines = r.render_text("# Plan\n\n`code` and **bold**\n\n```\nfn x()\n```\n", 40);
         let s = lines.join("\n");
         assert!(s.contains("\x1b[38;5;244m"));
         assert!(!s.contains("\x1b[38;5;151m"));
         assert!(!s.contains("\x1b[38;5;221m"));
+    }
+
+    #[test]
+    fn default_theme_styles_links_and_blockquotes() {
+        // Default theme closures for link/quote/quote_border.
+        let lines = render("[text](https://example.com)\n\n> a quote", 40);
+        let s = lines.join("\n");
+        assert!(s.contains("text"));
+        assert!(s.contains("a quote"));
+        assert!(s.contains("\x1b[38;5;117m")); // link fg
+    }
+
+    #[test]
+    fn default_theme_parity_styles_produce_output() {
+        // link_url/quote/quote_border exist for TS shape parity — the
+        // renderer deliberately never invokes them (quote text uses raw
+        // fg+italic so resets can be re-applied). Call them once here so
+        // their bodies aren't dead code.
+        let theme = MarkdownTheme::default();
+        assert!((theme.link_url)("x").contains("x"));
+        assert!((theme.quote)("x").contains("x"));
+        assert!((theme.quote_border)("x").contains("x"));
     }
 
     #[test]

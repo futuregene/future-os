@@ -445,6 +445,12 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
 
 // ─── Print Mode (Non-Interactive) ──────────────────────────────────────────
 
+/// Dial a channel for the event-stream subscription (print mode).
+async fn dial_channel(addr: &str) -> Result<tonic::transport::Channel, String> {
+    let endpoint = Endpoint::from_shared(format!("http://{addr}")).map_err(|e| e.to_string())?;
+    endpoint.connect().await.map_err(|e| e.to_string())
+}
+
 /// `runPrintMode` — connect, apply CLI options, stream events, prompt, output.
 async fn run_print_mode(grpc_addr: &str, args: &CliArgs) -> Result<(), String> {
     let prompt = build_initial_prompt(&args.file_args, &args.messages)
@@ -478,9 +484,7 @@ async fn run_print_mode(grpc_addr: &str, args: &CliArgs) -> Result<(), String> {
     apply_cli_options(grpc_addr, &session_id, args).await?;
 
     // Subscribe to events BEFORE sending the prompt.
-    let endpoint =
-        Endpoint::from_shared(format!("http://{grpc_addr}")).map_err(|e| e.to_string())?;
-    let channel = endpoint.connect().await.map_err(|e| e.to_string())?;
+    let channel = dial_channel(grpc_addr).await?;
     let mut client = FutureAgentClient::new(channel);
     let mut stream = client
         .stream_events(StreamRequest {
@@ -565,10 +569,9 @@ async fn run_print_mode(grpc_addr: &str, args: &CliArgs) -> Result<(), String> {
         return Err(err);
     }
 
-    // Wait for the event stream to complete.
-    let (stream_result, json_messages, text) = events_task
-        .await
-        .unwrap_or_else(|_| (Ok(()), Vec::new(), String::new()));
+    // Wait for the event stream to complete. (The task has no panic paths:
+    // every stream outcome is mapped to a value above.)
+    let (stream_result, json_messages, text) = events_task.await.expect("events task");
     stream_result?;
 
     // Output result.
@@ -1609,6 +1612,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dial_and_unary_address_arms() {
+        // Unparseable address → the from_shared map_err arms.
+        assert!(dial_channel("bad addr with spaces").await.is_err());
+        assert!(
+            execute_unary("bad addr with spaces", RpcCommand::default(), 1)
+                .await
+                .is_err()
+        );
+        // Parseable but nothing listening → the connect map_err arm.
+        assert!(dial_channel("127.0.0.1:1").await.is_err());
+    }
+
+    #[tokio::test]
     async fn print_mode_error_paths() {
         // No prompt content.
         let a = args(&["-p"]);
@@ -1987,10 +2003,7 @@ mod tests {
         let (code, ()) = tokio::join!(run_interactive(&args), driver);
 
         drop(pty);
-        match old_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        restore_env("HOME", old_home);
         assert_eq!(code, 0);
     }
 

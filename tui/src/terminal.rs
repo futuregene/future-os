@@ -947,8 +947,8 @@ mod tests {
 
     #[test]
     fn spin_until_returns_false_on_timeout() {
-        assert!(!spin_until(|| false, 5));
-        assert!(spin_until(|| true, 5));
+        assert!(!spin_until(&mut || false, 5));
+        assert!(spin_until(&mut || true, 5));
     }
 
     #[test]
@@ -1003,15 +1003,17 @@ mod tests {
     }
 
     /// Spin until `cond` holds (bounded), returning whether it did.
-    fn spin_until(mut cond: impl FnMut() -> bool, max_ms: u64) -> bool {
+    fn spin_until(cond: &mut dyn FnMut() -> bool, max_ms: u64) -> bool {
         let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(max_ms) {
+        loop {
             if cond() {
                 return true;
             }
+            if start.elapsed() >= Duration::from_millis(max_ms) {
+                return false;
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
-        cond()
     }
 
     #[cfg(unix)]
@@ -1039,26 +1041,29 @@ mod tests {
 
         // Kitty protocol response is consumed and arms the protocol.
         pty.write("\x1b[?1u");
-        assert!(spin_until(|| t.kitty_protocol_active(), 2000));
+        assert!(spin_until(&mut || t.kitty_protocol_active(), 2000));
 
         // Plain input is forwarded.
         pty.write("a");
-        assert!(spin_until(|| input_rx.try_iter().any(|s| s == "a"), 2000));
+        assert!(spin_until(
+            &mut || input_rx.try_iter().any(|s| s == "a"),
+            2000
+        ));
 
         // A lone ESC is buffered, then flushed after the idle timeout.
         pty.write("\x1b");
         assert!(spin_until(
-            || input_rx.try_iter().any(|s| s == "\x1b"),
+            &mut || input_rx.try_iter().any(|s| s == "\x1b"),
             2000
         ));
 
         // SIGWINCH through the self-pipe → resize callback.
         unsafe { libc::raise(libc::SIGWINCH) };
-        assert!(spin_until(|| resize_rx.try_recv().is_ok(), 2000));
+        assert!(spin_until(&mut || resize_rx.try_recv().is_ok(), 2000));
 
         // SIGTERM with an exit callback → callback, not process death.
         unsafe { libc::raise(libc::SIGTERM) };
-        assert!(spin_until(|| exit_rx.try_recv().is_ok(), 2000));
+        assert!(spin_until(&mut || exit_rx.try_recv().is_ok(), 2000));
 
         // Master close → POLLHUP/POLLIN → read returns EOF → reader exits.
         pty.close_master();
@@ -1116,7 +1121,7 @@ mod tests {
             ws.ws_row = 55;
             assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
             libc::raise(libc::SIGWINCH);
-            assert!(spin_until(|| *t.size.lock() == (99, 55), 2000));
+            assert!(spin_until(&mut || *t.size.lock() == (99, 55), 2000));
             t.stop();
 
             libc::dup2(saved0, 0);
@@ -1165,7 +1170,7 @@ mod tests {
         // die_with_signal, which the test build substitutes with a panic.
         unsafe { libc::raise(libc::SIGTERM) };
         let got = spin_until(
-            || {
+            &mut || {
                 panic_rx
                     .try_recv()
                     .map(|m| m == "die_with_signal(15)")
@@ -1173,6 +1178,21 @@ mod tests {
             },
             2000,
         );
+        // A &'static str panic payload exercises the hook's other downcast.
+        let worker = std::thread::spawn(|| {
+            let _ = std::panic::catch_unwind(|| panic!("literal-payload"));
+        });
+        let _ = worker.join();
+        let got_literal = spin_until(
+            &mut || {
+                panic_rx
+                    .try_recv()
+                    .map(|m| m == "literal-payload")
+                    .unwrap_or(false)
+            },
+            2000,
+        );
+        assert!(got_literal);
         let _ = std::panic::take_hook();
         std::panic::set_hook(prev_hook);
         t.stop();
