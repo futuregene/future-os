@@ -453,3 +453,299 @@ impl ChromiumPageManager {
         self.connection.register_target(target);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_cdp::{target, MockCdp};
+    use serde_json::json;
+
+    /// Start a mock with two pages and a connected page manager.
+    async fn manager_over_mock() -> (MockCdp, std::sync::Arc<CdpConnection>, ChromiumPageManager) {
+        let mock = MockCdp::start_with(
+            vec![
+                target("T-1", "http://one/", "One"),
+                target("T-2", "http://two/", "Two"),
+            ],
+            "Chrome/126.0.0.0",
+        )
+        .await;
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        let browser = CdpSession::new("", conn.clone());
+        let mgr = ChromiumPageManager::new(browser, conn.clone());
+        (mock, conn, mgr)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn initialize_discovers_attaches_and_orders_pages() {
+        let (mock, conn, mut mgr) = manager_over_mock().await;
+        mgr.initialize(None, None).await.unwrap();
+
+        let pages = mgr.get_pages();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].target_id, "T-1");
+        assert_eq!(pages[0].url, "http://one/");
+        assert_eq!(pages[1].title, "Two");
+        // Both attached (session ids assigned by the mock).
+        assert!(!pages[0].session_id.is_empty());
+        assert!(mgr.get_page("T-2").is_some());
+        assert!(mgr.get_page("nope").is_none());
+        // No active configured → last in order.
+        assert_eq!(mgr.get_active_page_id().as_deref(), Some("T-2"));
+        assert_eq!(mgr.get_tab_order(), vec!["T-1".to_string(), "T-2".to_string()]);
+
+        // Target.setDiscoverTargets + getTargets + 2 attaches happened.
+        assert_eq!(mock.commands_of("Target.setDiscoverTargets").len(), 1);
+        assert_eq!(mock.commands_of("Target.attachToTarget").len(), 2);
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn initialize_restores_tab_order_and_active_page() {
+        let (mock, conn, mut mgr) = manager_over_mock().await;
+        mgr.initialize(
+            Some(&["T-2".to_string(), "T-1".to_string()]),
+            Some("T-1"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(mgr.get_tab_order(), vec!["T-2".to_string(), "T-1".to_string()]);
+        assert_eq!(mgr.get_active_page_id().as_deref(), Some("T-1"));
+
+        // Unknown active id is ignored → falls back to last.
+        let (_m2, conn2, mut mgr2) = manager_over_mock().await;
+        mgr2.initialize(None, Some("ghost")).await.unwrap();
+        assert_eq!(mgr2.get_active_page_id().as_deref(), Some("T-2"));
+        conn.disconnect().await;
+        conn2.disconnect().await;
+        drop(mock);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn initialize_propagates_send_failures() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Target.setDiscoverTargets".to_string());
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        let browser = CdpSession::new("", conn.clone());
+        let mut mgr = ChromiumPageManager::new(browser, conn.clone());
+        let err = mgr.initialize(None, None).await.unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+
+        // getTargets failure.
+        let mock2 = MockCdp::start().await;
+        mock2
+            .state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Target.getTargets".to_string());
+        let conn2 = CdpConnection::connect(&mock2.ws_url, 5_000).await.unwrap();
+        let browser2 = CdpSession::new("", conn2.clone());
+        let mut mgr2 = ChromiumPageManager::new(browser2, conn2.clone());
+        assert!(mgr2.initialize(None, None).await.is_err());
+
+        // attachToTarget failure (targets exist).
+        mock2.state.lock().unwrap().fail_methods.clear();
+        mock2
+            .state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Target.attachToTarget".to_string());
+        let mut mgr3 = ChromiumPageManager::new(CdpSession::new("", conn2.clone()), conn2.clone());
+        assert!(mgr3.initialize(None, None).await.is_err());
+        conn.disconnect().await;
+        conn2.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn target_events_update_state() {
+        let (_mock, conn, mut mgr) = manager_over_mock().await;
+        mgr.initialize(None, None).await.unwrap();
+
+        // targetCreated for a NON-page target is ignored.
+        conn.dispatch_test(
+            None,
+            "Target.targetCreated",
+            &json!({"targetInfo": {"targetId": "W-1", "type": "worker", "url": "w", "title": "w"}}),
+        );
+        // targetCreated for a page adds it; a duplicate id does not.
+        conn.dispatch_test(
+            None,
+            "Target.targetCreated",
+            &json!({"targetInfo": {"targetId": "T-3", "type": "page", "url": "http://three/", "title": "Three"}}),
+        );
+        conn.dispatch_test(
+            None,
+            "Target.targetCreated",
+            &json!({"targetInfo": {"targetId": "T-3", "type": "page", "url": "dup", "title": "dup"}}),
+        );
+        // targetCreated fills the pages map (tab order is reconciled
+        // separately); the duplicate id was ignored.
+        assert_eq!(mgr.get_pages().len(), 2);
+        assert_eq!(mgr.get_page("T-3").unwrap().url, "http://three/");
+        assert!(mgr.get_page("W-1").is_none());
+
+        // targetInfoChanged updates url/title of an existing page.
+        conn.dispatch_test(
+            None,
+            "Target.targetInfoChanged",
+            &json!({"targetInfo": {"targetId": "T-3", "url": "http://moved/", "title": "Moved"}}),
+        );
+        assert_eq!(mgr.get_page("T-3").unwrap().url, "http://moved/");
+        assert_eq!(mgr.get_page("T-3").unwrap().title, "Moved");
+
+        // targetDestroyed removes the page and fixes the active pointer.
+        mgr.set_active_page_id("T-3");
+        assert_eq!(mgr.get_active_page_id().as_deref(), Some("T-3"));
+        conn.dispatch_test(None, "Target.targetDestroyed", &json!({"targetId": "T-3"}));
+        assert!(mgr.get_page("T-3").is_none());
+        assert_eq!(mgr.get_active_page_id().as_deref(), Some("T-2"));
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn target_destroyed_rejects_pending_for_attached_session() {
+        let (mock, conn, mut mgr) = manager_over_mock().await;
+        mgr.initialize(None, None).await.unwrap();
+
+        // Register the target in the connection registry, then park a
+        // pending request on its session.
+        conn.register_target(AttachedTarget {
+            target_id: "T-1".to_string(),
+            session_id: "SID-T1".to_string(),
+            r#type: "page".to_string(),
+        });
+        mock.state
+            .lock()
+            .unwrap()
+            .no_reply_methods
+            .insert("Never.answered".to_string());
+        let pending_conn = conn.clone();
+        let pending = tokio::spawn(async move {
+            pending_conn
+                .send_with_timeout("Never.answered", None, Some("SID-T1"), 60_000)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        conn.dispatch_test(None, "Target.targetDestroyed", &json!({"targetId": "T-1"}));
+        let err = pending.await.unwrap().unwrap_err();
+        assert_eq!(err.to_string(), "Target T-1 destroyed");
+        assert!(mgr.get_page("T-1").is_none());
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_close_activate_page_flows() {
+        let (mock, conn, mut mgr) = manager_over_mock().await;
+        mgr.initialize(None, None).await.unwrap();
+
+        let (target_id, page) = mgr.create_page("http://new/").await.unwrap();
+        assert!(target_id.starts_with("T-"));
+        assert_eq!(page.url, "http://new/");
+        assert!(mgr.get_tab_order().last().unwrap() == &target_id);
+        assert_eq!(mock.commands_of("Target.createTarget").len(), 1);
+
+        // create_page when the page is ALREADY discovered+attached is a
+        // no-op attach-wise.
+        let (again_id, _) = mgr.create_page("http://again/").await.unwrap();
+        assert!(mgr.get_page(&again_id).is_some());
+
+        // activate_page sets the active pointer.
+        mgr.activate_page("T-1").await.unwrap();
+        assert_eq!(mgr.get_active_page_id().as_deref(), Some("T-1"));
+
+        // close_page → targetDestroyed cleanup.
+        mgr.close_page(&target_id).await.unwrap();
+        for _ in 0..50 {
+            if mgr.get_page(&target_id).is_none() {
+                break;
+            }
+            crate::utils::time::sleep(20).await;
+        }
+        assert!(mgr.get_page(&target_id).is_none());
+
+        // activate/close send failures propagate.
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Target.activateTarget".to_string());
+        assert!(mgr.activate_page("T-1").await.is_err());
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Target.closeTarget".to_string());
+        assert!(mgr.close_page("T-1").await.is_err());
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_page_times_out_when_target_never_discovered() {
+        let mock = MockCdp::start().await;
+        mock.state.lock().unwrap().suppress_target_created = true;
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        let mut mgr = ChromiumPageManager::new(CdpSession::new("", conn.clone()), conn.clone());
+        mgr.initialize(None, None).await.unwrap();
+        let started = std::time::Instant::now();
+        let err = mgr.create_page("http://lost/").await.unwrap_err();
+        assert!(err.contains("not discovered within timeout"), "{err}");
+        assert!(started.elapsed().as_secs() >= 5);
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn query_and_mutation_helpers() {
+        let (_mock, conn, mut mgr) = manager_over_mock().await;
+        mgr.initialize(None, None).await.unwrap();
+
+        // get_active_page: active id pointing at a REMOVED page falls back
+        // to the last ordered page.
+        {
+            let mut d = mgr.data.lock().unwrap();
+            d.active_page_id = Some("ghost".to_string());
+        }
+        assert_eq!(mgr.get_active_page().unwrap().target_id, "T-2");
+
+        // Empty manager → no active page.
+        let (_m2, conn2, mgr2) = {
+            let mock2 = MockCdp::start_with(vec![], "Chrome/126").await;
+            let c = CdpConnection::connect(&mock2.ws_url, 5_000).await.unwrap();
+            let m = ChromiumPageManager::new(CdpSession::new("", c.clone()), c.clone());
+            (mock2, c, m)
+        };
+        assert!(mgr2.get_active_page().is_none());
+        assert!(mgr2.get_active_page_id().is_none());
+
+        // set_active_page_id ignores unknown ids.
+        mgr.set_active_page_id("nope");
+        assert_eq!(mgr.get_active_page_id().as_deref(), Some("T-2"));
+
+        // update_page / set_session_id mutate only existing pages.
+        mgr.update_page("T-1", "http://u/", "U");
+        assert_eq!(mgr.get_page("T-1").unwrap().title, "U");
+        mgr.update_page("nope", "x", "x");
+        mgr.set_session_id("T-1", "SID-X");
+        assert_eq!(mgr.get_page("T-1").unwrap().session_id, "SID-X");
+        mgr.set_session_id("nope", "SID-Y");
+
+        // register_attached proxies to the connection registry.
+        mgr.register_attached(AttachedTarget {
+            target_id: "T-1".to_string(),
+            session_id: "SID-X".to_string(),
+            r#type: "page".to_string(),
+        });
+        assert_eq!(
+            mgr.connection.get_target_by_session_id("SID-X").map(|t| t.target_id),
+            Some("T-1".to_string())
+        );
+        conn.disconnect().await;
+        conn2.disconnect().await;
+    }
+}

@@ -47,6 +47,11 @@ pub struct MockCdpState {
     pub navigate_same_document: bool,
     /// Do not emit the DOMContentLoaded lifecycle event after navigate.
     pub suppress_loaded_event: bool,
+    /// Do not emit Target.targetCreated after Target.createTarget
+    /// (page-manager discovery-timeout tests).
+    pub suppress_target_created: bool,
+    /// Page.getLayoutMetrics result payload.
+    pub layout_metrics: Value,
     /// Emit a fresh-loader DOMContentLoaded lifecycle event after every
     /// Input.dispatch* command (simulates action-triggered navigation).
     pub navigate_on_input: bool,
@@ -85,6 +90,8 @@ impl Default for MockCdpState {
             navigate_error_text: None,
             navigate_same_document: false,
             suppress_loaded_event: false,
+            suppress_target_created: false,
+            layout_metrics: json!({"cssContentSize": {"x": 0, "y": 0, "width": 800, "height": 600}}),
             navigate_on_input: false,
             console_logs: Value::Array(Vec::new()),
             snapshot_items: Vec::new(),
@@ -319,13 +326,15 @@ fn dispatch_method(
                 url: url.clone(),
                 title: String::new(),
             });
-            events.push(json!({
-                "method": "Target.targetCreated",
-                "params": {"targetInfo": {
-                    "targetId": target_id, "type": "page",
-                    "url": url, "title": "",
-                }},
-            }));
+            if !state.suppress_target_created {
+                events.push(json!({
+                    "method": "Target.targetCreated",
+                    "params": {"targetInfo": {
+                        "targetId": target_id, "type": "page",
+                        "url": url, "title": "",
+                    }},
+                }));
+            }
             json!({"targetId": target_id})
         }
 
@@ -408,9 +417,7 @@ fn dispatch_method(
 
         "Page.captureScreenshot" => json!({"data": state.screenshot_b64}),
 
-        "Page.getLayoutMetrics" => {
-            json!({"cssContentSize": {"x": 0, "y": 0, "width": 800, "height": 600}})
-        }
+        "Page.getLayoutMetrics" => state.layout_metrics.clone(),
 
         "Input.dispatchMouseEvent" | "Input.dispatchKeyEvent" | "Input.insertText" => {
             if state.navigate_on_input {
