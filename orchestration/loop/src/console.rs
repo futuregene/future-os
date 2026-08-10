@@ -4914,16 +4914,13 @@ mod coverage_tests {
 
     #[test]
     fn event_touches_todo_matrix() {
+        let mut wrongly_touched = false;
         for ev in all_events("todo_1") {
-            let touches = event_touches_todo(&ev, "todo_1");
-            let touches_other = event_touches_todo(&ev, "todo_other");
-            // Every todo-carrying variant matches its todo; none matches a
-            // different id. Goal-level variants never touch.
-            if touches_other {
-                panic!("{ev:?} must not touch todo_other");
-            }
-            let _ = touches;
+            let _touches = event_touches_todo(&ev, "todo_1");
+            // No event variant may match a different todo id.
+            wrongly_touched |= event_touches_todo(&ev, "todo_other");
         }
+        assert!(!wrongly_touched);
         assert!(event_touches_todo(&Event::TodoAdded {
             goal_id: "g".into(),
             todo: Todo::advancement("todo_1", "task"),
@@ -5075,5 +5072,32 @@ mod coverage_tests {
         print_status_json(&store, None).unwrap();
         print_status_json(&store, Some("gj".to_string())).unwrap();
         assert!(print_status_json(&store, Some("goal_nope".to_string())).is_err());
+    }
+
+    #[test]
+    fn sync_helpers_tolerate_missing_goals() {
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-console-sync-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        // sync_compat on a goal with no ledger → Ok no-op; refresh_next_action
+        // on the same → not-found error.
+        sync_compat(&store, "goal_ghost").unwrap();
+        assert!(refresh_next_action(&mut store, "goal_ghost").is_err());
+        // And the write path for a real goal (produces ACTIVE_GOAL_STATE.md).
+        let goal = Goal::new("gs", "sync goal", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted { goal_id: "gs".into(), ts: 1 })
+            .unwrap();
+        refresh_next_action(&mut store, "gs").unwrap();
+        sync_compat(&store, "gs").unwrap();
+        assert!(store.goal_dir("gs").join("ACTIVE_GOAL_STATE.md").exists());
     }
 }
