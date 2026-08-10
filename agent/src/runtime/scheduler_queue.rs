@@ -1017,7 +1017,12 @@ mod tests {
     #[test]
     fn accept_rejects_supersede_policy_via_plain_accept() {
         let queue = queue();
-        let result = queue.accept("r1", None, BusyPolicy::SupersedeSession, serde_json::json!({}));
+        let result = queue.accept(
+            "r1",
+            None,
+            BusyPolicy::SupersedeSession,
+            serde_json::json!({}),
+        );
         assert!(matches!(
             result.unwrap_err(),
             RunQueueError::SupersedeRequiresSessionOperation
@@ -1041,9 +1046,19 @@ mod tests {
     fn accept_reports_duplicate_run_id() {
         let queue = queue();
         queue
-            .accept("r1", Some("run-x"), BusyPolicy::EnqueueIfBusy, serde_json::json!({}))
+            .accept(
+                "r1",
+                Some("run-x"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({}),
+            )
             .unwrap();
-        let result = queue.accept("r2", Some("run-x"), BusyPolicy::EnqueueIfBusy, serde_json::json!({}));
+        let result = queue.accept(
+            "r2",
+            Some("run-x"),
+            BusyPolicy::EnqueueIfBusy,
+            serde_json::json!({}),
+        );
         assert!(matches!(
             result.unwrap_err(),
             RunQueueError::DuplicateRunId(id) if id == "run-x"
@@ -1058,7 +1073,12 @@ mod tests {
             RunQueueError::QueueEmpty
         ));
         queue
-            .accept("r1", Some("run-1"), BusyPolicy::EnqueueIfBusy, serde_json::json!({}))
+            .accept(
+                "r1",
+                Some("run-1"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({}),
+            )
             .unwrap();
         queue.start_next(1).unwrap();
         assert!(matches!(
@@ -1132,9 +1152,15 @@ mod tests {
     #[test]
     fn supersede_respects_global_budget_on_replace() {
         let budget = std::sync::Arc::new(GlobalQueueBudget::new(1, usize::MAX));
-        let queue = InMemoryRunQueue::with_limits_and_global("s", 1, 128, 65536, 65536, 256, budget);
+        let queue =
+            InMemoryRunQueue::with_limits_and_global("s", 1, 128, 65536, 65536, 256, budget);
         queue
-            .accept("r1", None, BusyPolicy::EnqueueIfBusy, serde_json::json!({"m": "a"}))
+            .accept(
+                "r1",
+                None,
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"m": "a"}),
+            )
             .unwrap();
         // The global budget is exhausted by the queued run; supersede's
         // replace path must still work (it releases first) — and the count
@@ -1148,15 +1174,30 @@ mod tests {
         let queue = queue();
         // An active run makes subsequent accepts queue with positions.
         queue
-            .accept("r1", Some("run-1"), BusyPolicy::EnqueueIfBusy, serde_json::json!({}))
+            .accept(
+                "r1",
+                Some("run-1"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({}),
+            )
             .unwrap();
         queue.start_next(1).unwrap();
         queue
-            .accept("r2", Some("run-2"), BusyPolicy::EnqueueIfBusy, serde_json::json!({"m": 1}))
+            .accept(
+                "r2",
+                Some("run-2"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"m": 1}),
+            )
             .unwrap();
         // Same payload + request id → the existing ack carries the position.
         let ack = queue
-            .accept("r2", Some("run-2"), BusyPolicy::EnqueueIfBusy, serde_json::json!({"m": 1}))
+            .accept(
+                "r2",
+                Some("run-2"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"m": 1}),
+            )
             .unwrap();
         assert_eq!(ack.accepted_state, RunAcceptedState::Existing);
         assert!(ack.queue_position.is_some());

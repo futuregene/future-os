@@ -928,9 +928,7 @@ mod tests {
         std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
         std::fs::write(
             &auth_path,
-            format!(
-                r#"{{"future": {{"type": "api_key", "key": "k", "base_url": "{base}/api"}}}}"#
-            ),
+            format!(r#"{{"future": {{"type": "api_key", "key": "k", "base_url": "{base}/api"}}}}"#),
         )
         .unwrap();
 

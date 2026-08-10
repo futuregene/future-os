@@ -1640,7 +1640,9 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         decider.join().unwrap();
         let denial = result.expect("rejection returns a tool result");
         assert!(denial.is_error);
-        assert!(denial.result.contains("rejected by the user: too dangerous"));
+        assert!(denial
+            .result
+            .contains("rejected by the user: too dangerous"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1815,7 +1817,10 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &sandbox,
         );
         decider.join().unwrap();
-        assert!(matches!(decision, crate::sandbox::EscalationDecision::Approved));
+        assert!(matches!(
+            decision,
+            crate::sandbox::EscalationDecision::Approved
+        ));
 
         let gate = ApprovalGate::default();
         let decider = spawn_decider(

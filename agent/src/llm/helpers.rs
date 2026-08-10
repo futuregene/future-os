@@ -902,7 +902,8 @@ mod message_conversion_tests {
             content: Some(serde_json::json!("plain result")),
             ..Default::default()
         };
-        let out = Client::convert_messages_to_openai(vec![tool_array, tool_string], String::new(), false);
+        let out =
+            Client::convert_messages_to_openai(vec![tool_array, tool_string], String::new(), false);
         assert_eq!(out[0]["content"], "piece");
         assert_eq!(out[1]["content"], "plain result");
     }

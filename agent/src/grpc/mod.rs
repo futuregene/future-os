@@ -521,8 +521,10 @@ mod tests {
             .join(format!("futureos-grpc-test-{stamp}"))
             .to_string_lossy()
             .to_string();
-        let session_dir = std::env::temp_dir()
-            .join(format!("futureos-grpc-sess-{}", crate::utils::generate_id()));
+        let session_dir = std::env::temp_dir().join(format!(
+            "futureos-grpc-sess-{}",
+            crate::utils::generate_id()
+        ));
         let model_registry = Arc::new(parking_lot::RwLock::new(crate::models::Registry::new()));
         let session_manager = Arc::new(crate::session::Manager::new(session_dir));
         let approval_gate = crate::rpc::ApprovalGate::default();
@@ -775,10 +777,10 @@ mod tests {
             .expect("subscribes");
         let mut stream = response.into_inner();
         // The initial ping is filtered out (not in event_types).
-        session
-            .read()
-            .broadcaster
-            .broadcast(SseEvent::new("thinking_level_changed", serde_json::json!({})));
+        session.read().broadcaster.broadcast(SseEvent::new(
+            "thinking_level_changed",
+            serde_json::json!({}),
+        ));
         session.read().broadcaster.broadcast(SseEvent::new(
             "model_changed",
             serde_json::json!({"model": "mock"}),

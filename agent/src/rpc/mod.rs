@@ -898,7 +898,11 @@ mod tests {
         let _home = crate::test_support::TestHome::new();
         let auth_path = _home.auth_path();
         std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
-        std::fs::write(&auth_path, r#"{"deepseek": {"type": "api_key", "key": "k"}}"#).unwrap();
+        std::fs::write(
+            &auth_path,
+            r#"{"deepseek": {"type": "api_key", "key": "k"}}"#,
+        )
+        .unwrap();
 
         let (_dir, state) = bare_app_state();
         // A live session with NO model — the reload resolves + applies one.

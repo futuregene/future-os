@@ -417,10 +417,7 @@ fn run_fixture(provider: Arc<dyn LLMProvider>, name: &str) -> RunFixture {
         Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
     );
-    RunFixture {
-        workspace,
-        session,
-    }
+    RunFixture { workspace, session }
 }
 
 impl RunFixture {
@@ -457,9 +454,14 @@ fn text_turn(text: &str) -> Script {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_text_run_completes_and_persists() {
-    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("the answer")]), "basic");
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("the answer")]),
+        "basic",
+    );
     let mut session = fixture.session;
-    let lease = session.prompt("the question", &[], &[], None, None).unwrap();
+    let lease = session
+        .prompt("the question", &[], &[], None, None)
+        .unwrap();
     wait_for_run_end(&session).await;
 
     // In-memory history: user + assistant.
@@ -524,12 +526,17 @@ async fn prompt_tool_run_executes_and_records_tool_result() {
     let fixture = run_fixture(provider, "tool");
     let out_path = fixture.workspace().join("out.txt");
     let mut session = fixture.session;
-    session.prompt("write a file", &[], &[], None, None).unwrap();
+    session
+        .prompt("write a file", &[], &[], None, None)
+        .unwrap();
     wait_for_run_end(&session).await;
 
     assert_eq!(std::fs::read_to_string(&out_path).unwrap(), "from tool");
     let messages = session.messages.read().clone();
-    let tool_msg = messages.iter().find(|m| m.role == "tool").expect("tool message");
+    let tool_msg = messages
+        .iter()
+        .find(|m| m.role == "tool")
+        .expect("tool message");
     assert!(tool_msg.text().contains("out.txt"));
 }
 
@@ -548,12 +555,17 @@ async fn prompt_permission_none_denies_tool_calls() {
     let denied_path = fixture.workspace().join("nope.txt");
     let mut session = fixture.session;
     session.set_permission_level("none");
-    session.prompt("write a file", &[], &[], None, None).unwrap();
+    session
+        .prompt("write a file", &[], &[], None, None)
+        .unwrap();
     wait_for_run_end(&session).await;
 
     assert!(!denied_path.exists());
     let messages = session.messages.read().clone();
-    let tool_msg = messages.iter().find(|m| m.role == "tool").expect("tool message");
+    let tool_msg = messages
+        .iter()
+        .find(|m| m.role == "tool")
+        .expect("tool message");
     assert!(tool_msg.text().contains("denied"));
 }
 
@@ -563,7 +575,7 @@ async fn prompt_provider_failure_records_error_terminal() {
     let fixture = run_fixture(provider, "error");
     let mut session = fixture.session;
     session.set_auto_retry(false); // fail once, no 2s/4s/8s backoff
-    // The failure surfaces through the run task, not the prompt() return.
+                                   // The failure surfaces through the run task, not the prompt() return.
     let _ = session.prompt("hi", &[], &[], None, None);
     wait_for_run_end(&session).await;
 
@@ -736,7 +748,10 @@ async fn prompt_with_unaccessible_cwd_fails_fast() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn scheduled_run_with_broken_transcript_reports_error() {
-    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("unused")]), "sched-fail");
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("unused")]),
+        "sched-fail",
+    );
     let transcript = fixture.transcript_file();
     std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
     std::fs::create_dir_all(&transcript).unwrap(); // dir where the file belongs
@@ -823,7 +838,9 @@ async fn run_sandbox_denial_escalates_through_session_wiring() {
         }
         panic!("escalation request never appeared");
     });
-    session.prompt("touch outside", &[], &[], None, None).unwrap();
+    session
+        .prompt("touch outside", &[], &[], None, None)
+        .unwrap();
     wait_for_run_end(&session).await;
     decider.join().unwrap();
     assert!(outside.exists(), "approved re-run created the file");
@@ -940,14 +957,19 @@ async fn prompt_verbose_logs_user_message() {
     let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("ok")]), "verbose");
     let mut session = fixture.session;
     session.agent_loop.write().await.verbose = true;
-    session.prompt("loud question", &[], &[], None, None).unwrap();
+    session
+        .prompt("loud question", &[], &[], None, None)
+        .unwrap();
     wait_for_run_end(&session).await;
     assert_eq!(session.messages.read().last().unwrap().text(), "ok");
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_persist_failure_aborts_run_with_error() {
-    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("unused")]), "persist-fail");
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("unused")]),
+        "persist-fail",
+    );
     // A directory where the transcript file should be breaks persistence.
     let transcript = fixture.transcript_file();
     let mut session = fixture.session;

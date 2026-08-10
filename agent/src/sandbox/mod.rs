@@ -1146,8 +1146,16 @@ mod tests {
         let ws = temp_workspace("denial-heur");
         let s = enabled(&ws);
         assert!(!looks_like_sandbox_denial(&s, 0, "Operation not permitted"));
-        assert!(looks_like_sandbox_denial(&s, 1, "touch: /x: Operation not permitted"));
-        assert!(looks_like_sandbox_denial(&s, 1, "sandbox-exec: deny(1) file-write"));
+        assert!(looks_like_sandbox_denial(
+            &s,
+            1,
+            "touch: /x: Operation not permitted"
+        ));
+        assert!(looks_like_sandbox_denial(
+            &s,
+            1,
+            "sandbox-exec: deny(1) file-write"
+        ));
         assert!(!looks_like_sandbox_denial(&s, 1, "file not found"));
     }
 

@@ -3462,7 +3462,8 @@ mod tests {
         assert_eq!(find_unterminated_run(&entries).as_deref(), Some("run-a"));
 
         // Markers without a run_id in their content are ignored.
-        let mut bare_terminal = SessionEntry::run_terminal("run-a", RUN_STATE_COMPLETED, 0, 0, None);
+        let mut bare_terminal =
+            SessionEntry::run_terminal("run-a", RUN_STATE_COMPLETED, 0, 0, None);
         bare_terminal.content = None;
         let mut bare_start = SessionEntry::run_started("run-c", 1);
         bare_start.content = None;
@@ -3583,8 +3584,8 @@ mod tests {
         assert_eq!(loaded.entries.len(), 1, "corrupt tail skipped");
 
         // A corrupt MIDDLE line is a hard error.
-        let valid = serde_json::to_string(&SessionEntry::new_user("user", serde_json::json!("x")))
-            .unwrap();
+        let valid =
+            serde_json::to_string(&SessionEntry::new_user("user", serde_json::json!("x"))).unwrap();
         std::fs::write(&path, format!("{valid}\n{{corrupt\n{valid}\n")).unwrap();
         let err = manager.load("s1").unwrap_err();
         assert!(err.to_string().contains("parse entry at line 2"));
@@ -3893,7 +3894,11 @@ mod tests {
         assert_eq!(s.parent_session_id, "parent-1");
         assert_eq!(s.first_message.as_deref(), Some("the first question"));
         // cwd filter narrows the list.
-        assert!(manager.list_summaries("/tmp").unwrap().iter().any(|s| s.id == "s1"));
+        assert!(manager
+            .list_summaries("/tmp")
+            .unwrap()
+            .iter()
+            .any(|s| s.id == "s1"));
         assert!(manager.list_summaries("/elsewhere").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -4165,5 +4170,4 @@ mod fork_tests {
         let manager = Manager::new(missing);
         assert!(manager.list_ids().unwrap().is_empty());
     }
-
 }

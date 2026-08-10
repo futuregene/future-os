@@ -125,7 +125,13 @@ fn agent_log_file_and_heap_flag_paths() {
     // --log-file without a value uses the default under ~/.future.
     let home = isolated_home();
     let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
-        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0", "--log-file"])
+        .args([
+            "--grpc-addr",
+            "127.0.0.1:0",
+            "--profile-seconds",
+            "0",
+            "--log-file",
+        ])
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
         .output()
@@ -135,10 +141,7 @@ fn agent_log_file_and_heap_flag_paths() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(home
-        .path()
-        .join(".future/agent/logs/agent.log")
-        .exists());
+    assert!(home.path().join(".future/agent/logs/agent.log").exists());
 }
 
 #[test]
@@ -202,7 +205,10 @@ fn agent_shuts_down_cleanly_on_sigint() {
     unsafe { libc::kill(pid, libc::SIGINT) };
     let status = child.wait().expect("wait");
     // Clean exit (0) — not killed by a signal.
-    assert!(status.signal().is_none(), "terminated by signal: {status:?}");
+    assert!(
+        status.signal().is_none(),
+        "terminated by signal: {status:?}"
+    );
     assert!(status.success(), "exit status: {status:?}");
 }
 

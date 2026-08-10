@@ -911,12 +911,15 @@ mod tests {
         persistence.close().unwrap();
         // Double close is a no-op.
         persistence.close().unwrap();
-        let terminal = SessionEntry::run_terminal("run-x", super::super::RUN_STATE_COMPLETED, 0, 0, None);
+        let terminal =
+            SessionEntry::run_terminal("run-x", super::super::RUN_STATE_COMPLETED, 0, 0, None);
         assert!(persistence.commit_run(vec![terminal]).is_err());
         assert!(persistence
             .recover_with_entries(vec![SessionEntry::new_user("user", serde_json::json!("x"))])
             .is_err());
-        assert!(persistence.append(vec![SessionEntry::new_user("user", serde_json::json!("x"))]).is_err());
+        assert!(persistence
+            .append(vec![SessionEntry::new_user("user", serde_json::json!("x"))])
+            .is_err());
         assert!(persistence.barrier().is_err());
         let _ = std::fs::remove_dir_all(_dir);
     }
@@ -953,7 +956,8 @@ mod tests {
             Duration::from_secs(60),
         );
         persistence.fail_next_commit();
-        let terminal = SessionEntry::run_terminal("run-x", super::super::RUN_STATE_COMPLETED, 0, 0, None);
+        let terminal =
+            SessionEntry::run_terminal("run-x", super::super::RUN_STATE_COMPLETED, 0, 0, None);
         assert!(persistence.commit_run(vec![terminal]).is_err());
         persistence.close().unwrap();
         let _ = std::fs::remove_dir_all(_dir);

@@ -2377,7 +2377,10 @@ mod tests {
         )));
         ServerSession::ensure_scheduler_worker(&session);
         // First prompt starts (gated); second queues behind it.
-        session.write().prompt("first", &[], &[], None, None).unwrap();
+        session
+            .write()
+            .prompt("first", &[], &[], None, None)
+            .unwrap();
         let ack = session
             .write()
             .enqueue_prompt(
@@ -2389,10 +2392,7 @@ mod tests {
                 crate::runtime::BusyPolicy::EnqueueIfBusy,
             )
             .unwrap();
-        assert_eq!(
-            ack.accepted_state,
-            crate::runtime::RunAcceptedState::Queued
-        );
+        assert_eq!(ack.accepted_state, crate::runtime::RunAcceptedState::Queued);
         // Release the first run; the completion wake starts the second.
         gate.notify_one();
         for _ in 0..500 {

@@ -1621,12 +1621,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Pre-existing session journal with events at session_idx 0 and 1.
         let first = SseBroadcaster::new();
-        first.configure_journal("s1".to_string(), dir.path().to_path_buf()).unwrap();
+        first
+            .configure_journal("s1".to_string(), dir.path().to_path_buf())
+            .unwrap();
         first.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 1})));
         first.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 2})));
 
         let second = SseBroadcaster::new();
-        second.configure_journal("s1".to_string(), dir.path().to_path_buf()).unwrap();
+        second
+            .configure_journal("s1".to_string(), dir.path().to_path_buf())
+            .unwrap();
         second.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 3})));
         let events = second.session_events_since(-1).unwrap();
         let idxs: Vec<i64> = events.iter().map(|e| e.session_idx).collect();
@@ -1665,7 +1669,10 @@ mod tests {
     fn broadcast_without_configured_journal_is_in_memory_only() {
         let broadcaster = SseBroadcaster::new();
         broadcaster.start_run("run-mem".to_string(), 1);
-        broadcaster.broadcast(SseEvent::new("text_chunk", serde_json::json!({"text": "x"})));
+        broadcaster.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "x"}),
+        ));
         assert!(broadcaster.persistence_error().is_none());
         let (_, events, _, _) = broadcaster.events_since("run-mem", -1).unwrap();
         assert_eq!(events.len(), 1);
@@ -1684,8 +1691,15 @@ mod tests {
         }
         // The in-memory ring holds 2000; idx 0 is truncated out.
         let (_, events, _, projection) = broadcaster.events_since("run-long", 0).unwrap();
-        assert!(projection.is_none(), "journal present → disk replay, not projection");
-        assert!(events.len() > 2000, "full history from disk: {}", events.len());
+        assert!(
+            projection.is_none(),
+            "journal present → disk replay, not projection"
+        );
+        assert!(
+            events.len() > 2000,
+            "full history from disk: {}",
+            events.len()
+        );
     }
 
     #[test]
@@ -1696,7 +1710,9 @@ mod tests {
             broadcaster.broadcast(SseEvent::new("text_chunk", serde_json::json!({"i": i})));
         }
         let attachment = broadcaster.attach("run-ring", 0).unwrap();
-        let projection = attachment.projection.expect("projection over the truncated ring");
+        let projection = attachment
+            .projection
+            .expect("projection over the truncated ring");
         assert_eq!(projection.run_id, "run-ring");
         assert!(!projection.events.is_empty());
     }

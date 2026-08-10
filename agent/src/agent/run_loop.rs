@@ -1133,7 +1133,9 @@ mod tests {
     }
 
     fn echo_tool() -> AgentTool {
-        fn handler(args: serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>> {
+        fn handler(
+            args: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>> {
             Box::pin(async move { Ok(format!("echo: {args}")) })
         }
         AgentTool {
@@ -1238,11 +1240,15 @@ mod tests {
         assert_eq!(text, "answer");
         assert_eq!(messages[1].thinking, "deep thought");
         assert_eq!(
-            loop_.cumulative_input_tokens.load(std::sync::atomic::Ordering::Relaxed),
+            loop_
+                .cumulative_input_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
             10
         );
         assert_eq!(
-            loop_.cumulative_output_tokens.load(std::sync::atomic::Ordering::Relaxed),
+            loop_
+                .cumulative_output_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
             5
         );
         assert_eq!(
@@ -1260,7 +1266,9 @@ mod tests {
         // credit_cost is applied once from the final usage, not per chunk.
         assert!((*loop_.cumulative_cost.lock() - 0.25).abs() < f64::EPSILON);
         assert_eq!(
-            loop_.last_prompt_tokens.load(std::sync::atomic::Ordering::Relaxed),
+            loop_
+                .last_prompt_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
             15
         );
         drop(provider);
@@ -1323,7 +1331,13 @@ mod tests {
             ..Default::default()
         });
         let result = loop_
-            .run_streaming_with_messages(messages, &StreamContext::default(), noop_on_text, |_| {}, None)
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
             .await;
         assert!(result.is_err());
         assert!(result
@@ -1363,10 +1377,7 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("turn limit"));
+        assert!(result.unwrap_err().to_string().contains("turn limit"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1448,7 +1459,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_times_out_a_stalled_stream() {
-        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("stuck")])]);
+        let provider =
+            ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("stuck")])]);
         let loop_ = Loop::new(provider, "mock");
         let (text, _) = loop_
             .run_streaming_with_messages(
@@ -1566,7 +1578,10 @@ mod tests {
                 ..Default::default()
             });
         }
-        messages.push(AgentMessage::new_user("user", serde_json::json!("fresh question")));
+        messages.push(AgentMessage::new_user(
+            "user",
+            serde_json::json!("fresh question"),
+        ));
         let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let (text, _) = loop_
             .run_streaming_with_messages(
@@ -1589,10 +1604,7 @@ mod tests {
     async fn run_folds_steering_notes_into_system_prompt() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
         let loop_ = Loop::new(provider.clone(), "mock");
-        loop_
-            .steering_notes
-            .lock()
-            .push("be brief".to_string());
+        loop_.steering_notes.lock().push("be brief".to_string());
         let ctx = StreamContext {
             system_prompt: "base".to_string(),
             ..Default::default()
@@ -1703,9 +1715,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_interrupt_mid_stream_keeps_partial_reply() {
-        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![
-            ev_text("before interrupt"),
-        ])]);
+        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text(
+            "before interrupt",
+        )])]);
         let loop_ = Loop::new(provider, "mock");
         let (interrupt_tx, interrupt_rx) = mpsc::channel::<()>(1);
         tokio::spawn(async move {
@@ -1823,7 +1835,9 @@ mod tests {
         let tool_messages: Vec<_> = messages.iter().filter(|m| m.role == "tool").collect();
         assert_eq!(tool_messages.len(), 2);
         assert!(tool_messages[0].text().contains("echo:"));
-        assert!(tool_messages[1].text().contains("was skipped due to user interrupt"));
+        assert!(tool_messages[1]
+            .text()
+            .contains("was skipped due to user interrupt"));
     }
 
     // ── pure helpers ────────────────────────────────────────────────────────
@@ -1968,7 +1982,13 @@ mod tests {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("hi"), ev_stop()])]);
         let loop_ = Loop::new(provider, "mock");
         let (text, _) = loop_
-            .run_streaming_with_messages(vec![], &StreamContext::default(), noop_on_text, |_| {}, None)
+            .run_streaming_with_messages(
+                vec![],
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(text, "hi");
@@ -2011,7 +2031,9 @@ mod tests {
         assert_eq!(text, "done");
         assert_eq!(messages[1].tool_calls.len(), 1);
         assert_eq!(
-            loop_.cumulative_input_tokens.load(std::sync::atomic::Ordering::Relaxed),
+            loop_
+                .cumulative_input_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
             9
         );
     }
@@ -2161,7 +2183,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_stream_idle_timeout_with_interrupt_channel() {
-        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("stuck")])]);
+        let provider =
+            ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("stuck")])]);
         let loop_ = Loop::new(provider, "mock");
         let (_interrupt_tx, interrupt_rx) = mpsc::channel::<()>(1);
         let (text, _) = loop_
@@ -2201,7 +2224,13 @@ mod tests {
             ..Default::default()
         };
         let (_, messages) = loop_
-            .run_streaming_with_messages(user_messages("hi"), &ctx, noop_on_text, |_| {}, Some(interrupt_rx))
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &ctx,
+                noop_on_text,
+                |_| {},
+                Some(interrupt_rx),
+            )
             .await
             .unwrap();
         // Partial assistant carries the finalized tool call, followed by its
@@ -2209,7 +2238,9 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[1].tool_calls.len(), 1);
         assert_eq!(messages[2].role, "tool");
-        assert!(messages[2].text().contains("was not executed due to interrupt"));
+        assert!(messages[2]
+            .text()
+            .contains("was not executed due to interrupt"));
         assert_eq!(saved.lock().len(), 2, "assistant + placeholder persisted");
     }
 
@@ -2318,9 +2349,12 @@ mod tests {
             }
         }
         // Without an interrupt channel (None arm of await_or_interrupt).
-        let loop_ = Loop::new(Arc::new(SlowProvider {
-            delay: Duration::from_millis(120),
-        }), "mock");
+        let loop_ = Loop::new(
+            Arc::new(SlowProvider {
+                delay: Duration::from_millis(120),
+            }),
+            "mock",
+        );
         let (text, _) = loop_
             .run_streaming_with_messages(
                 user_messages("hi"),
@@ -2334,9 +2368,12 @@ mod tests {
         assert_eq!(text, "slow");
 
         // With an interrupt channel that never fires (Some arm + poll sleep).
-        let loop_ = Loop::new(Arc::new(SlowProvider {
-            delay: Duration::from_millis(120),
-        }), "mock");
+        let loop_ = Loop::new(
+            Arc::new(SlowProvider {
+                delay: Duration::from_millis(120),
+            }),
+            "mock",
+        );
         let (_tx, interrupt_rx) = mpsc::channel::<()>(1);
         let (text, _) = loop_
             .run_streaming_with_messages(

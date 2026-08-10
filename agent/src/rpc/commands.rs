@@ -3582,7 +3582,10 @@ mod tests {
     fn sync_future_models_without_credentials_reports_not_synced() {
         let _home = TestHome::new();
         let state = make_app_state();
-        let resp = parse_response(&handle_command_internal(&state, make_cmd("sync_future_models")));
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("sync_future_models"),
+        ));
         assert_eq!(resp["success"], true);
         assert_eq!(resp["data"]["synced"], false);
         assert!(resp["data"]["modelCount"].is_number());
@@ -3598,13 +3601,19 @@ mod tests {
             make_cmd("set_default_model"),
         ));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("model_id is empty"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("model_id is empty"));
 
         let mut cmd = make_cmd("set_default_model");
         cmd.model_id = "no-such-provider/no-such-model".to_string();
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("not in the catalog"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("not in the catalog"));
     }
 
     #[test]
@@ -3670,7 +3679,9 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         let session = state.get_session("default").unwrap();
-        let request_id = session.read().scheduler.queued()[0].client_request_id.clone();
+        let request_id = session.read().scheduler.queued()[0]
+            .client_request_id
+            .clone();
         assert!(
             request_id.starts_with("request_"),
             "generated client_request_id, got {request_id:?}"
@@ -3851,7 +3862,9 @@ mod tests {
             ("cancelled", ApprovalDecisionStatus::Cancelled),
         ] {
             let request_id = format!("ap-{mode}");
-            let _rx = state.approval_gate.insert_pending_for_test(&request_id, "default");
+            let _rx = state
+                .approval_gate
+                .insert_pending_for_test(&request_id, "default");
             let mut cmd = make_cmd("approval_decision");
             cmd.entry_id = request_id;
             cmd.mode = mode.to_string();
@@ -4013,7 +4026,10 @@ mod tests {
         let cmd = make_cmd_for("switch_session", "");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("No session selected"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("No session selected"));
 
         let cmd = make_cmd_for("switch_session", "ghost");
         let resp = parse_response(&handle_command_internal(&state, cmd));
@@ -4101,10 +4117,8 @@ mod tests {
                 {"type": "text", "text": "agent-injected attachment list"},
             ]),
         );
-        let assistant = crate::session::SessionEntry::new_assistant(
-            serde_json::json!("answer"),
-            vec![],
-        );
+        let assistant =
+            crate::session::SessionEntry::new_assistant(serde_json::json!("answer"), vec![]);
         save_via(
             &state,
             "fork-src",
@@ -4282,7 +4296,10 @@ mod tests {
         let state = make_app_state();
         let resp = parse_response(&handle_command_internal(&state, make_cmd("fork")));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("No message selected"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("No message selected"));
     }
 
     #[test]
@@ -4292,7 +4309,10 @@ mod tests {
         cmd.entry_id = "entry-1".to_string();
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("not found on disk"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("not found on disk"));
     }
 
     #[test]
@@ -4363,7 +4383,10 @@ mod tests {
         }
         let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("not found on disk"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("not found on disk"));
     }
 
     #[test]
@@ -4434,7 +4457,10 @@ mod tests {
             make_cmd_for("get_messages", "ghost"),
         ));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("session not found"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("session not found"));
     }
 
     #[test]
@@ -4527,7 +4553,8 @@ mod tests {
         let dir = test_session_dir();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".run-events"), "not a dir").unwrap();
-        let state = make_app_state_with(dir, Arc::new(crate::runtime::GlobalQueueBudget::defaults()));
+        let state =
+            make_app_state_with(dir, Arc::new(crate::runtime::GlobalQueueBudget::defaults()));
 
         let mut cmd = make_cmd("prompt");
         cmd.message = "hello".to_string();
@@ -4975,11 +5002,15 @@ mod tests {
         let dir = test_session_dir();
         std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
         std::fs::write(&dir, "not a dir").unwrap();
-        let state = make_app_state_with(dir, Arc::new(crate::runtime::GlobalQueueBudget::defaults()));
+        let state =
+            make_app_state_with(dir, Arc::new(crate::runtime::GlobalQueueBudget::defaults()));
 
         let resp = parse_response(&handle_command_internal(&state, make_cmd("list_sessions")));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("enumerate sessions"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("enumerate sessions"));
 
         let resp = parse_response(&handle_command_internal(
             &state,
@@ -5002,10 +5033,7 @@ mod tests {
             .begin(Some("run-active"), Some("request-active"))
             .unwrap();
 
-        let resp = parse_response(&handle_command_internal(
-            &state,
-            make_cmd("delete_session"),
-        ));
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
         assert_eq!(resp["success"], false);
         assert_eq!(resp["error_code"], "deleting");
         assert_eq!(resp["error_data"]["active_run_id"], "run-active");
@@ -5039,11 +5067,7 @@ mod tests {
         let home = TestHome::new();
         let settings_path = home.settings_path();
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &settings_path,
-            r#"{"defaultPermissionLevel": "workspace"}"#,
-        )
-        .unwrap();
+        std::fs::write(&settings_path, r#"{"defaultPermissionLevel": "workspace"}"#).unwrap();
 
         let state = make_app_state();
         let cmd = make_cmd_for("new_session", "ns-settings");
@@ -5162,11 +5186,17 @@ mod tests {
         cmd.entry_id = entry_id;
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("failed to save forked"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("failed to save forked"));
 
         let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("failed to save cloned"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("failed to save cloned"));
 
         let mut perms = std::fs::metadata(&sess_dir).unwrap().permissions();
         #[allow(clippy::permissions_set_readonly_false)]

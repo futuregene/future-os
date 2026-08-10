@@ -1701,7 +1701,9 @@ mod tests {
         );
 
         // Provider override rewrites the builtin model's endpoint + key.
-        let gpt = reg.resolve("deepseek/deepseek-chat").expect("builtin resolves");
+        let gpt = reg
+            .resolve("deepseek/deepseek-chat")
+            .expect("builtin resolves");
         assert_eq!(gpt.base_url, "https://proxy.example.com/v1");
         assert_eq!(gpt.api_key, "sk-override");
     }

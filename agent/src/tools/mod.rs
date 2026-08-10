@@ -2160,7 +2160,10 @@ mod tests {
             "path": file.to_string_lossy()
         }))
         .await;
-        assert!(result.unwrap_err().to_string().contains("missing required parameters"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing required parameters"));
 
         // oldText not present in the file.
         let result = edit_handler(serde_json::json!({
@@ -2184,7 +2187,10 @@ mod tests {
         }))
         .await;
         let error = result.unwrap_err().to_string();
-        assert!(error.contains("1 of 2 edit(s) could not be applied"), "{error}");
+        assert!(
+            error.contains("1 of 2 edit(s) could not be applied"),
+            "{error}"
+        );
         assert!(error.contains("missing"), "{error}");
 
         // All batch edits apply.
@@ -2216,8 +2222,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn shell_escalated_prequest_approval_paths() {
-        let ws = std::env::temp_dir()
-            .join(format!("futureos-esc-{}", crate::utils::generate_id()));
+        let ws = std::env::temp_dir().join(format!("futureos-esc-{}", crate::utils::generate_id()));
         std::fs::create_dir_all(&ws).unwrap();
         let sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
@@ -2253,9 +2258,8 @@ mod tests {
             },
             ws.to_string_lossy().as_ref(),
         );
-        let deny: crate::sandbox::EscalationRequester = Arc::new(|_request| {
-            crate::sandbox::EscalationDecision::Denied("no way".to_string())
-        });
+        let deny: crate::sandbox::EscalationRequester =
+            Arc::new(|_request| crate::sandbox::EscalationDecision::Denied("no way".to_string()));
         let result = with_tool_scope(
             ScopeOptions {
                 workspace: ws.to_string_lossy().to_string(),
@@ -2277,8 +2281,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn shell_sandbox_denial_triggers_post_hoc_escalation() {
         let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
-        let ws = std::env::temp_dir()
-            .join(format!("futureos-esc2-{}", crate::utils::generate_id()));
+        let ws =
+            std::env::temp_dir().join(format!("futureos-esc2-{}", crate::utils::generate_id()));
         std::fs::create_dir_all(&ws).unwrap();
         let sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {

@@ -922,10 +922,8 @@ mod tests {
                         Ok(0) => break,
                         Ok(n) => {
                             buf.extend_from_slice(&chunk[..n]);
-                            if let Some(pos) = buf
-                                .windows(4)
-                                .position(|w| w == b"\r\n\r\n")
-                                .map(|p| p + 4)
+                            if let Some(pos) =
+                                buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
                             {
                                 header_end = Some(pos);
                                 break;
@@ -991,7 +989,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1026,7 +1029,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1042,8 +1050,16 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_maps_http_errors() {
         let cases: Vec<(u16, &str, &str)> = vec![
-            (401, r#"{"error":{"code":"x","message":"bad key"}}"#, "Authentication failed (401)"),
-            (429, r#"{"error":{"code":"x","message":"slow down"}}"#, "Rate limited (429)"),
+            (
+                401,
+                r#"{"error":{"code":"x","message":"bad key"}}"#,
+                "Authentication failed (401)",
+            ),
+            (
+                429,
+                r#"{"error":{"code":"x","message":"slow down"}}"#,
+                "Rate limited (429)",
+            ),
             (
                 404,
                 r#"{"error":{"code":"DeploymentNotFound","message":"gone"}}"#,
@@ -1069,7 +1085,12 @@ mod tests {
             let server = mock_server(move |_| (status, "application/json", body.to_string()));
             let client = Client::new(&server.base_url, "sk-test", None, None);
             let result = client
-                .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+                .stream_chat(
+                    "mock".to_string(),
+                    one_user_message(),
+                    vec![],
+                    String::new(),
+                )
                 .await;
             let error = result.unwrap_err().to_string();
             assert!(error.contains(expected), "status {status}: {error}");
@@ -1081,7 +1102,12 @@ mod tests {
         let server = mock_server(move |_| (400, "text/plain", String::new()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let result = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await;
         let error = result.unwrap_err().to_string();
         assert!(error.contains("[CTX_LIMIT]"), "{error}");
@@ -1091,11 +1117,20 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_generic_error_status() {
         let server = mock_server(move |_| {
-            (500, "application/json", r#"{"error":{"code":"x","message":"boom"}}"#.to_string())
+            (
+                500,
+                "application/json",
+                r#"{"error":{"code":"x","message":"boom"}}"#.to_string(),
+            )
         });
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let result = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await;
         assert!(result.is_err());
     }
@@ -1103,7 +1138,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_reports_response_via_callback() {
         let server = mock_server(move |_| {
-            (401, "application/json", r#"{"error":{"code":"x","message":"no"}}"#.to_string())
+            (
+                401,
+                "application/json",
+                r#"{"error":{"code":"x","message":"no"}}"#.to_string(),
+            )
         });
         let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
         let seen2 = seen.clone();
@@ -1114,7 +1153,12 @@ mod tests {
             },
         ));
         let _ = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await;
         assert_eq!(*seen.lock().unwrap(), Some(401));
     }
@@ -1159,7 +1203,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![tool], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![tool],
+                String::new(),
+            )
             .await
             .unwrap();
         let _: Vec<StreamEvent> = rx.collect().await;
@@ -1179,7 +1228,12 @@ mod tests {
             .with_thinking_budget(8192)
             .with_compat("deepseek", true, false);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], "sys".to_string())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                "sys".to_string(),
+            )
             .await
             .unwrap();
         let _: Vec<StreamEvent> = rx.collect().await;
@@ -1218,7 +1272,12 @@ mod tests {
         });
         let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1251,7 +1310,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1276,7 +1340,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1285,9 +1354,7 @@ mod tests {
             .filter(|e| e.event_type == "toolcall_end")
             .collect();
         assert!(
-            tool_ends
-                .iter()
-                .any(|e| e.stop_reason == "tool_calls"),
+            tool_ends.iter().any(|e| e.stop_reason == "tool_calls"),
             "auto-closed tool call: {events:?}"
         );
     }
@@ -1302,7 +1369,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1319,7 +1391,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.clone()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1348,7 +1425,12 @@ mod tests {
         });
         let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1388,7 +1470,12 @@ mod tests {
         });
         let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         drop(rx); // consumer goes away mid-stream
@@ -1400,11 +1487,17 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_upstream_eof_closes_thinking_block() {
         // thinking_delta then the connection closes (no [DONE]).
-        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\n";
+        let sse =
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\n";
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1447,7 +1540,12 @@ mod tests {
         });
         let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1479,7 +1577,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1498,7 +1601,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1526,13 +1634,50 @@ mod tests {
             seen2.fetch_add(bytes.len(), std::sync::atomic::Ordering::Relaxed);
         }));
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
         assert!(seen.load(std::sync::atomic::Ordering::Relaxed) > 0);
         assert!(events.iter().any(|e| e.event_type == "text_delta"));
         assert_eq!(events.last().unwrap().event_type, "stop");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_finish_tool_calls_with_text_chunk_force_closes_call() {
+        // A chunk carrying BOTH text and finish_reason=tool_calls parses to a
+        // text_delta (content wins), so the mapper emits the pending
+        // toolcall_end itself.
+        let sse = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let tool_ends: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == "toolcall_end")
+            .collect();
+        assert!(
+            tool_ends.iter().any(|e| e.stop_reason == "tool_calls"),
+            "mapper closed the pending call: {events:?}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1557,10 +1702,8 @@ mod tests {
             );
             let _ = stream.write_all(head.as_bytes());
             let _ = stream.flush();
-            // Empty event chunks: keep the socket active without touching
-            // last_sse_event_at, so the idle check fires on receipt.
-            for _ in 0..20 {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+            for _ in 0..30 {
+                std::thread::sleep(std::time::Duration::from_millis(120));
                 if stream.write_all(b"2\r\n\n\n").is_err() {
                     return;
                 }
@@ -1569,7 +1712,12 @@ mod tests {
         });
         let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1590,7 +1738,12 @@ mod tests {
         // Now a real request still gets served (the server loop continues).
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let result = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await;
         assert!(result.is_ok() || result.is_err());
     }
