@@ -117,10 +117,14 @@ impl CdpConnection {
         });
 
         // Dispatch loop: owns a clone of the connection, forwards transport
-        // events to handle_message / handle_close.
+        // events to handle_message / handle_close. The subscription is
+        // created BEFORE the task is spawned: a fast peer can deliver frames
+        // before a freshly-spawned task is first polled, and the reader
+        // treats "no subscribers" as fatal (broadcast buffers up to 1024
+        // events until the loop starts polling).
         let dispatch = conn.clone();
+        let mut rx = dispatch.transport.subscribe();
         tokio::spawn(async move {
-            let mut rx = dispatch.transport.subscribe();
             loop {
                 match rx.recv().await {
                     Ok(TransportEvent::Message(raw)) => dispatch.handle_message(&raw),
