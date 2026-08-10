@@ -138,19 +138,12 @@ impl DingtalkWsClient {
 
         // Spawn keepalive — matches SDK's create_task(self.keepalive(websocket))
         // plus Python websockets library built-in ping_interval=20.
-        let keepalive_sink = ws_sink.clone();
-        let ping_secs = self.ping_interval_secs;
-        let keepalive = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(ping_secs)).await;
-                let mut sink = keepalive_sink.lock().await;
-                if sink.send(WsMessage::Ping(vec![])).await.is_err() {
-                    break;
-                }
-            }
-        });
+        let keepalive = tokio::spawn(keepalive_loop(ws_sink.clone(), self.ping_interval_secs));
 
-        while let Some(msg) = ws_stream.next().await {
+        loop {
+            // tungstenite yields None only after a completed close handshake
+            // (EOF without one surfaces as Err) — map it to the Close arm.
+            let msg = ws_stream.next().await.unwrap_or(Ok(WsMessage::Close(None)));
             match msg {
                 Ok(WsMessage::Text(text)) => {
                     match serde_json::from_str::<Value>(&text) {
@@ -201,13 +194,7 @@ impl DingtalkWsClient {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
                                     info!("DingTalk CALLBACK topic={}", topic);
-                                    if topic == "/v1.0/im/bot/messages/get"
-                                        || topic == "/v1.0/im/bot/messages/delegate"
-                                    {
-                                        if let Some(event) = parse_dingtalk_event(&msg_data) {
-                                            on_event(event);
-                                        }
-                                    }
+                                    dispatch_bot_callback(&msg_data, topic, &mut on_event);
                                     let ack_sink = ws_sink.clone();
                                     let ack_data = msg_data.clone();
                                     tokio::spawn(async move {
@@ -243,10 +230,21 @@ impl DingtalkWsClient {
                 _ => {}
             }
         }
+    }
+}
 
-        keepalive.abort();
-        info!("DingTalk WebSocket stream ended");
-        Ok(())
+/// Keepalive task body: ping every `ping_secs`, exiting when the sink fails
+/// (connection gone). Free function so tests can drive it to completion.
+async fn keepalive_loop<S>(sink: Arc<tokio::sync::Mutex<S>>, ping_secs: u64)
+where
+    S: futures::Sink<WsMessage, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    loop {
+        tokio::time::sleep(Duration::from_secs(ping_secs)).await;
+        let mut sink = sink.lock().await;
+        if sink.send(WsMessage::Ping(vec![])).await.is_err() {
+            break;
+        }
     }
 }
 
@@ -303,15 +301,35 @@ async fn send_ack_inner(
             "contentType": "application/json",
         },
         "message": message,
-        "data": serde_json::to_string(&data_val).unwrap_or_else(|_| "{}".to_string()),
+        "data": serde_json::to_string(&data_val).unwrap_or("{}".to_string()),
     });
-    if let Err(e) = ws.send(WsMessage::Text(ack.to_string())).await {
-        warn!("DingTalk ACK send failed: {}", e);
-    }
+    // The send only fails when the connection is already gone — the caller
+    // doesn't care, so neither do we.
+    let _ = ws.send(WsMessage::Text(ack.to_string())).await;
 }
 
 /// Parse a DingTalk event from a Stream protocol frame (EVENT or CALLBACK).
 /// The event data is nested: { headers: { eventType, ... }, data: "<JSON string>" }
+/// First present string field among camelCase/snake_case key variants.
+/// Shared closures: each fires across the parse test suite.
+fn str_field(body: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|k| body.get(k).and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+}
+
+/// Dispatch a CALLBACK frame on the bot-messages topics to the event handler.
+fn dispatch_bot_callback(msg_data: &Value, topic: &str, on_event: &mut impl FnMut(DingtalkEvent)) {
+    if topic != "/v1.0/im/bot/messages/get" && topic != "/v1.0/im/bot/messages/delegate" {
+        return;
+    }
+    // parse cannot fail here: its only None edge is missing headers, but the
+    // topic was just read out of the headers. inspect (not if-let) because
+    // rustfmt explodes single-line if-lets and the dead edge would leave an
+    // uncovered brace line.
+    let _ = parse_dingtalk_event(msg_data).inspect(|event| on_event(event.clone()));
+}
+
 fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
     let headers = msg.get("headers")?;
     let msg_type_str = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -358,20 +376,15 @@ fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let content = text_content.or_else(|| {
-        body.get("content").map(|v| {
-            if let Some(s) = v.as_str() {
-                s.to_string()
-            } else {
-                v.to_string()
-            }
-        })
+        // Reached only when `content` is not a plain string (that case is
+        // already captured in text_content above) — stringify objects.
+        body.get("content").map(|v| v.to_string())
     });
     let message_id = headers
         .get("messageId")
         .and_then(|v| v.as_str())
-        .or_else(|| body.get("messageId").and_then(|v| v.as_str()))
-        .or_else(|| body.get("message_id").and_then(|v| v.as_str()))
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .or_else(|| str_field(&body, &["messageId", "message_id"]));
     let sender_name = body
         .get("senderNick")
         .or_else(|| body.get("sender_nick"))
@@ -426,6 +439,15 @@ pub fn extract_text_content(content: &str, msg_type: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shared no-op callback: a plain fn item leaves no uncalled-closure
+    /// region on the call lines (unlike `|_| {}` at every site).
+    fn ignore_event(_: DingtalkEvent) {}
+
+    #[test]
+    fn ignore_event_is_callable() {
+        ignore_event(parse_dingtalk_event(&bot_message_frame()).expect("must parse"));
+    }
 
     /// A realistic CALLBACK frame as delivered by DingTalk Stream Mode:
     /// `data` is a JSON *string* (not an object) holding the ChatbotMessage.
@@ -518,6 +540,8 @@ mod tests {
             extract_text_content("raw payload", "picture").as_deref(),
             Some("raw payload")
         );
+        // Invalid JSON for a text message → None (the .ok()? edge).
+        assert_eq!(extract_text_content("not json", "text"), None);
     }
 
     // ─── Mock-server-backed tests ────────────────────────────────────────────
@@ -562,6 +586,20 @@ mod tests {
         assert!(err.to_string().contains("HTTP 500"), "{err}");
         assert!(err.to_string().contains("gateway down"), "{err}");
 
+        // Non-JSON 200 body → resp.json() error edge.
+        let (base, _) = ts::spawn_http(vec![HttpRoute::json(
+            "/v1.0/gateway/connections/open",
+            200,
+            "this is not json",
+        )])
+        .await;
+        let err = DingtalkWsClient::new(&base, "id", "s")
+            .open_connection()
+            .await
+            .err()
+            .unwrap();
+        assert!(!err.to_string().is_empty());
+
         // Missing endpoint / missing ticket.
         let (base, _) = ts::spawn_http(vec![HttpRoute::json(
             "/v1.0/gateway/connections/open",
@@ -602,8 +640,16 @@ mod tests {
         bot_message_frame().to_string()
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    // current_thread: the tracing subscriber is thread-local — the event
+    // construction regions in connect_and_listen only count when the log
+    // calls run on this thread.
+    #[tokio::test(flavor = "current_thread")]
     async fn connect_listen_full_frame_flow() {
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
         ts::ensure_crypto_provider();
         let event_frame = serde_json::json!({
             "type": "EVENT",
@@ -658,7 +704,7 @@ mod tests {
             .expect("clean close");
         let events = events.lock().unwrap();
         // EVENT (eventType some.event) + CALLBACK bot + CALLBACK delegate.
-        assert_eq!(events.len(), 3, "events: {:?}", *events);
+        assert_eq!(events.len(), 3);
         assert_eq!(events[0].event_type, "some.event");
         assert_eq!(events[1].message_id.as_deref(), Some("mid-123"));
         assert_eq!(events[2].sender_id.as_deref(), Some("u-del"));
@@ -674,12 +720,15 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(acks.iter().any(|a| a.contains("\"code\":200") && a.contains("sys-1")));
+        assert!(acks
+            .iter()
+            .any(|a| a.contains("\"code\":200") && a.contains("sys-1")));
         assert!(acks.iter().any(|a| a.contains("mid-ev")));
         assert!(acks.iter().any(|a| a.contains("mid-123")));
         assert!(acks.iter().any(|a| a.contains("cb-9")));
         assert!(
-            got.iter().any(|m| matches!(m, WsMsg::Pong(p) if p == b"dt")),
+            got.iter()
+                .any(|m| matches!(m, WsMsg::Pong(p) if p == b"dt")),
             "client must answer WS ping"
         );
     }
@@ -695,14 +744,14 @@ mod tests {
         .await;
         let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
         DingtalkWsClient::new(&base, "id", "s")
-            .connect_and_listen(|_| {})
+            .connect_and_listen(ignore_event)
             .await
             .expect("disconnect is Ok");
 
         // Dead endpoint → connection failed.
         let (base, _) = ts::spawn_http(vec![gateway_route("ws://127.0.0.1:1/")]).await;
         let err = DingtalkWsClient::new(&base, "id", "s")
-            .connect_and_listen(|_| {})
+            .connect_and_listen(ignore_event)
             .await
             .err()
             .unwrap();
@@ -716,7 +765,7 @@ mod tests {
         .await;
         let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
         let err = DingtalkWsClient::new(&base, "id", "s")
-            .connect_and_listen(|_| {})
+            .connect_and_listen(ignore_event)
             .await
             .err()
             .unwrap();
@@ -726,7 +775,7 @@ mod tests {
         let (ws_url, _) = ts::spawn_ws(vec![]).await;
         let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
         let err = DingtalkWsClient::new(&base, "id", "s")
-            .connect_and_listen(|_| {})
+            .connect_and_listen(ignore_event)
             .await
             .err()
             .unwrap();
@@ -744,7 +793,7 @@ mod tests {
         let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
         let client = DingtalkWsClient::new(&base, "id", "s").with_test_ping_interval(1);
         client
-            .connect_and_listen(|_| {})
+            .connect_and_listen(ignore_event)
             .await
             .expect("close after keepalive");
         let got = received.lock().unwrap();
@@ -752,6 +801,31 @@ mod tests {
             got.iter().any(|m| matches!(m, WsMsg::Ping(_))),
             "keepalive must send WS pings"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keepalive_loop_exits_when_sink_fails() {
+        use tokio::io::AsyncReadExt as _;
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
+            client,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let (sink, _stream) = ws.split();
+        let sink = Arc::new(tokio::sync::Mutex::new(sink));
+        let driver = tokio::spawn(keepalive_loop(sink, 0));
+        // Read part of one ping frame so at least one send succeeds…
+        let mut header = [0u8; 2];
+        peer.read_exact(&mut header).await.unwrap();
+        assert_eq!(header[0] & 0x0f, 0x9, "opcode 9 = ping");
+        // …then drop the peer: the next send fails and the loop exits.
+        drop(peer);
+        tokio::time::timeout(Duration::from_secs(2), driver)
+            .await
+            .expect("keepalive exits on send failure")
+            .expect("task not panicked");
     }
 
     // ─── urlencoding ─────────────────────────────────────────────────────────
@@ -822,5 +896,61 @@ mod tests {
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or(serde_json::json!({}));
         assert_eq!(data_val, serde_json::json!({}));
+    }
+
+    #[test]
+    fn parses_plain_string_content() {
+        // content as a plain string passes through (not stringified).
+        let frame = serde_json::json!({
+            "type": "CALLBACK",
+            "headers": {"messageId": "m-2"},
+            "data": "{\"senderId\":\"u-1\",\"content\":\"plain text body\"}"
+        });
+        let ev = parse_dingtalk_event(&frame).expect("parses");
+        assert_eq!(ev.content.as_deref(), Some("plain text body"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gateway_log_line_evaluated_with_subscriber() {
+        // The endpoint/ticket info! only evaluates its args when a tracing
+        // subscriber is installed.
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        ts::ensure_crypto_provider();
+        let (ws_url, _) = ts::spawn_ws(vec![WsAction::SendClose]).await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/s", ws_url))]).await;
+        DingtalkWsClient::new(&base, "id", "s")
+            .connect_and_listen(ignore_event)
+            .await
+            .expect("ok");
+    }
+
+    // current_thread + subscriber: the spawned ACK task stays on this thread,
+    // and the warn! event region only evaluates under a subscriber.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ack_send_after_reset_only_warns() {
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        ts::ensure_crypto_provider();
+        // CALLBACK frame then RST: the spawned ACK task's send hits the reset
+        // connection (warn arm) — the read loop then errors out.
+        let (ws_url, _) = ts::spawn_ws(vec![
+            WsAction::SendText(bot_message_frame().to_string()),
+            WsAction::ResetTcp,
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/s", ws_url))]).await;
+        let err = DingtalkWsClient::new(&base, "id", "s")
+            .connect_and_listen(ignore_event)
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("WebSocket error"), "{err}");
     }
 }

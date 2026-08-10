@@ -572,6 +572,9 @@ pub struct ImageInput {
 
 #[cfg(test)]
 mod tests {
+    // MockState scaffolding mutates Default::default() instances per-test by
+    // design; field-reassign is the readable form for a 15-field mock.
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
 
     // Event-parsing coverage lives with the shared parser in future-rpc
@@ -733,7 +736,9 @@ mod tests {
         let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
         assert!(AgentClient::connect(&addr).await.is_ok());
         // http:// prefix is stripped.
-        assert!(AgentClient::connect(&format!("http://{}", addr)).await.is_ok());
+        assert!(AgentClient::connect(&format!("http://{}", addr))
+            .await
+            .is_ok());
         // Unreachable → error mentioning the address.
         let err = AgentClient::connect("127.0.0.1:1").await.err().unwrap();
         assert!(err.to_string().contains("127.0.0.1:1"), "{err}");
@@ -755,7 +760,10 @@ mod tests {
         let err = c.abort("s").await.unwrap_err();
         assert!(err.to_string().contains("unknown error"), "{err}");
         let err = c.set_cwd("s", "/x").await.unwrap_err();
-        assert!(err.to_string().contains("gRPC call 'set_cwd' failed"), "{err}");
+        assert!(
+            err.to_string().contains("gRPC call 'set_cwd' failed"),
+            "{err}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -814,7 +822,9 @@ mod tests {
     async fn prompt_run_id_variants() {
         // camelCase runId fallback.
         let mut state = MockState::default();
-        state.responses.insert("prompt".into(), r#"{"runId":"r-camel"}"#.into());
+        state
+            .responses
+            .insert("prompt".into(), r#"{"runId":"r-camel"}"#.into());
         let (mut c, _) = connect_to(state).await;
         assert_eq!(c.prompt("s", "m", vec![]).await.unwrap(), "r-camel");
 
@@ -823,7 +833,10 @@ mod tests {
         state.responses.insert("prompt".into(), "{}".into());
         let (mut c, _) = connect_to(state).await;
         let err = c.prompt("s", "m", vec![]).await.unwrap_err();
-        assert!(err.to_string().contains("missing canonical run id"), "{err}");
+        assert!(
+            err.to_string().contains("missing canonical run id"),
+            "{err}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -892,7 +905,9 @@ mod tests {
     async fn wait_until_idle_paths() {
         // No active run → immediately idle.
         let (mut c, _) = connect_to(MockState::default()).await;
-        c.wait_until_idle("sess", Duration::from_secs(2)).await.unwrap();
+        c.wait_until_idle("sess", Duration::from_secs(2))
+            .await
+            .unwrap();
 
         // Stuck states → explicit error.
         for stuck in ["cancellation_stuck", "persistence_degraded"] {
@@ -926,7 +941,9 @@ mod tests {
         let mut state = MockState::default();
         state.fail_times.insert("get_state".into(), 1);
         let (mut c, _) = connect_to(state).await;
-        c.wait_until_idle("sess", Duration::from_secs(2)).await.unwrap();
+        c.wait_until_idle("sess", Duration::from_secs(2))
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -984,9 +1001,7 @@ mod tests {
 
         // No models key → empty vec.
         let mut state = MockState::default();
-        state
-            .responses
-            .insert("list_models".into(), "{}".into());
+        state.responses.insert("list_models".into(), "{}".into());
         let (mut c, _) = connect_to(state).await;
         assert!(c.get_available_models("sess").await.unwrap().is_empty());
     }
@@ -999,8 +1014,12 @@ mod tests {
         c.set_permission_level("s", "workspace").await.unwrap();
         c.set_cwd("s", "/work").await.unwrap();
         c.switch_session("s").await.unwrap();
-        c.approval_decision("s", "req_1", true, "ok via card").await.unwrap();
-        c.approval_decision("s", "req_2", false, "no").await.unwrap();
+        c.approval_decision("s", "req_1", true, "ok via card")
+            .await
+            .unwrap();
+        c.approval_decision("s", "req_2", false, "no")
+            .await
+            .unwrap();
 
         let set_model = ts::recorded_of(&shared, "set_model");
         assert_eq!(set_model[0].model_id, "future/k3");
@@ -1065,7 +1084,10 @@ mod tests {
         state.events = vec![ts::ev("r", 0, "agent_start", "{}"), snapshot];
         let (mut c, _) = connect_to(state).await;
         let mut stream = c.stream_run_events("sess", "r").await.unwrap();
-        assert_eq!(stream.message().await.unwrap().unwrap().r#type, "agent_start");
+        assert_eq!(
+            stream.message().await.unwrap().unwrap().r#type,
+            "agent_start"
+        );
         let a = stream.message().await.unwrap().unwrap();
         let b = stream.message().await.unwrap().unwrap();
         assert_eq!((a.r#type.as_str(), a.idx), ("text_chunk", 7));

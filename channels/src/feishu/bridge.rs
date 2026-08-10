@@ -48,8 +48,12 @@ pub struct Bridge {
 
 impl Bridge {
     pub async fn new(agent_cfg: Arc<AgentConfig>, feishu_cfg: FeishuConfig) -> Result<Self> {
-        Self::with_data_dir(agent_cfg, feishu_cfg, dirs_next_path().join("channels").join("feishu"))
-            .await
+        Self::with_data_dir(
+            agent_cfg,
+            feishu_cfg,
+            dirs_next_path().join("channels").join("feishu"),
+        )
+        .await
     }
 
     /// Test constructor: explicit data dir so tests never touch the real
@@ -171,21 +175,21 @@ impl Bridge {
         let msg_type = event.msg_type.as_deref().unwrap_or("text");
         let content = event.content.as_deref().unwrap_or("");
         let text_preview = extract_text_content(content, msg_type).unwrap_or_default();
+        // Hoisted out of the info! args (macro args only evaluate with a
+        // subscriber; these run regardless).
+        let log_target = if chat_type == "p2p" {
+            sender_id.as_str()
+        } else {
+            chat_id.as_str()
+        };
+        let log_preview = if text_preview.len() > 200 {
+            truncate_at_char(&text_preview, 200)
+        } else {
+            text_preview.to_string()
+        };
         info!(
             "[RECV] sender={} chat={} chat_type={} msg_type={} text=\"{}\"",
-            sender_id,
-            if chat_type == "p2p" {
-                &*sender_id
-            } else {
-                chat_id.as_str()
-            },
-            chat_type,
-            msg_type,
-            if text_preview.len() > 200 {
-                truncate_at_char(&text_preview, 200)
-            } else {
-                text_preview.to_string()
-            },
+            sender_id, log_target, chat_type, msg_type, log_preview,
         );
 
         // Skip bot's own messages
@@ -595,17 +599,15 @@ impl Bridge {
                                 } else {
                                     String::new()
                                 };
-                                let out = if m.max_tokens > 0 {
-                                    format!(" | {}K out", m.max_tokens / 1000)
-                                } else {
-                                    String::new()
-                                };
+                                // max_tokens is not in the list_models wire
+                                // response (the client reports 0) — no output
+                                // column for it here.
                                 if m.provider.is_empty() {
-                                    format!("• {}{} — `{}`{}{}", image_icon, m.name, m.id, ctx, out)
+                                    format!("• {}{} — `{}`{}", image_icon, m.name, m.id, ctx)
                                 } else {
                                     format!(
-                                        "• {}{} — `{}/{}`{}{}",
-                                        image_icon, m.name, m.provider, m.id, ctx, out
+                                        "• {}{} — `{}/{}`{}",
+                                        image_icon, m.name, m.provider, m.id, ctx
                                     )
                                 }
                             })
@@ -828,14 +830,12 @@ impl Bridge {
         let (file_key, file_name) = extract_file_key(content);
 
         if let Some(key) = file_key {
-            let rtype = if event.msg_type.as_deref() == Some("image") {
-                "image"
-            } else {
-                "file"
-            };
+            // handle_media_message is only reached for file-like message
+            // types; images go through handle_image_message.
+            let rtype = "file";
             match self.feishu.download_resource(message_id, &key, rtype).await {
                 Ok(data) => {
-                    let name = file_name.unwrap_or_else(|| "file".to_string());
+                    let name = file_name.unwrap_or("file".to_string());
                     let file_path = save_received_file(&self.data_dir, &data, &name);
                     let text = format!(
                         "[User sent a file: {} ({} bytes)]\nFile path: {}",
@@ -1061,7 +1061,11 @@ fn dirs_next_path() -> std::path::PathBuf {
 
 /// Save a downloaded file to {base_dir}/files/{filename}.
 /// Returns the absolute path on success.
-fn save_received_file(base_dir: &std::path::Path, data: &[u8], filename: &str) -> std::path::PathBuf {
+fn save_received_file(
+    base_dir: &std::path::Path,
+    data: &[u8],
+    filename: &str,
+) -> std::path::PathBuf {
     let dir = base_dir.join("files");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(filename);
@@ -1071,10 +1075,13 @@ fn save_received_file(base_dir: &std::path::Path, data: &[u8], filename: &str) -
 
 #[cfg(test)]
 mod tests {
+    // MockState scaffolding mutates Default::default() instances per-test by
+    // design; field-reassign is the readable form for a 15-field mock.
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
     use crate::config::AgentConfig;
-    use crate::test_support::{self as ts, HttpRoute, MockState};
     use crate::feishu::config::{BehaviorConfig, FeishuConfig, PolicyConfig};
+    use crate::test_support::{self as ts, HttpRoute, MockState};
 
     const TOKEN_ROUTE: &str = "/auth/v3/tenant_access_token/internal";
 
@@ -1093,7 +1100,11 @@ mod tests {
                 200,
                 r#"{"code":0,"bot":{"open_id":"ou_bot","app_name":"Bot","app_id":"cli_1"}}"#,
             ),
-            HttpRoute::json("/cardkit/v1/cards", 200, r#"{"code":0,"data":{"card_id":"card_1"}}"#),
+            HttpRoute::json(
+                "/cardkit/v1/cards",
+                200,
+                r#"{"code":0,"data":{"card_id":"card_1"}}"#,
+            ),
             HttpRoute::json(
                 "/cardkit/v1/cards/card_1/elements/stream_out/content",
                 200,
@@ -1179,15 +1190,16 @@ mod tests {
     async fn make_bridge(label: &str, events: Vec<future_rpc::proto::StreamEvent>) -> Fixture {
         let mut state = MockState::default();
         state.events = events;
-        make_bridge_routes(label, state, std_routes(&["om_1", "om_2", "om_3", "om_4", "om_5"])).await
+        make_bridge_routes(
+            label,
+            state,
+            std_routes(&["om_1", "om_2", "om_3", "om_4", "om_5"]),
+        )
+        .await
     }
 
     /// Bridge over mocks with default policy and custom Feishu routes.
-    async fn make_bridge_routes(
-        label: &str,
-        state: MockState,
-        routes: Vec<HttpRoute>,
-    ) -> Fixture {
+    async fn make_bridge_routes(label: &str, state: MockState, routes: Vec<HttpRoute>) -> Fixture {
         ts::ensure_crypto_provider();
         let (base, http) = ts::spawn_http(routes).await;
         let (addr, grpc) = ts::spawn_mock_grpc(state).await;
@@ -1419,7 +1431,11 @@ mod tests {
         fx.bridge.handle_event(event("om_1")).await.unwrap();
         // Prompt still ran; agent_end react DONE also fails silently.
         assert!(
-            ts::wait_until(|| !ts::recorded_of(&fx.grpc, "prompt").is_empty(), std::time::Duration::from_secs(5)).await,
+            ts::wait_until(
+                || !ts::recorded_of(&fx.grpc, "prompt").is_empty(),
+                std::time::Duration::from_secs(5)
+            )
+            .await,
             "prompt should proceed despite ACK failure"
         );
     }
@@ -1440,7 +1456,11 @@ mod tests {
         let fx = make_bridge_routes("ack-timeout", state, routes).await;
         fx.bridge.handle_event(event("om_1")).await.unwrap();
         assert!(
-            ts::wait_until(|| !ts::recorded_of(&fx.grpc, "prompt").is_empty(), std::time::Duration::from_secs(5)).await,
+            ts::wait_until(
+                || !ts::recorded_of(&fx.grpc, "prompt").is_empty(),
+                std::time::Duration::from_secs(5)
+            )
+            .await,
             "prompt should proceed after ACK timeout"
         );
     }
@@ -1461,11 +1481,8 @@ mod tests {
 
     /// Non-agent slash commands swap Typing → DONE reactions.
     fn reaction_swapped(http: &ts::RecordedRequests, msg_id: &str) -> bool {
-        let removed = !ts::requests_to(
-            http,
-            &format!("/im/v1/messages/{msg_id}/reactions/rid_1"),
-        )
-        .is_empty();
+        let removed =
+            !ts::requests_to(http, &format!("/im/v1/messages/{msg_id}/reactions/rid_1")).is_empty();
         let done = ts::requests_to(http, &format!("/im/v1/messages/{msg_id}/reactions"))
             .iter()
             .any(|r| r.body_string().contains("DONE"));
@@ -1481,7 +1498,10 @@ mod tests {
         assert_eq!(ts::recorded_of(&fx.grpc, "new_session").len(), 1);
 
         // /new aborts the old session and creates a new one.
-        fx.bridge.handle_event(slash_event("om_2", "/new")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_2", "/new"))
+            .await
+            .unwrap();
         assert_eq!(ts::recorded_of(&fx.grpc, "abort").len(), 1);
         assert_eq!(ts::recorded_of(&fx.grpc, "new_session").len(), 2);
         let r = replies(&fx.http, "om_2");
@@ -1492,16 +1512,29 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn slash_new_without_prior_session_and_failure_arm() {
         let fx = make_bridge("slash-new-fresh", done_events()).await;
-        fx.bridge.handle_event(slash_event("om_2", "/new")).await.unwrap();
-        assert!(replies(&fx.http, "om_2").iter().any(|b| b.contains("New session")));
+        fx.bridge
+            .handle_event(slash_event("om_2", "/new"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_2")
+            .iter()
+            .any(|b| b.contains("New session")));
         assert_eq!(ts::recorded_of(&fx.grpc, "abort").len(), 0);
         drop(fx);
 
         // new_session failure → error reply.
         let mut state = MockState::default();
         state.fail_commands.insert("new_session".to_string());
-        let fx = make_bridge_routes("slash-new-fail", state, std_routes(&["om_1", "om_2", "om_3"])).await;
-        fx.bridge.handle_event(slash_event("om_2", "/new")).await.unwrap();
+        let fx = make_bridge_routes(
+            "slash-new-fail",
+            state,
+            std_routes(&["om_1", "om_2", "om_3"]),
+        )
+        .await;
+        fx.bridge
+            .handle_event(slash_event("om_2", "/new"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_2")
             .iter()
             .any(|b| b.contains("Failed to create new session")));
@@ -1511,7 +1544,10 @@ mod tests {
     async fn slash_status_with_and_without_session() {
         let fx = make_bridge("slash-status", done_events()).await;
         // No session yet.
-        fx.bridge.handle_event(slash_event("om_2", "/status")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_2", "/status"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_2")
             .iter()
             .any(|b| b.contains("No active session")));
@@ -1519,7 +1555,10 @@ mod tests {
         // Establish a session, then /status reports state + model info.
         fx.bridge.handle_event(event("om_1")).await.unwrap();
         assert!(wait_done(&fx.http, "om_1").await);
-        fx.bridge.handle_event(slash_event("om_3", "/status")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_3", "/status"))
+            .await
+            .unwrap();
         let r = replies(&fx.http, "om_3");
         assert!(r.iter().any(|b| b.contains("Model: future/k3")), "{r:?}");
         assert!(r.iter().any(|b| b.contains("Provider: future")), "{r:?}");
@@ -1528,23 +1567,41 @@ mod tests {
         // get_state failure → error reply.
         let mut state = MockState::default();
         state.events = done_events();
-        let fx = make_bridge_routes("slash-status-err", state, std_routes(&["om_1", "om_2", "om_3", "om_4", "om_5"])).await;
+        let fx = make_bridge_routes(
+            "slash-status-err",
+            state,
+            std_routes(&["om_1", "om_2", "om_3", "om_4", "om_5"]),
+        )
+        .await;
         fx.bridge.handle_event(event("om_1")).await.unwrap();
         assert!(wait_done(&fx.http, "om_1").await);
         // Now make get_state fail.
         ts::fail_command(&fx.grpc, "get_state");
-        fx.bridge.handle_event(slash_event("om_4", "/status")).await.unwrap();
-        assert!(replies(&fx.http, "om_4").iter().any(|b| b.contains("Error")));
+        fx.bridge
+            .handle_event(slash_event("om_4", "/status"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_4")
+            .iter()
+            .any(|b| b.contains("Error")));
         drop(fx);
 
         // Session exists but models lookup fails → model_info empty arm.
         let mut state = MockState::default();
         state.events = done_events();
         state.fail_commands.insert("list_models".into());
-        let fx = make_bridge_routes("slash-status-nomodels", state, std_routes(&["om_1", "om_2", "om_3", "om_4", "om_5"])).await;
+        let fx = make_bridge_routes(
+            "slash-status-nomodels",
+            state,
+            std_routes(&["om_1", "om_2", "om_3", "om_4", "om_5"]),
+        )
+        .await;
         fx.bridge.handle_event(event("om_1")).await.unwrap();
         assert!(wait_done(&fx.http, "om_1").await);
-        fx.bridge.handle_event(slash_event("om_5", "/status")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_5", "/status"))
+            .await
+            .unwrap();
         let r = replies(&fx.http, "om_5");
         assert!(r.iter().any(|b| b.contains("Model: future/k3")), "{r:?}");
     }
@@ -1553,22 +1610,35 @@ mod tests {
     async fn slash_stop_aborts_and_replies() {
         let fx = make_bridge("slash-stop", done_events()).await;
         // Without a session: still replies Stopped, no abort.
-        fx.bridge.handle_event(slash_event("om_2", "/stop")).await.unwrap();
-        assert!(replies(&fx.http, "om_2").iter().any(|b| b.contains("Stopped")));
+        fx.bridge
+            .handle_event(slash_event("om_2", "/stop"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_2")
+            .iter()
+            .any(|b| b.contains("Stopped")));
         assert!(ts::recorded_of(&fx.grpc, "abort").is_empty());
 
         // With a session: abort fires.
         fx.bridge.handle_event(event("om_1")).await.unwrap();
         assert!(wait_done(&fx.http, "om_1").await);
-        fx.bridge.handle_event(slash_event("om_3", "/stop")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_3", "/stop"))
+            .await
+            .unwrap();
         assert_eq!(ts::recorded_of(&fx.grpc, "abort").len(), 1);
-        assert!(replies(&fx.http, "om_3").iter().any(|b| b.contains("Stopped")));
+        assert!(replies(&fx.http, "om_3")
+            .iter()
+            .any(|b| b.contains("Stopped")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn slash_model_switch_paths() {
         let fx = make_bridge("slash-model", done_events()).await;
-        fx.bridge.handle_event(slash_event("om_2", "/model future:deepseek-v4-pro")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_2", "/model future:deepseek-v4-pro"))
+            .await
+            .unwrap();
         let sets = ts::recorded_of(&fx.grpc, "set_model");
         assert!(sets.iter().any(|c| c.model_id == "future/deepseek-v4-pro"));
         assert!(replies(&fx.http, "om_2")
@@ -1580,8 +1650,16 @@ mod tests {
         // is tolerated with a warn; the command's own call produces the reply).
         let mut state = MockState::default();
         state.fail_commands.insert("set_model".into());
-        let fx = make_bridge_routes("slash-model-fail", state, std_routes(&["om_1", "om_2", "om_3"])).await;
-        fx.bridge.handle_event(slash_event("om_2", "/model x/y")).await.unwrap();
+        let fx = make_bridge_routes(
+            "slash-model-fail",
+            state,
+            std_routes(&["om_1", "om_2", "om_3"]),
+        )
+        .await;
+        fx.bridge
+            .handle_event(slash_event("om_2", "/model x/y"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_2")
             .iter()
             .any(|b| b.contains("Failed to switch model")));
@@ -1590,7 +1668,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn slash_models_lists_and_errors() {
         let fx = make_bridge("slash-models", done_events()).await;
-        fx.bridge.handle_event(slash_event("om_2", "/models")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_2", "/models"))
+            .await
+            .unwrap();
         let r = replies(&fx.http, "om_2");
         assert!(r.iter().any(|b| b.contains("Available models")), "{r:?}");
         assert!(r.iter().any(|b| b.contains("K3")), "{r:?}");
@@ -1599,17 +1680,35 @@ mod tests {
         // list_models failure → error reply.
         let mut state = MockState::default();
         state.fail_commands.insert("list_models".into());
-        let fx = make_bridge_routes("slash-models-fail", state, std_routes(&["om_1", "om_2", "om_3"])).await;
-        fx.bridge.handle_event(slash_event("om_2", "/models")).await.unwrap();
-        assert!(replies(&fx.http, "om_2").iter().any(|b| b.contains("Error")));
+        let fx = make_bridge_routes(
+            "slash-models-fail",
+            state,
+            std_routes(&["om_1", "om_2", "om_3"]),
+        )
+        .await;
+        fx.bridge
+            .handle_event(slash_event("om_2", "/models"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_2")
+            .iter()
+            .any(|b| b.contains("Error")));
 
         // Empty list → "No models available".
         let mut state = MockState::default();
         state
             .responses
             .insert("list_models".into(), r#"{"models":[]}"#.into());
-        let fx = make_bridge_routes("slash-models-empty", state, std_routes(&["om_1", "om_2", "om_3"])).await;
-        fx.bridge.handle_event(slash_event("om_2", "/models")).await.unwrap();
+        let fx = make_bridge_routes(
+            "slash-models-empty",
+            state,
+            std_routes(&["om_1", "om_2", "om_3"]),
+        )
+        .await;
+        fx.bridge
+            .handle_event(slash_event("om_2", "/models"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_2")
             .iter()
             .any(|b| b.contains("No models available")));
@@ -1618,12 +1717,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn slash_effort_validation_and_set() {
         let fx = make_bridge("slash-effort", done_events()).await;
-        fx.bridge.handle_event(slash_event("om_2", "/effort turbo")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_2", "/effort turbo"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_2")
             .iter()
             .any(|b| b.contains("Invalid level")));
 
-        fx.bridge.handle_event(slash_event("om_3", "/effort high")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_3", "/effort high"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_3")
             .iter()
             .any(|b| b.contains("Thinking level set to: high")));
@@ -1632,8 +1737,16 @@ mod tests {
         // set_thinking_level failure → error reply.
         let mut state = MockState::default();
         state.fail_commands.insert("set_thinking_level".into());
-        let fx = make_bridge_routes("slash-effort-fail", state, std_routes(&["om_1", "om_2", "om_3"])).await;
-        fx.bridge.handle_event(slash_event("om_2", "/effort low")).await.unwrap();
+        let fx = make_bridge_routes(
+            "slash-effort-fail",
+            state,
+            std_routes(&["om_1", "om_2", "om_3"]),
+        )
+        .await;
+        fx.bridge
+            .handle_event(slash_event("om_2", "/effort low"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_2")
             .iter()
             .any(|b| b.contains("Failed to set thinking level")));
@@ -1643,7 +1756,10 @@ mod tests {
     async fn slash_compact_paths() {
         let fx = make_bridge("slash-compact", done_events()).await;
         // No session.
-        fx.bridge.handle_event(slash_event("om_2", "/compact")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_2", "/compact"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_2")
             .iter()
             .any(|b| b.contains("No active session to compact")));
@@ -1651,7 +1767,10 @@ mod tests {
         // With session → compacted.
         fx.bridge.handle_event(event("om_1")).await.unwrap();
         assert!(wait_done(&fx.http, "om_1").await);
-        fx.bridge.handle_event(slash_event("om_3", "/compact")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_3", "/compact"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_3")
             .iter()
             .any(|b| b.contains("Context compacted")));
@@ -1662,10 +1781,18 @@ mod tests {
         let mut state = MockState::default();
         state.events = done_events();
         state.fail_commands.insert("compact".into());
-        let fx = make_bridge_routes("slash-compact-fail", state, std_routes(&["om_1", "om_2", "om_3", "om_4", "om_5"])).await;
+        let fx = make_bridge_routes(
+            "slash-compact-fail",
+            state,
+            std_routes(&["om_1", "om_2", "om_3", "om_4", "om_5"]),
+        )
+        .await;
         fx.bridge.handle_event(event("om_1")).await.unwrap();
         assert!(wait_done(&fx.http, "om_1").await);
-        fx.bridge.handle_event(slash_event("om_4", "/compact")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_4", "/compact"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_4")
             .iter()
             .any(|b| b.contains("Failed to compact")));
@@ -1674,7 +1801,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn slash_cwd_paths() {
         let fx = make_bridge("slash-cwd", done_events()).await;
-        fx.bridge.handle_event(slash_event("om_2", "/cwd /work/dir")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_2", "/cwd /work/dir"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_2")
             .iter()
             .any(|b| b.contains("CWD set to: /work/dir")));
@@ -1684,8 +1814,16 @@ mod tests {
 
         let mut state = MockState::default();
         state.fail_commands.insert("set_cwd".into());
-        let fx = make_bridge_routes("slash-cwd-fail", state, std_routes(&["om_1", "om_2", "om_3"])).await;
-        fx.bridge.handle_event(slash_event("om_2", "/cwd /x")).await.unwrap();
+        let fx = make_bridge_routes(
+            "slash-cwd-fail",
+            state,
+            std_routes(&["om_1", "om_2", "om_3"]),
+        )
+        .await;
+        fx.bridge
+            .handle_event(slash_event("om_2", "/cwd /x"))
+            .await
+            .unwrap();
         assert!(replies(&fx.http, "om_2")
             .iter()
             .any(|b| b.contains("Failed to set CWD")));
@@ -1694,13 +1832,19 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn slash_help_sends_card_and_unknown_goes_to_agent() {
         let fx = make_bridge("slash-help", done_events()).await;
-        fx.bridge.handle_event(slash_event("om_2", "/help")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_2", "/help"))
+            .await
+            .unwrap();
         let r = replies(&fx.http, "om_2");
         assert!(r.iter().any(|b| b.contains("Slash Commands")), "{r:?}");
         assert!(reaction_swapped(&fx.http, "om_2"));
 
         // Unknown slash command → forwarded to the agent as a prompt.
-        fx.bridge.handle_event(slash_event("om_3", "/frobnicate")).await.unwrap();
+        fx.bridge
+            .handle_event(slash_event("om_3", "/frobnicate"))
+            .await
+            .unwrap();
         assert!(wait_done(&fx.http, "om_3").await);
         let prompts = ts::recorded_of(&fx.grpc, "prompt");
         assert!(prompts.iter().any(|c| c.message.contains("/frobnicate")));
@@ -1713,9 +1857,7 @@ mod tests {
         let fx = make_bridge("post-msg", done_events()).await;
         let mut e = event("om_1");
         e.msg_type = Some("post".into());
-        e.content = Some(
-            r#"{"content":[[{"tag":"text","text":"post body"}]]}"#.into(),
-        );
+        e.content = Some(r#"{"content":[[{"tag":"text","text":"post body"}]]}"#.into());
         fx.bridge.handle_event(e).await.unwrap();
         assert!(wait_done(&fx.http, "om_1").await);
         let prompts = ts::recorded_of(&fx.grpc, "prompt");
@@ -1750,14 +1892,21 @@ mod tests {
         let prompts = ts::recorded_of(&fx.grpc, "prompt");
         assert_eq!(prompts.len(), 1);
         assert!(prompts[0].message.contains("[User sent an image:"));
-        assert!(prompts[0].images.is_empty(), "first message predates the cache");
+        assert!(
+            prompts[0].images.is_empty(),
+            "first message predates the cache"
+        );
 
         // Second message: cache says imageSupport:true → attachment included.
         fx.bridge.handle_event(img_event("om_2")).await.unwrap();
         assert!(wait_done(&fx.http, "om_2").await);
         let prompts = ts::recorded_of(&fx.grpc, "prompt");
         assert_eq!(prompts.len(), 2);
-        assert_eq!(prompts[1].images.len(), 1, "cached support attaches the image");
+        assert_eq!(
+            prompts[1].images.len(),
+            1,
+            "cached support attaches the image"
+        );
         assert!(!prompts[1].images[0].file_path.is_empty());
     }
 
@@ -1804,18 +1953,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn file_message_downloads_and_prompts() {
         let fx = make_bridge("file-msg", done_events()).await;
-        for mt in ["file", "media", "audio"] {
-            let mut e = event("om_1");
-            e.msg_type = Some(mt.into());
-            e.content = Some(r#"{"file_key":"file_k","file_name":"doc.pdf"}"#.into());
-            fx.bridge.handle_event(e).await.unwrap();
-            assert!(wait_done(&fx.http, "om_1").await, "type {mt}");
-            let prompts = ts::recorded_of(&fx.grpc, "prompt");
-            assert!(prompts
-                .iter()
-                .any(|c| c.message.contains("doc.pdf")), "type {mt}");
-            break; // one is enough; all three share the handler
-        }
+        // One variant is enough; file/media/audio share the handler.
+        let mut e = event("om_1");
+        e.msg_type = Some("file".into());
+        e.content = Some(r#"{"file_key":"file_k","file_name":"doc.pdf"}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        let prompts = ts::recorded_of(&fx.grpc, "prompt");
+        assert!(prompts.iter().any(|c| c.message.contains("doc.pdf")));
         // A file with no file_key → handler no-ops.
         let mut e = event("om_2");
         e.msg_type = Some("file".into());
@@ -1850,6 +1995,13 @@ mod tests {
         e.content = Some(r#"{"file_key":"sticker_k"}"#.into());
         fx.bridge.handle_event(e).await.unwrap();
         assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+
+        // Image message WITHOUT an image_key → handler skipped.
+        let mut e = event("om_2");
+        e.msg_type = Some("image".into());
+        e.content = Some(r#"{"not_image_key":"x"}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1872,8 +2024,7 @@ mod tests {
         let mut e = event(msg_id);
         e.event_type = "card.action.trigger".into();
         e.content = Some(
-            serde_json::json!({"action": action, "approval_request_id": request_id})
-                .to_string(),
+            serde_json::json!({"action": action, "approval_request_id": request_id}).to_string(),
         );
         e
     }
@@ -1894,7 +2045,9 @@ mod tests {
         assert_eq!(decisions[0].mode, "approved");
         assert_eq!(decisions[0].entry_id, "req_1");
         assert!(decisions[0].message.contains("approved via Feishu card"));
-        assert!(replies(&fx.http, "om_2").iter().any(|b| b.contains("Approved")));
+        assert!(replies(&fx.http, "om_2")
+            .iter()
+            .any(|b| b.contains("Approved")));
 
         fx.bridge
             .handle_event(card_action("om_3", "reject", "req_2"))
@@ -1903,7 +2056,9 @@ mod tests {
         let decisions = ts::recorded_of(&fx.grpc, "approval_decision");
         assert_eq!(decisions.len(), 2);
         assert_eq!(decisions[1].mode, "rejected");
-        assert!(replies(&fx.http, "om_3").iter().any(|b| b.contains("Rejected")));
+        assert!(replies(&fx.http, "om_3")
+            .iter()
+            .any(|b| b.contains("Rejected")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1930,7 +2085,9 @@ mod tests {
             .await
             .unwrap();
         assert!(ts::recorded_of(&fx.grpc, "approval_decision").is_empty());
-        assert!(replies(&fx.http, "om_5").iter().any(|b| b.contains("Approved")));
+        assert!(replies(&fx.http, "om_5")
+            .iter()
+            .any(|b| b.contains("Approved")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1938,12 +2095,7 @@ mod tests {
         let mut state = MockState::default();
         state.events = done_events();
         state.fail_commands.insert("approval_decision".into());
-        let fx = make_bridge_routes(
-            "card-agent-fail",
-            state,
-            std_routes(&["om_1", "om_2"]),
-        )
-        .await;
+        let fx = make_bridge_routes("card-agent-fail", state, std_routes(&["om_1", "om_2"])).await;
         fx.bridge.handle_event(event("om_1")).await.unwrap();
         assert!(wait_done(&fx.http, "om_1").await);
         // Decision send fails → warn; ack reply still goes out.
@@ -1951,7 +2103,9 @@ mod tests {
             .handle_event(card_action("om_2", "approve", "req_1"))
             .await
             .unwrap();
-        assert!(replies(&fx.http, "om_2").iter().any(|b| b.contains("Approved")));
+        assert!(replies(&fx.http, "om_2")
+            .iter()
+            .any(|b| b.contains("Approved")));
     }
 
     // ─── Session management arms ─────────────────────────────────────────────
@@ -2045,5 +2199,240 @@ mod tests {
         assert!(Bridge::new_for_test(agent, cfg, ts::temp_dir("no-agent"))
             .await
             .is_err());
+    }
+
+    // ─── Residual-arm chase ──────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fresh_create_time_and_long_group_log() {
+        // current_thread: log-arg arms evaluate under the thread-local
+        // subscriber (multi_thread may migrate the task off it).
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        let fx = make_bridge("fresh-long", done_events()).await;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let mut e = event("om_1");
+        e.chat_type = Some("group".into());
+        e.chat_id = Some("oc_group".into());
+        e.create_time_ms = Some(now_ms); // fresh → stale-check false arm
+        e.mentions = Some(vec![serde_json::json!({"id": "ou_bot"})]);
+        let long_text = "x".repeat(300); // >200 → log truncation arm
+        e.content = Some(
+            serde_json::json!({"text": long_text, "mentions": [{"id": "ou_bot"}]}).to_string(),
+        );
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn placeholder_session_entry_gets_real_session() {
+        let fx = make_bridge("placeholder", done_events()).await;
+        // Seed a placeholder (empty session_id) as get_or_create would.
+        let (_, is_new) = fx.bridge.sessions.get_or_create("oc_1", None);
+        assert!(is_new);
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        // The empty placeholder took the new_session arm.
+        assert_eq!(ts::recorded_of(&fx.grpc, "new_session").len(), 1);
+        assert!(ts::recorded_of(&fx.grpc, "switch_session").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_new_with_placeholder_skips_abort() {
+        let fx = make_bridge("new-placeholder", done_events()).await;
+        // Placeholder entry: session exists but is empty → /new skips abort.
+        fx.bridge.sessions.get_or_create("oc_1", None);
+        fx.bridge
+            .handle_event(slash_event("om_2", "/new"))
+            .await
+            .unwrap();
+        assert!(ts::recorded_of(&fx.grpc, "abort").is_empty());
+        assert!(replies(&fx.http, "om_2")
+            .iter()
+            .any(|b| b.contains("New session")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_channel_defaults_skip_set_calls() {
+        // Empty model/thinking/permission → ensure_session skips those calls.
+        ts::ensure_crypto_provider();
+        let mut state = MockState::default();
+        state.events = done_events();
+        let (base, http) = ts::spawn_http(std_routes(&["om_1"])).await;
+        let (addr, grpc) = ts::spawn_mock_grpc(state).await;
+        let cfg = feishu_cfg(&base, "open", "open");
+        let agent = Arc::new(AgentConfig {
+            grpc_addr: addr,
+            cwd: "/tmp".into(),
+            model: String::new(),
+            thinking_level: String::new(),
+            permission_level: String::new(),
+        });
+        let bridge = Bridge::new_for_test(agent, cfg, ts::temp_dir("empty-defaults"))
+            .await
+            .unwrap();
+        bridge.handle_event(event("om_1")).await.unwrap();
+        let path = "/im/v1/messages/om_1/reactions";
+        assert!(
+            ts::wait_until(
+                || ts::requests_to(&http, path)
+                    .iter()
+                    .any(|r| r.body_string().contains("DONE")),
+                std::time::Duration::from_secs(10)
+            )
+            .await
+        );
+        assert!(ts::recorded_of(&grpc, "set_model").is_empty());
+        assert!(ts::recorded_of(&grpc, "set_thinking_level").is_empty());
+        assert!(ts::recorded_of(&grpc, "set_permission_level").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_image_support_failure_then_model_command_errors() {
+        let fx = make_bridge("refresh-fail", done_events()).await;
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        // get_state now fails: /model's refresh swallows it, but the reply
+        // path's get_state propagates → handle_event errors.
+        ts::fail_command(&fx.grpc, "get_state");
+        let result = fx
+            .bridge
+            .handle_event(slash_event("om_2", "/model x/y"))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn model_and_effort_session_create_failures() {
+        let mut state = MockState::default();
+        state.fail_commands.insert("new_session".into());
+        let fx = make_bridge_routes("cmd-session-fail", state, std_routes(&["om_2", "om_3"])).await;
+        fx.bridge
+            .handle_event(slash_event("om_2", "/model x/y"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_2")
+            .iter()
+            .any(|b| b.contains("Failed to create session")));
+        fx.bridge
+            .handle_event(slash_event("om_3", "/effort high"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_3")
+            .iter()
+            .any(|b| b.contains("Failed to create session")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn models_formatting_edge_models() {
+        // A provider-less model and a zero-context-window model.
+        let mut state = MockState::default();
+        state.responses.insert(
+            "list_models".into(),
+            r#"{"models":[
+                {"id":"plain","label":"Plain","provider":"","supportsImages":false,"contextWindow":0},
+                {"id":"future/k3","label":"K3","provider":"future","supportsImages":true,"contextWindow":256000}
+            ]}"#
+            .into(),
+        );
+        let fx = make_bridge_routes("models-edge", state, std_routes(&["om_2"])).await;
+        fx.bridge
+            .handle_event(slash_event("om_2", "/models"))
+            .await
+            .unwrap();
+        let r = replies(&fx.http, "om_2");
+        let body = r.last().expect("reply");
+        assert!(body.contains("Plain"), "{body}");
+        assert!(body.contains("future/k3"), "{body}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_message_with_image_support_attaches_file() {
+        let fx = make_bridge("file-attach", done_events()).await;
+        // Warm the image_support cache with a first message.
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        // Now a file message attaches the download as image data.
+        let mut e = event("om_2");
+        e.msg_type = Some("file".into());
+        e.content = Some(r#"{"file_key":"file_k","file_name":"photo.png"}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_2").await);
+        let prompts = ts::recorded_of(&fx.grpc, "prompt");
+        let file_prompt = prompts
+            .iter()
+            .find(|c| c.message.contains("photo.png"))
+            .unwrap();
+        assert_eq!(file_prompt.images.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prompt_loop_spawn_failure_replies_error() {
+        let mut state = MockState::default();
+        state.fail_commands.insert("prompt".into());
+        let fx = make_bridge_routes("spawn-fail", state, std_routes(&["om_1"])).await;
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        // The spawned task catches the loop error and replies "Error: ...".
+        assert!(
+            ts::wait_until(
+                || replies(&fx.http, "om_1")
+                    .iter()
+                    .any(|b| b.contains("Error:")),
+                std::time::Duration::from_secs(10)
+            )
+            .await,
+            "spawn error reply expected"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn card_action_without_message_id_skips_ack_reply() {
+        let fx = make_bridge("card-no-msgid", done_events()).await;
+        let mut e = card_action("om_2", "approve", "req_1");
+        e.message_id = None;
+        // Call the handler directly (handle_event requires a message_id).
+        fx.bridge.handle_card_action(&e).await.unwrap();
+        assert!(replies(&fx.http, "om_2").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_prompt_error_propagates_when_error_reply_fails() {
+        // Session creation fails AND the error reply itself fails →
+        // process_prompt's `?` propagates out of handle_event.
+        let mut routes = std_routes(&["om_1"]);
+        routes.retain(|r| r.path != "/im/v1/messages/om_1/reply");
+        let mut state = MockState::default();
+        state.fail_commands.insert("new_session".into());
+        let fx = make_bridge_routes("prompt-err-propagates", state, routes).await;
+        let result = fx.bridge.handle_event(event("om_1")).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_command_with_failed_ack_skips_removal() {
+        // ACK react fails → ack_reaction_id None → slash tail skips removal.
+        let mut routes = std_routes(&["om_2"]);
+        routes.retain(|r| r.path != "/im/v1/messages/om_2/reactions");
+        routes.push(HttpRoute::json(
+            "/im/v1/messages/om_2/reactions",
+            200,
+            r#"{"code":13,"msg":"nope"}"#,
+        ));
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge_routes("slash-no-ack", state, routes).await;
+        fx.bridge
+            .handle_event(slash_event("om_2", "/help"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_2")
+            .iter()
+            .any(|b| b.contains("Slash Commands")));
     }
 }

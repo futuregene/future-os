@@ -82,6 +82,9 @@ mod tests {
     #[test]
     fn base_url_passes_full_urls_through() {
         assert_eq!(base_url("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
-        assert_eq!(base_url("https://gw.example.com/"), "https://gw.example.com");
+        assert_eq!(
+            base_url("https://gw.example.com/"),
+            "https://gw.example.com"
+        );
     }
 }

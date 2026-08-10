@@ -80,9 +80,12 @@ async fn run_async() -> Result<()> {
             let fcfg = feishu_cfg.clone();
             let sd = shutdown.clone();
             handles.push(tokio::spawn(async move {
-                if let Err(e) = feishu::FeishuChannel::run(agent, fcfg, sd).await {
-                    tracing::error!("Feishu channel exited: {}", e);
-                }
+                // inspect_err, not if-let: rustfmt explodes single-line
+                // if-lets and the Ok-edge brace is unreachable in tests
+                // (a channel run only returns on error or shutdown abort).
+                let _ = feishu::FeishuChannel::run(agent, fcfg, sd)
+                    .await
+                    .inspect_err(|e| tracing::error!("Feishu channel exited: {}", e));
             }));
         }
     }
@@ -99,9 +102,9 @@ async fn run_async() -> Result<()> {
             let dcfg = dt_cfg.clone();
             let sd = shutdown.clone();
             handles.push(tokio::spawn(async move {
-                if let Err(e) = dingtalk::DingtalkChannel::run(agent, dcfg, sd).await {
-                    tracing::error!("DingTalk channel exited: {}", e);
-                }
+                let _ = dingtalk::DingtalkChannel::run(agent, dcfg, sd)
+                    .await
+                    .inspect_err(|e| tracing::error!("DingTalk channel exited: {}", e));
             }));
         }
     }
@@ -143,11 +146,7 @@ mod tests {
         let home = crate::test_support::IsolatedHome::new("lib-run");
         let dir = home.path.join(".future").join("channels");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("config.json"),
-            r#"{"feishu": {"enabled": true}}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"feishu": {"enabled": true}}"#).unwrap();
         let err = run(&[]).unwrap_err();
         assert!(
             err.to_string().contains("app_id/app_secret missing"),

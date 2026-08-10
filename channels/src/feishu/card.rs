@@ -582,7 +582,9 @@ mod tests {
             .map(|e| e["text"]["content"].as_str().unwrap_or(""))
             .collect::<Vec<_>>()
             .join("\n");
-        for cmd in ["/new", "/status", "/model", "/models", "/effort", "/stop", "/help"] {
+        for cmd in [
+            "/new", "/status", "/model", "/models", "/effort", "/stop", "/help",
+        ] {
             assert!(all.contains(cmd), "help must list {cmd}");
         }
     }

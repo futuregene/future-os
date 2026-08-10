@@ -111,11 +111,14 @@ mod tests {
     async fn run_fails_fast_without_agent() {
         ts::ensure_crypto_provider();
         let shutdown = Arc::new(tokio::sync::Notify::new());
-        let err =
-            DingtalkChannel::run(agent_cfg("127.0.0.1:1"), ch_cfg("http://127.0.0.1:1"), shutdown)
-                .await
-                .err()
-                .unwrap();
+        let err = DingtalkChannel::run(
+            agent_cfg("127.0.0.1:1"),
+            ch_cfg("http://127.0.0.1:1"),
+            shutdown,
+        )
+        .await
+        .err()
+        .unwrap();
         assert!(!err.to_string().is_empty());
     }
 
@@ -180,6 +183,65 @@ mod tests {
         let result = tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("shutdown cancels the backoff sleep")
+            .expect("task join");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_dispatches_events_to_the_bridge() {
+        ts::ensure_crypto_provider();
+        // A CALLBACK bot-message frame through the WS: the bridge spawns the
+        // handler (closure + spawn + error-log arms). new_session fails, so
+        // the prompt path errors and gets logged.
+        let frame = serde_json::json!({
+            "type": "CALLBACK",
+            "headers": {"messageId": "mid-ev", "topic": "/v1.0/im/bot/messages/get"},
+            "data": serde_json::json!({
+                "senderId": "user-1",
+                "conversationId": "cid-1",
+                "msgtype": "text",
+                "text": {"content": "/frobnicate"},
+                "sessionWebhook": "http://127.0.0.1:1/unreachable"
+            }).to_string()
+        })
+        .to_string();
+        // Plus a stale event (handle_event Ok → if-let-Err false path).
+        let old_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            - 120_000;
+        let stale_frame = serde_json::json!({
+            "type": "CALLBACK",
+            "headers": {"messageId": "mid-stale", "topic": "/v1.0/im/bot/messages/get"},
+            "data": serde_json::json!({
+                "senderId": "user-1",
+                "conversationId": "cid-1",
+                "msgtype": "text",
+                "text": {"content": "old"},
+                "createAt": old_ms
+            }).to_string()
+        })
+        .to_string();
+        let (ws_url, _) = ts::spawn_ws(vec![
+            WsAction::SendText(frame),
+            WsAction::SendText(stale_frame),
+            WsAction::Delay(Duration::from_millis(500)),
+            WsAction::SendClose,
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
+        let mut state = MockState::default();
+        state.fail_commands.insert("new_session".into());
+        let (addr, _) = ts::spawn_mock_grpc(state).await;
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let sd = shutdown.clone();
+        let handle = tokio::spawn(DingtalkChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        shutdown.notify_waiters();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("run must return after shutdown")
             .expect("task join");
         assert!(result.is_ok());
     }

@@ -354,7 +354,9 @@ mod tests {
         let target = CardTarget::Group {
             open_conversation_id: "conv_456".to_string(),
         };
-        assert!(matches!(target, CardTarget::Group { ref open_conversation_id } if open_conversation_id == "conv_456"));
+        assert!(
+            matches!(target, CardTarget::Group { ref open_conversation_id } if open_conversation_id == "conv_456")
+        );
     }
 
     // ─── HTTP flows against the mock server ──────────────────────────────────
@@ -369,9 +371,14 @@ mod tests {
             HttpRoute::json("/v1.0/card/instances/deliver", 200, "{}"),
         ];
         let (base, recorded) = ts::spawn_http(routes).await;
-        let card = create_ai_card(&base, "tok", "robot-1", &CardTarget::User {
-            user_id: "u-1".into(),
-        })
+        let card = create_ai_card(
+            &base,
+            "tok",
+            "robot-1",
+            &CardTarget::User {
+                user_id: "u-1".into(),
+            },
+        )
         .await
         .unwrap();
         assert!(card.card_instance_id.starts_with("card_"));
@@ -380,7 +387,9 @@ mod tests {
         let deliver = ts::requests_to(&recorded, "/v1.0/card/instances/deliver");
         assert_eq!(deliver.len(), 1);
         assert!(deliver[0].body_string().contains("\"userId\":\"u-1\""));
-        assert!(deliver[0].body_string().contains("\"robotCode\":\"robot-1\""));
+        assert!(deliver[0]
+            .body_string()
+            .contains("\"robotCode\":\"robot-1\""));
         assert_eq!(
             deliver[0].header("x-acs-dingtalk-access-token"),
             Some("tok")
@@ -395,9 +404,14 @@ mod tests {
             HttpRoute::json("/v1.0/card/instances/deliver", 200, "{}"),
         ];
         let (base, recorded) = ts::spawn_http(routes).await;
-        let card = create_ai_card(&base, "tok", "robot-1", &CardTarget::Group {
-            open_conversation_id: "oc-1".into(),
-        })
+        let card = create_ai_card(
+            &base,
+            "tok",
+            "robot-1",
+            &CardTarget::Group {
+                open_conversation_id: "oc-1".into(),
+            },
+        )
         .await
         .unwrap();
         let deliver = ts::requests_to(&recorded, "/v1.0/card/instances/deliver");
@@ -411,9 +425,14 @@ mod tests {
     async fn create_ai_card_send_failure() {
         ts::ensure_crypto_provider();
         // Nothing listening → connection refused surfaces as Err.
-        let err = create_ai_card("http://127.0.0.1:1", "tok", "r", &CardTarget::User {
-            user_id: "u".into(),
-        })
+        let err = create_ai_card(
+            "http://127.0.0.1:1",
+            "tok",
+            "r",
+            &CardTarget::User {
+                user_id: "u".into(),
+            },
+        )
         .await
         .err()
         .unwrap();
@@ -440,7 +459,9 @@ mod tests {
             .unwrap();
         assert!(card.inputing_started);
         // Second call: no INPUTING PUT; finished=true → FINISH PUT.
-        stream_ai_card(&base, &mut card, "done", true).await.unwrap();
+        stream_ai_card(&base, &mut card, "done", true)
+            .await
+            .unwrap();
 
         let instances = ts::requests_to(&recorded, "/v1.0/card/instances");
         // INPUTING once, FINISH once.
@@ -467,7 +488,9 @@ mod tests {
             access_token: "tok".into(),
             inputing_started: false,
         };
-        stream_ai_card(&base, &mut card, "final", true).await.unwrap();
+        stream_ai_card(&base, &mut card, "final", true)
+            .await
+            .unwrap();
         assert!(card.inputing_started);
     }
 

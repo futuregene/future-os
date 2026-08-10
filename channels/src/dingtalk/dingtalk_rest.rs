@@ -41,7 +41,10 @@ impl DingtalkRestClient {
             }
         }
         let client = crate::tls::http_client();
-        let url = format!("{}/v1.0/oauth2/accessToken", super::config::base_url(&self.domain));
+        let url = format!(
+            "{}/v1.0/oauth2/accessToken",
+            super::config::base_url(&self.domain)
+        );
         let resp: Value = client
             .post(&url)
             .json(&json!({
@@ -134,7 +137,9 @@ mod tests {
         let calls = ts::requests_to(&recorded, TOKEN_ROUTE);
         assert_eq!(calls.len(), 1, "second call must hit the cache");
         assert!(calls[0].body_string().contains("\"appKey\":\"client-id\""));
-        assert!(calls[0].body_string().contains("\"appSecret\":\"client-secret\""));
+        assert!(calls[0]
+            .body_string()
+            .contains("\"appSecret\":\"client-secret\""));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -157,7 +162,10 @@ mod tests {
         // Missing accessToken → error carrying the raw response.
         let (base, _) = ts::spawn_http(vec![HttpRoute::json(TOKEN_ROUTE, 200, "{}")]).await;
         let err = client(&base).get_token().await.unwrap_err();
-        assert!(err.to_string().contains("Failed to get access token"), "{err}");
+        assert!(
+            err.to_string().contains("Failed to get access token"),
+            "{err}"
+        );
 
         // Missing expireIn → 7200 default (token stays cached).
         let (base, recorded) = ts::spawn_http(vec![HttpRoute::json(

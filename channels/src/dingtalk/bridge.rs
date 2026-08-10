@@ -85,22 +85,26 @@ impl DingtalkBridge {
 
         let text = event.content.clone().unwrap_or_default();
 
+        // Hoisted out of the info! args: the macro only evaluates its
+        // arguments when a subscriber is installed, and this truncation must
+        // run regardless (also exercised directly in tests).
+        let text_preview = if text.len() > 200 {
+            truncate_at_char(&text, 200)
+        } else {
+            text.clone()
+        };
         info!(
             "[DING RECV] sender={} name={} text=\"{}\"",
             sender_id,
             event.sender_name.as_deref().unwrap_or("?"),
-            if text.len() > 200 {
-                truncate_at_char(&text, 200)
-            } else {
-                text.clone()
-            }
+            text_preview
         );
 
         let webhook = event.session_webhook.clone();
         let conversation_key = event
             .chat_id
             .clone()
-            .unwrap_or_else(|| format!("sender:{sender_id}"));
+            .unwrap_or(format!("sender:{sender_id}"));
 
         if text.starts_with('/') {
             self.handle_slash_command(&text, &webhook, &conversation_key)
@@ -214,14 +218,11 @@ impl DingtalkBridge {
                                     } else {
                                         String::new()
                                     };
-                                    let out = if m.max_tokens > 0 {
-                                        format!(" | {}K out", m.max_tokens / 1000)
-                                    } else {
-                                        String::new()
-                                    };
+                                    // max_tokens is not in the list_models wire
+                                    // response (the client reports 0).
                                     format!(
-                                        "• {}{} — `{}/{}`{}{}",
-                                        img, m.name, m.provider, m.id, ctx, out
+                                        "• {}{} — `{}/{}`{}",
+                                        img, m.name, m.provider, m.id, ctx
                                     )
                                 })
                                 .collect();
@@ -340,14 +341,14 @@ async fn run_prompt_loop(
 ) -> Result<()> {
     let (expected_run_id, my_gen, mut stream) = {
         let mut client = agent.write().await;
+        let send_preview = if text.len() > 300 {
+            truncate_at_char(text, 300)
+        } else {
+            text.to_string()
+        };
         info!(
             "[DING SEND] session={} text=\"{}\"",
-            session_id,
-            if text.len() > 300 {
-                truncate_at_char(text, 300)
-            } else {
-                text.to_string()
-            }
+            session_id, send_preview
         );
         let expected_run_id = client.prompt_superseding(session_id, text, vec![]).await?;
         client
@@ -490,6 +491,9 @@ fn truncate_tool_output(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // MockState scaffolding mutates Default::default() instances per-test by
+    // design; field-reassign is the readable form for a 15-field mock.
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
     use crate::config::AgentConfig;
     use crate::test_support::{self as ts, HttpRoute, MockState};
@@ -505,15 +509,15 @@ mod tests {
     }
 
     /// Bridge over mock gRPC + mock DingTalk REST (token route + webhook).
-    async fn make_bridge(
-        label: &str,
-        state: MockState,
-        extra_routes: Vec<HttpRoute>,
-    ) -> Fixture {
+    async fn make_bridge(label: &str, state: MockState, extra_routes: Vec<HttpRoute>) -> Fixture {
         ts::ensure_crypto_provider();
         let _ = label;
         let mut routes = vec![
-            HttpRoute::json(TOKEN_ROUTE, 200, r#"{"accessToken":"dt-tok","expireIn":7200}"#),
+            HttpRoute::json(
+                TOKEN_ROUTE,
+                200,
+                r#"{"accessToken":"dt-tok","expireIn":7200}"#,
+            ),
             HttpRoute::json("/robot/hook", 200, "{}"),
         ];
         routes.extend(extra_routes);
@@ -646,8 +650,18 @@ mod tests {
             ts::ev("", 0, "thinking_start", "{}"),
             ts::ev("", 1, "thinking_delta", r#"{"text":"hmm\nso"}"#),
             ts::ev("", 2, "thinking_end", "{}"),
-            ts::ev("", 3, "tool_start", r#"{"tool_id":"t1","tool_name":"shell"}"#),
-            ts::ev("", 4, "tool_end", r#"{"tool_id":"t1","text":"line1\nline2"}"#),
+            ts::ev(
+                "",
+                3,
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"shell"}"#,
+            ),
+            ts::ev(
+                "",
+                4,
+                "tool_end",
+                r#"{"tool_id":"t1","text":"line1\nline2"}"#,
+            ),
             ts::ev("", 5, "tool_end", r#"{"tool_id":"t2"}"#),
             ts::ev("", 6, "text_chunk", r#"{"text":"the answer"}"#),
             ts::ev("", 7, "agent_end", r#"{"state":"completed"}"#),
@@ -696,7 +710,10 @@ mod tests {
             ts::ev("", 1, "agent_end", r#"{"error":"boom"}"#),
         ];
         let fx = make_bridge("dt-err", state, vec![]).await;
-        fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "x"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "boom").await);
 
         // cancelled-with-error / interrupted → silent (the was_cancelled and
@@ -711,7 +728,10 @@ mod tests {
                 ts::ev("", 1, "agent_end", data),
             ];
             let fx = make_bridge(label, state, vec![]).await;
-            fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+            fx.bridge
+                .handle_event(event(&fx.base, "m1", "x"))
+                .await
+                .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
             assert!(
                 hook_bodies(&fx.http).is_empty(),
@@ -723,7 +743,10 @@ mod tests {
         let mut state = MockState::default();
         state.events = vec![ts::ev("", 0, "error", r#"{"error":"stream died"}"#)];
         let fx = make_bridge("dt-err-event", state, vec![]).await;
-        fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "x"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "stream died").await);
     }
 
@@ -732,11 +755,19 @@ mod tests {
         let big = "y".repeat(21000);
         let mut state = MockState::default();
         state.events = vec![
-            ts::ev("", 0, "text_chunk", &serde_json::json!({"text": big}).to_string()),
+            ts::ev(
+                "",
+                0,
+                "text_chunk",
+                &serde_json::json!({"text": big}).to_string(),
+            ),
             ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
         ];
         let fx = make_bridge("dt-long", state, vec![]).await;
-        fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "x"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "yyy").await);
         let body = hook_bodies(&fx.http).pop().unwrap();
         assert!(body.len() < 21000 + 500, "reply must be truncated");
@@ -751,7 +782,10 @@ mod tests {
             ts::ev("other", 1, "agent_end", r#"{"state":"completed"}"#),
         ];
         let fx = make_bridge("dt-foreign", state, vec![]).await;
-        fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "x"))
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         assert!(hook_bodies(&fx.http).is_empty());
     }
@@ -763,7 +797,10 @@ mod tests {
         let fx = make_bridge("dt-prompt-fail", state, vec![]).await;
         // process_prompt spawns the loop; the failure is logged, handle_event
         // itself returns Ok.
-        fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "x"))
+            .await
+            .unwrap();
         assert!(
             ts::wait_until(
                 || !ts::recorded_of(&fx.grpc, "prompt").is_empty(),
@@ -816,13 +853,19 @@ mod tests {
         state.events = done_events();
         let fx = make_bridge("dt-slash-new", state, vec![]).await;
         // /new with no prior session → creates one.
-        fx.bridge.handle_event(event(&fx.base, "m1", "/new")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/new"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "New Session").await);
         assert_eq!(ts::recorded_of(&fx.grpc, "new_session").len(), 1);
         assert!(ts::recorded_of(&fx.grpc, "abort").is_empty());
 
         // /new again → aborts the old session, creates a fresh one.
-        fx.bridge.handle_event(event(&fx.base, "m2", "/new")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m2", "/new"))
+            .await
+            .unwrap();
         assert_eq!(ts::recorded_of(&fx.grpc, "new_session").len(), 2);
         assert_eq!(ts::recorded_of(&fx.grpc, "abort").len(), 1);
         drop(fx);
@@ -831,7 +874,10 @@ mod tests {
         let mut state = MockState::default();
         state.fail_commands.insert("new_session".into());
         let fx = make_bridge("dt-slash-new-fail", state, vec![]).await;
-        fx.bridge.handle_event(event(&fx.base, "m1", "/new")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/new"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "Error").await);
     }
 
@@ -840,7 +886,10 @@ mod tests {
         let mut state = MockState::default();
         state.events = done_events();
         let fx = make_bridge("dt-slash-status", state, vec![]).await;
-        fx.bridge.handle_event(event(&fx.base, "m1", "/status")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/status"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "Model:").await);
         let body = hook_bodies(&fx.http).pop().unwrap();
         assert!(body.contains("future/k3"), "{body}");
@@ -854,7 +903,10 @@ mod tests {
         // new_session must still work for session creation; get_state failing
         // means the status body never builds.
         let fx = make_bridge("dt-status-fail", state, vec![]).await;
-        fx.bridge.handle_event(event(&fx.base, "m1", "/status")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/status"))
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         assert!(hook_bodies(&fx.http).is_empty());
     }
@@ -865,37 +917,64 @@ mod tests {
         state.events = done_events();
         let fx = make_bridge("dt-slash-misc", state, vec![]).await;
 
-        fx.bridge.handle_event(event(&fx.base, "m1", "/stop")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/stop"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "Stopped").await);
 
-        fx.bridge.handle_event(event(&fx.base, "m2", "/model future:plain")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m2", "/model future:plain"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "Model:").await);
         assert!(ts::recorded_of(&fx.grpc, "set_model")
             .iter()
             .any(|c| c.model_id == "future/plain"));
 
-        fx.bridge.handle_event(event(&fx.base, "m3", "/models")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m3", "/models"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "K3").await);
 
-        fx.bridge.handle_event(event(&fx.base, "m4", "/compact")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m4", "/compact"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "Context compacted").await);
 
-        fx.bridge.handle_event(event(&fx.base, "m5", "/effort turbo")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m5", "/effort turbo"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "Invalid").await);
-        fx.bridge.handle_event(event(&fx.base, "m6", "/effort high")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m6", "/effort high"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "Thinking").await);
 
-        fx.bridge.handle_event(event(&fx.base, "m7", "/cwd /work")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m7", "/cwd /work"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "CWD").await);
         assert!(ts::recorded_of(&fx.grpc, "set_cwd")
             .iter()
             .any(|c| c.cwd == "/work"));
 
-        fx.bridge.handle_event(event(&fx.base, "m8", "/help")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m8", "/help"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "Commands").await);
 
         // Unknown slash → forwarded to the agent.
-        fx.bridge.handle_event(event(&fx.base, "m9", "/dance")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m9", "/dance"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "ding answer").await);
         assert!(ts::recorded_of(&fx.grpc, "prompt")
             .iter()
@@ -908,15 +987,36 @@ mod tests {
         // are all silent (if-let-Ok skips the reply).
         let mut state = MockState::default();
         state.events = done_events();
-        for cmd in ["set_model", "list_models", "compact", "set_thinking_level", "set_cwd"] {
+        for cmd in [
+            "set_model",
+            "list_models",
+            "compact",
+            "set_thinking_level",
+            "set_cwd",
+        ] {
             state.fail_commands.insert(cmd.into());
         }
         let fx = make_bridge("dt-slash-fail", state, vec![]).await;
-        fx.bridge.handle_event(event(&fx.base, "m1", "/model x/y")).await.unwrap();
-        fx.bridge.handle_event(event(&fx.base, "m2", "/models")).await.unwrap();
-        fx.bridge.handle_event(event(&fx.base, "m3", "/compact")).await.unwrap();
-        fx.bridge.handle_event(event(&fx.base, "m4", "/effort low")).await.unwrap();
-        fx.bridge.handle_event(event(&fx.base, "m5", "/cwd /x")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/model x/y"))
+            .await
+            .unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m2", "/models"))
+            .await
+            .unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m3", "/compact"))
+            .await
+            .unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m4", "/effort low"))
+            .await
+            .unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m5", "/cwd /x"))
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         // Session creation itself triggered a set_model failure — tolerated.
         // None of the commands replied.
@@ -932,10 +1032,55 @@ mod tests {
             .responses
             .insert("list_models".into(), r#"{"models":[]}"#.into());
         let fx = make_bridge("dt-status-nomodels", state, vec![]).await;
-        fx.bridge.handle_event(event(&fx.base, "m1", "/status")).await.unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/status"))
+            .await
+            .unwrap();
         assert!(wait_hook(&fx.http, "Model:").await);
         let body = hook_bodies(&fx.http).pop().unwrap();
         assert!(!body.contains("Provider"), "{body}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_models_zero_context_window() {
+        // contextWindow 0 → the ctx column is omitted.
+        let mut state = MockState::default();
+        state.responses.insert(
+            "list_models".into(),
+            r#"{"models":[{"id":"m0","label":"Zero","provider":"p","supportsImages":false,"contextWindow":0}]}"#.into(),
+        );
+        let fx = make_bridge("dt-models-zero", state, vec![]).await;
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/models"))
+            .await
+            .unwrap();
+        assert!(wait_hook(&fx.http, "Zero").await);
+        let body = hook_bodies(&fx.http).pop().unwrap();
+        assert!(!body.contains("ctx"), "{body}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_loop_directly_with_long_text_and_empty_result() {
+        // Direct call (same thread) so the thread-local subscriber governs
+        // the send-log truncation arm.
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        // Long text (>300) → truncated send-log arm; empty stream_text at
+        // agent_end → no-reply false path.
+        let mut state = MockState::default();
+        state.events = vec![ts::ev("", 0, "agent_end", r#"{"state":"completed"}"#)];
+        let fx = make_bridge("dt-direct", state, vec![]).await;
+        let sid = fx.bridge.get_or_create_session("cid-direct").await.unwrap();
+        let agent = fx.bridge.agent.clone();
+        let gen = AtomicU64::new(0);
+        let long = "w".repeat(400);
+        run_prompt_loop(&fx.bridge.dingtalk, &agent, &sid, &long, &gen, None)
+            .await
+            .unwrap();
+        assert!(hook_bodies(&fx.http).is_empty(), "no text → no reply");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -971,7 +1116,10 @@ mod tests {
         // Short output unchanged.
         assert_eq!(truncate_tool_output("a\nb"), "a\nb");
         // Line-limit truncation.
-        let many_lines = (1..=10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        let many_lines = (1..=10)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let out = truncate_tool_output(&many_lines);
         assert!(out.contains("line4"));
         assert!(!out.contains("line6"));
@@ -985,5 +1133,153 @@ mod tests {
         let uni = "好".repeat(600);
         let out = truncate_tool_output(&uni);
         assert!(out.contains("truncated"));
+    }
+
+    // ─── Residual-arm chase ──────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn event_without_chatbot_id_and_fresh_timestamp() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-nobotid", state, vec![]).await;
+        let mut e = event(&fx.base, "m1", "hello");
+        e.chatbot_user_id = None; // skip the bot-self check entirely
+        e.create_time_ms = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64,
+        ); // fresh → stale-check false arm
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_hook(&fx.http, "ding answer").await);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn long_text_log_arms_with_subscriber() {
+        // current_thread: the thread-local subscriber governs log-arg
+        // evaluation (multi_thread migrates tasks off the subscribed thread).
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-longtext", state, vec![]).await;
+        let long = "z".repeat(400); // >200 recv log arm, >300 send log arm
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", &long))
+            .await
+            .unwrap();
+        assert!(wait_hook(&fx.http, "ding answer").await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_session_create_failure_replies_error() {
+        let mut state = MockState::default();
+        state.fail_commands.insert("new_session".into());
+        let fx = make_bridge("dt-sess-fail", state, vec![]).await;
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/status"))
+            .await
+            .unwrap();
+        assert!(wait_hook(&fx.http, "Error").await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_model_without_arg_is_silent() {
+        // "/model" with no arg: matched by the outer group arm, falls through
+        // the inner guarded arms to `_ => {}` — no reply.
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-model-noarg", state, vec![]).await;
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/model"))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(hook_bodies(&fx.http).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_channel_defaults_skip_set_calls() {
+        ts::ensure_crypto_provider();
+        let mut state = MockState::default();
+        state.events = done_events();
+        let (base, http) = ts::spawn_http(vec![
+            HttpRoute::json(
+                TOKEN_ROUTE,
+                200,
+                r#"{"accessToken":"dt-tok","expireIn":7200}"#,
+            ),
+            HttpRoute::json("/robot/hook", 200, "{}"),
+        ])
+        .await;
+        let (addr, grpc) = ts::spawn_mock_grpc(state).await;
+        let cfg = crate::dingtalk::config::DingtalkConfig {
+            client_id: "id".into(),
+            client_secret: "secret".into(),
+            domain: base.clone(),
+        };
+        let agent_cfg = Arc::new(AgentConfig {
+            grpc_addr: addr,
+            cwd: "/tmp".into(),
+            model: String::new(),
+            thinking_level: String::new(),
+            permission_level: String::new(),
+        });
+        let bridge = DingtalkBridge::new(agent_cfg, cfg).await.unwrap();
+        bridge
+            .handle_event(event(&base, "m1", "hello"))
+            .await
+            .unwrap();
+        assert!(wait_hook(&http, "ding answer").await);
+        assert!(ts::recorded_of(&grpc, "set_model").is_empty());
+        assert!(ts::recorded_of(&grpc, "set_thinking_level").is_empty());
+        assert!(ts::recorded_of(&grpc, "set_permission_level").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loop_event_variants_and_no_webhook_error_arms() {
+        // agent_start/ping (no-op), tool_delta (catch-all), unmappable event
+        // (parse None), then a normal completion.
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "agent_start", "{}"),
+            ts::ev("", 1, "ping", ""),
+            ts::ev("", 2, "tool_delta", r#"{"tool_id":"t","text":"x"}"#),
+            ts::ev("", 3, "session_info", "{}"),
+            ts::ev("", 4, "text_chunk", r#"{"text":"body"}"#),
+            ts::ev("", 5, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let fx = make_bridge("dt-variants", state, vec![]).await;
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "x"))
+            .await
+            .unwrap();
+        assert!(wait_hook(&fx.http, "body").await);
+
+        // agent_end error with NO webhook → skipped silently.
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"p"}"#),
+            ts::ev("", 1, "agent_end", r#"{"error":"quiet boom"}"#),
+        ];
+        let fx = make_bridge("dt-err-nohook", state, vec![]).await;
+        let mut e = event(&fx.base, "m1", "x");
+        e.session_webhook = None;
+        fx.bridge.handle_event(e).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(hook_bodies(&fx.http).is_empty());
+
+        // error event with NO webhook → also silent.
+        let mut state = MockState::default();
+        state.events = vec![ts::ev("", 0, "error", r#"{"error":"quiet"}"#)];
+        let fx = make_bridge("dt-errevt-nohook", state, vec![]).await;
+        let mut e = event(&fx.base, "m1", "x");
+        e.session_webhook = None;
+        fx.bridge.handle_event(e).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(hook_bodies(&fx.http).is_empty());
     }
 }

@@ -25,10 +25,13 @@ struct CachedToken {
 impl FeishuRestClient {
     pub fn new(api_base: &str, app_id: &str, app_secret: &str) -> Self {
         Self {
+            // unwrap_or (not unwrap_or_else) keeps this line free of an
+            // uncalled closure: the fallback client builds eagerly, which is
+            // fine on this once-per-process constructor path.
             http: crate::tls::http_client_builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
-                .unwrap_or_else(|_| crate::tls::http_client()),
+                .unwrap_or(crate::tls::http_client()),
             api_base: api_base.to_string(),
             app_id: app_id.to_string(),
             app_secret: app_secret.to_string(),
@@ -733,8 +736,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn get_token_caches_and_sends_credentials() {
-        let (base, recorded) =
-            crate::test_support::spawn_http(vec![token_ok()]).await;
+        let (base, recorded) = crate::test_support::spawn_http(vec![token_ok()]).await;
         let c = client(&base);
         let t1 = c.get_token().await.unwrap();
         let t2 = c.get_token().await.unwrap();
@@ -750,8 +752,14 @@ mod tests {
         let route = HttpRoute::sequence(
             TOKEN_ROUTE,
             vec![
-                (200, r#"{"code":0,"tenant_access_token":"tok-old","expire":61}"#),
-                (200, r#"{"code":0,"tenant_access_token":"tok-new","expire":7200}"#),
+                (
+                    200,
+                    r#"{"code":0,"tenant_access_token":"tok-old","expire":61}"#,
+                ),
+                (
+                    200,
+                    r#"{"code":0,"tenant_access_token":"tok-new","expire":7200}"#,
+                ),
             ],
         );
         let (base, recorded) = crate::test_support::spawn_http(vec![route]).await;
@@ -782,19 +790,33 @@ mod tests {
     async fn get_token_http_failure() {
         let (base, _) = crate::test_support::spawn_http(vec![]).await; // 404 {}
         let err = client(&base).get_token().await.unwrap_err();
-        assert!(err.to_string().contains("Failed to get tenant token"), "{err}");
+        assert!(
+            err.to_string().contains("Failed to get tenant token"),
+            "{err}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn send_message_and_reply_message() {
         let routes = vec![
             token_ok(),
-            HttpRoute::json("/im/v1/messages", 200, r#"{"code":0,"data":{"message_id":"om_1"}}"#),
-            HttpRoute::json("/im/v1/messages/om_x/reply", 200, r#"{"code":0,"data":{"message_id":"om_2"}}"#),
+            HttpRoute::json(
+                "/im/v1/messages",
+                200,
+                r#"{"code":0,"data":{"message_id":"om_1"}}"#,
+            ),
+            HttpRoute::json(
+                "/im/v1/messages/om_x/reply",
+                200,
+                r#"{"code":0,"data":{"message_id":"om_2"}}"#,
+            ),
         ];
         let (base, recorded) = crate::test_support::spawn_http(routes).await;
         let c = client(&base);
-        let r = c.send_message("ou_1", "open_id", "text", "{}").await.unwrap();
+        let r = c
+            .send_message("ou_1", "open_id", "text", "{}")
+            .await
+            .unwrap();
         assert_eq!(r.message_id, "om_1");
         let r = c.reply_message("om_x", "text", "{}").await.unwrap();
         assert_eq!(r.message_id, "om_2");
@@ -804,11 +826,18 @@ mod tests {
         assert_eq!(sent[0].header("authorization"), Some("Bearer tok-1"));
         // Missing message_id → empty string (no error).
         let routes = vec![
-            HttpRoute::json(TOKEN_ROUTE, 200, r#"{"code":0,"tenant_access_token":"t","expire":7200}"#),
+            HttpRoute::json(
+                TOKEN_ROUTE,
+                200,
+                r#"{"code":0,"tenant_access_token":"t","expire":7200}"#,
+            ),
             HttpRoute::json("/im/v1/messages", 200, r#"{"code":0,"data":{}}"#),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
-        let r = client(&base).send_message("ou_1", "open_id", "text", "{}").await.unwrap();
+        let r = client(&base)
+            .send_message("ou_1", "open_id", "text", "{}")
+            .await
+            .unwrap();
         assert_eq!(r.message_id, "");
     }
 
@@ -816,7 +845,11 @@ mod tests {
     async fn api_error_code_propagates() {
         let routes = vec![
             token_ok(),
-            HttpRoute::json("/im/v1/messages", 200, r#"{"code":230001,"msg":"msg too long"}"#),
+            HttpRoute::json(
+                "/im/v1/messages",
+                200,
+                r#"{"code":230001,"msg":"msg too long"}"#,
+            ),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
         let err = client(&base)
@@ -831,14 +864,25 @@ mod tests {
     async fn upload_image_and_file() {
         let routes = vec![
             token_ok(),
-            HttpRoute::json("/im/v1/images", 200, r#"{"code":0,"data":{"image_key":"img_k1"}}"#),
-            HttpRoute::json("/im/v1/files", 200, r#"{"code":0,"data":{"file_key":"file_k1"}}"#),
+            HttpRoute::json(
+                "/im/v1/images",
+                200,
+                r#"{"code":0,"data":{"image_key":"img_k1"}}"#,
+            ),
+            HttpRoute::json(
+                "/im/v1/files",
+                200,
+                r#"{"code":0,"data":{"file_key":"file_k1"}}"#,
+            ),
         ];
         let (base, recorded) = crate::test_support::spawn_http(routes).await;
         let c = client(&base);
         let key = c.upload_image(b"pngbytes", "image/png").await.unwrap();
         assert_eq!(key, "img_k1");
-        let key = c.upload_file(b"data", "stream", "report.pdf").await.unwrap();
+        let key = c
+            .upload_file(b"data", "stream", "report.pdf")
+            .await
+            .unwrap();
         assert_eq!(key, "file_k1");
         // Multipart bodies actually arrived.
         let up = crate::test_support::requests_to(&recorded, "/im/v1/images");
@@ -857,39 +901,75 @@ mod tests {
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
         let c = client(&base);
-        assert!(c.upload_image(b"x", "image/png").await.unwrap_err().to_string().contains("too big"));
-        assert!(c.upload_file(b"x", "stream", "f.bin").await.unwrap_err().to_string().contains("bad type"));
+        assert!(c
+            .upload_image(b"x", "image/png")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("too big"));
+        assert!(c
+            .upload_file(b"x", "stream", "f.bin")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("bad type"));
 
         let routes = vec![
-            HttpRoute::json(TOKEN_ROUTE, 200, r#"{"code":0,"tenant_access_token":"t","expire":7200}"#),
+            HttpRoute::json(
+                TOKEN_ROUTE,
+                200,
+                r#"{"code":0,"tenant_access_token":"t","expire":7200}"#,
+            ),
             HttpRoute::json("/im/v1/images", 200, r#"{"code":0,"data":{}}"#),
             HttpRoute::json("/im/v1/files", 200, r#"{"code":0,"data":{}}"#),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
         let c = client(&base);
-        assert!(c.upload_image(b"x", "image/png").await.unwrap_err().to_string().contains("image_key not found"));
-        assert!(c.upload_file(b"x", "stream", "f.bin").await.unwrap_err().to_string().contains("file_key not found"));
+        assert!(c
+            .upload_image(b"x", "image/png")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("image_key not found"));
+        assert!(c
+            .upload_file(b"x", "stream", "f.bin")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("file_key not found"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn download_resource_ok_and_http_error() {
         let routes = vec![
             token_ok(),
-            HttpRoute::binary("/im/v1/messages/om_1/resources/img_k", 200, b"\x89PNG".to_vec()),
+            HttpRoute::binary(
+                "/im/v1/messages/om_1/resources/img_k",
+                200,
+                b"\x89PNG".to_vec(),
+            ),
         ];
         let (base, recorded) = crate::test_support::spawn_http(routes).await;
         let c = client(&base);
         let data = c.download_resource("om_1", "img_k", "image").await.unwrap();
         assert_eq!(data, b"\x89PNG");
-        let dl = crate::test_support::requests_to(&recorded, "/im/v1/messages/om_1/resources/img_k");
+        let dl =
+            crate::test_support::requests_to(&recorded, "/im/v1/messages/om_1/resources/img_k");
         assert!(dl[0].target.contains("type=image"));
 
         let routes = vec![
-            HttpRoute::json(TOKEN_ROUTE, 200, r#"{"code":0,"tenant_access_token":"t","expire":7200}"#),
+            HttpRoute::json(
+                TOKEN_ROUTE,
+                200,
+                r#"{"code":0,"tenant_access_token":"t","expire":7200}"#,
+            ),
             HttpRoute::json("/im/v1/messages/om_1/resources/img_k", 500, "{}"),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
-        let err = client(&base).download_resource("om_1", "img_k", "image").await.unwrap_err();
+        let err = client(&base)
+            .download_resource("om_1", "img_k", "image")
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("HTTP 500"), "{err}");
     }
 
@@ -897,8 +977,16 @@ mod tests {
     async fn get_message_and_chat_info() {
         let routes = vec![
             token_ok(),
-            HttpRoute::json("/im/v1/messages/om_9", 200, r#"{"code":0,"data":{"items":[]}}"#),
-            HttpRoute::json("/im/v1/chats/oc_1", 200, r#"{"code":0,"data":{"name":"g"}}"#),
+            HttpRoute::json(
+                "/im/v1/messages/om_9",
+                200,
+                r#"{"code":0,"data":{"items":[]}}"#,
+            ),
+            HttpRoute::json(
+                "/im/v1/chats/oc_1",
+                200,
+                r#"{"code":0,"data":{"name":"g"}}"#,
+            ),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
         let c = client(&base);
@@ -912,7 +1000,11 @@ mod tests {
     async fn get_error_code_propagates() {
         let routes = vec![
             token_ok(),
-            HttpRoute::json("/im/v1/messages/om_9", 200, r#"{"code":44,"msg":"not found"}"#),
+            HttpRoute::json(
+                "/im/v1/messages/om_9",
+                200,
+                r#"{"code":44,"msg":"not found"}"#,
+            ),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
         let err = client(&base).get_message("om_9").await.unwrap_err();
@@ -924,7 +1016,11 @@ mod tests {
     async fn get_bot_info_ok_and_error() {
         let routes = vec![
             token_ok(),
-            HttpRoute::json("/bot/v3/info", 200, r#"{"code":0,"bot":{"open_id":"ou_bot","app_name":"Bot","app_id":"cli_1","avatar_url":"u"}}"#),
+            HttpRoute::json(
+                "/bot/v3/info",
+                200,
+                r#"{"code":0,"bot":{"open_id":"ou_bot","app_name":"Bot","app_id":"cli_1","avatar_url":"u"}}"#,
+            ),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
         let info = client(&base).get_bot_info().await.unwrap();
@@ -932,7 +1028,11 @@ mod tests {
         assert_eq!(info.app_name, "Bot");
 
         let routes = vec![
-            HttpRoute::json(TOKEN_ROUTE, 200, r#"{"code":0,"tenant_access_token":"t","expire":7200}"#),
+            HttpRoute::json(
+                TOKEN_ROUTE,
+                200,
+                r#"{"code":0,"tenant_access_token":"t","expire":7200}"#,
+            ),
             HttpRoute::json("/bot/v3/info", 200, r#"{"code":55,"msg":"no scope"}"#),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
@@ -944,10 +1044,26 @@ mod tests {
     async fn cardkit_full_flow() {
         let routes = vec![
             token_ok(),
-            HttpRoute::json("/cardkit/v1/cards", 200, r#"{"code":0,"data":{"card_id":"card_1"}}"#),
-            HttpRoute::json("/im/v1/messages", 200, r#"{"code":0,"data":{"message_id":"om_1"}}"#),
-            HttpRoute::json("/im/v1/messages/om_1/reply", 200, r#"{"code":0,"data":{"message_id":"om_2"}}"#),
-            HttpRoute::json("/cardkit/v1/cards/card_1/elements/stream_out/content", 200, r#"{"code":0}"#),
+            HttpRoute::json(
+                "/cardkit/v1/cards",
+                200,
+                r#"{"code":0,"data":{"card_id":"card_1"}}"#,
+            ),
+            HttpRoute::json(
+                "/im/v1/messages",
+                200,
+                r#"{"code":0,"data":{"message_id":"om_1"}}"#,
+            ),
+            HttpRoute::json(
+                "/im/v1/messages/om_1/reply",
+                200,
+                r#"{"code":0,"data":{"message_id":"om_2"}}"#,
+            ),
+            HttpRoute::json(
+                "/cardkit/v1/cards/card_1/elements/stream_out/content",
+                200,
+                r#"{"code":0}"#,
+            ),
             HttpRoute::json("/cardkit/v1/cards/card_1", 200, r#"{"code":0}"#),
             HttpRoute::json("/cardkit/v1/cards/card_1/settings", 200, ""),
         ];
@@ -956,17 +1072,23 @@ mod tests {
         let card = serde_json::json!({"schema":"2.0"});
         let cid = c.create_cardkit_card(&card).await.unwrap();
         assert_eq!(cid, "card_1");
-        let r = c.send_card_by_card_id("oc_1", "chat_id", &cid).await.unwrap();
+        let r = c
+            .send_card_by_card_id("oc_1", "chat_id", &cid)
+            .await
+            .unwrap();
         assert_eq!(r.message_id, "om_1");
         let r = c.reply_with_card_id("om_1", &cid).await.unwrap();
         assert_eq!(r.message_id, "om_2");
-        c.update_card_element(&cid, "stream_out", "hello", 1).await.unwrap();
+        c.update_card_element(&cid, "stream_out", "hello", 1)
+            .await
+            .unwrap();
         c.update_cardkit_card(&cid, &card, 2).await.unwrap();
         c.set_card_streaming_mode(&cid, false, 3).await.unwrap();
         // The card payload travels as a string under data.card_id.
         let sent = crate::test_support::requests_to(&recorded, "/im/v1/messages");
         assert!(sent[0].body_string().contains("card_1"));
-        let settings = crate::test_support::requests_to(&recorded, "/cardkit/v1/cards/card_1/settings");
+        let settings =
+            crate::test_support::requests_to(&recorded, "/cardkit/v1/cards/card_1/settings");
         assert_eq!(settings[0].method, "PATCH");
         assert!(settings[0].body_string().contains("streaming_mode"));
     }
@@ -980,18 +1102,32 @@ mod tests {
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
         let c = client(&base);
-        let err = c.create_cardkit_card(&serde_json::json!({})).await.unwrap_err();
+        let err = c
+            .create_cardkit_card(&serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("card_id not found"), "{err}");
         let err = c.set_card_streaming_mode("c1", true, 1).await.unwrap_err();
         assert!(err.to_string().contains("HTTP 500"), "{err}");
 
         // PUT element update API error code arm.
         let routes = vec![
-            HttpRoute::json(TOKEN_ROUTE, 200, r#"{"code":0,"tenant_access_token":"t","expire":7200}"#),
-            HttpRoute::json("/cardkit/v1/cards/c1/elements/e/content", 200, r#"{"code":300302,"msg":"update_multi"}"#),
+            HttpRoute::json(
+                TOKEN_ROUTE,
+                200,
+                r#"{"code":0,"tenant_access_token":"t","expire":7200}"#,
+            ),
+            HttpRoute::json(
+                "/cardkit/v1/cards/c1/elements/e/content",
+                200,
+                r#"{"code":300302,"msg":"update_multi"}"#,
+            ),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
-        let err = client(&base).update_card_element("c1", "e", "x", 1).await.unwrap_err();
+        let err = client(&base)
+            .update_card_element("c1", "e", "x", 1)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("300302"), "{err}");
     }
 
@@ -999,9 +1135,16 @@ mod tests {
     async fn get_user_info_parses_and_defaults() {
         let routes = vec![
             token_ok(),
-            HttpRoute::json("/contact/v3/users/ou_1", 200,
-                r#"{"code":0,"data":{"user":{"name":"Alice","avatar":{"avatar_origin":"http://a"}}}}"#),
-            HttpRoute::json("/contact/v3/users/ou_2", 200, r#"{"code":0,"data":{"user":{}}}"#),
+            HttpRoute::json(
+                "/contact/v3/users/ou_1",
+                200,
+                r#"{"code":0,"data":{"user":{"name":"Alice","avatar":{"avatar_origin":"http://a"}}}}"#,
+            ),
+            HttpRoute::json(
+                "/contact/v3/users/ou_2",
+                200,
+                r#"{"code":0,"data":{"user":{}}}"#,
+            ),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
         let c = client(&base);
@@ -1017,7 +1160,11 @@ mod tests {
     async fn reactions_add_and_remove() {
         let routes = vec![
             token_ok(),
-            HttpRoute::json("/im/v1/messages/om_1/reactions", 200, r#"{"code":0,"data":{"reaction_id":"rid_1"}}"#),
+            HttpRoute::json(
+                "/im/v1/messages/om_1/reactions",
+                200,
+                r#"{"code":0,"data":{"reaction_id":"rid_1"}}"#,
+            ),
             HttpRoute::json("/im/v1/messages/om_1/reactions/rid_1", 200, r#"{"code":0}"#),
         ];
         let (base, recorded) = crate::test_support::spawn_http(routes).await;
@@ -1025,7 +1172,8 @@ mod tests {
         let rid = c.react_to_message("om_1", "Typing").await.unwrap();
         assert_eq!(rid, "rid_1");
         c.remove_reaction("om_1", "rid_1").await.unwrap();
-        let del = crate::test_support::requests_to(&recorded, "/im/v1/messages/om_1/reactions/rid_1");
+        let del =
+            crate::test_support::requests_to(&recorded, "/im/v1/messages/om_1/reactions/rid_1");
         assert_eq!(del[0].method, "DELETE");
     }
 
@@ -1033,8 +1181,16 @@ mod tests {
     async fn reaction_error_arms() {
         let routes = vec![
             token_ok(),
-            HttpRoute::json("/im/v1/messages/om_1/reactions", 200, r#"{"code":0,"data":{}}"#),
-            HttpRoute::json("/im/v1/messages/om_1/reactions/rid_1", 200, r#"{"code":7,"msg":"gone"}"#),
+            HttpRoute::json(
+                "/im/v1/messages/om_1/reactions",
+                200,
+                r#"{"code":0,"data":{}}"#,
+            ),
+            HttpRoute::json(
+                "/im/v1/messages/om_1/reactions/rid_1",
+                200,
+                r#"{"code":7,"msg":"gone"}"#,
+            ),
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
         let c = client(&base);

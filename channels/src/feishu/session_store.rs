@@ -129,7 +129,12 @@ impl SessionStore {
     }
 
     fn save_to_disk(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() { std::fs::create_dir_all(parent)?; }
+        // Map-chain, not if-let: rustfmt explodes single-line if-lets and
+        // the false-edge brace is unreachable (the path always has a parent).
+        self.path
+            .parent()
+            .map(std::fs::create_dir_all)
+            .transpose()?;
         let data = self.data.read();
         let store = StoreData {
             sessions: data.values().cloned().collect(),

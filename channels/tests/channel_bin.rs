@@ -125,3 +125,36 @@ fn enabled_channel_with_dead_agent_sigint_exits_cleanly() {
             "feishu": {"enabled": true, "app_id": "x", "app_secret": "y"}}"#,
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn dingtalk_enabled_with_dead_agent_sigint_exits_cleanly() {
+    // Same for the DingTalk spawn arm.
+    sigint_shutdown_case(
+        "dt-dead-agent",
+        r#"{"agent": {"grpc_addr": "http://127.0.0.1:1"},
+            "dingtalk": {"enabled": true, "client_id": "x", "client_secret": "y"}}"#,
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn both_channels_enabled_sigint_exits_cleanly() {
+    sigint_shutdown_case(
+        "both-dead-agent",
+        r#"{"agent": {"grpc_addr": "http://127.0.0.1:1"},
+            "feishu": {"enabled": true, "app_id": "x", "app_secret": "y"},
+            "dingtalk": {"enabled": true, "client_id": "x", "client_secret": "y"}}"#,
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn disabled_channels_sigint_exits_cleanly() {
+    // Channels present but disabled → the enabled-check false paths.
+    sigint_shutdown_case(
+        "disabled-channels",
+        r#"{"feishu": {"enabled": false, "app_id": "x", "app_secret": "y"},
+            "dingtalk": {"enabled": false, "client_id": "x", "client_secret": "y"}}"#,
+    );
+}

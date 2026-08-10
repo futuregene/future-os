@@ -50,15 +50,14 @@ pub(super) async fn run_prompt_loop(
                 ImageData::Url(_) => prompt_text.push_str("\n[Image URL attached]"),
             }
         }
-        info!(
-            "[SEND] session={} text=\"{}\"",
-            session_id,
-            if prompt_text.len() > 300 {
-                format!("{}...", truncate_at_char(&prompt_text, 300))
-            } else {
-                prompt_text.clone()
-            }
-        );
+        // Hoisted out of the info! args (macro args only evaluate with a
+        // subscriber; this runs regardless).
+        let send_preview = if prompt_text.len() > 300 {
+            format!("{}...", truncate_at_char(&prompt_text, 300))
+        } else {
+            prompt_text.clone()
+        };
+        info!("[SEND] session={} text=\"{}\"", session_id, send_preview);
         let expected_run_id = client
             .prompt_superseding(session_id, &prompt_text, images.to_vec())
             .await?;
@@ -455,6 +454,9 @@ pub(super) fn truncate_at_char(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    // MockState scaffolding mutates Default::default() instances per-test by
+    // design; field-reassign is the readable form for a 15-field mock.
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
 
     // ─── truncate_at_char ────────────────────────────────────────────────────
@@ -507,20 +509,24 @@ mod tests {
     #[test]
     fn stream_text_separator_between_thinking_and_content() {
         // Simulates the pattern used in run_prompt_loop:
-        // thinking → "---" separator → content
-        let mut stream_text = String::new();
-        stream_text.push_str("💭 **Thinking...**\n\nSome thinking here");
-        let last_was_content = false;
-
-        // Simulate TextChunk after thinking
-        if !last_was_content && !stream_text.is_empty() {
-            stream_text.push_str("\n\n---\n\n");
+        // thinking → "---" separator → content. Shared fn so both edges of
+        // the condition execute (false edge: already-content case).
+        fn maybe_separator(s: &mut String, last_was_content: bool) {
+            if !last_was_content && !s.is_empty() {
+                s.push_str("\n\n---\n\n");
+            }
         }
+        let mut stream_text = String::from("💭 **Thinking...**\n\nSome thinking here");
+        maybe_separator(&mut stream_text, false);
         stream_text.push_str("Actual answer");
 
         assert!(stream_text.contains("💭 **Thinking...**"));
         assert!(stream_text.contains("\n\n---\n\n"));
         assert!(stream_text.ends_with("Actual answer"));
+
+        let mut already_content = String::from("some answer");
+        maybe_separator(&mut already_content, true);
+        assert_eq!(already_content, "some answer");
     }
 
     #[test]
@@ -580,13 +586,33 @@ mod tests {
                 200,
                 r#"{"code":0,"tenant_access_token":"tok","expire":7200}"#,
             ),
-            HttpRoute::json("/cardkit/v1/cards", 200, r#"{"code":0,"data":{"card_id":"card_1"}}"#),
-            HttpRoute::json("/im/v1/messages/om_user/reply", 200, r#"{"code":0,"data":{"message_id":"om_reply"}}"#),
-            HttpRoute::json("/cardkit/v1/cards/card_1/elements/stream_out/content", 200, r#"{"code":0}"#),
+            HttpRoute::json(
+                "/cardkit/v1/cards",
+                200,
+                r#"{"code":0,"data":{"card_id":"card_1"}}"#,
+            ),
+            HttpRoute::json(
+                "/im/v1/messages/om_user/reply",
+                200,
+                r#"{"code":0,"data":{"message_id":"om_reply"}}"#,
+            ),
+            HttpRoute::json(
+                "/cardkit/v1/cards/card_1/elements/stream_out/content",
+                200,
+                r#"{"code":0}"#,
+            ),
             HttpRoute::json("/cardkit/v1/cards/card_1", 200, r#"{"code":0}"#),
             HttpRoute::json("/cardkit/v1/cards/card_1/settings", 200, ""),
-            HttpRoute::json("/im/v1/messages/om_user/reactions", 200, r#"{"code":0,"data":{"reaction_id":"rid_1"}}"#),
-            HttpRoute::json("/im/v1/messages/om_user/reactions/rid_1", 200, r#"{"code":0}"#),
+            HttpRoute::json(
+                "/im/v1/messages/om_user/reactions",
+                200,
+                r#"{"code":0,"data":{"reaction_id":"rid_1"}}"#,
+            ),
+            HttpRoute::json(
+                "/im/v1/messages/om_user/reactions/rid_1",
+                200,
+                r#"{"code":0}"#,
+            ),
         ]
     }
 
@@ -696,7 +722,12 @@ mod tests {
             ts::ev("", 0, "thinking_start", "{}"),
             ts::ev("", 1, "thinking_delta", r#"{"text":"pondering"}"#),
             ts::ev("", 2, "thinking_end", "{}"),
-            ts::ev("", 3, "tool_start", r#"{"tool_id":"t1","tool_name":"shell","tool_args":"ls -la"}"#),
+            ts::ev(
+                "",
+                3,
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"shell","tool_args":"ls -la"}"#,
+            ),
             ts::ev("", 4, "tool_delta", r#"{"tool_id":"t1","text":"partial"}"#),
             ts::ev("", 5, "tool_end", r#"{"tool_id":"t1","text":"file.txt"}"#),
             // ToolEnd without a matching ToolStart → falls back to tool_id.
@@ -742,7 +773,10 @@ mod tests {
         state.events = events;
         let (env, _) = setup_with(state, routes).await;
         drive(&env, true, None).await.unwrap();
-        let updates = bodies(&env.http, "/cardkit/v1/cards/card_1/elements/stream_out/content");
+        let updates = bodies(
+            &env.http,
+            "/cardkit/v1/cards/card_1/elements/stream_out/content",
+        );
         assert!(
             updates.len() >= 2,
             "mid-stream throttled updates + final flush expected: {updates:?}"
@@ -753,7 +787,12 @@ mod tests {
     async fn approval_flow_finalizes_stream_and_sends_card() {
         let events = vec![
             ts::ev("", 0, "text_chunk", r#"{"text":"working"}"#),
-            ts::ev("", 1, "approval_request", r#"{"approval_request_id":"req_1","tool_name":"shell","risk_level":"high","title":"Run command","summary":"rm -rf","requested_action":"ls"}"#),
+            ts::ev(
+                "",
+                1,
+                "approval_request",
+                r#"{"approval_request_id":"req_1","tool_name":"shell","risk_level":"high","title":"Run command","summary":"rm -rf","requested_action":"ls"}"#,
+            ),
             ts::ev("", 2, "agent_end", r#"{"state":"completed"}"#),
         ];
         let (env, _) = setup(events).await;
@@ -783,7 +822,12 @@ mod tests {
         ));
         let events = vec![
             ts::ev("", 0, "text_chunk", r#"{"text":"working"}"#),
-            ts::ev("", 1, "approval_request", r#"{"approval_request_id":"req_2","tool_name":"shell","risk_level":"low","title":"T","summary":"S","requested_action":{"cmd":"ls"}}"#),
+            ts::ev(
+                "",
+                1,
+                "approval_request",
+                r#"{"approval_request_id":"req_2","tool_name":"shell","risk_level":"low","title":"T","summary":"S","requested_action":{"cmd":"ls"}}"#,
+            ),
             ts::ev("", 2, "agent_end", r#"{"state":"completed"}"#),
         ];
         let mut state = MockState::default();
@@ -793,7 +837,9 @@ mod tests {
         // Fallback: a text reply mentioning the approval + TUI commands.
         let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
         assert!(
-            replies.iter().any(|b| b.contains("Approval") && b.contains("req_2")),
+            replies
+                .iter()
+                .any(|b| b.contains("Approval") && b.contains("req_2")),
             "fallback text reply expected: {replies:?}"
         );
     }
@@ -825,7 +871,9 @@ mod tests {
             drive(&env, true, None).await.unwrap();
             let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
             assert!(
-                !replies.iter().any(|b| b.contains("error") || b.contains("Error")),
+                !replies
+                    .iter()
+                    .any(|b| b.contains("error") || b.contains("Error")),
                 "no error card for {data}: {replies:?}"
             );
         }
@@ -833,9 +881,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn error_event_sends_error_card() {
-        let events = vec![
-            ts::ev("", 0, "error", r#"{"error":"transport blew up"}"#),
-        ];
+        let events = vec![ts::ev("", 0, "error", r#"{"error":"transport blew up"}"#)];
         let (env, _) = setup(events).await;
         drive(&env, true, Some("rid_1".into())).await.unwrap();
         let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
@@ -843,6 +889,18 @@ mod tests {
         // ACK swapped out even on error.
         let deletes = ts::requests_to(&env.http, "/im/v1/messages/om_user/reactions/rid_1");
         assert_eq!(deletes.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn error_event_without_ack_reaction() {
+        // ack_reaction_id None → the removal if-let false path.
+        let events = vec![ts::ev("", 0, "error", r#"{"error":"boom"}"#)];
+        let (env, _) = setup(events).await;
+        drive(&env, true, None).await.unwrap();
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(replies.iter().any(|b| b.contains("boom")));
+        let deletes = ts::requests_to(&env.http, "/im/v1/messages/om_user/reactions/rid_1");
+        assert!(deletes.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -886,8 +944,10 @@ mod tests {
         let (r, _) = tokio::join!(drive, bump);
         r.unwrap();
         // Stopped before AgentEnd → no DONE reaction, no finalize.
+        // (join instead of .any(): the closure would never run when the
+        // request log is empty, leaving an uncovered region.)
         let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
-        assert!(!reactions.iter().any(|b| b.contains("DONE")));
+        assert!(!reactions.join("\n").contains("DONE"));
         let settings = ts::requests_to(&env.http, "/cardkit/v1/cards/card_1/settings");
         assert!(settings.is_empty());
     }
@@ -903,7 +963,7 @@ mod tests {
         // Nothing streamed: no card, no reply, no DONE.
         assert!(bodies(&env.http, "/cardkit/v1/cards").is_empty());
         let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
-        assert!(replies.is_empty() || !replies.iter().any(|b| b.contains("alien")));
+        assert!(!replies.join("\n").contains("alien"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -987,8 +1047,15 @@ mod tests {
         assert_eq!(prompts[0].images.len(), 3);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "current_thread")]
     async fn long_prompt_text_truncated_in_log_only() {
+        // current_thread: info! args only evaluate under the thread-local
+        // subscriber.
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
         let events = vec![ts::ev("", 0, "agent_end", r#"{"state":"completed"}"#)];
         let (env, grpc) = setup(events).await;
         let long_text = "x".repeat(400);
@@ -1010,5 +1077,211 @@ mod tests {
         .unwrap();
         let prompts = ts::recorded_of(&grpc, "prompt");
         assert_eq!(prompts[0].message.len(), 400, "full text goes to the agent");
+    }
+
+    // ─── Residual-arm chase ──────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn thinking_after_text_adds_separator() {
+        // ThinkingStart with existing stream_text pushes a blank line first.
+        let events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"answer part"}"#),
+            ts::ev("", 1, "thinking_start", "{}"),
+            ts::ev("", 2, "thinking_delta", r#"{"text":"afterthought"}"#),
+            ts::ev("", 3, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup(events).await;
+        drive(&env, true, None).await.unwrap();
+        let finals = bodies(&env.http, "/cardkit/v1/cards/card_1");
+        let last = finals.last().unwrap();
+        assert!(last.contains("answer part"), "{last}");
+        assert!(last.contains("afterthought"), "{last}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn card_reply_failure_only_warns() {
+        // Card create succeeds but replying with the card reference fails.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/im/v1/messages/om_user/reply");
+        routes.push(HttpRoute::json(
+            "/im/v1/messages/om_user/reply",
+            200,
+            r#"{"code":61,"msg":"reply quota"}"#,
+        ));
+        // Thinking flow first (ThinkingDelta create site)…
+        let events = vec![
+            ts::ev("", 0, "thinking_start", "{}"),
+            ts::ev("", 1, "thinking_delta", r#"{"text":"t"}"#),
+            ts::ev("", 2, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let mut state = MockState::default();
+        state.events = events;
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        // The loop completed despite the reply failure (agent_end reached:
+        // DONE reaction attempted).
+        let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
+        assert!(reactions.iter().any(|b| b.contains("DONE")));
+
+        // …and the TextChunk create site.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/im/v1/messages/om_user/reply");
+        routes.push(HttpRoute::json(
+            "/im/v1/messages/om_user/reply",
+            200,
+            r#"{"code":61,"msg":"reply quota"}"#,
+        ));
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"x"}"#),
+            ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
+        assert!(reactions.iter().any(|b| b.contains("DONE")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn card_create_failure_only_warns() {
+        // Streaming-card create fails at both sites (thinking + text);
+        // tool/approval/finalize proceed with no card id.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/cardkit/v1/cards");
+        routes.push(HttpRoute::json(
+            "/cardkit/v1/cards",
+            200,
+            r#"{"code":42,"msg":"no cards today"}"#,
+        ));
+        let events = vec![
+            ts::ev("", 0, "thinking_start", "{}"),
+            ts::ev("", 1, "thinking_delta", r#"{"text":"t"}"#),
+            ts::ev("", 2, "thinking_end", "{}"),
+            ts::ev(
+                "",
+                3,
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"shell"}"#,
+            ),
+            ts::ev("", 4, "tool_end", r#"{"tool_id":"t1"}"#),
+            ts::ev(
+                "",
+                5,
+                "approval_request",
+                r#"{"approval_request_id":"req_9","tool_name":"shell","risk_level":"low","title":"T","summary":"S","requested_action":""}"#,
+            ),
+            ts::ev("", 6, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let mut state = MockState::default();
+        state.events = events;
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        // Approval fallback replied in text; agent_end replied complete card.
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(
+            replies.iter().any(|b| b.contains("Approval")),
+            "{replies:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn card_create_failure_text_site() {
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/cardkit/v1/cards");
+        routes.push(HttpRoute::json(
+            "/cardkit/v1/cards",
+            200,
+            r#"{"code":42,"msg":"no cards"}"#,
+        ));
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"x"}"#),
+            ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(replies.iter().any(|b| b.contains("x")), "{replies:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_and_approval_flush_arms_with_paced_stream() {
+        // 300ms between events: every flush check sees elapsed ≥ 250ms.
+        let long_args = "a".repeat(300);
+        let long_result = "r".repeat(600);
+        let mut state = MockState::default();
+        state.stream_event_delay = Some(Duration::from_millis(300));
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"start"}"#),
+            // Long args (>200) → truncation arm; mid-stream flush arm.
+            ts::ev(
+                "",
+                1,
+                "tool_start",
+                &serde_json::json!({"tool_id":"t1","tool_name":"shell","tool_args": long_args})
+                    .to_string(),
+            ),
+            // Long result (>500) → truncation arm; flush arm.
+            ts::ev(
+                "",
+                2,
+                "tool_end",
+                &serde_json::json!({"tool_id":"t1","text": long_result}).to_string(),
+            ),
+            // No args / no result → empty-display arms.
+            ts::ev(
+                "",
+                3,
+                "tool_start",
+                r#"{"tool_id":"t2","tool_name":"read"}"#,
+            ),
+            ts::ev("", 4, "tool_end", r#"{"tool_id":"t2"}"#),
+            // needs_flush is false right after a flush → approval flush-skip arm.
+            ts::ev(
+                "",
+                5,
+                "approval_request",
+                r#"{"approval_request_id":"req_1","tool_name":"shell","risk_level":"low","title":"T","summary":"S","requested_action":""}"#,
+            ),
+            ts::ev("", 6, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup_with(state, feishu_routes()).await;
+        drive(&env, true, None).await.unwrap();
+        let updates = bodies(
+            &env.http,
+            "/cardkit/v1/cards/card_1/elements/stream_out/content",
+        );
+        assert!(updates.len() >= 3, "paced flushes: {updates:?}");
+        let all = updates.join("\n");
+        assert!(all.contains("Running tool"), "{all}");
+        // Approval flow ran (2 creates total).
+        assert_eq!(bodies(&env.http, "/cardkit/v1/cards").len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finalize_failures_only_warn() {
+        // set_card_streaming_mode + update_cardkit_card fail at agent_end.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/cardkit/v1/cards/card_1/settings");
+        routes.retain(|r| r.path != "/cardkit/v1/cards/card_1");
+        routes.push(HttpRoute::json(
+            "/cardkit/v1/cards/card_1/settings",
+            500,
+            "nope",
+        ));
+        routes.push(HttpRoute::json(
+            "/cardkit/v1/cards/card_1",
+            200,
+            r#"{"code":88,"msg":"bad card"}"#,
+        ));
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"done text"}"#),
+            ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
+        assert!(reactions.iter().any(|b| b.contains("DONE")));
     }
 }

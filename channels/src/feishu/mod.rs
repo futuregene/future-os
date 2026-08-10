@@ -127,10 +127,14 @@ mod tests {
         let shutdown = Arc::new(tokio::sync::Notify::new());
         // No HTTP server for bot info / no gRPC — Bridge::new errors (gRPC
         // connect fails first) and run() propagates it.
-        let err = FeishuChannel::run(agent_cfg("127.0.0.1:1"), ch_cfg("http://127.0.0.1:1"), shutdown)
-            .await
-            .err()
-            .unwrap();
+        let err = FeishuChannel::run(
+            agent_cfg("127.0.0.1:1"),
+            ch_cfg("http://127.0.0.1:1"),
+            shutdown,
+        )
+        .await
+        .err()
+        .unwrap();
         assert!(!err.to_string().is_empty());
     }
 
@@ -195,6 +199,97 @@ mod tests {
         let result = tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("shutdown cancels the backoff sleep")
+            .expect("task join");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_dispatches_events_to_the_bridge() {
+        ts::ensure_crypto_provider();
+        // One real event frame through the WS: the default policy (allowlist,
+        // empty) denies the DM; the deny reply hits an unregistered route
+        // (404 → code -1) so handle_event errors → the error-log arm runs.
+        use prost::Message as _;
+        let event_json = serde_json::json!({
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_stranger"}},
+                "message": {
+                    "message_id": "om_ev", "chat_id": "oc_1", "chat_type": "p2p",
+                    "message_type": "text", "content": "{\"text\":\"hi\"}"
+                }
+            }
+        })
+        .to_string();
+        let frame = super::feishu_ws::feishu_pb::WsFrame {
+            seq_id: 1,
+            log_id: 2,
+            service: 0,
+            method: 0,
+            headers: vec![super::feishu_ws::feishu_pb::Header {
+                key: "type".into(),
+                value: "event".into(),
+            }],
+            payload: event_json.into_bytes(),
+            payload_encoding: String::new(),
+            payload_type: String::new(),
+            log_id_new: String::new(),
+        };
+        let mut buf = Vec::new();
+        frame.encode(&mut buf).unwrap();
+        // A stale event too: handle_event returns Ok → the handler's
+        // if-let-Err false path.
+        let old_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            - 120_000;
+        let stale_json = serde_json::json!({
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_1"}},
+                "message": {
+                    "message_id": "om_stale", "chat_id": "oc_1", "chat_type": "p2p",
+                    "message_type": "text", "content": "{\"text\":\"old\"}",
+                    "create_time": old_ms.to_string()
+                }
+            }
+        })
+        .to_string();
+        let stale_frame = super::feishu_ws::feishu_pb::WsFrame {
+            seq_id: 2,
+            log_id: 3,
+            service: 0,
+            method: 0,
+            headers: vec![super::feishu_ws::feishu_pb::Header {
+                key: "type".into(),
+                value: "event".into(),
+            }],
+            payload: stale_json.into_bytes(),
+            payload_encoding: String::new(),
+            payload_type: String::new(),
+            log_id_new: String::new(),
+        };
+        let mut buf2 = Vec::new();
+        stale_frame.encode(&mut buf2).unwrap();
+        let (ws_url, _) = ts::spawn_ws(vec![
+            WsAction::SendBinary(buf),
+            WsAction::SendBinary(buf2),
+            WsAction::Delay(Duration::from_millis(400)),
+            WsAction::SendClose,
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(http_routes(&ws_url)).await;
+        let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let sd = shutdown.clone();
+        let handle = tokio::spawn(FeishuChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
+        // Let the event flow through, then shut down.
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        shutdown.notify_waiters();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("run must return after shutdown")
             .expect("task join");
         assert!(result.is_ok());
     }

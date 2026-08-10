@@ -96,7 +96,7 @@ fn default_grpc_addr() -> String {
 }
 fn default_cwd() -> String {
     dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .unwrap_or(PathBuf::from("/tmp"))
         .to_string_lossy()
         .into_owned()
 }
@@ -145,7 +145,10 @@ impl ChannelConfig {
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let config = Self::default();
-                if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+                // (map-chain, not if-let: rustfmt explodes single-line
+                // if-lets and the false-edge brace is unreachable — the
+                // config path always has a parent directory.)
+                path.parent().map(std::fs::create_dir_all).transpose()?;
                 std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
                 anyhow::bail!(
                     "Default config written to {}. Edit it and restart.",
@@ -199,7 +202,7 @@ impl Default for FeishuChannelConfig {
 /// (cmd/PowerShell set no `HOME`), silently writing the config into a
 /// `~` folder next to the working directory.
 fn home_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
+    dirs::home_dir().unwrap_or(PathBuf::from("~"))
 }
 
 #[cfg(test)]
@@ -374,7 +377,11 @@ mod tests {
             "unexpected error: {err}"
         );
         // The default file was actually written to the isolated home.
-        let path = home.path.join(".future").join("channels").join("config.json");
+        let path = home
+            .path
+            .join(".future")
+            .join("channels")
+            .join("config.json");
         assert!(path.exists(), "default config must be written");
         let written = std::fs::read_to_string(path).unwrap();
         let parsed: ChannelConfig = serde_json::from_str(&written).unwrap();

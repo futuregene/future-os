@@ -69,10 +69,7 @@ mod tests {
     fn ws_connector_is_rustls() {
         ensure_provider();
         let connector = ws_connector();
-        assert!(matches!(
-            connector,
-            tokio_tungstenite::Connector::Rustls(_)
-        ));
+        assert!(matches!(connector, tokio_tungstenite::Connector::Rustls(_)));
     }
 
     #[test]
