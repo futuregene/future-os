@@ -147,10 +147,10 @@ mod tests {
 
     type ServerWs = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
 
-    /// Read frames until the client's Close frame arrives (returns true) or
-    /// the peer goes away (false). Shared so the stream-end exit is covered
-    /// once by `peer_drop_without_close_ends_reader` instead of needing a
-    /// drop-early variant per server.
+    /// Read frames until the client's Close frame arrives (answers it and
+    /// returns true) or the peer goes away (false). Shared so the stream-end
+    /// exit is covered once by `peer_drop_without_close_ends_reader` instead
+    /// of needing a drop-early variant per server.
     async fn next_close_frame(ws: &mut ServerWs) -> bool {
         while let Some(frame) = ws.next().await {
             if matches!(frame, Ok(Message::Close(_))) {
@@ -158,6 +158,13 @@ mod tests {
             }
         }
         false
+    }
+
+    /// `next_close_frame` + an immediate Close reply.
+    async fn answer_close_frame(ws: &mut ServerWs) {
+        if next_close_frame(ws).await {
+            let _ = ws.send(Message::Close(None)).await;
+        }
     }
 
     /// Extract the text of a Message event (panic arm covered below).
@@ -261,9 +268,7 @@ mod tests {
                 ws
             });
             let mut ws = tickler.await.unwrap();
-            if next_close_frame(&mut ws).await {
-                let _ = ws.send(Message::Close(None)).await;
-            }
+            answer_close_frame(&mut ws).await;
             // Bounded hold: keeps the socket through the client assertions,
             // then closes so this task (and its closing lines) complete.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -317,7 +322,10 @@ mod tests {
             .await
             .expect("close returns");
         drop(transport);
-        crate::test_env::wait_for(|| server.is_finished()).await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("flood task finishes")
+            .unwrap();
     }
 
     /// Server-initiated close and abrupt TCP drop both notify subscribers.

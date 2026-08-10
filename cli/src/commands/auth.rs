@@ -600,6 +600,23 @@ mod tests {
         assert!(!err.is_empty());
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_device_code_bad_shape_errors() {
+        // 200 with a type-incompatible body → the post() deserialize arm.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/oauth/device/code",
+            200,
+            "{\"device_code\": 42}",
+        )])
+        .await;
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let (code, _, stderr) = run(&["auth", "login", "--url", &base]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("Network error"), "{stderr}");
+    }
+
     #[tokio::test]
     async fn login_with_invalid_auth_file_propagates_load_error() {
         let _guard = crate::test_env::lock_env().await;

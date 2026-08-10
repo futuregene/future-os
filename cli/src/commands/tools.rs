@@ -1506,18 +1506,15 @@ async fn tools_call(args: &[String], out: &Output) -> Result<(), String> {
         int_min("max_tokens", 1, out)?;
 
         // Normalize file_type to lowercase
-        match tool_args.get("file_type") {
-            Some(Value::String(ft)) => {
-                let ft_lower = ft.to_lowercase();
-                if ft_lower != "pdf" && ft_lower != "docx" {
-                    out.log_err(&format!(
-                        "Error: --file_type must be \"pdf\" or \"docx\", got: \"{ft}\""
-                    ));
-                    return Err(crate::HANDLED_EXIT.to_string());
-                }
-                tool_args.insert("file_type".to_string(), Value::String(ft_lower));
+        if let Some(Value::String(ft)) = tool_args.get("file_type") {
+            let ft_lower = ft.to_lowercase();
+            if ft_lower != "pdf" && ft_lower != "docx" {
+                out.log_err(&format!(
+                    "Error: --file_type must be \"pdf\" or \"docx\", got: \"{ft}\""
+                ));
+                return Err(crate::HANDLED_EXIT.to_string());
             }
-            _ => {}
+            tool_args.insert("file_type".to_string(), Value::String(ft_lower));
         }
     }
 
@@ -2419,6 +2416,59 @@ mod tests {
         .await;
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(!stderr.contains("must be an integer between"), "{stderr}");
+
+        // int_min invalid + valid arms.
+        let (out, cap) = Output::memory();
+        let _ = tools(
+            "call",
+            &[
+                "search_paper".to_string(),
+                "--queries".to_string(),
+                "[\"q\"]".to_string(),
+                "--max_k".to_string(),
+                "0".to_string(),
+            ],
+            &out,
+        )
+        .await;
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("--max_k must be a positive integer"),
+            "{stderr}"
+        );
+
+        let (out, cap) = Output::memory();
+        let _ = tools(
+            "call",
+            &[
+                "search_paper".to_string(),
+                "--queries".to_string(),
+                "[\"q\"]".to_string(),
+                "--max_k".to_string(),
+                "5".to_string(),
+            ],
+            &out,
+        )
+        .await;
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(!stderr.contains("must be a positive integer"), "{stderr}");
+
+        // file_type normalization runs for valid string values.
+        let (out, cap) = Output::memory();
+        let _ = tools(
+            "call",
+            &[
+                "parse_doc".to_string(),
+                "--input".to_string(),
+                "f.pdf".to_string(),
+                "--file_type".to_string(),
+                "PDF".to_string(),
+            ],
+            &out,
+        )
+        .await;
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(!stderr.contains("file_type must"), "{stderr}");
 
         // Non-string file_type is ignored by the normalization.
         let (out, cap) = Output::memory();

@@ -1930,6 +1930,37 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn type_and_press_missing_element_timeout() {
+        // The element check never finds the element → wait_for_actionable
+        // times out and the `?` propagates.
+        let mock = MockCdp::start().await;
+        mock.state.lock().unwrap().element_check = json!({"exists": false});
+        let mut s = session_over(&mock);
+        let err = s
+            .r#type(
+                &target("#ghost"),
+                "x",
+                TypeOptions {
+                    clear: None,
+                    submit: None,
+                    timeout_ms: Some(200),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("Element not found"), "{err}");
+
+        let mock = MockCdp::start().await;
+        mock.state.lock().unwrap().element_check = json!({"exists": false});
+        let mut s = session_over(&mock);
+        let err = s
+            .press("Tab", Some(&target("#ghost")), PressOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("Element not found"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn press_key_dispatch_failure_propagates() {
         let mock = MockCdp::start().await;
         mock.state
@@ -1940,6 +1971,20 @@ mod tests {
         let mut s = session_over(&mock);
         let err = s
             .press("Tab", None, PressOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+
+        // Enter dispatches two events (rawKeyDown + char); fail the second.
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_on_call
+            .insert(("Input.dispatchKeyEvent".to_string(), 1));
+        let mut s = session_over(&mock);
+        let err = s
+            .press("Enter", None, PressOptions::default())
             .await
             .unwrap_err();
         assert!(err.contains("mock failure"), "{err}");

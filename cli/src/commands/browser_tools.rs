@@ -369,7 +369,8 @@ async fn create_session(
                         fresh.connection.protocol() == "cdp"
                             && fresh.connection.browser_kind() == "chromium"
                     });
-                    if let Some(mut updated) = refinable {
+                    if refinable.is_some() {
+                        let mut updated = refinable.expect("checked above");
                         updated.connection = BrowserConnectionConfig::Cdp {
                             browser_kind: browser_kind.clone(),
                             endpoint: updated.connection.endpoint().to_string(),

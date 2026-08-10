@@ -128,9 +128,8 @@ async fn list_skills(out: &Output) {
     if let Ok(mut entries) = entries {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if let Some(ver) =
-                read_skill_md_version(&skills_dir().join(&name).join("SKILL.md")).await
-            {
+            let ver = read_skill_md_version(&skills_dir().join(&name).join("SKILL.md")).await;
+            if let Some(ver) = ver {
                 installed.insert(name, ver);
             }
         }
