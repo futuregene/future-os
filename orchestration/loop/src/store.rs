@@ -537,6 +537,10 @@ impl Store {
                         lease = Some((agent, exp));
                     }
                     "todo_released" => lease = None,
+                    // Mirror replay (apply): an expiry record clears the
+                    // claim too, so a steal/expiry is honored by the atomic
+                    // claim path exactly like by projection replay.
+                    "todo_expired" => lease = None,
                     _ => {}
                 }
             }
