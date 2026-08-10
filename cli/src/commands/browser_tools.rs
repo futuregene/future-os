@@ -369,8 +369,7 @@ async fn create_session(
                         fresh.connection.protocol() == "cdp"
                             && fresh.connection.browser_kind() == "chromium"
                     });
-                    if refinable.is_some() {
-                        let mut updated = refinable.expect("checked above");
+                    if let Some(mut updated) = refinable {
                         updated.connection = BrowserConnectionConfig::Cdp {
                             browser_kind: browser_kind.clone(),
                             endpoint: updated.connection.endpoint().to_string(),
@@ -1606,12 +1605,14 @@ mod tests {
     async fn snapshot_empty_href_state_and_evaluate_failure() {
         // href present but EMPTY is skipped in the state line.
         let (_g, _e, _d) = isolated_home().await;
-        let mut session = MockSession::default();
-        session.snapshot_value = json!({
-            "title": "T", "url": "http://x/",
-            "items": [{"ref": "a1", "selector": "a", "role": "link",
-                       "name": "N", "disabled": false, "href": "", "tag": "a"}],
-        });
+        let session = MockSession {
+            snapshot_value: json!({
+                "title": "T", "url": "http://x/",
+                "items": [{"ref": "a1", "selector": "a", "role": "link",
+                           "name": "N", "disabled": false, "href": "", "tag": "a"}],
+            }),
+            ..Default::default()
+        };
         let mut ctx = ctx_with(session, BrowserConfig::default(), args(&[]));
         let result = browser_snapshot(&mut ctx).await.unwrap();
         let text = result.text.unwrap();
@@ -1619,8 +1620,10 @@ mod tests {
         assert!(!text.contains("href="), "{text}");
 
         // Evaluate failure propagates.
-        let mut session = MockSession::default();
-        session.on_eval = Some(Box::new(|_| Err("eval exploded".to_string())));
+        let session = MockSession {
+            on_eval: Some(Box::new(|_| Err("eval exploded".to_string()))),
+            ..Default::default()
+        };
         let mut ctx = ctx_with(session, BrowserConfig::default(), args(&[]));
         let err = browser_snapshot(&mut ctx).await.unwrap_err();
         assert_eq!(err, "eval exploded");
@@ -1631,8 +1634,10 @@ mod tests {
         let (_g, _e, _d) = isolated_home().await;
         let config = BrowserConfig::default();
 
-        let mut session = MockSession::default();
-        session.type_result = Some(Err("type failed".to_string()));
+        let session = MockSession {
+            type_result: Some(Err("type failed".to_string())),
+            ..Default::default()
+        };
         let mut ctx = ctx_with(
             session,
             config.clone(),
@@ -1641,8 +1646,10 @@ mod tests {
         let err = browser_type(&mut ctx).await.unwrap_err();
         assert_eq!(err, "type failed");
 
-        let mut session = MockSession::default();
-        session.press_result = Some(Err("press failed".to_string()));
+        let session = MockSession {
+            press_result: Some(Err("press failed".to_string())),
+            ..Default::default()
+        };
         let mut ctx = ctx_with(session, config, args(&[("key", json!("Enter"))]));
         let err = browser_press(&mut ctx).await.unwrap_err();
         assert_eq!(err, "press failed");

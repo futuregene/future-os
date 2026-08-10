@@ -1034,10 +1034,10 @@ fn parse_cmd_value(raw: &str) -> Value {
     // `/^-?\d+(?:\.\d+)?$/` → Number(text). Integers stay integers so JSON
     // serialization matches JS (5, not 5.0).
     if is_integer_literal(text) {
-        match text.parse::<i64>() {
-            Ok(n) => return Value::from(n),
-            Err(_) => {} // overflow falls through to the float parse
+        if let Ok(n) = text.parse::<i64>() {
+            return Value::from(n);
         }
+        // (i64 overflow falls through to the float parse below.)
     }
     if is_number_literal(text) {
         // A string matching the number regex always parses as f64.
