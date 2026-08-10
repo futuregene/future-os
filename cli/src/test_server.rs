@@ -150,19 +150,33 @@ pub fn stream_event(r#type: &str, data: &str) -> StreamEvent {
 
 // ── HTTP mock ───────────────────────────────────────────────────────────────
 
-/// One canned HTTP route: exact path → (status, body).
+/// One canned HTTP route: exact path → one or more (status, body) responses.
+/// With multiple responses they are consumed in order (device-code polling
+/// tests); the last one repeats once exhausted.
 pub struct HttpRoute {
     pub path: String,
-    pub status: u16,
-    pub body: String,
+    pub responses: Vec<(u16, String)>,
+    pub index: std::sync::atomic::AtomicUsize,
 }
 
 impl HttpRoute {
     pub fn json(path: &str, status: u16, body: &str) -> Self {
         HttpRoute {
             path: path.to_string(),
-            status,
-            body: body.to_string(),
+            responses: vec![(status, body.to_string())],
+            index: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Stateful route: successive calls return successive responses.
+    pub fn sequence(path: &str, responses: Vec<(u16, &str)>) -> Self {
+        HttpRoute {
+            path: path.to_string(),
+            responses: responses
+                .into_iter()
+                .map(|(s, b)| (s, b.to_string()))
+                .collect(),
+            index: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -221,7 +235,13 @@ pub async fn spawn_http_recording(
                     .to_string();
                 let route = routes.iter().find(|r| r.path == path);
                 let (status, body) = match route {
-                    Some(r) => (r.status, r.body.clone()),
+                    Some(r) => {
+                        let i = r
+                            .index
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            .min(r.responses.len() - 1);
+                        r.responses[i].clone()
+                    }
                     None => (404, "{}".to_string()),
                 };
                 let reason = match status {

@@ -21,7 +21,9 @@ pub async fn account(command: &str, args: &[String], out: &Output) -> Result<(),
     match command {
         "profile" => account_profile(json_flag, out).await,
         "balance" => account_balance(json_flag, out).await,
-        _ => unreachable!("dispatch guards is_account_command"),
+        // The dispatch guards via is_account_command; a direct caller with an
+        // unknown subcommand gets an error rather than a panic.
+        other => Err(format!("Unknown account command: {other}")),
     }
 }
 
@@ -234,5 +236,196 @@ mod tests {
         assert_eq!(to_fixed(&1.0, 3), 1.0);
         assert_eq!(to_fixed(&0.0, 3), 0.0);
         assert_eq!(to_fixed(&(12345678901.0 / 1e10), 3), 1.235);
+    }
+
+    // ── HTTP-mock backed flows ──────────────────────────────────────
+
+    /// Write auth.json with a key + base_url pointing at `platform_url`.
+    async fn write_auth(platform_url: &str) {
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &path,
+            format!(
+                "{{\"future\": {{\"key\": \"sk-test\", \"base_url\": \"{platform_url}\"}}}}"
+            ),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn profile_text_and_json() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = crate::test_server::spawn_http_recording(
+            vec![crate::test_server::HttpRoute::json(
+                "/client/v1/account/profile",
+                200,
+                "{\"email\":\"a@b.c\",\"user_id\":\"u1\",\"email_verified\":true,\"created_at\":\"2026-01-01\"}",
+            )],
+            Some(requests.clone()),
+        )
+        .await;
+        write_auth(&base).await;
+
+        // Text mode.
+        let (code, stdout, stderr) = run(&["account", "profile"]).await;
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert!(stdout.contains("  Email:           a@b.c"), "stdout: {stdout}");
+        assert!(stdout.contains("  User ID:         u1"), "stdout: {stdout}");
+        assert!(stdout.contains("  Email verified:  true"), "stdout: {stdout}");
+        assert!(stdout.contains("  Created:         2026-01-01"), "stdout: {stdout}");
+
+        // JSON mode: only the four known keys, in TS order.
+        let (code, stdout, _) = run(&["account", "profile", "--json"]).await;
+        assert_eq!(code, 0);
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["email"], "a@b.c");
+        assert_eq!(parsed["user_id"], "u1");
+        assert_eq!(parsed["email_verified"], true);
+        assert_eq!(parsed["created_at"], "2026-01-01");
+        assert_eq!(parsed.as_object().unwrap().len(), 4);
+
+        // Bearer auth header sent.
+        let recorded = requests.lock().unwrap();
+        assert!(!recorded.is_empty());
+        assert!(
+            recorded[0].contains("authorization: Bearer sk-test"),
+            "request: {}",
+            recorded[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_missing_fields_render_empty() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/account/profile",
+            200,
+            "{}",
+        )])
+        .await;
+        write_auth(&base).await;
+        let (code, stdout, _) = run(&["account", "profile"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("  Email:           \n"), "stdout: {stdout}");
+        // JSON mode renders explicit nulls.
+        let (code, stdout, _) = run(&["account", "profile", "--json"]).await;
+        assert_eq!(code, 0);
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["email"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn balance_text_and_json() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/account/balance",
+            200,
+            "{\"balance_credits\": 12345678901}",
+        )])
+        .await;
+        write_auth(&base).await;
+        let (code, stdout, _) = run(&["account", "balance"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "  Balance: 1.235 credits\n");
+
+        let (code, stdout, _) = run(&["account", "balance", "--json"]).await;
+        assert_eq!(code, 0);
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["balance_credits"], 12345678901_i64);
+        assert_eq!(parsed["credits"], 1.235);
+    }
+
+    #[tokio::test]
+    async fn balance_missing_field_is_zero() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/account/balance",
+            200,
+            "{}",
+        )])
+        .await;
+        write_auth(&base).await;
+        let (code, stdout, _) = run(&["account", "balance"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "  Balance: 0.000 credits\n");
+    }
+
+    #[tokio::test]
+    async fn http_error_message_extraction() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        // message field wins, then error field, then HTTP status fallback.
+        for (body, expected) in [
+            ("{\"message\":\"nope\"}", "nope"),
+            ("{\"error\":\"broken\"}", "broken"),
+            ("{}", "HTTP 401"),
+        ] {
+            let base = crate::test_server::spawn_http(vec![
+                crate::test_server::HttpRoute::json("/client/v1/account/profile", 401, body),
+            ])
+            .await;
+            write_auth(&base).await;
+            let (code, _, stderr) = run(&["account", "profile"]).await;
+            assert_eq!(code, 1);
+            assert_eq!(stderr, format!("{expected}\n"), "body: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn platform_get_transport_and_json_errors() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        // Connection refused.
+        write_auth("http://127.0.0.1:1").await;
+        let (code, _, stderr) = run(&["account", "balance"]).await;
+        assert_eq!(code, 1);
+        assert!(!stderr.is_empty());
+    }
+
+    #[tokio::test]
+    async fn auth_file_edge_cases() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        // Non-object JSON.
+        tokio::fs::write(&path, "[1,2]").await.unwrap();
+        let (code, _, stderr) = run(&["account", "profile"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("must contain a JSON object"), "stderr: {stderr}");
+        // Invalid JSON.
+        tokio::fs::write(&path, "{oops").await.unwrap();
+        let (code, _, stderr) = run(&["account", "profile"]).await;
+        assert_eq!(code, 1);
+        assert!(!stderr.is_empty());
+        // future provider not an object.
+        tokio::fs::write(&path, "{\"future\": 42}").await.unwrap();
+        let (code, _, stderr) = run(&["account", "profile"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("No \"future\" provider in"), "stderr: {stderr}");
+        // key not a string.
+        tokio::fs::write(&path, "{\"future\": {\"key\": 7}}").await.unwrap();
+        let (code, _, stderr) = run(&["account", "profile"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("No API key for \"future\" in"), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn account_dispatch_rejects_unknown_command() {
+        // The `_` arm: dispatch guards via is_account_command, but a direct
+        // call surfaces an error instead of the old unreachable!() panic.
+        let (out, _) = Output::memory();
+        let err = account("bogus", &[], &out).await.unwrap_err();
+        assert!(err.contains("Unknown account command"), "err: {err}");
     }
 }
