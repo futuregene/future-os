@@ -128,8 +128,19 @@ impl Default for Terminal {
     }
 }
 
+/// One-shot fault injection for `Terminal::new` (test seam: POSIX's
+/// Backend::new is infallible, so the error path is otherwise untestable).
+#[cfg(test)]
+pub(crate) static FORCE_NEW_FAILURE: AtomicBool = AtomicBool::new(false);
+
 impl Terminal {
     pub fn new() -> io::Result<Self> {
+        // Test-only fault injection for the POSIX-infallible Backend::new
+        // (Windows can genuinely fail on non-console handles).
+        #[cfg(test)]
+        if FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst) {
+            return Err(io::Error::other("injected test failure"));
+        }
         let backend = Arc::new(platform::Backend::new()?);
         let size = Arc::new(Mutex::new(backend.size()));
         Ok(Self {
@@ -231,25 +242,24 @@ impl Terminal {
                 }
                 let timeout_ms = timeout_ms.max(0) as i32;
 
-                let wait = match backend.wait(timeout_ms) {
-                    Ok(w) => w,
-                    Err(_) => break, // wait error — stdin gone
-                };
+                let wait = backend.wait(timeout_ms);
 
                 match wait {
                     ReadWait::Input => {
                         let mut chunk = [0u8; 4096];
                         let n = match backend.read_stdin(&mut chunk) {
                             Ok(n) => n,
-                            Err(_) => break, // read error
+                            Err(_) => break, // read error — stdin gone
                         };
-                        if n == 0 {
-                            // POSIX: EOF — stdin closed. Windows: a wait can
-                            // fire with no key data (window event); continue.
-                            if backend.eof_is_terminal() {
-                                break;
-                            }
+                        // Windows: a zero read is a spurious wake (window
+                        // event with no key data) — keep polling.
+                        #[cfg(windows)]
+                        if n == 0 && !backend.eof_is_terminal() {
                             continue;
+                        }
+                        // POSIX: EOF — stdin closed.
+                        if n == 0 {
+                            break;
                         }
                         *last_data_time.lock() = Instant::now();
                         let events = buffer.process_bytes(&chunk[..n]);
@@ -263,6 +273,9 @@ impl Terminal {
                             flush_deadline = None;
                         }
                     }
+                    // Windows-only event; POSIX resize arrives as SIGWINCH
+                    // through the self-pipe (ReadWait::Signal).
+                    #[cfg(windows)]
                     ReadWait::Resize => {
                         let (cols, rows) = backend.size();
                         if cols > 0 && rows > 0 {
@@ -589,9 +602,122 @@ fn restore_terminal_for_exit(
 mod tests {
     use super::*;
 
+    /// Serialize tests that mutate process-global state (fd 0, signal
+    /// handlers, env) against each other and against other files' tests.
+    fn terminal_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_env::lock()
+    }
+
+    /// Shared no-op start callbacks: one closure instance each (kept honest
+    /// by `noop_callbacks_invoke`), so call sites don't carry dead bodies.
+    fn noop_input_cb() -> Box<dyn FnMut(String) + Send + 'static> {
+        Box::new(|_| {})
+    }
+
+    fn noop_resize_cb() -> Box<dyn FnMut() + Send + 'static> {
+        Box::new(|| {})
+    }
+
+    #[test]
+    fn noop_callbacks_invoke() {
+        (noop_input_cb())("x".to_string());
+        (noop_resize_cb())();
+    }
+
+    /// fd 0 redirected from /dev/null until dropped.
+    #[cfg(unix)]
+    struct NullStdin {
+        saved: i32,
+    }
+
+    #[cfg(unix)]
+    impl NullStdin {
+        fn install() -> Self {
+            unsafe {
+                let null_fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY);
+                assert!(null_fd >= 0);
+                let saved = libc::dup(0);
+                assert!(saved >= 0);
+                assert_ne!(libc::dup2(null_fd, 0), -1);
+                libc::close(null_fd);
+                Self { saved }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for NullStdin {
+        fn drop(&mut self) {
+            unsafe {
+                libc::dup2(self.saved, 0);
+                libc::close(self.saved);
+            }
+        }
+    }
+
+    /// A PTY pair with fd 0 redirected to the slave until dropped.
+    #[cfg(unix)]
+    struct PtyStdin {
+        master: i32,
+        slave: i32,
+        saved: i32,
+    }
+
+    #[cfg(unix)]
+    impl PtyStdin {
+        fn install() -> Self {
+            unsafe {
+                let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+                assert!(master >= 0);
+                assert_eq!(libc::grantpt(master), 0);
+                assert_eq!(libc::unlockpt(master), 0);
+                let slave_name = libc::ptsname(master);
+                assert!(!slave_name.is_null());
+                let slave = libc::open(slave_name, libc::O_RDWR | libc::O_NOCTTY);
+                assert!(slave >= 0);
+                let saved = libc::dup(0);
+                assert!(saved >= 0);
+                assert_ne!(libc::dup2(slave, 0), -1);
+                Self {
+                    master,
+                    slave,
+                    saved,
+                }
+            }
+        }
+
+        fn write(&self, data: &str) {
+            unsafe {
+                libc::write(
+                    self.master,
+                    data.as_ptr() as *const libc::c_void,
+                    data.len(),
+                );
+            }
+        }
+
+        fn close_master(&self) {
+            unsafe {
+                libc::close(self.master);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for PtyStdin {
+        fn drop(&mut self) {
+            unsafe {
+                libc::dup2(self.saved, 0);
+                libc::close(self.saved);
+                libc::close(self.slave);
+                libc::close(self.master);
+            }
+        }
+    }
+
     #[test]
     fn columns_fallback_prefers_ioctl_then_env_then_80() {
-        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env::lock();
         assert_eq!(columns_with_ioctl(0), 80);
         unsafe {
             std::env::set_var("COLUMNS", "123");
@@ -610,7 +736,7 @@ mod tests {
 
     #[test]
     fn rows_fallback_prefers_ioctl_then_env_then_24() {
-        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env::lock();
         assert_eq!(rows_with_ioctl(0), 24);
         unsafe {
             std::env::set_var("LINES", "50");
@@ -620,6 +746,230 @@ mod tests {
         unsafe {
             std::env::remove_var("LINES");
         }
+    }
+
+    #[test]
+    fn terminal_default_simple_methods_and_progress() {
+        let mut t = Terminal::default();
+        t.hide_cursor();
+        t.show_cursor();
+        t.clear_line();
+        t.clear_from_cursor();
+        t.clear_screen();
+        t.set_title("probe");
+        t.move_by(2);
+        t.move_by(-2);
+        t.move_by(0); // no output
+        assert!(!t.kitty_protocol_active());
+
+        // Progress keepalive lifecycle.
+        t.set_progress(true);
+        assert!(t.progress_thread.is_some());
+        t.set_progress(true); // already running — no second thread
+                              // Let the keepalive thread fire at least once.
+        std::thread::sleep(Duration::from_millis(TERMINAL_PROGRESS_KEEPALIVE_MS + 200));
+        t.set_progress(false);
+        assert!(t.progress_thread.is_none());
+        // clear_progress_interval with nothing running → false.
+        assert!(!t.clear_progress_interval());
+        // stop with the keepalive still running clears and reports it.
+        t.set_progress(true);
+        t.stop();
+        assert!(t.progress_thread.is_none());
+    }
+
+    #[test]
+    fn write_log_gated_by_env() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let old_log = std::env::var_os("PI_TUI_WRITE_LOG");
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("PI_TUI_WRITE_LOG", "1");
+        std::env::set_var("HOME", home.path());
+        let t = Terminal::new().unwrap();
+        t.write("log-me");
+        let log = std::fs::read_to_string(home.path().join(".future/tui/write.log")).unwrap();
+        assert!(log.contains("log-me"));
+        // With HOME unset the log write is skipped (output still written).
+        std::env::remove_var("HOME");
+        t.write("not-logged");
+        restore_env("PI_TUI_WRITE_LOG", old_log);
+        restore_env("HOME", old_home);
+    }
+
+    fn restore_env(key: &str, old: Option<std::ffi::OsString>) {
+        match old {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn restore_env_handles_set_and_unset() {
+        let _guard = crate::test_env::lock();
+        let old = std::env::var_os("FUTURE_TUI_TERM_PROBE");
+        restore_env("FUTURE_TUI_TERM_PROBE", Some("1".into()));
+        assert_eq!(std::env::var("FUTURE_TUI_TERM_PROBE").as_deref(), Ok("1"));
+        restore_env("FUTURE_TUI_TERM_PROBE", None);
+        assert!(std::env::var_os("FUTURE_TUI_TERM_PROBE").is_none());
+        restore_env("FUTURE_TUI_TERM_PROBE", old);
+    }
+
+    #[test]
+    fn columns_rows_read_cached_size() {
+        let _guard = crate::test_env::lock();
+        let t = Terminal::new().unwrap();
+        *t.size.lock() = (111, 44);
+        assert_eq!(t.columns(), 111);
+        assert_eq!(t.rows(), 44);
+        *t.size.lock() = (0, 0);
+        let old_c = std::env::var_os("COLUMNS");
+        let old_l = std::env::var_os("LINES");
+        std::env::set_var("COLUMNS", "72");
+        std::env::set_var("LINES", "33");
+        // refresh_size keeps the cached size when the backend reports 0.
+        t.refresh_size();
+        assert_eq!(t.columns(), 72);
+        assert_eq!(t.rows(), 33);
+        restore_env("COLUMNS", old_c);
+        restore_env("LINES", old_l);
+    }
+
+    #[test]
+    fn drain_input_with_and_without_protocols() {
+        let _g = terminal_test_lock();
+        let mut t = Terminal::new().unwrap();
+        // No protocols active: returns once input is idle.
+        t.drain_input(200, 5);
+        // Protocols active: deactivation sequences are written, flags flip.
+        t.kitty_active.store(true, Ordering::SeqCst);
+        t.modify_other_keys_active.store(true, Ordering::SeqCst);
+        keys::set_kitty_protocol_active(true);
+        t.drain_input(200, 5);
+        assert!(!t.kitty_active.load(Ordering::SeqCst));
+        assert!(!t.modify_other_keys_active.load(Ordering::SeqCst));
+        assert!(!keys::is_kitty_protocol_active());
+        // Fresh input resets the idle window (max_ms caps the wait).
+        *t.last_data_time.lock() = Instant::now();
+        t.drain_input(10, 60_000); // max_ms wins over idle
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_rejects_non_tty_and_double_start() {
+        let _g = terminal_test_lock();
+        // Not a TTY: stdin swapped for /dev/null.
+        let _null = NullStdin::install();
+        let mut t = Terminal::new().unwrap();
+        let err = t.start(noop_input_cb(), noop_resize_cb()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotConnected);
+        drop(_null);
+
+        // Already started: a reader thread is present.
+        let mut t = Terminal::new().unwrap();
+        t.reader_thread = Some(std::thread::spawn(|| {}));
+        let err = t.start(noop_input_cb(), noop_resize_cb()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        // Drop joins the dummy thread via stop().
+    }
+
+    #[test]
+    fn ms_until_boundaries() {
+        let now = Instant::now();
+        assert_eq!(ms_until(now + Duration::from_millis(50), now), 50);
+        assert_eq!(ms_until(now, now + Duration::from_millis(50)), 0);
+        assert_eq!(
+            ms_until(now + Duration::from_secs(u64::MAX / 4), now),
+            i64::MAX
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refresh_size_picks_up_pty_dimensions() {
+        let _g = terminal_test_lock();
+        // Point stdout (fd 1) at a PTY with a known window size.
+        let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+        assert!(master >= 0);
+        unsafe {
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let slave_name = libc::ptsname(master);
+            let slave = libc::open(slave_name, libc::O_RDWR | libc::O_NOCTTY);
+            assert!(slave >= 0);
+            let mut ws: libc::winsize = std::mem::zeroed();
+            ws.ws_col = 99;
+            ws.ws_row = 55;
+            assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
+            let saved = libc::dup(1);
+            assert_ne!(libc::dup2(slave, 1), -1);
+            let t = Terminal::new().unwrap();
+            t.refresh_size();
+            assert_eq!(*t.size.lock(), (99, 55));
+            libc::dup2(saved, 1);
+            libc::close(saved);
+            libc::close(slave);
+            libc::close(master);
+        }
+    }
+
+    #[test]
+    fn handle_event_rewraps_paste_content() {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let mut on_input: Box<dyn FnMut(String) + Send> = Box::new(move |s| {
+            let _ = tx.send(s);
+        });
+        let kitty = AtomicBool::new(false);
+        let draining = AtomicBool::new(false);
+        let lock = Mutex::new(());
+        handle_event(
+            &mut on_input,
+            &StdinEvent::Paste("hello paste".to_string()),
+            &kitty,
+            &draining,
+            &lock,
+        );
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec!["\x1b[200~hello paste\x1b[201~"]
+        );
+        // While draining, paste is swallowed.
+        draining.store(true, Ordering::SeqCst);
+        handle_event(
+            &mut on_input,
+            &StdinEvent::Paste("x".to_string()),
+            &kitty,
+            &draining,
+            &lock,
+        );
+        assert!(rx.try_iter().next().is_none());
+    }
+
+    #[test]
+    fn spin_until_returns_false_on_timeout() {
+        assert!(!spin_until(|| false, 5));
+        assert!(spin_until(|| true, 5));
+    }
+
+    #[test]
+    fn restore_terminal_for_exit_writes_teardown() {
+        let _g = terminal_test_lock();
+        let backend = platform::Backend::new().unwrap();
+        let kitty = AtomicBool::new(true);
+        let mok = AtomicBool::new(true);
+        let lock = Mutex::new(());
+        keys::set_kitty_protocol_active(true);
+        restore_terminal_for_exit(&backend, &kitty, &mok, &lock);
+        assert!(!kitty.load(Ordering::SeqCst));
+        assert!(!mok.load(Ordering::SeqCst));
+        assert!(!keys::is_kitty_protocol_active());
+        // With nothing active it still restores + writes the trailing newline.
+        restore_terminal_for_exit(
+            &backend,
+            &AtomicBool::new(false),
+            &AtomicBool::new(false),
+            &lock,
+        );
     }
 
     #[test]
@@ -650,5 +1000,182 @@ mod tests {
             handle_event(&mut on_input, &ev, &kitty, &draining, &lock);
         }
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec!["ctrl+c"]);
+    }
+
+    /// Spin until `cond` holds (bounded), returning whether it did.
+    fn spin_until(mut cond: impl FnMut() -> bool, max_ms: u64) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(max_ms) {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        cond()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_loop_full_cycle_on_pty() {
+        let _g = terminal_test_lock();
+        let pty = PtyStdin::install();
+        let (input_tx, input_rx) = std::sync::mpsc::channel::<String>();
+        let (resize_tx, resize_rx) = std::sync::mpsc::channel::<()>();
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel::<()>();
+
+        let mut t = Terminal::new().unwrap();
+        t.set_exit_signal_callback(Some(Box::new(move || {
+            let _ = exit_tx.send(());
+        })));
+        t.start(
+            Box::new(move |s| {
+                let _ = input_tx.send(s);
+            }),
+            Box::new(move || {
+                let _ = resize_tx.send(());
+            }),
+        )
+        .unwrap();
+
+        // Kitty protocol response is consumed and arms the protocol.
+        pty.write("\x1b[?1u");
+        assert!(spin_until(|| t.kitty_protocol_active(), 2000));
+
+        // Plain input is forwarded.
+        pty.write("a");
+        assert!(spin_until(|| input_rx.try_iter().any(|s| s == "a"), 2000));
+
+        // A lone ESC is buffered, then flushed after the idle timeout.
+        pty.write("\x1b");
+        assert!(spin_until(
+            || input_rx.try_iter().any(|s| s == "\x1b"),
+            2000
+        ));
+
+        // SIGWINCH through the self-pipe → resize callback.
+        unsafe { libc::raise(libc::SIGWINCH) };
+        assert!(spin_until(|| resize_rx.try_recv().is_ok(), 2000));
+
+        // SIGTERM with an exit callback → callback, not process death.
+        unsafe { libc::raise(libc::SIGTERM) };
+        assert!(spin_until(|| exit_rx.try_recv().is_ok(), 2000));
+
+        // Master close → POLLHUP/POLLIN → read returns EOF → reader exits.
+        pty.close_master();
+        // Give the reader a poll cycle to take the EOF path before stop().
+        std::thread::sleep(Duration::from_millis(300));
+        t.stop(); // joins the reader; kitty protocol was active → pop written
+        assert!(!t.kitty_protocol_active());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_breaks_on_stdin_read_error() {
+        let _g = terminal_test_lock();
+        let _pty = PtyStdin::install();
+        let mut t = Terminal::new().unwrap();
+        t.start(noop_input_cb(), noop_resize_cb()).unwrap();
+        // Swap fd 0 for a directory: poll reports POLLNVAL → the reader
+        // attempts the read, which fails (EISDIR) and ends the loop.
+        let dir = unsafe { libc::open(c"/tmp".as_ptr(), libc::O_RDONLY) };
+        assert!(dir >= 0);
+        unsafe { assert_ne!(libc::dup2(dir, 0), -1) };
+        // Let the reader observe the failure, then stop (joins the thread).
+        std::thread::sleep(Duration::from_millis(300));
+        t.stop();
+        unsafe { libc::close(dir) };
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_resize_updates_cached_size() {
+        let _g = terminal_test_lock();
+        let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+        assert!(master >= 0);
+        unsafe {
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let slave_name = libc::ptsname(master);
+            let slave = libc::open(slave_name, libc::O_RDWR | libc::O_NOCTTY);
+            assert!(slave >= 0);
+            let mut ws: libc::winsize = std::mem::zeroed();
+            ws.ws_col = 80;
+            ws.ws_row = 40;
+            assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
+            // fd 0 and fd 1 both on the PTY (size is read from stdout).
+            let saved0 = libc::dup(0);
+            let saved1 = libc::dup(1);
+            assert_ne!(libc::dup2(slave, 0), -1);
+            assert_ne!(libc::dup2(slave, 1), -1);
+
+            let mut t = Terminal::new().unwrap();
+            t.start(noop_input_cb(), noop_resize_cb()).unwrap();
+            assert_eq!(*t.size.lock(), (80, 40));
+            // Resize the PTY, then SIGWINCH → the reader refreshes the cache.
+            ws.ws_col = 99;
+            ws.ws_row = 55;
+            assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
+            libc::raise(libc::SIGWINCH);
+            assert!(spin_until(|| *t.size.lock() == (99, 55), 2000));
+            t.stop();
+
+            libc::dup2(saved0, 0);
+            libc::dup2(saved1, 1);
+            libc::close(saved0);
+            libc::close(saved1);
+            libc::close(slave);
+            libc::close(master);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_with_modify_other_keys_active() {
+        let _g = terminal_test_lock();
+        let _pty = PtyStdin::install();
+        let mut t = Terminal::new().unwrap();
+        t.start(noop_input_cb(), noop_resize_cb()).unwrap();
+        // Simulate the modifyOtherKeys fallback having armed.
+        t.modify_other_keys_active.store(true, Ordering::SeqCst);
+        t.stop();
+        assert!(!t.modify_other_keys_active.load(Ordering::SeqCst));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn term_signal_failsafe_runs_restore_and_die_path() {
+        let _g = terminal_test_lock();
+        let _pty = PtyStdin::install();
+        // Record the panic payload from the reader thread.
+        let (panic_tx, panic_rx) = std::sync::mpsc::channel::<String>();
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            let _ = panic_tx.send(msg);
+        }));
+
+        let mut t = Terminal::new().unwrap();
+        t.start(noop_input_cb(), noop_resize_cb()).unwrap();
+        // No exit callback → the failsafe restores the terminal and invokes
+        // die_with_signal, which the test build substitutes with a panic.
+        unsafe { libc::raise(libc::SIGTERM) };
+        let got = spin_until(
+            || {
+                panic_rx
+                    .try_recv()
+                    .map(|m| m == "die_with_signal(15)")
+                    .unwrap_or(false)
+            },
+            2000,
+        );
+        let _ = std::panic::take_hook();
+        std::panic::set_hook(prev_hook);
+        t.stop();
+        assert!(got, "failsafe die_with_signal path did not run");
     }
 }

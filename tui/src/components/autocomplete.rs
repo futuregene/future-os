@@ -353,7 +353,9 @@ impl AutocompleteProvider for FilePathProvider {
         // Resolve the partial path
         let resolved: PathBuf = if let Some(rest) = token.strip_prefix('~') {
             let home = env::var("HOME").unwrap_or_else(|_| "/".to_string());
-            PathBuf::from(home).join(rest)
+            // TS path.join(home, rest) concatenates; Rust's PathBuf::join
+            // replaces on absolute rest — strip the leading '/'.
+            PathBuf::from(home).join(rest.trim_start_matches('/'))
         } else {
             PathBuf::from(&self.cwd).join(token)
         };
@@ -1149,5 +1151,407 @@ mod tests {
         // Directories first, then alphabetical
         assert_eq!(labels, vec!["subdir/", "alpha.txt", "beta.txt"]);
         assert_eq!(items[0].description.as_deref(), Some("dir"));
+    }
+
+    // ─── Manager plumbing ─────────────────────────────────────────────
+
+    /// Restore an environment variable to a saved value (None = absent).
+    fn restore_env_var(key: &str, old: Option<std::ffi::OsString>) {
+        match old {
+            Some(v) => env::set_var(key, v),
+            None => env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn restore_env_var_handles_set_and_unset() {
+        let _guard = crate::test_env::lock();
+        let old = env::var_os("FUTURE_TUI_TEST_PROBE");
+        restore_env_var("FUTURE_TUI_TEST_PROBE", Some("probe".into()));
+        assert_eq!(env::var("FUTURE_TUI_TEST_PROBE").as_deref(), Ok("probe"));
+        restore_env_var("FUTURE_TUI_TEST_PROBE", None);
+        assert!(env::var_os("FUTURE_TUI_TEST_PROBE").is_none());
+        restore_env_var("FUTURE_TUI_TEST_PROBE", old);
+    }
+
+    #[test]
+    fn manager_default_register_unregister_destroy() {
+        let mut manager = AutocompleteManager::default();
+        let idx = manager.register(Box::new(DummyProvider {
+            name: "p",
+            trigger: "/",
+            completions: vec![],
+        }));
+        assert_eq!(idx, 0);
+        manager.unregister(0);
+        manager.unregister(9); // out of bounds — no-op
+        manager.register(Box::new(DummyProvider {
+            name: "p2",
+            trigger: "/",
+            completions: vec![],
+        }));
+        manager.destroy();
+        assert!(manager.active_context().is_none());
+    }
+
+    #[test]
+    fn manager_query_immediate_bypasses_and_names_provider() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let provider = DummyProvider {
+            name: "direct",
+            trigger: "/",
+            completions: vec![AutocompleteItem {
+                value: "/x".into(),
+                label: "/x".into(),
+                description: None,
+            }],
+        };
+        assert_eq!(provider.name(), "direct");
+        let mut manager = AutocompleteManager::new();
+        manager.register(Box::new(provider));
+        let last_items = Rc::new(RefCell::new(Vec::<String>::new()));
+        let cb = Rc::clone(&last_items);
+        manager.set_on_items(Box::new(move |items| {
+            *cb.borrow_mut() = items.iter().map(|i| i.value.clone()).collect();
+        }));
+        manager.query_immediate("/x", 2);
+        assert_eq!(*last_items.borrow(), vec!["/x"]);
+    }
+
+    // ─── SlashCommandProvider gaps ────────────────────────────────────
+
+    #[test]
+    fn slash_provider_name_and_arg_edge_cases() {
+        let provider = SlashCommandProvider::new(slash_commands(), None, None);
+        assert_eq!(provider.name(), "slash-command");
+
+        // Unknown command in arg position → no context.
+        assert!(provider.r#match("/nope x", 7).is_none());
+
+        // get_completions with an unknown command → empty.
+        let ctx = AutocompleteContext {
+            text: "/nope x".into(),
+            cursor_pos: 7,
+            token: "x".into(),
+            token_start: 6,
+        };
+        assert!(provider.get_completions(&ctx).is_empty());
+
+        // Model/session arg commands without the corresponding callback.
+        let ctx = AutocompleteContext {
+            text: "/model cl".into(),
+            cursor_pos: 9,
+            token: "cl".into(),
+            token_start: 7,
+        };
+        assert!(provider.get_completions(&ctx).is_empty());
+        let ctx = AutocompleteContext {
+            text: "/sessions ab".into(),
+            cursor_pos: 12,
+            token: "ab".into(),
+            token_start: 10,
+        };
+        assert!(provider.get_completions(&ctx).is_empty());
+
+        // A command that takes no argument never completes one.
+        let ctx = AutocompleteContext {
+            text: "/new x".into(),
+            cursor_pos: 6,
+            token: "x".into(),
+            token_start: 5,
+        };
+        assert!(provider.get_completions(&ctx).is_empty());
+    }
+
+    // ─── FilePathProvider gaps ────────────────────────────────────────
+
+    #[test]
+    fn file_path_provider_name_new_and_set_cwd() {
+        let mut provider = FilePathProvider::new(None); // falls back to cwd
+        assert_eq!(provider.name(), "file-path");
+        provider.set_cwd("/tmp");
+        let ctx = provider.r#match("ls /tm", 6).unwrap();
+        assert_eq!(ctx.token, "/tm");
+    }
+
+    #[test]
+    fn file_path_completions_filter_by_prefix_and_skip_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap().to_string();
+        std::fs::write(dir.path().join("apple.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("apricot.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("banana.txt"), "x").unwrap();
+        std::fs::write(dir.path().join(".apricot-hidden"), "x").unwrap();
+
+        let provider = FilePathProvider::new(Some(dir_path.clone()));
+        // Partial basename "ap" → only the two visible "ap*" files.
+        let ctx = AutocompleteContext {
+            text: "ap".into(),
+            cursor_pos: 2,
+            token: "ap".into(),
+            token_start: 0,
+        };
+        let items = provider.get_completions(&ctx);
+        let mut labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        labels.sort_unstable();
+        assert_eq!(labels, vec!["apple.txt", "apricot.txt"]);
+
+        // A dot-prefix matches the hidden file, which is then skipped.
+        let ctx = AutocompleteContext {
+            text: ".a".into(),
+            cursor_pos: 2,
+            token: ".a".into(),
+            token_start: 0,
+        };
+        assert!(provider.get_completions(&ctx).is_empty());
+
+        // A token resolving into a missing directory yields nothing.
+        let ctx = AutocompleteContext {
+            text: "no/such/dir/x".into(),
+            cursor_pos: 13,
+            token: "no/such/dir/x".into(),
+            token_start: 0,
+        };
+        assert!(provider.get_completions(&ctx).is_empty());
+    }
+
+    #[test]
+    fn file_path_completions_sort_mixed_kinds() {
+        // The directories-first sort must compare files against directories;
+        // which comparison arm fires depends on read_dir's order. Two layouts
+        // cover every consistent ordering: "fwd" has files first both in
+        // creation and alphabetical order, "rev" has dirs first in both.
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap().to_string();
+        let fwd = dir.path().join("fwd");
+        std::fs::create_dir(&fwd).unwrap();
+        for i in 0..3 {
+            std::fs::write(fwd.join(format!("a{i}.txt")), "x").unwrap();
+        }
+        for i in 0..3 {
+            std::fs::create_dir(fwd.join(format!("z{i}"))).unwrap();
+        }
+        let rev = dir.path().join("rev");
+        std::fs::create_dir(&rev).unwrap();
+        for i in 0..3 {
+            std::fs::create_dir(rev.join(format!("a{i}"))).unwrap();
+        }
+        for i in 0..3 {
+            std::fs::write(rev.join(format!("z{i}.txt")), "x").unwrap();
+        }
+
+        let provider = FilePathProvider::new(Some(dir_path.clone()));
+        // (dir names, file names) per layout, as completed under each subdir.
+        let expected: [(&str, [&str; 3], [&str; 3]); 2] = [
+            ("fwd", ["z0/", "z1/", "z2/"], ["a0.txt", "a1.txt", "a2.txt"]),
+            ("rev", ["a0/", "a1/", "a2/"], ["z0.txt", "z1.txt", "z2.txt"]),
+        ];
+        for (sub, dirs, files) in expected {
+            let ctx = AutocompleteContext {
+                text: format!("{sub}/"),
+                cursor_pos: sub.len() + 1,
+                token: format!("{sub}/"),
+                token_start: 0,
+            };
+            let items = provider.get_completions(&ctx);
+            let prefix = format!("{sub}/");
+            let got: Vec<String> = items
+                .iter()
+                .map(|i| {
+                    i.label
+                        .strip_prefix(&prefix)
+                        .unwrap_or(&i.label)
+                        .to_string()
+                })
+                .collect();
+            // Directories first, then files, alphabetical within each kind.
+            let want: Vec<String> = dirs
+                .iter()
+                .chain(files.iter())
+                .map(|s| s.to_string())
+                .collect();
+            assert_eq!(got, want);
+        }
+    }
+
+    #[test]
+    fn file_path_completions_expand_tilde_and_keep_absolute_display() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_str().unwrap().to_string();
+        std::fs::write(home.path().join("note.txt"), "x").unwrap();
+        let old = env::var_os("HOME");
+        env::set_var("HOME", &home_str);
+
+        let provider = FilePathProvider::new(Some("/tmp".into()));
+        let ctx = AutocompleteContext {
+            text: "~/no".into(),
+            cursor_pos: 4,
+            token: "~/no".into(),
+            token_start: 0,
+        };
+        let items = provider.get_completions(&ctx);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].label.ends_with("note.txt"));
+
+        restore_env_var("HOME", old);
+        drop(_guard);
+
+        // An absolute token outside the cwd keeps its absolute display.
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep.txt"), "x").unwrap();
+        let outside_str = outside.path().to_str().unwrap().to_string();
+        let provider = FilePathProvider::new(Some("/definitely/not/the/parent".into()));
+        let ctx = AutocompleteContext {
+            text: format!("{outside_str}/"),
+            cursor_pos: outside_str.len() + 1,
+            token: format!("{outside_str}/"),
+            token_start: 0,
+        };
+        let items = provider.get_completions(&ctx);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].label.starts_with(&outside_str));
+    }
+
+    // ─── AttachmentProvider ───────────────────────────────────────────
+
+    #[test]
+    fn attachment_match_extracts_at_token() {
+        let provider = AttachmentProvider;
+        assert_eq!(provider.name(), "attachment");
+        let ctx = provider.r#match("@foo", 4).unwrap();
+        assert_eq!(ctx.token, "foo");
+        assert_eq!(ctx.token_start, 1);
+        let ctx = provider.r#match("hello @wo", 9).unwrap();
+        assert_eq!(ctx.token, "wo");
+        assert!(provider.r#match("no at here", 10).is_none());
+        // Empty pattern completes nothing.
+        let ctx = AutocompleteContext {
+            text: "@".into(),
+            cursor_pos: 1,
+            token: String::new(),
+            token_start: 1,
+        };
+        assert!(provider.get_completions(&ctx).is_empty());
+    }
+
+    #[cfg(unix)]
+    fn with_stubbed_path(scripts: &[(&str, &str)], f: impl FnOnce()) {
+        let _guard = crate::test_env::lock();
+        let dir = tempfile::tempdir().unwrap();
+        for (name, body) in scripts {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let old = env::var_os("PATH");
+        env::set_var("PATH", dir.path());
+        f();
+        restore_env_var("PATH", old);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_completions_via_fd_stub() {
+        with_stubbed_path(
+            &[("fd", "#!/bin/sh\nprintf 'src/main.rs\\nsrc/lib.rs\\n'")],
+            || {
+                let provider = AttachmentProvider;
+                let ctx = AutocompleteContext {
+                    text: "@src".into(),
+                    cursor_pos: 4,
+                    token: "src".into(),
+                    token_start: 1,
+                };
+                let items = provider.get_completions(&ctx);
+                let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+                assert_eq!(labels, vec!["src/main.rs", "src/lib.rs"]);
+                assert_eq!(items[0].value, "@src/main.rs");
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_completions_fall_back_to_find() {
+        with_stubbed_path(
+            &[
+                ("fd", "#!/bin/sh\nexit 1"),
+                ("find", "#!/bin/sh\nprintf './a.rs\\n'"),
+            ],
+            || {
+                let provider = AttachmentProvider;
+                let ctx = AutocompleteContext {
+                    text: "@a".into(),
+                    cursor_pos: 2,
+                    token: "a".into(),
+                    token_start: 1,
+                };
+                let items = provider.get_completions(&ctx);
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].label, "./a.rs");
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_completions_empty_when_no_searcher_works() {
+        with_stubbed_path(
+            &[("fd", "#!/bin/sh\nexit 1"), ("find", "#!/bin/sh\nexit 1")],
+            || {
+                let provider = AttachmentProvider;
+                let ctx = AutocompleteContext {
+                    text: "@a".into(),
+                    cursor_pos: 2,
+                    token: "a".into(),
+                    token_start: 1,
+                };
+                assert!(provider.get_completions(&ctx).is_empty());
+            },
+        );
+    }
+
+    // ─── Popup gaps ───────────────────────────────────────────────────
+
+    #[test]
+    fn popup_select_on_empty_is_noop_and_default_works() {
+        let mut pop = AutocompletePopup::default();
+        pop.select_next(); // no items — no-op
+        pop.select_prev();
+        assert!(!pop.is_visible());
+        pop.invalidate();
+        assert!(pop.as_any().downcast_ref::<AutocompletePopup>().is_some());
+        assert!(pop
+            .as_any_mut()
+            .downcast_mut::<AutocompletePopup>()
+            .is_some());
+    }
+
+    #[test]
+    fn popup_render_handles_missing_description() {
+        let mut pop = AutocompletePopup::new();
+        pop.show(vec![
+            AutocompleteItem {
+                value: "a".into(),
+                label: "a".into(),
+                description: None,
+            },
+            AutocompleteItem {
+                value: "b".into(),
+                label: "b".into(),
+                description: Some(String::new()),
+            },
+        ]);
+        let lines = pop.render(40);
+        assert_eq!(lines.len(), 4); // 2 borders + 2 items
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain.iter().any(|l| l.contains("▶ a")));
+        assert!(plain.iter().any(|l| l.contains("  b")));
     }
 }

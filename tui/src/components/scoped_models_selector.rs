@@ -352,6 +352,24 @@ mod tests {
         (saved, Box::new(move |ids| *cb.borrow_mut() = ids.to_vec()))
     }
 
+    /// Shared no-op callbacks: a single closure instance each (executed by
+    /// `noop_callbacks_are_callable`), so the many call sites below don't
+    /// each carry a never-invoked closure body.
+    #[allow(clippy::type_complexity)] // trait-object alias buys nothing here
+    fn noop_save() -> Box<dyn FnMut(&[String])> {
+        Box::new(|_| {})
+    }
+
+    fn noop_cancel() -> Box<dyn FnMut()> {
+        Box::new(|| {})
+    }
+
+    #[test]
+    fn noop_callbacks_are_callable() {
+        noop_save()(&[]);
+        noop_cancel()();
+    }
+
     #[allow(clippy::type_complexity)]
     fn bool_sink() -> (std::rc::Rc<std::cell::Cell<bool>>, Box<dyn FnMut()>) {
         use std::cell::Cell;
@@ -364,7 +382,7 @@ mod tests {
     #[test]
     fn models_are_sorted_by_provider_id() {
         let (saved, on_save) = saved_sink();
-        let mut sel = make_selector(on_save, Box::new(|| {}));
+        let mut sel = make_selector(on_save, noop_cancel());
         sel.handle_key("enter");
         assert!(saved.borrow().contains(&"openai/gpt-4o".to_string()));
         assert!(saved
@@ -375,7 +393,7 @@ mod tests {
     #[test]
     fn space_toggles_model_off() {
         let (saved, on_save) = saved_sink();
-        let mut sel = make_selector(on_save, Box::new(|| {}));
+        let mut sel = make_selector(on_save, noop_cancel());
         // First item (sorted): anthropic/claude-sonnet-4
         sel.handle_key("space"); // toggle off claude
         sel.handle_key("enter");
@@ -388,7 +406,7 @@ mod tests {
     #[test]
     fn space_toggles_model_back_on() {
         let (saved, on_save) = saved_sink();
-        let mut sel = make_selector(on_save, Box::new(|| {}));
+        let mut sel = make_selector(on_save, noop_cancel());
         sel.handle_key("space"); // toggle off
         sel.handle_key("space"); // toggle back on
         sel.handle_key("enter");
@@ -416,7 +434,7 @@ mod tests {
 
     #[test]
     fn filter_narrows_model_list() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         sel.handle_key("d");
         sel.handle_key("e");
         sel.handle_key("e");
@@ -434,7 +452,7 @@ mod tests {
 
     #[test]
     fn render_shows_enabled_count() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         let lines = sel.render(60);
         let text = lines
             .iter()
@@ -446,7 +464,7 @@ mod tests {
 
     #[test]
     fn render_shows_unsaved_indicator_after_toggle() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         let before = sel.render(60);
         assert!(!before
             .iter()
@@ -460,7 +478,7 @@ mod tests {
 
     #[test]
     fn render_shows_check_and_cross_for_enabled_disabled() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         let lines = sel.render(60);
         let text = lines
             .iter()
@@ -476,7 +494,7 @@ mod tests {
         // Sorted: anthropic/claude-sonnet-4, deepseek/deepseek-r1,
         // openai/gpt-4o, openai/o3-mini
         let (saved, on_save) = saved_sink();
-        let mut sel = make_selector(on_save, Box::new(|| {}));
+        let mut sel = make_selector(on_save, noop_cancel());
         sel.handle_key("down"); // move to deepseek-r1
         sel.handle_key("space"); // enable deepseek-r1
         sel.handle_key("enter");
@@ -485,7 +503,7 @@ mod tests {
 
     #[test]
     fn empty_filter_shows_all_models() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         let lines = sel.render(80);
         let text = lines
             .iter()
@@ -501,8 +519,140 @@ mod tests {
     #[test]
     fn handle_input_delegates_to_handle_key() {
         let (cancelled, on_cancel) = bool_sink();
-        let mut sel = make_selector(Box::new(|_| {}), on_cancel);
+        let mut sel = make_selector(noop_save(), on_cancel);
         sel.handle_input("escape");
         assert!(cancelled.get());
+    }
+
+    fn bare_selector(models: Vec<ModelInfo>, max_visible: usize) -> ScopedModelsSelector {
+        ScopedModelsSelector::new(ScopedModelsSelectorOptions {
+            all_models: models,
+            enabled_model_ids: HashSet::new(),
+            on_save: noop_save(),
+            on_cancel: noop_cancel(),
+            max_visible: Some(max_visible),
+        })
+    }
+
+    #[test]
+    fn up_and_down_wrap_around() {
+        let mut sel = make_selector(noop_save(), noop_cancel());
+        // up from the first row wraps to the bottom.
+        assert!(sel.handle_key("up"));
+        assert_eq!(sel.selected_index, 3);
+        // up again moves within the list.
+        assert!(sel.handle_key("up"));
+        assert_eq!(sel.selected_index, 2);
+        // down from the last row wraps to the top.
+        assert!(sel.handle_key("down"));
+        assert!(sel.handle_key("down"));
+        assert_eq!(sel.selected_index, 0);
+    }
+
+    #[test]
+    fn scroll_window_slides_and_snaps_back() {
+        let six = || {
+            (0..6)
+                .map(|i| model(&format!("m{i}"), &format!("M{i}"), "p"))
+                .collect::<Vec<_>>()
+        };
+        let mut sel = bare_selector(six(), 2);
+        sel.handle_key("down");
+        sel.handle_key("down"); // selected 2 → scroll_offset 1
+        assert_eq!(sel.selected_index, 2);
+        assert_eq!(sel.scroll_offset, 1);
+        // Moving above the window snaps the scroll back up.
+        sel.handle_key("up");
+        sel.handle_key("up"); // selected 0 < scroll_offset 1 → snap
+        assert_eq!(sel.scroll_offset, 0);
+
+        // Scroll down again and render: both indicators appear.
+        sel.handle_key("down");
+        sel.handle_key("down");
+        let lines = sel.render(80);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain.iter().any(|l| l.contains("↑ 1 more")));
+        assert!(plain.iter().any(|l| l.contains("↓ 3 more")));
+    }
+
+    #[test]
+    fn space_on_empty_list_is_a_noop() {
+        let mut sel = bare_selector(vec![], 4);
+        assert!(sel.handle_key("space"));
+        assert!(sel.enabled_set.is_empty());
+    }
+
+    #[test]
+    fn backspace_edits_filter_and_unhandled_keys_return_false() {
+        let mut sel = make_selector(noop_save(), noop_cancel());
+        assert!(sel.handle_key("g")); // filter "g"
+        assert_eq!(sel.filter, "g");
+        assert!(sel.handle_key("backspace"));
+        assert_eq!(sel.filter, "");
+        // Multi-char keys are not filter input.
+        assert!(!sel.handle_key("f1"));
+        assert!(!sel.handle_key("ctrl+x"));
+    }
+
+    #[test]
+    fn filter_shrink_clamps_selection() {
+        let mut sel = make_selector(noop_save(), noop_cancel());
+        sel.selected_index = 3;
+        sel.handle_key("d"); // filter "d" matches deepseek-r1 (+ Claude? no)
+        assert!(sel.selected_index < sel.filtered_items.len().max(1));
+        assert!(sel
+            .filtered_items
+            .iter()
+            .all(|m| m.id.contains('d') || m.provider.contains('d')));
+    }
+
+    #[test]
+    fn render_handles_empty_labels_and_no_matches() {
+        // Empty label → empty description suffix on both selected and
+        // non-selected rows.
+        let items = vec![model("a", "", "p"), model("b", "", "p")];
+        let mut sel = bare_selector(items, 4);
+        let lines = sel.render(60);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain.iter().any(|l| l.contains("p/a")));
+        assert!(plain.iter().any(|l| l.contains("p/b")));
+
+        // Filter matching nothing → "No matching models".
+        sel.handle_key("z");
+        let lines = sel.render(60);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain.iter().any(|l| l.contains("No matching models")));
+    }
+
+    #[test]
+    fn render_skips_rows_beyond_filtered_items() {
+        // White-box: force scroll_offset past the (shrunk) item list so the
+        // row loop hits its out-of-items guard.
+        let mut sel = bare_selector(models(), 12);
+        sel.filtered_items.truncate(2);
+        sel.scroll_offset = 1;
+        let lines = sel.render(60);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        // Sorted order is [claude-sonnet-4, deepseek-r1, ...]; truncate(2)
+        // keeps the first two and scroll_offset 1 renders only deepseek-r1.
+        assert!(plain.iter().any(|l| l.contains("deepseek-r1")));
+        assert!(!plain.iter().any(|l| l.contains("claude-sonnet-4")));
+        assert!(!plain.iter().any(|l| l.contains("gpt-4o")));
+    }
+
+    #[test]
+    fn component_trait_passthroughs() {
+        let mut sel = make_selector(noop_save(), noop_cancel());
+        sel.handle_input("down");
+        assert_eq!(sel.selected_index, 1);
+        sel.invalidate();
+        assert!(sel
+            .as_any()
+            .downcast_ref::<ScopedModelsSelector>()
+            .is_some());
+        assert!(sel
+            .as_any_mut()
+            .downcast_mut::<ScopedModelsSelector>()
+            .is_some());
     }
 }

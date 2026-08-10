@@ -1144,23 +1144,22 @@ impl MarkdownRenderer {
             return prefix.clone();
         }
         let sentinel = "\u{0}";
+        let style = self.default_text_style.as_ref().expect("guarded above");
         let mut styled = sentinel.to_string();
-        if let Some(style) = &self.default_text_style {
-            if let Some(color) = &style.color {
-                styled = color(&styled);
-            }
-            if style.bold {
-                styled = (self.theme.bold)(&styled);
-            }
-            if style.italic {
-                styled = (self.theme.italic)(&styled);
-            }
-            if style.strikethrough {
-                styled = (self.theme.strikethrough)(&styled);
-            }
-            if style.underline {
-                styled = (self.theme.underline)(&styled);
-            }
+        if let Some(color) = &style.color {
+            styled = color(&styled);
+        }
+        if style.bold {
+            styled = (self.theme.bold)(&styled);
+        }
+        if style.italic {
+            styled = (self.theme.italic)(&styled);
+        }
+        if style.strikethrough {
+            styled = (self.theme.strikethrough)(&styled);
+        }
+        if style.underline {
+            styled = (self.theme.underline)(&styled);
         }
         let prefix = match styled.find(sentinel) {
             Some(idx) => styled[..idx].to_string(),
@@ -1653,28 +1652,24 @@ impl MarkdownRenderer {
             min_col_widths = vec![1; num_cols];
             let remaining = avail_for_cells - num_cols as isize;
             if remaining > 0 {
-                let total_weight: usize = min_word_widths.iter().map(|w| w.saturating_sub(1)).sum();
+                // total_weight is always > 0 here: min_total > avail ≥
+                // num_cols ⇒ Σ(w-1) = min_total - num_cols > 0.
+                let total_weight = min_word_widths
+                    .iter()
+                    .map(|w| w.saturating_sub(1))
+                    .sum::<usize>()
+                    .max(1);
                 for i in 0..num_cols {
                     let weight = min_word_widths[i].saturating_sub(1);
-                    let add = if total_weight > 0 {
-                        (weight as f64 / total_weight as f64 * remaining as f64).floor() as usize
-                    } else {
-                        0
-                    };
+                    let add =
+                        (weight as f64 / total_weight as f64 * remaining as f64).floor() as usize;
                     min_col_widths[i] += add;
                 }
                 let allocated: usize = min_col_widths.iter().sum();
-                // JS: `let leftover = remaining - allocated;` — can be
-                // negative, in which case the distribution loop is skipped.
-                // Signed arithmetic matches JS (usize would underflow).
-                let mut leftover = remaining - allocated as isize;
-                for w in min_col_widths.iter_mut() {
-                    if leftover <= 0 {
-                        break;
-                    }
-                    *w += 1;
-                    leftover -= 1;
-                }
+                // JS distributes `leftover = remaining - allocated` one cell
+                // at a time; here it is always ≤ 0 (each floor loses < 1, so
+                // Σadd > remaining - num_cols), making the loop a no-op.
+                debug_assert!(remaining - allocated as isize <= 0);
             }
             min_total = min_col_widths.iter().sum();
         }
@@ -1686,23 +1681,22 @@ impl MarkdownRenderer {
                 .map(|i| natural_widths[i].max(min_col_widths[i]))
                 .collect()
         } else {
-            // Shrink proportionally.
+            // Grow proportionally. total_grow > 0 here: if every natural
+            // width equaled its min, the first branch would have matched
+            // (natural == min ⇒ total_natural + border ≤ avail + border).
             let total_grow: usize = natural_widths
                 .iter()
                 .enumerate()
                 .map(|(i, w)| w.saturating_sub(min_col_widths[i]))
-                .sum();
+                .sum::<usize>()
+                .max(1);
             let extra = std::cmp::max(0, avail_for_cells - min_total as isize) as usize;
             let mut cols: Vec<usize> = min_col_widths
                 .iter()
                 .enumerate()
                 .map(|(i, min_w)| {
                     let delta = natural_widths[i].saturating_sub(*min_w);
-                    let grow = if total_grow > 0 {
-                        (delta as f64 / total_grow as f64 * extra as f64).floor() as usize
-                    } else {
-                        0
-                    };
+                    let grow = (delta as f64 / total_grow as f64 * extra as f64).floor() as usize;
                     min_w + grow
                 })
                 .collect();
@@ -2447,5 +2441,990 @@ mod tests {
             lines[0],
             "\x1b[38;5;221m\x1b[1m\x1b[1mSub\x1b[m\x1b[m\x1b[m\x1b[0m"
         );
+    }
+
+    // ─── structural coverage ──────────────────────────────────────────
+
+    fn render_plain(md: &str) -> Vec<String> {
+        let mut r = MarkdownRenderer::new();
+        r.render_text(md, 80)
+            .iter()
+            .map(|l| strip_ansi_codes(l))
+            .collect()
+    }
+
+    #[test]
+    fn type_name_covers_every_block_variant() {
+        assert_eq!(
+            MdBlock::Heading {
+                depth: 1,
+                inline: vec![]
+            }
+            .type_name(),
+            "heading"
+        );
+        assert_eq!(
+            MdBlock::Paragraph { inline: vec![] }.type_name(),
+            "paragraph"
+        );
+        assert_eq!(
+            MdBlock::Code {
+                text: String::new(),
+                lang: String::new()
+            }
+            .type_name(),
+            "code"
+        );
+        assert_eq!(
+            MdBlock::Blockquote { blocks: vec![] }.type_name(),
+            "blockquote"
+        );
+        assert_eq!(
+            MdBlock::List {
+                ordered: false,
+                start: None,
+                items: vec![]
+            }
+            .type_name(),
+            "list"
+        );
+        assert_eq!(MdBlock::Hr.type_name(), "hr");
+        assert_eq!(MdBlock::Html { raw: String::new() }.type_name(), "html");
+        assert_eq!(MdBlock::Space.type_name(), "space");
+        assert_eq!(
+            MdBlock::Table {
+                header: vec![],
+                rows: vec![],
+                raw: String::new()
+            }
+            .type_name(),
+            "table"
+        );
+        assert_eq!(MdBlock::Text { inline: vec![] }.type_name(), "text");
+        assert_eq!(MdBlock::Def.type_name(), "def");
+    }
+
+    #[test]
+    fn markdown_theme_debug_is_brief() {
+        let theme = MarkdownTheme::default();
+        assert_eq!(format!("{theme:?}"), "MarkdownTheme { .. }");
+    }
+
+    #[test]
+    fn with_partial_applies_every_override() {
+        let f: StyleFn = std::rc::Rc::new(|s: &str| format!("B{s}B"));
+        let partial = MarkdownThemePartial {
+            heading: Some(f.clone()),
+            link: Some(f.clone()),
+            link_url: Some(f.clone()),
+            code: Some(f.clone()),
+            code_block: Some(f.clone()),
+            code_block_border: Some(f.clone()),
+            quote: Some(f.clone()),
+            quote_border: Some(f.clone()),
+            hr: Some(f.clone()),
+            list_bullet: Some(f.clone()),
+            bold: Some(f.clone()),
+            italic: Some(f.clone()),
+            strikethrough: Some(f.clone()),
+            underline: Some(f.clone()),
+            highlight_code: Some(std::rc::Rc::new(|text: &str, _lang| {
+                vec![format!("HL:{text}")]
+            })),
+            code_block_indent: Some(">>>".to_string()),
+        };
+        let theme = MarkdownTheme::default().with_partial(partial);
+        assert_eq!((theme.bold)("x"), "BxB");
+        assert_eq!((theme.italic)("x"), "BxB");
+        assert_eq!((theme.strikethrough)("x"), "BxB");
+        assert_eq!((theme.underline)("x"), "BxB");
+        assert_eq!(theme.highlight_code.unwrap()("x", None), vec!["HL:x"]);
+        assert_eq!(theme.code_block_indent.as_deref(), Some(">>>"));
+    }
+
+    #[test]
+    fn renders_all_heading_depths() {
+        let plain = render_plain("# H1\n\n## H2\n\n### H3\n\n#### H4\n\n##### H5\n\n###### H6");
+        for h in ["H1", "H2", "H3", "H4", "H5", "H6"] {
+            assert!(plain.iter().any(|l| l.contains(h)), "missing {h}");
+        }
+    }
+
+    #[test]
+    fn renders_indented_and_fenced_code() {
+        // Fenced with language.
+        let plain = render_plain("```rust\nfn main() {}\n```");
+        assert!(plain.iter().any(|l| l.contains("fn main() {}")));
+        // Indented code block (trailing blanks are trimmed).
+        let plain = render_plain("para\n\n    let x = 1;\n\n");
+        assert!(plain.iter().any(|l| l.contains("let x = 1;")));
+    }
+
+    #[test]
+    fn renders_code_with_custom_highlighter_and_indent() {
+        let mut r = MarkdownRenderer::with_theme(MarkdownThemePartial {
+            highlight_code: Some(std::rc::Rc::new(|text: &str, lang| {
+                vec![format!("[{lang:?}] {text}")]
+            })),
+            code_block_indent: Some(">>".to_string()),
+            ..Default::default()
+        });
+        let lines = r.render_text("```rs\nx\n```", 80);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain.iter().any(|l| l.contains(">>") && l.contains("x")));
+    }
+
+    #[test]
+    fn renders_blockquotes_tasklists_and_nested_lists() {
+        let plain = render_plain(
+            "> quoted *em*\n>\n> more\n\n- [ ] todo\n- [x] done\n\n1. first\n2. second\n",
+        );
+        assert!(plain.iter().any(|l| l.contains("quoted")));
+        assert!(plain.iter().any(|l| l.contains("todo")));
+        assert!(plain.iter().any(|l| l.contains("done")));
+        assert!(plain.iter().any(|l| l.contains("first")));
+        assert!(plain.iter().any(|l| l.contains("second")));
+        // Nested list inside a list item.
+        let plain = render_plain("- outer\n  - inner\n");
+        assert!(plain.iter().any(|l| l.contains("inner")));
+    }
+
+    #[test]
+    fn renders_tables_hr_html_and_defs() {
+        let plain = render_plain(
+            "| A | B |\n|---|---|\n| 1 | 2 |\n\n---\n\n<div>block</div>\n\n[x]: http://ref\n\nafter",
+        );
+        assert!(plain.iter().any(|l| l.contains('A')));
+        assert!(plain.iter().any(|l| l.contains('1')));
+        assert!(plain.iter().any(|l| l.contains("─")));
+        assert!(plain.iter().any(|l| l.contains("div")));
+        assert!(plain.iter().any(|l| l.contains("after")));
+        // The link definition itself renders nothing.
+        assert!(!plain.iter().any(|l| l.contains("http://ref")));
+    }
+
+    #[test]
+    fn renders_inline_features() {
+        let plain = render_plain(
+            "has **bold** *em* ~~gone~~ `code` [lnk](http://x) <span>inline</span> ![img](i.png) and  \na break",
+        );
+        let joined = plain.join("\n");
+        for needle in ["bold", "em", "gone", "code", "lnk", "span", "break"] {
+            assert!(joined.contains(needle), "missing {needle}");
+        }
+    }
+
+    #[test]
+    fn default_text_style_applies_color_bg_and_attributes() {
+        use crate::theme::{bg_raw, fg_raw};
+        let style = DefaultTextStyle {
+            color: Some(std::rc::Rc::new(|s: &str| fg_raw(196, s))),
+            bg_color: Some(std::rc::Rc::new(|s: &str| bg_raw(17, s))),
+            bold: true,
+            italic: true,
+            strikethrough: true,
+            underline: true,
+        };
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
+        let lines = r.render_text("styled text", 40);
+        let joined = lines.join("\n");
+        assert!(joined.contains("38;5;196"));
+        assert!(joined.contains("48;5;17"));
+        assert!(strip_ansi_codes(&joined).contains("styled text"));
+    }
+
+    #[test]
+    fn renderer_component_trait_and_caching() {
+        let mut r = MarkdownRenderer::default();
+        r.set_text("cached body");
+        let a = Component::render(&mut r, 60);
+        let b = r.render(60); // cache hit
+        assert_eq!(a, b);
+        r.set_padding(2, Some(1));
+        let c = r.render(60);
+        assert!(c.len() >= a.len()); // padding adds lines
+        r.invalidate();
+        Component::handle_input(&mut r, "ignored");
+        assert!(r.as_any().downcast_ref::<MarkdownRenderer>().is_some());
+        assert!(r.as_any_mut().downcast_mut::<MarkdownRenderer>().is_some());
+    }
+
+    #[test]
+    fn helpers_cover_their_branches() {
+        // reapply_quote_style re-arms after every reset form.
+        assert_eq!(
+            reapply_quote_style("a\x1b[0mb\x1b[mc"),
+            "a\x1b[0m\x1b[3m\x1b[38;5;244mb\x1b[0m\x1b[3m\x1b[38;5;244mc"
+        );
+        // extract_bg_num finds / misses the bg number.
+        assert_eq!(extract_bg_num("\x1b[48;5;17mx"), Some(17));
+        assert_eq!(extract_bg_num("\x1b[38;5;17mx"), None);
+        assert_eq!(extract_bg_num("48;5;abc"), None);
+        // apply_text_nl styles per line.
+        let out = apply_text_nl(&|s: &str| format!("<{s}>"), "a\nb");
+        assert_eq!(out, "<a>\n<b>");
+        // apply_default_style_fn: None style passes through; all flags apply.
+        let theme = MarkdownTheme::default();
+        assert_eq!(apply_default_style_fn(&theme, &None, "plain"), "plain");
+        let style = DefaultTextStyle {
+            color: Some(std::rc::Rc::new(|s: &str| format!("C{s}C"))),
+            bg_color: None,
+            bold: true,
+            italic: true,
+            strikethrough: true,
+            underline: true,
+        };
+        let out = apply_default_style_fn(&theme, &Some(style), "x");
+        assert!(out.contains('C'));
+        assert!(strip_ansi_codes(&out.replace('C', "")).contains('x'));
+    }
+
+    #[test]
+    fn blockquote_raw_text_reconstructs_content() {
+        let blocks = vec![
+            MdBlock::Paragraph {
+                inline: vec![
+                    MdInline::Text {
+                        text: "hello ".to_string(),
+                    },
+                    MdInline::Strong {
+                        inline: vec![MdInline::Text {
+                            text: "bold".into(),
+                        }],
+                    },
+                    MdInline::Codespan {
+                        text: "code".into(),
+                    },
+                    MdInline::Br,
+                    MdInline::Em {
+                        inline: vec![MdInline::Text { text: "em".into() }],
+                    },
+                    MdInline::Del {
+                        inline: vec![MdInline::Text { text: "del".into() }],
+                    },
+                    MdInline::Link {
+                        inline: vec![MdInline::Text { text: "lnk".into() }],
+                        href: String::new(),
+                    },
+                    MdInline::Html {
+                        raw: "<b>raw</b>".into(),
+                    },
+                    MdInline::Image,
+                    MdInline::Checkbox,
+                ],
+            },
+            MdBlock::Text {
+                inline: vec![MdInline::Text { text: "txt".into() }],
+            },
+            MdBlock::Code {
+                text: "c1\nc2".into(),
+                lang: String::new(),
+            },
+            MdBlock::Hr, // ignored
+        ];
+        let text = blockquote_raw_text(&blocks);
+        assert!(text.contains("hello boldcode"));
+        assert!(text.contains("em"));
+        assert!(text.contains("del"));
+        assert!(text.contains("lnk"));
+        assert!(text.contains("<b>raw</b>"));
+        assert!(text.contains("txt"));
+        assert!(text.contains("c1\nc2"));
+        assert!(!text.ends_with('\n'));
+    }
+
+    // ─── white-box render drives ──────────────────────────────────────
+
+    fn bare_ctx(r: &mut MarkdownRenderer) -> InlineStyleContext {
+        r.get_default_inline_style_context()
+    }
+
+    #[test]
+    fn render_block_text_def_space_and_spacers() {
+        let mut r = MarkdownRenderer::new();
+        let ctx = bare_ctx(&mut r);
+        // Top-level Text block.
+        let out = r.render_block(
+            &MdBlock::Text {
+                inline: vec![MdInline::Text {
+                    text: "tight".into(),
+                }],
+            },
+            60,
+            None,
+            &ctx,
+        );
+        assert_eq!(strip_ansi_codes(&out[0]), "tight");
+        // Def renders nothing; Space renders a blank line.
+        assert!(r.render_block(&MdBlock::Def, 60, None, &ctx).is_empty());
+        let ctx = bare_ctx(&mut r);
+        let space = r.render_block(&MdBlock::Space, 60, None, &ctx);
+        assert!(space.iter().all(|l| l.trim().is_empty()));
+        // Code block followed by a non-space block gets a spacer line.
+        let ctx = bare_ctx(&mut r);
+        let code = MdBlock::Code {
+            text: "x = 1".into(),
+            lang: String::new(),
+        };
+        let with_next = r.render_block(&code, 60, Some("paragraph"), &ctx);
+        let ctx = bare_ctx(&mut r);
+        let without_next = r.render_block(&code, 60, None, &ctx);
+        assert_eq!(with_next.len(), without_next.len() + 1);
+        // …but not before a space block.
+        let ctx = bare_ctx(&mut r);
+        let before_space = r.render_block(&code, 60, Some("space"), &ctx);
+        assert_eq!(before_space.len(), without_next.len());
+        // Hr with a following block.
+        let ctx = bare_ctx(&mut r);
+        let hr = r.render_block(&MdBlock::Hr, 60, Some("paragraph"), &ctx);
+        assert!(hr.last().unwrap().is_empty());
+        // Html block uses the default style.
+        let ctx = bare_ctx(&mut r);
+        let html = r.render_block(&MdBlock::Html { raw: "<br>".into() }, 60, None, &ctx);
+        assert!(strip_ansi_codes(&html[0]).contains("<br>"));
+    }
+
+    #[test]
+    fn render_list_item_all_content_kinds() {
+        let mut r = MarkdownRenderer::new();
+        let ctx = bare_ctx(&mut r);
+        let item: Vec<MdBlock> = vec![
+            MdBlock::Code {
+                text: "item code".into(),
+                lang: "rs".into(),
+            },
+            MdBlock::Html {
+                raw: "<i>x</i>".into(),
+            },
+            MdBlock::Blockquote {
+                blocks: vec![MdBlock::Paragraph {
+                    inline: vec![MdInline::Text {
+                        text: "q in item".into(),
+                    }],
+                }],
+            },
+            MdBlock::Hr, // renders nothing inline
+            MdBlock::Table {
+                header: vec![],
+                rows: vec![],
+                raw: String::new(),
+            }, // nothing
+            MdBlock::List {
+                ordered: false,
+                start: None,
+                items: vec![vec![MdBlock::Text {
+                    inline: vec![MdInline::Text {
+                        text: "nested".into(),
+                    }],
+                }]],
+            },
+        ];
+        let lines = r.render_list_item(&item, 0, &ctx);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain.iter().any(|l| l.contains("item code")));
+        assert!(plain.iter().any(|l| l.contains("<i>x</i>")));
+        assert!(plain.iter().any(|l| l.contains("q in item")));
+        assert!(plain.iter().any(|l| l.contains("nested")));
+    }
+
+    #[test]
+    fn render_table_narrow_fallback_and_shrink() {
+        // Too narrow for borders → raw text fallback (+ spacer when a
+        // non-space block follows).
+        let mut r = MarkdownRenderer::new();
+        let ctx = bare_ctx(&mut r);
+        let header = vec![vec![MdInline::Text { text: "A".into() }]];
+        let rows = vec![vec![vec![MdInline::Text { text: "1".into() }]]];
+        let narrow = r.render_table(
+            &header,
+            &rows,
+            "| A |\n|---|\n| 1 |",
+            2,
+            Some("paragraph"),
+            &ctx,
+        );
+        assert!(narrow.iter().any(|l| l.contains('A')));
+        assert!(narrow.last().unwrap().is_empty());
+
+        // A long unbroken word forces the shrink-to-fit path.
+        let long = "x".repeat(100);
+        let header2 = vec![
+            vec![MdInline::Text { text: long.clone() }],
+            vec![MdInline::Text { text: "B".into() }],
+        ];
+        let rows2 = vec![vec![
+            vec![MdInline::Text { text: long }],
+            vec![MdInline::Text { text: "2".into() }],
+        ]];
+        let mut r = MarkdownRenderer::new();
+        let ctx = bare_ctx(&mut r);
+        let lines = r.render_table(&header2, &rows2, "", 30, None, &ctx);
+        assert!(!lines.is_empty());
+        // A table with an empty header renders nothing.
+        let ctx = bare_ctx(&mut r);
+        assert!(r.render_table(&[], &[], "", 40, None, &ctx).is_empty());
+    }
+
+    #[test]
+    fn render_table_multi_row_and_ragged() {
+        let mut r = MarkdownRenderer::new();
+        let ctx = bare_ctx(&mut r);
+        let header = vec![
+            vec![MdInline::Text { text: "A".into() }],
+            vec![MdInline::Text { text: "B".into() }],
+        ];
+        // Second row has fewer cells than the header (ragged → skip arm).
+        let rows = vec![
+            vec![
+                vec![MdInline::Text { text: "1".into() }],
+                vec![MdInline::Text { text: "2".into() }],
+            ],
+            vec![vec![MdInline::Text { text: "3".into() }]],
+        ];
+        let lines = r.render_table(&header, &rows, "", 60, Some("paragraph"), &ctx);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        // Row separator between rows.
+        assert!(plain.iter().any(|l| l.contains('├')));
+        assert!(plain.iter().any(|l| l.contains('1')));
+        assert!(plain.iter().any(|l| l.contains('3')));
+        // Spacer before the next non-space block.
+        assert!(plain.last().unwrap().is_empty());
+        // get_longest_word_width with no cap.
+        assert_eq!(r.get_longest_word_width("a bbbb cc", None), 4);
+        assert_eq!(r.get_longest_word_width("a bbbb cc", Some(2)), 2);
+    }
+
+    #[test]
+    fn parser_synthetic_event_skip_arms() {
+        use pulldown_cmark::CowStr;
+
+        fn parser_with(events: Vec<(Event<'static>, std::ops::Range<usize>)>) -> MdParser<'static> {
+            MdParser {
+                // Padding so synthetic byte ranges stay in bounds.
+                src: "                                                                ",
+                line_starts: vec![0],
+                events,
+                pos: 0,
+            }
+        }
+        fn text_ev(s: &str) -> (Event<'static>, std::ops::Range<usize>) {
+            (
+                Event::Text(CowStr::Boxed(s.to_string().into_boxed_str())),
+                0..1,
+            )
+        }
+        let rng = || 0..1;
+
+        // parse_blocks: End that does not match the stop is skipped.
+        let mut p = parser_with(vec![
+            (Event::End(TagEnd::Paragraph), rng()),
+            (Event::End(TagEnd::Item), rng()),
+        ]);
+        let (blocks, _) = p.parse_blocks(Some(TagEnd::Item), (0, 0), false, false);
+        assert!(blocks.is_empty());
+
+        // parse_blocks: an unrecognized top-level event hits `other`.
+        let mut p = parser_with(vec![(
+            Event::FootnoteReference(CowStr::Boxed("x".to_string().into_boxed_str())),
+            rng(),
+        )]);
+        let (blocks, _) = p.parse_blocks(None, (0, 0), false, false);
+        assert!(blocks.is_empty());
+
+        // parse_block_start: an unexpected block tag is skipped to its End.
+        let mut p = parser_with(vec![
+            (
+                Event::Start(Tag::FootnoteDefinition(CowStr::Boxed(
+                    "x".to_string().into_boxed_str(),
+                ))),
+                rng(),
+            ),
+            text_ev("inside"),
+            (Event::End(TagEnd::FootnoteDefinition), rng()),
+        ]);
+        let (blocks, _) = p.parse_blocks(None, (0, 0), false, false);
+        assert!(blocks.is_empty());
+
+        // Code block: stray non-text events are skipped.
+        let mut p = parser_with(vec![
+            (
+                Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(
+                    CowStr::Boxed("rs".to_string().into_boxed_str()),
+                ))),
+                rng(),
+            ),
+            (Event::SoftBreak, rng()),
+            text_ev("code"),
+            (Event::End(TagEnd::CodeBlock), rng()),
+        ]);
+        let (blocks, _) = p.parse_blocks(None, (0, 0), false, false);
+        assert!(matches!(blocks[0], MdBlock::Code { .. }));
+
+        // Indented code: trailing spaces/tabs are trimmed.
+        let mut p = parser_with(vec![
+            (
+                Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Indented)),
+                rng(),
+            ),
+            text_ev("code  \t\n\n"),
+            (Event::End(TagEnd::CodeBlock), rng()),
+        ]);
+        let (blocks, _) = p.parse_blocks(None, (0, 0), false, false);
+        let debug = format!("{:?}", blocks[0]);
+        assert!(debug.starts_with("Code"));
+        assert!(debug.contains("text: \"code\""));
+
+        // List: stray events between items are skipped.
+        let mut p = parser_with(vec![
+            (Event::Start(Tag::List(None)), rng()),
+            (Event::SoftBreak, rng()),
+            (Event::End(TagEnd::List(false)), rng()),
+        ]);
+        let (blocks, _) = p.parse_blocks(None, (0, 0), false, false);
+        assert!(matches!(blocks[0], MdBlock::List { .. }));
+
+        // Table: stray events in head/row/top loops are skipped.
+        let mut p = parser_with(vec![
+            (Event::Start(Tag::Table(vec![])), rng()),
+            (Event::Start(Tag::TableHead), rng()),
+            (Event::SoftBreak, rng()),
+            (Event::End(TagEnd::TableHead), rng()),
+            (Event::Start(Tag::TableRow), rng()),
+            (Event::Rule, rng()),
+            (Event::End(TagEnd::TableRow), rng()),
+            (Event::HardBreak, rng()),
+            (Event::End(TagEnd::Table), rng()),
+        ]);
+        let (blocks, _) = p.parse_blocks(None, (0, 0), false, false);
+        assert!(matches!(blocks[0], MdBlock::Table { .. }));
+
+        // parse_inline_until: running out of events breaks; a non-matching
+        // End is skipped.
+        let mut p = parser_with(vec![
+            (Event::Start(Tag::Emphasis), rng()),
+            (Event::End(TagEnd::Paragraph), rng()),
+            text_ev("x"),
+        ]);
+        let tokens = p.parse_inline_until(TagEnd::Emphasis);
+        assert_eq!(tokens.len(), 1);
+
+        // parse_inline_until: a nested BLOCK start is skipped to its End.
+        let mut p = parser_with(vec![
+            (Event::Start(Tag::Emphasis), rng()),
+            (
+                Event::Start(Tag::Heading {
+                    level: pulldown_cmark::HeadingLevel::H2,
+                    id: None,
+                    classes: vec![],
+                    attrs: vec![],
+                }),
+                rng(),
+            ),
+            text_ev("inner"),
+            (
+                Event::End(TagEnd::Heading(pulldown_cmark::HeadingLevel::H2)),
+                rng(),
+            ),
+            text_ev("after"),
+            (Event::End(TagEnd::Emphasis), rng()),
+        ]);
+        let tokens = p.parse_inline_until(TagEnd::Emphasis);
+        assert_eq!(tokens.len(), 1); // only "after" — the heading was skipped
+
+        // parse_inline_until: an unrecognized event is skipped in place.
+        let mut p = parser_with(vec![
+            (Event::Start(Tag::Emphasis), rng()),
+            (Event::Rule, rng()),
+            text_ev("x"),
+            (Event::End(TagEnd::Emphasis), rng()),
+        ]);
+        let tokens = p.parse_inline_until(TagEnd::Emphasis);
+        assert_eq!(tokens.len(), 1);
+
+        // parse_bare_text_block: all inline event kinds.
+        let mut p = parser_with(vec![
+            (Event::TaskListMarker(false), rng()),
+            (
+                Event::Code(CowStr::Boxed("c".to_string().into_boxed_str())),
+                rng(),
+            ),
+            (
+                Event::InlineHtml(CowStr::Boxed("<b>".to_string().into_boxed_str())),
+                rng(),
+            ),
+            (Event::SoftBreak, rng()),
+            (Event::HardBreak, rng()),
+            (Event::Start(Tag::Emphasis), rng()),
+            text_ev("em"),
+            (Event::End(TagEnd::Emphasis), rng()),
+            (Event::Start(Tag::Strong), rng()),
+            text_ev("st"),
+            (Event::End(TagEnd::Strong), rng()),
+            (Event::Start(Tag::Strikethrough), rng()),
+            text_ev("del"),
+            (Event::End(TagEnd::Strikethrough), rng()),
+            (
+                Event::Start(Tag::Link {
+                    link_type: pulldown_cmark::LinkType::Inline,
+                    dest_url: CowStr::Boxed("http://x".to_string().into_boxed_str()),
+                    title: CowStr::Boxed(String::new().into_boxed_str()),
+                    id: CowStr::Boxed(String::new().into_boxed_str()),
+                }),
+                rng(),
+            ),
+            text_ev("lnk"),
+            (Event::End(TagEnd::Link), rng()),
+            (
+                Event::Start(Tag::Image {
+                    link_type: pulldown_cmark::LinkType::Inline,
+                    dest_url: CowStr::Boxed("i.png".to_string().into_boxed_str()),
+                    title: CowStr::Boxed(String::new().into_boxed_str()),
+                    id: CowStr::Boxed(String::new().into_boxed_str()),
+                }),
+                rng(),
+            ),
+            (Event::End(TagEnd::Image), rng()),
+            // …ends at end-of-events (no stop).
+        ]);
+        let (block, _) = p.parse_bare_text_block(0..1);
+        let debug = format!("{:?}", block);
+        assert!(debug.starts_with("Text"));
+
+        // parse_bare_text_block: breaks on an unhandled Start and on Rule.
+        let mut p = parser_with(vec![
+            text_ev("before"),
+            (
+                Event::Start(Tag::Heading {
+                    level: pulldown_cmark::HeadingLevel::H1,
+                    id: None,
+                    classes: vec![],
+                    attrs: vec![],
+                }),
+                rng(),
+            ),
+        ]);
+        let (block, _) = p.parse_bare_text_block(0..1);
+        assert!(matches!(block, MdBlock::Text { .. }));
+        let mut p = parser_with(vec![text_ev("before"), (Event::Rule, rng())]);
+        let (block, _) = p.parse_bare_text_block(0..1);
+        assert!(matches!(block, MdBlock::Text { .. }));
+
+        // is_blank_line with blockquote markers.
+        let p = MdParser::new("> \n");
+        assert!(p.is_blank_line(0));
+        let p = MdParser::new("  > quoted\n");
+        assert!(!p.is_blank_line(0));
+    }
+
+    #[test]
+    fn render_inline_strips_trailing_style_prefix() {
+        use crate::theme::fg_raw;
+        let style = DefaultTextStyle {
+            color: Some(std::rc::Rc::new(|s: &str| fg_raw(99, s))),
+            bg_color: None,
+            bold: false,
+            italic: false,
+            strikethrough: false,
+            underline: false,
+        };
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
+        // An image-only inline run renders just the style prefix, which is
+        // then stripped back off.
+        let ctx = bare_ctx(&mut r);
+        let out = r.render_inline_tokens(&[MdInline::Image], &ctx);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn component_invalidate_override_and_blockquote_trailing_pop() {
+        let mut r = MarkdownRenderer::new();
+        r.set_text("x");
+        let _ = r.render(40);
+        Component::invalidate(&mut r);
+        assert!(r.cached_lines.is_none());
+
+        // blockquote_raw_text drops trailing empty lines.
+        let blocks = vec![
+            MdBlock::Paragraph {
+                inline: vec![MdInline::Text {
+                    text: "real".into(),
+                }],
+            },
+            MdBlock::Paragraph { inline: vec![] },
+        ];
+        assert_eq!(blockquote_raw_text(&blocks), "real");
+    }
+
+    #[test]
+    fn parser_white_box_edges() {
+        let p = MdParser::new("plain text");
+        // find_container_end at a non-Start event → 0.
+        let mut p2 = MdParser::new("plain text");
+        // pos 1 is the Text event inside the paragraph.
+        p2.pos = 1;
+        assert_eq!(p2.find_container_end(TagEnd::Paragraph), 0);
+        // …and an unmatched stop scans to the end → 0.
+        let mut p3 = MdParser::new("plain text");
+        p3.pos = 0;
+        assert_eq!(p3.find_container_end(TagEnd::CodeBlock), 0);
+        // parse_block_start at a non-Start event → None.
+        assert!(matches!(p2.events[p2.pos].0, Event::Text(_)));
+        assert!(p2.parse_block_start().is_none());
+        drop(p);
+    }
+
+    #[test]
+    fn parser_skip_arms_via_exotic_inputs() {
+        // Exercise the skip/`other` arms; assertions are loose — the point
+        // is driving the parser paths without panicking.
+        let cases = [
+            "- a\n\n>\n",                         // blank-ish blockquote marker after a list
+            "- [ ] task\n\n- [x] done\n\npara\n", // loose task list
+            "<div>\nblock\n</div>\n\npara\n",     // html block
+            "text\n<span>inline</span>\nmore\n",  // inline html mid-paragraph
+            "<!-- comment -->\n\npara\n",
+            "##\n",                        // empty heading
+            "```\n\n```\n",                // empty fenced code
+            "    indented\n\n\t tabbed\n", // indented code with tab line
+        ];
+        for md in cases {
+            let mut r = MarkdownRenderer::new();
+            let _ = r.render_text(md, 60);
+        }
+    }
+
+    #[test]
+    fn default_style_prefix_cache_and_sentinel_dropping_style() {
+        use crate::theme::fg_raw;
+        let style = DefaultTextStyle {
+            color: Some(std::rc::Rc::new(|s: &str| fg_raw(99, s))),
+            bg_color: None,
+            bold: false,
+            italic: false,
+            strikethrough: false,
+            underline: false,
+        };
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
+        // Two renders: the second hits the cached style prefix.
+        let _ = r.render_text("<b>hi</b>", 40);
+        let _ = r.render_text("<b>hi again</b>", 40);
+
+        // A color fn that DROPS the sentinel → empty prefix (find → None).
+        let style = DefaultTextStyle {
+            color: Some(std::rc::Rc::new(|_s: &str| "CONSTANT".to_string())),
+            bg_color: None,
+            bold: true,
+            italic: false,
+            strikethrough: false,
+            underline: false,
+        };
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
+        let lines = r.render_text("<u>html</u>", 40);
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn task_list_markers_in_tight_and_loose_lists() {
+        let plain = render_plain("- [ ] open\n- [x] closed\n");
+        assert!(plain.join("").contains("open"));
+        let plain = render_plain("- [ ] open\n\n- [x] closed\n");
+        assert!(plain.join("").contains("closed"));
+    }
+
+    #[test]
+    fn default_style_applies_to_html_blocks() {
+        use crate::theme::fg_raw;
+        let style = DefaultTextStyle {
+            color: Some(std::rc::Rc::new(|s: &str| fg_raw(99, s))),
+            bg_color: None,
+            bold: true,
+            italic: true,
+            strikethrough: true,
+            underline: true,
+        };
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
+        let lines = r.render_text("<div>\nblock html\n</div>", 60);
+        let joined = lines.join("\n");
+        assert!(joined.contains("38;5;99"));
+        assert!(strip_ansi_codes(&joined).contains("block html"));
+    }
+
+    #[test]
+    fn get_style_prefix_none_when_sentinel_dropped() {
+        // A heading style that drops the sentinel yields an empty prefix.
+        let mut r = MarkdownRenderer::with_theme(MarkdownThemePartial {
+            heading: Some(std::rc::Rc::new(|_s: &str| "CONSTANT".to_string())),
+            ..Default::default()
+        });
+        let lines = r.render_text("# title", 60);
+        // The style fn swallows the text — the output is its constant.
+        assert!(strip_ansi_codes(&lines.join("\n")).contains("CONSTANT"));
+    }
+
+    #[test]
+    fn blockquote_spacer_before_next_block() {
+        let mut r = MarkdownRenderer::new();
+        let ctx = bare_ctx(&mut r);
+        let quote = MdBlock::Blockquote {
+            blocks: vec![MdBlock::Paragraph {
+                inline: vec![MdInline::Text { text: "q".into() }],
+            }],
+        };
+        let with_next = r.render_block(&quote, 60, Some("paragraph"), &ctx);
+        let ctx = bare_ctx(&mut r);
+        let without = r.render_block(&quote, 60, None, &ctx);
+        assert_eq!(with_next.len(), without.len() + 1);
+    }
+
+    #[test]
+    fn render_list_with_nested_list_first_line() {
+        let mut r = MarkdownRenderer::new();
+        let ctx = bare_ctx(&mut r);
+        // An item whose first content block is itself a list → the first
+        // line is pushed without a bullet prefix.
+        let items = vec![vec![
+            MdBlock::List {
+                ordered: false,
+                start: None,
+                items: vec![vec![MdBlock::Text {
+                    inline: vec![MdInline::Text {
+                        text: "deep".into(),
+                    }],
+                }]],
+            },
+            MdBlock::Text {
+                inline: vec![MdInline::Text {
+                    text: "tail".into(),
+                }],
+            },
+        ]];
+        let lines = r.render_list(false, None, &items, 0, &ctx);
+        let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
+        assert!(plain.iter().any(|l| l.contains("deep")));
+        assert!(plain.iter().any(|l| l.contains("tail")));
+    }
+
+    #[test]
+    fn highlight_code_inside_list_item() {
+        let mut r = MarkdownRenderer::with_theme(MarkdownThemePartial {
+            highlight_code: Some(std::rc::Rc::new(|text: &str, _lang| {
+                vec![format!("HL {text}")]
+            })),
+            ..Default::default()
+        });
+        let ctx = bare_ctx(&mut r);
+        let item = vec![MdBlock::Code {
+            text: "fn x()".into(),
+            lang: "rs".into(),
+        }];
+        let lines = r.render_list_item(&item, 0, &ctx);
+        assert!(strip_ansi_codes(&lines.join("\n")).contains("HL fn x()"));
+    }
+
+    #[test]
+    fn table_narrow_fallback_with_empty_raw() {
+        let mut r = MarkdownRenderer::new();
+        let ctx = bare_ctx(&mut r);
+        let header = vec![vec![MdInline::Text { text: "A".into() }]];
+        let rows = vec![vec![vec![MdInline::Text { text: "1".into() }]]];
+        // Empty raw + narrow → empty fallback (no spacer without a next).
+        assert!(r.render_table(&header, &rows, "", 2, None, &ctx).is_empty());
+    }
+
+    #[test]
+    fn table_width_distribution_edges() {
+        let mut r = MarkdownRenderer::new();
+        // Shrink with zero remaining (avail == num_cols after borders).
+        let header = vec![
+            vec![MdInline::Text { text: "aaa".into() }],
+            vec![MdInline::Text { text: "bbb".into() }],
+        ];
+        let rows = vec![vec![
+            vec![MdInline::Text { text: "ccc".into() }],
+            vec![MdInline::Text { text: "ddd".into() }],
+        ]];
+        let ctx = bare_ctx(&mut r);
+        let lines = r.render_table(&header, &rows, "", 9, None, &ctx);
+        assert!(!lines.is_empty());
+
+        // Grow with zero total_grow (all cells single words at min width).
+        let header = vec![
+            vec![MdInline::Text { text: "aa".into() }],
+            vec![MdInline::Text { text: "b".into() }],
+        ];
+        let rows = vec![vec![
+            vec![MdInline::Text { text: "cc".into() }],
+            vec![MdInline::Text { text: "d".into() }],
+        ]];
+        let ctx = bare_ctx(&mut r);
+        let lines = r.render_table(&header, &rows, "", 9, None, &ctx);
+        assert!(!lines.is_empty());
+
+        // Remainder distribution: cols grown below natural with spare room.
+        let header = vec![
+            vec![MdInline::Text {
+                text: "aa bb".into(),
+            }],
+            vec![MdInline::Text {
+                text: "cc dd".into(),
+            }],
+        ];
+        let rows = vec![vec![
+            vec![MdInline::Text {
+                text: "ee ff".into(),
+            }],
+            vec![MdInline::Text {
+                text: "gg hh".into(),
+            }],
+        ]];
+        let ctx = bare_ctx(&mut r);
+        let lines = r.render_table(&header, &rows, "", 14, None, &ctx);
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn synthetic_html_block_event() {
+        use pulldown_cmark::CowStr;
+        let mut p = MdParser {
+            src: "                                                                ",
+            line_starts: vec![0],
+            events: vec![(
+                Event::Html(CowStr::Boxed("<div>raw</div>".to_string().into_boxed_str())),
+                0..1,
+            )],
+            pos: 0,
+        };
+        let (blocks, _) = p.parse_blocks(None, (0, 0), false, false);
+        assert!(matches!(&blocks[0], MdBlock::Html { raw } if raw.contains("raw")));
+    }
+
+    #[test]
+    fn trailing_prefix_stripped_after_styled_token() {
+        use crate::theme::fg_raw;
+        let style = DefaultTextStyle {
+            color: Some(std::rc::Rc::new(|s: &str| fg_raw(99, s))),
+            bg_color: None,
+            bold: false,
+            italic: false,
+            strikethrough: false,
+            underline: false,
+        };
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
+        // A run ending in Strong pushes the prefix last → stripped.
+        let ctx = bare_ctx(&mut r);
+        let out = r.render_inline_tokens(
+            &[MdInline::Strong {
+                inline: vec![MdInline::Text { text: "b".into() }],
+            }],
+            &ctx,
+        );
+        assert!(!out.ends_with(&ctx.style_prefix));
+        assert!(strip_ansi_codes(&out).contains('b'));
     }
 }
