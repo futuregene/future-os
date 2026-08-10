@@ -61,4 +61,88 @@ mod tests {
         let result = get_platform_url(None).await;
         assert_eq!(result, DEFAULT_PLATFORM_URL);
     }
+
+    /// Write `~/.future/agent/auth.json` under the guard's temp HOME.
+    async fn write_auth(home: &crate::test_env::EnvGuard, body: &str) {
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().expect("parent"))
+            .await
+            .expect("mkdir");
+        tokio::fs::write(&path, body)
+            .await
+            .expect("write auth.json");
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn auth_file_base_url_wins_over_default() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = crate::test_env::EnvGuard::temp_home();
+        write_auth(
+            &home,
+            r#"{"future": {"base_url": "https://corp.example.com"}}"#,
+        )
+        .await;
+        assert_eq!(get_platform_url(None).await, "https://corp.example.com");
+    }
+
+    #[tokio::test]
+    async fn auth_file_base_url_api_suffix_stripped() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = crate::test_env::EnvGuard::temp_home();
+        // Both "/api" and "/api/" suffixes strip; plain trailing slash trims.
+        write_auth(
+            &home,
+            r#"{"future": {"base_url": "https://a.example.com/api"}}"#,
+        )
+        .await;
+        assert_eq!(get_platform_url(None).await, "https://a.example.com");
+        write_auth(
+            &home,
+            r#"{"future": {"base_url": "https://b.example.com/api/"}}"#,
+        )
+        .await;
+        assert_eq!(get_platform_url(None).await, "https://b.example.com");
+        write_auth(
+            &home,
+            r#"{"future": {"base_url": "https://c.example.com/"}}"#,
+        )
+        .await;
+        assert_eq!(get_platform_url(None).await, "https://c.example.com");
+        // A non-suffix "/api" in the middle is preserved.
+        write_auth(
+            &home,
+            r#"{"future": {"base_url": "https://d.example.com/api/v1"}}"#,
+        )
+        .await;
+        assert_eq!(get_platform_url(None).await, "https://d.example.com/api/v1");
+    }
+
+    #[tokio::test]
+    async fn auth_file_edge_cases_fall_through_to_default() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = crate::test_env::EnvGuard::temp_home();
+        // Invalid JSON.
+        write_auth(&home, "not json").await;
+        assert_eq!(get_platform_url(None).await, DEFAULT_PLATFORM_URL);
+        // `future` key not an object.
+        write_auth(&home, r#"{"future": "nope"}"#).await;
+        assert_eq!(get_platform_url(None).await, DEFAULT_PLATFORM_URL);
+        // `base_url` empty (JS-falsy).
+        write_auth(&home, r#"{"future": {"base_url": ""}}"#).await;
+        assert_eq!(get_platform_url(None).await, DEFAULT_PLATFORM_URL);
+        // `base_url` not a string.
+        write_auth(&home, r#"{"future": {"base_url": 42}}"#).await;
+        assert_eq!(get_platform_url(None).await, DEFAULT_PLATFORM_URL);
+        // Explicit override still wins over a valid auth.json.
+        write_auth(
+            &home,
+            r#"{"future": {"base_url": "https://corp.example.com"}}"#,
+        )
+        .await;
+        assert_eq!(
+            get_platform_url(Some("https://override.example.com/")).await,
+            "https://override.example.com"
+        );
+    }
 }

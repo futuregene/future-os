@@ -24,17 +24,14 @@ pub fn ensure_record_property<'a>(
     parent: &'a mut Map<String, Value>,
     key: &str,
 ) -> &'a mut Map<String, Value> {
-    if parent.get(key).is_some_and(Value::is_object) {
-        return match parent.get_mut(key) {
-            Some(Value::Object(map)) => map,
-            _ => unreachable!("is_object checked above"),
-        };
+    if !parent.get(key).is_some_and(Value::is_object) {
+        parent.insert(key.to_string(), Value::Object(Map::new()));
     }
-    parent.insert(key.to_string(), Value::Object(Map::new()));
-    match parent.get_mut(key) {
-        Some(Value::Object(map)) => map,
-        _ => unreachable!("just inserted"),
-    }
+    // Invariant: the entry exists and is an object (checked/inserted above).
+    parent
+        .get_mut(key)
+        .and_then(Value::as_object_mut)
+        .expect("entry checked or inserted above")
 }
 
 #[cfg(test)]

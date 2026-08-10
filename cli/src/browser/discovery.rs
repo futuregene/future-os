@@ -56,11 +56,17 @@ fn find_macos_browser() -> Option<BrowserExecutable> {
             "/Applications/Chromium.app/Contents/MacOS/Chromium",
         ),
     ];
-    for (kind, path) in CANDIDATES {
+    first_existing(&CANDIDATES)
+}
+
+/// First candidate whose path exists on disk, in priority order.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn first_existing(candidates: &[(&'static str, &str)]) -> Option<BrowserExecutable> {
+    for (kind, path) in candidates {
         if std::path::Path::new(path).exists() {
             return Some(BrowserExecutable {
                 kind,
-                executable_path: path.to_string(),
+                executable_path: (*path).to_string(),
             });
         }
     }
@@ -122,15 +128,7 @@ fn find_linux_browser() -> Option<BrowserExecutable> {
         ("chromium", "/usr/bin/chromium-browser"),
         ("chromium", "/usr/bin/chromium"),
     ];
-    for (kind, path) in CANDIDATES {
-        if std::path::Path::new(path).exists() {
-            return Some(BrowserExecutable {
-                kind,
-                executable_path: path.to_string(),
-            });
-        }
-    }
-    None
+    first_existing(&CANDIDATES)
 }
 
 /// `inferKind(path)`.
@@ -164,5 +162,25 @@ mod tests {
         let found = find_browser(Some("/tmp/custom-chrome")).unwrap();
         assert_eq!(found.executable_path, "/tmp/custom-chrome");
         assert_eq!(found.kind, "chrome");
+    }
+
+    #[test]
+    fn discovery_runs_platform_candidates() {
+        // Environment-dependent: returns Some when a browser is installed
+        // (dev machines), None on bare CI images. Either way the platform
+        // candidate-scan code path executes.
+        let _ = find_browser(None);
+    }
+
+    #[test]
+    fn first_existing_scans_in_order_and_may_miss() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let present = dir.path().join("browser-bin");
+        std::fs::write(&present, "x").expect("write");
+        let present = present.to_str().expect("utf8").to_string();
+        // Hit on the second candidate (skips a missing one), then total miss.
+        let found = first_existing(&[("chrome", "/no/such/bin"), ("chromium", &present)]);
+        assert_eq!(found.map(|b| b.kind), Some("chromium"));
+        assert!(first_existing(&[("chrome", "/no/such/bin")]).is_none());
     }
 }

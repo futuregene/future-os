@@ -109,4 +109,138 @@ mod tests {
         let path = resolve_screenshot_path(None);
         assert!(!path.contains(':'));
     }
+
+    #[tokio::test]
+    async fn browser_dir_honors_future_home_env() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        assert_eq!(browser_dir(), dir.path().join("agent").join("browser"));
+        assert_eq!(
+            artifacts_dir(),
+            dir.path().join("agent").join("browser").join("artifacts")
+        );
+        drop(_env);
+        // Without FUTURE_HOME it derives from the home directory.
+        let expected = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".future")
+            .join("agent")
+            .join("browser");
+        assert_eq!(browser_dir(), expected);
+    }
+
+    #[tokio::test]
+    async fn write_screenshot_to_explicit_path() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        let target = dir.path().join("shots").join("one.png");
+        let result = write_screenshot(b"png-bytes", target.to_str().expect("utf8"))
+            .await
+            .expect("write");
+        assert_eq!(result.path, target.display().to_string());
+        assert_eq!(result.filename, "one.png");
+        assert_eq!(tokio::fs::read(&target).await.expect("read"), b"png-bytes");
+    }
+
+    #[tokio::test]
+    async fn write_screenshot_falls_back_to_artifacts_dir() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        // Parent is a regular FILE → create_dir_all fails → fallback.
+        let blocker = dir.path().join("blocker");
+        tokio::fs::write(&blocker, "x").await.expect("write");
+        let target = blocker.join("two.png");
+        let result = write_screenshot(b"png-bytes", target.to_str().expect("utf8"))
+            .await
+            .expect("fallback write");
+        assert_eq!(result.filename, "two.png");
+        assert!(result.path.contains("artifacts"));
+        let written = tokio::fs::read(&result.path).await.expect("read");
+        assert_eq!(written, b"png-bytes");
+    }
+
+    #[tokio::test]
+    async fn write_screenshot_fallback_failures_surface() {
+        let _guard = crate::test_env::lock_env().await;
+
+        // FUTURE_HOME is a regular FILE → the artifacts dir cannot be
+        // created → create_dir_all error propagates.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home_file = tmp.path().join("home-file");
+        tokio::fs::write(&home_file, "x").await.expect("write");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            home_file.as_os_str().to_os_string(),
+        )]);
+        // Explicit target also unwritable (parent is a file).
+        let target = home_file.join("x.png");
+        let err = write_screenshot(b"b", target.to_str().expect("utf8"))
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+        drop(_env);
+
+        // Artifacts dir exists but the fallback FILE path is a directory.
+        let tmp2 = tempfile::tempdir().expect("tempdir");
+        let _env2 = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            tmp2.path().as_os_str().to_os_string(),
+        )]);
+        tokio::fs::create_dir_all(artifacts_dir().join("shot.png"))
+            .await
+            .expect("mkdir");
+        let blocker = tmp2.path().join("blocker");
+        tokio::fs::write(&blocker, "x").await.expect("write");
+        let target = blocker.join("shot.png");
+        let err = write_screenshot(b"b", target.to_str().expect("utf8"))
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_screenshot_filename_defaults_for_rootish_paths() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        // A bare filename has no parent component → parent "." is used.
+        let cwd = dir.path().join("cwd");
+        tokio::fs::create_dir_all(&cwd).await.expect("mkdir");
+        let _cwd_guard = CwdGuard::enter(&cwd);
+        let result = write_screenshot(b"x", "bare.png").await.expect("write");
+        assert_eq!(result.filename, "bare.png");
+        assert!(cwd.join("bare.png").exists());
+    }
+
+    /// Restore the process CWD on drop (tests share one process).
+    struct CwdGuard(std::path::PathBuf);
+
+    impl CwdGuard {
+        fn enter(dir: &Path) -> Self {
+            let original = std::env::current_dir().expect("cwd");
+            std::env::set_current_dir(dir).expect("chdir");
+            CwdGuard(original)
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.0).expect("restore cwd");
+        }
+    }
 }

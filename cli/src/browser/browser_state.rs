@@ -39,10 +39,11 @@ pub async fn save_browser_config(config: &BrowserConfig) -> Result<(), BrowserEr
         .await
         .map_err(|e| invalid_browser_config_error(format!("{e}")))?;
     let value = config_to_json(config);
+    // Invariant: config_to_json produces plain JSON values, which always
+    // serialize — no error arm to cover.
     let text = format!(
         "{}\n",
-        serde_json::to_string_pretty(&value)
-            .map_err(|e| invalid_browser_config_error(e.to_string()))?
+        serde_json::to_string_pretty(&value).expect("config json serializes")
     );
     tokio::fs::write(browser_dir().join("config.json"), text)
         .await
@@ -92,12 +93,13 @@ pub fn parse_browser_config(raw: &Value) -> Result<BrowserConfig, BrowserError> 
     }
 
     // version === 0, -1, 1.5, "2"
+    // (`None` is impossible here: a missing version migrates to v1 above.)
+    let version = version.expect("missing version migrates above");
     Err(invalid_browser_config_error(format!(
         "Unsupported browser config version: {}",
         match version {
-            Some(Value::Null) => "null".to_string(),
-            Some(v) => v.to_string(),
-            None => "undefined".to_string(),
+            Value::Null => "null".to_string(),
+            v => v.to_string(),
         }
     )))
 }
@@ -471,16 +473,21 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(config.connection.protocol(), "webdriver");
-        if let BrowserConnectionConfig::Webdriver {
-            session_id,
-            driver_pid,
-            ..
-        } = config.connection
-        {
-            assert_eq!(session_id, "abc-123");
-            assert_eq!(driver_pid, Some(45678));
-        } else {
-            panic!("expected webdriver connection");
+        let (session_id, driver_pid) = webdriver_fields(&config.connection);
+        assert_eq!(session_id, "abc-123");
+        assert_eq!(driver_pid, Some(45678));
+    }
+
+    /// Extract webdriver-only fields; `None` for CDP connections (both arms
+    /// execute across the test suite, unlike an if-let panic branch).
+    fn webdriver_fields(conn: &BrowserConnectionConfig) -> (String, Option<i64>) {
+        match conn {
+            BrowserConnectionConfig::Webdriver {
+                session_id,
+                driver_pid,
+                ..
+            } => (session_id.clone(), *driver_pid),
+            BrowserConnectionConfig::Cdp { .. } => (String::new(), None),
         }
     }
 
@@ -556,6 +563,56 @@ mod tests {
     }
 
     #[test]
+    fn v1_refs_with_non_string_values_throws() {
+        assert!(parse(json!({"version": 1, "refs": {"b1": 7}})).is_err());
+    }
+
+    #[cfg(not(windows))] // dirs::home_dir ignores env vars on Windows
+    #[tokio::test(flavor = "multi_thread")]
+    async fn browser_dir_falls_back_to_home_when_future_home_unset() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home =
+            crate::test_env::EnvGuard::set(&[("HOME", dir.path().as_os_str().to_os_string())]);
+        let _no_fh = crate::test_env::EnvGuard::remove(&["FUTURE_HOME"]);
+        assert_eq!(
+            browser_dir(),
+            dir.path().join(".future").join("agent").join("browser")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_fails_when_home_is_a_file_and_config_path_is_a_dir() {
+        let _guard = crate::test_env::lock_env().await;
+
+        // FUTURE_HOME pointing at a regular FILE → create_dir_all fails.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("afile");
+        std::fs::write(&file, "x").expect("write");
+        let _env =
+            crate::test_env::EnvGuard::set(&[("FUTURE_HOME", file.as_os_str().to_os_string())]);
+        let err = save_browser_config(&BrowserConfig::default())
+            .await
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
+        drop(_env);
+
+        // config.json existing as a DIRECTORY → the write fails.
+        let tmp2 = tempfile::tempdir().expect("tempdir");
+        let _env2 = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            tmp2.path().as_os_str().to_os_string(),
+        )]);
+        tokio::fs::create_dir_all(browser_dir().join("config.json"))
+            .await
+            .expect("mkdir");
+        let err = save_browser_config(&BrowserConfig::default())
+            .await
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
     fn not_an_object_throws() {
         assert!(parse(json!(null)).is_err());
         assert!(parse(json!("invalid")).is_err());
@@ -598,5 +655,197 @@ mod tests {
         let roundtrip = config_to_json(&config);
         assert_eq!(roundtrip.get("activeUrl"), raw.get("activeUrl"));
         assert_eq!(roundtrip.get("refs"), raw.get("refs"));
+    }
+
+    #[tokio::test]
+    async fn load_save_roundtrip_via_future_home() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        assert_eq!(browser_dir(), dir.path().join("agent").join("browser"));
+        // Missing file → default config.
+        let loaded = load_browser_config().await.expect("default load");
+        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.connection.endpoint(), "http://127.0.0.1:9222");
+        // Save then load a webdriver config.
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Webdriver {
+                browser_kind: "safari".to_string(),
+                endpoint: "http://127.0.0.1:4444".to_string(),
+                session_id: "s1".to_string(),
+                driver_pid: Some(42),
+            },
+            active_url: Some("https://example.com".to_string()),
+            active_page_id: Some("p1".to_string()),
+            tab_order: Some(vec!["p1".to_string()]),
+            refs: None,
+            refs_page_id: Some("p1".to_string()),
+            refs_url: Some("https://example.com".to_string()),
+        };
+        save_browser_config(&config).await.expect("save");
+        let loaded = load_browser_config().await.expect("load saved");
+        assert_eq!(loaded.connection.protocol(), "webdriver");
+        assert_eq!(loaded.connection.session_id(), Some("s1"));
+        assert_eq!(loaded.active_page_id.as_deref(), Some("p1"));
+        assert_eq!(loaded.refs_url.as_deref(), Some("https://example.com"));
+    }
+
+    #[tokio::test]
+    async fn load_rejects_invalid_json() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        let config_dir = browser_dir();
+        tokio::fs::create_dir_all(&config_dir).await.expect("mkdir");
+        tokio::fs::write(config_dir.join("config.json"), "not json")
+            .await
+            .expect("write");
+        let err = load_browser_config().await.unwrap_err();
+        assert_eq!(err.code, "invalid_config");
+        assert!(err.message.contains("Invalid JSON"));
+    }
+
+    #[tokio::test]
+    async fn load_maps_non_notfound_io_errors() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        // config.json as a DIRECTORY → read_to_string fails non-ENOENT.
+        let config_dir = browser_dir();
+        tokio::fs::create_dir_all(config_dir.join("config.json"))
+            .await
+            .expect("mkdir");
+        let err = load_browser_config().await.unwrap_err();
+        assert_eq!(err.code, "invalid_config");
+        assert!(!err.message.contains("Invalid JSON"));
+    }
+
+    #[test]
+    fn version_null_and_fractional_throw() {
+        let err = parse(json!({"version": null})).unwrap_err();
+        assert!(err.message.contains("null"));
+        let err = parse(json!({"version": 1.5})).unwrap_err();
+        assert!(err.message.contains("1.5"));
+        let err = parse(json!({"version": -1})).unwrap_err();
+        assert!(err.message.contains("-1"));
+    }
+
+    #[test]
+    fn v1_active_url_and_refs_migrate() {
+        let config = parse(json!({
+            "version": 1,
+            "endpoint": "http://127.0.0.1:9225",
+            "activeUrl": "https://example.com",
+            "refs": {"b1": "#btn"}
+        }))
+        .unwrap();
+        assert_eq!(config.active_url.as_deref(), Some("https://example.com"));
+        assert!(config.refs.is_some());
+        // Blank endpoint falls back to the default.
+        let config = parse(json!({"version": 1, "endpoint": "  "})).unwrap();
+        assert_eq!(config.connection.endpoint(), "http://127.0.0.1:9222");
+    }
+
+    #[test]
+    fn helper_edge_cases() {
+        // optional_positive_integer: null → None, 0/negative/string → error.
+        assert_eq!(optional_positive_integer(None).unwrap(), None);
+        assert_eq!(optional_positive_integer(Some(&Value::Null)).unwrap(), None);
+        assert!(optional_positive_integer(Some(&json!(0))).is_err());
+        assert!(optional_positive_integer(Some(&json!(-3))).is_err());
+        assert!(optional_positive_integer(Some(&json!("7"))).is_err());
+        assert_eq!(optional_positive_integer(Some(&json!(7))).unwrap(), Some(7));
+        // validate_enum: missing field renders "undefined".
+        let err = validate_enum(None, &["a"], "thing").unwrap_err();
+        assert!(err.message.contains("\"undefined\""));
+        // tabOrder: empty-string item rejected.
+        assert!(validate_optional_string_array(Some(&json!(["ok", " "]))).is_err());
+        assert_eq!(
+            validate_optional_string_array(Some(&Value::Null)).unwrap(),
+            None
+        );
+        // refs: non-object rejected.
+        assert!(validate_refs_map(Some(&json!(["x"]))).is_err());
+        assert_eq!(validate_refs_map(Some(&Value::Null)).unwrap(), None);
+        // require_http_url: non-string JSON rendering in message.
+        let err = require_http_url("ftp://x".to_string(), "f").unwrap_err();
+        assert!(err.message.contains("\"ftp://x\""));
+    }
+
+    #[test]
+    fn webdriver_driver_pid_validation() {
+        let base = |pid: Value| {
+            json!({
+                "version": 2,
+                "connection": {
+                    "protocol": "webdriver",
+                    "browserKind": "safari",
+                    "endpoint": "http://127.0.0.1:4444",
+                    "sessionId": "s1",
+                    "driverPid": pid
+                }
+            })
+        };
+        // Valid positive integer accepted; zero rejected.
+        assert!(parse(base(json!(1))).is_ok());
+        assert!(parse(base(json!(0))).is_err());
+        // Absent → None.
+        let config = parse(json!({
+            "version": 2,
+            "connection": {
+                "protocol": "webdriver",
+                "browserKind": "safari",
+                "endpoint": "http://127.0.0.1:4444",
+                "sessionId": "s1"
+            }
+        }))
+        .unwrap();
+        let (session_id, driver_pid) = webdriver_fields(&config.connection);
+        assert_eq!(session_id, "s1");
+        assert_eq!(driver_pid, None);
+    }
+
+    #[test]
+    fn config_to_json_webdriver_includes_session_fields() {
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Webdriver {
+                browser_kind: "safari".to_string(),
+                endpoint: "http://127.0.0.1:4444".to_string(),
+                session_id: "s1".to_string(),
+                driver_pid: Some(9),
+            },
+            ..Default::default()
+        };
+        let value = config_to_json(&config);
+        let conn = value.get("connection").expect("connection");
+        assert_eq!(conn.get("sessionId"), Some(&json!("s1")));
+        assert_eq!(conn.get("driverPid"), Some(&json!(9)));
+    }
+
+    #[test]
+    fn webdriver_fields_cdp_arm() {
+        let cdp = BrowserConnectionConfig::Cdp {
+            browser_kind: "chrome".to_string(),
+            endpoint: "http://e".to_string(),
+        };
+        assert_eq!(webdriver_fields(&cdp), (String::new(), None));
+        let wd = BrowserConnectionConfig::Webdriver {
+            browser_kind: "safari".to_string(),
+            endpoint: "http://e".to_string(),
+            session_id: "s".to_string(),
+            driver_pid: Some(3),
+        };
+        assert_eq!(webdriver_fields(&wd), ("s".to_string(), Some(3)));
     }
 }

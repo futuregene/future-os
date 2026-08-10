@@ -60,14 +60,19 @@ pub struct FutureAuthEntry {
     pub base_url: Option<String>,
 }
 
+/// `platformUrlOverride ? trimTrailingSlashes(override) : DEFAULT_PLATFORM_URL`.
+fn resolve_login_platform_url(platform_url_override: Option<String>) -> String {
+    match platform_url_override {
+        Some(url) => trim_trailing_slash(&url),
+        None => DEFAULT_PLATFORM_URL.to_string(),
+    }
+}
+
 /// `login(platformUrlOverride?)` — device-code OAuth flow.
 pub async fn login(platform_url_override: Option<String>, out: &Output) -> Result<(), String> {
     let auth_data = load_auth_file().await?;
     // `platformUrlOverride ? platformUrlOverride.replace(/\/+$/, "") : DEFAULT_PLATFORM_URL`
-    let platform_url = match platform_url_override {
-        Some(url) => trim_trailing_slash(&url),
-        None => DEFAULT_PLATFORM_URL.to_string(),
-    };
+    let platform_url = resolve_login_platform_url(platform_url_override);
 
     let client = http_client();
     let device: DeviceCodeResponse = post(
@@ -374,9 +379,10 @@ async fn write_auth_file(auth_file: &Value) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())?;
     }
+    // Serializing plain JSON values is infallible.
     let contents = format!(
         "{}\n",
-        serde_json::to_string_pretty(auth_file).map_err(|e| e.to_string())?
+        serde_json::to_string_pretty(auth_file).expect("auth json serializes")
     );
     let mut opts = tokio::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -426,21 +432,7 @@ fn now_ms() -> u64 {
 /// `openBrowser(url)` — spawn the platform opener detached with stdio
 /// ignored; resolves true when the process spawned.
 async fn open_browser(url: &str) -> bool {
-    let (command, args): (&str, Vec<String>) = if cfg!(target_os = "macos") {
-        ("open", vec![url.to_string()])
-    } else if cfg!(windows) {
-        (
-            "cmd",
-            vec![
-                "/c".to_string(),
-                "start".to_string(),
-                String::new(),
-                url.to_string(),
-            ],
-        )
-    } else {
-        ("xdg-open", vec![url.to_string()])
-    };
+    let (command, args) = opener_command(url);
     std::process::Command::new(command)
         .args(&args)
         .stdin(std::process::Stdio::null())
@@ -448,6 +440,33 @@ async fn open_browser(url: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .spawn()
         .is_ok()
+}
+
+/// The platform opener command. `#[cfg]` (not `cfg!`) so off-platform arms
+/// are never compiled into this target.
+#[cfg(target_os = "macos")]
+fn opener_command(url: &str) -> (&'static str, Vec<String>) {
+    ("open", vec![url.to_string()])
+}
+
+/// Windows opener: `cmd /c start "" <url>`.
+#[cfg(windows)]
+fn opener_command(url: &str) -> (&'static str, Vec<String>) {
+    (
+        "cmd",
+        vec![
+            "/c".to_string(),
+            "start".to_string(),
+            String::new(),
+            url.to_string(),
+        ],
+    )
+}
+
+/// Linux/other opener: xdg-open.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn opener_command(url: &str) -> (&'static str, Vec<String>) {
+    ("xdg-open", vec![url.to_string()])
 }
 
 #[cfg(test)]
@@ -535,6 +554,33 @@ mod tests {
             stdout,
             "{\"api_key\":\"k456\",\"endpoint\":\"https://example.com/api/v1\"}\n"
         );
+
+        // Invalid auth.json (parse failure → outer Err), plain output.
+        tokio::fs::write(&path, "{not json").await.unwrap();
+        let (code, stdout, _) = run(&["auth", "credential"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "Not logged in.\n");
+        // Same, with --json.
+        let (code, stdout, _) = run(&["auth", "credential", "--json"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("\"error\""), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn logout_entry_without_key_reports_not_logged_in() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        // The future entry exists but has no key field.
+        tokio::fs::write(&path, r#"{"future":{"type":"api_key"}}"#)
+            .await
+            .unwrap();
+        let (code, stdout, _) = run(&["auth", "logout"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "Not logged in.\n");
     }
 
     #[tokio::test]
@@ -631,5 +677,391 @@ mod tests {
         assert_eq!(entry.key.as_deref(), Some("k"));
         assert_eq!(entry.type_, None);
         assert_eq!(entry.base_url, None);
+    }
+
+    // ── Device-code login flow (HTTP mock) ─────────────────────────
+    //
+    // All login tests manipulate PATH so the browser opener is a fake (or
+    // missing) binary — never a real browser. Unix-only: on Windows the
+    // opener is `cmd /c start`, which CreateProcess finds in System32 even
+    // with an empty PATH (and would really open a browser).
+
+    /// A temp dir holding a fake `open`/`xdg-open` that exits 0.
+    #[cfg(not(windows))]
+    fn fake_opener_dir() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["open", "xdg-open"] {
+            let bin = dir.path().join(name);
+            std::fs::write(&bin, "#!/bin/sh\nexit 0\n").expect("write");
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        dir
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_success_after_pending_poll() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        // Pre-existing entry with a custom type — save_auth preserves it.
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &path,
+            "{\"future\": {\"type\": \"oauth\"}, \"openai\": {\"key\": \"keep\"}}",
+        )
+        .await
+        .unwrap();
+
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/code",
+                200,
+                "{\"device_code\":\"dc-1\",\"user_code\":\"ABCD-EFGH\",\"verification_uri\":\"https://x/verify\",\"verification_uri_complete\":\"https://x/verify?c=1\",\"expires_in\":60,\"interval\":0}",
+            ),
+            crate::test_server::HttpRoute::sequence(
+                "/client/v1/oauth/device/token",
+                vec![
+                    (400, "{\"error\":\"authorization_pending\"}"),
+                    (400, "{\"error\":\"slow_down\"}"),
+                    (200, "{\"api_key\":\"sk-new\",\"api_key_id\":\"id1\",\"token_type\":\"bearer\"}"),
+                ],
+            ),
+        ])
+        .await;
+        let opener = fake_opener_dir();
+        let _env = EnvGuard::set(&[("PATH", opener.path().as_os_str().to_os_string())]);
+
+        let (code, stdout, stderr) = run(&["auth", "login", "--url", &base]).await;
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(
+            stdout.contains("Opened Future Platform Console:"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("  https://x/verify?c=1\n"),
+            "stdout: {stdout}"
+        );
+        assert!(stdout.contains("  ABCD-EFGH"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Waiting for authorization..."),
+            "stdout: {stdout}"
+        );
+        // Two pending polls printed dots before the grant.
+        assert!(stdout.contains(".."), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Saved Future API key to"),
+            "stdout: {stdout}"
+        );
+
+        let saved: Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
+        assert_eq!(saved["future"]["key"], "sk-new");
+        assert_eq!(saved["future"]["type"], "oauth");
+        assert_eq!(saved["future"]["base_url"], format!("{base}/api"));
+        assert_eq!(saved["openai"]["key"], "keep");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_browser_open_failure_and_plain_verification_uri() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/code",
+                200,
+                "{\"device_code\":\"dc-1\",\"user_code\":\"WXYZ\",\"verification_uri\":\"https://x/verify\",\"expires_in\":60,\"interval\":0}",
+            ),
+            crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/token",
+                200,
+                "{\"api_key\":\"sk-2\"}",
+            ),
+        ])
+        .await;
+        // Empty PATH → no opener binary → manual-open message.
+        let empty = tempfile::tempdir().expect("tempdir");
+        let _env = EnvGuard::set(&[("PATH", empty.path().as_os_str().to_os_string())]);
+        let (code, stdout, _) = run(&["auth", "login", "--url", &base]).await;
+        assert_eq!(code, 0);
+        assert!(
+            stdout.contains("Open this URL in your browser:"),
+            "stdout: {stdout}"
+        );
+        assert!(stdout.contains("  https://x/verify\n"), "stdout: {stdout}");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_expired_device_code() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/oauth/device/code",
+            200,
+            "{\"device_code\":\"dc-1\",\"user_code\":\"WXYZ\",\"verification_uri\":\"https://x/verify\",\"expires_in\":0,\"interval\":0}",
+        )])
+        .await;
+        let empty = tempfile::tempdir().expect("tempdir");
+        let _env = EnvGuard::set(&[("PATH", empty.path().as_os_str().to_os_string())]);
+        let (code, _, stderr) = run(&["auth", "login", "--url", &base]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stderr, "Device authorization expired.\n");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_device_code_post_error_variants() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let empty = tempfile::tempdir().expect("tempdir");
+        let _env = EnvGuard::set(&[("PATH", empty.path().as_os_str().to_os_string())]);
+        // message field.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/oauth/device/code",
+            500,
+            "{\"message\":\"broken server\"}",
+        )])
+        .await;
+        let (code, _, stderr) = run(&["auth", "login", "--url", &base]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stderr, "broken server\n");
+        // No message → status fallback.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/oauth/device/code",
+            500,
+            "{}",
+        )])
+        .await;
+        let (code, _, stderr) = run(&["auth", "login", "--url", &base]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stderr, "Request failed with 500\n");
+        // Non-JSON body → Network error.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/oauth/device/code",
+            200,
+            "not json",
+        )])
+        .await;
+        let (code, _, stderr) = run(&["auth", "login", "--url", &base]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("Network error"), "stderr: {stderr}");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_token_error_other_than_pending() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/code",
+                200,
+                "{\"device_code\":\"dc-1\",\"user_code\":\"WXYZ\",\"verification_uri\":\"https://x/verify\",\"expires_in\":60,\"interval\":0}",
+            ),
+            crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/token",
+                403,
+                "{\"error\":\"access_denied\",\"message\":\"Denied by user\"}",
+            ),
+        ])
+        .await;
+        let empty = tempfile::tempdir().expect("tempdir");
+        let _env = EnvGuard::set(&[("PATH", empty.path().as_os_str().to_os_string())]);
+        let (code, _, stderr) = run(&["auth", "login", "--url", &base]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stderr, "Denied by user\n");
+    }
+
+    #[tokio::test]
+    async fn status_and_credential_remaining_variants() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+
+        // Logged in WITHOUT base_url → default platform URL fallback.
+        tokio::fs::write(&path, "{\"future\": {\"key\": \"k\"}}")
+            .await
+            .unwrap();
+        let (code, stdout, _) = run(&["auth", "status"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(
+            stdout,
+            format!("Platform: {DEFAULT_PLATFORM_URL}\nAPI: {DEFAULT_PLATFORM_URL}/api/v1\n")
+        );
+
+        // Entry present but key missing → Not logged in.
+        tokio::fs::write(&path, "{\"future\": {\"type\": \"api_key\"}}")
+            .await
+            .unwrap();
+        let (code, stdout, _) = run(&["auth", "status"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "Not logged in.\n");
+        let (code, stdout, _) = run(&["auth", "credential"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "Not logged in.\n");
+
+        // Credential --json while logged in.
+        tokio::fs::write(
+            &path,
+            "{\"future\": {\"key\": \"k9\", \"base_url\": \"https://x/api\"}}",
+        )
+        .await
+        .unwrap();
+        let (code, stdout, _) = run(&["auth", "credential", "--json"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(
+            stdout,
+            "{\"api_key\":\"k9\",\"endpoint\":\"https://x/api/v1\"}\n"
+        );
+
+        // Credential --json with a corrupt auth file → error JSON.
+        tokio::fs::write(&path, "{oops").await.unwrap();
+        let (code, stdout, _) = run(&["auth", "credential", "--json"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.starts_with("{\"error\":\""), "stdout: {stdout}");
+    }
+
+    // ── Remainder coverage ────────────────────────────────────────────
+
+    #[test]
+    fn resolve_login_platform_url_arms() {
+        assert_eq!(resolve_login_platform_url(None), DEFAULT_PLATFORM_URL);
+        assert_eq!(
+            resolve_login_platform_url(Some("http://x/".to_string())),
+            "http://x"
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_json_entry_without_key_and_without_base_url() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let path = auth_file_path();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+
+        // Entry exists but has NO key → JSON "Not logged in.".
+        tokio::fs::write(&path, r#"{"future": {"base_url": "http://p/api"}}"#)
+            .await
+            .unwrap();
+        let (out, cap) = Output::memory();
+        credential(true, &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout.trim(), r#"{"error":"Not logged in."}"#);
+
+        // Key but NO base_url → get_platform_url fallback for the endpoint.
+        tokio::fs::write(&path, r#"{"future": {"key": "k"}}"#)
+            .await
+            .unwrap();
+        let (out, cap) = Output::memory();
+        credential(true, &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("\"api_key\":\"k\""), "{stdout}");
+        assert!(stdout.contains("/api/v1"), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn logout_full_entry_arm_coverage() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let path = auth_file_path();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        // Entry with key + type + base_url → all insert arms run.
+        tokio::fs::write(
+            &path,
+            r#"{"future": {"type": "oauth", "key": "k", "base_url": "http://p/api"}}"#,
+        )
+        .await
+        .unwrap();
+        let (out, cap) = Output::memory();
+        logout(&out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Removed Future API key"), "{stdout}");
+        // The entry survives sans key (type + base_url kept).
+        let remaining: Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
+        let entry = remaining.get("future").unwrap();
+        assert!(entry.get("key").is_none());
+        assert_eq!(entry.get("type").and_then(Value::as_str), Some("oauth"));
+        assert_eq!(
+            entry.get("base_url").and_then(Value::as_str),
+            Some("http://p/api")
+        );
+
+        // Entry without a key → "Not logged in." (nothing removed).
+        let (out, cap) = Output::memory();
+        logout(&out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Not logged in."), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn load_auth_file_non_object_and_unreadable() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let path = auth_file_path();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+
+        // Valid JSON but not an object → "must contain a JSON object".
+        tokio::fs::write(&path, "[1,2]").await.unwrap();
+        let err = load_auth_file().await.unwrap_err();
+        assert!(err.contains("must contain a JSON object"), "{err}");
+
+        // Unreadable (chmod 000) → raw IO error string.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::write(&path, "{}").await.unwrap();
+            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+                .await
+                .unwrap();
+            let err = load_auth_file().await.unwrap_err();
+            assert!(!err.is_empty());
+            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn write_auth_file_mkdir_failure() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        // $HOME/.future is a REGULAR FILE → create_dir_all(agent) fails.
+        tokio::fs::write(dir.path().join(".future"), "x")
+            .await
+            .unwrap();
+        let _home =
+            crate::test_env::EnvGuard::set(&[("HOME", dir.path().as_os_str().to_os_string())]);
+        let err = write_auth_file(&json!({})).await.unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_auth_file_write_failure() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _home =
+            crate::test_env::EnvGuard::set(&[("HOME", dir.path().as_os_str().to_os_string())]);
+        // auth.json as a DIRECTORY: mkdir succeeds, the file write fails.
+        let agent_dir = dir.path().join(".future").join("agent");
+        tokio::fs::create_dir_all(agent_dir.join("auth.json"))
+            .await
+            .unwrap();
+        let err = write_auth_file(&json!({})).await.unwrap_err();
+        assert!(!err.is_empty());
     }
 }

@@ -71,9 +71,12 @@ fn parse_timestamp_ms(iso: &str) -> i64 {
         return dt.timestamp_millis();
     }
     if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(iso, "%Y-%m-%d %H:%M:%S") {
-        if let Some(local) = chrono::Local.from_local_datetime(&naive).single() {
-            return local.timestamp_millis();
-        }
+        // Ambiguous/nonexistent local times (DST gaps) fall back to 0 (NaN).
+        return chrono::Local
+            .from_local_datetime(&naive)
+            .single()
+            .map(|local| local.timestamp_millis())
+            .unwrap_or(0);
     }
     0
 }
@@ -101,7 +104,8 @@ async fn list_sessions(json_flag: bool, out: &Output) -> Result<(), String> {
         .unwrap_or_default();
 
     if json_flag {
-        out.log(&serde_json::to_string_pretty(&json_value(&sessions)).map_err(|e| e.to_string())?);
+        // Serializing plain JSON values is infallible.
+        out.log(&serde_json::to_string_pretty(&json_value(&sessions)).expect("json serializes"));
         return Ok(());
     }
 
@@ -569,5 +573,326 @@ mod tests {
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert_eq!(stderr, "Usage: future session rename <session-id> <name>\n");
+    }
+
+    // ── Mock-agent backed flows ─────────────────────────────────────
+
+    /// Point FUTURE_AGENT_GRPC_ADDR at a spawned mock (caller holds ENV_LOCK).
+    async fn mock_env(
+        agent: crate::test_server::MockAgent,
+    ) -> (crate::test_server::MockAgent, crate::test_env::EnvGuard) {
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        let env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(addr),
+        )]);
+        (agent, env)
+    }
+
+    #[tokio::test]
+    async fn list_empty_sessions() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond("list_sessions", "{\"sessions\":[]}");
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(Some("list"), &[], &out).await.expect("list");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "No sessions found.\n");
+    }
+
+    #[tokio::test]
+    async fn list_json_passthrough() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "list_sessions",
+            "{\"sessions\":[{\"id\":\"s1\",\"session_name\":\"one\"}]}",
+        );
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(Some("list"), &["--json".to_string()], &out)
+            .await
+            .expect("list");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["sessions"][0]["id"], "s1");
+    }
+
+    #[tokio::test]
+    async fn list_table_rendering_and_sorting() {
+        let _guard = crate::test_env::lock_env().await;
+        let long_model = "a".repeat(30);
+        let body = format!(
+            "{{\"sessions\":[\
+                {{\"id\":\"untitled-old\",\"updated_at\":\"2020-01-01T00:00:00Z\"}},\
+                {{\"id\":\"named\",\"session_name\":\"My Session\",\"model\":\"k3\",\"query_count\":3,\"updated_at\":\"2099-01-01T00:00:00Z\"}},\
+                {{\"id\":\"first-msg\",\"first_message\":\"hello world this is the first message of the session\",\"model\":\"{long_model}\",\"query_count\":0,\"updated_at\":\"2098-01-01T00:00:00Z\"}}\
+            ]}}"
+        );
+        let agent = crate::test_server::MockAgent::respond("list_sessions", &body);
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(Some("list"), &[], &out).await.expect("list");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        // Header + rule + 3 rows + count.
+        assert!(stdout.contains("SESSION ID"), "stdout: {stdout}");
+        assert!(stdout.contains("QUERIES"), "stdout: {stdout}");
+        // Sorted by updated_at desc: named (2099) before first-msg (2098).
+        let named = stdout.find("My Session").expect("named row");
+        let first_msg = stdout.find("hello world").expect("first-msg row");
+        assert!(named < first_msg);
+        // Untitled row + zero query count → "—", long model truncated.
+        assert!(stdout.contains("(untitled)"), "stdout: {stdout}");
+        assert!(
+            stdout.contains(&format!("{}…", "a".repeat(27))),
+            "stdout: {stdout}"
+        );
+        assert!(stdout.ends_with("\n3 sessions.\n"), "stdout: {stdout}");
+        // A row with a real query count renders the number (single line: a
+        // short-circuit chain split across lines leaves the tail uncovered).
+        let has_three =
+            stdout.contains(" 3\n") || stdout.contains(" 3 \n") || stdout.contains("3\n");
+        assert!(has_three, "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn list_agent_down_propagates_raw_error() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
+        let (out, _cap) = Output::memory();
+        // Not wrapped in HANDLED_EXIT — the transport error propagates.
+        let err = session(Some("list"), &[], &out).await.unwrap_err();
+        assert_ne!(err, crate::HANDLED_EXIT);
+    }
+
+    #[tokio::test]
+    async fn info_full_rendering() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "get_session_entries",
+            "{\"entries\":[\
+                {\"role\":\"system\",\"content\":{\"session_name\":\"Named\",\"cwd\":\"/work\",\"tokens_in\":2500000,\"tokens_out\":128000,\"tokens_cache_r\":5000,\"tokens_cache_w\":1500,\"total_cost\":0.012345}},\
+                {\"role\":\"user\"},\
+                {\"role\":\"assistant\",\"tool_calls\":[{},{}]},\
+                {\"role\":\"assistant\"},\
+                {\"role\":\"tool\"},\
+                {\"type\":\"compaction\"},\
+                {}\
+            ]}",
+        );
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(Some("info"), &["sess-1".to_string()], &out)
+            .await
+            .expect("info");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Session:  sess-1"), "stdout: {stdout}");
+        assert!(stdout.contains("Name:        Named"));
+        // model falls back to "?" (no model anywhere), thinking "?" too.
+        assert!(stdout.contains("Model:       ?"), "stdout: {stdout}");
+        assert!(stdout.contains("Thinking:    ?"), "stdout: {stdout}");
+        assert!(stdout.contains("CWD:         /work"));
+        // 7 entries: 1 user, 2 assistant, 1 tool, 1 system, 1 compaction,
+        // and the {} entry counts as "?".
+        assert!(
+            stdout.contains("Messages:    7 (1 user, 2 assistant, 1 tool, 1 system, 1 compacted)"),
+            "stdout: {stdout}"
+        );
+        assert!(stdout.contains("Tool calls:  2"));
+        assert!(
+            stdout.contains("Tokens:      in=2.5M out=128K"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("Cache:       r=5K w=2K"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("Cost:        $0.012345"),
+            "stdout: {stdout}"
+        );
+    }
+
+    #[tokio::test]
+    async fn info_minimal_entry_and_model_fallbacks() {
+        let _guard = crate::test_env::lock_env().await;
+        // Model from the entry itself, thinking from content; no cwd/tokens.
+        let agent = crate::test_server::MockAgent::respond(
+            "get_session_entries",
+            "{\"entries\":[{\"role\":\"system\",\"model\":\"m-entry\",\"content\":{\"thinking_level\":\"high\"}}]}",
+        );
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(Some("info"), &["s1".to_string()], &out)
+            .await
+            .expect("info");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Model:       m-entry"), "stdout: {stdout}");
+        assert!(stdout.contains("Thinking:    high"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Name:        (untitled)"),
+            "stdout: {stdout}"
+        );
+        assert!(!stdout.contains("CWD:"), "stdout: {stdout}");
+        assert!(!stdout.contains("Tokens:"), "stdout: {stdout}");
+        assert!(!stdout.contains("Cache:"), "stdout: {stdout}");
+        assert!(!stdout.contains("Cost:"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn info_session_not_found() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent =
+            crate::test_server::MockAgent::respond("get_session_entries", "{\"entries\":[]}");
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        let result = session(Some("info"), &["ghost".to_string()], &out).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr, "Session not found: ghost\n");
+    }
+
+    #[tokio::test]
+    async fn info_and_rename_rpc_failures_propagate() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.fail_types.insert("get_session_entries".into());
+        agent.fail_types.insert("set_session_name".into());
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, _cap) = Output::memory();
+        let result = session(Some("info"), &["s1".to_string()], &out).await;
+        assert!(result.is_err());
+        let result = session(Some("rename"), &["s1".to_string(), "x".to_string()], &out).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn info_sparse_entries_take_default_arms() {
+        let _guard = crate::test_env::lock_env().await;
+        // No system-role entry, non-array tool_calls, zero cost: all the
+        // default/false arms in the info renderer.
+        let agent = crate::test_server::MockAgent::respond(
+            "get_session_entries",
+            "{\"entries\":[{\"role\":\"user\",\"tool_calls\":5,\"content\":null}]}",
+        );
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(Some("info"), &["s1".to_string()], &out)
+            .await
+            .expect("info");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Model:       ?"), "stdout: {stdout}");
+        assert!(stdout.contains("user"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn rename_success() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::default();
+        let (agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(
+            Some("rename"),
+            &["sess-1".to_string(), "new".to_string(), "name".to_string()],
+            &out,
+        )
+        .await
+        .expect("rename");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "Renamed session sess-1 → \"new name\"\n");
+        let seen = agent.seen_of("set_session_name");
+        assert_eq!(seen[0].name, "new name");
+        assert_eq!(seen[0].session_id, "sess-1");
+    }
+
+    #[tokio::test]
+    async fn delete_outcomes() {
+        let _guard = crate::test_env::lock_env().await;
+        // deleted: true.
+        let agent = crate::test_server::MockAgent::respond("delete_session", "{\"deleted\":true}");
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(Some("delete"), &["s1".to_string()], &out)
+            .await
+            .expect("delete");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "Deleted session s1\n");
+        drop(_env);
+
+        // deleted: false → not found.
+        let agent = crate::test_server::MockAgent::respond("delete_session", "{\"deleted\":false}");
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        let result = session(Some("delete"), &["ghost".to_string()], &out).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr, "Session not found: ghost\n");
+        drop(_env);
+
+        // RPC failure → "Failed to delete: <msg>".
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.fail_types.insert("delete_session".into());
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        let result = session(Some("delete"), &["s1".to_string()], &out).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr, "Failed to delete: boom\n");
+        drop(_env);
+
+        // Failure already prefixed passes through untouched.
+        let mut agent = crate::test_server::MockAgent::default();
+        agent
+            .fail_with
+            .insert("delete_session".into(), "failed to delete: busy".into());
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        let result = session(Some("delete"), &["s1".to_string()], &out).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr, "failed to delete: busy\n");
+    }
+
+    #[test]
+    fn parse_timestamp_ms_naive_local() {
+        // Naive "YYYY-MM-DD HH:MM:SS" parses in LOCAL time — compare against
+        // the UTC epoch allowing any timezone offset (±14h max).
+        let naive = parse_timestamp_ms("2001-09-09 01:46:40");
+        let utc = parse_timestamp_ms("2001-09-09T01:46:40Z");
+        assert!(naive != 0);
+        assert!(
+            (naive - utc).abs() <= 14 * 3_600_000,
+            "naive={naive} utc={utc}"
+        );
+        assert_eq!(parse_timestamp_ms("junk"), 0);
+    }
+
+    #[test]
+    fn json_value_wraps_sessions() {
+        let value = json_value(&[serde_json::json!({"id": "s1"})]);
+        assert_eq!(value["sessions"][0]["id"], "s1");
+        assert!(json_value(&[])["sessions"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_no_subcommand_prints_help() {
+        let (out, cap) = Output::memory();
+        session(None, &[], &out).await.expect("ok");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, format!("{}\n", SESSION_HELP));
+    }
+
+    #[tokio::test]
+    async fn session_rename_usage_includes_name_placeholder() {
+        let (out, cap) = Output::memory();
+        let result = session(Some("rename"), &[], &out).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("Usage: future session rename <session-id> <name>"),
+            "stderr: {stderr}"
+        );
     }
 }

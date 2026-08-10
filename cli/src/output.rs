@@ -103,3 +103,46 @@ impl Output {
         let _ = self.err.lock().expect("stderr sink poisoned").flush();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn captured_string(buf: &Arc<Mutex<Vec<u8>>>) -> String {
+        String::from_utf8(buf.lock().expect("buffer").clone()).expect("utf8")
+    }
+
+    #[test]
+    fn memory_sink_captures_log_and_raw_writes() {
+        let (output, captured) = Output::memory();
+        output.log("line one");
+        output.log_err("oops");
+        output.write_out("raw");
+        output.write_err("rawerr");
+        output.flush();
+        assert_eq!(captured_string(&captured.out), "line one\nraw");
+        assert_eq!(captured_string(&captured.err), "oops\nrawerr");
+    }
+
+    #[test]
+    fn exit_code_roundtrip() {
+        let (output, _captured) = Output::memory();
+        assert_eq!(output.exit_code(), 0);
+        output.set_exit_code(3);
+        assert_eq!(output.exit_code(), 3);
+        // Clone shares the exit-code cell (mirrors process-global exitCode).
+        let clone = output.clone();
+        clone.set_exit_code(7);
+        assert_eq!(output.exit_code(), 7);
+    }
+
+    #[test]
+    fn stdio_sink_smoke() {
+        // Writes to the real process stdio; kept minimal to avoid noise.
+        let output = Output::stdio();
+        output.write_out("");
+        output.write_err("");
+        output.flush();
+        assert_eq!(output.exit_code(), 0);
+    }
+}

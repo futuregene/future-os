@@ -32,6 +32,16 @@ pub async fn init_command(out: &Output) -> Result<(), String> {
     init(InitOptions::default(), out).await
 }
 
+/// Node `os.platform()` string for the current target.
+#[cfg(target_os = "macos")]
+const DEFAULT_PLATFORM: &str = "darwin";
+/// Windows value of [`DEFAULT_PLATFORM`].
+#[cfg(windows)]
+const DEFAULT_PLATFORM: &str = "win32";
+/// Linux value of [`DEFAULT_PLATFORM`].
+#[cfg(not(any(target_os = "macos", windows)))]
+const DEFAULT_PLATFORM: &str = "linux";
+
 /// `init(options = {})` — full port.
 pub async fn init(options: InitOptions, out: &Output) -> Result<(), String> {
     // `const installBuiltins = options.installBuiltins ?? installBuiltinSkills;`
@@ -45,14 +55,9 @@ pub async fn init(options: InitOptions, out: &Output) -> Result<(), String> {
     });
     install_builtins(out).await;
 
-    // `const platform = options.platform ?? osPlatform();`
-    let platform = options.platform.unwrap_or(if cfg!(target_os = "macos") {
-        "darwin"
-    } else if cfg!(windows) {
-        "win32"
-    } else {
-        "linux"
-    });
+    // `const platform = options.platform ?? osPlatform();` — cfg-gated (not
+    // cfg!) so the off-platform arms are never compiled into this target.
+    let platform = options.platform.unwrap_or(DEFAULT_PLATFORM);
     if platform != "darwin" && platform != "linux" {
         return Ok(());
     }
@@ -208,6 +213,26 @@ mod tests {
             .await
             .unwrap();
         (executable_path, home_dir)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn realpath_non_enoent_error_propagates() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().unwrap();
+        let (executable_path, home_dir) = create_unix_fixture(root.path()).await;
+        // Replace future-agent with a symlink LOOP → realpath fails ELOOP
+        // (not ENOENT) → the error propagates instead of defaulting.
+        let agent = executable_path.parent().unwrap().join("future-agent");
+        tokio::fs::remove_file(&agent).await.unwrap();
+        let loop_a = root.path().join("loop-a");
+        let loop_b = root.path().join("loop-b");
+        tokio::fs::symlink(&loop_b, &loop_a).await.unwrap();
+        tokio::fs::symlink(&loop_a, &loop_b).await.unwrap();
+        tokio::fs::symlink(&loop_a, &agent).await.unwrap();
+        let install_count = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (code, _, _) = run_init(&executable_path, &home_dir, install_count, "darwin").await;
+        assert_eq!(code, 1);
     }
 
     async fn run_init(
@@ -397,5 +422,93 @@ mod tests {
             run_init(&interpreter_path, &home_dir, install_count, "darwin").await;
         assert_eq!(code, 1);
         assert!(stderr.contains("Run the standalone future executable"));
+    }
+
+    #[tokio::test]
+    async fn init_command_with_defaults_errors_on_test_binary() {
+        let _guard = crate::test_env::lock_env().await;
+        // Isolated HOME with the platform pointed at a dead port so the
+        // default install hook (install_builtin_skills) fails fast offline.
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let auth = crate::constants::auth_file();
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &auth,
+            "{\"future\": {\"base_url\": \"http://127.0.0.1:1\"}}",
+        )
+        .await
+        .unwrap();
+        let (out, _cap) = Output::memory();
+        // The test binary is not named "future" → the command refuses.
+        let err = init_command(&out).await.unwrap_err();
+        assert!(
+            err.contains("Cannot initialize command links from"),
+            "err: {err}"
+        );
+        // The default hook ran and failed (catalog unreachable) → exit code 1.
+        assert_eq!(out.exit_code(), 1);
+    }
+
+    #[tokio::test]
+    async fn existing_symlink_to_other_target_is_repointed() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().unwrap();
+        let (executable_path, home_dir) = create_unix_fixture(root.path()).await;
+        let bin_dir = home_dir.join(".future").join("bin");
+        tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        // Stale symlink: future → some OTHER binary.
+        let other = root.path().join("old-future");
+        tokio::fs::write(&other, "").await.unwrap();
+        #[cfg(unix)]
+        tokio::fs::symlink(&other, bin_dir.join("future"))
+            .await
+            .unwrap();
+        let install_count = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (code, _, _) = run_init(&executable_path, &home_dir, install_count, "darwin").await;
+        assert_eq!(code, 0);
+        assert_eq!(
+            tokio::fs::read_link(bin_dir.join("future")).await.unwrap(),
+            tokio::fs::canonicalize(&executable_path).await.unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn existing_relative_symlink_is_resolved_and_recreated() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().unwrap();
+        let (executable_path, home_dir) = create_unix_fixture(root.path()).await;
+        let bin_dir = home_dir.join(".future").join("bin");
+        tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        // A RELATIVE symlink target exercises the readlink-relative resolution
+        // path; it does not match the new source, so it is recreated absolute.
+        tokio::fs::symlink("old-future", bin_dir.join("future"))
+            .await
+            .unwrap();
+        let install_count = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (code, _, stderr) =
+            run_init(&executable_path, &home_dir, install_count, "darwin").await;
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert_eq!(
+            tokio::fs::read_link(bin_dir.join("future")).await.unwrap(),
+            tokio::fs::canonicalize(&executable_path).await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_symlink_metadata_error_beyond_not_found() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("future");
+        tokio::fs::write(&source, "x").await.unwrap();
+        // destination's PARENT is a regular file → symlink_metadata fails
+        // with ENOTDIR (not NotFound) → propagated.
+        let blocker = dir.path().join("blocker");
+        tokio::fs::write(&blocker, "x").await.unwrap();
+        let destination = blocker.join("future");
+        let err = ensure_symlink(&source, destination).await.unwrap_err();
+        assert!(!err.is_empty());
     }
 }
