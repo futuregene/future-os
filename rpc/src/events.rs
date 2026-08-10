@@ -252,6 +252,88 @@ mod tests {
         }
     }
 
+    // ── Variant extraction helpers ─────────────────────────────────────────
+    // Shared by the parse tests; each helper's mismatch-panic line is covered
+    // by a should_panic test at the bottom of this module.
+
+    fn expect_agent_end(event: Option<AgentEvent>) -> (Option<String>, Option<String>) {
+        match event {
+            Some(AgentEvent::AgentEnd { state, error }) => (state, error),
+            other => panic!("expected AgentEnd, got {:?}", other),
+        }
+    }
+
+    fn expect_text_chunk(event: Option<AgentEvent>) -> String {
+        match event {
+            Some(AgentEvent::TextChunk(text)) => text,
+            other => panic!("expected TextChunk, got {:?}", other),
+        }
+    }
+
+    fn expect_thinking_delta(event: Option<AgentEvent>) -> String {
+        match event {
+            Some(AgentEvent::ThinkingDelta(text)) => text,
+            other => panic!("expected ThinkingDelta, got {:?}", other),
+        }
+    }
+
+    fn expect_tool_start(event: Option<AgentEvent>) -> (String, String, Option<String>) {
+        match event {
+            Some(AgentEvent::ToolStart {
+                tool_id,
+                tool_name,
+                tool_args,
+            }) => (tool_id, tool_name, tool_args),
+            other => panic!("expected ToolStart, got {:?}", other),
+        }
+    }
+
+    fn expect_tool_delta(event: Option<AgentEvent>) -> (String, String) {
+        match event {
+            Some(AgentEvent::ToolDelta { tool_id, text }) => (tool_id, text),
+            other => panic!("expected ToolDelta, got {:?}", other),
+        }
+    }
+
+    fn expect_tool_end(event: Option<AgentEvent>) -> (String, Option<String>) {
+        match event {
+            Some(AgentEvent::ToolEnd { tool_id, text }) => (tool_id, text),
+            other => panic!("expected ToolEnd, got {:?}", other),
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn expect_approval_request(
+        event: Option<AgentEvent>,
+    ) -> (String, String, String, String, String, Value) {
+        match event {
+            Some(AgentEvent::ApprovalRequest {
+                approval_request_id,
+                tool_name,
+                risk_level,
+                title,
+                summary,
+                requested_action,
+                ..
+            }) => (
+                approval_request_id,
+                tool_name,
+                risk_level,
+                title,
+                summary,
+                requested_action,
+            ),
+            other => panic!("expected ApprovalRequest, got {:?}", other),
+        }
+    }
+
+    fn expect_error(event: Option<AgentEvent>) -> String {
+        match event {
+            Some(AgentEvent::Error(msg)) => msg,
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
     #[test]
     fn parse_event_carries_run_id() {
         let event = make_event("text_chunk", r#"{"text":"hi"}"#);
@@ -262,17 +344,11 @@ mod tests {
 
     #[test]
     fn parse_agent_end_state() {
-        parse_both_twins(
-            "agent_end",
-            r#"{"state":"cancelled"}"#,
-            |event| match event {
-                Some(AgentEvent::AgentEnd { state, error }) => {
-                    assert_eq!(state.as_deref(), Some("cancelled"));
-                    assert!(error.is_none());
-                }
-                other => panic!("expected AgentEnd, got {:?}", other),
-            },
-        );
+        parse_both_twins("agent_end", r#"{"state":"cancelled"}"#, |event| {
+            let (state, error) = expect_agent_end(event);
+            assert_eq!(state.as_deref(), Some("cancelled"));
+            assert!(error.is_none());
+        });
     }
 
     #[test]
@@ -293,43 +369,31 @@ mod tests {
 
     #[test]
     fn parse_agent_end_no_error() {
-        parse_both_twins("agent_end", "{}", |event| match event {
-            Some(AgentEvent::AgentEnd { error, .. }) => assert!(error.is_none()),
-            other => panic!("expected AgentEnd, got {:?}", other),
+        parse_both_twins("agent_end", "{}", |event| {
+            let (_, error) = expect_agent_end(event);
+            assert!(error.is_none());
         });
     }
 
     #[test]
     fn parse_agent_end_with_error() {
-        parse_both_twins(
-            "agent_end",
-            r#"{"error":"rate limited"}"#,
-            |event| match event {
-                Some(AgentEvent::AgentEnd { error, .. }) => {
-                    assert_eq!(error.as_deref(), Some("rate limited"))
-                }
-                other => panic!("expected AgentEnd, got {:?}", other),
-            },
-        );
+        parse_both_twins("agent_end", r#"{"error":"rate limited"}"#, |event| {
+            let (_, error) = expect_agent_end(event);
+            assert_eq!(error.as_deref(), Some("rate limited"));
+        });
     }
 
     #[test]
     fn parse_text_chunk() {
-        parse_both_twins(
-            "text_chunk",
-            r#"{"text":"Hello world"}"#,
-            |event| match event {
-                Some(AgentEvent::TextChunk(text)) => assert_eq!(text, "Hello world"),
-                other => panic!("expected TextChunk, got {:?}", other),
-            },
-        );
+        parse_both_twins("text_chunk", r#"{"text":"Hello world"}"#, |event| {
+            assert_eq!(expect_text_chunk(event), "Hello world");
+        });
     }
 
     #[test]
     fn parse_text_chunk_empty_data() {
-        parse_both_twins("text_chunk", "{}", |event| match event {
-            Some(AgentEvent::TextChunk(text)) => assert_eq!(text, ""),
-            other => panic!("expected TextChunk, got {:?}", other),
+        parse_both_twins("text_chunk", "{}", |event| {
+            assert_eq!(expect_text_chunk(event), "");
         });
     }
 
@@ -342,14 +406,9 @@ mod tests {
 
     #[test]
     fn parse_thinking_delta() {
-        parse_both_twins(
-            "thinking_delta",
-            r#"{"text":"Let me think"}"#,
-            |event| match event {
-                Some(AgentEvent::ThinkingDelta(text)) => assert_eq!(text, "Let me think"),
-                other => panic!("expected ThinkingDelta, got {:?}", other),
-            },
-        );
+        parse_both_twins("thinking_delta", r#"{"text":"Let me think"}"#, |event| {
+            assert_eq!(expect_thinking_delta(event), "Let me think");
+        });
     }
 
     #[test]
@@ -364,18 +423,11 @@ mod tests {
         parse_both_twins(
             "tool_start",
             r#"{"tool_id":"call_1","tool_name":"shell","tool_args":"{\"command\":\"ls\"}"}"#,
-            |event| match event {
-                Some(AgentEvent::ToolStart {
-                    tool_id,
-                    tool_name,
-                    tool_args,
-                    ..
-                }) => {
-                    assert_eq!(tool_id, "call_1");
-                    assert_eq!(tool_name, "shell");
-                    assert_eq!(tool_args.as_deref(), Some("{\"command\":\"ls\"}"));
-                }
-                other => panic!("expected ToolStart, got {:?}", other),
+            |event| {
+                let (tool_id, tool_name, tool_args) = expect_tool_start(event);
+                assert_eq!(tool_id, "call_1");
+                assert_eq!(tool_name, "shell");
+                assert_eq!(tool_args.as_deref(), Some("{\"command\":\"ls\"}"));
             },
         );
     }
@@ -387,10 +439,7 @@ mod tests {
         parse_both_twins(
             "tool_start",
             r#"{"tool_id":"call_1","tool_name":"shell","tool_args":{"command":"ls"}}"#,
-            |event| match event {
-                Some(AgentEvent::ToolStart { tool_args, .. }) => assert!(tool_args.is_none()),
-                other => panic!("expected ToolStart, got {:?}", other),
-            },
+            |event| assert!(expect_tool_start(event).2.is_none()),
         );
     }
 
@@ -399,10 +448,7 @@ mod tests {
         parse_both_twins(
             "tool_start",
             r#"{"tool_id":"call_1","tool_name":"read"}"#,
-            |event| match event {
-                Some(AgentEvent::ToolStart { tool_args, .. }) => assert!(tool_args.is_none()),
-                other => panic!("expected ToolStart, got {:?}", other),
-            },
+            |event| assert!(expect_tool_start(event).2.is_none()),
         );
     }
 
@@ -416,12 +462,10 @@ mod tests {
         parse_both_twins(
             "tool_delta",
             r#"{"tool_id":"call_1","text":"partial output"}"#,
-            |event| match event {
-                Some(AgentEvent::ToolDelta { tool_id, text }) => {
-                    assert_eq!(tool_id, "call_1");
-                    assert_eq!(text, "partial output");
-                }
-                other => panic!("expected ToolDelta, got {:?}", other),
+            |event| {
+                let (tool_id, text) = expect_tool_delta(event);
+                assert_eq!(tool_id, "call_1");
+                assert_eq!(text, "partial output");
             },
         );
     }
@@ -431,21 +475,18 @@ mod tests {
         parse_both_twins(
             "tool_end",
             r#"{"tool_id":"call_1","text":"file1.txt"}"#,
-            |event| match event {
-                Some(AgentEvent::ToolEnd { tool_id, text }) => {
-                    assert_eq!(tool_id, "call_1");
-                    assert_eq!(text.as_deref(), Some("file1.txt"));
-                }
-                other => panic!("expected ToolEnd, got {:?}", other),
+            |event| {
+                let (tool_id, text) = expect_tool_end(event);
+                assert_eq!(tool_id, "call_1");
+                assert_eq!(text.as_deref(), Some("file1.txt"));
             },
         );
     }
 
     #[test]
     fn parse_tool_end_no_text() {
-        parse_both_twins("tool_end", r#"{"tool_id":"call_1"}"#, |event| match event {
-            Some(AgentEvent::ToolEnd { text, .. }) => assert!(text.is_none()),
-            other => panic!("expected ToolEnd, got {:?}", other),
+        parse_both_twins("tool_end", r#"{"tool_id":"call_1"}"#, |event| {
+            assert!(expect_tool_end(event).1.is_none());
         });
     }
 
@@ -463,46 +504,30 @@ mod tests {
                 "summary": "rm -rf /",
                 "requested_action": {"command": "rm -rf /"}
             }"#,
-            |event| match event {
-                Some(AgentEvent::ApprovalRequest {
-                    approval_request_id,
-                    tool_name,
-                    risk_level,
-                    title,
-                    summary,
-                    requested_action,
-                    ..
-                }) => {
-                    assert_eq!(approval_request_id, "req_1");
-                    assert_eq!(tool_name, "shell");
-                    assert_eq!(risk_level, "high");
-                    assert_eq!(title, "Dangerous command");
-                    assert_eq!(summary, "rm -rf /");
-                    assert_eq!(requested_action["command"], "rm -rf /");
-                }
-                other => panic!("expected ApprovalRequest, got {:?}", other),
+            |event| {
+                let (approval_request_id, tool_name, risk_level, title, summary, requested_action) =
+                    expect_approval_request(event);
+                assert_eq!(approval_request_id, "req_1");
+                assert_eq!(tool_name, "shell");
+                assert_eq!(risk_level, "high");
+                assert_eq!(title, "Dangerous command");
+                assert_eq!(summary, "rm -rf /");
+                assert_eq!(requested_action["command"], "rm -rf /");
             },
         );
     }
 
     #[test]
     fn parse_error_event() {
-        parse_both_twins(
-            "error",
-            r#"{"error":"something went wrong"}"#,
-            |event| match event {
-                Some(AgentEvent::Error(msg)) => assert_eq!(msg, "something went wrong"),
-                other => panic!("expected Error, got {:?}", other),
-            },
-        );
+        parse_both_twins("error", r#"{"error":"something went wrong"}"#, |event| {
+            assert_eq!(expect_error(event), "something went wrong");
+        });
     }
 
     #[test]
     fn parse_error_event_invalid_json() {
-        match parsed(make_event("error", "not json")) {
-            Some(AgentEvent::Error(msg)) => assert_eq!(msg, "unknown error"),
-            other => panic!("expected Error, got {:?}", other),
-        }
+        let msg = expect_error(parsed(make_event("error", "not json")));
+        assert_eq!(msg, "unknown error");
     }
 
     #[test]
@@ -513,5 +538,89 @@ mod tests {
     #[test]
     fn parse_empty_type_returns_none() {
         assert!(parsed(make_event("", "{}")).is_none());
+    }
+
+    #[test]
+    fn parse_typed_error_with_empty_message_is_unknown_error() {
+        // The typed path maps an empty error string to "unknown error".
+        let event = proto::StreamEvent {
+            r#type: "error".to_string(),
+            payload: Some(proto::EventPayload {
+                kind: Some(proto::event_payload::Kind::Error(proto::ErrorEvent {
+                    error: String::new(),
+                })),
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            parsed(event),
+            Some(AgentEvent::Error(msg)) if msg == "unknown error"
+        ));
+    }
+
+    #[test]
+    fn parse_typed_kind_without_agent_event_mapping_returns_none() {
+        // usage has no AgentEvent variant: the typed path falls through and
+        // the data path does not map the type either.
+        let event = proto::StreamEvent {
+            r#type: "usage".to_string(),
+            payload: Some(proto::EventPayload {
+                kind: Some(proto::event_payload::Kind::Usage(
+                    proto::UsageEvent::default(),
+                )),
+            }),
+            ..Default::default()
+        };
+        assert!(parsed(event).is_none());
+    }
+
+    // ── Extraction-helper mismatch arms ─────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "expected AgentEnd")]
+    fn expect_agent_end_rejects_other_events() {
+        expect_agent_end(Some(AgentEvent::Ping));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected TextChunk")]
+    fn expect_text_chunk_rejects_other_events() {
+        expect_text_chunk(Some(AgentEvent::Ping));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected ThinkingDelta")]
+    fn expect_thinking_delta_rejects_other_events() {
+        expect_thinking_delta(Some(AgentEvent::Ping));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected ToolStart")]
+    fn expect_tool_start_rejects_other_events() {
+        expect_tool_start(Some(AgentEvent::Ping));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected ToolDelta")]
+    fn expect_tool_delta_rejects_other_events() {
+        expect_tool_delta(Some(AgentEvent::Ping));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected ToolEnd")]
+    fn expect_tool_end_rejects_other_events() {
+        expect_tool_end(Some(AgentEvent::Ping));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected ApprovalRequest")]
+    fn expect_approval_request_rejects_other_events() {
+        expect_approval_request(Some(AgentEvent::Ping));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Error")]
+    fn expect_error_rejects_other_events() {
+        expect_error(Some(AgentEvent::Ping));
     }
 }

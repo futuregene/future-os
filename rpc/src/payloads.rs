@@ -275,6 +275,53 @@ mod tests {
         ("clientRequestId", "client_request_id"),
     ];
 
+    /// Mirror of the agent's get_state dual-write alias injection (top-level
+    /// plus per-ack snake_case), factored out so both the acks-present and
+    /// acks-absent edges get exercised.
+    fn inject_get_state_wire_aliases(wire: &mut Value) {
+        inject_legacy_aliases(wire, GET_STATE_ALIASES);
+        if let Some(acks) = wire
+            .get_mut("recentTerminalAcks")
+            .and_then(Value::as_array_mut)
+        {
+            for ack in acks {
+                inject_legacy_aliases(ack, TERMINAL_ACK_ALIASES);
+            }
+        }
+    }
+
+    /// Decode-side mirror of [`inject_get_state_wire_aliases`].
+    fn strip_get_state_wire_aliases(wire: &mut Value) {
+        strip_legacy_aliases(wire, GET_STATE_ALIASES);
+        if let Some(acks) = wire
+            .get_mut("recentTerminalAcks")
+            .and_then(Value::as_array_mut)
+        {
+            for ack in acks {
+                strip_legacy_aliases(ack, TERMINAL_ACK_ALIASES);
+            }
+        }
+    }
+
+    #[test]
+    fn inject_legacy_aliases_ignores_non_objects() {
+        let mut value = json!(["not", "an", "object"]);
+        inject_legacy_aliases(&mut value, GET_STATE_ALIASES);
+        assert_eq!(value, json!(["not", "an", "object"]));
+    }
+
+    /// With no recentTerminalAcks key both helpers still apply the top-level
+    /// alias pair and leave the rest untouched.
+    #[test]
+    fn get_state_wire_aliases_without_acks() {
+        let mut wire = json!({"sessionName": "Demo"});
+        inject_get_state_wire_aliases(&mut wire);
+        assert_eq!(wire["session_name"], json!("Demo"));
+        strip_get_state_wire_aliases(&mut wire);
+        assert!(wire.get("session_name").is_none());
+        assert_eq!(wire["sessionName"], json!("Demo"));
+    }
+
     #[test]
     fn inject_legacy_aliases_duplicates_present_keys_only() {
         let mut value = json!({"sessionName": "demo", "queuedCount": 0});
@@ -498,27 +545,11 @@ mod tests {
 
         // Agent dual-write: inject the legacy aliases, as get_state does.
         let mut wire = canonical.clone();
-        inject_legacy_aliases(&mut wire, GET_STATE_ALIASES);
-        if let Some(acks) = wire
-            .get_mut("recentTerminalAcks")
-            .and_then(Value::as_array_mut)
-        {
-            for ack in acks {
-                inject_legacy_aliases(ack, TERMINAL_ACK_ALIASES);
-            }
-        }
+        inject_get_state_wire_aliases(&mut wire);
 
         // Decode: strip duplicates, then deserialize (aliases cover
         // legacy-only JSON from pre-migration agents).
-        strip_legacy_aliases(&mut wire, GET_STATE_ALIASES);
-        if let Some(acks) = wire
-            .get_mut("recentTerminalAcks")
-            .and_then(Value::as_array_mut)
-        {
-            for ack in acks {
-                strip_legacy_aliases(ack, TERMINAL_ACK_ALIASES);
-            }
-        }
+        strip_get_state_wire_aliases(&mut wire);
         let decoded: GetStatePayload = serde_json::from_value(wire).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), canonical);
     }
