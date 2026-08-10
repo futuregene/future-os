@@ -48,7 +48,7 @@ fn valid_manifest() -> ExtensionManifest {
 
 #[test]
 fn manifest_top_level_errors() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Not an object.
     assert!(validate_manifest_value(&serde_json::json!([]), "t").is_err());
     // Bad / legacy schema.
@@ -86,7 +86,7 @@ fn manifest_top_level_errors() {
 
 #[test]
 fn manifest_runtime_errors() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Bad protocol token.
     assert!(validate_manifest_value(&manifest_json(|m| {
         m["runtime"].as_object_mut().unwrap().insert("protocol".into(), "NOPE".into());
@@ -127,7 +127,7 @@ fn manifest_runtime_errors() {
 
 #[test]
 fn manifest_provides_implements_errors() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // provides not an array / item not an object / missing fields.
     assert!(validate_manifest_value(&manifest_json(|m| {
         m.insert("provides".into(), "x".into());
@@ -174,7 +174,7 @@ fn manifest_provides_implements_errors() {
 
 #[test]
 fn protocol_token_matrix() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     assert!(validate_protocol_token("command_json_v0"));
     assert!(validate_protocol_token("a_v1"));
     assert!(!validate_protocol_token(""));
@@ -188,7 +188,7 @@ fn protocol_token_matrix() {
 
 #[test]
 fn api_version_clause_matrix() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // LOOPX_EXTENSION_API_VERSION == 1.
     assert!(require_compatible_future_loop_api(">=1").is_ok());
     assert!(require_compatible_future_loop_api(">=1,<3").is_ok());
@@ -208,7 +208,7 @@ fn api_version_clause_matrix() {
 
 #[test]
 fn readiness_branches() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Entrypoint resolves on PATH → ready (no doctor args configured).
     let m = valid_manifest();
     let report = extension_doctor(&m);
@@ -278,7 +278,7 @@ fn readiness_branches() {
 
 #[test]
 fn runtime_lifecycle_errors() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let state_file = dir.path().join("state.json");
     let m = valid_manifest();
@@ -319,7 +319,7 @@ fn runtime_lifecycle_errors() {
 
 #[test]
 fn revision_digest_stable() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let m = valid_manifest();
     assert_eq!(manifest_revision(&m), manifest_revision(&m));
     assert_eq!(manifest_revision(&m).len(), 16);

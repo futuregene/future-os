@@ -286,3 +286,75 @@ fn runs_retention_with_candidates() {
     }
     cli_ok(&["runs", "retention", "--goal", &gid, "--keep", "1"]);
 }
+
+#[test]
+fn benchmark_protocol_blind_route_print() {
+    let _cr = cli_root();
+    cli_ok(&["benchmark", "protocol", "--route", "future-loop-blind-loop-treatment"]);
+}
+
+#[test]
+fn runs_retention_candidates_print() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "retention print");
+    {
+        let store = open_store(&cr);
+        let runs_dir = store.goal_dir(&gid).join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        for (name, ts) in [
+            ("2020-01-01T00-00-00-00-00.json", "2020-01-01T00:00:00+00:00"),
+            ("2021-01-01T00-00-00-00-00.json", "2021-01-01T00:00:00+00:00"),
+            ("2022-01-01T00-00-00-00-00.json", "2022-01-01T00:00:00+00:00"),
+        ] {
+            std::fs::write(
+                runs_dir.join(name),
+                format!("{{\"timestamp\":\"{ts}\",\"turn\":1,\"terminal_state\":\"completed\"}}"),
+            )
+            .unwrap();
+        }
+    }
+    // The retention projection reads the rebuilt index.
+    cli_ok(&["runs", "index", "--goal", &gid, "--rebuild"]);
+    cli_ok(&["runs", "retention", "--goal", &gid, "--keep", "1"]);
+}
+
+#[test]
+fn benchmark_run_stub_flag() {
+    let cr = cli_root();
+    let ledger_dir = std::path::Path::new(&cr.cwd).join("bench-stub");
+    cli_ok(&[
+        "benchmark", "run", "--benchmark-id", "bs", "--case-id", "cs", "--task", "t",
+        "--stub", "--ledger-dir", ledger_dir.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn corpus_build_positional_arg_arm() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "corpus positional");
+    cli_ok(&["replay", "corpus", "build", "--goal", &gid, "positional-junk", "--patch", "{}"]);
+}
+
+#[test]
+fn run_validator_inconclusive_print() {
+    let cr = cli_root();
+    let (_rt, _shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        ..Default::default()
+    });
+    let gid = init_goal(&cr, "validator inconclusive");
+    let first = first_todo_id(&cr.root, &gid);
+    cli_ok(&["todo", "complete", "--goal", &gid, "--todo-id", &first, "--no-follow-up"]);
+    cli_ok(&[
+        "todo", "add", "--goal", &gid, "--text", "validated task", "--verify", "exit 0",
+        "--max-validation-attempts", "1",
+    ]);
+    // With an empty PATH the validator's `sh` cannot spawn → Inconclusive.
+    let saved = std::env::var_os("PATH");
+    std::env::set_var("PATH", "/nonexistent-dir-xyz");
+    let result = cli(&["run", "--goal", &gid, "--anonymous", "--max-turns", "2"]);
+    if let Some(p) = saved {
+        std::env::set_var("PATH", p);
+    }
+    result.unwrap();
+}

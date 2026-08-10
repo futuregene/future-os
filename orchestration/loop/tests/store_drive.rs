@@ -368,6 +368,80 @@ fn verify_conflict_dedup_arm() {
     assert_eq!(report.conflicts.len(), 1, "{report:?}");
 }
 
+#[test]
+fn apply_renew_and_priority_arms() {
+    let (_d, root) = fresh_store("s15");
+    let mut store = Store::open(&root).unwrap();
+    registered_goal(&mut store, "g1");
+    add(&mut store, "g1", "t1");
+    // Claim, then renew: the claim-fill arm is skipped (already claimed) but
+    // the lease updates.
+    store
+        .append(Event::TodoClaimed {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            agent_id: "a".into(),
+            lease_expires_at: 100,
+            ts: now_epoch(),
+        })
+        .unwrap();
+    store
+        .append(Event::TodoRenewed {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            agent_id: "a".into(),
+            lease_expires_at: 200,
+            ts: now_epoch(),
+        })
+        .unwrap();
+    // Release by the owner clears both fields.
+    store
+        .append(Event::TodoReleased {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            agent_id: "a".into(),
+            ts: now_epoch(),
+        })
+        .unwrap();
+    // Expiry on a CLAIMED todo clears it (the had-claim arm).
+    store
+        .append(Event::TodoClaimed {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            agent_id: "b".into(),
+            lease_expires_at: 50,
+            ts: now_epoch(),
+        })
+        .unwrap();
+    store
+        .append(Event::TodoExpired {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            ts: now_epoch(),
+        })
+        .unwrap();
+    // TodoUpdated priority P0 arm (P2 covered elsewhere).
+    store
+        .append(Event::TodoUpdated {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            text: None,
+            status: None,
+            evidence: None,
+            note: None,
+            priority: Some("P0".into()),
+            resume_when: None,
+            blocks: None,
+            ts: now_epoch(),
+        })
+        .unwrap();
+    let goal = store.replay("g1").unwrap().unwrap();
+    let t = goal.todo("t1").unwrap();
+    assert_eq!(t.claimed_by, None, "expired claim cleared");
+    assert_eq!(t.lease_expires_at, None);
+    assert_eq!(t.priority, future_loop::state::Priority::P0);
+}
+
 // ── apply matrix (append + replay state assertions) ────────────────────────
 
 #[test]
