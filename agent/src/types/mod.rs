@@ -1630,25 +1630,6 @@ mod tests {
         assert_eq!(usage.credit_cost, None);
     }
 
-    #[test]
-    fn agent_tool_debug_redacts_handler() {
-        let tool = AgentTool {
-            def: ToolDef {
-                tool_type: "function".to_string(),
-                function: FunctionDef {
-                    name: "t".to_string(),
-                    description: "d".to_string(),
-                    parameters: serde_json::json!({}),
-                },
-            },
-            handler: |_: serde_json::Value| Box::pin(async { Ok("ok".to_string()) }),
-            guidelines: vec![],
-        };
-        let debug = format!("{tool:?}");
-        assert!(debug.contains("<fn>"));
-        assert!(debug.contains("\"t\""));
-    }
-
     #[tokio::test(flavor = "current_thread")]
     async fn provider_default_key_and_thinking_setters_are_noops() {
         struct MinimalProvider;
@@ -1668,5 +1649,100 @@ mod tests {
         let provider = MinimalProvider;
         provider.set_api_key("ignored");
         provider.update_thinking("high", 1234);
+        // The default stream_chat implementation is callable too.
+        let mut stream = provider
+            .stream_chat("m".to_string(), vec![], vec![], String::new())
+            .await
+            .unwrap();
+        use tokio_stream::StreamExt;
+        assert!(stream.next().await.is_none());
+    }
+
+    #[test]
+    fn usage_credit_cost_integer_and_null_forms() {
+        let usage: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"credit_cost":2}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.credit_cost, Some(2.0));
+        let usage: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"credit_cost":null}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.credit_cost, None);
+    }
+
+    #[test]
+    fn convert_from_llm_content_block_variants() {
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: Some(serde_json::json!([
+                    {"type": "text", "text": "t"},
+                    {"type": "image_url", "image_url": "data:image/png;base64,x"},
+                    {"type": "image_url", "image_url": 42},
+                    {"type": "unknown"},
+                    "plain-entry"
+                ])),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: Some(serde_json::json!("string content")),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: Some(serde_json::json!("")),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: None,
+                ..Default::default()
+            },
+        ];
+        let converted = convert_from_llm(messages);
+        assert_eq!(converted.len(), 4);
+        // The string-form image_url keeps its URL in this direction.
+        let images: Vec<_> = converted[0]
+            .content
+            .iter()
+            .filter(|b| matches!(b, ContentBlock::Image { .. }))
+            .collect();
+        assert_eq!(images.len(), 2);
+        let ContentBlock::Image { image_url } = images[0] else { panic!("image") };
+        assert_eq!(image_url.url.as_deref(), Some("data:image/png;base64,x"));
+        let ContentBlock::Image { image_url } = images[1] else { panic!("image") };
+        assert!(image_url.url.is_none());
+        assert_eq!(converted[1].text(), "string content");
+        assert!(converted[2].content.is_empty());
+        assert!(converted[3].content.is_empty());
+    }
+
+    #[test]
+    fn agent_tool_debug_redacts_handler() {
+        let tool = AgentTool {
+            def: ToolDef {
+                tool_type: "function".to_string(),
+                function: FunctionDef {
+                    name: "t".to_string(),
+                    description: "d".to_string(),
+                    parameters: serde_json::json!({}),
+                },
+            },
+            handler: |_: serde_json::Value| Box::pin(async { Ok("ok".to_string()) }),
+            guidelines: vec![],
+        };
+        let debug = format!("{tool:?}");
+        assert!(debug.contains("<fn>"));
+        assert!(debug.contains("\"t\""));
+        // The handler itself is callable.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on((tool.handler)(serde_json::json!({})));
+        assert_eq!(result.unwrap(), "ok");
     }
 }

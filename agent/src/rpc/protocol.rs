@@ -1613,4 +1613,122 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(projection.is_none());
     }
+
+    // ─── coverage batch: journal resume/recovery/projection arms ───────────
+
+    #[test]
+    fn configure_journal_resumes_session_idx_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        // Pre-existing session journal with events at session_idx 0 and 1.
+        let first = SseBroadcaster::new();
+        first.configure_journal("s1".to_string(), dir.path().to_path_buf()).unwrap();
+        first.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 1})));
+        first.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 2})));
+
+        let second = SseBroadcaster::new();
+        second.configure_journal("s1".to_string(), dir.path().to_path_buf()).unwrap();
+        second.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 3})));
+        let events = second.session_events_since(-1).unwrap();
+        let idxs: Vec<i64> = events.iter().map(|e| e.session_idx).collect();
+        assert_eq!(idxs, vec![0, 1, 2], "resumed after the on-disk sequence");
+    }
+
+    #[test]
+    fn set_persistence_interrupt_flags_when_journal_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        // A file where the journal directory belongs → configure fails.
+        let blocker = dir.path().join("blocked");
+        std::fs::write(&blocker, "x").unwrap();
+        let broadcaster = SseBroadcaster::new();
+        assert!(broadcaster
+            .configure_journal("s1".to_string(), blocker.join("sub"))
+            .is_err());
+        assert!(broadcaster.persistence_error().is_some());
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        broadcaster.set_persistence_interrupt(flag.clone());
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn start_run_recovers_from_corrupt_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("run-x.jsonl"), "{corrupt\n{also corrupt\n").unwrap();
+        let broadcaster = SseBroadcaster::new();
+        broadcaster
+            .configure_journal("s1".to_string(), dir.path().to_path_buf())
+            .unwrap();
+        broadcaster.start_run("run-x".to_string(), 1);
+        assert!(broadcaster.persistence_error().is_some());
+    }
+
+    #[test]
+    fn broadcast_without_configured_journal_is_in_memory_only() {
+        let broadcaster = SseBroadcaster::new();
+        broadcaster.start_run("run-mem".to_string(), 1);
+        broadcaster.broadcast(SseEvent::new("text_chunk", serde_json::json!({"text": "x"})));
+        assert!(broadcaster.persistence_error().is_none());
+        let (_, events, _, _) = broadcaster.events_since("run-mem", -1).unwrap();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn events_since_beyond_ring_reads_disk_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let broadcaster = SseBroadcaster::new();
+        broadcaster
+            .configure_journal("s1".to_string(), dir.path().to_path_buf())
+            .unwrap();
+        broadcaster.start_run("run-long".to_string(), 1);
+        for i in 0..2100 {
+            broadcaster.broadcast(SseEvent::new("text_chunk", serde_json::json!({"i": i})));
+        }
+        // The in-memory ring holds 2000; idx 0 is truncated out.
+        let (_, events, _, projection) = broadcaster.events_since("run-long", 0).unwrap();
+        assert!(projection.is_none(), "journal present → disk replay, not projection");
+        assert!(events.len() > 2000, "full history from disk: {}", events.len());
+    }
+
+    #[test]
+    fn attach_beyond_ring_without_journal_returns_projection() {
+        let broadcaster = SseBroadcaster::new();
+        broadcaster.start_run("run-ring".to_string(), 1);
+        for i in 0..2100 {
+            broadcaster.broadcast(SseEvent::new("text_chunk", serde_json::json!({"i": i})));
+        }
+        let attachment = broadcaster.attach("run-ring", 0).unwrap();
+        let projection = attachment.projection.expect("projection over the truncated ring");
+        assert_eq!(projection.run_id, "run-ring");
+        assert!(!projection.events.is_empty());
+    }
+
+    #[test]
+    fn projection_skips_raw_text_deltas() {
+        let mut projection = Vec::new();
+        apply_to_projection(
+            &mut projection,
+            &SseEvent::new("text_delta", serde_json::json!({"text": "raw"})),
+        );
+        assert!(projection.is_empty());
+        apply_to_projection(
+            &mut projection,
+            &SseEvent::new("text_chunk", serde_json::json!({"text": "kept"})),
+        );
+        assert_eq!(projection.len(), 1);
+        // A second text_chunk replaces the projection's previous text entry.
+        apply_to_projection(
+            &mut projection,
+            &SseEvent::new("text_chunk", serde_json::json!({"text": "kept v2"})),
+        );
+        assert_eq!(projection.len(), 1);
+    }
+
+    #[test]
+    fn sse_event_default_session_idx_is_negative() {
+        let event: SseEvent = serde_json::from_str(
+            r#"{"type":"x","data":"{}","event_type":"x","run_id":"","epoch":0,"idx":0,"timestamp":""}"#,
+        )
+        .unwrap();
+        assert_eq!(event.session_idx, -1);
+        let _default = SseBroadcaster::default();
+    }
 }
