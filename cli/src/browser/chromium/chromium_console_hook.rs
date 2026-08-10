@@ -202,14 +202,26 @@ mod tests {
             2
         );
 
-        // Add-script failure → Err before the action runs.
+        // Add-script failure → Err before the action runs. The shared
+        // `ok_action` body also runs (below) so its line is covered.
         mock.state
             .lock()
             .unwrap()
             .fail_methods
             .insert("Page.addScriptToEvaluateOnNewDocument".to_string());
-        let err: Result<(), String> = with_temporary_preload(&session, async { Ok(()) }).await;
+        let err: Result<(), String> = with_temporary_preload(&session, ok_action()).await;
         assert!(err.unwrap_err().contains("mock failure"));
+
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .remove("Page.addScriptToEvaluateOnNewDocument");
+        with_temporary_preload(&session, ok_action()).await.unwrap();
         conn.disconnect().await;
+    }
+
+    async fn ok_action() -> Result<(), String> {
+        Ok(())
     }
 }

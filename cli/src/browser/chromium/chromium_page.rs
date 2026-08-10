@@ -101,7 +101,7 @@ impl ChromiumPageManager {
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
-                        if let Ok(mut d) = data.lock() {
+                        let _ = data.lock().map(|mut d| {
                             if !d.pages.contains_key(&target_id) {
                                 d.pages.insert(
                                     target_id.clone(),
@@ -114,7 +114,7 @@ impl ChromiumPageManager {
                                     },
                                 );
                             }
-                        }
+                        });
                     }
                 });
             self._unsubs
@@ -145,12 +145,12 @@ impl ChromiumPageManager {
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
-                        if let Ok(mut d) = data.lock() {
+                        let _ = data.lock().map(|mut d| {
                             if let Some(existing) = d.pages.get_mut(&target_id) {
                                 existing.url = url;
                                 existing.title = title;
                             }
-                        }
+                        });
                     }
                 });
             self._unsubs
@@ -183,13 +183,13 @@ impl ChromiumPageManager {
                             ),
                         );
                     }
-                    if let Ok(mut d) = data.lock() {
+                    let _ = data.lock().map(|mut d| {
                         d.pages.shift_remove(&target_id);
                         d.tab_order = remove_page(&d.tab_order, &target_id);
                         if d.active_page_id.as_deref() == Some(target_id.as_str()) {
                             d.active_page_id = d.tab_order.last().cloned();
                         }
-                    }
+                    });
                     let _ = disposed;
                 });
             self._unsubs
@@ -290,7 +290,7 @@ impl ChromiumPageManager {
             .unwrap_or("")
             .to_string();
 
-        if let Ok(mut d) = self.data.lock() {
+        let _ = self.data.lock().map(|mut d| {
             d.pages.insert(
                 target_id.to_string(),
                 ChromiumPage {
@@ -301,7 +301,7 @@ impl ChromiumPageManager {
                     title: title.to_string(),
                 },
             );
-        }
+        });
         Ok(())
     }
 
@@ -378,9 +378,9 @@ impl ChromiumPageManager {
             )
             .await
             .map_err(|e| e.to_string())?;
-        if let Ok(mut d) = self.data.lock() {
+        let _ = self.data.lock().map(|mut d| {
             d.active_page_id = Some(target_id.to_string());
-        }
+        });
         Ok(())
     }
 
@@ -422,30 +422,30 @@ impl ChromiumPageManager {
     }
 
     pub fn set_active_page_id(&self, page_id: &str) {
-        if let Ok(mut d) = self.data.lock() {
+        let _ = self.data.lock().map(|mut d| {
             if d.pages.contains_key(page_id) {
                 d.active_page_id = Some(page_id.to_string());
             }
-        }
+        });
     }
 
     /// Update page info after navigation (open() refreshes title/url).
     pub fn update_page(&self, target_id: &str, url: &str, title: &str) {
-        if let Ok(mut d) = self.data.lock() {
+        let _ = self.data.lock().map(|mut d| {
             if let Some(page) = d.pages.get_mut(target_id) {
                 page.url = url.to_string();
                 page.title = title.to_string();
             }
-        }
+        });
     }
 
     /// Record an attached session id for a page (activePageSession attach).
     pub fn set_session_id(&self, target_id: &str, session_id: &str) {
-        if let Ok(mut d) = self.data.lock() {
+        let _ = self.data.lock().map(|mut d| {
             if let Some(page) = d.pages.get_mut(target_id) {
                 page.session_id = session_id.to_string();
             }
-        }
+        });
     }
 
     /// Record an attached target (used by activePageSession).
@@ -500,6 +500,25 @@ mod tests {
         // Target.setDiscoverTargets + getTargets + 2 attaches happened.
         assert_eq!(mock.commands_of("Target.setDiscoverTargets").len(), 1);
         assert_eq!(mock.commands_of("Target.attachToTarget").len(), 2);
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn initialize_skips_non_page_targets() {
+        let mock = MockCdp::start_with(
+            vec![
+                target("T-1", "http://one/", "One"),
+                crate::test_cdp::target_kind("W-1", "http://w/", "W", "service_worker"),
+            ],
+            "Chrome/126.0.0.0",
+        )
+        .await;
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        let mut mgr = ChromiumPageManager::new(CdpSession::new("", conn.clone()), conn.clone());
+        mgr.initialize(None, None).await.unwrap();
+        // Only the page target was attached/tracked.
+        assert_eq!(mgr.get_pages().len(), 1);
+        assert_eq!(mock.commands_of("Target.attachToTarget").len(), 1);
         conn.disconnect().await;
     }
 
@@ -608,6 +627,20 @@ mod tests {
         conn.dispatch_test(None, "Target.targetDestroyed", &json!({"targetId": "T-3"}));
         assert!(mgr.get_page("T-3").is_none());
         assert_eq!(mgr.get_active_page_id().as_deref(), Some("T-2"));
+
+        // Malformed events are ignored: no targetInfo / unknown ids /
+        // destroying a non-active page (active pointer stays).
+        conn.dispatch_test(None, "Target.targetCreated", &json!({}));
+        conn.dispatch_test(None, "Target.targetInfoChanged", &json!({}));
+        conn.dispatch_test(
+            None,
+            "Target.targetInfoChanged",
+            &json!({"targetInfo": {"targetId": "ghost", "url": "g", "title": "g"}}),
+        );
+        conn.dispatch_test(None, "Target.targetDestroyed", &json!({}));
+        conn.dispatch_test(None, "Target.targetDestroyed", &json!({"targetId": "T-1"}));
+        assert!(mgr.get_page("T-1").is_none());
+        assert_eq!(mgr.get_active_page_id().as_deref(), Some("T-2"));
         conn.disconnect().await;
     }
 
@@ -665,13 +698,7 @@ mod tests {
 
         // close_page → targetDestroyed cleanup.
         mgr.close_page(&target_id).await.unwrap();
-        for _ in 0..50 {
-            if mgr.get_page(&target_id).is_none() {
-                break;
-            }
-            crate::utils::time::sleep(20).await;
-        }
-        assert!(mgr.get_page(&target_id).is_none());
+        assert!(crate::test_env::wait_for(|| mgr.get_page(&target_id).is_none()).await);
 
         // activate/close send failures propagate.
         mock.state
@@ -686,6 +713,47 @@ mod tests {
             .fail_methods
             .insert("Target.closeTarget".to_string());
         assert!(mgr.close_page("T-1").await.is_err());
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_page_skips_attach_when_session_already_known() {
+        let (mock, conn, mut mgr) = manager_over_mock().await;
+        mgr.initialize(None, None).await.unwrap();
+        // Pre-seed the to-be-created target as already attached (the mock
+        // assigns T-3 next).
+        {
+            let mut d = mgr.data.lock().unwrap();
+            d.pages.insert(
+                "T-3".to_string(),
+                ChromiumPage {
+                    target_id: "T-3".to_string(),
+                    session_id: "SID-pre".to_string(),
+                    r#type: "page".to_string(),
+                    url: "about:blank".to_string(),
+                    title: String::new(),
+                },
+            );
+        }
+        let (target_id, page) = mgr.create_page("http://new/").await.unwrap();
+        assert_eq!(target_id, "T-3");
+        assert_eq!(page.session_id, "SID-pre");
+        // No additional attach (still the two from initialize).
+        assert_eq!(mock.commands_of("Target.attachToTarget").len(), 2);
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_page_propagates_create_target_failure() {
+        let (mock, conn, mut mgr) = manager_over_mock().await;
+        mgr.initialize(None, None).await.unwrap();
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Target.createTarget".to_string());
+        let err = mgr.create_page("http://x/").await.unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
         conn.disconnect().await;
     }
 

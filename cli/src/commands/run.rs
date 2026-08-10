@@ -409,6 +409,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_valid_thinking_and_permission_levels() {
+        let parsed = parse(&["--thinking", "high", "hi"]).unwrap();
+        assert_eq!(parsed.thinking.as_deref(), Some("high"));
+        let parsed = parse(&["--permission", "workspace", "hi"]).unwrap();
+        assert_eq!(parsed.permission.as_deref(), Some("workspace"));
+        // Trailing flags without values are ignored.
+        assert!(parse(&["--model"]).is_some());
+        assert!(parse(&["--thinking"]).is_some());
+        assert!(parse(&["--permission"]).is_some());
+    }
+
+    #[test]
+    fn normalize_abs_resolves_curdir_segments() {
+        let out = normalize_abs(std::path::PathBuf::from("/a/b/../c"));
+        assert_eq!(out, "/a/c");
+        // A leading ./ produces an actual CurDir component.
+        let out = normalize_abs(std::path::PathBuf::from("./rel/path"));
+        assert_eq!(out, "rel/path");
+    }
+
+    #[test]
     fn parse_invalid_mode() {
         assert!(parse(&["--mode", "xml", "hi"]).is_none());
     }
@@ -619,10 +640,10 @@ mod tests {
         // The prompt carried the wrapped file + message.
         let prompts = agent.seen_of("prompt");
         assert_eq!(prompts.len(), 1);
+        let first_message = &prompts[0].message;
         assert!(
-            prompts[0].message.contains("<file name=\""),
-            "msg: {}",
-            prompts[0].message
+            first_message.contains("<file name=\""),
+            "msg: {first_message}"
         );
         assert!(prompts[0].message.contains("FILE-CONTENTS"));
         assert!(prompts[0].message.ends_with("summarize"));

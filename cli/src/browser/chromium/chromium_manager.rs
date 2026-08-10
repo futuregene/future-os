@@ -120,6 +120,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_port_free_occupied_and_exhausted() {
+        // Serialize against other port-exhaustion tests (50 consecutive
+        // bound ports must not overlap).
+        let _guard = crate::test_env::lock_env().await;
         let free = free_port();
         assert_eq!(resolve_port(free).await.unwrap(), free);
 
@@ -131,22 +134,9 @@ mod tests {
         drop(held);
 
         // Exhaustion: 50 consecutive occupied ports → error.
-        let first = free_port();
-        let mut holders = Vec::new();
-        let mut blocked = true;
-        for p in first..first + 50 {
-            match std::net::TcpListener::bind(("127.0.0.1", p as u16)) {
-                Ok(l) => holders.push(l),
-                Err(_) => {
-                    blocked = false;
-                    break;
-                }
-            }
-        }
-        if blocked {
-            let err = resolve_port(first).await.unwrap_err();
-            assert!(err.contains("No available browser debugging port"), "{err}");
-        }
+        let (first, holders) = crate::test_env::reserve_consecutive_ports(50);
+        let err = resolve_port(first).await.unwrap_err();
+        assert!(err.contains("No available browser debugging port"), "{err}");
         drop(holders);
     }
 

@@ -301,10 +301,10 @@ mod tests {
         // Bearer auth header sent.
         let recorded = requests.lock().unwrap();
         assert!(!recorded.is_empty());
+        let first_request = &recorded[0];
         assert!(
-            recorded[0].contains("authorization: Bearer sk-test"),
-            "request: {}",
-            recorded[0]
+            first_request.contains("authorization: Bearer sk-test"),
+            "request: {first_request}"
         );
     }
 

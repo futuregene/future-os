@@ -215,6 +215,26 @@ mod tests {
         (executable_path, home_dir)
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn realpath_non_enoent_error_propagates() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().unwrap();
+        let (executable_path, home_dir) = create_unix_fixture(root.path()).await;
+        // Replace future-agent with a symlink LOOP → realpath fails ELOOP
+        // (not ENOENT) → the error propagates instead of defaulting.
+        let agent = executable_path.parent().unwrap().join("future-agent");
+        tokio::fs::remove_file(&agent).await.unwrap();
+        let loop_a = root.path().join("loop-a");
+        let loop_b = root.path().join("loop-b");
+        tokio::fs::symlink(&loop_b, &loop_a).await.unwrap();
+        tokio::fs::symlink(&loop_a, &loop_b).await.unwrap();
+        tokio::fs::symlink(&loop_a, &agent).await.unwrap();
+        let install_count = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (code, _, _) = run_init(&executable_path, &home_dir, install_count, "darwin").await;
+        assert_eq!(code, 1);
+    }
+
     async fn run_init(
         executable_path: &Path,
         home_dir: &Path,

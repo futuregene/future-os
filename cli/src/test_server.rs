@@ -374,3 +374,39 @@ pub async fn spawn_http_recording(
     });
     format!("http://127.0.0.1:{}", addr.port())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_201_reason_and_aborted_connections() {
+        // A 201 route (reason-phrase arm).
+        let base = spawn_http(vec![HttpRoute::json("/made", 201, r#"{"ok":true}"#)]).await;
+        let body = reqwest::get(format!("{base}/made")).await.unwrap();
+        assert_eq!(body.status().as_u16(), 201);
+
+        // A client that connects and closes without writing → Ok(0) read →
+        // the handler breaks out cleanly; the mock stays responsive.
+        let socket = tokio::net::TcpStream::connect(&base[7..]).await.unwrap();
+        drop(socket);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let body = reqwest::get(format!("{base}/made")).await.unwrap();
+        assert_eq!(body.status().as_u16(), 201);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_header_read_loop_exhaustion() {
+        let base = spawn_http(vec![HttpRoute::json("/x", 200, "{}")]).await;
+        // Trickling many tiny writes without the header terminator exhausts
+        // the 16-iteration read loop.
+        let mut socket = tokio::net::TcpStream::connect(&base[7..]).await.unwrap();
+        use tokio::io::AsyncWriteExt;
+        for b in std::iter::repeat_n(b'x', 20) {
+            // The server may answer/close mid-write → broken pipe is fine.
+            let _ = socket.write_all(&[b]).await;
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+        drop(socket);
+    }
+}

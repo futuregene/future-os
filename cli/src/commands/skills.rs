@@ -1073,6 +1073,114 @@ mod tests {
     // ── install / download / unzip ──────────────────────────────────
 
     #[tokio::test]
+    async fn skills_list_dispatch_and_unversioned_installed_skill() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Catalog with one skill; skills dir holds one versioned and one
+        // unversioned install (the unversioned one is skipped by the
+        // installed-version lookup).
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            r#"{"skills":[{"id":"future-x","description":"d","latest_version":"1.0"}]}"#,
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let dir = skills_dir().join("future-x");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("SKILL.md"), "---\nversion: 1.0\n---\n")
+            .await
+            .unwrap();
+        let plain = skills_dir().join("side-loaded");
+        tokio::fs::create_dir_all(&plain).await.unwrap();
+        tokio::fs::write(plain.join("SKILL.md"), "# no frontmatter\n")
+            .await
+            .unwrap();
+        let (out, cap) = Output::memory();
+        skills("list", &[], &out).await.expect("list");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("future-x"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn skills_install_error_propagates_and_version_without_v_prefix() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // A corrupt zip makes install_skill return Err → the `?` arm in the
+        // install dispatch. --version without a "v" prefix skips the strip.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::binary(
+            "/client/v1/skills/future-x/versions/1.0/download",
+            200,
+            b"not a zip".to_vec(),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, _cap) = Output::memory();
+        let err = skills(
+            "install",
+            &[
+                "future-x".to_string(),
+                "--version".to_string(),
+                "1.0".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_builtin_reports_failed_installs() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Catalog offers one builtin; its download is corrupt → the failure
+        // is logged, not fatal.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/skills",
+                200,
+                r#"{"skills":[{"id":"future-x","latest_version":"1.0"}]}"#,
+            ),
+            crate::test_server::HttpRoute::binary(
+                "/client/v1/skills/future-x/versions/1.0/download",
+                200,
+                b"not a zip".to_vec(),
+            ),
+        ])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        install_builtin_skills(&out).await;
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("Failed to install future-x"),
+            "stderr: {stderr}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_skill_md_version_metadata_edge_shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SKILL.md");
+        // metadata JSON with an EMPTY version → falls through.
+        tokio::fs::write(&path, "---\nmetadata: {\"version\": \"\"}\n---\n")
+            .await
+            .unwrap();
+        assert_eq!(read_skill_md_version(&path).await, None);
+        // metadata JSON without a version key → falls through.
+        tokio::fs::write(&path, "---\nmetadata: {\"other\": 1}\n---\n")
+            .await
+            .unwrap();
+        assert_eq!(read_skill_md_version(&path).await, None);
+        // metadata non-JSON and not starting with "version:" → falls through.
+        tokio::fs::write(&path, "---\nmetadata: bogus-shape\n---\n")
+            .await
+            .unwrap();
+        assert_eq!(read_skill_md_version(&path).await, None);
+    }
+
+    #[tokio::test]
     async fn install_skill_explicit_version_happy_path() {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();

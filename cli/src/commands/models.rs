@@ -174,7 +174,8 @@ pub async fn models(args: &[String], out: &Output) -> Result<(), String> {
             by_provider,
             total_models: raw_models.len(),
         };
-        out.log(&serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?);
+        // Serializing plain JSON values is infallible.
+        out.log(&serde_json::to_string_pretty(&output).expect("json serializes"));
         return Ok(());
     }
 

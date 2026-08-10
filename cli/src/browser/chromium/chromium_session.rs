@@ -106,10 +106,13 @@ impl ChromiumSession {
     // ── Init ──────────────────────────────────────────────────────────
 
     async fn init(&mut self) -> Result<(), String> {
-        if let Some(conn) = &self.connection {
-            if conn.is_connected() && self.page_mgr.is_some() {
-                return Ok(());
-            }
+        let ready = self
+            .connection
+            .as_ref()
+            .map(|conn| conn.is_connected() && self.page_mgr.is_some())
+            .unwrap_or(false);
+        if ready {
+            return Ok(());
         }
 
         if self.params.protocol() != "cdp" {
@@ -963,6 +966,38 @@ mod tests {
     use crate::test_cdp::MockCdp;
 
     /// A ChromiumSession bound to the mock browser.
+    /// TabsResult extractors (panic arms covered by a dedicated test).
+    #[track_caller]
+    fn expect_tabs_list(r: InternalTabsResult) -> Vec<InternalTabInfo> {
+        match r {
+            InternalTabsResult::List { tabs } => tabs,
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn expect_tabs_new(r: InternalTabsResult) -> (InternalPageInfo, usize) {
+        match r {
+            InternalTabsResult::New { page, index } => (page, index),
+            other => panic!("expected new, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tabs_extractors_panic_on_wrong_variant() {
+        assert!(std::panic::catch_unwind(|| {
+            expect_tabs_list(InternalTabsResult::Close {
+                url: String::new(),
+                index: 0,
+            })
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            expect_tabs_new(InternalTabsResult::List { tabs: vec![] })
+        })
+        .is_err());
+    }
+
     fn session_over(mock: &MockCdp) -> ChromiumSession {
         ChromiumSession::new(BrowserSessionParams::Cdp {
             browser_kind: "chrome".to_string(),
@@ -1406,15 +1441,10 @@ mod tests {
         let mut s = session_over(&mock);
 
         // list: one seeded page.
-        let result = s.tabs(&TabsAction::List).await.unwrap();
-        match result {
-            InternalTabsResult::List { tabs } => {
-                assert_eq!(tabs.len(), 1);
-                assert_eq!(tabs[0].page_id, "T-1");
-                assert!(tabs[0].active);
-            }
-            other => panic!("expected list, got {other:?}"),
-        }
+        let tabs = expect_tabs_list(s.tabs(&TabsAction::List).await.unwrap());
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].page_id, "T-1");
+        assert!(tabs[0].active);
 
         // new.
         let result = s
@@ -1423,13 +1453,9 @@ mod tests {
             })
             .await
             .unwrap();
-        match result {
-            InternalTabsResult::New { page, index } => {
-                assert_eq!(page.url, "http://two/");
-                assert_eq!(index, 1);
-            }
-            other => panic!("expected new, got {other:?}"),
-        }
+        let (page, index) = expect_tabs_new(result);
+        assert_eq!(page.url, "http://two/");
+        assert_eq!(index, 1);
 
         // select (valid + invalid).
         let result = s.tabs(&TabsAction::Select { index: 0 }).await.unwrap();
@@ -1699,6 +1725,245 @@ mod tests {
                     timeout_ms: None,
                 },
             )
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn type_submit_enter_char_and_keyup_failures() {
+        // dispatchEnter sends rawKeyDown/char/keyUp under ONE method name;
+        // fail_on_call picks the exact invocation to break.
+        for fail_at in [1usize, 2usize] {
+            let mock = MockCdp::start().await;
+            mock.state
+                .lock()
+                .unwrap()
+                .fail_on_call
+                .insert(("Input.dispatchKeyEvent".to_string(), fail_at));
+            let mut s = session_over(&mock);
+            let err = s
+                .r#type(
+                    &target("#in"),
+                    "x",
+                    TypeOptions {
+                        clear: None,
+                        submit: Some(true),
+                        timeout_ms: None,
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(err.contains("mock failure"), "fail_at {fail_at}: {err}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn init_endpoint_resolution_and_connect_failures() {
+        // /json/version 404 → endpoint resolution error.
+        let base = crate::test_server::spawn_http(vec![]).await;
+        let mut s = ChromiumSession::new(BrowserSessionParams::Cdp {
+            browser_kind: "chrome".to_string(),
+            endpoint: base,
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: None,
+            init_tab_order: None,
+        });
+        let err = s
+            .open("http://x/", OpenPageOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("/json/version"), "{err}");
+
+        // /json/version points at a dead WebSocket → connect error.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/json/version",
+            200,
+            r#"{"webSocketDebuggerUrl": "ws://127.0.0.1:1/ws", "Browser": "Chrome/126"}"#,
+        )])
+        .await;
+        let mut s = ChromiumSession::new(BrowserSessionParams::Cdp {
+            browser_kind: "chrome".to_string(),
+            endpoint: base,
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: None,
+            init_tab_order: None,
+        });
+        let err = s
+            .open("http://x/", OpenPageOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("WebSocket connection failed"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn active_page_session_create_page_failure_propagates() {
+        // Empty browser + discovery suppressed → create_page times out.
+        let mock = MockCdp::start_with(vec![], "Chrome/126").await;
+        mock.state.lock().unwrap().suppress_target_created = true;
+        let mut s = session_over(&mock);
+        let err = s
+            .open("http://x/", OpenPageOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("not discovered within timeout"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn attach_arm_failure_propagates() {
+        // Same late-page setup as attach_arm_for_pages_without_session, but
+        // the lazy attach fails.
+        let mock = MockCdp::start().await;
+        mock.state.lock().unwrap().events_after_response.insert(
+            "Target.getTargets".to_string(),
+            vec![json!({
+                "method": "Target.targetCreated",
+                "params": {"targetInfo": {
+                    "targetId": "T-late", "type": "page",
+                    "url": "about:blank", "title": "",
+                }},
+            })],
+        );
+        let mut s = ChromiumSession::new(BrowserSessionParams::Cdp {
+            browser_kind: "chrome".to_string(),
+            endpoint: mock.http_url.clone(),
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: Some("T-late".to_string()),
+            init_tab_order: None,
+        });
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Target.attachToTarget".to_string());
+        let err = s
+            .open("http://late/", OpenPageOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn page_enable_runtime_enable_lifecycle_failures() {
+        // Each of the three enable calls in active_page_session, failed in
+        // turn; the session retries the whole sequence after each failure.
+        let mock = MockCdp::start().await;
+        let mut s = session_over(&mock);
+        for method in [
+            "Page.enable",
+            "Runtime.enable",
+            "Page.setLifecycleEventsEnabled",
+        ] {
+            mock.state
+                .lock()
+                .unwrap()
+                .fail_methods
+                .insert(method.to_string());
+            let err = s
+                .evaluate(&EvaluateRequest::Expression {
+                    expression: "1".to_string(),
+                })
+                .await
+                .unwrap_err();
+            assert!(err.contains("mock failure"), "{method}: {err}");
+            mock.state.lock().unwrap().fail_methods.remove(method);
+        }
+        // And it recovers once nothing fails anymore.
+        let out = s
+            .evaluate(&EvaluateRequest::Expression {
+                expression: "document.title".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out, json!("Mock Title"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn click_mouse_dispatch_per_call_failures() {
+        // moved/pressed/released share Input.dispatchMouseEvent; break each.
+        for fail_at in [0usize, 1, 2] {
+            let mock = MockCdp::start().await;
+            mock.state
+                .lock()
+                .unwrap()
+                .fail_on_call
+                .insert(("Input.dispatchMouseEvent".to_string(), fail_at));
+            let mut s = session_over(&mock);
+            let err = s
+                .click(&target("#go"), ClickOptions::default())
+                .await
+                .unwrap_err();
+            assert!(err.contains("mock failure"), "fail_at {fail_at}: {err}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn click_loader_id_failure_falls_back_to_empty() {
+        // getFrameTree succeeds for the session attach (call 0) but fails
+        // for the click-time loader read (call 1) → unwrap_or_default.
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_on_call
+            .insert(("Page.getFrameTree".to_string(), 1));
+        let mut s = session_over(&mock);
+        let result = s.click(&target("#go"), ClickOptions::default()).await;
+        // The click itself completes (observer armed with an empty loader).
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_navigate_send_failure_propagates() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Page.navigate".to_string());
+        let mut s = session_over(&mock);
+        let err = s
+            .open("http://x/", OpenPageOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn evaluate_function_send_failure_propagates() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Runtime.evaluate".to_string());
+        let mut s = session_over(&mock);
+        let err = s
+            .evaluate(&EvaluateRequest::Function {
+                function_declaration: "function() { return 1; }".to_string(),
+                arguments: vec![],
+            })
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_reinit_failure_after_connection_drop() {
+        // The title evaluate kills the connection mid-open; the re-init
+        // reconnects (the mock accepts again) but the SECOND
+        // setDiscoverTargets fails → the deferred init error propagates.
+        let mock = MockCdp::start().await;
+        {
+            let mut state = mock.state.lock().unwrap();
+            state.close_connection_on_eval_substring = Some("document.title".to_string());
+            state
+                .fail_on_call
+                .insert(("Target.setDiscoverTargets".to_string(), 1));
+        }
+        let mut s = session_over(&mock);
+        let err = s
+            .open("http://x/", OpenPageOptions::default())
             .await
             .unwrap_err();
         assert!(err.contains("mock failure"), "{err}");

@@ -379,9 +379,10 @@ async fn write_auth_file(auth_file: &Value) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())?;
     }
+    // Serializing plain JSON values is infallible.
     let contents = format!(
         "{}\n",
-        serde_json::to_string_pretty(auth_file).map_err(|e| e.to_string())?
+        serde_json::to_string_pretty(auth_file).expect("auth json serializes")
     );
     let mut opts = tokio::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -553,6 +554,33 @@ mod tests {
             stdout,
             "{\"api_key\":\"k456\",\"endpoint\":\"https://example.com/api/v1\"}\n"
         );
+
+        // Invalid auth.json (parse failure → outer Err), plain output.
+        tokio::fs::write(&path, "{not json").await.unwrap();
+        let (code, stdout, _) = run(&["auth", "credential"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "Not logged in.\n");
+        // Same, with --json.
+        let (code, stdout, _) = run(&["auth", "credential", "--json"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("\"error\""), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn logout_entry_without_key_reports_not_logged_in() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        // The future entry exists but has no key field.
+        tokio::fs::write(&path, r#"{"future":{"type":"api_key"}}"#)
+            .await
+            .unwrap();
+        let (code, stdout, _) = run(&["auth", "logout"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "Not logged in.\n");
     }
 
     #[tokio::test]

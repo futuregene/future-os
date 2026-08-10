@@ -19,50 +19,65 @@ const SAFARIDRIVER_PATH: &str = "/usr/bin/safaridriver";
 #[cfg(test)]
 static SAFARIDRIVER_PATH_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// The safaridriver executable path (honors the test override).
-#[cfg(not(test))]
+/// The safaridriver executable path (honors the test override). Single
+/// definition so no cfg(not(test))-only copy goes unexecuted in the
+/// integration-test (non-cfg-test) build.
 fn safaridriver_path() -> String {
-    SAFARIDRIVER_PATH.to_string()
-}
-
-/// Test build: explicit override → `/bin/sh` fallback.
-#[cfg(test)]
-fn safaridriver_path() -> String {
-    SAFARIDRIVER_PATH_OVERRIDE
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap_or_else(|| "/bin/sh".to_string())
+    #[cfg(test)]
+    if let Some(p) = SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap().clone() {
+        return p;
+    }
+    #[cfg(not(test))]
+    const DEFAULT_PATH: &str = SAFARIDRIVER_PATH;
+    #[cfg(test)]
+    const DEFAULT_PATH: &str = "/bin/sh";
+    DEFAULT_PATH.to_string()
 }
 
 /// `SafariManager::start(options)` — port of the CLI-visible path.
+/// Test-only platform override (the cfg!(macos) gate is otherwise
+/// uncoverable on the macOS coverage host).
+#[cfg(test)]
+static SAFARI_PLATFORM_OVERRIDE: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+
+fn is_macos() -> bool {
+    #[cfg(test)]
+    if let Some(v) = *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() {
+        return v;
+    }
+    cfg!(target_os = "macos")
+}
+
 pub async fn safari_start(
     requested_port: i64,
     _url: Option<&str>,
 ) -> Result<SafariStartResult, String> {
-    if !cfg!(target_os = "macos") {
+    if !is_macos() {
         return Err("Safari is only available on macOS.".to_string());
     }
 
-    let port = resolve_port(requested_port).await?;
-    let driver_endpoint = format!("http://127.0.0.1:{port}");
-
-    // Check if safaridriver is already running on this port.
-    if endpoint_reachable(&driver_endpoint).await {
+    // Check if safaridriver is already running on the REQUESTED port first
+    // (after resolve_port the port is free by construction, so a later check
+    // could never succeed).
+    let requested_endpoint = format!("http://127.0.0.1:{requested_port}");
+    if endpoint_reachable(&requested_endpoint).await {
         // Try to create a session — may fail if remote automation is not enabled.
-        let session_id = create_session_with_translation(&driver_endpoint).await?;
+        let session_id = create_session_with_translation(&requested_endpoint).await?;
         return Ok(SafariStartResult {
             connection: BrowserConnectionConfig::Webdriver {
                 browser_kind: "safari".to_string(),
-                endpoint: driver_endpoint,
+                endpoint: requested_endpoint,
                 session_id,
                 driver_pid: None,
             },
             launcher: SAFARIDRIVER_PATH.to_string(),
-            port,
+            port: requested_port,
             status: "already_running".to_string(),
         });
     }
+
+    let port = resolve_port(requested_port).await?;
+    let driver_endpoint = format!("http://127.0.0.1:{port}");
 
     // Launch safaridriver.
     let child = tokio::process::Command::new(safaridriver_path())
@@ -304,6 +319,9 @@ mod tests {
 
     #[tokio::test]
     async fn start_already_running_creates_session() {
+        let _guard = crate::test_env::lock_env().await;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+        let _reset = PlatformReset;
         let base = spawn_http(vec![
             HttpRoute::json("/status", 200, r#"{"ready":true}"#),
             HttpRoute::json("/session", 200, r#"{"sessionId":"sid-1","value":{}}"#),
@@ -327,6 +345,9 @@ mod tests {
 
     #[tokio::test]
     async fn start_translates_permission_errors() {
+        let _guard = crate::test_env::lock_env().await;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+        let _reset = PlatformReset;
         for body in [
             r#"{"value":{"error":"session not created","message":"boom"}}"#,
             r#"{"value":{"error":"unknown error","message":"You must Allow Remote Automation first"}}"#,
@@ -344,6 +365,9 @@ mod tests {
 
     #[tokio::test]
     async fn start_passthrough_other_session_errors() {
+        let _guard = crate::test_env::lock_env().await;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+        let _reset = PlatformReset;
         let base = spawn_http(vec![
             HttpRoute::json("/status", 200, r#"{"ready":true}"#),
             HttpRoute::json(
@@ -360,21 +384,25 @@ mod tests {
 
     // ── safari_start: launch paths (macOS only) ───────────────────────
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn start_launch_spawn_failure() {
         let _guard = crate::test_env::lock_env().await;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+        let _reset_platform = PlatformReset;
         let _reset = set_driver_override("/nonexistent/safaridriver");
         let err = safari_start(free_port().await, None).await.err().unwrap();
         assert!(err.contains("Failed to launch safaridriver"), "{err}");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn start_launch_never_ready_times_out() {
         let _guard = crate::test_env::lock_env().await;
-        // No override: the cfg(test) default is /bin/sh, which spawns fine
-        // but never serves → 10 s wait → error.
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+        let _reset = PlatformReset;
+        // No driver-path override: the cfg(test) default is /bin/sh, which
+        // spawns fine but never serves → 10 s wait → error.
         let started = std::time::Instant::now();
         let err = safari_start(free_port().await, Some("https://x"))
             .await
@@ -384,10 +412,12 @@ mod tests {
         assert!(started.elapsed().as_secs() >= 10);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn start_launch_success_against_fake_driver() {
         let _guard = crate::test_env::lock_env().await;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+        let _reset_platform = PlatformReset;
         // Fake safaridriver: a shell script launching a tiny python HTTP
         // server that answers /status and POST /session.
         let dir = tempfile::tempdir().unwrap();
@@ -427,6 +457,12 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         }
         let _reset = set_driver_override(&sh.to_string_lossy());
 
+        // Pre-warm the python interpreter (page-in under full-suite load can
+        // otherwise exceed the 10 s readiness window).
+        let _ = std::process::Command::new("python3")
+            .arg("--version")
+            .output();
+
         let result = safari_start(free_port().await, Some("http://x/"))
             .await
             .expect("start");
@@ -441,20 +477,52 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         ));
     }
 
-    #[cfg(not(target_os = "macos"))]
+    /// Reset the platform override after a test.
+    struct PlatformReset;
+    impl Drop for PlatformReset {
+        fn drop(&mut self) {
+            *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = None;
+        }
+    }
+
     #[tokio::test]
     async fn start_rejected_off_macos() {
+        // Platform override forces the non-macOS gate on any host.
+        let _guard = crate::test_env::lock_env().await;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(false);
+        let _reset = PlatformReset;
         let err = safari_start(free_port().await, None).await.err().unwrap();
         assert_eq!(err, "Safari is only available on macOS.");
+    }
+
+    #[tokio::test]
+    async fn start_propagates_port_exhaustion() {
+        // All 50 candidate ports occupied → resolve_port error propagates
+        // through safari_start (before any launch attempt).
+        let _guard = crate::test_env::lock_env().await;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+        let _reset = PlatformReset;
+        let (first, holders) = crate::test_env::reserve_consecutive_ports(50);
+        let err = safari_start(first, None).await.err().unwrap();
+        assert!(err.contains("No available port found near"), "{err}");
+        drop(holders);
     }
 
     // ── port helpers ──────────────────────────────────────────────────
 
     #[tokio::test]
     async fn resolve_port_free_occupied_and_exhausted() {
+        // Serialize against the other port-exhaustion test (50 consecutive
+        // bound ports must not overlap).
+        let _guard = crate::test_env::lock_env().await;
         // Free port is returned as-is.
         let free = free_port().await;
         assert_eq!(resolve_port(free).await.unwrap(), free);
+
+        // A live HTTP endpoint on the requested port is reused as-is.
+        let base = spawn_http(vec![HttpRoute::json("/status", 200, "{}")]).await;
+        let live: i64 = base.rsplit(':').next().unwrap().parse().unwrap();
+        assert_eq!(resolve_port(live).await.unwrap(), live);
 
         // Occupied (but not an HTTP endpoint) → scan to the next free one.
         let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -464,22 +532,9 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         drop(held);
 
         // Exhaustion: 50 consecutive occupied ports → error.
-        let first = free_port().await;
-        let mut holders = Vec::new();
-        let mut blocked = true;
-        for p in first..first + 50 {
-            match std::net::TcpListener::bind(("127.0.0.1", p as u16)) {
-                Ok(l) => holders.push(l),
-                Err(_) => {
-                    blocked = false;
-                    break;
-                }
-            }
-        }
-        if blocked {
-            let err = resolve_port(first).await.unwrap_err();
-            assert!(err.contains("No available port found near"), "{err}");
-        }
+        let (first, holders) = crate::test_env::reserve_consecutive_ports(50);
+        let err = resolve_port(first).await.unwrap_err();
+        assert!(err.contains("No available port found near"), "{err}");
         drop(holders);
     }
 

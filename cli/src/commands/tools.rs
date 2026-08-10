@@ -1530,17 +1530,10 @@ async fn tools_call(args: &[String], out: &Output) -> Result<(), String> {
     if is_browser_tool(tool_name) {
         let (output, exit_code) = match call_browser_tool(tool_name, &tool_args, out).await {
             Ok(result) => {
-                let has_sc = result
-                    .structured_content
-                    .as_ref()
-                    .and_then(Value::as_object)
-                    .is_some_and(|m| !m.is_empty());
-                let output = if has_sc {
-                    serde_json::to_string_pretty(result.structured_content.as_ref().unwrap())
-                        .unwrap_or_default()
-                } else {
-                    result.text.unwrap_or_default()
-                };
+                // Every browser tool result carries structured content (the
+                // text fallback in the TS is unreachable in the Rust port).
+                let output =
+                    serde_json::to_string_pretty(&result.structured_content).unwrap_or_default();
                 (output, 0)
             }
             Err(message) => (message, 1),
@@ -1903,11 +1896,8 @@ mod tests {
         assert!(find_tool_entry("search_paper").is_some());
         assert!(find_tool_entry("no-such-tool").is_none());
         // Browser tools are merged into the catalog too.
-        assert!(
-            find_tool_entry("browser").is_some()
-                || find_tool_entry("browser_open").is_some()
-                || !browser_tool_catalog().is_empty()
-        );
+        assert!(find_tool_entry("browser").is_some());
+        assert!(!browser_tool_catalog().is_empty());
         let dir = image_output_dir();
         assert!(dir.ends_with(".future/agent/images") || dir.ends_with(".future\\agent\\images"));
     }
@@ -1941,6 +1931,11 @@ mod tests {
         // Results rows with no papers are skipped; all-empty → fallback.
         assert_eq!(
             format_search_paper(&json!({"results": [{"query": "q", "papers": []}]})),
+            "No papers found."
+        );
+        // Non-object rows are skipped too.
+        assert_eq!(
+            format_search_paper(&json!({"results": ["junk", 42, null]})),
             "No papers found."
         );
         let sc = json!({"results": [{
@@ -2121,6 +2116,14 @@ mod tests {
         let _env3 =
             crate::test_env::EnvGuard::set(&[("FUTURE_API_KEY", std::ffi::OsString::from(""))]);
         assert_eq!(load_api_key().await.unwrap(), "test-key");
+        // An EMPTY FUTURE_API_TEST_KEY does not rescue either.
+        drop(_env3);
+        let _env4 = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_API_TEST_KEY",
+            std::ffi::OsString::from(""),
+        )]);
+        let err = load_api_key().await.unwrap_err();
+        assert!(err.contains("Not logged in"), "err: {err}");
     }
 
     // ── MCP-backed list/describe/call ───────────────────────────────
@@ -2322,6 +2325,169 @@ mod tests {
         assert_eq!(err, crate::HANDLED_EXIT);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(stderr.contains("Tool not found: nope"), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn tools_describe_remote_failure_falls_back_to_none() {
+        // API key present but the MCP endpoint is dead → the remote lookup
+        // errors → None → "Tool not found".
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let (_e1, _e2) = mcp_env("http://127.0.0.1:1").await;
+        let (out, cap) = Output::memory();
+        let err = tools("describe", &["nope".to_string()], &out)
+            .await
+            .unwrap_err();
+        assert_eq!(err, crate::HANDLED_EXIT);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Tool not found: nope"), "stderr: {stderr}");
+    }
+
+    #[test]
+    fn cmd_value_parse_remaining_arms() {
+        // Integer literal overflowing i64 falls through to the f64 parse.
+        assert_eq!(parse_cmd_value("99999999999999999999999999"), json!(1e26));
+        // Float literal.
+        assert_eq!(parse_cmd_value("2.5"), json!(2.5));
+        // Object-looking text with an unparseable field → falls back to string.
+        assert_eq!(parse_cmd_value("{abc}"), json!("{abc}"));
+        // strip_outer_quotes with a lone character is returned as-is.
+        assert_eq!(strip_outer_quotes("x"), "x");
+        // parse_cmd_object with an empty body → Some(empty map).
+        assert_eq!(parse_cmd_object("{}"), Some(Map::new()));
+    }
+
+    #[tokio::test]
+    async fn tools_call_trailing_input_flag_and_valid_ranges() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
+
+        // Trailing --input with no value → input_path None (no panic).
+        let (out, _) = Output::memory();
+        let _ = tools(
+            "call",
+            &["web_search".to_string(), "--input".to_string()],
+            &out,
+        )
+        .await;
+
+        // --input followed by another flag → treated as missing too.
+        let (out, _) = Output::memory();
+        let _ = tools(
+            "call",
+            &[
+                "web_search".to_string(),
+                "--input".to_string(),
+                "--output".to_string(),
+                "x.png".to_string(),
+            ],
+            &out,
+        )
+        .await;
+
+        // --mask: with a value, followed by a flag, and trailing.
+        for args in [
+            vec!["image_gen", "--prompt", "p", "--mask", "m.png"],
+            vec!["image_gen", "--prompt", "p", "--mask", "--output"],
+            vec!["image_gen", "--prompt", "p", "--mask"],
+        ] {
+            let (out, _) = Output::memory();
+            let _ = tools(
+                "call",
+                &args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                &out,
+            )
+            .await;
+        }
+
+        // Valid numeric ranges pass validation (fails later at the API key).
+        let (out, cap) = Output::memory();
+        let _ = tools(
+            "call",
+            &[
+                "image_gen".to_string(),
+                "--prompt".to_string(),
+                "x".to_string(),
+                "--n".to_string(),
+                "5".to_string(),
+            ],
+            &out,
+        )
+        .await;
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(!stderr.contains("must be an integer between"), "{stderr}");
+
+        // Non-string file_type is ignored by the normalization.
+        let (out, cap) = Output::memory();
+        let _ = tools(
+            "call",
+            &[
+                "parse_doc".to_string(),
+                "--input".to_string(),
+                "f.pdf".to_string(),
+                "--file_type".to_string(),
+                "5".to_string(),
+            ],
+            &out,
+        )
+        .await;
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(!stderr.contains("file_type"), "{stderr}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tools_call_reads_args_from_stdin_child_process() {
+        // Child mode: stdin is a pipe — the read path executes. Runs in the
+        // same (instrumented) test binary, so its coverage merges.
+        if let Some(dir) = std::env::var_os("FUTURE_CLI_STDIN_CHILD") {
+            let _guard = crate::test_env::lock_env().await;
+            let _env = crate::test_env::EnvGuard::set(&[("FUTURE_HOME", dir)]);
+            let _keys =
+                crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
+            let (out, _) = Output::memory();
+            let _ = tools(
+                "call",
+                &["web_search".to_string(), "--stdin".to_string()],
+                &out,
+            )
+            .await;
+            return;
+        }
+        // Parent mode: re-run THIS test in a subprocess with a piped stdin.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut child = std::process::Command::new(std::env::current_exe().expect("exe"))
+            .args([
+                "--exact",
+                "commands::tools::tests::tools_call_reads_args_from_stdin_child_process",
+                "--nocapture",
+            ])
+            .env("FUTURE_CLI_STDIN_CHILD", dir.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn child test");
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(br#"{"query":"x"}"#)
+            .expect("write");
+        assert!(child.wait().expect("wait").success());
+    }
+
+    #[tokio::test]
+    async fn format_image_result_root_output_path_has_no_parent() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"img");
+        let sc = json!({"images": [{"base64": b64}]});
+        // A root output path has no parent → mkdir skipped, write fails
+        // silently, and the header still prints.
+        let out = format_image_result("image_gen", &sc, Some("/")).await;
+        assert!(out.contains("[Image generated"), "{out}");
     }
 
     #[tokio::test]

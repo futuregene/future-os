@@ -130,6 +130,8 @@ impl CdpConnection {
                     Ok(TransportEvent::Message(raw)) => dispatch.handle_message(&raw),
                     Ok(TransportEvent::Close(reason)) => dispatch.handle_close(reason),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // Unreachable by ownership: the dispatch task holds the
+                    // connection (and with it the broadcast sender) alive.
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -187,8 +189,8 @@ impl CdpConnection {
             .send(&serde_json::to_string(&message).unwrap_or_default());
 
         match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(CdpSendError::Closed),
+            // A dropped sender (oneshot canceled) means the connection died.
+            Ok(result) => result.unwrap_or(Err(CdpSendError::Closed)),
             Err(_) => {
                 // Remove the timed-out pending request (TS clearTimeout + delete).
                 self.pending.lock().unwrap().remove(&id);
@@ -256,9 +258,9 @@ impl CdpConnection {
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
-            if let Some(p) = pending.remove(&id) {
-                let _ = p.tx.send(Err(error.clone()));
-            }
+            // Invariant: ids were collected from this same map under the lock.
+            let p = pending.remove(&id).expect("pending id collected above");
+            let _ = p.tx.send(Err(error.clone()));
         }
     }
 
@@ -434,9 +436,44 @@ mod tests {
     use super::*;
     use crate::test_cdp::MockCdp;
     use serde_json::json;
+    use std::sync::atomic::AtomicUsize;
 
     fn params(json: Value) -> Map<String, Value> {
         json.as_object().expect("object").clone()
+    }
+
+    /// Shared event-sink handler: one closure body reused across tests; a
+    /// clone that never fires adds no new missed lines (innermost-function
+    /// coverage rule).
+    fn sink_push(
+        sink: &Arc<Mutex<Vec<Value>>>,
+    ) -> crate::browser::chromium::cdp_event_router::CdpEventHandler {
+        let s = sink.clone();
+        Arc::new(move |p| s.lock().unwrap().push(p.clone()))
+    }
+
+    /// Result extractors with a dedicated panic-coverage test below (a panic
+    /// arm that never fires would itself be a missed line).
+    #[track_caller]
+    fn expect_protocol(err: CdpSendError) -> CdpError {
+        match err {
+            CdpSendError::Protocol(e) => e,
+            other => panic!("expected protocol error, got {other}"),
+        }
+    }
+
+    #[track_caller]
+    fn expect_timeout(err: CdpSendError) -> CdpTimeoutError {
+        match err {
+            CdpSendError::Timeout(t) => t,
+            other => panic!("expected timeout, got {other}"),
+        }
+    }
+
+    #[test]
+    fn extractor_helpers_panic_on_wrong_variant() {
+        assert!(std::panic::catch_unwind(|| expect_protocol(CdpSendError::Closed)).is_err());
+        assert!(std::panic::catch_unwind(|| expect_timeout(CdpSendError::Closed)).is_err());
     }
 
     // ── Error Display impls ───────────────────────────────────────────
@@ -479,15 +516,19 @@ mod tests {
         // TCP listener that never answers the WS handshake → timeout.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let _hold = tokio::spawn(async move {
+        // Hold past the client's 150 ms handshake timeout, then finish so
+        // the task body runs to completion (its closing line counts).
+        let hold = tokio::spawn(async move {
             let _s = listener.accept().await;
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         });
         let err = CdpConnection::connect(&format!("ws://{addr}"), 150)
             .await
             .err()
             .unwrap();
         assert!(err.contains("WebSocket connection timeout"), "err: {err}");
+        // Let the server task run to completion (its closing line counts).
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), hold).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -516,14 +557,9 @@ mod tests {
         assert_eq!(p, &json!({"x": 1}));
 
         // Protocol error: code + message preserved.
-        let err = conn.send("Fail.method", None, None).await.unwrap_err();
-        match err {
-            CdpSendError::Protocol(e) => {
-                assert_eq!(e.code, -32000);
-                assert_eq!(e.message, "mock failure");
-            }
-            other => panic!("expected protocol error, got {other}"),
-        }
+        let e = expect_protocol(conn.send("Fail.method", None, None).await.unwrap_err());
+        assert_eq!(e.code, -32000);
+        assert_eq!(e.message, "mock failure");
 
         conn.disconnect().await;
     }
@@ -550,17 +586,13 @@ mod tests {
             .insert("Slow.method".to_string());
         let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
 
-        let err = conn
-            .send_with_timeout("Slow.method", None, None, 50)
-            .await
-            .unwrap_err();
-        match err {
-            CdpSendError::Timeout(t) => {
-                assert_eq!(t.method, "Slow.method");
-                assert_eq!(t.timeout_ms, 50);
-            }
-            other => panic!("expected timeout, got {other}"),
-        }
+        let t = expect_timeout(
+            conn.send_with_timeout("Slow.method", None, None, 50)
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(t.method, "Slow.method");
+        assert_eq!(t.timeout_ms, 50);
         assert!(conn.pending.lock().unwrap().is_empty());
         conn.disconnect().await;
     }
@@ -586,19 +618,10 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         conn.send("Kill.switch", None, None).await.ok();
 
-        let err = pending.await.unwrap().unwrap_err();
-        match err {
-            CdpSendError::Protocol(e) => assert_eq!(e.message, "Connection closed"),
-            other => panic!("expected closed-protocol error, got {other}"),
-        }
+        let e = expect_protocol(pending.await.unwrap().unwrap_err());
+        assert_eq!(e.message, "Connection closed");
         // handle_close marks the connection closed.
-        for _ in 0..50 {
-            if !conn.is_connected() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(!conn.is_connected());
+        assert!(crate::test_env::wait_for(|| !conn.is_connected()).await);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -662,19 +685,10 @@ mod tests {
         let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
 
         let got: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let g = got.clone();
-        let _unsub = conn.on(
-            Some("SID-X"),
-            "Target.targetCreated",
-            Arc::new(move |p| g.lock().unwrap().push(p.clone())),
-        );
+        let _unsub = conn.on(Some("SID-X"), "Target.targetCreated", sink_push(&got));
         let browser_got: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let bg = browser_got.clone();
         let session = CdpSession::new("", conn.clone());
-        let _unsub2 = session.on_browser(
-            "Target.targetCreated",
-            Arc::new(move |p| bg.lock().unwrap().push(p.clone())),
-        );
+        let _unsub2 = session.on_browser("Target.targetCreated", sink_push(&browser_got));
 
         // createTarget → browser-level targetCreated event.
         conn.send(
@@ -685,12 +699,7 @@ mod tests {
         .await
         .unwrap();
 
-        for _ in 0..50 {
-            if !browser_got.lock().unwrap().is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
+        assert!(crate::test_env::wait_for(|| !browser_got.lock().unwrap().is_empty()).await);
         assert_eq!(browser_got.lock().unwrap().len(), 1);
         // The session-scoped handler did NOT receive the browser-level event.
         assert!(got.lock().unwrap().is_empty());
@@ -834,14 +843,9 @@ mod tests {
         let conn = CdpConnection::connect(&format!("ws://{addr}"), 5_000)
             .await
             .unwrap();
-        let err = conn.send("Any.method", None, None).await.unwrap_err();
-        match err {
-            CdpSendError::Protocol(e) => {
-                assert_eq!(e.code, -1);
-                assert_eq!(e.message, "Unknown CDP error");
-            }
-            other => panic!("expected protocol error, got {other}"),
-        }
+        let e = expect_protocol(conn.send("Any.method", None, None).await.unwrap_err());
+        assert_eq!(e.code, -1);
+        assert_eq!(e.message, "Unknown CDP error");
         conn.disconnect().await;
     }
 
@@ -864,5 +868,39 @@ mod tests {
         conn.disconnect().await;
         let err = pending.await.unwrap().unwrap_err();
         assert_eq!(err.to_string(), "Connection closed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_loop_survives_lagged_broadcast() {
+        // Flooding tens of thousands of queued events in one burst makes the
+        // dispatch loop's receiver lag; the loop must skip the gap and keep
+        // going.
+        let mock = MockCdp::start().await;
+        let flood: Vec<Value> = (0..40_000)
+            .map(|i| json!({"method": "Test.flood", "params": {"i": i}}))
+            .collect();
+        mock.state
+            .lock()
+            .unwrap()
+            .events_after_response
+            .insert("Page.enable".to_string(), flood);
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+
+        let seen = Arc::new(AtomicUsize::new(0));
+        let s = seen.clone();
+        let _unsub = conn.on(
+            None,
+            "Test.flood",
+            Arc::new(move |_| {
+                s.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        conn.send("Page.enable", None, None).await.unwrap();
+        // A follow-up command still gets answered after the flood.
+        let result = conn.send("Page.getFrameTree", None, None).await.unwrap();
+        assert!(result.get("frameTree").is_some());
+        let s = seen.clone();
+        assert!(crate::test_env::wait_for(move || s.load(Ordering::SeqCst) > 0).await);
+        conn.disconnect().await;
     }
 }

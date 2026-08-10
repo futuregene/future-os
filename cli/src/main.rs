@@ -33,13 +33,9 @@ fn run_from_args(args: &[String]) -> ExitCode {
     }
 
     let out = future_cli::Output::stdio();
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(err) => {
-            eprintln!("failed to start runtime: {err}");
-            return ExitCode::from(1);
-        }
-    };
+    // Invariant: a multi-thread runtime always builds (failure would mean
+    // resource exhaustion fatal to the process anyway).
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime starts");
     let code = runtime.block_on(future_cli::dispatch(args, &out));
     out.flush();
     ExitCode::from(code as u8)

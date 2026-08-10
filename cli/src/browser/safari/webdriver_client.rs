@@ -783,4 +783,90 @@ mod tests {
         let err = client.get_current_url("s1").await.unwrap_err();
         assert!(!err.is_empty());
     }
+
+    #[tokio::test]
+    async fn webdriver_error_arms_propagate_for_every_method() {
+        // Every endpoint answers with a WebDriver error payload → every
+        // method surfaces it (covers the per-method error arms).
+        const ERR: &str = r#"{"value":{"error":"unknown error","message":"kaput"}}"#;
+        let base = mock(vec![
+            ("/session", 500, ERR),
+            ("/session/s1", 500, ERR),
+            ("/session/s1/url", 500, ERR),
+            ("/session/s1/title", 500, ERR),
+            ("/session/s1/source", 500, ERR),
+            ("/session/s1/execute/sync", 500, ERR),
+            ("/session/s1/element", 500, ERR),
+            ("/session/s1/elements", 500, ERR),
+            ("/session/s1/element/e1/click", 500, ERR),
+            ("/session/s1/element/e1/text", 500, ERR),
+            ("/session/s1/element/e1/attribute/href", 500, ERR),
+            ("/session/s1/element/e1/value", 500, ERR),
+            ("/session/s1/element/e1/clear", 500, ERR),
+            ("/session/s1/element/e1/enabled", 500, ERR),
+            ("/session/s1/screenshot", 500, ERR),
+            ("/session/s1/window/handles", 500, ERR),
+            ("/session/s1/window", 500, ERR),
+            ("/session/s1/window/new", 500, ERR),
+        ])
+        .await;
+        let client = WebDriverClient::new(&base);
+
+        macro_rules! assert_kaput {
+            ($call:expr) => {
+                let err = $call.await.unwrap_err();
+                assert!(err.contains("kaput"), "{err}");
+            };
+        }
+        assert_kaput!(client.delete_session("s1"));
+        assert_kaput!(client.navigate_to("s1", "http://x/"));
+        assert_kaput!(client.get_current_url("s1"));
+        assert_kaput!(client.get_title("s1"));
+        assert_kaput!(client.get_page_source("s1"));
+        assert_kaput!(client.execute_script::<Value>("s1", "return 1", &[]));
+        assert_kaput!(client.find_element("s1", "css selector", "#a"));
+        assert_kaput!(client.find_elements("s1", "css selector", "#a"));
+        assert_kaput!(client.click_element("s1", "e1"));
+        assert_kaput!(client.get_element_text("s1", "e1"));
+        assert_kaput!(client.get_element_attribute("s1", "e1", "href"));
+        assert_kaput!(client.send_keys_to_element("s1", "e1", "t"));
+        assert_kaput!(client.clear_element("s1", "e1"));
+        assert_kaput!(client.is_element_enabled("s1", "e1"));
+        assert_kaput!(client.take_screenshot("s1"));
+        assert_kaput!(client.get_window_handles("s1"));
+        assert_kaput!(client.get_current_window_handle("s1"));
+        assert_kaput!(client.switch_to_window("s1", "h1"));
+        assert_kaput!(client.new_window("s1"));
+        assert_kaput!(client.close_window("s1"));
+        // create_session surfaces the error too.
+        assert_kaput!(client.create_session(None));
+    }
+
+    #[test]
+    fn extract_element_id_object_without_known_keys() {
+        assert_eq!(extract_element_id(Some(&json!({"bogus": true}))), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn non_array_values_yield_empty_lists() {
+        let base = spawn_http(vec![
+            HttpRoute::json(
+                "/session/s1/elements",
+                200,
+                r#"{"value": {"not": "array"}}"#,
+            ),
+            HttpRoute::json("/session/s1/window/handles", 200, r#"{"value": null}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value": "h1"}"#),
+        ])
+        .await;
+        let client = WebDriverClient::new(&base);
+        assert!(client
+            .find_elements("s1", "css selector", ".x")
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(client.get_window_handles("s1").await.unwrap().is_empty());
+        // close_window parses the same shape; a non-array value → empty.
+        assert!(client.close_window("s1").await.unwrap().is_empty());
+    }
 }

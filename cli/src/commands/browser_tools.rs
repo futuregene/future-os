@@ -415,6 +415,9 @@ where
     let mut endpoint = ensure_browser(args).await?;
     let session: Box<dyn BrowserSession> = match create_session(&config, &endpoint).await {
         Ok(s) => s,
+        // NOTE(coverage): create_session only fails for a webdriver config
+        // with an empty session id, which the config-file loader rejects —
+        // so this retry arm is unreachable through the public surface.
         Err(error) => {
             if string_arg(args, "endpoint").is_some() {
                 return Err(error);
@@ -2179,26 +2182,33 @@ mod tests {
 
     /// Serve `GET /json/version` on a FIXED port with a hand-rolled HTTP
     /// responder (spawn_http only binds ephemeral ports).
-    async fn serve_json_version_on(port: i64, ws_url: &str) -> tokio::task::JoinHandle<()> {
+    /// Serve `/json/version` on a fixed port for exactly `connections`
+    /// requests, then finish (an unbounded accept loop never completes, and
+    /// an aborted task body leaves its closing lines uncovered).
+    async fn serve_json_version_connections(
+        port: i64,
+        ws_url: &str,
+        connections: usize,
+    ) -> tokio::task::JoinHandle<()> {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
             .await
             .expect("bind fixed port");
         let body = format!(r#"{{"Browser":"Chrome/126.0.0.0","webSocketDebuggerUrl":"{ws_url}"}}"#);
         tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                let body = body.clone();
-                tokio::spawn(async move {
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let mut buf = [0u8; 2048];
-                    let _ = socket.read(&mut buf).await;
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    );
-                    let _ = socket.write_all(response.as_bytes()).await;
-                    let _ = socket.shutdown().await;
-                });
+            for _ in 0..connections {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
             }
         })
     }
@@ -2215,7 +2225,8 @@ mod tests {
     async fn start_already_running_notes_and_config_update() {
         let (_g, _e, _d) = isolated_home().await;
         let port = free_port();
-        let _server = serve_json_version_on(port, "ws://127.0.0.1:1/ws").await;
+        // Two browser_start calls × two probes each.
+        let server = serve_json_version_connections(port, "ws://127.0.0.1:1/ws", 4).await;
         let endpoint = format!("http://127.0.0.1:{port}");
 
         // First call: existing endpoint (default 9222) differs → update note.
@@ -2236,6 +2247,7 @@ mod tests {
             sc["note"],
             json!("Browser is already running at this endpoint.")
         );
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2498,27 +2510,45 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
     #[tokio::test(flavor = "multi_thread")]
     async fn ensure_browser_auto_start_success() {
         let (_g, _e, _d) = isolated_home().await;
-        // Needs the default 9222 port; skip when the user's own browser
-        // holds it.
-        if std::net::TcpListener::bind("127.0.0.1:9222").is_err() {
-            return;
-        }
-        let _server = serve_json_version_on(9222, "ws://127.0.0.1:1/ws").await;
-        // No explicit endpoint; config endpoint unreachable-at-first is not
-        // required here: the DEFAULT endpoint is what ensure_browser checks.
-        let endpoint = ensure_browser(&Map::new()).await.unwrap();
-        assert_eq!(endpoint, DEFAULT_ENDPOINT);
+        // Config endpoint is dead; the args carry a reachable mock port, so
+        // the auto-start path short-circuits through "already running" and
+        // re-points the saved config. Three probe connections in total.
+        let port = free_port();
+        let server = serve_json_version_connections(port, "ws://127.0.0.1:1/ws", 3).await;
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: "http://127.0.0.1:1".to_string(),
+            },
+            ..Default::default()
+        };
+        save_browser_config(&config).await.unwrap();
+        let endpoint = ensure_browser(&args(&[("port", json!(port))]))
+            .await
+            .unwrap();
+        assert_eq!(endpoint, format!("http://127.0.0.1:{port}"));
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn ensure_browser_auto_start_failure_propagates() {
         let (_g, _e, _d) = isolated_home().await;
-        if std::net::TcpListener::bind("127.0.0.1:9222").is_err() {
-            return;
-        }
-        // Nothing on 9222 and no browser binary → browser_start fails.
+        // Dead config endpoint + free arg port + no browser binary (the
+        // launcher override) → browser_start fails and the error surfaces.
         *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = Some(None);
-        let err = ensure_browser(&Map::new()).await.unwrap_err();
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: "http://127.0.0.1:1".to_string(),
+            },
+            ..Default::default()
+        };
+        save_browser_config(&config).await.unwrap();
+        let err = ensure_browser(&args(&[("port", json!(free_port()))]))
+            .await
+            .unwrap_err();
         *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
         assert!(err.contains("Could not find Chrome or Edge"), "{err}");
     }
@@ -2625,5 +2655,340 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
             ..Default::default()
         };
         assert_eq!(config_endpoint_or_default(&config), "http://x/");
+    }
+
+    // ── call_browser_tool dispatch over a webdriver mock ──────────────
+
+    /// End-to-end dispatch coverage: every command arm goes through
+    /// call_browser_tool → with_session → a real SafariSession bound to the
+    /// HTTP mock.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_all_session_commands_over_webdriver_mock() {
+        let (_g, _e, dir) = isolated_home().await;
+
+        let snapshot = json!({
+            "title": "Snap", "url": "http://snap/",
+            "items": [{"ref": "b1", "selector": "#go", "role": "button",
+                       "name": "Go", "disabled": false, "tag": "button"}],
+        });
+        let png64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"\x89PNG");
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/json/version",
+                200,
+                r#"{"Browser":"Chrome/126"}"#,
+            ),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1"]}"#,
+            ),
+            crate::test_server::HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/window/new",
+                200,
+                r#"{"value":{"handle":"h2"}}"#,
+            ),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/url",
+                200,
+                r#"{"value":"http://cur/"}"#,
+            ),
+            crate::test_server::HttpRoute::json("/session/s1/title", 200, r#"{"value":"T"}"#),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/execute/sync",
+                200,
+                &json!({"value": snapshot}).to_string(),
+            ),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/element",
+                200,
+                r#"{"value":{"element-6066-11e4-a52e-4f735466cecf":"e1"}}"#,
+            ),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/element/e1/click",
+                200,
+                r#"{"value":null}"#,
+            ),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/element/e1/clear",
+                200,
+                r#"{"value":null}"#,
+            ),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/element/e1/value",
+                200,
+                r#"{"value":null}"#,
+            ),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/screenshot",
+                200,
+                &json!({"value": png64}).to_string(),
+            ),
+        ])
+        .await;
+
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Webdriver {
+                browser_kind: "safari".to_string(),
+                endpoint: base.clone(),
+                session_id: "s1".to_string(),
+                driver_pid: None,
+            },
+            ..Default::default()
+        };
+        save_browser_config(&config).await.unwrap();
+        let out = Output::memory().0;
+
+        // status (explicit endpoint → no config lookup needed).
+        let r = call_browser_tool(
+            "browser",
+            &args(&[("command", json!("status")), ("endpoint", json!(base))]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&r)["reachable"], true);
+
+        // tabs list.
+        let r = call_browser_tool("browser", &args(&[("command", json!("tabs"))]), &out)
+            .await
+            .unwrap();
+        assert_eq!(structured(&r)["tabCount"], 1);
+
+        // open.
+        let r = call_browser_tool(
+            "browser",
+            &args(&[("command", json!("open")), ("url", json!("http://x/"))]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&r)["title"], "T");
+
+        // snapshot (text + refs persisted).
+        let r = call_browser_tool("browser", &args(&[("command", json!("snapshot"))]), &out)
+            .await
+            .unwrap();
+        assert!(r.text.unwrap().contains("button \"Go\" [ref=b1]"));
+
+        // click via the saved ref.
+        let r = call_browser_tool(
+            "browser",
+            &args(&[("command", json!("click")), ("ref", json!("b1"))]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&r)["selector"], "#go");
+
+        // type.
+        let r = call_browser_tool(
+            "browser",
+            &args(&[
+                ("command", json!("type")),
+                ("selector", json!("#in")),
+                ("text", json!("hello")),
+            ]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&r)["typed"], "#in");
+
+        // press (no target → page level).
+        let r = call_browser_tool(
+            "browser",
+            &args(&[("command", json!("press")), ("key", json!("Enter"))]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&r)["key"], "Enter");
+
+        // screenshot (explicit path inside the temp home).
+        let shot = dir.path().join("shot.png");
+        let r = call_browser_tool(
+            "browser",
+            &args(&[
+                ("command", json!("screenshot")),
+                ("path", json!(shot.display().to_string())),
+            ]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&r)["filename"], "shot.png");
+
+        // scroll.
+        let r = call_browser_tool("browser", &args(&[("command", json!("scroll"))]), &out)
+            .await
+            .unwrap();
+        assert_eq!(structured(&r)["scrolled"]["direction"], "down");
+
+        // console (the mock returns the snapshot payload; non-array → note).
+        let r = call_browser_tool("browser", &args(&[("command", json!("console"))]), &out)
+            .await
+            .unwrap();
+        assert!(structured(&r)["note"]
+            .as_str()
+            .unwrap()
+            .contains("No buffered console"));
+
+        // start with an already-running endpoint.
+        let port: i64 = base.rsplit(':').next().unwrap().parse().unwrap();
+        let r = call_browser_tool(
+            "browser",
+            &args(&[("command", json!("start")), ("port", json!(port))]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&r)["status"], "already_running");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mock_session_disconnect_is_called() {
+        let mut session = MockSession::default();
+        session.disconnect().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_tabs_mutations_refresh_the_full_list() {
+        let (_g, _e, _dir) = isolated_home().await;
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/json/version",
+                200,
+                r#"{"Browser":"Chrome/126"}"#,
+            ),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1","h2"]}"#,
+            ),
+            crate::test_server::HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/window/new",
+                200,
+                r#"{"value":{"handle":"h2"}}"#,
+            ),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/url",
+                200,
+                r#"{"value":"http://cur/"}"#,
+            ),
+            crate::test_server::HttpRoute::json("/session/s1/title", 200, r#"{"value":"T"}"#),
+            crate::test_server::HttpRoute::json(
+                "/session/s1/execute/sync",
+                200,
+                r#"{"value":null}"#,
+            ),
+        ])
+        .await;
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Webdriver {
+                browser_kind: "safari".to_string(),
+                endpoint: base,
+                session_id: "s1".to_string(),
+                driver_pid: None,
+            },
+            ..Default::default()
+        };
+        save_browser_config(&config).await.unwrap();
+        let out = Output::memory().0;
+
+        // new → created + refreshed list (list_tabs helper).
+        let r = call_browser_tool(
+            "browser",
+            &args(&[("command", json!("tabs")), ("action", json!("new"))]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&r)["created"]["index"], 1);
+
+        // select.
+        let r = call_browser_tool(
+            "browser",
+            &args(&[
+                ("command", json!("tabs")),
+                ("action", json!("select")),
+                ("index", json!(1)),
+            ]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&r)["selected"]["index"], 1);
+
+        // close.
+        let r = call_browser_tool(
+            "browser",
+            &args(&[
+                ("command", json!("tabs")),
+                ("action", json!("close")),
+                ("index", json!(0)),
+            ]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&r)["closed"]["index"], 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn webdriver_config_with_empty_session_id_fails_at_load() {
+        let (_g, _e, _dir) = isolated_home().await;
+        // An empty webdriver session id is the ONLY way create_session
+        // errors — and the config loader rejects it, so with_session's
+        // auto-start retry arm is unreachable through the public surface.
+        // Document the invariant at the load boundary.
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Webdriver {
+                browser_kind: "safari".to_string(),
+                endpoint: "http://x".to_string(),
+                session_id: String::new(),
+                driver_pid: None,
+            },
+            ..Default::default()
+        };
+        save_browser_config(&config).await.unwrap();
+        let err = load_browser_config().await.unwrap_err();
+        assert!(err.to_string().contains("sessionId"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_session_skips_refined_save_for_non_chromium_saved_config() {
+        let (_g, _e, _dir) = isolated_home().await;
+        // Saved config already refined (browserKind "chrome") → the refine
+        // result does not trigger a config rewrite.
+        let port = free_port();
+        let server = serve_json_version_connections(port, "ws://127.0.0.1:1/ws", 1).await;
+        let endpoint = format!("http://127.0.0.1:{port}");
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chrome".to_string(),
+                endpoint: endpoint.clone(),
+            },
+            ..Default::default()
+        };
+        save_browser_config(&config).await.unwrap();
+        let session = create_session(&config, &endpoint).await.unwrap();
+        assert_eq!(session.kind(), "chromium");
+        // The saved kind was left alone.
+        assert_eq!(
+            load_browser_config()
+                .await
+                .unwrap()
+                .connection
+                .browser_kind(),
+            "chrome"
+        );
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 }

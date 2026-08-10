@@ -39,10 +39,11 @@ pub async fn save_browser_config(config: &BrowserConfig) -> Result<(), BrowserEr
         .await
         .map_err(|e| invalid_browser_config_error(format!("{e}")))?;
     let value = config_to_json(config);
+    // Invariant: config_to_json produces plain JSON values, which always
+    // serialize — no error arm to cover.
     let text = format!(
         "{}\n",
-        serde_json::to_string_pretty(&value)
-            .map_err(|e| invalid_browser_config_error(e.to_string()))?
+        serde_json::to_string_pretty(&value).expect("config json serializes")
     );
     tokio::fs::write(browser_dir().join("config.json"), text)
         .await
@@ -559,6 +560,56 @@ mod tests {
             "refs": {"b1": 123}
         }))
         .is_err());
+    }
+
+    #[test]
+    fn v1_refs_with_non_string_values_throws() {
+        assert!(parse(json!({"version": 1, "refs": {"b1": 7}})).is_err());
+    }
+
+    #[cfg(not(windows))] // dirs::home_dir ignores env vars on Windows
+    #[tokio::test(flavor = "multi_thread")]
+    async fn browser_dir_falls_back_to_home_when_future_home_unset() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home =
+            crate::test_env::EnvGuard::set(&[("HOME", dir.path().as_os_str().to_os_string())]);
+        let _no_fh = crate::test_env::EnvGuard::remove(&["FUTURE_HOME"]);
+        assert_eq!(
+            browser_dir(),
+            dir.path().join(".future").join("agent").join("browser")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_fails_when_home_is_a_file_and_config_path_is_a_dir() {
+        let _guard = crate::test_env::lock_env().await;
+
+        // FUTURE_HOME pointing at a regular FILE → create_dir_all fails.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("afile");
+        std::fs::write(&file, "x").expect("write");
+        let _env =
+            crate::test_env::EnvGuard::set(&[("FUTURE_HOME", file.as_os_str().to_os_string())]);
+        let err = save_browser_config(&BrowserConfig::default())
+            .await
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
+        drop(_env);
+
+        // config.json existing as a DIRECTORY → the write fails.
+        let tmp2 = tempfile::tempdir().expect("tempdir");
+        let _env2 = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            tmp2.path().as_os_str().to_os_string(),
+        )]);
+        tokio::fs::create_dir_all(browser_dir().join("config.json"))
+            .await
+            .expect("mkdir");
+        let err = save_browser_config(&BrowserConfig::default())
+            .await
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 
     #[test]

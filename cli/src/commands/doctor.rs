@@ -1088,9 +1088,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn doctor_skills_catalog_match_mismatch_and_provider_edge() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        // Platform mock serving the skills catalog.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            r#"{"skills":[{"id":"same","latest_version":"1.0"},{"id":"older","latest_version":"2.0"},{"id":"noversion"}]}"#,
+        )])
+        .await;
+        // auth.json: future key + base_url → platform mock; a non-object
+        // provider entry is skipped by the providers check.
+        let auth = auth_file_path();
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &auth,
+            serde_json::json!({
+                "future": {"key": "k", "base_url": base},
+                "weird-provider": "not-an-object",
+            })
+            .to_string(),
+        )
+        .await
+        .unwrap();
+        // Installed skills: one version-matching, one older.
+        let skills = skills_dir();
+        tokio::fs::create_dir_all(skills.join("same"))
+            .await
+            .unwrap();
+        tokio::fs::write(skills.join("same/SKILL.md"), "---\nversion: 1.0\n---\n")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(skills.join("older"))
+            .await
+            .unwrap();
+        tokio::fs::write(skills.join("older/SKILL.md"), "---\nversion: 1.0\n---\n")
+            .await
+            .unwrap();
+        // Catalog entry without a latest_version → plain up-to-date.
+        tokio::fs::create_dir_all(skills.join("noversion"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            skills.join("noversion/SKILL.md"),
+            "---\nversion: 3.1\n---\n",
+        )
+        .await
+        .unwrap();
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("same (v1.0)"), "stdout: {stdout}");
+        assert!(stdout.contains("noversion (v3.1)"), "stdout: {stdout}");
+        assert!(stdout.contains("older: 1.0"), "stdout: {stdout}");
+        // The non-object provider was skipped; future counts as [key].
+        assert!(stdout.contains("[key]"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn doctor_invalid_auth_json_is_tolerated_by_providers_check() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        let auth = auth_file_path();
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&auth, "{not json").await.unwrap();
+        let (code, _, _) = run_doctor().await;
+        assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn doctor_empty_key_is_not_logged_in() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        let auth = auth_file_path();
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&auth, r#"{"future":{"key":""}}"#)
+            .await
+            .unwrap();
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("Not logged in"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
     async fn doctor_skills_offline_and_unversioned() {
         let _guard = crate::test_env::lock_env().await;
         let _env = isolate_env();
+        // Point the platform at an unreachable address — deterministic
+        // offline even on a networked machine (auth.json beats the default
+        // URL in get_platform_url).
+        let auth = auth_file_path();
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &auth,
+            r#"{"future":{"key":"k","base_url":"http://127.0.0.1:1"}}"#,
+        )
+        .await
+        .unwrap();
         // Installed skill, no version in SKILL.md; catalog unreachable.
         let skills = skills_dir();
         tokio::fs::create_dir_all(skills.join("future-a"))

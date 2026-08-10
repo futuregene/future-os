@@ -872,8 +872,12 @@ mod tests {
     async fn await_stream_handles_dropped_sender() {
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(Vec<Value>, String), String>>();
         let handle = tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            // Short enough to complete within the test (an aborted task's
+            // final line never executes).
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         });
+        // Let the task finish before dropping the sender.
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
         drop(tx);
         let err = await_stream(rx, handle).await.unwrap_err();
         assert_eq!(err, "Event stream task was dropped");
@@ -919,6 +923,26 @@ mod tests {
         agent
             .responses
             .insert("list_sessions".into(), "{\"sessions\":[]}".into());
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _cap) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            continue_last: true,
+            ..Default::default()
+        };
+        let err = client.run(&config, &out).await.unwrap_err();
+        assert!(err.contains("No previous session to continue"), "{err}");
+    }
+
+    /// run --continue with only malformed session rows → inner error arm.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_continue_with_malformed_sessions_errors() {
+        let mut agent = MockAgent::default();
+        agent.responses.insert(
+            "list_sessions".into(),
+            "{\"sessions\":[{\"no_id\":true},42,\"junk\"]}".into(),
+        );
         let addr = crate::test_server::spawn_mock(agent).await;
         let client = RunClient::new(&addr);
         let (out, _cap) = Output::memory();
@@ -1689,12 +1713,7 @@ mod tests {
         )]);
         notify_agent_refresh_skills().await;
         // Wait for the fire-and-forget call to land.
-        for _ in 0..40 {
-            if !agent.seen_of("refresh_skills").is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
+        assert!(crate::test_env::wait_for(|| !agent.seen_of("refresh_skills").is_empty()).await);
         assert_eq!(agent.seen_of("refresh_skills").len(), 1);
         // Against a dead port: errors are swallowed.
         let _env = crate::test_env::EnvGuard::set(&[(

@@ -58,7 +58,7 @@ impl ExecutionContextTracker {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    if let Ok(mut map) = contexts.lock() {
+                    let _ = contexts.lock().map(|mut map| {
                         map.insert(
                             id,
                             ExecutionContextInfo {
@@ -68,7 +68,7 @@ impl ExecutionContextTracker {
                                 name,
                             },
                         );
-                    }
+                    });
                 }
             });
             self._unsubs
@@ -81,9 +81,7 @@ impl ExecutionContextTracker {
                     .get("executionContextId")
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
-                if let Ok(mut map) = contexts.lock() {
-                    map.remove(&id);
-                }
+                let _ = contexts.lock().map(|mut map| map.remove(&id));
             });
             self._unsubs
                 .push(session.on("Runtime.executionContextDestroyed", h));
@@ -91,9 +89,7 @@ impl ExecutionContextTracker {
         {
             let contexts = self.contexts.clone();
             let h: CdpEventHandler = std::sync::Arc::new(move |_params: &Value| {
-                if let Ok(mut map) = contexts.lock() {
-                    map.clear();
-                }
+                let _ = contexts.lock().map(|mut map| map.clear());
             });
             self._unsubs
                 .push(session.on("Runtime.executionContextsCleared", h));
@@ -165,7 +161,8 @@ mod tests {
             for msg in script {
                 let _ = ws.send(Message::Text(msg.to_string())).await;
             }
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            // Brief hold; tests await the handle so the task completes.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         });
         (format!("ws://{addr}"), handle)
     }
@@ -185,30 +182,42 @@ mod tests {
         let tracker = ExecutionContextTracker::new(&_session);
 
         // No "context" object → ignored.
-        conn.dispatch_test(None, "Runtime.executionContextCreated", &json!({}));
+        conn.dispatch_test(
+            Some("sess-1"),
+            "Runtime.executionContextCreated",
+            &json!({}),
+        );
         // Context without id / auxData / name → id 0, "" frame, default.
         conn.dispatch_test(
-            None,
+            Some("sess-1"),
             "Runtime.executionContextCreated",
             &json!({"context": {}}),
         );
         // auxData present but partial → is_default honored, frame "".
         conn.dispatch_test(
-            None,
+            Some("sess-1"),
             "Runtime.executionContextCreated",
             &json!({"context": {"id": 7, "auxData": {"isDefault": false}}}),
         );
         // Destroyed without id → removes id 0 (the first default entry).
-        conn.dispatch_test(None, "Runtime.executionContextDestroyed", &json!({}));
+        conn.dispatch_test(
+            Some("sess-1"),
+            "Runtime.executionContextDestroyed",
+            &json!({}),
+        );
         // Cleared empties everything.
-        conn.dispatch_test(None, "Runtime.executionContextsCleared", &json!({}));
+        conn.dispatch_test(
+            Some("sess-1"),
+            "Runtime.executionContextsCleared",
+            &json!({}),
+        );
 
         // A subsequent default-world lookup must NOT find the cleared ones.
         let result = tracker
             .get_main_world_context_id("any", &Deadline::new(120))
             .await;
         assert!(result.is_err());
-        drop(server);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     #[test]

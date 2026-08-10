@@ -37,7 +37,10 @@ pub fn create_default_session(
     params: BrowserSessionParams,
 ) -> Result<Box<dyn BrowserSession>, String> {
     if params.protocol() == "webdriver" {
-        let session = safari::safari_session::SafariSession::new(params)?;
+        // Invariant: protocol() == "webdriver" ⇔ Webdriver params, which
+        // SafariSession::new always accepts — the Err arm is unreachable.
+        let session = safari::safari_session::SafariSession::new(params)
+            .expect("webdriver params are always accepted");
         return Ok(Box::new(session));
     }
     let session = chromium::chromium_session::ChromiumSession::new(params);

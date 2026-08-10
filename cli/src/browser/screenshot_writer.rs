@@ -172,6 +172,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_screenshot_fallback_failures_surface() {
+        let _guard = crate::test_env::lock_env().await;
+
+        // FUTURE_HOME is a regular FILE → the artifacts dir cannot be
+        // created → create_dir_all error propagates.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home_file = tmp.path().join("home-file");
+        tokio::fs::write(&home_file, "x").await.expect("write");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            home_file.as_os_str().to_os_string(),
+        )]);
+        // Explicit target also unwritable (parent is a file).
+        let target = home_file.join("x.png");
+        let err = write_screenshot(b"b", target.to_str().expect("utf8"))
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+        drop(_env);
+
+        // Artifacts dir exists but the fallback FILE path is a directory.
+        let tmp2 = tempfile::tempdir().expect("tempdir");
+        let _env2 = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            tmp2.path().as_os_str().to_os_string(),
+        )]);
+        tokio::fs::create_dir_all(artifacts_dir().join("shot.png"))
+            .await
+            .expect("mkdir");
+        let blocker = tmp2.path().join("blocker");
+        tokio::fs::write(&blocker, "x").await.expect("write");
+        let target = blocker.join("shot.png");
+        let err = write_screenshot(b"b", target.to_str().expect("utf8"))
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[tokio::test]
     async fn write_screenshot_filename_defaults_for_rootish_paths() {
         let _guard = crate::test_env::lock_env().await;
         let dir = tempfile::tempdir().expect("tempdir");

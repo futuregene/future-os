@@ -22,6 +22,9 @@ pub struct MockTarget {
     pub target_id: String,
     pub url: String,
     pub title: String,
+    /// CDP target type ("page", "worker", ...). The page manager only
+    /// attaches to "page" targets.
+    pub kind: String,
 }
 
 /// Test hook: expression → `Some(value)` to override the default
@@ -36,6 +39,10 @@ pub struct MockCdpState {
     /// Methods answered with a CDP error `{code: -32000, message: "mock
     /// failure"}` instead of a result.
     pub fail_methods: HashSet<String>,
+    /// Fail only the Nth (0-based) invocation of a method — multi-call
+    /// sequences like dispatchEnter (rawKeyDown/char/keyUp share one CDP
+    /// method name).
+    pub fail_on_call: HashSet<(String, usize)>,
     /// Methods the mock never answers (client-side timeout tests).
     pub no_reply_methods: HashSet<String>,
     /// Methods that make the mock drop the WebSocket WITHOUT answering
@@ -75,10 +82,15 @@ pub struct MockCdpState {
     /// Runtime.evaluate expressions containing this substring get a CDP
     /// error response (per-expression failure injection).
     pub eval_error_on_substring: Option<String>,
+    /// Runtime.evaluate expressions containing this substring make the mock
+    /// DROP the WebSocket without answering (mid-session death tests).
+    pub close_connection_on_eval_substring: Option<String>,
     /// Per-test Runtime.evaluate override (checked FIRST).
     pub eval_override: Option<EvalOverride>,
     /// Every command received: (method, sessionId, params).
     pub commands: Vec<(String, Option<String>, Value)>,
+    /// Per-method invocation counter backing [`Self::fail_on_call`].
+    call_counts: HashMap<String, usize>,
     next_target: u64,
     next_session: u64,
     next_loader: u64,
@@ -91,6 +103,7 @@ impl Default for MockCdpState {
             targets: Vec::new(),
             sessions: HashMap::new(),
             fail_methods: HashSet::new(),
+            fail_on_call: HashSet::new(),
             no_reply_methods: HashSet::new(),
             close_connection_on: HashSet::new(),
             navigate_error_text: None,
@@ -116,8 +129,10 @@ impl Default for MockCdpState {
             ),
             events_after_response: HashMap::new(),
             eval_error_on_substring: None,
+            close_connection_on_eval_substring: None,
             eval_override: None,
             commands: Vec::new(),
+            call_counts: HashMap::new(),
             next_target: 0,
             next_session: 0,
             next_loader: 1,
@@ -251,10 +266,32 @@ fn handle_cdp_message(state_arc: &Arc<Mutex<MockCdpState>>, text: &str) -> Optio
             drop(state);
             return None;
         }
+        if method == "Runtime.evaluate" {
+            let expression = params
+                .get("expression")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if state
+                .close_connection_on_eval_substring
+                .as_deref()
+                .is_some_and(|sub| expression.contains(sub))
+            {
+                drop(state);
+                return None;
+            }
+        }
         if state.no_reply_methods.contains(&method) {
             return Some(Vec::new());
         }
-        if state.fail_methods.contains(&method) {
+        let call_index = {
+            let count = state.call_counts.entry(method.clone()).or_insert(0);
+            let index = *count;
+            *count += 1;
+            index
+        };
+        if state.fail_methods.contains(&method)
+            || state.fail_on_call.contains(&(method.clone(), call_index))
+        {
             return Some(vec![json!({
                 "id": id,
                 "error": {"code": -32000, "message": "mock failure"},
@@ -318,7 +355,7 @@ fn dispatch_method(
                 .map(|t| {
                     json!({
                         "targetId": t.target_id,
-                        "type": "page",
+                        "type": t.kind,
                         "url": t.url,
                         "title": t.title,
                     })
@@ -351,6 +388,7 @@ fn dispatch_method(
                 target_id: target_id.clone(),
                 url: url.clone(),
                 title: String::new(),
+                kind: "page".to_string(),
             });
             if !state.suppress_target_created {
                 events.push(json!({
@@ -539,5 +577,110 @@ pub fn target(id: &str, url: &str, title: &str) -> MockTarget {
         target_id: id.to_string(),
         url: url.to_string(),
         title: title.to_string(),
+        kind: "page".to_string(),
+    }
+}
+
+/// A non-page target (worker/service_worker) for discovery-filter tests.
+pub fn target_kind(id: &str, url: &str, title: &str, kind: &str) -> MockTarget {
+    MockTarget {
+        target_id: id.to_string(),
+        url: url.to_string(),
+        title: title.to_string(),
+        kind: kind.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handle_cdp_message_frame_edge_shapes() {
+        let state = Arc::new(Mutex::new(MockCdpState::default()));
+
+        // Malformed JSON → ignored.
+        assert_eq!(handle_cdp_message(&state, "not json"), Some(Vec::new()));
+        // Valid JSON without an id → ignored (event-shaped frame).
+        assert_eq!(
+            handle_cdp_message(&state, r#"{"method":"Page.enable"}"#),
+            Some(Vec::new())
+        );
+        // Unknown method → empty result.
+        let replies = handle_cdp_message(&state, r#"{"id":1,"method":"Bogus.method"}"#).unwrap();
+        assert_eq!(replies[0]["result"], json!({}));
+        // Unknown method WITH a session id (no mapping → first-target arm of
+        // target_for with an empty target list → None).
+        let replies =
+            handle_cdp_message(&state, r#"{"id":2,"method":"Nope.x","sessionId":"ghost"}"#)
+                .unwrap();
+        assert_eq!(replies[0]["result"], json!({}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reply_send_failure_when_client_vanishes_mid_flood() {
+        let mock = MockCdp::start().await;
+        mock.state.lock().unwrap().events_after_response.insert(
+            "Page.enable".to_string(),
+            (0..5_000)
+                .map(|i| json!({"method": "E.v", "params": {"i": i}}))
+                .collect(),
+        );
+        // Raw WS client: send the command, then drop the socket instantly —
+        // the reply flood errors mid-send and the task returns early.
+        let (mut ws, _) = tokio_tungstenite::connect_async(&mock.ws_url)
+            .await
+            .unwrap();
+        ws.send(Message::Text(
+            r#"{"id":1,"method":"Page.enable"}"#.to_string(),
+        ))
+        .await
+        .unwrap();
+        drop(ws);
+        // The mock stays usable for a fresh connection.
+        let conn =
+            crate::browser::chromium::cdp_connection::CdpConnection::connect(&mock.ws_url, 5_000)
+                .await
+                .unwrap();
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_eval_block_and_handshake_failure() {
+        let mock = MockCdp::start().await;
+        // Drive the snapshot eval response through a real CDP evaluate.
+        let conn =
+            crate::browser::chromium::cdp_connection::CdpConnection::connect(&mock.ws_url, 5_000)
+                .await
+                .unwrap();
+        let session = crate::browser::chromium::cdp_connection::CdpSession::new("", conn.clone());
+        let out = session
+            .send(
+                "Runtime.evaluate",
+                Some(
+                    &json!({"expression": "function(){ var escapeCss = 1; }"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["result"]["value"]["title"], json!("Mock Title"));
+        conn.disconnect().await;
+
+        // A raw TCP client that sends garbage → the WS handshake fails and
+        // the connection task returns early.
+        let host_port = mock.ws_url[5..].split('/').next().unwrap().to_string();
+        let mut socket = tokio::net::TcpStream::connect(host_port).await.unwrap();
+        use tokio::io::AsyncWriteExt;
+        socket.write_all(b"garbage\r\n\r\n").await.unwrap();
+        drop(socket);
+        // The mock survives and answers a fresh connection.
+        let conn2 =
+            crate::browser::chromium::cdp_connection::CdpConnection::connect(&mock.ws_url, 5_000)
+                .await
+                .unwrap();
+        conn2.disconnect().await;
     }
 }

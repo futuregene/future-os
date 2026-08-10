@@ -85,10 +85,10 @@ pub async fn mcp_post(
 
     let effective_timeout = timeout_ms.unwrap_or(60_000);
     let client = reqwest::Client::new();
-    let request = client
-        .post(url)
-        .headers(headers)
-        .body(serde_json::to_string(&Value::Object(body)).map_err(|e| e.to_string())?);
+    let request = client.post(url).headers(headers).body(
+        // Serializing a Value is infallible.
+        serde_json::to_string(&Value::Object(body)).expect("json body serializes"),
+    );
 
     let result = tokio::time::timeout(Duration::from_millis(effective_timeout), async {
         let response = request
@@ -425,6 +425,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_post_invalid_header_values_error() {
+        // Newlines are not valid in header values.
+        let err = mcp_post(
+            "http://127.0.0.1:1/api/v1/mcp",
+            "m",
+            &Map::new(),
+            "bad\nkey",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(!err.is_empty());
+
+        let err = mcp_post(
+            "http://127.0.0.1:1/api/v1/mcp",
+            "m",
+            &Map::new(),
+            "sk",
+            Some("bad\nsession"),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_notify_invalid_headers_fall_back() {
+        // Invalid header bytes hit the unwrap_or_else fallbacks; the send
+        // itself fails (nothing listening) and is swallowed.
+        mcp_notify(
+            "http://127.0.0.1:1/api/v1/mcp",
+            "m",
+            &Map::new(),
+            "bad\nkey",
+            "bad\nsession",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn mcp_post_truncated_body_errors() {
+        use tokio::io::AsyncWriteExt;
+        // Advertise Content-Length: 100 but close after 2 bytes → text() fails.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{}")
+                .await;
+            // Dropping the socket mid-body.
+        });
+        let err = mcp_post(
+            &format!("http://{addr}/api/v1/mcp"),
+            "m",
+            &Map::new(),
+            "sk",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(!err.is_empty());
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+    }
+
+    #[tokio::test]
+    async fn initialize_error_without_code_says_unknown() {
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sse(
+            "/api/v1/mcp",
+            "data: {\"error\":{\"message\":\"no code here\"}}\n",
+            Some("sess-1"),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let err = initialize_session("sk").await.unwrap_err();
+        assert!(err.contains("code=unknown"), "{err}");
+        assert!(err.contains("no code here"), "{err}");
+    }
+
+    #[tokio::test]
     async fn mcp_post_timeout_message() {
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::slow(
             "/api/v1/mcp",
@@ -468,12 +556,7 @@ mod tests {
         let sid = initialize_session("sk-test").await.expect("init");
         assert_eq!(sid, "sess-42");
         // initialize + fire-and-forget notification both hit the server.
-        for _ in 0..40 {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            if requests.lock().unwrap().len() >= 2 {
-                break;
-            }
-        }
+        assert!(crate::test_env::wait_for(|| requests.lock().unwrap().len() >= 2).await);
         // Clone under a short-lived guard so no MutexGuard is held across
         // the awaits below (clippy::await_holding_lock).
         let recorded = requests.lock().unwrap().clone();
@@ -546,12 +629,7 @@ mod tests {
             "sess-1",
         )
         .await;
-        for _ in 0..40 {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            if !requests.lock().unwrap().is_empty() {
-                break;
-            }
-        }
+        assert!(crate::test_env::wait_for(|| !requests.lock().unwrap().is_empty()).await);
         assert_eq!(requests.lock().unwrap().len(), 1);
         // Dead server: errors are swallowed.
         mcp_notify("http://127.0.0.1:1/api/v1/mcp", "m", &Map::new(), "sk", "s").await;

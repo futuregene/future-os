@@ -76,3 +76,43 @@ fn embedded_loop_unknown_command() {
     assert_eq!(code, Some(1));
     assert!(!stderr.is_empty());
 }
+
+#[test]
+fn tools_call_reads_args_from_stdin() {
+    use std::io::Write;
+    use std::process::Stdio;
+    // `tools call web_search --stdin` reads the JSON args from stdin; the
+    // call then fails without an API key, but the stdin path executed.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_future"))
+        .args(["tools", "call", "web_search", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn future");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(br#"{"query":"x"}"#)
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait");
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn embedded_channel_invalid_config_errors() {
+    // An existing-but-invalid channels config makes run() return Err → the
+    // main.rs error arm (exit 1) instead of starting the bridge.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_dir = dir.path().join(".future").join("channels");
+    std::fs::create_dir_all(&cfg_dir).expect("mkdir");
+    std::fs::write(cfg_dir.join("config.json"), "{not json").expect("write");
+    let output = Command::new(env!("CARGO_BIN_EXE_future"))
+        .args(["channel"])
+        .env("HOME", dir.path())
+        .env("FUTURE_HOME", dir.path())
+        .output()
+        .expect("run future channel");
+    assert_eq!(output.status.code(), Some(1));
+}

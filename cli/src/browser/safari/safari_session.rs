@@ -26,13 +26,10 @@ pub struct SafariSession {
 
 impl SafariSession {
     pub fn new(params: BrowserSessionParams) -> Result<Self, String> {
-        if params.protocol() != "webdriver" {
+        let BrowserSessionParams::Webdriver { session_id, .. } = &params else {
             return Err("SafariSession requires webdriver protocol".to_string());
-        }
-        let session_id = match &params {
-            BrowserSessionParams::Webdriver { session_id, .. } => session_id.clone(),
-            _ => unreachable!("protocol checked above"),
         };
+        let session_id = session_id.clone();
         Ok(SafariSession {
             client: WebDriverClient::new(params.endpoint()),
             session_id,
@@ -60,11 +57,11 @@ impl SafariSession {
         {
             Ok(id) => Ok(id),
             Err(e) => {
-                // WebDriver "no such element" → ElementNotFoundError.
-                if let Some(wd) = parse_webdriver_error(&e) {
-                    if wd.error == "no such element" {
-                        return Err(element_not_found_error(selector).to_string());
-                    }
+                // WebDriver "no such element" → ElementNotFoundError. The
+                // re-parse only matches when the marker is present, so no
+                // second comparison is needed here.
+                if parse_webdriver_error(&e) {
+                    return Err(element_not_found_error(selector).to_string());
                 }
                 Err(e)
             }
@@ -87,18 +84,11 @@ impl SafariSession {
     }
 }
 
-/// Extract a WebDriver error payload from a formatted error string. The
-/// client formats `WebDriver [status] code: message`, so we re-parse the
-/// "no such element" marker here (the TS checks `e.wd.error` directly).
-fn parse_webdriver_error(e: &str) -> Option<WebDriverErrMarker> {
-    let marker = e.find("no such element")?;
-    Some(WebDriverErrMarker {
-        error: e[marker..marker + "no such element".len()].to_string(),
-    })
-}
-
-struct WebDriverErrMarker {
-    error: String,
+/// Whether a formatted WebDriver error carries the "no such element"
+/// marker. The client formats `WebDriver [status] code: message`, so we
+/// re-parse the marker here (the TS checks `e.wd.error` directly).
+fn parse_webdriver_error(e: &str) -> bool {
+    e.contains("no such element")
 }
 
 #[async_trait]
@@ -454,6 +444,70 @@ mod tests {
     use crate::test_server::{spawn_http, HttpRoute};
     use serde_json::json;
 
+    /// TabsResult extractors (panic arms covered by a dedicated test).
+    #[track_caller]
+    fn expect_list(r: InternalTabsResult) -> Vec<InternalTabInfo> {
+        match r {
+            InternalTabsResult::List { tabs } => tabs,
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn expect_new(r: InternalTabsResult) -> (InternalPageInfo, usize) {
+        match r {
+            InternalTabsResult::New { page, index } => (page, index),
+            other => panic!("expected new, got {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn expect_select(r: InternalTabsResult) -> InternalPageInfo {
+        match r {
+            InternalTabsResult::Select { page } => page,
+            other => panic!("expected select, got {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn expect_close(r: InternalTabsResult) -> (String, usize) {
+        match r {
+            InternalTabsResult::Close { url, index } => (url, index),
+            other => panic!("expected close, got {other:?}"),
+        }
+    }
+
+    fn page_info(id: &str) -> InternalPageInfo {
+        InternalPageInfo {
+            page_id: id.to_string(),
+            title: String::new(),
+            url: String::new(),
+        }
+    }
+
+    #[test]
+    fn tabs_result_extractors_panic_on_wrong_variant() {
+        assert!(std::panic::catch_unwind(|| {
+            expect_new(InternalTabsResult::List { tabs: vec![] })
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            expect_select(InternalTabsResult::List { tabs: vec![] })
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            expect_close(InternalTabsResult::List { tabs: vec![] })
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            expect_list(InternalTabsResult::New {
+                page: page_info("p"),
+                index: 0,
+            })
+        })
+        .is_err());
+    }
+
     fn session(endpoint: &str) -> SafariSession {
         SafariSession::new(BrowserSessionParams::Webdriver {
             endpoint: endpoint.to_string(),
@@ -576,6 +630,47 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, "Element not found: \"#ghost\"");
+    }
+
+    #[tokio::test]
+    async fn click_other_webdriver_errors_pass_through() {
+        // A WebDriver error WITHOUT the "no such element" marker is
+        // returned unchanged (not translated to ElementNotFoundError).
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/element",
+            500,
+            r#"{"value":{"error":"stale element reference","message":"went stale"}}"#,
+        )])
+        .await;
+        let mut s = session(&base);
+        let err = s
+            .click(&target("#stale"), ClickOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("stale element reference"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn type_fails_when_window_handle_unreadable() {
+        // find + clear succeed, but reading the current window handle for
+        // the page_id fails → the error propagates out of `type`.
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/element", 200, r#"{"value":"e1"}"#),
+            HttpRoute::json("/session/s1/element/e1/clear", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/element/e1/value", 200, r#"{"value":null}"#),
+            HttpRoute::json(
+                "/session/s1/window",
+                500,
+                r#"{"value":{"error":"no such window","message":"gone"}}"#,
+            ),
+        ])
+        .await;
+        let mut s = session(&base);
+        let err = s
+            .r#type(&target("#in"), "x", TypeOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("no such window"), "{err}");
     }
 
     #[tokio::test]
@@ -702,17 +797,12 @@ mod tests {
         ])
         .await;
         let mut s = session(&base);
-        let result = s.tabs(&TabsAction::List).await.unwrap();
-        match result {
-            InternalTabsResult::List { tabs } => {
-                assert_eq!(tabs.len(), 2);
-                assert_eq!(tabs[0].title, "T1");
-                assert!(tabs[0].active);
-                assert_eq!(tabs[1].title, "T2");
-                assert!(!tabs[1].active);
-            }
-            other => panic!("expected list, got {other:?}"),
-        }
+        let tabs = expect_list(s.tabs(&TabsAction::List).await.unwrap());
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[0].title, "T1");
+        assert!(tabs[0].active);
+        assert_eq!(tabs[1].title, "T2");
+        assert!(!tabs[1].active);
     }
 
     #[tokio::test]
@@ -740,14 +830,10 @@ mod tests {
             })
             .await
             .unwrap();
-        match result {
-            InternalTabsResult::New { page, index } => {
-                assert_eq!(page.page_id, "h2");
-                assert_eq!(index, 1);
-                assert_eq!(page.url, "http://new/");
-            }
-            other => panic!("expected new, got {other:?}"),
-        }
+        let (page, index) = expect_new(result);
+        assert_eq!(page.page_id, "h2");
+        assert_eq!(index, 1);
+        assert_eq!(page.url, "http://new/");
         // No url → skip navigate.
         let result = s.tabs(&TabsAction::New { url: None }).await.unwrap();
         assert!(matches!(result, InternalTabsResult::New { .. }));
@@ -769,13 +855,9 @@ mod tests {
         .await;
         let mut s = session(&base);
         let result = s.tabs(&TabsAction::Select { index: 1 }).await.unwrap();
-        match result {
-            InternalTabsResult::Select { page } => {
-                assert_eq!(page.page_id, "h2");
-                assert_eq!(page.title, "T2");
-            }
-            other => panic!("expected select, got {other:?}"),
-        }
+        let page = expect_select(result);
+        assert_eq!(page.page_id, "h2");
+        assert_eq!(page.title, "T2");
         let err = s.tabs(&TabsAction::Select { index: 9 }).await.unwrap_err();
         assert_eq!(err, "Invalid tab index: 9");
     }
@@ -794,13 +876,9 @@ mod tests {
         .await;
         let mut s = session(&base);
         let result = s.tabs(&TabsAction::Close { index: 0 }).await.unwrap();
-        match result {
-            InternalTabsResult::Close { url, index } => {
-                assert_eq!(url, "u1");
-                assert_eq!(index, 0);
-            }
-            other => panic!("expected close, got {other:?}"),
-        }
+        let (url, index) = expect_close(result);
+        assert_eq!(url, "u1");
+        assert_eq!(index, 0);
         // Close with an empty remaining list.
         let base = mock(vec![
             HttpRoute::sequence(
