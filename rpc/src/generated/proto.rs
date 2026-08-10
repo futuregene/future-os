@@ -73,6 +73,14 @@ pub struct RpcCommand {
     pub since_idx: i64,
     #[prost(string, tag = "141")]
     pub run_id: ::prost::alloc::string::String,
+    /// Page size for get_events_since (0 = unlimited, the legacy behavior).
+    /// A run journal can far exceed the gRPC message-size cap, so clients
+    /// reading a full run history page through it: re-request with
+    /// since_idx = the last event's idx while the response has has_more set.
+    /// The server may return fewer events than requested when a serialized-size
+    /// budget cuts the page first.
+    #[prost(int64, tag = "145")]
+    pub max_events: i64,
     /// Optional run identity proposed by a client that has already created its
     /// local run record. The Agent validates/adopts it atomically and returns the
     /// canonical id in the prompt acknowledgement.
@@ -1103,6 +1111,10 @@ pub struct EventsSince {
     pub truncated: bool,
     #[prost(message, optional, tag = "4")]
     pub projection: ::core::option::Option<ProjectionSnapshot>,
+    /// True when this page was cut short (see RpcCommand.max_events) and more
+    /// events follow: re-request with since_idx = the last event's idx.
+    #[prost(bool, tag = "5")]
+    pub has_more: bool,
 }
 /// A compressed projection of a run's events (coalesced deltas).
 #[derive(Clone, PartialEq, ::prost::Message)]

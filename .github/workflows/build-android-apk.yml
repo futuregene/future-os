@@ -12,6 +12,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       is_release: ${{ steps.v.outputs.is_release }}
+      build_number: ${{ steps.v.outputs.build_number }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -21,7 +22,11 @@ jobs:
           node-version: "24"
       - name: Resolve version
         id: v
-        run: node scripts/version.mjs --github-output
+        run: |
+          node scripts/version.mjs --github-output
+          # versionCode must be a monotonic integer if this ever goes to Play
+          # Store; the repo-wide run counter never resets on workflow renames.
+          echo "build_number=${{ github.run_id }}" >> "$GITHUB_OUTPUT"
 
   build-apk:
     name: Build APK
@@ -29,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FUTURE_VERSION: ${{ needs.version.outputs.version }}
+      FUTURE_BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
       IS_RELEASE: ${{ needs.version.outputs.is_release }}
       OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
       OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
