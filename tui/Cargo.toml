@@ -45,3 +45,5 @@ windows-sys = { version = "0.61", features = [
 tempfile.workspace = true
 futures-util.workspace = true
 tokio-stream.workspace = true
+# test-util: paused time (tokio::time::advance) for the heartbeat test.
+tokio = { workspace = true, features = ["test-util"] }

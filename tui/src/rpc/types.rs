@@ -349,4 +349,35 @@ mod tests {
         assert!(state.active_run.is_none());
         assert_eq!(state.total_cost, None);
     }
+
+    fn agent_event_with_data(data: serde_json::Value) -> AgentEvent {
+        AgentEvent {
+            r#type: "text_chunk".into(),
+            session_id: None,
+            run_id: None,
+            epoch: 0,
+            idx: 0,
+            event_id: None,
+            timestamp: None,
+            projection_snapshot: false,
+            snapshot_cursor: 0,
+            snapshot_events: Vec::new(),
+            data,
+        }
+    }
+
+    #[test]
+    fn agent_event_text_reads_data_text() {
+        let ev = agent_event_with_data(serde_json::json!({"text": "hello"}));
+        assert_eq!(ev.text(), "hello");
+    }
+
+    #[test]
+    fn agent_event_text_defaults_to_empty() {
+        let ev = agent_event_with_data(serde_json::json!({}));
+        assert_eq!(ev.text(), "");
+        // Non-string text is not returned either.
+        let ev = agent_event_with_data(serde_json::json!({"text": 5}));
+        assert_eq!(ev.text(), "");
+    }
 }

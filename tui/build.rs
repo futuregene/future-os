@@ -21,6 +21,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn emit_build_version() {
     let version = resolve_version();
     println!("cargo:rustc-env=FUTURE_TUI_VERSION={version}");
+    // `cfg(coverage)` is set by cargo-llvm-cov; used for test-only
+    // substitutions of process-death paths (see terminal_posix.rs).
+    println!("cargo:rustc-check-cfg=cfg(coverage)");
     println!("cargo:rerun-if-env-changed=FUTURE_VERSION");
     println!("cargo:rerun-if-env-changed=GITHUB_REF");
     println!("cargo:rerun-if-env-changed=GITHUB_ACTIONS");

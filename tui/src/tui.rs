@@ -443,7 +443,154 @@ mod tests {
         c.add_child(Box::new(FixedLine("a".into())));
         c.add_child(Box::new(FixedLine("b".into())));
         assert_eq!(c.render(80), vec!["a", "b"]);
+        // as_any downcasts work on the container and its children.
+        assert!(c.as_any().downcast_ref::<Container>().is_some());
+        assert!(c.as_any_mut().downcast_mut::<Container>().is_some());
+        // remove_child_at returns the component and bounds-checks the index.
+        let mut removed = c.remove_child_at(0).unwrap();
+        assert!(removed.as_any().downcast_ref::<FixedLine>().is_some());
+        assert!(removed.as_any_mut().downcast_mut::<FixedLine>().is_some());
+        assert!(c.remove_child_at(9).is_none());
+        assert_eq!(c.render(80), vec!["b"]);
         c.clear();
         assert!(c.render(80).is_empty());
+    }
+
+    #[test]
+    fn component_default_methods_are_noops() {
+        struct Bare;
+        impl Component for Bare {
+            fn render(&mut self, _width: usize) -> Vec<String> {
+                vec!["x".into()]
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+                self
+            }
+        }
+        let mut c = Bare;
+        c.handle_input("anything"); // default: ignored
+        c.invalidate(); // default: no cache to drop
+        assert!(!c.wants_key_release());
+        assert_eq!(c.render(80), vec!["x"]);
+        assert!(c.as_any().downcast_ref::<Bare>().is_some());
+        assert!(c.as_any_mut().downcast_mut::<Bare>().is_some());
+    }
+
+    #[test]
+    fn container_invalidate_propagates_to_children() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct CountingChild(Rc<Cell<usize>>);
+        impl Component for CountingChild {
+            fn render(&mut self, _width: usize) -> Vec<String> {
+                vec![]
+            }
+            fn invalidate(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+                self
+            }
+        }
+
+        let count = Rc::new(Cell::new(0));
+        let mut c = Container::new();
+        let mut child = CountingChild(Rc::clone(&count));
+        assert!(child.as_any().downcast_ref::<CountingChild>().is_some());
+        assert!(child.as_any_mut().downcast_mut::<CountingChild>().is_some());
+        assert!(child.render(80).is_empty());
+        c.add_child(Box::new(child));
+        c.add_child(Box::new(CountingChild(Rc::clone(&count))));
+        c.invalidate();
+        assert_eq!(count.get(), 2);
+    }
+
+    #[test]
+    fn focus_helpers_recognize_focusable_components() {
+        use crate::components::input::Input;
+        use crate::components::scoped_models_selector::{
+            ScopedModelsSelector, ScopedModelsSelectorOptions,
+        };
+        use std::collections::HashSet;
+
+        let mut input: Box<dyn Component> = Box::<Input>::default();
+        assert!(is_focusable(input.as_ref()));
+        set_component_focused(input.as_mut(), true);
+        assert!(input.as_any().downcast_ref::<Input>().unwrap().focused);
+
+        let mut selector: Box<dyn Component> =
+            Box::new(ScopedModelsSelector::new(ScopedModelsSelectorOptions {
+                all_models: vec![],
+                enabled_model_ids: HashSet::new(),
+                on_save: Box::new(|_| {}),
+                on_cancel: Box::new(|| {}),
+                max_visible: None,
+            }));
+        assert!(is_focusable(selector.as_ref()));
+        set_component_focused(selector.as_mut(), true);
+        assert!(
+            selector
+                .as_any()
+                .downcast_ref::<ScopedModelsSelector>()
+                .unwrap()
+                .focused
+        );
+        // Fire the save/cancel callbacks so their bodies aren't dead.
+        selector.handle_input("enter");
+        selector.handle_input("escape");
+
+        struct Bare;
+        impl Component for Bare {
+            fn render(&mut self, _width: usize) -> Vec<String> {
+                vec![]
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+                self
+            }
+        }
+        let mut bare: Box<dyn Component> = Box::new(Bare);
+        assert!(!is_focusable(bare.as_ref()));
+        set_component_focused(bare.as_mut(), true); // no-op, must not panic
+        assert!(bare.render(80).is_empty());
+    }
+
+    #[test]
+    fn overlay_anchor_defaults_to_center() {
+        assert_eq!(OverlayAnchor::default(), OverlayAnchor::Center);
+    }
+
+    #[test]
+    fn overlay_layout_sides_margin_min_width_and_explicit_row_col() {
+        let opts = OverlayOptions {
+            margin: Some(MarginValue::Sides(OverlayMargin {
+                top: Some(2),
+                right: Some(4),
+                bottom: None,
+                left: Some(6),
+            })),
+            min_width: Some(30),
+            row: Some(SizeValue::Fixed(5)),
+            col: Some(SizeValue::Percent(50.0)),
+            width: Some(SizeValue::Fixed(10)),
+            ..Default::default()
+        };
+        let layout = resolve_overlay_layout(100, 40, 10, Some(&opts));
+        // width 10 is bumped to min_width 30 (avail_w = 100-6-4 = 90).
+        assert_eq!(layout.width, 30);
+        assert_eq!(layout.row, 5);
+        // col = 50% of avail_w 90.
+        assert_eq!(layout.col, 45);
+        // avail_h = 40-2-0 = 38 clamps the default max_height.
+        assert_eq!(layout.max_height, 38);
     }
 }
