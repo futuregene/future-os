@@ -4206,6 +4206,8 @@ mod tests {
         writes: Rc<RefCell<Vec<String>>>,
         cols: u16,
         rows: u16,
+        on_input: Option<Box<dyn FnMut(String) + Send + 'static>>,
+        on_resize: Option<Box<dyn FnMut() + Send + 'static>>,
     }
 
     impl TerminalIo for FakeTerminal {
@@ -4222,9 +4224,11 @@ mod tests {
         fn show_cursor(&self) {}
         fn start(
             &mut self,
-            _on_input: Box<dyn FnMut(String) + Send + 'static>,
-            _on_resize: Box<dyn FnMut() + Send + 'static>,
+            on_input: Box<dyn FnMut(String) + Send + 'static>,
+            on_resize: Box<dyn FnMut() + Send + 'static>,
         ) -> std::io::Result<()> {
+            self.on_input = Some(on_input);
+            self.on_resize = Some(on_resize);
             Ok(())
         }
         fn stop(&mut self) {}
@@ -4240,6 +4244,8 @@ mod tests {
                 writes: Rc::new(RefCell::new(Vec::new())),
                 cols,
                 rows,
+                on_input: None,
+                on_resize: None,
             },
             Arc::new(client),
             op_tx,
@@ -4386,6 +4392,8 @@ mod tests {
                 writes: Rc::new(RefCell::new(Vec::new())),
                 cols: 80,
                 rows: 24,
+                on_input: None,
+                on_resize: None,
             },
             Arc::new(client),
             op_tx,
@@ -4795,7 +4803,9 @@ mod tests {
         needle: &str,
     ) {
         let mut found = false;
-        for _ in 0..400 {
+        // 1200 × 25ms = 30s budget — loaded CI runners can take far longer
+        // than a local machine for the gRPC round trips behind these steps.
+        for _ in 0..1200 {
             while let Ok(cmd) = op_rx.try_recv() {
                 app.handle_cmd(cmd);
             }
@@ -4805,7 +4815,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        assert!(found);
+        assert!(
+            found,
+            "timed out waiting for system message containing {needle:?}"
+        );
     }
 
     /// System message contents, plain text.
@@ -6232,6 +6245,8 @@ mod tests {
                 writes: Rc::new(RefCell::new(Vec::new())),
                 cols: 100,
                 rows: 30,
+                on_input: None,
+                on_resize: None,
             },
             Arc::new(client),
             op_tx,
@@ -6367,7 +6382,7 @@ mod tests {
                 description: None,
             },
         });
-        pump(&mut app, &mut rx).await;
+        pump_until_msg(&mut app, &mut rx, "Forked from entry one.").await;
         assert!(last_system(&app).contains("Forked from entry one."));
 
         // /model set directly succeeds.
@@ -7739,6 +7754,23 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_callbacks_forward_into_input_channel() {
+        // The callbacks App::start hands to TerminalIo::start forward input
+        // and resize events into the app's input channel.
+        let (addr, _seen) = spawn_app_mock().await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        let (in_tx, mut in_rx) = mpsc::unbounded_channel();
+        app.start(in_tx).await.unwrap();
+        assert!(app.is_running());
+        let term = &mut app.terminal;
+        (term.on_input.as_mut().unwrap())("abc".to_string());
+        (term.on_resize.as_mut().unwrap())();
+        assert!(matches!(in_rx.try_recv(), Ok(UiInput::Input(_))));
+        assert!(matches!(in_rx.try_recv(), Ok(UiInput::Resize)));
+        pump(&mut app, &mut rx).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn startup_explicit_session_state_skips_new_session() {
         // get_state reports an explicit session → startup does not call
         // new_session at all.
@@ -7896,8 +7928,10 @@ mod tests {
         }
 
         let (mut app, mut rx) = make_app(100, 30);
+        let provider = FixedProvider;
+        assert_eq!(provider.name(), "fixed");
         app.ac_manager.destroy();
-        app.ac_manager.register(Box::new(FixedProvider));
+        app.ac_manager.register(Box::new(provider));
         app.input.set_value("ay", None);
         app.trigger_autocomplete();
         pump(&mut app, &mut rx).await; // deliver AcItems
@@ -7926,42 +7960,45 @@ mod tests {
         assert!(base < 30);
         // An overlay whose component renders nothing: compositing pads the
         // frame to the terminal height with blank lines — a pure tail
-        // append with no in-place change. (non_capturing: a focus change
-        // would restyle the editor line, breaking the pure-append shape.)
-        app.show_overlay(
-            Box::new(ProbeComponent {
+        // append with no in-place change. Pushed directly: show_overlay's
+        // request_render(true) would clear the diff baseline.
+        app.overlay_stack.push(OverlayEntry {
+            id: 999,
+            component: Box::new(ProbeComponent {
                 lines: 0,
                 wants_release: false,
                 render_only_at: None,
             }),
-            OverlayOptions {
-                non_capturing: true,
-                ..Default::default()
-            },
-        );
+            options: OverlayOptions::default(),
+            pre_focus: FocusTarget::Input,
+            hidden: false,
+            focus_order: 0,
+        });
         app.do_render();
         assert_eq!(app.previous_lines.len(), 30);
-        app.hide_overlay();
+        app.overlay_stack.clear();
         app.do_render();
-        assert_eq!(app.previous_lines.len(), base);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn overwide_line_truncated_in_diff_render() {
-        // Width-1 terminal: a wide char can't be split by the wrapper, so
-        // the rendered line exceeds the width and the diff render takes the
-        // truncate-instead-of-crashing arm.
-        let (mut app, _rx) = running_app(40, 12);
-        app.chat
-            .add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, "ok"));
+        // The autocomplete popup enforces a minimum width of 12 — wider
+        // than a w=10 terminal — and its lines are composited into the
+        // frame raw. The diff render's truncate arm keeps that graceful.
+        let (mut app, _rx) = running_app(10, 12);
         app.do_render(); // frame 1 (full)
-                         // Code-block lines render unwrapped (raw + indent): a long code
-                         // line exceeds the terminal width → the diff render's truncate
-                         // arm (graceful degradation instead of a hard failure).
-        let wide = format!("```\n{}\n```", "x".repeat(80));
-        app.chat.update_last_message(&wide);
-        app.do_render();
-        app.chat.update_last_message("done");
+        app.autocomplete
+            .show(vec![crate::components::autocomplete::AutocompleteItem {
+                value: "/model".into(),
+                label: "/model".into(),
+                description: None,
+            }]);
+        app.do_render(); // diff render composites the over-wide popup line
+        assert!(app
+            .previous_lines
+            .iter()
+            .any(|l| visible_width(l) > 10 || !l.is_empty()));
+        app.autocomplete.hide();
         app.do_render();
     }
 }

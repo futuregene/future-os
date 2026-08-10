@@ -499,11 +499,16 @@ mod tests {
         fn redirect_to_idle_pipe() -> Self {
             let mut fds = [0 as RawFd; 2];
             assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-            let guard = Self::redirect_to(fds[0]);
+            // NOTE: construct directly — `..Self::redirect_to(fd)` (FRU)
+            // would leave the temp guard alive (saved is Copy) and its Drop
+            // would restore fd 0 immediately.
+            let saved = unsafe { libc::dup(0) };
+            assert!(saved >= 0);
+            assert_ne!(unsafe { libc::dup2(fds[0], 0) }, -1);
             unsafe { libc::close(fds[0]) };
             Self {
+                saved,
                 idle_pipe_write: Some(fds[1]),
-                ..guard
             }
         }
     }

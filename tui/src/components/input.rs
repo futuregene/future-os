@@ -624,11 +624,9 @@ impl Input {
             self.history_index += 1;
         }
         let idx = self.history_index as usize;
-        self.value = self
-            .history
-            .get(idx)
-            .cloned()
-            .unwrap_or_else(|| self.history_draft.clone());
+        // In-bounds by construction: history is non-empty (early return) and
+        // history_index is clamped to len-1 above.
+        self.value = self.history[idx].clone();
         self.cursor = u16_len(&self.value);
         if let Some(on_change) = self.onChange.as_mut() {
             on_change(&self.value);
@@ -643,11 +641,9 @@ impl Input {
         if self.history_index > 0 {
             self.history_index -= 1;
             let idx = self.history_index as usize;
-            self.value = self
-                .history
-                .get(idx)
-                .cloned()
-                .unwrap_or_else(|| self.history_draft.clone());
+            // In-bounds: history_index ∈ [1, len-1] here (set by history_up,
+            // which clamps to len-1), so idx ∈ [0, len-2].
+            self.value = self.history[idx].clone();
         } else {
             self.history_index = -1;
             self.value = self.history_draft.clone();

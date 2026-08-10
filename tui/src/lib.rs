@@ -65,4 +65,18 @@ pub mod test_env {
     pub fn lock() -> std::sync::MutexGuard<'static, ()> {
         ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
     }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn lock_survives_poisoning() {
+            // Poison ENV_LOCK (panic while held), then re-acquire: the
+            // unwrap_or_else arm must recover the guard.
+            let _ = std::panic::catch_unwind(|| {
+                let _g = super::lock();
+                panic!("intentional poison");
+            });
+            let _g = super::lock();
+        }
+    }
 }

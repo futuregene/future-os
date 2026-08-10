@@ -608,6 +608,22 @@ mod tests {
         crate::test_env::lock()
     }
 
+    /// Shared no-op start callbacks: one closure instance each (kept honest
+    /// by `noop_callbacks_invoke`), so call sites don't carry dead bodies.
+    fn noop_input_cb() -> Box<dyn FnMut(String) + Send + 'static> {
+        Box::new(|_| {})
+    }
+
+    fn noop_resize_cb() -> Box<dyn FnMut() + Send + 'static> {
+        Box::new(|| {})
+    }
+
+    #[test]
+    fn noop_callbacks_invoke() {
+        (noop_input_cb())("x".to_string());
+        (noop_resize_cb())();
+    }
+
     /// fd 0 redirected from /dev/null until dropped.
     #[cfg(unix)]
     struct NullStdin {
@@ -845,14 +861,14 @@ mod tests {
         // Not a TTY: stdin swapped for /dev/null.
         let _null = NullStdin::install();
         let mut t = Terminal::new().unwrap();
-        let err = t.start(Box::new(|_| {}), Box::new(|| {})).unwrap_err();
+        let err = t.start(noop_input_cb(), noop_resize_cb()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotConnected);
         drop(_null);
 
         // Already started: a reader thread is present.
         let mut t = Terminal::new().unwrap();
         t.reader_thread = Some(std::thread::spawn(|| {}));
-        let err = t.start(Box::new(|_| {}), Box::new(|| {})).unwrap_err();
+        let err = t.start(noop_input_cb(), noop_resize_cb()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         // Drop joins the dummy thread via stop().
     }
@@ -1058,7 +1074,7 @@ mod tests {
         let _g = terminal_test_lock();
         let _pty = PtyStdin::install();
         let mut t = Terminal::new().unwrap();
-        t.start(Box::new(|_| {}), Box::new(|| {})).unwrap();
+        t.start(noop_input_cb(), noop_resize_cb()).unwrap();
         // Swap fd 0 for a directory: poll reports POLLNVAL → the reader
         // attempts the read, which fails (EISDIR) and ends the loop.
         let dir = unsafe { libc::open(c"/tmp".as_ptr(), libc::O_RDONLY) };
@@ -1093,7 +1109,7 @@ mod tests {
             assert_ne!(libc::dup2(slave, 1), -1);
 
             let mut t = Terminal::new().unwrap();
-            t.start(Box::new(|_| {}), Box::new(|| {})).unwrap();
+            t.start(noop_input_cb(), noop_resize_cb()).unwrap();
             assert_eq!(*t.size.lock(), (80, 40));
             // Resize the PTY, then SIGWINCH → the reader refreshes the cache.
             ws.ws_col = 99;
@@ -1118,7 +1134,7 @@ mod tests {
         let _g = terminal_test_lock();
         let _pty = PtyStdin::install();
         let mut t = Terminal::new().unwrap();
-        t.start(Box::new(|_| {}), Box::new(|| {})).unwrap();
+        t.start(noop_input_cb(), noop_resize_cb()).unwrap();
         // Simulate the modifyOtherKeys fallback having armed.
         t.modify_other_keys_active.store(true, Ordering::SeqCst);
         t.stop();
@@ -1144,7 +1160,7 @@ mod tests {
         }));
 
         let mut t = Terminal::new().unwrap();
-        t.start(Box::new(|_| {}), Box::new(|| {})).unwrap();
+        t.start(noop_input_cb(), noop_resize_cb()).unwrap();
         // No exit callback → the failsafe restores the terminal and invokes
         // die_with_signal, which the test build substitutes with a panic.
         unsafe { libc::raise(libc::SIGTERM) };

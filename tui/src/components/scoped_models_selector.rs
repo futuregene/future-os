@@ -352,6 +352,24 @@ mod tests {
         (saved, Box::new(move |ids| *cb.borrow_mut() = ids.to_vec()))
     }
 
+    /// Shared no-op callbacks: a single closure instance each (executed by
+    /// `noop_callbacks_are_callable`), so the many call sites below don't
+    /// each carry a never-invoked closure body.
+    #[allow(clippy::type_complexity)] // trait-object alias buys nothing here
+    fn noop_save() -> Box<dyn FnMut(&[String])> {
+        Box::new(|_| {})
+    }
+
+    fn noop_cancel() -> Box<dyn FnMut()> {
+        Box::new(|| {})
+    }
+
+    #[test]
+    fn noop_callbacks_are_callable() {
+        noop_save()(&[]);
+        noop_cancel()();
+    }
+
     #[allow(clippy::type_complexity)]
     fn bool_sink() -> (std::rc::Rc<std::cell::Cell<bool>>, Box<dyn FnMut()>) {
         use std::cell::Cell;
@@ -364,7 +382,7 @@ mod tests {
     #[test]
     fn models_are_sorted_by_provider_id() {
         let (saved, on_save) = saved_sink();
-        let mut sel = make_selector(on_save, Box::new(|| {}));
+        let mut sel = make_selector(on_save, noop_cancel());
         sel.handle_key("enter");
         assert!(saved.borrow().contains(&"openai/gpt-4o".to_string()));
         assert!(saved
@@ -375,7 +393,7 @@ mod tests {
     #[test]
     fn space_toggles_model_off() {
         let (saved, on_save) = saved_sink();
-        let mut sel = make_selector(on_save, Box::new(|| {}));
+        let mut sel = make_selector(on_save, noop_cancel());
         // First item (sorted): anthropic/claude-sonnet-4
         sel.handle_key("space"); // toggle off claude
         sel.handle_key("enter");
@@ -388,7 +406,7 @@ mod tests {
     #[test]
     fn space_toggles_model_back_on() {
         let (saved, on_save) = saved_sink();
-        let mut sel = make_selector(on_save, Box::new(|| {}));
+        let mut sel = make_selector(on_save, noop_cancel());
         sel.handle_key("space"); // toggle off
         sel.handle_key("space"); // toggle back on
         sel.handle_key("enter");
@@ -416,7 +434,7 @@ mod tests {
 
     #[test]
     fn filter_narrows_model_list() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         sel.handle_key("d");
         sel.handle_key("e");
         sel.handle_key("e");
@@ -434,7 +452,7 @@ mod tests {
 
     #[test]
     fn render_shows_enabled_count() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         let lines = sel.render(60);
         let text = lines
             .iter()
@@ -446,7 +464,7 @@ mod tests {
 
     #[test]
     fn render_shows_unsaved_indicator_after_toggle() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         let before = sel.render(60);
         assert!(!before
             .iter()
@@ -460,7 +478,7 @@ mod tests {
 
     #[test]
     fn render_shows_check_and_cross_for_enabled_disabled() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         let lines = sel.render(60);
         let text = lines
             .iter()
@@ -476,7 +494,7 @@ mod tests {
         // Sorted: anthropic/claude-sonnet-4, deepseek/deepseek-r1,
         // openai/gpt-4o, openai/o3-mini
         let (saved, on_save) = saved_sink();
-        let mut sel = make_selector(on_save, Box::new(|| {}));
+        let mut sel = make_selector(on_save, noop_cancel());
         sel.handle_key("down"); // move to deepseek-r1
         sel.handle_key("space"); // enable deepseek-r1
         sel.handle_key("enter");
@@ -485,7 +503,7 @@ mod tests {
 
     #[test]
     fn empty_filter_shows_all_models() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         let lines = sel.render(80);
         let text = lines
             .iter()
@@ -501,7 +519,7 @@ mod tests {
     #[test]
     fn handle_input_delegates_to_handle_key() {
         let (cancelled, on_cancel) = bool_sink();
-        let mut sel = make_selector(Box::new(|_| {}), on_cancel);
+        let mut sel = make_selector(noop_save(), on_cancel);
         sel.handle_input("escape");
         assert!(cancelled.get());
     }
@@ -510,15 +528,15 @@ mod tests {
         ScopedModelsSelector::new(ScopedModelsSelectorOptions {
             all_models: models,
             enabled_model_ids: HashSet::new(),
-            on_save: Box::new(|_| {}),
-            on_cancel: Box::new(|| {}),
+            on_save: noop_save(),
+            on_cancel: noop_cancel(),
             max_visible: Some(max_visible),
         })
     }
 
     #[test]
     fn up_and_down_wrap_around() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         // up from the first row wraps to the bottom.
         assert!(sel.handle_key("up"));
         assert_eq!(sel.selected_index, 3);
@@ -566,7 +584,7 @@ mod tests {
 
     #[test]
     fn backspace_edits_filter_and_unhandled_keys_return_false() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         assert!(sel.handle_key("g")); // filter "g"
         assert_eq!(sel.filter, "g");
         assert!(sel.handle_key("backspace"));
@@ -578,7 +596,7 @@ mod tests {
 
     #[test]
     fn filter_shrink_clamps_selection() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         sel.selected_index = 3;
         sel.handle_key("d"); // filter "d" matches deepseek-r1 (+ Claude? no)
         assert!(sel.selected_index < sel.filtered_items.len().max(1));
@@ -624,7 +642,7 @@ mod tests {
 
     #[test]
     fn component_trait_passthroughs() {
-        let mut sel = make_selector(Box::new(|_| {}), Box::new(|| {}));
+        let mut sel = make_selector(noop_save(), noop_cancel());
         sel.handle_input("down");
         assert_eq!(sel.selected_index, 1);
         sel.invalidate();

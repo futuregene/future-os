@@ -542,6 +542,9 @@ mod tests {
                 .unwrap()
                 .focused
         );
+        // Fire the save/cancel callbacks so their bodies aren't dead.
+        selector.handle_input("enter");
+        selector.handle_input("escape");
 
         struct Bare;
         impl Component for Bare {

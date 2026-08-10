@@ -1688,6 +1688,28 @@ mod tests {
     }
 
     #[test]
+    fn thinking_theme_styles_blockquote_and_code_block() {
+        // Thinking with a blockquote and a fenced code block — exercises the
+        // thinking theme's quote/code-block style closures.
+        let mut chat = ChatArea::new(60, None);
+        chat.add_message(ChatMessage {
+            id: "1".into(),
+            role: ChatRole::Assistant,
+            content: "answer".into(),
+            thinking: Some("> quoted thought\n\n```\ncode line\n```\n\n".into()),
+            ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
+        });
+        let lines = chat.render(60);
+        let joined = lines
+            .iter()
+            .map(|l| crate::utils::strip_ansi_codes(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("quoted thought"));
+        assert!(joined.contains("code line"));
+    }
+
+    #[test]
     fn thinking_never_leaks_markdown_accent_colors() {
         let mut chat = ChatArea::new(60, None);
         chat.add_message(ChatMessage {

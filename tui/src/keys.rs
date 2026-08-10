@@ -1721,6 +1721,11 @@ mod tests {
     #[test]
     fn parse_key_legacy_control_and_alt_forms() {
         let _g = reset_kitty();
+        // \x08 maps to "ctrl+backspace" under Windows Terminal — take the env
+        // lock and clear WT_SESSION/SSH_* so a parallel env-matrix test can't
+        // flip the expectation (flaked on Linux CI).
+        let _guard = crate::test_env::lock();
+        let saved = clear_terminal_env();
         assert_eq!(parse_key("\x1c").as_deref(), Some("ctrl+\\"));
         assert_eq!(parse_key("\x1d").as_deref(), Some("ctrl+]"));
         assert_eq!(parse_key("\x1f").as_deref(), Some("ctrl+-"));
@@ -1741,6 +1746,9 @@ mod tests {
         assert_eq!(parse_key("\x1b5").as_deref(), Some("alt+5"));
         // Unrecognized → None.
         assert_eq!(parse_key("\x1b[").as_deref(), None);
+        for (k, v) in saved {
+            restore_env(k, v);
+        }
     }
 
     #[test]
@@ -1997,6 +2005,10 @@ mod tests {
     #[test]
     fn matches_key_backspace_forms() {
         let _g = reset_kitty();
+        // \x08 is env-sensitive (Windows Terminal) — serialize against the
+        // env-matrix test and clear WT_SESSION/SSH_* (flaked on Linux CI).
+        let _guard = crate::test_env::lock();
+        let saved = clear_terminal_env();
         assert!(matches_key("\x7f", "backspace"));
         assert!(matches_key("\x08", "backspace"));
         assert!(matches_key("\x1b[127u", "backspace"));
@@ -2011,6 +2023,9 @@ mod tests {
         assert!(matches_key("\x1b[127;2u", "shift+backspace"));
         assert!(matches_key("\x1b[27;2;127~", "shift+backspace"));
         assert!(!matches_key("x", "backspace"));
+        for (k, v) in saved {
+            restore_env(k, v);
+        }
     }
 
     #[test]
