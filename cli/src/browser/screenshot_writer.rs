@@ -147,10 +147,7 @@ mod tests {
             .expect("write");
         assert_eq!(result.path, target.display().to_string());
         assert_eq!(result.filename, "one.png");
-        assert_eq!(
-            tokio::fs::read(&target).await.expect("read"),
-            b"png-bytes"
-        );
+        assert_eq!(tokio::fs::read(&target).await.expect("read"), b"png-bytes");
     }
 
     #[tokio::test]

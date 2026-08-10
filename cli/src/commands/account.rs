@@ -248,9 +248,7 @@ mod tests {
             .unwrap();
         tokio::fs::write(
             &path,
-            format!(
-                "{{\"future\": {{\"key\": \"sk-test\", \"base_url\": \"{platform_url}\"}}}}"
-            ),
+            format!("{{\"future\": {{\"key\": \"sk-test\", \"base_url\": \"{platform_url}\"}}}}"),
         )
         .await
         .unwrap();
@@ -276,10 +274,19 @@ mod tests {
         let (code, stdout, stderr) = run(&["account", "profile"]).await;
         assert_eq!(code, 0);
         assert!(stderr.is_empty());
-        assert!(stdout.contains("  Email:           a@b.c"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("  Email:           a@b.c"),
+            "stdout: {stdout}"
+        );
         assert!(stdout.contains("  User ID:         u1"), "stdout: {stdout}");
-        assert!(stdout.contains("  Email verified:  true"), "stdout: {stdout}");
-        assert!(stdout.contains("  Created:         2026-01-01"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("  Email verified:  true"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("  Created:         2026-01-01"),
+            "stdout: {stdout}"
+        );
 
         // JSON mode: only the four known keys, in TS order.
         let (code, stdout, _) = run(&["account", "profile", "--json"]).await;
@@ -370,9 +377,11 @@ mod tests {
             ("{\"error\":\"broken\"}", "broken"),
             ("{}", "HTTP 401"),
         ] {
-            let base = crate::test_server::spawn_http(vec![
-                crate::test_server::HttpRoute::json("/client/v1/account/profile", 401, body),
-            ])
+            let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+                "/client/v1/account/profile",
+                401,
+                body,
+            )])
             .await;
             write_auth(&base).await;
             let (code, _, stderr) = run(&["account", "profile"]).await;
@@ -397,12 +406,17 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let _home = EnvGuard::temp_home();
         let path = auth_file();
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
         // Non-object JSON.
         tokio::fs::write(&path, "[1,2]").await.unwrap();
         let (code, _, stderr) = run(&["account", "profile"]).await;
         assert_eq!(code, 1);
-        assert!(stderr.contains("must contain a JSON object"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("must contain a JSON object"),
+            "stderr: {stderr}"
+        );
         // Invalid JSON.
         tokio::fs::write(&path, "{oops").await.unwrap();
         let (code, _, stderr) = run(&["account", "profile"]).await;
@@ -412,12 +426,20 @@ mod tests {
         tokio::fs::write(&path, "{\"future\": 42}").await.unwrap();
         let (code, _, stderr) = run(&["account", "profile"]).await;
         assert_eq!(code, 1);
-        assert!(stderr.contains("No \"future\" provider in"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("No \"future\" provider in"),
+            "stderr: {stderr}"
+        );
         // key not a string.
-        tokio::fs::write(&path, "{\"future\": {\"key\": 7}}").await.unwrap();
+        tokio::fs::write(&path, "{\"future\": {\"key\": 7}}")
+            .await
+            .unwrap();
         let (code, _, stderr) = run(&["account", "profile"]).await;
         assert_eq!(code, 1);
-        assert!(stderr.contains("No API key for \"future\" in"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("No API key for \"future\" in"),
+            "stderr: {stderr}"
+        );
     }
 
     #[tokio::test]

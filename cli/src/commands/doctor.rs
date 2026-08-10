@@ -950,11 +950,15 @@ mod tests {
         write_agent_file("sessions/notes.txt", "x").await;
         // Skills: one up-to-date, one needing update — catalog via HTTP mock.
         let skills = skills_dir();
-        tokio::fs::create_dir_all(skills.join("future-a")).await.unwrap();
+        tokio::fs::create_dir_all(skills.join("future-a"))
+            .await
+            .unwrap();
         tokio::fs::write(skills.join("future-a/SKILL.md"), "---\nversion: 1.0\n---\n")
             .await
             .unwrap();
-        tokio::fs::create_dir_all(skills.join("future-b")).await.unwrap();
+        tokio::fs::create_dir_all(skills.join("future-b"))
+            .await
+            .unwrap();
         tokio::fs::write(skills.join("future-b/SKILL.md"), "---\nversion: 0.9\n---\n")
             .await
             .unwrap();
@@ -983,23 +987,44 @@ mod tests {
         assert!(stdout.contains("Connected to"), "stdout: {stdout}");
         assert!(stdout.contains("(v1.2.3)"), "stdout: {stdout}");
         // Login ok with the mock platform (base_url /api stripped).
-        assert!(stdout.contains(&format!("Logged in to {catalog}")), "stdout: {stdout}");
+        assert!(
+            stdout.contains(&format!("Logged in to {catalog}")),
+            "stdout: {stdout}"
+        );
         // Auth config: 2 provider keys.
         assert!(stdout.contains("2 provider key(s)"), "stdout: {stdout}");
         // Models config: custom provider listed, override-only + future hidden.
-        assert!(stdout.contains("Custom providers: custom-p"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Custom providers: custom-p"),
+            "stdout: {stdout}"
+        );
         assert!(!stdout.contains("override-only"), "stdout: {stdout}");
         // Settings exists.
         assert!(stdout.contains("settings.json exists"), "stdout: {stdout}");
         // Providers: custom-p merged label, future from key.
-        assert!(stdout.contains("2 provider(s) configured"), "stdout: {stdout}");
-        assert!(stdout.contains("custom-p \u{1b}[2m([key] + custom)\u{1b}[0m"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("2 provider(s) configured"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("custom-p \u{1b}[2m([key] + custom)\u{1b}[0m"),
+            "stdout: {stdout}"
+        );
         // Sessions: 2 jsonl + agent-tracked count.
         assert!(stdout.contains("2 JSONL file(s)"), "stdout: {stdout}");
-        assert!(stdout.contains("2 session(s) tracked by agent"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("2 session(s) tracked by agent"),
+            "stdout: {stdout}"
+        );
         // Skills: one up-to-date with version, one needs update.
-        assert!(stdout.contains("Up to date: future-a (v1.0)"), "stdout: {stdout}");
-        assert!(stdout.contains("Updates available: future-b: 0.9"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Up to date: future-a (v1.0)"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("Updates available: future-b: 0.9"),
+            "stdout: {stdout}"
+        );
         assert!(stdout.contains("future skills update"), "stdout: {stdout}");
     }
 
@@ -1013,15 +1038,25 @@ mod tests {
         write_agent_file("models.json", "{bad").await;
         write_agent_file("settings.json", "{bad").await;
         let (_, stdout, _) = run_doctor().await;
-        assert_eq!(stdout.matches("exists but is not valid JSON").count(), 3, "stdout: {stdout}");
+        assert_eq!(
+            stdout.matches("exists but is not valid JSON").count(),
+            3,
+            "stdout: {stdout}"
+        );
 
         // auth.json exists but has no keys → Warn line.
         write_agent_file("auth.json", "{\"future\": {\"base_url\": \"https://x\"}}").await;
         write_agent_file("models.json", "{}").await;
         write_agent_file("settings.json", "{}").await;
         let (_, stdout, _) = run_doctor().await;
-        assert!(stdout.contains("exists but no keys configured"), "stdout: {stdout}");
-        assert!(stdout.contains("No custom providers defined"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("exists but no keys configured"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("No custom providers defined"),
+            "stdout: {stdout}"
+        );
     }
 
     #[tokio::test]
@@ -1030,16 +1065,24 @@ mod tests {
         let _env = isolate_env();
         // Installed skill, no version in SKILL.md; catalog unreachable.
         let skills = skills_dir();
-        tokio::fs::create_dir_all(skills.join("future-a")).await.unwrap();
+        tokio::fs::create_dir_all(skills.join("future-a"))
+            .await
+            .unwrap();
         tokio::fs::write(skills.join("future-a/SKILL.md"), "# no frontmatter\n")
             .await
             .unwrap();
         let (_, stdout, _) = run_doctor().await;
         // Offline: listed up-to-date WITHOUT a version suffix.
-        assert!(stdout.contains("Up to date: future-a\n"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Up to date: future-a\n"),
+            "stdout: {stdout}"
+        );
         // Skills dir exists → no "(directory not found)" marker even though
         // installed is non-empty here (marker only in the empty branch).
-        assert!(!stdout.contains("(directory not found)"), "stdout: {stdout}");
+        assert!(
+            !stdout.contains("(directory not found)"),
+            "stdout: {stdout}"
+        );
     }
 
     #[cfg(unix)]

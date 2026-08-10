@@ -639,46 +639,47 @@ fn unquote(val: &str) -> Option<String> {
 
 // ── unzip / flatten ────────────────────────────────────────────────────────
 
+/// The platform unzip command. `#[cfg]` (not `cfg!`) so the off-platform
+/// branch is never compiled into this target.
+#[cfg(windows)]
+fn unzip_command(zip_path: &Path, dest_dir: &Path) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-Command",
+        &format!(
+            "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+            zip_path.display(),
+            dest_dir.display()
+        ),
+    ]);
+    cmd
+}
+
+/// Unix unzip: `unzip -o <zip> -d <dest>`.
+#[cfg(not(windows))]
+fn unzip_command(zip_path: &Path, dest_dir: &Path) -> tokio::process::Command {
+    let zip = zip_path.display().to_string();
+    let dest = dest_dir.display().to_string();
+    let mut cmd = tokio::process::Command::new("unzip");
+    cmd.args(["-o", zip.as_str(), "-d", dest.as_str()]);
+    cmd
+}
+
 /// `unzip(zipPath, destDir)` — system `unzip` (unix) or PowerShell
 /// Expand-Archive (Windows).
 async fn unzip(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
-    if cfg!(windows) {
-        let output = tokio::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                    zip_path.display(),
-                    dest_dir.display()
-                ),
-            ])
-            .output()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !output.status.success() {
-            return Err(format!(
-                "unzip failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        Ok(())
-    } else {
-        let zip = zip_path.display().to_string();
-        let dest = dest_dir.display().to_string();
-        let output = tokio::process::Command::new("unzip")
-            .args(["-o", zip.as_str(), "-d", dest.as_str()])
-            .output()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !output.status.success() {
-            return Err(format!(
-                "unzip failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        Ok(())
+    let output = unzip_command(zip_path, dest_dir)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "unzip failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
+    Ok(())
 }
 
 /// `flattenSingleSubdir(dir)` — if the dir contains exactly one subdirectory
@@ -819,7 +820,11 @@ mod tests {
         for (i, slot) in table.iter_mut().enumerate() {
             let mut c = i as u32;
             for _ in 0..8 {
-                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
             }
             *slot = c;
         }
@@ -897,9 +902,12 @@ mod tests {
         tokio::fs::create_dir_all(path.parent().unwrap())
             .await
             .unwrap();
-        tokio::fs::write(&path, format!("{{\"future\": {{\"base_url\": \"{base}\"}}}}"))
-            .await
-            .unwrap();
+        tokio::fs::write(
+            &path,
+            format!("{{\"future\": {{\"base_url\": \"{base}\"}}}}"),
+        )
+        .await
+        .unwrap();
     }
 
     /// Catalog JSON body for the given (id, latest_version, description).
@@ -922,9 +930,12 @@ mod tests {
     async fn plant_skill(id: &str, version: &str) {
         let dir = skills_dir().join(id);
         tokio::fs::create_dir_all(&dir).await.unwrap();
-        tokio::fs::write(dir.join("SKILL.md"), format!("---\nversion: {version}\n---\n"))
-            .await
-            .unwrap();
+        tokio::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nversion: {version}\n---\n"),
+        )
+        .await
+        .unwrap();
     }
 
     // ── fetch_skills ────────────────────────────────────────────────
@@ -996,9 +1007,11 @@ mod tests {
             ("future-beta", None, &long_desc),
             (long_id, Some("2.0"), "Long id"),
         ]);
-        let base = crate::test_server::spawn_http(vec![
-            crate::test_server::HttpRoute::json("/client/v1/skills", 200, &body)
-        ])
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &body,
+        )])
         .await;
         point_platform_at(&base).await;
         plant_skill("future-alpha", "1.0").await;
@@ -1019,7 +1032,10 @@ mod tests {
         assert!(stdout.contains("future-alpha"), "stdout: {stdout}");
         assert!(stdout.contains("v1.0"), "stdout: {stdout}");
         // Long description truncated to 48 chars with an ellipsis.
-        assert!(stdout.contains(&format!("{}…", "d".repeat(47))), "stdout: {stdout}");
+        assert!(
+            stdout.contains(&format!("{}…", "d".repeat(47))),
+            "stdout: {stdout}"
+        );
         // Long id rendered untruncated (width clamp caps at 36 but pad never truncates).
         assert!(stdout.contains(long_id), "stdout: {stdout}");
         assert!(stdout.contains("3 skills available."), "stdout: {stdout}");
@@ -1048,7 +1064,10 @@ mod tests {
         list_skills(&out).await;
         assert_eq!(out.exit_code(), 1);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Failed to fetch skills from http://127.0.0.1:1/client/v1/skills"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Failed to fetch skills from http://127.0.0.1:1/client/v1/skills"),
+            "stderr: {stderr}"
+        );
     }
 
     // ── install / download / unzip ──────────────────────────────────
@@ -1057,19 +1076,30 @@ mod tests {
     async fn install_skill_explicit_version_happy_path() {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();
-        let zip = make_zip(&[("future-x/", ""), ("future-x/SKILL.md", "---\nversion: 1.0\n---\n")]);
+        let zip = make_zip(&[
+            ("future-x/", ""),
+            ("future-x/SKILL.md", "---\nversion: 1.0\n---\n"),
+        ]);
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::binary(
             "/client/v1/skills/future-x/versions/1.0/download",
             200,
             zip.clone(),
-            )])
+        )])
         .await;
         point_platform_at(&base).await;
         let (out, cap) = Output::memory();
-        install_skill("future-x", Some("1.0"), &out).await.expect("install");
+        install_skill("future-x", Some("1.0"), &out)
+            .await
+            .expect("install");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("Downloading future-x v1.0..."), "stdout: {stdout}");
-        assert!(stdout.contains("Installed skill \"future-x\" v1.0 →"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Downloading future-x v1.0..."),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("Installed skill \"future-x\" v1.0 →"),
+            "stdout: {stdout}"
+        );
         // Flattened: SKILL.md at the skill root (not nested under future-x/).
         let installed = skills_dir().join("future-x").join("SKILL.md");
         assert!(installed.exists());
@@ -1087,13 +1117,18 @@ mod tests {
             "/client/v1/skills/future-x/versions/1.0/download",
             200,
             zip.clone(),
-            )])
+        )])
         .await;
         point_platform_at(&base).await;
         let (out, cap) = Output::memory();
-        install_skill("future-x", Some("1.0"), &out).await.expect("update");
+        install_skill("future-x", Some("1.0"), &out)
+            .await
+            .expect("update");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("Updated skill \"future-x\" v1.0"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Updated skill \"future-x\" v1.0"),
+            "stdout: {stdout}"
+        );
     }
 
     #[tokio::test]
@@ -1106,7 +1141,10 @@ mod tests {
         install_skill("future-x", None, &out).await.expect("ok");
         assert_eq!(out.exit_code(), 1);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Failed to fetch skill metadata."), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Failed to fetch skill metadata."),
+            "stderr: {stderr}"
+        );
 
         // Skill not in catalog.
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
@@ -1120,7 +1158,10 @@ mod tests {
         install_skill("future-x", None, &out).await.expect("ok");
         assert_eq!(out.exit_code(), 1);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Skill \"future-x\" not found in catalog."), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Skill \"future-x\" not found in catalog."),
+            "stderr: {stderr}"
+        );
 
         // In catalog but no versions.
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
@@ -1134,7 +1175,10 @@ mod tests {
         install_skill("future-x", None, &out).await.expect("ok");
         assert_eq!(out.exit_code(), 1);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Skill \"future-x\" has no versions available."), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Skill \"future-x\" has no versions available."),
+            "stderr: {stderr}"
+        );
 
         // Found → installs the latest version from the catalog.
         let zip = make_zip(&[("SKILL.md", "---\nversion: 2.0\n---\n")]);
@@ -1148,7 +1192,7 @@ mod tests {
                 "/client/v1/skills/future-x/versions/2.0/download",
                 200,
                 zip.clone(),
-                ),
+            ),
         ])
         .await;
         point_platform_at(&base).await;
@@ -1202,7 +1246,9 @@ mod tests {
             "eA==", // not a zip — just need bytes back
         )])
         .await;
-        let bytes = download_skill_zip(&base, "a b", "v/1").await.expect("download");
+        let bytes = download_skill_zip(&base, "a b", "v/1")
+            .await
+            .expect("download");
         assert_eq!(bytes, b"eA==");
     }
 
@@ -1213,10 +1259,15 @@ mod tests {
         let base = crate::test_server::spawn_http(vec![]).await; // 404
         point_platform_at(&base).await;
         let (out, cap) = Output::memory();
-        install_skill("future-x", Some("9.9"), &out).await.expect("ok");
+        install_skill("future-x", Some("9.9"), &out)
+            .await
+            .expect("ok");
         assert_eq!(out.exit_code(), 1);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Skill version \"future-x@9.9\" not found."), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Skill version \"future-x@9.9\" not found."),
+            "stderr: {stderr}"
+        );
     }
 
     #[tokio::test]
@@ -1231,7 +1282,9 @@ mod tests {
         .await;
         point_platform_at(&base).await;
         let (out, _) = Output::memory();
-        let err = install_skill("future-x", Some("1.0"), &out).await.unwrap_err();
+        let err = install_skill("future-x", Some("1.0"), &out)
+            .await
+            .unwrap_err();
         assert!(err.contains("unzip failed"), "err: {err}");
     }
 
@@ -1242,7 +1295,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("pkg");
         tokio::fs::create_dir_all(&nested).await.unwrap();
-        tokio::fs::write(nested.join("SKILL.md"), "x").await.unwrap();
+        tokio::fs::write(nested.join("SKILL.md"), "x")
+            .await
+            .unwrap();
         flatten_single_subdir(dir.path()).await.unwrap();
         assert!(dir.path().join("SKILL.md").exists());
         assert!(!nested.exists());
@@ -1256,12 +1311,16 @@ mod tests {
 
         // Single FILE (not dir) → untouched.
         let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(dir.path().join("only.txt"), "x").await.unwrap();
+        tokio::fs::write(dir.path().join("only.txt"), "x")
+            .await
+            .unwrap();
         flatten_single_subdir(dir.path()).await.unwrap();
         assert!(dir.path().join("only.txt").exists());
 
         // Missing dir → Ok (no-op).
-        flatten_single_subdir(Path::new("/no/such/dir")).await.unwrap();
+        flatten_single_subdir(Path::new("/no/such/dir"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1284,16 +1343,27 @@ mod tests {
         let src = dir.path().join("src");
         tokio::fs::create_dir_all(src.join("sub")).await.unwrap();
         tokio::fs::write(src.join("top.txt"), "1").await.unwrap();
-        tokio::fs::write(src.join("sub").join("deep.txt"), "2").await.unwrap();
+        tokio::fs::write(src.join("sub").join("deep.txt"), "2")
+            .await
+            .unwrap();
         let dest = dir.path().join("dest");
         copy_recursive(&src, &dest).await.unwrap();
-        assert_eq!(tokio::fs::read_to_string(dest.join("top.txt")).await.unwrap(), "1");
         assert_eq!(
-            tokio::fs::read_to_string(dest.join("sub").join("deep.txt")).await.unwrap(),
+            tokio::fs::read_to_string(dest.join("top.txt"))
+                .await
+                .unwrap(),
+            "1"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(dest.join("sub").join("deep.txt"))
+                .await
+                .unwrap(),
             "2"
         );
         // Missing source → Err.
-        assert!(copy_recursive(&dir.path().join("nope"), &dest).await.is_err());
+        assert!(copy_recursive(&dir.path().join("nope"), &dest)
+            .await
+            .is_err());
     }
 
     // ── uninstall / installed-ids ───────────────────────────────────
@@ -1311,7 +1381,10 @@ mod tests {
         let (out, cap) = Output::memory();
         uninstall_skill("future-x", &out).await.unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("Uninstalled skill \"future-x\" from"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Uninstalled skill \"future-x\" from"),
+            "stdout: {stdout}"
+        );
         assert!(!skills_dir().join("future-x").exists());
     }
 
@@ -1367,12 +1440,12 @@ mod tests {
                 "/client/v1/skills/future-a/versions/1.0/download",
                 200,
                 zip_a.clone(),
-                ),
+            ),
             crate::test_server::HttpRoute::binary(
                 "/client/v1/skills/future-b/versions/2.0/download",
                 200,
                 zip_b.clone(),
-                ),
+            ),
         ])
         .await;
         point_platform_at(&base).await;
@@ -1382,9 +1455,18 @@ mod tests {
         install_builtin_skills(&out).await;
         assert_eq!(out.exit_code(), 0);
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("Installing 2 builtin skills (1 already installed)..."), "stdout: {stdout}");
-        assert!(stdout.contains("Skipping future-skip — no version available."), "stdout: {stdout}");
-        assert!(stdout.contains("Done. 2 skills installed."), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Installing 2 builtin skills (1 already installed)..."),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("Skipping future-skip — no version available."),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("Done. 2 skills installed."),
+            "stdout: {stdout}"
+        );
         assert!(skills_dir().join("future-a").join("SKILL.md").exists());
         // Non-builtin skill not installed.
         assert!(!skills_dir().join("other-x").exists());
@@ -1393,7 +1475,10 @@ mod tests {
         let (out, cap) = Output::memory();
         install_builtin_skills(&out).await;
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("Installing 1 builtin skills (2 already installed)..."), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Installing 1 builtin skills (2 already installed)..."),
+            "stdout: {stdout}"
+        );
     }
 
     #[tokio::test]
@@ -1405,7 +1490,10 @@ mod tests {
         install_builtin_skills(&out).await;
         assert_eq!(out.exit_code(), 1);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Failed to fetch builtin skills."), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Failed to fetch builtin skills."),
+            "stderr: {stderr}"
+        );
 
         // Catalog with no future-* skills.
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
@@ -1442,16 +1530,22 @@ mod tests {
                 "/client/v1/skills/future-a/versions/1.0/download",
                 200,
                 zip.clone(),
-                ),
+            ),
         ])
         .await;
         point_platform_at(&base).await;
         let (out, cap) = Output::memory();
         update_skills(&out).await.expect("update");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("Fetching skill catalog from"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Fetching skill catalog from"),
+            "stdout: {stdout}"
+        );
         assert!(stdout.contains("  future-a: 0.9 → 1.0"), "stdout: {stdout}");
-        assert!(stdout.contains("Updated 1 skill(s), 1 already up to date."), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Updated 1 skill(s), 1 already up to date."),
+            "stdout: {stdout}"
+        );
         // Actually upgraded on disk.
         let ver = read_skill_md_version(&skills_dir().join("future-a").join("SKILL.md")).await;
         assert_eq!(ver.as_deref(), Some("1.0"));
@@ -1497,7 +1591,10 @@ mod tests {
         let (out, cap) = Output::memory();
         update_skills(&out).await.unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("1 skill(s) already up to date."), "stdout: {stdout}");
+        assert!(
+            stdout.contains("1 skill(s) already up to date."),
+            "stdout: {stdout}"
+        );
     }
 
     #[tokio::test]
@@ -1526,7 +1623,11 @@ mod tests {
         assert!(stderr.contains("  Failed: "), "stderr: {stderr}");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         // Nothing updated; up_to_date didn't count it either.
-        assert!(stdout.contains("Updated 0 skill(s)") || stdout.contains("0 skill(s) already up to date"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Updated 0 skill(s)")
+                || stdout.contains("0 skill(s) already up to date"),
+            "stdout: {stdout}"
+        );
     }
 
     #[tokio::test]
@@ -1551,7 +1652,10 @@ mod tests {
         let (out, cap) = Output::memory();
         update_skills(&out).await.unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("1 skill(s) already up to date."), "stdout: {stdout}");
+        assert!(
+            stdout.contains("1 skill(s) already up to date."),
+            "stdout: {stdout}"
+        );
     }
 
     #[tokio::test]
@@ -1582,13 +1686,17 @@ mod tests {
             "/client/v1/skills/future-x/versions/1.0/download",
             200,
             zip.clone(),
-            )])
+        )])
         .await;
         point_platform_at(&base).await;
         let (out, _) = Output::memory();
         skills(
             "install",
-            &["future-x".to_string(), "--version".to_string(), "v1.0".to_string()],
+            &[
+                "future-x".to_string(),
+                "--version".to_string(),
+                "v1.0".to_string(),
+            ],
             &out,
         )
         .await
@@ -1604,7 +1712,9 @@ mod tests {
 
         // uninstall happy path through the dispatch.
         let (out, _) = Output::memory();
-        skills("uninstall", &["future-x".to_string()], &out).await.unwrap();
+        skills("uninstall", &["future-x".to_string()], &out)
+            .await
+            .unwrap();
         assert!(!skills_dir().join("future-x").exists());
     }
 
@@ -1625,7 +1735,10 @@ mod tests {
             .unwrap();
         // not JSON → strip_prefix("version:") on the rest fails (starts with
         // "version: ..."? it does) → unquote.
-        assert_eq!(read_skill_md_version(&path).await.as_deref(), Some("4.0 extra"));
+        assert_eq!(
+            read_skill_md_version(&path).await.as_deref(),
+            Some("4.0 extra")
+        );
         // metadata JSON without version, YAML block scan; comments skipped.
         tokio::fs::write(
             &path,
@@ -1635,13 +1748,19 @@ mod tests {
         .unwrap();
         assert_eq!(read_skill_md_version(&path).await.as_deref(), Some("5.1"));
         // Quoted direct version.
-        tokio::fs::write(&path, "---\nversion: \"6.0\"\n---\n").await.unwrap();
+        tokio::fs::write(&path, "---\nversion: \"6.0\"\n---\n")
+            .await
+            .unwrap();
         assert_eq!(read_skill_md_version(&path).await.as_deref(), Some("6.0"));
         // Empty quoted version → None.
-        tokio::fs::write(&path, "---\nversion: \"\"\n---\n").await.unwrap();
+        tokio::fs::write(&path, "---\nversion: \"\"\n---\n")
+            .await
+            .unwrap();
         assert_eq!(read_skill_md_version(&path).await, None);
         // No closing frontmatter delimiter → None.
-        tokio::fs::write(&path, "---\nversion: 1.0\n# no end\n").await.unwrap();
+        tokio::fs::write(&path, "---\nversion: 1.0\n# no end\n")
+            .await
+            .unwrap();
         assert_eq!(read_skill_md_version(&path).await, None);
         // metadata JSON with empty-string version → falls through → None.
         tokio::fs::write(&path, "---\nmetadata: {\"version\": \"\"}\n---\n")

@@ -285,9 +285,12 @@ mod tests {
         tokio::fs::create_dir_all(path.parent().unwrap())
             .await
             .unwrap();
-        tokio::fs::write(&path, format!("{{\"future\": {{\"base_url\": \"{base}\"}}}}"))
-            .await
-            .unwrap();
+        tokio::fs::write(
+            &path,
+            format!("{{\"future\": {{\"base_url\": \"{base}\"}}}}"),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -332,9 +335,17 @@ mod tests {
             None,
         )])
         .await;
-        let err = mcp_post(&format!("{base}/api/v1/mcp"), "m", &Map::new(), "sk", None, None, None)
-            .await
-            .unwrap_err();
+        let err = mcp_post(
+            &format!("{base}/api/v1/mcp"),
+            "m",
+            &Map::new(),
+            "sk",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("Invalid JSON in SSE"), "err: {err}");
 
         // No data: lines → empty object body.
@@ -344,9 +355,17 @@ mod tests {
             None,
         )])
         .await;
-        let response = mcp_post(&format!("{base}/api/v1/mcp"), "m", &Map::new(), "sk", None, None, None)
-            .await
-            .expect("post");
+        let response = mcp_post(
+            &format!("{base}/api/v1/mcp"),
+            "m",
+            &Map::new(),
+            "sk",
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("post");
         assert_eq!(response.body, Value::Object(Map::new()));
         assert_eq!(response.session_id, None);
 
@@ -357,9 +376,17 @@ mod tests {
             None,
         )])
         .await;
-        let response = mcp_post(&format!("{base}/api/v1/mcp"), "m", &Map::new(), "sk", None, None, None)
-            .await
-            .expect("post");
+        let response = mcp_post(
+            &format!("{base}/api/v1/mcp"),
+            "m",
+            &Map::new(),
+            "sk",
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("post");
         assert!(response.body.get("result").is_some());
 
         // Non-200 status → translated HTTP error.
@@ -369,15 +396,31 @@ mod tests {
             "{}",
         )])
         .await;
-        let err = mcp_post(&format!("{base}/api/v1/mcp"), "m", &Map::new(), "sk", None, None, None)
-            .await
-            .unwrap_err();
+        let err = mcp_post(
+            &format!("{base}/api/v1/mcp"),
+            "m",
+            &Map::new(),
+            "sk",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("Not logged in"), "err: {err}");
 
         // Connect failure → "Request failed: ...".
-        let err = mcp_post("http://127.0.0.1:1/api/v1/mcp", "m", &Map::new(), "sk", None, None, None)
-            .await
-            .unwrap_err();
+        let err = mcp_post(
+            "http://127.0.0.1:1/api/v1/mcp",
+            "m",
+            &Map::new(),
+            "sk",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("Request failed:"), "err: {err}");
     }
 
@@ -400,7 +443,10 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("Request timed out after 0s."), "err: {err}");
-        assert!(err.contains("Use --timeout <seconds> to extend"), "err: {err}");
+        assert!(
+            err.contains("Use --timeout <seconds> to extend"),
+            "err: {err}"
+        );
     }
 
     #[tokio::test]
@@ -428,11 +474,16 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        let recorded = requests.lock().unwrap();
+        // Clone under a short-lived guard so no MutexGuard is held across
+        // the awaits below (clippy::await_holding_lock).
+        let recorded = requests.lock().unwrap().clone();
         assert!(recorded.iter().any(|r| r.contains("initialize")));
-        assert!(recorded.iter().any(|r| r.contains("notifications/initialized")));
-        assert!(recorded.iter().any(|r| r.contains("mcp-session-id: sess-42")));
-        drop(recorded);
+        assert!(recorded
+            .iter()
+            .any(|r| r.contains("notifications/initialized")));
+        assert!(recorded
+            .iter()
+            .any(|r| r.contains("mcp-session-id: sess-42")));
 
         // Error body → MCP initialize failed.
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sse(
@@ -443,7 +494,10 @@ mod tests {
         .await;
         point_platform_at(&base).await;
         let err = initialize_session("sk").await.unwrap_err();
-        assert_eq!(err, "MCP initialize failed: code=-32600, message=bad request");
+        assert_eq!(
+            err,
+            "MCP initialize failed: code=-32600, message=bad request"
+        );
 
         // Error with a STRING code + missing message → defaults.
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sse(
@@ -454,7 +508,10 @@ mod tests {
         .await;
         point_platform_at(&base).await;
         let err = initialize_session("sk").await.unwrap_err();
-        assert_eq!(err, "MCP initialize failed: code=E_X, message=unknown error");
+        assert_eq!(
+            err,
+            "MCP initialize failed: code=E_X, message=unknown error"
+        );
 
         // No session header → dedicated error.
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sse(
@@ -473,12 +530,22 @@ mod tests {
         // Live server: the POST lands (recorded), no result expected.
         let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let base = crate::test_server::spawn_http_recording(
-            vec![crate::test_server::HttpRoute::json("/api/v1/mcp", 200, "{}")],
+            vec![crate::test_server::HttpRoute::json(
+                "/api/v1/mcp",
+                200,
+                "{}",
+            )],
             Some(requests.clone()),
         )
         .await;
-        mcp_notify(&format!("{base}/api/v1/mcp"), "notifications/initialized", &Map::new(), "sk", "sess-1")
-            .await;
+        mcp_notify(
+            &format!("{base}/api/v1/mcp"),
+            "notifications/initialized",
+            &Map::new(),
+            "sk",
+            "sess-1",
+        )
+        .await;
         for _ in 0..40 {
             if !requests.lock().unwrap().is_empty() {
                 break;
@@ -487,8 +554,7 @@ mod tests {
         }
         assert_eq!(requests.lock().unwrap().len(), 1);
         // Dead server: errors are swallowed.
-        mcp_notify("http://127.0.0.1:1/api/v1/mcp", "m", &Map::new(), "sk", "s")
-            .await;
+        mcp_notify("http://127.0.0.1:1/api/v1/mcp", "m", &Map::new(), "sk", "s").await;
     }
 
     #[test]

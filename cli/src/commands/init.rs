@@ -32,6 +32,16 @@ pub async fn init_command(out: &Output) -> Result<(), String> {
     init(InitOptions::default(), out).await
 }
 
+/// Node `os.platform()` string for the current target.
+#[cfg(target_os = "macos")]
+const DEFAULT_PLATFORM: &str = "darwin";
+/// Windows value of [`DEFAULT_PLATFORM`].
+#[cfg(windows)]
+const DEFAULT_PLATFORM: &str = "win32";
+/// Linux value of [`DEFAULT_PLATFORM`].
+#[cfg(not(any(target_os = "macos", windows)))]
+const DEFAULT_PLATFORM: &str = "linux";
+
 /// `init(options = {})` — full port.
 pub async fn init(options: InitOptions, out: &Output) -> Result<(), String> {
     // `const installBuiltins = options.installBuiltins ?? installBuiltinSkills;`
@@ -45,14 +55,9 @@ pub async fn init(options: InitOptions, out: &Output) -> Result<(), String> {
     });
     install_builtins(out).await;
 
-    // `const platform = options.platform ?? osPlatform();`
-    let platform = options.platform.unwrap_or(if cfg!(target_os = "macos") {
-        "darwin"
-    } else if cfg!(windows) {
-        "win32"
-    } else {
-        "linux"
-    });
+    // `const platform = options.platform ?? osPlatform();` — cfg-gated (not
+    // cfg!) so the off-platform arms are never compiled into this target.
+    let platform = options.platform.unwrap_or(DEFAULT_PLATFORM);
     if platform != "darwin" && platform != "linux" {
         return Ok(());
     }
@@ -406,14 +411,22 @@ mod tests {
         // default install hook (install_builtin_skills) fails fast offline.
         let _home = crate::test_env::EnvGuard::temp_home();
         let auth = crate::constants::auth_file();
-        tokio::fs::create_dir_all(auth.parent().unwrap()).await.unwrap();
-        tokio::fs::write(&auth, "{\"future\": {\"base_url\": \"http://127.0.0.1:1\"}}")
+        tokio::fs::create_dir_all(auth.parent().unwrap())
             .await
             .unwrap();
+        tokio::fs::write(
+            &auth,
+            "{\"future\": {\"base_url\": \"http://127.0.0.1:1\"}}",
+        )
+        .await
+        .unwrap();
         let (out, _cap) = Output::memory();
         // The test binary is not named "future" → the command refuses.
         let err = init_command(&out).await.unwrap_err();
-        assert!(err.contains("Cannot initialize command links from"), "err: {err}");
+        assert!(
+            err.contains("Cannot initialize command links from"),
+            "err: {err}"
+        );
         // The default hook ran and failed (catalog unreachable) → exit code 1.
         assert_eq!(out.exit_code(), 1);
     }
@@ -429,10 +442,11 @@ mod tests {
         let other = root.path().join("old-future");
         tokio::fs::write(&other, "").await.unwrap();
         #[cfg(unix)]
-        tokio::fs::symlink(&other, bin_dir.join("future")).await.unwrap();
+        tokio::fs::symlink(&other, bin_dir.join("future"))
+            .await
+            .unwrap();
         let install_count = Arc::new(std::sync::atomic::AtomicI32::new(0));
-        let (code, _, _) =
-            run_init(&executable_path, &home_dir, install_count, "darwin").await;
+        let (code, _, _) = run_init(&executable_path, &home_dir, install_count, "darwin").await;
         assert_eq!(code, 0);
         assert_eq!(
             tokio::fs::read_link(bin_dir.join("future")).await.unwrap(),
@@ -461,26 +475,5 @@ mod tests {
             tokio::fs::read_link(bin_dir.join("future")).await.unwrap(),
             tokio::fs::canonicalize(&executable_path).await.unwrap()
         );
-    }
-
-    /// Lexical relative path from `from` to `to` (both absolute).
-    #[cfg(unix)]
-    #[allow(dead_code)]
-    fn pathdiff(from: &Path, to: &Path) -> PathBuf {
-        let from: Vec<_> = from.components().collect();
-        let to: Vec<_> = to.components().collect();
-        let common = from
-            .iter()
-            .zip(to.iter())
-            .take_while(|(a, b)| a == b)
-            .count();
-        let mut out = PathBuf::new();
-        for _ in common..from.len() {
-            out.push("..");
-        }
-        for part in &to[common..] {
-            out.push(part.as_os_str());
-        }
-        out
     }
 }

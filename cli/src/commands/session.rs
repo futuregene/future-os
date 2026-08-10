@@ -71,9 +71,12 @@ fn parse_timestamp_ms(iso: &str) -> i64 {
         return dt.timestamp_millis();
     }
     if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(iso, "%Y-%m-%d %H:%M:%S") {
-        if let Some(local) = chrono::Local.from_local_datetime(&naive).single() {
-            return local.timestamp_millis();
-        }
+        // Ambiguous/nonexistent local times (DST gaps) fall back to 0 (NaN).
+        return chrono::Local
+            .from_local_datetime(&naive)
+            .single()
+            .map(|local| local.timestamp_millis())
+            .unwrap_or(0);
     }
     0
 }
@@ -638,10 +641,16 @@ mod tests {
         assert!(named < first_msg);
         // Untitled row + zero query count → "—", long model truncated.
         assert!(stdout.contains("(untitled)"), "stdout: {stdout}");
-        assert!(stdout.contains(&format!("{}…", "a".repeat(27))), "stdout: {stdout}");
+        assert!(
+            stdout.contains(&format!("{}…", "a".repeat(27))),
+            "stdout: {stdout}"
+        );
         assert!(stdout.ends_with("\n3 sessions.\n"), "stdout: {stdout}");
         // A row with a real query count renders the number.
-        assert!(stdout.contains(" 3\n") || stdout.contains(" 3 \n") || stdout.contains("3\n"), "stdout: {stdout}");
+        assert!(
+            stdout.contains(" 3\n") || stdout.contains(" 3 \n") || stdout.contains("3\n"),
+            "stdout: {stdout}"
+        );
     }
 
     #[tokio::test]
@@ -691,9 +700,18 @@ mod tests {
             "stdout: {stdout}"
         );
         assert!(stdout.contains("Tool calls:  2"));
-        assert!(stdout.contains("Tokens:      in=2.5M out=128K"), "stdout: {stdout}");
-        assert!(stdout.contains("Cache:       r=5K w=2K"), "stdout: {stdout}");
-        assert!(stdout.contains("Cost:        $0.012345"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Tokens:      in=2.5M out=128K"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("Cache:       r=5K w=2K"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("Cost:        $0.012345"),
+            "stdout: {stdout}"
+        );
     }
 
     #[tokio::test]
@@ -706,11 +724,16 @@ mod tests {
         );
         let (_agent, _env) = mock_env(agent).await;
         let (out, cap) = Output::memory();
-        session(Some("info"), &["s1".to_string()], &out).await.expect("info");
+        session(Some("info"), &["s1".to_string()], &out)
+            .await
+            .expect("info");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(stdout.contains("Model:       m-entry"), "stdout: {stdout}");
         assert!(stdout.contains("Thinking:    high"), "stdout: {stdout}");
-        assert!(stdout.contains("Name:        (untitled)"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Name:        (untitled)"),
+            "stdout: {stdout}"
+        );
         assert!(!stdout.contains("CWD:"), "stdout: {stdout}");
         assert!(!stdout.contains("Tokens:"), "stdout: {stdout}");
         assert!(!stdout.contains("Cache:"), "stdout: {stdout}");
@@ -754,8 +777,7 @@ mod tests {
     async fn delete_outcomes() {
         let _guard = crate::test_env::lock_env().await;
         // deleted: true.
-        let agent =
-            crate::test_server::MockAgent::respond("delete_session", "{\"deleted\":true}");
+        let agent = crate::test_server::MockAgent::respond("delete_session", "{\"deleted\":true}");
         let (_agent, _env) = mock_env(agent).await;
         let (out, cap) = Output::memory();
         session(Some("delete"), &["s1".to_string()], &out)
@@ -766,8 +788,7 @@ mod tests {
         drop(_env);
 
         // deleted: false → not found.
-        let agent =
-            crate::test_server::MockAgent::respond("delete_session", "{\"deleted\":false}");
+        let agent = crate::test_server::MockAgent::respond("delete_session", "{\"deleted\":false}");
         let (_agent, _env) = mock_env(agent).await;
         let (out, cap) = Output::memory();
         let result = session(Some("delete"), &["ghost".to_string()], &out).await;
@@ -807,7 +828,10 @@ mod tests {
         let naive = parse_timestamp_ms("2001-09-09 01:46:40");
         let utc = parse_timestamp_ms("2001-09-09T01:46:40Z");
         assert!(naive != 0);
-        assert!((naive - utc).abs() <= 14 * 3_600_000, "naive={naive} utc={utc}");
+        assert!(
+            (naive - utc).abs() <= 14 * 3_600_000,
+            "naive={naive} utc={utc}"
+        );
         assert_eq!(parse_timestamp_ms("junk"), 0);
     }
 

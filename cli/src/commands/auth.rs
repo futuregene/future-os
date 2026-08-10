@@ -60,14 +60,19 @@ pub struct FutureAuthEntry {
     pub base_url: Option<String>,
 }
 
+/// `platformUrlOverride ? trimTrailingSlashes(override) : DEFAULT_PLATFORM_URL`.
+fn resolve_login_platform_url(platform_url_override: Option<String>) -> String {
+    match platform_url_override {
+        Some(url) => trim_trailing_slash(&url),
+        None => DEFAULT_PLATFORM_URL.to_string(),
+    }
+}
+
 /// `login(platformUrlOverride?)` — device-code OAuth flow.
 pub async fn login(platform_url_override: Option<String>, out: &Output) -> Result<(), String> {
     let auth_data = load_auth_file().await?;
     // `platformUrlOverride ? platformUrlOverride.replace(/\/+$/, "") : DEFAULT_PLATFORM_URL`
-    let platform_url = match platform_url_override {
-        Some(url) => trim_trailing_slash(&url),
-        None => DEFAULT_PLATFORM_URL.to_string(),
-    };
+    let platform_url = resolve_login_platform_url(platform_url_override);
 
     let client = http_client();
     let device: DeviceCodeResponse = post(
@@ -426,21 +431,7 @@ fn now_ms() -> u64 {
 /// `openBrowser(url)` — spawn the platform opener detached with stdio
 /// ignored; resolves true when the process spawned.
 async fn open_browser(url: &str) -> bool {
-    let (command, args): (&str, Vec<String>) = if cfg!(target_os = "macos") {
-        ("open", vec![url.to_string()])
-    } else if cfg!(windows) {
-        (
-            "cmd",
-            vec![
-                "/c".to_string(),
-                "start".to_string(),
-                String::new(),
-                url.to_string(),
-            ],
-        )
-    } else {
-        ("xdg-open", vec![url.to_string()])
-    };
+    let (command, args) = opener_command(url);
     std::process::Command::new(command)
         .args(&args)
         .stdin(std::process::Stdio::null())
@@ -448,6 +439,33 @@ async fn open_browser(url: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .spawn()
         .is_ok()
+}
+
+/// The platform opener command. `#[cfg]` (not `cfg!`) so off-platform arms
+/// are never compiled into this target.
+#[cfg(target_os = "macos")]
+fn opener_command(url: &str) -> (&'static str, Vec<String>) {
+    ("open", vec![url.to_string()])
+}
+
+/// Windows opener: `cmd /c start "" <url>`.
+#[cfg(windows)]
+fn opener_command(url: &str) -> (&'static str, Vec<String>) {
+    (
+        "cmd",
+        vec![
+            "/c".to_string(),
+            "start".to_string(),
+            String::new(),
+            url.to_string(),
+        ],
+    )
+}
+
+/// Linux/other opener: xdg-open.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn opener_command(url: &str) -> (&'static str, Vec<String>) {
+    ("xdg-open", vec![url.to_string()])
 }
 
 #[cfg(test)]
@@ -648,8 +666,7 @@ mod tests {
         for name in ["open", "xdg-open"] {
             let bin = dir.path().join(name);
             std::fs::write(&bin, "#!/bin/sh\nexit 0\n").expect("write");
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod");
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         }
         dir
     }
@@ -661,10 +678,15 @@ mod tests {
         let _home = EnvGuard::temp_home();
         // Pre-existing entry with a custom type — save_auth preserves it.
         let path = auth_file();
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
-        tokio::fs::write(&path, "{\"future\": {\"type\": \"oauth\"}, \"openai\": {\"key\": \"keep\"}}")
+        tokio::fs::create_dir_all(path.parent().unwrap())
             .await
             .unwrap();
+        tokio::fs::write(
+            &path,
+            "{\"future\": {\"type\": \"oauth\"}, \"openai\": {\"key\": \"keep\"}}",
+        )
+        .await
+        .unwrap();
 
         let base = crate::test_server::spawn_http(vec![
             crate::test_server::HttpRoute::json(
@@ -687,13 +709,25 @@ mod tests {
 
         let (code, stdout, stderr) = run(&["auth", "login", "--url", &base]).await;
         assert_eq!(code, 0, "stderr: {stderr}");
-        assert!(stdout.contains("Opened Future Platform Console:"), "stdout: {stdout}");
-        assert!(stdout.contains("  https://x/verify?c=1\n"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Opened Future Platform Console:"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("  https://x/verify?c=1\n"),
+            "stdout: {stdout}"
+        );
         assert!(stdout.contains("  ABCD-EFGH"), "stdout: {stdout}");
-        assert!(stdout.contains("Waiting for authorization..."), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Waiting for authorization..."),
+            "stdout: {stdout}"
+        );
         // Two pending polls printed dots before the grant.
         assert!(stdout.contains(".."), "stdout: {stdout}");
-        assert!(stdout.contains("Saved Future API key to"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Saved Future API key to"),
+            "stdout: {stdout}"
+        );
 
         let saved: Value =
             serde_json::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
@@ -726,7 +760,10 @@ mod tests {
         let _env = EnvGuard::set(&[("PATH", empty.path().as_os_str().to_os_string())]);
         let (code, stdout, _) = run(&["auth", "login", "--url", &base]).await;
         assert_eq!(code, 0);
-        assert!(stdout.contains("Open this URL in your browser:"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Open this URL in your browser:"),
+            "stdout: {stdout}"
+        );
         assert!(stdout.contains("  https://x/verify\n"), "stdout: {stdout}");
     }
 
@@ -817,7 +854,9 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let _home = EnvGuard::temp_home();
         let path = auth_file();
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
 
         // Logged in WITHOUT base_url → default platform URL fallback.
         tokio::fs::write(&path, "{\"future\": {\"key\": \"k\"}}")
@@ -842,9 +881,12 @@ mod tests {
         assert_eq!(stdout, "Not logged in.\n");
 
         // Credential --json while logged in.
-        tokio::fs::write(&path, "{\"future\": {\"key\": \"k9\", \"base_url\": \"https://x/api\"}}")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            &path,
+            "{\"future\": {\"key\": \"k9\", \"base_url\": \"https://x/api\"}}",
+        )
+        .await
+        .unwrap();
         let (code, stdout, _) = run(&["auth", "credential", "--json"]).await;
         assert_eq!(code, 0);
         assert_eq!(

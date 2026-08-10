@@ -354,9 +354,7 @@ impl RunClient {
                     _ => continue,
                 }
             };
-            let Some(event_json) = parse_stream_event(&message, &raw_data) else {
-                continue;
-            };
+            let event_json = parse_stream_event(&message, &raw_data);
 
             if message.r#type == "text_chunk" {
                 let chunk = raw_data
@@ -614,14 +612,7 @@ impl RunClient {
         self.prompt(&config.message, &session_id).await?;
 
         // 6. Wait for events to complete
-        let (events, text) = match rx.await {
-            Ok(Ok(result)) => result,
-            Ok(Err(err)) => return Err(err),
-            Err(_) => {
-                handle.abort();
-                return Err("Event stream task was dropped".to_string());
-            }
-        };
+        let (events, text) = await_stream(rx, handle).await?;
 
         // 7. Get final state for model info (query the run's own session)
         let mut model: Option<String> = None;
@@ -671,6 +662,23 @@ impl RunClient {
     }
 }
 
+/// Await the spawned stream_events task's oneshot result; a dropped task
+/// (panic) aborts the handle and surfaces a fixed message. Free function so
+/// the dropped-sender arm is unit-testable.
+#[allow(clippy::type_complexity)]
+async fn await_stream(
+    rx: tokio::sync::oneshot::Receiver<Result<(Vec<Value>, String), String>>,
+    handle: tokio::task::JoinHandle<()>,
+) -> Result<(Vec<Value>, String), String> {
+    match rx.await {
+        Ok(result) => result,
+        Err(_) => {
+            handle.abort();
+            Err("Event stream task was dropped".to_string())
+        }
+    }
+}
+
 /// `parse_updated_at(s)` — comparable timestamp for `updated_at` sorting
 /// (the TS uses `new Date(...).getTime()`; this mirrors the ordering, not
 /// the exact epoch). Accepts RFC3339 and `"YYYY-MM-DD HH:MM:SS"`.
@@ -687,7 +695,7 @@ fn parse_updated_at(s: &str) -> i64 {
 /// Build the event JSON the TS client pushes: the envelope keys in order,
 /// then the parsed `data` spread over them (data wins on key collisions,
 /// envelope keys keep their position).
-fn parse_stream_event(event: &StreamEvent, raw_data: &Map<String, Value>) -> Option<Value> {
+fn parse_stream_event(event: &StreamEvent, raw_data: &Map<String, Value>) -> Value {
     let mut obj = Map::new();
     obj.insert(
         "type".to_string(),
@@ -733,7 +741,7 @@ fn parse_stream_event(event: &StreamEvent, raw_data: &Map<String, Value>) -> Opt
     for (k, v) in raw_data {
         obj.insert(k.clone(), v.clone());
     }
-    Some(Value::Object(obj))
+    Value::Object(obj)
 }
 
 /// `RunConfig` from grpc-client.ts.
@@ -814,10 +822,7 @@ mod tests {
     #[test]
     fn parse_updated_at_formats() {
         assert_eq!(parse_updated_at("2026-08-06T12:00:00Z"), 1786017600000);
-        assert_eq!(
-            parse_updated_at("2026-08-06 12:00:00"),
-            1786017600000
-        );
+        assert_eq!(parse_updated_at("2026-08-06 12:00:00"), 1786017600000);
         assert_eq!(parse_updated_at("garbage"), 0);
     }
 
@@ -873,7 +878,10 @@ mod tests {
         );
         assert!(client.get_session_entries("s1").await.unwrap()["entries"].is_array());
         assert_eq!(client.delete_session("s1").await.unwrap()["deleted"], true);
-        assert_eq!(client.switch_session("s1").await.unwrap()["cancelled"], false);
+        assert_eq!(
+            client.switch_session("s1").await.unwrap()["cancelled"],
+            false
+        );
         assert!(client.fork("e1", "s1").await.unwrap()["cancelled"].is_boolean());
         assert_eq!(client.new_session("/tmp").await.unwrap()["sessionId"], "s9");
 
@@ -894,7 +902,7 @@ mod tests {
         client.set_cwd("/work", "s1").await.unwrap();
         client.prompt("hi", "s1").await.unwrap();
 
-        let seen = agent.seen.lock().expect("seen");
+        let seen = agent.seen.lock().expect("seen").clone();
         let by_type = |t: &str| seen.iter().find(|c| c.r#type == t).expect(t).clone();
         assert_eq!(by_type("set_session_name").name, "hello");
         assert_eq!(by_type("set_session_name").session_id, "s1");
@@ -918,7 +926,6 @@ mod tests {
         assert!(no_session.is_some());
         // Every command got a millis id assigned.
         assert!(seen.iter().all(|c| !c.id.is_empty()));
-        drop(seen);
 
         // Non-JSON data passes through as a string; empty data → Null.
         // (Unknown command types return the default "{}" → Null object.)
@@ -960,7 +967,10 @@ mod tests {
         let err = client.list_sessions().await.unwrap_err();
         assert!(err.contains("Unknown"), "err: {err}");
         // tonic Status with a message surfaces the message.
-        assert_eq!(client.delete_session("s1").await.unwrap_err(), "transport down");
+        assert_eq!(
+            client.delete_session("s1").await.unwrap_err(),
+            "transport down"
+        );
     }
 
     #[tokio::test]
@@ -980,7 +990,10 @@ mod tests {
             events: vec![
                 stream_event("text_chunk", "{\"text\":\"hel\"}"),
                 stream_event("text_chunk", "{\"text\":\"lo\"}"),
-                stream_event("tool_start", "{\"tool_name\":\"bash\",\"tool_args\":{\"cmd\":\"ls\"}}"),
+                stream_event(
+                    "tool_start",
+                    "{\"tool_name\":\"bash\",\"tool_args\":{\"cmd\":\"ls\"}}",
+                ),
                 stream_event("error", "{\"error\":\"nope\"}"),
                 stream_event("agent_end", "{}"),
                 // Never reached: agent_end breaks the loop.
@@ -1007,7 +1020,10 @@ mod tests {
         // text chunks + tool_start + error + agent_end (the late event dropped).
         assert_eq!(events.len(), 5);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("⚙ bash {\"cmd\":\"ls\"}"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("⚙ bash {\"cmd\":\"ls\"}"),
+            "stderr: {stderr}"
+        );
         assert!(stderr.contains("Error: nope"), "stderr: {stderr}");
         // Envelope fields on every event.
         assert_eq!(events[0]["type"], "text_chunk");
@@ -1040,7 +1056,10 @@ mod tests {
                 // tool_start with string input, clipped at 80 chars.
                 stream_event(
                     "tool_start",
-                    &format!("{{\"tool_name\":\"big\",\"tool_args\":\"{}\"}}", "x".repeat(100)),
+                    &format!(
+                        "{{\"tool_name\":\"big\",\"tool_args\":\"{}\"}}",
+                        "x".repeat(100)
+                    ),
                 ),
                 // error without payload → "unknown".
                 stream_event("error", "{}"),
@@ -1050,10 +1069,7 @@ mod tests {
         let addr = spawn_mock(agent).await;
         let client = RunClient::new(&addr);
         let (out, cap) = Output::memory();
-        let (events, text) = client
-            .stream_events("s1", None, true, &out)
-            .await
-            .unwrap();
+        let (events, text) = client.stream_events("s1", None, true, &out).await.unwrap();
         assert_eq!(text, "");
         // Dropped: bad JSON + array. Kept: lifecycle, message, 2 tool_start, error.
         assert_eq!(events.len(), 5);
@@ -1108,7 +1124,10 @@ mod tests {
         let client = RunClient::new(&addr);
         let (out, _) = Output::memory();
         assert_eq!(
-            client.stream_events("s1", None, false, &out).await.unwrap_err(),
+            client
+                .stream_events("s1", None, false, &out)
+                .await
+                .unwrap_err(),
             "stream down"
         );
         // Message-less Status → Display fallback; and connect failure.
@@ -1119,7 +1138,10 @@ mod tests {
         let addr = spawn_mock(agent).await;
         let client = RunClient::new(&addr);
         let (out, _) = Output::memory();
-        let err = client.stream_events("s1", None, false, &out).await.unwrap_err();
+        let err = client
+            .stream_events("s1", None, false, &out)
+            .await
+            .unwrap_err();
         assert!(err.contains("Unknown"), "err: {err}");
         let client = RunClient::new("127.0.0.1:1");
         assert!(client.stream_events("s1", None, false, &out).await.is_err());
@@ -1349,7 +1371,10 @@ mod tests {
         let result = client.run(&config, &out).await.expect("run");
         assert_eq!(result.session_id, "new");
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Continuing session Latest..."), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Continuing session Latest..."),
+            "stderr: {stderr}"
+        );
     }
 
     #[tokio::test]
@@ -1364,7 +1389,10 @@ mod tests {
         let mut config = run_config("hi");
         config.continue_last = true;
         let err = client.run(&config, &out).await.unwrap_err();
-        assert!(err.contains("No previous session to continue"), "err: {err}");
+        assert!(
+            err.contains("No previous session to continue"),
+            "err: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1425,7 +1453,10 @@ mod tests {
         let (out, _) = Output::memory();
         let mut config = run_config("hi");
         config.fork = Some("e9".to_string());
-        assert_eq!(client.run(&config, &out).await.unwrap_err(), "Fork was cancelled");
+        assert_eq!(
+            client.run(&config, &out).await.unwrap_err(),
+            "Fork was cancelled"
+        );
     }
 
     #[tokio::test]
@@ -1443,9 +1474,10 @@ mod tests {
         assert_eq!(err, "No previous session to fork from.");
         // Sessions present but all unparseable → same error.
         let mut agent = fresh_run_agent();
-        agent
-            .responses
-            .insert("list_sessions".into(), "{\"sessions\":[{\"bogus\":1}]}".into());
+        agent.responses.insert(
+            "list_sessions".into(),
+            "{\"sessions\":[{\"bogus\":1}]}".into(),
+        );
         let addr = spawn_mock(agent).await;
         let client = RunClient::new(&addr);
         let err = client.run(&config, &out).await.unwrap_err();

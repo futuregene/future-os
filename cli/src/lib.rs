@@ -402,7 +402,10 @@ mod tests {
         // init runs against the test binary (not named "future") → exit 1.
         let (code, _, stderr) = run(&["init"]).await;
         assert_eq!(code, 1);
-        assert!(stderr.contains("Cannot initialize command links"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Cannot initialize command links"),
+            "stderr: {stderr}"
+        );
     }
 
     #[tokio::test]
@@ -433,7 +436,10 @@ mod tests {
         // returning Ok — catch() merges it (process.exitCode semantics).
         let (code, _, stderr) = run(&["skills", "uninstall"]).await;
         assert_eq!(code, 1);
-        assert!(stderr.contains("Usage: future skills uninstall"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Usage: future skills uninstall"),
+            "stderr: {stderr}"
+        );
         // Unknown subcommand → group help.
         let (code, stdout, stderr) = run(&["skills", "bogus"]).await;
         assert_eq!(code, 0);
@@ -491,13 +497,14 @@ mod tests {
         // session unknown subcommand → HANDLED_EXIT → 1.
         let (code, _, stderr) = run(&["session", "bogus", "id-1"]).await;
         assert_eq!(code, 1);
-        assert!(stderr.contains("Unknown command: bogus"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Unknown command: bogus"),
+            "stderr: {stderr}"
+        );
         // doctor runs to completion (isolated env → warns but exit 0).
         let dir = tempfile::tempdir().unwrap();
-        let _path = crate::test_env::EnvGuard::set(&[(
-            "PATH",
-            dir.path().as_os_str().to_os_string(),
-        )]);
+        let _path =
+            crate::test_env::EnvGuard::set(&[("PATH", dir.path().as_os_str().to_os_string())]);
         let (code, stdout, _) = run(&["doctor"]).await;
         assert_eq!(code, 0);
         assert!(stdout.contains("Future Doctor"), "stdout: {stdout}");

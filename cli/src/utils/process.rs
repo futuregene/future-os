@@ -69,13 +69,19 @@ mod tests {
     /// the off-platform branch is not compiled into this target's binary.
     #[cfg(windows)]
     fn shell_cmd(script: &str) -> (String, Vec<String>) {
-        ("cmd".to_string(), vec!["/C".to_string(), script.to_string()])
+        (
+            "cmd".to_string(),
+            vec!["/C".to_string(), script.to_string()],
+        )
     }
 
     /// Unix half of [`shell_cmd`]. Absolute path: other tests mutate PATH.
     #[cfg(not(windows))]
     fn shell_cmd(script: &str) -> (String, Vec<String>) {
-        ("/bin/sh".to_string(), vec!["-c".to_string(), script.to_string()])
+        (
+            "/bin/sh".to_string(),
+            vec!["-c".to_string(), script.to_string()],
+        )
     }
 
     /// Print to stderr then exit 3 (cmd.exe separates commands with `&`).
@@ -132,7 +138,10 @@ mod tests {
         let reported = std::path::PathBuf::from(result.stdout.trim());
         // macOS tempdirs are /var symlinks to /private/var — canonicalize.
         let reported = reported.canonicalize().unwrap_or(reported);
-        let expected = dir.path().canonicalize().unwrap_or_else(|_| dir.path().to_path_buf());
+        let expected = dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().to_path_buf());
         assert_eq!(reported, expected);
     }
 

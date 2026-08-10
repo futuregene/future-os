@@ -159,10 +159,8 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         // PATH without any powershell.exe → spawn error surfaces.
         let dir = tempfile::tempdir().expect("tempdir");
-        let _env = crate::test_env::EnvGuard::set(&[(
-            "PATH",
-            dir.path().as_os_str().to_os_string(),
-        )]);
+        let _env =
+            crate::test_env::EnvGuard::set(&[("PATH", dir.path().as_os_str().to_os_string())]);
         let err = launch_windows_detached("chrome.exe", &["--flag".to_string()])
             .await
             .unwrap_err();
@@ -173,16 +171,16 @@ mod tests {
     /// and point PATH at it exclusively. Unix-only: on Windows the real
     /// PowerShell would actually launch processes.
     #[cfg(not(windows))]
-    async fn with_fake_powershell(script_body: &str) -> (tempfile::TempDir, crate::test_env::EnvGuard) {
+    async fn with_fake_powershell(
+        script_body: &str,
+    ) -> (tempfile::TempDir, crate::test_env::EnvGuard) {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let bin = dir.path().join("powershell.exe");
         std::fs::write(&bin, format!("#!/bin/sh\n{script_body}\n")).expect("write");
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        let guard = crate::test_env::EnvGuard::set(&[(
-            "PATH",
-            dir.path().as_os_str().to_os_string(),
-        )]);
+        let guard =
+            crate::test_env::EnvGuard::set(&[("PATH", dir.path().as_os_str().to_os_string())]);
         (dir, guard)
     }
 

@@ -283,13 +283,12 @@ async fn build_prompt(file_args: &[String], messages: &[String], out: &Output) -
 fn absolute_path(file_path: &str) -> String {
     let path = Path::new(file_path);
     if path.is_absolute() {
-        normalize_abs(path.to_path_buf())
-    } else {
-        match std::env::current_dir() {
-            Ok(cwd) => normalize_abs(cwd.join(path)),
-            Err(_) => path.display().to_string(),
-        }
+        return normalize_abs(path.to_path_buf());
     }
+    // current_dir is practically infallible; on the off chance it fails the
+    // bare path is still better than a panic (TS path.resolve never fails).
+    let cwd = std::env::current_dir().unwrap_or_default();
+    normalize_abs(cwd.join(path))
 }
 
 fn normalize_abs(path: std::path::PathBuf) -> String {
@@ -477,13 +476,19 @@ mod tests {
     #[test]
     fn parse_value_flags() {
         let parsed = parse(&[
-            "--grpc-addr", "10.0.0.1:9999",
-            "--fork", "entry-1",
-            "--session", "sess-1",
-            "--system-prompt", "sys",
-            "--cwd", "/work",
+            "--grpc-addr",
+            "10.0.0.1:9999",
+            "--fork",
+            "entry-1",
+            "--session",
+            "sess-1",
+            "--system-prompt",
+            "sys",
+            "--cwd",
+            "/work",
             "-nbt",
-            "--mode", "json",
+            "--mode",
+            "json",
             "-c",
             "hi",
         ])
@@ -529,7 +534,10 @@ mod tests {
         let (out, cap) = Output::memory();
         run_command(&["--help".to_string()], &out).await.unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("future run — send a prompt"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("future run — send a prompt"),
+            "stdout: {stdout}"
+        );
         assert!(stdout.contains("--fork <entry-id>"), "stdout: {stdout}");
 
         // No message and no @files → usage error.
@@ -548,14 +556,13 @@ mod tests {
 
         // @file content wraps in <file> tags; unreadable file → error.
         let (out, cap) = Output::memory();
-        let result = run_command(
-            &["@/no/such/file.txt".to_string(), "hi".to_string()],
-            &out,
-        )
-        .await;
+        let result = run_command(&["@/no/such/file.txt".to_string(), "hi".to_string()], &out).await;
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Failed to read file: /no/such/file.txt"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Failed to read file: /no/such/file.txt"),
+            "stderr: {stderr}"
+        );
     }
 
     #[tokio::test]
@@ -602,7 +609,11 @@ mod tests {
         // The prompt carried the wrapped file + message.
         let prompts = agent.seen_of("prompt");
         assert_eq!(prompts.len(), 1);
-        assert!(prompts[0].message.contains("<file name=\""), "msg: {}", prompts[0].message);
+        assert!(
+            prompts[0].message.contains("<file name=\""),
+            "msg: {}",
+            prompts[0].message
+        );
         assert!(prompts[0].message.contains("FILE-CONTENTS"));
         assert!(prompts[0].message.ends_with("summarize"));
         // Repeated append-system-prompt joined with newline.
@@ -616,7 +627,11 @@ mod tests {
         // Dead port → error printed per mode.
         let (out, cap) = Output::memory();
         let result = run_command(
-            &["--grpc-addr".to_string(), "127.0.0.1:1".to_string(), "hi".to_string()],
+            &[
+                "--grpc-addr".to_string(),
+                "127.0.0.1:1".to_string(),
+                "hi".to_string(),
+            ],
             &out,
         )
         .await;

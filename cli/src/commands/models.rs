@@ -289,8 +289,12 @@ mod tests {
         models(&args, &out).await.expect("models");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         // BTreeMap ordering: future before openai.
-        let future_pos = stdout.find("Provider: future  (2 models)").expect("future group");
-        let openai_pos = stdout.find("Provider: openai  (1 models)").expect("openai group");
+        let future_pos = stdout
+            .find("Provider: future  (2 models)")
+            .expect("future group");
+        let openai_pos = stdout
+            .find("Provider: openai  (1 models)")
+            .expect("openai group");
         assert!(future_pos < openai_pos);
         // Padding, context window humanization, flags, default marker.
         assert!(stdout.contains("Model: k3"), "stdout: {stdout}");
@@ -334,7 +338,9 @@ mod tests {
         );
         let addr = crate::test_server::spawn_mock(agent).await;
         let (out, cap) = Output::memory();
-        models(&["--json".to_string(), addr], &out).await.expect("models");
+        models(&["--json".to_string(), addr], &out)
+            .await
+            .expect("models");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         let parsed: Value = serde_json::from_str(&stdout).expect("json");
         assert_eq!(parsed["totalModels"], 1);
@@ -348,6 +354,9 @@ mod tests {
         let (out, cap) = Output::memory();
         models(&[addr], &out).await.expect("models");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("0 models, 0 providers."), "stdout: {stdout}");
+        assert!(
+            stdout.contains("0 models, 0 providers."),
+            "stdout: {stdout}"
+        );
     }
 }

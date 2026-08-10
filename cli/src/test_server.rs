@@ -316,11 +316,7 @@ pub async fn spawn_http_recording(
                 if let Some(sink) = &requests {
                     sink.lock().expect("requests").push(request.clone());
                 }
-                let path = request
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("/")
-                    .to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
                 let route = routes.iter().find(|r| r.path == path);
                 let response_data = match route {
                     Some(r) => {
@@ -338,13 +334,7 @@ pub async fn spawn_http_recording(
                                 r.delay,
                             )
                         };
-                        (
-                            status,
-                            content_type,
-                            extra_headers,
-                            body,
-                            delay,
-                        )
+                        (status, content_type, extra_headers, body, delay)
                     }
                     None => (
                         404,

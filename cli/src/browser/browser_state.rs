@@ -719,7 +719,10 @@ mod tests {
         assert!(err.message.contains("\"undefined\""));
         // tabOrder: empty-string item rejected.
         assert!(validate_optional_string_array(Some(&json!(["ok", " "]))).is_err());
-        assert_eq!(validate_optional_string_array(Some(&Value::Null)).unwrap(), None);
+        assert_eq!(
+            validate_optional_string_array(Some(&Value::Null)).unwrap(),
+            None
+        );
         // refs: non-object rejected.
         assert!(validate_refs_map(Some(&json!(["x"]))).is_err());
         assert_eq!(validate_refs_map(Some(&Value::Null)).unwrap(), None);

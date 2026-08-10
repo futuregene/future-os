@@ -1903,7 +1903,11 @@ mod tests {
         assert!(find_tool_entry("search_paper").is_some());
         assert!(find_tool_entry("no-such-tool").is_none());
         // Browser tools are merged into the catalog too.
-        assert!(find_tool_entry("browser").is_some() || find_tool_entry("browser_open").is_some() || !browser_tool_catalog().is_empty());
+        assert!(
+            find_tool_entry("browser").is_some()
+                || find_tool_entry("browser_open").is_some()
+                || !browser_tool_catalog().is_empty()
+        );
         let dir = image_output_dir();
         assert!(dir.ends_with(".future/agent/images") || dir.ends_with(".future\\agent\\images"));
     }
@@ -1930,7 +1934,10 @@ mod tests {
     fn format_search_paper_variants() {
         // Missing / empty results.
         assert_eq!(format_search_paper(&json!({})), "No papers found.");
-        assert_eq!(format_search_paper(&json!({"results": []})), "No papers found.");
+        assert_eq!(
+            format_search_paper(&json!({"results": []})),
+            "No papers found."
+        );
         // Results rows with no papers are skipped; all-empty → fallback.
         assert_eq!(
             format_search_paper(&json!({"results": [{"query": "q", "papers": []}]})),
@@ -1946,7 +1953,10 @@ mod tests {
             ]
         }]});
         let out = format_search_paper(&sc);
-        assert!(out.contains("## Search Results: \"crispr\" (4 papers)"), "out: {out}");
+        assert!(
+            out.contains("## Search Results: \"crispr\" (4 papers)"),
+            "out: {out}"
+        );
         assert!(out.contains("### 1. T"), "out: {out}");
         assert!(out.contains("**Authors:** A B"));
         assert!(out.contains("**Journal:** Nat (2025)"));
@@ -1954,7 +1964,10 @@ mod tests {
         assert!(out.contains("**URL:** http://u"));
         assert!(out.contains("\nsum"));
         assert!(out.contains("### 2. Untitled"), "out: {out}");
-        assert!(out.contains("**Journal:** J\n") || out.contains("**Journal:** J"), "out: {out}");
+        assert!(
+            out.contains("**Journal:** J\n") || out.contains("**Journal:** J"),
+            "out: {out}"
+        );
         assert!(out.contains("**Journal:** (2024)"), "out: {out}");
     }
 
@@ -1976,7 +1989,9 @@ mod tests {
         assert!(out.contains("(No body text available)"), "out: {out}");
         // Journal without year; year without journal.
         assert!(format_get_paper(&json!({"paper": {"journal": "J"}})).contains("**Journal:** J\n"));
-        assert!(format_get_paper(&json!({"paper": {"year": "2024"}})).contains("**Journal:** (2024)"));
+        assert!(
+            format_get_paper(&json!({"paper": {"year": "2024"}})).contains("**Journal:** (2024)")
+        );
     }
 
     #[test]
@@ -1995,7 +2010,10 @@ mod tests {
             "not-a-record"
         ]});
         let out = format_web_search(&sc);
-        assert!(out.contains("## Search Results: \"q\" (3 results)"), "out: {out}");
+        assert!(
+            out.contains("## Search Results: \"q\" (3 results)"),
+            "out: {out}"
+        );
         assert!(out.contains("1. **T**"));
         assert!(out.contains("   http://l"));
         assert!(out.contains("   s"));
@@ -2030,7 +2048,10 @@ mod tests {
             structured_content: sc,
         };
         // No structured content → raw text.
-        assert_eq!(format_tool_result("web_search", &make("plain", None), None).await, "plain");
+        assert_eq!(
+            format_tool_result("web_search", &make("plain", None), None).await,
+            "plain"
+        );
         // Known tools route to their renderer.
         assert_eq!(
             format_tool_result("web_search", &make("", Some(json!({"query": "q"}))), None).await,
@@ -2066,7 +2087,9 @@ mod tests {
         let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
         // 2. auth.json key.
         let path = auth_file();
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
         tokio::fs::write(&path, "{\"future\": {\"key\": \"file-key\"}}")
             .await
             .unwrap();
@@ -2095,10 +2118,8 @@ mod tests {
         )]);
         assert_eq!(load_api_key().await.unwrap(), "test-key");
         // Empty FUTURE_API_KEY is ignored (JS falsy).
-        let _env3 = crate::test_env::EnvGuard::set(&[(
-            "FUTURE_API_KEY",
-            std::ffi::OsString::from(""),
-        )]);
+        let _env3 =
+            crate::test_env::EnvGuard::set(&[("FUTURE_API_KEY", std::ffi::OsString::from(""))]);
         assert_eq!(load_api_key().await.unwrap(), "test-key");
     }
 
@@ -2107,14 +2128,17 @@ mod tests {
     /// Auth env: FUTURE_API_KEY set + platform pointed at the mock.
     async fn mcp_env(base: &str) -> (crate::test_env::EnvGuard, crate::test_env::EnvGuard) {
         let path = auth_file();
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
-        tokio::fs::write(&path, format!("{{\"future\": {{\"key\": \"sk\", \"base_url\": \"{base}\"}}}}"))
+        tokio::fs::create_dir_all(path.parent().unwrap())
             .await
             .unwrap();
-        let guard = crate::test_env::EnvGuard::set(&[(
-            "FUTURE_API_KEY",
-            std::ffi::OsString::from("sk"),
-        )]);
+        tokio::fs::write(
+            &path,
+            format!("{{\"future\": {{\"key\": \"sk\", \"base_url\": \"{base}\"}}}}"),
+        )
+        .await
+        .unwrap();
+        let guard =
+            crate::test_env::EnvGuard::set(&[("FUTURE_API_KEY", std::ffi::OsString::from("sk"))]);
         (guard, crate::test_env::EnvGuard::set(&[]))
     }
 
@@ -2145,7 +2169,10 @@ mod tests {
         tools("list", &[], &out).await.expect("list");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         // Local description wins over the remote one for known tools.
-        assert!(stdout.contains("Search academic papers"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Search academic papers"),
+            "stdout: {stdout}"
+        );
         assert!(!stdout.contains("REMOTE desc"), "stdout: {stdout}");
         // Remote-only tool listed with its (default empty) description.
         assert!(stdout.contains("remote_only"), "stdout: {stdout}");
@@ -2154,7 +2181,9 @@ mod tests {
 
         // JSON mode.
         let (out, cap) = Output::memory();
-        tools("list", &["--json".to_string()], &out).await.expect("list");
+        tools("list", &["--json".to_string()], &out)
+            .await
+            .expect("list");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         let parsed: Value = serde_json::from_str(&stdout).expect("json");
         let arr = parsed.as_array().unwrap();
@@ -2174,19 +2203,31 @@ mod tests {
         let (out, cap) = Output::memory();
         tools("list", &[], &out).await.expect("list");
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Remote tools unavailable:"), "stderr: {stderr}");
-        assert!(stderr.contains("Showing local tools only."), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Remote tools unavailable:"),
+            "stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("Showing local tools only."),
+            "stderr: {stderr}"
+        );
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(!stdout.contains("search_paper"), "stdout: {stdout}");
 
         // …and silently omitted in JSON mode (local tools only).
         let (out, cap) = Output::memory();
-        tools("list", &["--json".to_string()], &out).await.expect("list");
+        tools("list", &["--json".to_string()], &out)
+            .await
+            .expect("list");
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(stderr.is_empty(), "stderr: {stderr}");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         let parsed: Value = serde_json::from_str(&stdout).expect("json");
-        assert!(parsed.as_array().unwrap().iter().all(|t| t["name"] != "search_paper"));
+        assert!(parsed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["name"] != "search_paper"));
 
         // Remote call fails (bad gateway) → same warning path with the error.
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
@@ -2202,22 +2243,27 @@ mod tests {
         assert!(stderr.contains("502"), "stderr: {stderr}");
 
         // tools/list returns an error object → wrapped message.
-        let base = crate::test_server::spawn_http(vec![
-            crate::test_server::HttpRoute::sse_sequence(
+        let base =
+            crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sse_sequence(
                 "/api/v1/mcp",
                 vec![
                     ("data: {\"result\":{}}\n\n", Some("s")),
                     ("data: {}\n\n", None),
-                    ("data: {\"error\":{\"code\":-1,\"message\":\"list broke\"}}\n\n", None),
+                    (
+                        "data: {\"error\":{\"code\":-1,\"message\":\"list broke\"}}\n\n",
+                        None,
+                    ),
                 ],
-            ),
-        ])
-        .await;
+            )])
+            .await;
         let _env3 = mcp_env(&base).await;
         let (out, cap) = Output::memory();
         tools("list", &[], &out).await.expect("list");
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("tools/list failed: code=-1, message=list broke"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("tools/list failed: code=-1, message=list broke"),
+            "stderr: {stderr}"
+        );
     }
 
     #[tokio::test]
@@ -2226,7 +2272,9 @@ mod tests {
         let _home = crate::test_env::EnvGuard::temp_home();
         // --help.
         let (out, cap) = Output::memory();
-        tools("describe", &["--help".to_string()], &out).await.unwrap();
+        tools("describe", &["--help".to_string()], &out)
+            .await
+            .unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(stdout.contains("Usage: future tools describe"));
         // Missing name → usage + exit code.
@@ -2238,7 +2286,9 @@ mod tests {
 
         // Local tool: flags + args + example.
         let (out, cap) = Output::memory();
-        tools("describe", &["image_edit".to_string()], &out).await.unwrap();
+        tools("describe", &["image_edit".to_string()], &out)
+            .await
+            .unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(stdout.contains("  image_edit"), "stdout: {stdout}");
         assert!(stdout.contains("--input <path>"), "stdout: {stdout}");
@@ -2246,19 +2296,29 @@ mod tests {
         assert!(stdout.contains("--output <path>"), "stdout: {stdout}");
         assert!(stdout.contains("--timeout <secs>"), "stdout: {stdout}");
         assert!(stdout.contains("--prompt"), "stdout: {stdout}");
-        assert!(stdout.contains("future tools call image_edit --input <file>"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("future tools call image_edit --input <file>"),
+            "stdout: {stdout}"
+        );
 
         // search_paper example renders array JSON + quoted string flags.
         let (out, cap) = Output::memory();
-        tools("describe", &["search_paper".to_string()], &out).await.unwrap();
+        tools("describe", &["search_paper".to_string()], &out)
+            .await
+            .unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(stdout.contains("--queries '["), "stdout: {stdout}");
-        assert!(stdout.contains("--max_results_per_query 8"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("--max_results_per_query 8"),
+            "stdout: {stdout}"
+        );
 
         // Unknown tool with no remote → not found error.
         let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
         let (out, cap) = Output::memory();
-        let err = tools("describe", &["nope".to_string()], &out).await.unwrap_err();
+        let err = tools("describe", &["nope".to_string()], &out)
+            .await
+            .unwrap_err();
         assert_eq!(err, crate::HANDLED_EXIT);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(stderr.contains("Tool not found: nope"), "stderr: {stderr}");
@@ -2281,12 +2341,20 @@ mod tests {
         .await;
         let _env = mcp_env(&base).await;
         let (out, cap) = Output::memory();
-        tools("describe", &["remote_gem".to_string()], &out).await.unwrap();
+        tools("describe", &["remote_gem".to_string()], &out)
+            .await
+            .unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(stdout.contains("  remote_gem"), "stdout: {stdout}");
         assert!(stdout.contains("  A remote tool"), "stdout: {stdout}");
-        assert!(stdout.contains("Remote tool — use --args with JSON"), "stdout: {stdout}");
-        assert!(stdout.contains("future tools call remote_gem --args"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Remote tool — use --args with JSON"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("future tools call remote_gem --args"),
+            "stdout: {stdout}"
+        );
     }
 
     #[tokio::test]
@@ -2307,53 +2375,106 @@ mod tests {
         assert!(result.is_ok());
         // Missing tool name / flag as name.
         let (result, stderr, code) = run(&[]).await;
-        assert!(result.is_ok() && code == 1 && stderr.contains("Usage:"), "{stderr}");
+        assert!(
+            result.is_ok() && code == 1 && stderr.contains("Usage:"),
+            "{stderr}"
+        );
         let (result, stderr, code) = run(&["--raw"]).await;
-        assert!(result.is_ok() && code == 1 && stderr.contains("Usage:"), "{stderr}");
+        assert!(
+            result.is_ok() && code == 1 && stderr.contains("Usage:"),
+            "{stderr}"
+        );
 
         // Required args.
         let (result, stderr, _) = run(&["search_paper"]).await;
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-        assert!(stderr.contains("search_paper requires: --queries"), "{stderr}");
-        assert!(stderr.contains("future tools describe search_paper"), "{stderr}");
+        assert!(
+            stderr.contains("search_paper requires: --queries"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("future tools describe search_paper"),
+            "{stderr}"
+        );
 
         // queries must be a non-empty array of non-empty strings.
         for bad in ["[]", "[\"  \"]", "[1]", "\"text\""] {
             let (result, stderr, _) = run(&["search_paper", "--queries", bad]).await;
             assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-            assert!(stderr.contains("--queries must be a non-empty array"), "{bad}: {stderr}");
+            assert!(
+                stderr.contains("--queries must be a non-empty array"),
+                "{bad}: {stderr}"
+            );
         }
 
         // Numeric ranges.
         let (result, stderr, _) = run(&["image_gen", "--prompt", "x", "--n", "0"]).await;
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-        assert!(stderr.contains("--n must be an integer between 1 and 10"), "{stderr}");
+        assert!(
+            stderr.contains("--n must be an integer between 1 and 10"),
+            "{stderr}"
+        );
         let (_, stderr, _) = run(&["image_gen", "--prompt", "x", "--n", "11"]).await;
-        assert!(stderr.contains("--n must be an integer between 1 and 10"), "{stderr}");
+        assert!(
+            stderr.contains("--n must be an integer between 1 and 10"),
+            "{stderr}"
+        );
         let (_, stderr, _) = run(&["image_gen", "--prompt", "x", "--n", "abc"]).await;
-        assert!(stderr.contains("--n must be an integer between 1 and 10"), "{stderr}");
+        assert!(
+            stderr.contains("--n must be an integer between 1 and 10"),
+            "{stderr}"
+        );
         let (_, stderr, _) = run(&["web_search", "--query", "q", "--count", "51"]).await;
-        assert!(stderr.contains("--count must be an integer between 1 and 50"), "{stderr}");
+        assert!(
+            stderr.contains("--count must be an integer between 1 and 50"),
+            "{stderr}"
+        );
         let (_, stderr, _) = run(&["get_paper", "--paper_id", "PMID:1", "--max_k", "0"]).await;
-        assert!(stderr.contains("--max_k must be a positive integer"), "{stderr}");
+        assert!(
+            stderr.contains("--max_k must be a positive integer"),
+            "{stderr}"
+        );
         let (_, stderr, _) = run(&["read_image", "--question", "q", "--max_tokens", "-1"]).await;
-        assert!(stderr.contains("--max_tokens must be a positive integer"), "{stderr}");
+        assert!(
+            stderr.contains("--max_tokens must be a positive integer"),
+            "{stderr}"
+        );
 
         // file_type normalization + rejection.
         let (_, stderr, _) = run(&["parse_doc", "--file_type", "txt"]).await;
-        assert!(stderr.contains("--file_type must be \"pdf\" or \"docx\", got: \"txt\""), "{stderr}");
+        assert!(
+            stderr.contains("--file_type must be \"pdf\" or \"docx\", got: \"txt\""),
+            "{stderr}"
+        );
 
         // Negative --timeout.
         let (_, stderr, _) = run(&["web_search", "--query", "q", "--timeout", "-5"]).await;
-        assert!(stderr.contains("--timeout must be >= 1 second, got: -5"), "{stderr}");
+        assert!(
+            stderr.contains("--timeout must be >= 1 second, got: -5"),
+            "{stderr}"
+        );
 
         // Unreadable --input / --mask.
-        let (result, stderr, _) = run(&["read_image", "--question", "q", "--input", "/no/such/file.png"]).await;
+        let (result, stderr, _) = run(&[
+            "read_image",
+            "--question",
+            "q",
+            "--input",
+            "/no/such/file.png",
+        ])
+        .await;
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-        assert!(stderr.contains("cannot read input file: /no/such/file.png"), "{stderr}");
-        let (result, stderr, _) = run(&["image_edit", "--prompt", "x", "--mask", "/no/such/mask.png"]).await;
+        assert!(
+            stderr.contains("cannot read input file: /no/such/file.png"),
+            "{stderr}"
+        );
+        let (result, stderr, _) =
+            run(&["image_edit", "--prompt", "x", "--mask", "/no/such/mask.png"]).await;
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-        assert!(stderr.contains("cannot read mask file: /no/such/mask.png"), "{stderr}");
+        assert!(
+            stderr.contains("cannot read mask file: /no/such/mask.png"),
+            "{stderr}"
+        );
     }
 
     #[tokio::test]
@@ -2395,12 +2516,14 @@ mod tests {
         .expect("call");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert_eq!(stdout, "done\n");
-        let recorded = requests.lock().unwrap();
-        let call = recorded.iter().find(|r| r.contains("tools/call")).expect("call");
+        let recorded = requests.lock().unwrap().clone();
+        let call = recorded
+            .iter()
+            .find(|r| r.contains("tools/call"))
+            .expect("call");
         assert!(call.contains("doc_b64"), "call: {call}");
         assert!(call.contains("UERG"), "base64 of PDF: {call}");
         assert!(call.contains("file_type"), "call: {call}");
-        drop(recorded);
 
         // image_edit: input → image_b64, mask → mask_b64.
         let requests2 = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2441,7 +2564,10 @@ mod tests {
         .await
         .expect("call");
         let recorded = requests2.lock().unwrap();
-        let call = recorded.iter().find(|r| r.contains("tools/call")).expect("call");
+        let call = recorded
+            .iter()
+            .find(|r| r.contains("tools/call"))
+            .expect("call");
         assert!(call.contains("image_b64"), "call: {call}");
         assert!(call.contains("mask_b64"), "call: {call}");
     }
@@ -2464,9 +2590,17 @@ mod tests {
         .await;
         let _env = mcp_env(&base).await;
         let (out, cap) = Output::memory();
-        tools("call", &["web_search".to_string(), "--query".to_string(), "q".to_string()], &out)
-            .await
-            .expect("call");
+        tools(
+            "call",
+            &[
+                "web_search".to_string(),
+                "--query".to_string(),
+                "q".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("call");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(stdout.contains("hello"), "stdout: {stdout}");
         assert!(stdout.contains("\"uri\": \"u\""), "stdout: {stdout}");
@@ -2488,7 +2622,12 @@ mod tests {
         let (out, cap) = Output::memory();
         tools(
             "call",
-            &["web_search".to_string(), "--query".to_string(), "q".to_string(), "--raw".to_string()],
+            &[
+                "web_search".to_string(),
+                "--query".to_string(),
+                "q".to_string(),
+                "--raw".to_string(),
+            ],
             &out,
         )
         .await
@@ -2512,7 +2651,12 @@ mod tests {
         let (out, cap) = Output::memory();
         tools(
             "call",
-            &["web_search".to_string(), "--query".to_string(), "q".to_string(), "--raw".to_string()],
+            &[
+                "web_search".to_string(),
+                "--query".to_string(),
+                "q".to_string(),
+                "--raw".to_string(),
+            ],
             &out,
         )
         .await
@@ -2526,27 +2670,46 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();
         // tools/call error matching a translation.
-        let base = crate::test_server::spawn_http(vec![
-            crate::test_server::HttpRoute::sse_sequence(
+        let base =
+            crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sse_sequence(
                 "/api/v1/mcp",
                 vec![
                     ("data: {\"result\":{}}\n\n", Some("s")),
                     ("data: {}\n\n", None),
-                    ("data: {\"error\":{\"code\":-1,\"message\":\"insufficient_credit\"}}\n\n", None),
+                    (
+                        "data: {\"error\":{\"code\":-1,\"message\":\"insufficient_credit\"}}\n\n",
+                        None,
+                    ),
                 ],
-            ),
-        ])
-        .await;
+            )])
+            .await;
         let _env = mcp_env(&base).await;
         let (out, cap) = Output::memory();
-        let err = tools("call", &["image_gen".to_string(), "--prompt".to_string(), "x".to_string()], &out)
-            .await
-            .unwrap_err();
+        let err = tools(
+            "call",
+            &[
+                "image_gen".to_string(),
+                "--prompt".to_string(),
+                "x".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err, crate::HANDLED_EXIT);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Error: Account balance too low"), "stderr: {stderr}");
-        assert!(stderr.contains("Fix: Top up your account"), "stderr: {stderr}");
-        assert!(stderr.contains("Use \"future tools describe image_gen\" for help."), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Error: Account balance too low"),
+            "stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("Fix: Top up your account"),
+            "stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("Use \"future tools describe image_gen\" for help."),
+            "stderr: {stderr}"
+        );
         // Non-retryable → no retry hint.
         assert!(!stderr.contains("retry should work"), "stderr: {stderr}");
 
@@ -2564,29 +2727,53 @@ mod tests {
         .await;
         let _env = mcp_env(&base).await;
         let (out, cap) = Output::memory();
-        let _ = tools("call", &["fetch_url".to_string(), "--url".to_string(), "http://x".to_string()], &out)
-            .await;
+        let _ = tools(
+            "call",
+            &[
+                "fetch_url".to_string(),
+                "--url".to_string(),
+                "http://x".to_string(),
+            ],
+            &out,
+        )
+        .await;
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("(This is usually temporary — retry should work.)"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("(This is usually temporary — retry should work.)"),
+            "stderr: {stderr}"
+        );
 
         // Untranslated error → raw message form.
-        let base = crate::test_server::spawn_http(vec![
-            crate::test_server::HttpRoute::sse_sequence(
+        let base =
+            crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sse_sequence(
                 "/api/v1/mcp",
                 vec![
                     ("data: {\"result\":{}}\n\n", Some("s")),
                     ("data: {}\n\n", None),
-                    ("data: {\"error\":{\"code\":7,\"message\":\"weird failure\"}}\n\n", None),
+                    (
+                        "data: {\"error\":{\"code\":7,\"message\":\"weird failure\"}}\n\n",
+                        None,
+                    ),
                 ],
-            ),
-        ])
-        .await;
+            )])
+            .await;
         let _env = mcp_env(&base).await;
         let (out, cap) = Output::memory();
-        let _ = tools("call", &["web_search".to_string(), "--query".to_string(), "q".to_string()], &out)
-            .await;
+        let _ = tools(
+            "call",
+            &[
+                "web_search".to_string(),
+                "--query".to_string(),
+                "q".to_string(),
+            ],
+            &out,
+        )
+        .await;
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Error calling web_search: code=7, message=weird failure"), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Error calling web_search: code=7, message=weird failure"),
+            "stderr: {stderr}"
+        );
     }
 
     #[tokio::test]
@@ -2595,9 +2782,17 @@ mod tests {
         let _home = crate::test_env::EnvGuard::temp_home();
         let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
         let (out, _) = Output::memory();
-        let err = tools("call", &["web_search".to_string(), "--query".to_string(), "q".to_string()], &out)
-            .await
-            .unwrap_err();
+        let err = tools(
+            "call",
+            &[
+                "web_search".to_string(),
+                "--query".to_string(),
+                "q".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("Not logged in"), "err: {err}");
     }
 
@@ -2610,12 +2805,19 @@ mod tests {
         let (out, cap) = Output::memory();
         let result = tools(
             "call",
-            &["browser".to_string(), "--command".to_string(), "bogus".to_string()],
+            &[
+                "browser".to_string(),
+                "--command".to_string(),
+                "bogus".to_string(),
+            ],
             &out,
         )
         .await;
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert!(stderr.contains("Unknown browser command: \"bogus\""), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Unknown browser command: \"bogus\""),
+            "stderr: {stderr}"
+        );
     }
 }

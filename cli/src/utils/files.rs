@@ -142,9 +142,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("present.txt");
         tokio::fs::write(&path, "x").await.expect("write");
-        assert!(assert_readable_file(path.to_str().expect("utf8"), "Config", None)
-            .await
-            .is_ok());
+        assert!(
+            assert_readable_file(path.to_str().expect("utf8"), "Config", None)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

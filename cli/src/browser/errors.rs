@@ -195,7 +195,9 @@ mod tests {
         assert_eq!(with.code, "browser_not_found");
         assert_eq!(with.to_string(), "Browser not found: /opt/chrome");
         let without = browser_not_found_error(None);
-        assert!(without.to_string().starts_with("Could not find Chrome or Edge."));
+        assert!(without
+            .to_string()
+            .starts_with("Could not find Chrome or Edge."));
     }
 
     #[test]
@@ -253,7 +255,10 @@ mod tests {
     fn timeout_error_with_and_without_context() {
         let plain = operation_timeout_error("navigation", 5000, None);
         assert_eq!(plain.code, "operation_timeout");
-        assert_eq!(plain.to_string(), "Timed out after 5000ms waiting for navigation");
+        assert_eq!(
+            plain.to_string(),
+            "Timed out after 5000ms waiting for navigation"
+        );
         let ctx = operation_timeout_error("selector", 100, Some("iframe"));
         assert_eq!(
             ctx.to_string(),
