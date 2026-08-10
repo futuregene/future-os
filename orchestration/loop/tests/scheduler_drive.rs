@@ -263,10 +263,10 @@ fn progression_cursor_behaviors() {
     // advance → 30m (index 1); next advance wraps to 15m (returns true).
     assert_eq!(st::apply_next_progression(&mut state, 2).as_deref(), Some("FREQ=MINUTELY;INTERVAL=30"));
     assert!(st::advance_progression(&mut state), "wraps to start");
-    assert!(!st::advance_progression(&mut state), "index 1, no wrap");
-    // current_rrule / current_progression_minutes.
     assert_eq!(st::current_progression_minutes(&state), Some(15));
     assert_eq!(st::current_rrule(&state).as_deref(), Some("FREQ=MINUTELY;INTERVAL=15"));
+    assert!(!st::advance_progression(&mut state), "index 1, no wrap");
+    assert_eq!(st::current_progression_minutes(&state), Some(30));
     // Empty progression: no-op advance, None rrules.
     state.progression_minutes = vec![];
     assert!(!st::advance_progression(&mut state));
