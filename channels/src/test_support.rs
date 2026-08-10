@@ -37,6 +37,8 @@ pub struct MockState {
     /// Fail the next N calls of this type with a tonic Status, then succeed
     /// (transient-error retry paths).
     pub fail_times: HashMap<String, u64>,
+    /// Sleep this long before answering the command (race-window tests).
+    pub command_delay: HashMap<String, Duration>,
     /// Canned events for stream_events.
     pub events: Vec<StreamEvent>,
     /// stream_events RPC fails immediately with a tonic Status.
@@ -88,6 +90,13 @@ impl FutureAgent for MockAgent {
         request: tonic::Request<RpcCommand>,
     ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
         let cmd = request.into_inner();
+        let delay = {
+            let st = lock(&self.state);
+            st.command_delay.get(&cmd.r#type).copied()
+        };
+        if let Some(d) = delay {
+            tokio::time::sleep(d).await;
+        }
         let mut st = lock(&self.state);
         st.recorded.push(cmd.clone());
         if st.status_error.contains(&cmd.r#type) {

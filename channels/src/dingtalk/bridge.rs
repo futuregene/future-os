@@ -487,3 +487,503 @@ fn truncate_tool_output(s: &str) -> String {
     truncated.push_str("...\n_(truncated)_");
     truncated
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+    use crate::test_support::{self as ts, HttpRoute, MockState};
+
+    const TOKEN_ROUTE: &str = "/v1.0/oauth2/accessToken";
+
+    struct Fixture {
+        bridge: DingtalkBridge,
+        grpc: ts::SharedState,
+        http: ts::RecordedRequests,
+        /// Base URL of the mock HTTP server (for webhook URLs).
+        base: String,
+    }
+
+    /// Bridge over mock gRPC + mock DingTalk REST (token route + webhook).
+    async fn make_bridge(
+        label: &str,
+        state: MockState,
+        extra_routes: Vec<HttpRoute>,
+    ) -> Fixture {
+        ts::ensure_crypto_provider();
+        let _ = label;
+        let mut routes = vec![
+            HttpRoute::json(TOKEN_ROUTE, 200, r#"{"accessToken":"dt-tok","expireIn":7200}"#),
+            HttpRoute::json("/robot/hook", 200, "{}"),
+        ];
+        routes.extend(extra_routes);
+        let (base, http) = ts::spawn_http(routes).await;
+        let (addr, grpc) = ts::spawn_mock_grpc(state).await;
+        let cfg = crate::dingtalk::config::DingtalkConfig {
+            client_id: "id".into(),
+            client_secret: "secret".into(),
+            domain: base.clone(), // full URL → base_url verbatim
+        };
+        let agent_cfg = Arc::new(AgentConfig {
+            grpc_addr: addr,
+            cwd: "/tmp".into(),
+            model: "future/k3".into(),
+            thinking_level: "high".into(),
+            permission_level: "all".into(),
+        });
+        let bridge = DingtalkBridge::new(agent_cfg, cfg)
+            .await
+            .expect("bridge builds over mocks");
+        Fixture {
+            bridge,
+            grpc,
+            http,
+            base,
+        }
+    }
+
+    fn done_events() -> Vec<future_rpc::proto::StreamEvent> {
+        vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"ding answer"}"#),
+            ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
+        ]
+    }
+
+    fn event(base: &str, msg_id: &str, text: &str) -> DingtalkEvent {
+        DingtalkEvent {
+            event_type: "CALLBACK".into(),
+            message_id: Some(msg_id.into()),
+            chat_id: Some("cid-1".into()),
+            chat_type: Some("1".into()),
+            sender_id: Some("user-1".into()),
+            sender_name: Some("Alice".into()),
+            msg_type: Some("text".into()),
+            content: Some(text.into()),
+            create_time_ms: None,
+            session_webhook: Some(format!("{}/robot/hook", base)),
+            chatbot_user_id: Some("bot-1".into()),
+            raw: serde_json::json!({}),
+        }
+    }
+
+    fn hook_bodies(http: &ts::RecordedRequests) -> Vec<String> {
+        ts::requests_to(http, "/robot/hook")
+            .iter()
+            .map(|r| r.body_string())
+            .collect()
+    }
+
+    /// Wait until a webhook reply lands containing `needle`.
+    async fn wait_hook(http: &ts::RecordedRequests, needle: &str) -> bool {
+        ts::wait_until(
+            || hook_bodies(http).iter().any(|b| b.contains(needle)),
+            std::time::Duration::from_secs(10),
+        )
+        .await
+    }
+
+    // ─── Early-skip arms ─────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skips_events_with_missing_fields_or_bot_self() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-skip", state, vec![]).await;
+        // No sender.
+        let mut e = event(&fx.base, "m1", "hi");
+        e.sender_id = None;
+        fx.bridge.handle_event(e).await.unwrap();
+        // No message_id.
+        let mut e = event(&fx.base, "m2", "hi");
+        e.message_id = None;
+        fx.bridge.handle_event(e).await.unwrap();
+        // Bot's own message.
+        let mut e = event(&fx.base, "m3", "hi");
+        e.sender_id = Some("bot-1".into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dedup_and_stale_skips() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-dedup", state, vec![]).await;
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "hello"))
+            .await
+            .unwrap();
+        assert!(wait_hook(&fx.http, "ding answer").await);
+        // Redelivery → skipped.
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "hello"))
+            .await
+            .unwrap();
+        assert_eq!(ts::recorded_of(&fx.grpc, "prompt").len(), 1);
+
+        // Stale create_time → skipped (and the dedup set stays bounded).
+        let old_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            - 120_000;
+        for i in 0..1005 {
+            let mut e = event(&fx.base, &format!("stale-{i}"), "old");
+            e.create_time_ms = Some(old_ms);
+            fx.bridge.handle_event(e).await.unwrap();
+        }
+        assert_eq!(ts::recorded_of(&fx.grpc, "prompt").len(), 1);
+        let len = fx.bridge.processed.read().await.len();
+        assert!(len <= 520, "dedup set trimmed, got {len}");
+    }
+
+    // ─── Prompt flow ─────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prompt_streams_markdown_reply_via_webhook() {
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "thinking_start", "{}"),
+            ts::ev("", 1, "thinking_delta", r#"{"text":"hmm\nso"}"#),
+            ts::ev("", 2, "thinking_end", "{}"),
+            ts::ev("", 3, "tool_start", r#"{"tool_id":"t1","tool_name":"shell"}"#),
+            ts::ev("", 4, "tool_end", r#"{"tool_id":"t1","text":"line1\nline2"}"#),
+            ts::ev("", 5, "tool_end", r#"{"tool_id":"t2"}"#),
+            ts::ev("", 6, "text_chunk", r#"{"text":"the answer"}"#),
+            ts::ev("", 7, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let fx = make_bridge("dt-prompt", state, vec![]).await;
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "question"))
+            .await
+            .unwrap();
+        assert!(wait_hook(&fx.http, "the answer").await);
+        let hooks = hook_bodies(&fx.http);
+        let body = hooks.last().unwrap();
+        assert!(body.contains("Thinking"), "{body}");
+        assert!(body.contains("🔧"), "{body}");
+        // Channel defaults applied at session creation.
+        assert!(!ts::recorded_of(&fx.grpc, "set_model").is_empty());
+        assert!(!ts::recorded_of(&fx.grpc, "set_thinking_level").is_empty());
+        assert!(!ts::recorded_of(&fx.grpc, "set_permission_level").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prompt_without_webhook_runs_but_sends_nothing() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-no-hook", state, vec![]).await;
+        let mut e = event(&fx.base, "m1", "hello");
+        e.session_webhook = None;
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(
+            ts::wait_until(
+                || !ts::recorded_of(&fx.grpc, "prompt").is_empty(),
+                std::time::Duration::from_secs(5)
+            )
+            .await
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(hook_bodies(&fx.http).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_end_error_variants() {
+        // error → webhook error reply.
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"partial"}"#),
+            ts::ev("", 1, "agent_end", r#"{"error":"boom"}"#),
+        ];
+        let fx = make_bridge("dt-err", state, vec![]).await;
+        fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+        assert!(wait_hook(&fx.http, "boom").await);
+
+        // cancelled-with-error / interrupted → silent (the was_cancelled and
+        // "interrupted" guards only apply when an error is present).
+        for (label, data) in [
+            ("dt-cancel", r#"{"state":"cancelled","error":"aborted"}"#),
+            ("dt-interrupted", r#"{"error":"Interrupted by newer"}"#),
+        ] {
+            let mut state = MockState::default();
+            state.events = vec![
+                ts::ev("", 0, "text_chunk", r#"{"text":"partial"}"#),
+                ts::ev("", 1, "agent_end", data),
+            ];
+            let fx = make_bridge(label, state, vec![]).await;
+            fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            assert!(
+                hook_bodies(&fx.http).is_empty(),
+                "{label}: no reply expected for {data}"
+            );
+        }
+
+        // error event → webhook error reply.
+        let mut state = MockState::default();
+        state.events = vec![ts::ev("", 0, "error", r#"{"error":"stream died"}"#)];
+        let fx = make_bridge("dt-err-event", state, vec![]).await;
+        fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+        assert!(wait_hook(&fx.http, "stream died").await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn long_reply_truncated_at_20000() {
+        let big = "y".repeat(21000);
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", &serde_json::json!({"text": big}).to_string()),
+            ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let fx = make_bridge("dt-long", state, vec![]).await;
+        fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+        assert!(wait_hook(&fx.http, "yyy").await);
+        let body = hook_bodies(&fx.http).pop().unwrap();
+        assert!(body.len() < 21000 + 500, "reply must be truncated");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn supersede_and_foreign_run_arms() {
+        // Foreign run events dropped entirely.
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("other", 0, "text_chunk", r#"{"text":"alien"}"#),
+            ts::ev("other", 1, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let fx = make_bridge("dt-foreign", state, vec![]).await;
+        fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(hook_bodies(&fx.http).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prompt_failure_is_logged_not_raised() {
+        let mut state = MockState::default();
+        state.fail_commands.insert("prompt".into());
+        let fx = make_bridge("dt-prompt-fail", state, vec![]).await;
+        // process_prompt spawns the loop; the failure is logged, handle_event
+        // itself returns Ok.
+        fx.bridge.handle_event(event(&fx.base, "m1", "x")).await.unwrap();
+        assert!(
+            ts::wait_until(
+                || !ts::recorded_of(&fx.grpc, "prompt").is_empty(),
+                std::time::Duration::from_secs(5)
+            )
+            .await
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(hook_bodies(&fx.http).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_creation_race_uses_recheck() {
+        // Slow new_session: two concurrent first-prompts for one conversation
+        // — the loser of the write-lock race must reuse the winner's session
+        // via the inner recheck (not create a second one).
+        let mut state = MockState::default();
+        state.events = done_events();
+        state
+            .command_delay
+            .insert("new_session".into(), std::time::Duration::from_millis(300));
+        let fx = make_bridge("dt-race", state, vec![]);
+        let fx = fx.await;
+        let b = &fx.bridge;
+        let (r1, r2) = tokio::join!(
+            b.get_or_create_session("cid-race"),
+            b.get_or_create_session("cid-race")
+        );
+        assert_eq!(r1.unwrap(), r2.unwrap());
+        assert_eq!(ts::recorded_of(&fx.grpc, "new_session").len(), 1);
+    }
+
+    // ─── Slash commands ──────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_without_webhook_returns_early() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-slash-nohook", state, vec![]).await;
+        let mut e = event(&fx.base, "m1", "/status");
+        e.session_webhook = None;
+        fx.bridge.handle_event(e).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(ts::recorded_of(&fx.grpc, "get_state").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_new_session_lifecycle() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-slash-new", state, vec![]).await;
+        // /new with no prior session → creates one.
+        fx.bridge.handle_event(event(&fx.base, "m1", "/new")).await.unwrap();
+        assert!(wait_hook(&fx.http, "New Session").await);
+        assert_eq!(ts::recorded_of(&fx.grpc, "new_session").len(), 1);
+        assert!(ts::recorded_of(&fx.grpc, "abort").is_empty());
+
+        // /new again → aborts the old session, creates a fresh one.
+        fx.bridge.handle_event(event(&fx.base, "m2", "/new")).await.unwrap();
+        assert_eq!(ts::recorded_of(&fx.grpc, "new_session").len(), 2);
+        assert_eq!(ts::recorded_of(&fx.grpc, "abort").len(), 1);
+        drop(fx);
+
+        // new_session failure → error reply.
+        let mut state = MockState::default();
+        state.fail_commands.insert("new_session".into());
+        let fx = make_bridge("dt-slash-new-fail", state, vec![]).await;
+        fx.bridge.handle_event(event(&fx.base, "m1", "/new")).await.unwrap();
+        assert!(wait_hook(&fx.http, "Error").await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_status_reports_state() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-slash-status", state, vec![]).await;
+        fx.bridge.handle_event(event(&fx.base, "m1", "/status")).await.unwrap();
+        assert!(wait_hook(&fx.http, "Model:").await);
+        let body = hook_bodies(&fx.http).pop().unwrap();
+        assert!(body.contains("future/k3"), "{body}");
+        assert!(body.contains("Provider"), "{body}"); // model info block
+        assert!(body.contains("Cost"), "{body}");
+        drop(fx);
+
+        // get_state failure → silent (no reply).
+        let mut state = MockState::default();
+        state.fail_commands.insert("get_state".into());
+        // new_session must still work for session creation; get_state failing
+        // means the status body never builds.
+        let fx = make_bridge("dt-status-fail", state, vec![]).await;
+        fx.bridge.handle_event(event(&fx.base, "m1", "/status")).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(hook_bodies(&fx.http).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_stop_model_models_compact_effort_cwd() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-slash-misc", state, vec![]).await;
+
+        fx.bridge.handle_event(event(&fx.base, "m1", "/stop")).await.unwrap();
+        assert!(wait_hook(&fx.http, "Stopped").await);
+
+        fx.bridge.handle_event(event(&fx.base, "m2", "/model future:plain")).await.unwrap();
+        assert!(wait_hook(&fx.http, "Model:").await);
+        assert!(ts::recorded_of(&fx.grpc, "set_model")
+            .iter()
+            .any(|c| c.model_id == "future/plain"));
+
+        fx.bridge.handle_event(event(&fx.base, "m3", "/models")).await.unwrap();
+        assert!(wait_hook(&fx.http, "K3").await);
+
+        fx.bridge.handle_event(event(&fx.base, "m4", "/compact")).await.unwrap();
+        assert!(wait_hook(&fx.http, "Context compacted").await);
+
+        fx.bridge.handle_event(event(&fx.base, "m5", "/effort turbo")).await.unwrap();
+        assert!(wait_hook(&fx.http, "Invalid").await);
+        fx.bridge.handle_event(event(&fx.base, "m6", "/effort high")).await.unwrap();
+        assert!(wait_hook(&fx.http, "Thinking").await);
+
+        fx.bridge.handle_event(event(&fx.base, "m7", "/cwd /work")).await.unwrap();
+        assert!(wait_hook(&fx.http, "CWD").await);
+        assert!(ts::recorded_of(&fx.grpc, "set_cwd")
+            .iter()
+            .any(|c| c.cwd == "/work"));
+
+        fx.bridge.handle_event(event(&fx.base, "m8", "/help")).await.unwrap();
+        assert!(wait_hook(&fx.http, "Commands").await);
+
+        // Unknown slash → forwarded to the agent.
+        fx.bridge.handle_event(event(&fx.base, "m9", "/dance")).await.unwrap();
+        assert!(wait_hook(&fx.http, "ding answer").await);
+        assert!(ts::recorded_of(&fx.grpc, "prompt")
+            .iter()
+            .any(|c| c.message.contains("/dance")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_silent_failure_arms() {
+        // set_model/list_models/compact/set_thinking_level/set_cwd failures
+        // are all silent (if-let-Ok skips the reply).
+        let mut state = MockState::default();
+        state.events = done_events();
+        for cmd in ["set_model", "list_models", "compact", "set_thinking_level", "set_cwd"] {
+            state.fail_commands.insert(cmd.into());
+        }
+        let fx = make_bridge("dt-slash-fail", state, vec![]).await;
+        fx.bridge.handle_event(event(&fx.base, "m1", "/model x/y")).await.unwrap();
+        fx.bridge.handle_event(event(&fx.base, "m2", "/models")).await.unwrap();
+        fx.bridge.handle_event(event(&fx.base, "m3", "/compact")).await.unwrap();
+        fx.bridge.handle_event(event(&fx.base, "m4", "/effort low")).await.unwrap();
+        fx.bridge.handle_event(event(&fx.base, "m5", "/cwd /x")).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // Session creation itself triggered a set_model failure — tolerated.
+        // None of the commands replied.
+        assert!(hook_bodies(&fx.http).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_status_models_empty_variant() {
+        // list_models returns nothing matching → empty model-info block.
+        let mut state = MockState::default();
+        state.events = done_events();
+        state
+            .responses
+            .insert("list_models".into(), r#"{"models":[]}"#.into());
+        let fx = make_bridge("dt-status-nomodels", state, vec![]).await;
+        fx.bridge.handle_event(event(&fx.base, "m1", "/status")).await.unwrap();
+        assert!(wait_hook(&fx.http, "Model:").await);
+        let body = hook_bodies(&fx.http).pop().unwrap();
+        assert!(!body.contains("Provider"), "{body}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_fails_without_agent() {
+        ts::ensure_crypto_provider();
+        let cfg = crate::dingtalk::config::DingtalkConfig {
+            client_id: "id".into(),
+            client_secret: "s".into(),
+            domain: "api.dingtalk.com".into(),
+        };
+        let agent_cfg = Arc::new(AgentConfig {
+            grpc_addr: "127.0.0.1:1".into(),
+            cwd: "/tmp".into(),
+            model: String::new(),
+            thinking_level: String::new(),
+            permission_level: String::new(),
+        });
+        assert!(DingtalkBridge::new(agent_cfg, cfg).await.is_err());
+    }
+
+    // ─── truncate helpers ────────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_at_char_boundaries() {
+        assert_eq!(truncate_at_char("hello", 10), "hello");
+        assert_eq!(truncate_at_char("hello world", 5), "hello");
+        assert_eq!(truncate_at_char("你好世界", 2), "你好");
+        assert_eq!(truncate_at_char("", 5), "");
+    }
+
+    #[test]
+    fn truncate_tool_output_rules() {
+        // Short output unchanged.
+        assert_eq!(truncate_tool_output("a\nb"), "a\nb");
+        // Line-limit truncation.
+        let many_lines = (1..=10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        let out = truncate_tool_output(&many_lines);
+        assert!(out.contains("line4"));
+        assert!(!out.contains("line6"));
+        assert!(out.contains("truncated"));
+        // Char-limit truncation.
+        let long_line = "x".repeat(600);
+        let out = truncate_tool_output(&long_line);
+        assert!(out.len() < 600);
+        assert!(out.contains("truncated"));
+        // Unicode-safe.
+        let uni = "好".repeat(600);
+        let out = truncate_tool_output(&uni);
+        assert!(out.contains("truncated"));
+    }
+}
