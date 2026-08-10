@@ -98,6 +98,85 @@ fn claim_rejects_live_lease_from_other_agent() {
     assert_eq!(g.todo("t1").unwrap().claimed_by.as_deref(), Some("alice"));
 }
 
+// ── Contract (P0-1): workspace declarations survive replay and drive the
+//    guard — a peer holding a live lease in an overlapping workspace
+//    conflicts; idle or disjoint peers do not. ─────────────────────────────
+#[test]
+fn workspace_guard_survives_replay_and_detects_conflicts() {
+    use future_loop::agents::workspace_guard as wsg;
+    let root = tmp_root("wsguard");
+    let mut store = Store::open(&root).unwrap();
+    let g = Goal::new("g1", "objective", "/tmp");
+    store.register(&g).unwrap();
+    let now = now_epoch();
+    store
+        .append(Event::GoalStarted {
+            goal_id: "g1".into(),
+            ts: now,
+        })
+        .unwrap();
+    store
+        .append(Event::AgentOnboarded {
+            goal_id: "g1".into(),
+            agent_id: "alice".into(),
+            capabilities: vec![],
+            workspaces: vec!["/definitely/not/here/wt1".into()],
+            ts: now,
+        })
+        .unwrap();
+    store
+        .append(Event::AgentOnboarded {
+            goal_id: "g1".into(),
+            agent_id: "bob".into(),
+            capabilities: vec![],
+            workspaces: vec!["/definitely/not/here/wt1".into()],
+            ts: now,
+        })
+        .unwrap();
+    store
+        .append(Event::TodoAdded {
+            goal_id: "g1".into(),
+            todo: Todo::advancement("t1", "shared work"),
+            ts: now,
+        })
+        .unwrap();
+    store
+        .append(Event::TodoClaimed {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            agent_id: "alice".into(),
+            lease_expires_at: now + 3600,
+            ts: now,
+        })
+        .unwrap();
+    store
+        .append(Event::WorkspaceLockAcquired {
+            goal_id: "g1".into(),
+            agent_id: "alice".into(),
+            todo_id: "t1".into(),
+            paths: vec!["/definitely/not/here/wt1".into()],
+            forced: false,
+            ts: now,
+        })
+        .unwrap();
+
+    // Fresh store → replay: declarations, lease and the lock audit event
+    // all survive.
+    let rebuilt = Store::open(&root).unwrap().replay("g1").unwrap().unwrap();
+    assert_eq!(
+        wsg::agent_workspaces(&rebuilt, "alice"),
+        vec!["/definitely/not/here/wt1".to_string()]
+    );
+    let conflicts = wsg::live_workspace_conflicts(&rebuilt, "bob", now + 10);
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].holder_agent_id, "alice");
+    assert_eq!(conflicts[0].holder_todo_ids, vec!["t1".to_string()]);
+    // Alice never conflicts with herself; after the lease lapses the
+    // workspace is free again.
+    assert!(wsg::live_workspace_conflicts(&rebuilt, "alice", now + 10).is_empty());
+    assert!(wsg::live_workspace_conflicts(&rebuilt, "bob", now + 7200).is_empty());
+}
+
 // ── Contract: claim/lease persists through the event ledger ────────────────
 #[test]
 fn claim_survives_replay() {
@@ -116,6 +195,7 @@ fn claim_survives_replay() {
         .append(Event::AgentRegistered {
             goal_id: "g1".into(),
             agent_id: "alice".into(),
+            workspaces: vec![],
             ts,
         })
         .unwrap();

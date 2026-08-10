@@ -117,6 +117,7 @@ fn agent_profiles_survive_replay() {
             goal_id: "g1".into(),
             agent_id: "alice".into(),
             capabilities: vec!["shell".into(), "github".into()],
+            workspaces: vec![],
             ts,
         })
         .unwrap();

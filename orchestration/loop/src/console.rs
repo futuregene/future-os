@@ -289,7 +289,7 @@ fn build_cli_registry() -> CommandRegistry {
         todo,
         "lease",
         "task lease lifecycle (claim/renew/release/expire/status)",
-        "lease claim|renew|release|expire|status --goal G --todo-id T [--agent-id A] [--format json (status)]",
+        "lease claim|renew|release|expire|status --goal G --todo-id T [--agent-id A] [--force (claim)] [--format json (status)]",
     );
     r.command(
         todo,
@@ -302,8 +302,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         agent,
         "agent",
-        "register/onboard agents",
-        "agent onboard --goal G --agent-id A [--capabilities c1,c2]",
+        "register/onboard agents (declare capabilities + workspaces)",
+        "agent onboard --goal G --agent-id A [--capabilities c1,c2] [--workspace p1,p2]",
     );
     r.command(
         agent,
@@ -468,7 +468,7 @@ fn build_cli_registry() -> CommandRegistry {
         ops,
         "run",
         "drive one bounded gRPC turn (requires --agent-id; auto-registers)",
-        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N]",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N] [--force-workspace]",
     );
 
     let work_items = r.group("work-items", "attention / operator inbox (G-15)");
@@ -1045,12 +1045,23 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
     let mut todo_id = None;
     let mut agent_id = None;
     let mut lease_secs = 3600u64;
-    reject_unknown_flags(args, &["--agent-id", "--goal", "--lease-secs", "--todo-id"])?;
+    let mut force = false;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--force",
+            "--goal",
+            "--lease-secs",
+            "--todo-id",
+        ],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
         "--agent-id" => agent_id = Some(v),
         "--lease-secs" => lease_secs = v.parse().unwrap_or(3600),
+        "--force" => force = true,
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -1063,6 +1074,16 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
         bail!("agent `{agent}` is not registered for goal {goal_id} — `{} agent register --goal {goal_id} --agent-id {agent}` first", prog());
     }
     let now = crate::state::now_epoch();
+    // P0-1 workspace guard: refuse (degrade to serial) when a peer holds a
+    // live lease in an overlapping declared workspace, unless --force.
+    let conflicts = crate::agents::workspace_guard::live_workspace_conflicts(&goal, &agent, now);
+    if !conflicts.is_empty() && !force {
+        bail!(
+            "workspace conflict — claiming would race a peer writing the same workspace:\n{}\
+             degrade to serial: retry after the holder's lease expires, or pass --force",
+            crate::agents::workspace_guard::render_conflicts(&conflicts, now)
+        );
+    }
     let claimed = goal
         .todo_mut(&todo_id)
         .map(|t| t.claim(&agent, lease_secs, now))
@@ -1078,14 +1099,53 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
         lease_expires_at: expires,
         ts: now,
     })?;
+    append_workspace_lock(store, &goal_id, &agent, &todo_id, &goal, force)?;
     refresh_next_action(store, &goal_id)?;
     sync_compat(store, &goal_id)?;
     println!("todo {todo_id} claimed by {agent} until epoch {expires} ✔");
     Ok(())
 }
 
-/// `loopx agent register --goal G --agent-id A` — register a peer (LoopX:
-/// coordination.registered_agents; precondition for quota --agent-id).
+/// P0-1: append the advisory write-lock record after a successful claim by
+/// a workspace-declaring agent (empty declared set → no record, the guard
+/// is fail-open). `goal` must be the pre-claim replay carrying the
+/// claimer's profile; `forced` marks a claim that overrode a conflict.
+fn append_workspace_lock(
+    store: &mut Store,
+    goal_id: &str,
+    agent_id: &str,
+    todo_id: &str,
+    goal: &Goal,
+    forced: bool,
+) -> Result<()> {
+    let paths = crate::agents::workspace_guard::agent_workspaces(goal, agent_id);
+    if paths.is_empty() {
+        return Ok(());
+    }
+    store.append(Event::WorkspaceLockAcquired {
+        goal_id: goal_id.to_string(),
+        agent_id: agent_id.to_string(),
+        todo_id: todo_id.to_string(),
+        paths,
+        forced,
+        ts: crate::state::now_epoch(),
+    })?;
+    Ok(())
+}
+
+/// Parse a `--workspace` flag value into normalized absolute paths
+/// (comma-separated, like `--capabilities`; empty entries dropped).
+fn parse_workspaces(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(crate::agents::workspace_guard::normalize_workspace_path)
+        .collect()
+}
+
+/// `loopx agent register --goal G --agent-id A [--workspace p1,p2]` —
+/// register a peer (LoopX: coordination.registered_agents; precondition for
+/// quota --agent-id). `--workspace` declares the P0-1 guard write set.
 fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     if args.first().map(|s| s.as_str()) == Some("onboard") {
         return cmd_agent_onboard(store, &args[1..]);
@@ -1095,10 +1155,12 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     }
     let mut goal_id = None;
     let mut agent_id = None;
-    reject_unknown_flags(args, &["--agent-id", "--goal"])?;
+    let mut workspaces = vec![];
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--workspace"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
+        "--workspace" => workspaces = parse_workspaces(&v),
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -1109,22 +1171,35 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     store.append(Event::AgentRegistered {
         goal_id: goal_id.clone(),
         agent_id: agent_id.clone(),
+        workspaces: workspaces.clone(),
         ts: crate::state::now_epoch(),
     })?;
-    println!("agent `{agent_id}` registered for {goal_id} ✔");
+    if workspaces.is_empty() {
+        println!("agent `{agent_id}` registered for {goal_id} ✔");
+    } else {
+        println!("agent `{agent_id}` registered for {goal_id} (workspaces={workspaces:?}) ✔");
+    }
     Ok(())
 }
 
-/// `loopx agent onboard --goal G --agent-id A [--capability shell,github]`
-/// — register a peer AND declare its capabilities (LoopX: agent_profiles;
-/// input to the capability gate).
+/// `loopx agent onboard --goal G --agent-id A [--capability shell,github]
+/// [--workspace p1,p2]` — register a peer AND declare its capabilities
+/// (LoopX: agent_profiles; input to the capability gate) plus the P0-1
+/// workspace-guard write set.
 fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
     let mut capabilities = vec![];
+    let mut workspaces = vec![];
     reject_unknown_flags(
         args,
-        &["--agent-id", "--capabilities", "--capability", "--goal"],
+        &[
+            "--agent-id",
+            "--capabilities",
+            "--capability",
+            "--goal",
+            "--workspace",
+        ],
     )?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
@@ -1132,6 +1207,7 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
         "--capability" | "--capabilities" => {
             capabilities = v.split(',').map(|s| s.trim().to_string()).collect()
         }
+        "--workspace" => workspaces = parse_workspaces(&v),
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -1143,9 +1219,12 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
         goal_id: goal_id.clone(),
         agent_id: agent_id.clone(),
         capabilities: capabilities.clone(),
+        workspaces: workspaces.clone(),
         ts: crate::state::now_epoch(),
     })?;
-    println!("agent `{agent_id}` onboarded (capabilities={capabilities:?}) ✔");
+    println!(
+        "agent `{agent_id}` onboarded (capabilities={capabilities:?} workspaces={workspaces:?}) ✔"
+    );
     Ok(())
 }
 
@@ -1203,14 +1282,19 @@ fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
         goal.registered_agents.len()
     );
     println!(
-        "  {:<12} {:<8} {:<32} {:<14} {:<12}",
-        "agent_id", "status", "work-on", "capabilities", "last-active"
+        "  {:<12} {:<8} {:<28} {:<24} {:<14} {:<12}",
+        "agent_id", "status", "work-on", "workspaces", "capabilities", "last-active"
     );
     for row in &rows {
         let work_label = if row.work_on.is_empty() {
             "-".to_string()
         } else {
             row.work_on.join("; ")
+        };
+        let ws_label = if row.workspaces.is_empty() {
+            "-".to_string()
+        } else {
+            row.workspaces.join(",")
         };
         let caps = if row.capabilities.is_empty() {
             "-".to_string()
@@ -1222,9 +1306,28 @@ fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
             .map(|ts| format!("{} ago", human_dur(now.saturating_sub(ts))))
             .unwrap_or_else(|| "-".to_string());
         println!(
-            "  {:<12} {:<8} {:<32} {:<14} {:<12}",
-            row.agent_id, row.status, work_label, caps, last
+            "  {:<12} {:<8} {:<28} {:<24} {:<14} {:<12}",
+            row.agent_id, row.status, work_label, ws_label, caps, last
         );
+    }
+    // P0-1: live workspace conflicts — who occupies the paths you declared.
+    let mut any_conflict = false;
+    for row in &rows {
+        let conflicts =
+            crate::agents::workspace_guard::live_workspace_conflicts(&goal, &row.agent_id, now);
+        for c in &conflicts {
+            any_conflict = true;
+            println!(
+                "⚠ workspace conflict: {} ↔ {} share {} (holder lease expires in {})",
+                row.agent_id,
+                c.holder_agent_id,
+                c.overlapping_paths.join(", "),
+                human_dur(c.holder_lease_expires_at.saturating_sub(now))
+            );
+        }
+    }
+    if any_conflict {
+        println!("hint: conflicting claims need `--force` — or wait for the holder's lease");
     }
     println!(
         "hint: agent ids are goal-scoped; check this list before `agent register`/`onboard` \
@@ -1242,8 +1345,20 @@ struct AgentListRow {
     status: String,
     /// Human-readable live lease labels (todo id + remaining time).
     work_on: Vec<String>,
+    /// P0-1 declared workspace write set (display-shortened; a `✍` suffix
+    /// marks paths the agent currently occupies under a live lease).
+    workspaces: Vec<String>,
     capabilities: Vec<String>,
     last_active_ts: Option<u64>,
+}
+
+/// Shorten a workspace path for the agent-list table: `$HOME` → `~`.
+fn shorten_home(path: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if !home.is_empty() && path.starts_with(&home) {
+        return format!("~{}", &path[home.len()..]);
+    }
+    path.to_string()
 }
 
 /// Build the agent-list projection rows (event-derived last-active map +
@@ -1262,16 +1377,29 @@ fn agent_list_rows(goal: &Goal, last_active: &HashMap<String, u64>, now: u64) ->
                 }
             }
             let status = if work.is_empty() { "idle" } else { "running" };
-            let caps = goal
-                .agent_profiles
-                .iter()
-                .find(|p| p.id == *aid)
-                .map(|p| p.capabilities.clone())
+            let occupying = !work.is_empty();
+            let profile = goal.agent_profiles.iter().find(|p| p.id == *aid);
+            let caps = profile.map(|p| p.capabilities.clone()).unwrap_or_default();
+            let workspaces = profile
+                .map(|p| {
+                    p.workspaces
+                        .iter()
+                        .map(|w| {
+                            let short = shorten_home(w);
+                            if occupying {
+                                format!("{short} ✍")
+                            } else {
+                                short
+                            }
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
             AgentListRow {
                 agent_id: aid.clone(),
                 status: status.to_string(),
                 work_on: work,
+                workspaces,
                 capabilities: caps,
                 last_active_ts: last_active.get(aid).copied(),
             }
@@ -2226,7 +2354,10 @@ const DEFAULT_RUN_LEASE_SECS: u64 = 4 * 3600;
 /// nothing, so two agentless runs deterministically race on the same todo.
 /// An id that is not yet registered is auto-registered on first use (replay
 /// is idempotent, so `run` never needs a separate `agent register` step).
-/// `--anonymous` opts back into the legacy uncoordinated one-shot path.
+/// Auto-registration declares the process cwd as the agent's P0-1 workspace
+/// (parallel runs launched from the same checkout then trip the workspace
+/// guard instead of silently overwriting each other). `--anonymous` opts
+/// back into the legacy uncoordinated one-shot path.
 /// Returns the resolved agent id (None for `--anonymous`).
 pub fn ensure_run_identity(
     store: &mut Store,
@@ -2240,9 +2371,20 @@ pub fn ensure_run_identity(
                 .replay(goal_id)?
                 .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
             if !goal.is_registered_agent(Some(aid)) {
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let workspaces = if cwd.is_empty() {
+                    vec![]
+                } else {
+                    vec![crate::agents::workspace_guard::normalize_workspace_path(
+                        &cwd,
+                    )]
+                };
                 store.append(Event::AgentRegistered {
                     goal_id: goal_id.to_string(),
                     agent_id: aid.to_string(),
+                    workspaces,
                     ts: now_epoch(),
                 })?;
                 println!("agent `{aid}` auto-registered for {goal_id} ✔");
@@ -2272,11 +2414,13 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut agent_id = None;
     let mut anonymous = false;
     let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
+    let mut force_workspace = false;
     reject_unknown_flags(
         args,
         &[
             "--agent-id",
             "--anonymous",
+            "--force-workspace",
             "--goal",
             "--lease-secs",
             "--max-turn-secs",
@@ -2294,6 +2438,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         "--agent-id" => agent_id = Some(v),
         "--lease-secs" => lease_secs = v.parse().unwrap_or(DEFAULT_RUN_LEASE_SECS),
         "--anonymous" => anonymous = true,
+        "--force-workspace" => force_workspace = true,
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -2329,6 +2474,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         lease_secs,
         agent_id.as_deref(),
         max_turn_secs,
+        force_workspace,
     )
     .await;
     if let Err(e) = client.delete_session(&session_id).await {
@@ -2509,6 +2655,7 @@ async fn run_turns(
     lease_secs: u64,
     agent_id: Option<&str>,
     max_turn_secs: u64,
+    force_workspace: bool,
 ) -> Result<()> {
     let mut turn = 0u32;
     loop {
@@ -2556,6 +2703,30 @@ async fn run_turns(
         }
 
         // bounded_delivery / monitor_poll: execute one turn.
+        // Claim with a lease BEFORE executing — atomically (check+append under
+        // one lock) so two concurrent `run --agent-id` workers can never both
+        // win the same todo; on contention, re-decide against the fresh
+        // ledger and pick the next runnable todo (up to 3 re-decides).
+        //
+        // P0-1 workspace guard: if a PEER agent holds a live lease in an
+        // overlapping declared workspace, degrade to serial — stop the run
+        // with a retry hint (the scheduler will relaunch later) unless the
+        // operator passed --force-workspace.
+        let mut workspace_conflict_forced = false;
+        if let Some(aid) = agent_id {
+            let now = crate::state::now_epoch();
+            let conflicts =
+                crate::agents::workspace_guard::live_workspace_conflicts(&goal, aid, now);
+            if !conflicts.is_empty() && !force_workspace {
+                bail!(
+                    "workspace conflict — running would race a peer writing the same workspace:\n{}\
+                     degrade to serial: rerun after the holder's lease expires, \
+                     or pass --force-workspace",
+                    crate::agents::workspace_guard::render_conflicts(&conflicts, now)
+                );
+            }
+            workspace_conflict_forced = !conflicts.is_empty() && force_workspace;
+        }
         let mut packet = packet;
         let Some(todo_id) =
             claim_selected_with_lease(store, goal_id, &mut packet, agent_id, lease_secs)?
@@ -2563,6 +2734,22 @@ async fn run_turns(
             println!("   no selected todo; stopping");
             break;
         };
+        // P0-1: record the advisory write lock for the claimed todo (audit
+        // trail for agent list / history). Best-effort against the
+        // turn-start replay — profiles rarely change mid-turn.
+        if let Some(aid) = agent_id {
+            let goal = store.replay(goal_id)?.ok_or_else(|| {
+                anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
+            })?;
+            append_workspace_lock(
+                store,
+                goal_id,
+                aid,
+                &todo_id,
+                &goal,
+                workspace_conflict_forced,
+            )?;
+        }
         let goal = store
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
@@ -2993,10 +3180,12 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
     let mut todo_id = None;
     let mut agent_id = None;
     let mut lease_secs = 0u64;
+    let mut force = false;
     reject_unknown_flags(
         &args[1..],
         &[
             "--agent-id",
+            "--force",
             "--format",
             "--goal",
             "--json",
@@ -3009,6 +3198,7 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
         "--todo-id" => todo_id = Some(v),
         "--agent-id" => agent_id = Some(v),
         "--lease-secs" => lease_secs = v.parse().unwrap_or(0),
+        "--force" => force = true,
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -3044,6 +3234,20 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
         return Ok(());
     }
 
+    // P0-1 workspace guard (claim only): checked before the mutable todo
+    // borrow below; same conflict semantics as `todo claim`.
+    if sub == "claim" {
+        let conflicts =
+            crate::agents::workspace_guard::live_workspace_conflicts(&goal, &agent, now);
+        if !conflicts.is_empty() && !force {
+            bail!(
+                "workspace conflict — claiming would race a peer writing the same workspace:\n{}\
+                 degrade to serial: retry after the holder's lease expires, or pass --force",
+                crate::agents::workspace_guard::render_conflicts(&conflicts, now)
+            );
+        }
+    }
+
     let todo = goal
         .todo_mut(&todo_id)
         .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
@@ -3066,6 +3270,8 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
                     lease_expires_at: expires,
                     ts: now,
                 })?;
+                // P0-1: advisory workspace write lock (audit for agent list).
+                append_workspace_lock(store, &goal_id, &agent, &todo_id, &goal, force)?;
             }
             let _ = sync_compat(store, &goal_id);
             println!(
@@ -5105,6 +5311,7 @@ fn event_touches_todo(event: &crate::store::Event, todo_id: &str) -> bool {
         | Event::TodoRenewed { todo_id: id, .. }
         | Event::TodoReleased { todo_id: id, .. }
         | Event::TodoExpired { todo_id: id, .. }
+        | Event::WorkspaceLockAcquired { todo_id: id, .. }
         | Event::GateResolved { todo_id: id, .. } => id == todo_id,
         Event::RunRecorded { record, .. } => record.todo_id == todo_id,
         _ => false,
@@ -5170,6 +5377,19 @@ fn describe_event(event: &crate::store::Event) -> String {
             return format!(
                 "agent_onboarded agent={agent_id} capabilities={}",
                 capabilities.join(",")
+            );
+        }
+        Event::WorkspaceLockAcquired {
+            agent_id,
+            todo_id,
+            paths,
+            forced,
+            ..
+        } => {
+            return format!(
+                "workspace_lock agent={agent_id} todo={todo_id} paths={}{}",
+                paths.join(","),
+                if *forced { " (forced)" } else { "" }
             );
         }
         Event::ReplanAcked { delta_kinds, .. } => {
@@ -6353,6 +6573,7 @@ mod cli_quirks_tests {
         goal.agent_profiles = vec![crate::state::AgentProfile {
             id: "alice".to_string(),
             capabilities: vec!["code".to_string()],
+            workspaces: vec![],
         }];
         let mut todo = Todo::advancement("t1", "work");
         todo.claimed_by = Some("alice".to_string());
@@ -6593,5 +6814,266 @@ mod cli_quirks_tests {
         assert_eq!(todo.status, crate::state::TodoStatus::Deferred);
         let deadline = todo.resume_when.expect("numeric sets a deadline");
         assert!(deadline >= before + std::time::Duration::from_secs(120));
+    }
+}
+
+// ── P0-1 workspace guard CLI contract tests ───────────────────────────────
+
+#[cfg(test)]
+mod workspace_guard_cli_tests {
+    use super::*;
+
+    fn tmp_store(tag: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-p01-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Store::open(dir.to_string_lossy().as_ref()).unwrap()
+    }
+
+    fn open_goal(store: &mut Store, goal_id: &str, todo_ids: &[&str]) {
+        let goal = Goal::new(goal_id, "objective", "/tmp");
+        store.register(&goal).unwrap();
+        let ts = goal.created_at;
+        store
+            .append(Event::GoalStarted {
+                goal_id: goal_id.into(),
+                ts,
+            })
+            .unwrap();
+        for id in todo_ids {
+            store
+                .append(Event::TodoAdded {
+                    goal_id: goal_id.into(),
+                    todo: Todo::advancement(id, "work"),
+                    ts,
+                })
+                .unwrap();
+        }
+    }
+
+    fn onboard(store: &mut Store, goal: &str, agent: &str, workspace: &str) {
+        cmd_agent_onboard(
+            store,
+            &[
+                "--goal".to_string(),
+                goal.to_string(),
+                "--agent-id".to_string(),
+                agent.to_string(),
+                "--workspace".to_string(),
+                workspace.to_string(),
+            ],
+        )
+        .unwrap();
+    }
+
+    fn claim_args(goal: &str, todo: &str, agent: &str, extra: &[&str]) -> Vec<String> {
+        let mut v = vec![
+            "--goal".to_string(),
+            goal.to_string(),
+            "--todo-id".to_string(),
+            todo.to_string(),
+            "--agent-id".to_string(),
+            agent.to_string(),
+        ];
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v
+    }
+
+    fn lock_events(store: &Store, goal: &str) -> Vec<(String, String, bool)> {
+        store
+            .events(goal)
+            .unwrap()
+            .iter()
+            .filter_map(|se| match &se.event {
+                Event::WorkspaceLockAcquired {
+                    agent_id,
+                    todo_id,
+                    forced,
+                    ..
+                } => Some((agent_id.clone(), todo_id.clone(), *forced)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn register_and_onboard_workspace_roundtrip_through_replay() {
+        let mut store = tmp_store("declare");
+        open_goal(&mut store, "g1", &[]);
+        cmd_agent(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "a1".to_string(),
+                "--workspace".to_string(),
+                "/definitely/not/here/wt1".to_string(),
+            ],
+        )
+        .unwrap();
+        onboard(&mut store, "g1", "a2", "/definitely/not/here/wt2");
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(
+            crate::agents::workspace_guard::agent_workspaces(&goal, "a1"),
+            vec!["/definitely/not/here/wt1".to_string()]
+        );
+        assert_eq!(
+            crate::agents::workspace_guard::agent_workspaces(&goal, "a2"),
+            vec!["/definitely/not/here/wt2".to_string()]
+        );
+    }
+
+    #[test]
+    fn legacy_agent_registered_event_without_workspaces_replays_empty() {
+        // Old ledger line (pre-P0-1) — no `workspaces` field.
+        let json = r#"{"kind":"agent_registered","goal_id":"g1","agent_id":"old","ts":1}"#;
+        let event: Event = serde_json::from_str(json).unwrap();
+        match event {
+            Event::AgentRegistered { workspaces, .. } => assert!(workspaces.is_empty()),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn claim_refuses_on_live_workspace_conflict_and_stays_serial() {
+        let mut store = tmp_store("conflict");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt1");
+        // agent-b claims t1 first (a is idle → no conflict).
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-b", &[])).unwrap();
+        // agent-a claiming t2 in the same workspace must be refused.
+        let err = todo_claim(&mut store, &claim_args("g1", "t2", "agent-a", &[])).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("workspace conflict"), "got: {msg}");
+        assert!(msg.contains("agent-b"), "holder missing: {msg}");
+        assert!(msg.contains("--force"), "force hint missing: {msg}");
+        // No claim for t2 landed in the ledger.
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert!(goal.todo("t2").unwrap().claimed_by.is_none());
+    }
+
+    #[test]
+    fn claim_force_overrides_conflict_and_records_forced_lock() {
+        let mut store = tmp_store("force");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt1");
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-b", &[])).unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t2", "agent-a", &["--force"])).unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(
+            goal.todo("t2").unwrap().claimed_by.as_deref(),
+            Some("agent-a")
+        );
+        let locks = lock_events(&store, "g1");
+        assert_eq!(locks.len(), 2, "one lock per workspace-declaring claim");
+        assert_eq!(locks[0], ("agent-b".to_string(), "t1".to_string(), false));
+        assert_eq!(locks[1], ("agent-a".to_string(), "t2".to_string(), true));
+    }
+
+    #[test]
+    fn claim_without_conflict_records_unforced_lock_only_for_declaring_agents() {
+        let mut store = tmp_store("lock");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        // agent-b registers WITHOUT a workspace declaration.
+        cmd_agent(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "agent-b".to_string(),
+            ],
+        )
+        .unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-a", &[])).unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t2", "agent-b", &[])).unwrap();
+        let locks = lock_events(&store, "g1");
+        assert_eq!(
+            locks,
+            vec![("agent-a".to_string(), "t1".to_string(), false)],
+            "undeclared agents leave no lock record (fail-open)"
+        );
+    }
+
+    #[test]
+    fn disjoint_workspaces_claim_freely() {
+        let mut store = tmp_store("disjoint");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt2");
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-b", &[])).unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t2", "agent-a", &[])).unwrap();
+    }
+
+    #[test]
+    fn lease_claim_applies_the_same_guard() {
+        let mut store = tmp_store("lease-guard");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt1");
+        let lease_args = |todo: &str, agent: &str, extra: &[&str]| {
+            let mut v = vec!["claim".to_string()];
+            v.extend(claim_args("g1", todo, agent, &["--lease-secs", "3600"]));
+            v.extend(extra.iter().map(|s| s.to_string()));
+            v
+        };
+        cmd_lease(&mut store, &lease_args("t1", "agent-b", &[])).unwrap();
+        let err = cmd_lease(&mut store, &lease_args("t2", "agent-a", &[])).unwrap_err();
+        assert!(format!("{err}").contains("workspace conflict"));
+        cmd_lease(&mut store, &lease_args("t2", "agent-a", &["--force"])).unwrap();
+        let locks = lock_events(&store, "g1");
+        assert_eq!(locks.len(), 2);
+        assert!(locks[1].2, "forced lease claim must record forced=true");
+    }
+
+    #[test]
+    fn agent_list_rows_show_declared_workspaces_and_occupancy() {
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.registered_agents = vec!["alice".to_string()];
+        goal.agent_profiles = vec![crate::state::AgentProfile {
+            id: "alice".to_string(),
+            capabilities: vec![],
+            workspaces: vec!["/repo/wt1".to_string()],
+        }];
+        // idle: declared, not occupied.
+        let rows = agent_list_rows(&goal, &HashMap::new(), 1_000);
+        assert_eq!(rows[0].workspaces, vec!["/repo/wt1".to_string()]);
+        // running: occupancy marker on the declared path.
+        let mut todo = Todo::advancement("t1", "work");
+        todo.claimed_by = Some("alice".to_string());
+        todo.lease_expires_at = Some(2_000);
+        goal.todos.push(todo);
+        let rows = agent_list_rows(&goal, &HashMap::new(), 1_000);
+        assert_eq!(rows[0].workspaces, vec!["/repo/wt1 ✍".to_string()]);
+        let json = serde_json::to_string(&rows).unwrap();
+        assert!(json.contains("workspaces"));
+    }
+
+    #[test]
+    fn describe_event_renders_workspace_lock() {
+        let event = Event::WorkspaceLockAcquired {
+            goal_id: "g1".to_string(),
+            agent_id: "a1".to_string(),
+            todo_id: "t1".to_string(),
+            paths: vec!["/repo/wt1".to_string()],
+            forced: true,
+            ts: 1,
+        };
+        let text = describe_event(&event);
+        assert!(text.contains("workspace_lock"), "got: {text}");
+        assert!(text.contains("a1"), "got: {text}");
+        assert!(text.contains("(forced)"), "got: {text}");
+        // todo-event filtering picks the lock event up for its todo.
+        assert!(event_touches_todo(&event, "t1"));
+        assert!(!event_touches_todo(&event, "t2"));
     }
 }

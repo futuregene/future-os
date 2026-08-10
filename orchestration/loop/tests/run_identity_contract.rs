@@ -95,6 +95,7 @@ fn existing_registered_id_passes_through() {
         .append(future_loop::store::Event::AgentRegistered {
             goal_id: "g1".to_string(),
             agent_id: "alice".to_string(),
+            workspaces: vec![],
             ts: future_loop::state::now_epoch(),
         })
         .unwrap();
