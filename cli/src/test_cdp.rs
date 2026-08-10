@@ -69,6 +69,12 @@ pub struct MockCdpState {
     pub click_state: Value,
     /// Base64 payload for Page.captureScreenshot.
     pub screenshot_b64: String,
+    /// Extra events emitted right after the response to a given method
+    /// (e.g. a bare Target.targetCreated after setDiscoverTargets).
+    pub events_after_response: HashMap<String, Vec<Value>>,
+    /// Runtime.evaluate expressions containing this substring get a CDP
+    /// error response (per-expression failure injection).
+    pub eval_error_on_substring: Option<String>,
     /// Per-test Runtime.evaluate override (checked FIRST).
     pub eval_override: Option<EvalOverride>,
     /// Every command received: (method, sessionId, params).
@@ -108,6 +114,8 @@ impl Default for MockCdpState {
                 &base64::engine::general_purpose::STANDARD,
                 b"\x89PNG-mock",
             ),
+            events_after_response: HashMap::new(),
+            eval_error_on_substring: None,
             eval_override: None,
             commands: Vec::new(),
             next_target: 0,
@@ -252,8 +260,21 @@ fn handle_cdp_message(state_arc: &Arc<Mutex<MockCdpState>>, text: &str) -> Optio
                 "error": {"code": -32000, "message": "mock failure"},
             })]);
         }
-        dispatch_method(&mut state, &method, &params, session_id.as_deref(), &mut events)
+        let result =
+            dispatch_method(&mut state, &method, &params, session_id.as_deref(), &mut events);
+        if let Some(extra) = state.events_after_response.get(&method) {
+            events.extend(extra.iter().cloned());
+        }
+        result
     };
+
+    // Per-expression eval failure marker → protocol error frame.
+    if result.get("__eval_error__").is_some() {
+        return Some(vec![json!({
+            "id": id,
+            "error": {"code": -32000, "message": "eval failure"},
+        })]);
+    }
 
     let mut out = vec![json!({"id": id, "result": result})];
     out.extend(events);
@@ -404,6 +425,14 @@ fn dispatch_method(
                 .get("expression")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            if state
+                .eval_error_on_substring
+                .as_deref()
+                .is_some_and(|sub| expression.contains(sub))
+            {
+                // Protocol-level error for this expression only.
+                return json!({"__eval_error__": true});
+            }
             let value = evaluate_response(state, expression, session_id);
             json!({"result": {"type": "object", "value": value}})
         }

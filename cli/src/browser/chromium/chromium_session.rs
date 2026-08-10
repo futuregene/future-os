@@ -1486,4 +1486,162 @@ mod tests {
         // Second disconnect: nothing to tear down → Ok.
         s.disconnect().await.unwrap();
     }
+
+    // ── Remainder coverage ────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn second_operation_reuses_initialized_connection() {
+        // open() then click(): the second init() call returns early.
+        let mock = MockCdp::start().await;
+        let mut s = session_over(&mock);
+        s.open("http://x/", OpenPageOptions::default()).await.unwrap();
+        s.click(&target("#go"), ClickOptions::default()).await.unwrap();
+        // One setDiscoverTargets for both operations.
+        assert_eq!(mock.commands_of("Target.setDiscoverTargets").len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_creates_page_when_browser_has_none() {
+        // Zero targets → active_page_session creates about:blank.
+        let mock = MockCdp::start_with(vec![], "Chrome/126.0.0.0").await;
+        let mut s = session_over(&mock);
+        let info = s
+            .open("http://fresh/", OpenPageOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(info.url, "http://fresh/");
+        assert_eq!(mock.commands_of("Target.createTarget").len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn attach_arm_for_pages_without_session() {
+        // A page announced ONLY via a targetCreated event (never attached
+        // by the page manager) gets attached lazily by active_page_session.
+        let mock = MockCdp::start().await;
+        mock.state.lock().unwrap().events_after_response.insert(
+            // After getTargets the targetCreated handler is already
+            // registered (setDiscoverTargets would be too early).
+            "Target.getTargets".to_string(),
+            vec![json!({
+                "method": "Target.targetCreated",
+                "params": {"targetInfo": {
+                    "targetId": "T-late", "type": "page",
+                    "url": "about:blank", "title": "",
+                }},
+            })],
+        );
+        let mut s = ChromiumSession::new(BrowserSessionParams::Cdp {
+            browser_kind: "chrome".to_string(),
+            endpoint: mock.http_url.clone(),
+            timeouts: DEFAULT_TIMEOUTS,
+            // Restore the event-announced page as active: it is in the pages
+            // map but was never attached.
+            active_page_id: Some("T-late".to_string()),
+            init_tab_order: None,
+        });
+        let info = s
+            .open("http://late/", OpenPageOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(info.page_id, "T-late");
+        // attachToTarget ran for BOTH the seeded page and T-late.
+        assert!(mock.commands_of("Target.attachToTarget").len() >= 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn evaluate_failures_default_title_and_url() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Runtime.evaluate".to_string());
+        let mut s = session_over(&mock);
+        let info = s
+            .open("http://x/", OpenPageOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(info.title, "");
+        assert_eq!(info.url, "");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn click_with_null_scroll_box_clicks_origin() {
+        let mock = MockCdp::start().await;
+        mock.state.lock().unwrap().eval_override = Some(std::sync::Arc::new(|expr| {
+            if expr.contains("scrollIntoView") {
+                return Some(Value::Null);
+            }
+            None
+        }));
+        let mut s = session_over(&mock);
+        s.click(&target("#go"), ClickOptions::default()).await.unwrap();
+        let moves = mock.commands_of("Input.dispatchMouseEvent");
+        assert_eq!(moves[0]["x"], json!(0));
+        assert_eq!(moves[0]["y"], json!(0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn type_clear_focus_failure_propagates() {
+        let mock = MockCdp::start().await;
+        // The element check passes but the focus/clear eval fails.
+        mock.state
+            .lock()
+            .unwrap()
+            .eval_error_on_substring = Some("el.focus".to_string());
+        let mut s = session_over(&mock);
+        let err = s
+            .r#type(
+                &target("#in"),
+                "x",
+                TypeOptions {
+                    clear: Some(true),
+                    submit: None,
+                    timeout_ms: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("eval failure"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn type_insert_text_failure_propagates() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Input.insertText".to_string());
+        let mut s = session_over(&mock);
+        let err = s
+            .r#type(&target("#in"), "x", TypeOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn type_submit_enter_dispatch_failure_propagates() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Input.dispatchKeyEvent".to_string());
+        let mut s = session_over(&mock);
+        let err = s
+            .r#type(
+                &target("#in"),
+                "x",
+                TypeOptions {
+                    clear: None,
+                    submit: Some(true),
+                    timeout_ms: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+    }
 }
