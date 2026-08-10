@@ -205,3 +205,152 @@ fn agent_shuts_down_cleanly_on_sigint() {
     assert!(status.signal().is_none(), "terminated by signal: {status:?}");
     assert!(status.success(), "exit status: {status:?}");
 }
+
+#[test]
+fn agent_exits_nonzero_when_grpc_bind_fails() {
+    let home = isolated_home();
+    // Hold the port so the agent's bind fails and async_main errors out.
+    let blocker = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = blocker.local_addr().unwrap().port();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", &format!("127.0.0.1:{port}")])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn future-agent");
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn agent_warns_and_uses_defaults_on_corrupt_settings() {
+    let home = isolated_home();
+    let agent_dir = home.path().join(".future/agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(agent_dir.join("settings.json"), "{not json").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn agent_resolves_custom_provider_model_config() {
+    let home = isolated_home();
+    let agent_dir = home.path().join(".future/agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("models.json"),
+        r#"{
+          "providers": {
+            "custom": {
+              "api": "openai-completions",
+              "baseUrl": "https://custom.example.com/v1",
+              "apiKey": "sk-custom",
+              "thinkingLevelMap": {"high": {"budget": 4096}},
+              "compat": {"thinkingFormat": "deepseek", "supportsReasoningEffort": true},
+              "models": [{"id": "custom-model", "limit": {"context": 64000, "output": 4096}}]
+            }
+          }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        r#"{"defaultModel": "custom/custom-model", "maxTurns": 9}"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn agent_prefers_future_model_when_future_is_configured() {
+    let home = isolated_home();
+    let agent_dir = home.path().join(".future/agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("auth.json"),
+        r#"{"future": {"type": "api_key", "key": "k"}}"#,
+    )
+    .unwrap();
+    // A warm future-models cache makes the future provider visible at startup.
+    std::fs::write(
+        agent_dir.join(".future-models-cache.json"),
+        r#"{"fetched_at": 1, "models": [{
+            "id": "deepseek-v4-pro", "name": "v4 pro", "provider": "future",
+            "API": "openai", "reasoning": true, "ContextWindow": 128000
+        }]}"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn agent_reclaims_orphan_run_data_at_startup() {
+    let home = isolated_home();
+    // An orphan run-events directory (no matching transcript) is reclaimed.
+    let orphan = home.path().join(".future/agent/run-events/orphan-session");
+    std::fs::create_dir_all(&orphan).unwrap();
+    std::fs::write(orphan.join("run-1.jsonl"), "{}").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!orphan.exists(), "orphan run data reclaimed at startup");
+}
+
+#[test]
+fn agent_survives_unwritable_profile_path() {
+    let home = isolated_home();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args([
+            "--grpc-addr",
+            "127.0.0.1:0",
+            "--profile-seconds",
+            "0",
+            "--profile",
+            "/nonexistent-dir-xyz/flame.svg",
+        ])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

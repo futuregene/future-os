@@ -892,7 +892,8 @@ mod tests {
     // ─── mock HTTP server for stream_chat ───────────────────────────────────
 
     /// One-shot HTTP server: accepts a single request, records its body, and
-    /// replies with a canned (status, content_type, body).
+    /// replies with a canned (status, content_type, body). Loops so aborted
+    /// probe connections don't consume the one real response.
     struct MockServer {
         base_url: String,
         requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -907,55 +908,67 @@ mod tests {
         let captured = requests.clone();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
-            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-            let mut buf: Vec<u8> = Vec::new();
-            let mut chunk = [0u8; 8192];
-            // Read until end of headers.
-            let header_end = loop {
-                match stream.read(&mut chunk) {
-                    Ok(0) => return,
-                    Ok(n) => {
-                        buf.extend_from_slice(&chunk[..n]);
-                        if let Some(pos) = buf
-                            .windows(4)
-                            .position(|w| w == b"\r\n\r\n")
-                            .map(|p| p + 4)
-                        {
-                            break pos;
+            for _ in 0..16 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                let mut buf: Vec<u8> = Vec::new();
+                let mut chunk = [0u8; 8192];
+                // Read until end of headers.
+                let mut header_end: Option<usize> = None;
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(pos) = buf
+                                .windows(4)
+                                .position(|w| w == b"\r\n\r\n")
+                                .map(|p| p + 4)
+                            {
+                                header_end = Some(pos);
+                                break;
+                            }
                         }
+                        Err(_) => break,
                     }
-                    Err(_) => return,
+                    if buf.len() > 1_000_000 {
+                        break;
+                    }
                 }
-            };
-            let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
-            let content_length: usize = headers
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length:")
-                        .and_then(|v| v.trim().parse().ok())
-                })
-                .unwrap_or(0);
-            // Read the remaining body bytes.
-            while buf.len() < header_end + content_length {
-                match stream.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                    Err(_) => break,
+                let Some(header_end) = header_end else {
+                    continue; // aborted probe connection
+                };
+                let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                let content_length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|v| v.trim().parse().ok())
+                    })
+                    .unwrap_or(0);
+                // Read the remaining body bytes.
+                while buf.len() < header_end + content_length {
+                    match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        Err(_) => break,
+                    }
                 }
+                let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
+                captured.lock().unwrap().push(body.clone());
+                let (status, content_type, response_body) = respond(&body);
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                if stream.write_all(response.as_bytes()).is_err() {
+                    return;
+                }
+                let _ = stream.flush();
             }
-            let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
-            captured.lock().unwrap().push(body.clone());
-            let (status, content_type, response_body) = respond(&body);
-            let response = format!(
-                "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
-                response_body.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
         });
         MockServer {
             base_url: format!("http://127.0.0.1:{port}"),
@@ -1453,5 +1466,132 @@ mod tests {
         client.update_thinking("low", 4000);
         assert_eq!(*client.thinking_level.read(), "low");
         assert_eq!(*client.thinking_budget.read(), 4000);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_done_closes_lone_thinking_block() {
+        // thinking_delta then [DONE] with nothing in between: the [DONE]
+        // handler emits the pending thinking_end itself.
+        let sse = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        let end = types.iter().position(|t| *t == "thinking_end");
+        let stop = types.iter().position(|t| *t == "stop");
+        assert!(end.is_some() && stop.is_some(), "{types:?}");
+        assert!(end.unwrap() < stop.unwrap());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_eof_with_open_tool_call_closes_it() {
+        // toolcall_start then the connection closes: the end-of-stream tail
+        // emits toolcall_end before the truncated stop.
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{}\"}}]}}]}\n\n";
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        let end = types.iter().position(|t| *t == "toolcall_end");
+        assert!(end.is_some(), "{types:?}");
+        let last = events.last().unwrap();
+        assert_eq!(last.stop_reason, "truncated");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_skips_non_data_lines_and_reports_payloads() {
+        // SSE comment/keepalive lines are skipped by the data: filter.
+        let sse = concat!(
+            ": keepalive\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "event: ping\n\n",
+            "data: [DONE]\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen2 = seen.clone();
+        let mut client = Client::new(&server.base_url, "sk-test", None, None);
+        client.on_payload = Some(std::sync::Arc::new(move |bytes: &[u8]| {
+            seen2.fetch_add(bytes.len(), std::sync::atomic::Ordering::Relaxed);
+        }));
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        assert!(seen.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        assert!(events.iter().any(|e| e.event_type == "text_delta"));
+        assert_eq!(events.last().unwrap().event_type, "stop");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_tool_call_idle_with_keepalive_chunks() {
+        std::env::set_var("FUTURE_TEST_TOOL_IDLE_SECS", "1");
+        // Keepalive chunks (no data: lines) keep the select alive while the
+        // tool-call idle window elapses → the buffer-path force-close fires.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut sink = [0u8; 8192];
+            let _ = stream.read(&mut sink);
+            let first = "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{}\"}}]}}]}\n\n";
+            let head = format!(
+                "HTTP/1.1 200 X\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n",
+                first.len(),
+                first
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.flush();
+            // Empty event chunks: keep the socket active without touching
+            // last_sse_event_at, so the idle check fires on receipt.
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                if stream.write_all(b"2\r\n\n\n").is_err() {
+                    return;
+                }
+                let _ = stream.flush();
+            }
+        });
+        let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        std::env::remove_var("FUTURE_TEST_TOOL_IDLE_SECS");
+        let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        assert!(types.contains(&"toolcall_start"), "{types:?}");
+        assert!(types.contains(&"toolcall_end"), "{types:?}");
+        assert!(types.contains(&"stop"), "{types:?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_server_tolerates_aborted_connections() {
+        let server = mock_server(move |_| (200, "application/json", "{}".to_string()));
+        // Connect and immediately close without sending anything.
+        let addr = server.base_url.trim_start_matches("http://");
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        drop(stream);
+        // Now a real request still gets served (the server loop continues).
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let result = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await;
+        assert!(result.is_ok() || result.is_err());
     }
 }

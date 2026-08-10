@@ -3453,6 +3453,25 @@ mod tests {
             SessionEntry::run_terminal("run-a", RUN_STATE_COMPLETED, 5, 100, None),
         ];
         assert_eq!(find_unterminated_run(&entries), None);
+
+        // A stray terminal for a DIFFERENT run does not mask the open one.
+        let entries = vec![
+            SessionEntry::run_started("run-a", 1),
+            SessionEntry::run_terminal("run-b", RUN_STATE_COMPLETED, 5, 100, None),
+        ];
+        assert_eq!(find_unterminated_run(&entries).as_deref(), Some("run-a"));
+
+        // Markers without a run_id in their content are ignored.
+        let mut bare_terminal = SessionEntry::run_terminal("run-a", RUN_STATE_COMPLETED, 0, 0, None);
+        bare_terminal.content = None;
+        let mut bare_start = SessionEntry::run_started("run-c", 1);
+        bare_start.content = None;
+        let entries = vec![
+            SessionEntry::run_started("run-a", 1),
+            bare_terminal,
+            bare_start,
+        ];
+        assert_eq!(find_unterminated_run(&entries).as_deref(), Some("run-a"));
     }
 
     #[test]

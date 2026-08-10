@@ -1156,6 +1156,18 @@ mod tests {
 
     fn noop_on_text(_: String) {}
 
+    /// Install a thread-local tracing subscriber that discards output. The
+    /// verbose log macros only evaluate their arguments when a subscriber
+    /// enables the callsite — without one, argument lines never execute.
+    fn tracing_sink() -> tracing::subscriber::DefaultGuard {
+        tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        )
+    }
+
     // ── run_streaming_with_messages ─────────────────────────────────────────
 
     #[tokio::test(flavor = "current_thread")]
@@ -1937,6 +1949,119 @@ mod tests {
             Script::Events(vec![ev_text("final"), ev_stop()]),
         ]);
         let mut loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        loop_.verbose = true;
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "final");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_with_empty_messages_validates_ok() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("hi"), ev_stop()])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (text, _) = loop_
+            .run_streaming_with_messages(vec![], &StreamContext::default(), noop_on_text, |_| {}, None)
+            .await
+            .unwrap();
+        assert_eq!(text, "hi");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_stop_event_finalizes_pending_tool_calls_and_usage() {
+        // toolcall_start followed DIRECTLY by a usage-carrying stop: the stop
+        // arm both finalizes the pending call and processes usage.
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_toolcall_start(0, "c1", "echo", "{}"),
+                StreamEvent {
+                    event_type: "stop".to_string(),
+                    stop_reason: "tool_calls".to_string(),
+                    usage: Some(crate::types::Usage {
+                        prompt_tokens: 9,
+                        completion_tokens: 4,
+                        total_tokens: 13,
+                        cache_read_tokens: None,
+                        cache_write_tokens: None,
+                        credit_cost: None,
+                    }),
+                    ..Default::default()
+                },
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        assert_eq!(messages[1].tool_calls.len(), 1);
+        assert_eq!(
+            loop_.cumulative_input_tokens.load(std::sync::atomic::Ordering::Relaxed),
+            9
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_verbose_truncated_stream_warns() {
+        let _tracing = tracing_sink();
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("cut off"),
+            StreamEvent {
+                event_type: "stop".to_string(),
+                stop_reason: "truncated".to_string(),
+                ..Default::default()
+            },
+        ])]);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.verbose = true;
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "cut off");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_verbose_completion_logs_usage_details() {
+        let _tracing = tracing_sink();
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("final"),
+            StreamEvent {
+                event_type: "stop".to_string(),
+                stop_reason: "end_turn".to_string(),
+                usage: Some(crate::types::Usage {
+                    prompt_tokens: 11,
+                    completion_tokens: 7,
+                    total_tokens: 18,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                    credit_cost: Some(0.01),
+                }),
+                ..Default::default()
+            },
+        ])]);
+        let mut loop_ = Loop::new(provider, "mock");
         loop_.verbose = true;
         let (text, _) = loop_
             .run_streaming_with_messages(
