@@ -1,15 +1,16 @@
 name: Publish Docs
 
-# Publish the Chinese wiki (docs/wiki/zh/) to Aliyun OSS (docs/ prefix). Manual
-# trigger only — run it from the Actions tab ("Run workflow") or with
+# Publish the Chinese wiki (docs/wiki/zh/) to Aliyun OSS (docs/ prefix) and the
+# English wiki (docs/wiki/en/) to the docs/en/ prefix. Manual trigger only —
+# run it from the Actions tab ("Run workflow") or with
 # `gh workflow run publish-wiki.yml`.
 #
-# Only the Chinese pages are published; the English pages under docs/wiki/en/
-# are not pushed to OSS.
+# The console serves these docs through /platform/v1/docs; the frontend picks
+# the language via ?lang=en (en → docs/en/ prefix) or the root prefix (zh).
 #
-# OSS publish uploads and updates the current Chinese pages. It deliberately
-# does not delete objects that disappeared locally: the publishing credential
-# has no DeleteObject permission.
+# OSS publish uploads and updates the current pages. It deliberately does not
+# delete objects that disappeared locally: the publishing credential has no
+# DeleteObject permission.
 
 on:
   workflow_dispatch:
@@ -48,4 +49,13 @@ jobs:
           set -euo pipefail
           echo "==> Syncing docs/wiki/zh/ → docs/"
           ossutil sync docs/wiki/zh/ "oss://$OSS_BUCKET/docs/" -f
+          echo "==> Done."
+
+      # English pages go to the docs/en/ prefix — the console requests them
+      # with ?lang=en through the /platform/v1/docs proxy.
+      - name: Publish docs/wiki/en to OSS
+        run: |
+          set -euo pipefail
+          echo "==> Syncing docs/wiki/en/ → docs/en/"
+          ossutil sync docs/wiki/en/ "oss://$OSS_BUCKET/docs/en/" -f
           echo "==> Done."

@@ -77,6 +77,9 @@ export function modelProviderFromReference(modelReference: string): string | und
 export interface RemoteSessionState {
   model?: string;
   thinkingLevel?: ThinkingLevel;
+  /** The session's active (in-flight) run, if any — the tail of its events
+   *  can be backfilled from `get_events_since` to resync on open/reconnect. */
+  activeRun?: { runId?: string } | null;
 }
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -98,13 +101,22 @@ export interface HistoryAttachment {
 /**
  * Display-shaped session entry from `get_session_entries` (the agent's JSONL,
  * same source the desktop app renders). Content is plain text; user entries
- * carry attachments on `meta`.
+ * carry attachments on `meta`, and assistant entries may carry the model's
+ * thinking and the tool calls it introduced.
  */
 export interface HistoryEntry {
   id?: string;
   role: string;
   content?: string | null;
-  meta?: { attachments?: HistoryAttachment[] | null } | null;
+  /** Model reasoning for an assistant entry — rendered as a thinking row. */
+  thinking?: string | null;
+  /** Tool calls an assistant entry introduced — rendered as activity rows. */
+  tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[] | null;
+  meta?: {
+    /** Canonical Agent run identity (present on new entries). */
+    run_id?: string;
+    attachments?: HistoryAttachment[] | null;
+  } | null;
   /** Output tokens for the reply — only the final assistant entry of a run. */
   output_tokens?: number;
   /** Reply wall-clock duration in ms — paired with `output_tokens`. */
@@ -166,6 +178,9 @@ export type TimelineItem =
       name: string;
       complete: boolean;
       runId?: string;
+      /** The call's display target (desktop parity): the shell command or
+       *  file path, shown on the row and expandable on tap. */
+      detail?: string;
     }
   | {
       id: string;
