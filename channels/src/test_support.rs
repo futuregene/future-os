@@ -49,6 +49,8 @@ pub struct MockState {
     pub recorded: Vec<RpcCommand>,
     /// session_id → active run_id (set by `prompt`).
     pub active_runs: HashMap<String, String>,
+    /// Override for the imageSupport field in the default get_state payload.
+    pub image_support: Option<bool>,
     /// Sessions created via new_session.
     pub sessions_created: u64,
     /// Prompts received.
@@ -141,13 +143,14 @@ impl FutureAgent for MockAgent {
                         )
                     })
                     .unwrap_or_default();
+                let image_support = st.image_support.unwrap_or(true);
                 format!(
                     "{{\"sessionId\":\"{}\",\"model\":\"future/k3\",\"thinkingLevel\":\"high\",\
-                     \"permissionLevel\":\"all\",\"cwd\":\"/tmp\",\"imageSupport\":true,\
+                     \"permissionLevel\":\"all\",\"cwd\":\"/tmp\",\"imageSupport\":{},\
                      \"contextTokens\":100,\"contextWindow\":1000,\"tokensIn\":10,\
                      \"tokensOut\":20,\"queryCount\":3,\"totalCost\":0.01,\
                      \"autoCompactionEnabled\":true,\"isStreaming\":false{}}}",
-                    cmd.session_id, active
+                    cmd.session_id, image_support, active
                 )
             }
             "list_models" => {

@@ -1705,4 +1705,345 @@ mod tests {
         let prompts = ts::recorded_of(&fx.grpc, "prompt");
         assert!(prompts.iter().any(|c| c.message.contains("/frobnicate")));
     }
+
+    // ─── Message-type handlers ───────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn post_message_extracts_text() {
+        let fx = make_bridge("post-msg", done_events()).await;
+        let mut e = event("om_1");
+        e.msg_type = Some("post".into());
+        e.content = Some(
+            r#"{"content":[[{"tag":"text","text":"post body"}]]}"#.into(),
+        );
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        let prompts = ts::recorded_of(&fx.grpc, "prompt");
+        assert!(prompts.iter().any(|c| c.message.contains("post body")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_text_falls_to_media_handler_noop() {
+        let fx = make_bridge("empty-text", done_events()).await;
+        let mut e = event("om_1");
+        e.content = Some(r#"{"text":"  "}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        // Empty text, no file_key → media handler no-ops: no prompt.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn image_message_downloads_and_prompts_with_image() {
+        let fx = make_bridge("image-msg", done_events()).await;
+        let img_event = |id: &str| {
+            let mut e = event(id);
+            e.msg_type = Some("image".into());
+            e.content = Some(r#"{"image_key":"img_k"}"#.into());
+            e
+        };
+        // NOTE: the image_support cache starts empty and is populated by
+        // ensure_session — so the FIRST image on a fresh bridge goes without
+        // an inline attachment (the file path is still referenced).
+        fx.bridge.handle_event(img_event("om_1")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        let prompts = ts::recorded_of(&fx.grpc, "prompt");
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].message.contains("[User sent an image:"));
+        assert!(prompts[0].images.is_empty(), "first message predates the cache");
+
+        // Second message: cache says imageSupport:true → attachment included.
+        fx.bridge.handle_event(img_event("om_2")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_2").await);
+        let prompts = ts::recorded_of(&fx.grpc, "prompt");
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[1].images.len(), 1, "cached support attaches the image");
+        assert!(!prompts[1].images[0].file_path.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn image_message_without_image_support_sends_no_attachment() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        state.image_support = Some(false);
+        let fx = make_bridge_routes("image-no-support", state, std_routes(&["om_1", "om_2"])).await;
+        let mut e = event("om_1");
+        e.msg_type = Some("image".into());
+        e.content = Some(r#"{"image_key":"img_k"}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        // Warm the cache (false), then verify the second message attaches nothing.
+        let mut e = event("om_2");
+        e.msg_type = Some("image".into());
+        e.content = Some(r#"{"image_key":"img_k"}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_2").await);
+        let prompts = ts::recorded_of(&fx.grpc, "prompt");
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].images.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn image_download_failure_replies_error() {
+        let mut routes = std_routes(&["om_1"]);
+        routes.retain(|r| !r.path.contains("/resources/"));
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge_routes("image-dl-fail", state, routes).await;
+        let mut e = event("om_1");
+        e.msg_type = Some("image".into());
+        e.content = Some(r#"{"image_key":"img_k"}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        // 404 from the mock → "Failed to download image" reply.
+        assert!(replies(&fx.http, "om_1")
+            .iter()
+            .any(|b| b.contains("Failed to download image")));
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_message_downloads_and_prompts() {
+        let fx = make_bridge("file-msg", done_events()).await;
+        for mt in ["file", "media", "audio"] {
+            let mut e = event("om_1");
+            e.msg_type = Some(mt.into());
+            e.content = Some(r#"{"file_key":"file_k","file_name":"doc.pdf"}"#.into());
+            fx.bridge.handle_event(e).await.unwrap();
+            assert!(wait_done(&fx.http, "om_1").await, "type {mt}");
+            let prompts = ts::recorded_of(&fx.grpc, "prompt");
+            assert!(prompts
+                .iter()
+                .any(|c| c.message.contains("doc.pdf")), "type {mt}");
+            break; // one is enough; all three share the handler
+        }
+        // A file with no file_key → handler no-ops.
+        let mut e = event("om_2");
+        e.msg_type = Some("file".into());
+        e.content = Some(r#"{"file_name":"nokey.bin"}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let prompts = ts::recorded_of(&fx.grpc, "prompt");
+        assert!(!prompts.iter().any(|c| c.message.contains("nokey.bin")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_download_failure_replies_error() {
+        let mut routes = std_routes(&["om_1"]);
+        routes.retain(|r| !r.path.contains("/resources/"));
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge_routes("file-dl-fail", state, routes).await;
+        let mut e = event("om_1");
+        e.msg_type = Some("file".into());
+        e.content = Some(r#"{"file_key":"file_k","file_name":"doc.pdf"}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(replies(&fx.http, "om_1")
+            .iter()
+            .any(|b| b.contains("Failed to download file")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unsupported_message_type_ignored() {
+        let fx = make_bridge("unsupported", done_events()).await;
+        let mut e = event("om_1");
+        e.msg_type = Some("sticker".into());
+        e.content = Some(r#"{"file_key":"sticker_k"}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reply_thread_uses_thread_session() {
+        let fx = make_bridge("thread", done_events()).await;
+        let mut e = event("om_1");
+        e.root_id = Some("om_root".into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        // Thread sessions are stored under chat_id:thread_id.
+        assert_eq!(
+            fx.bridge.sessions.get("oc_1", Some("om_root")).as_deref(),
+            Some("mock-session-1")
+        );
+    }
+
+    // ─── Card action events ──────────────────────────────────────────────────
+
+    fn card_action(msg_id: &str, action: &str, request_id: &str) -> FeishuEvent {
+        let mut e = event(msg_id);
+        e.event_type = "card.action.trigger".into();
+        e.content = Some(
+            serde_json::json!({"action": action, "approval_request_id": request_id})
+                .to_string(),
+        );
+        e
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn card_action_approve_and_reject() {
+        let fx = make_bridge("card-action", done_events()).await;
+        // Establish a session first.
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+
+        fx.bridge
+            .handle_event(card_action("om_2", "approve", "req_1"))
+            .await
+            .unwrap();
+        let decisions = ts::recorded_of(&fx.grpc, "approval_decision");
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].mode, "approved");
+        assert_eq!(decisions[0].entry_id, "req_1");
+        assert!(decisions[0].message.contains("approved via Feishu card"));
+        assert!(replies(&fx.http, "om_2").iter().any(|b| b.contains("Approved")));
+
+        fx.bridge
+            .handle_event(card_action("om_3", "reject", "req_2"))
+            .await
+            .unwrap();
+        let decisions = ts::recorded_of(&fx.grpc, "approval_decision");
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[1].mode, "rejected");
+        assert!(replies(&fx.http, "om_3").iter().any(|b| b.contains("Rejected")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn card_action_edge_arms() {
+        let fx = make_bridge("card-edge", done_events()).await;
+        // No content → early return.
+        let mut e = event("om_2");
+        e.event_type = "card.action.trigger".into();
+        e.content = None;
+        fx.bridge.handle_event(e).await.unwrap();
+        // Invalid JSON content → early return.
+        let mut e = event("om_3");
+        e.event_type = "card.action.trigger".into();
+        e.content = Some("not json".into());
+        fx.bridge.handle_event(e).await.unwrap();
+        // Missing approval_request_id → early return.
+        let mut e = event("om_4");
+        e.event_type = "card.action.trigger".into();
+        e.content = Some(r#"{"action":"approve"}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        // No session → decision skipped, ack reply still sent.
+        fx.bridge
+            .handle_event(card_action("om_5", "approve", "req_9"))
+            .await
+            .unwrap();
+        assert!(ts::recorded_of(&fx.grpc, "approval_decision").is_empty());
+        assert!(replies(&fx.http, "om_5").iter().any(|b| b.contains("Approved")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn card_action_agent_failure_only_warns() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        state.fail_commands.insert("approval_decision".into());
+        let fx = make_bridge_routes(
+            "card-agent-fail",
+            state,
+            std_routes(&["om_1", "om_2"]),
+        )
+        .await;
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        // Decision send fails → warn; ack reply still goes out.
+        fx.bridge
+            .handle_event(card_action("om_2", "approve", "req_1"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_2").iter().any(|b| b.contains("Approved")));
+    }
+
+    // ─── Session management arms ─────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn existing_session_is_reactivated() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge_routes("session-reactivate", state, std_routes(&["om_1"])).await;
+        // Pre-seed the session store (as if a previous run created it).
+        fx.bridge.sessions.set_session_id("oc_1", None, "sess-old");
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        // switch_session called, no new_session needed.
+        let switches = ts::recorded_of(&fx.grpc, "switch_session");
+        assert!(switches.iter().any(|c| c.session_id == "sess-old"));
+        assert!(ts::recorded_of(&fx.grpc, "new_session").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_create_failure_replies_error() {
+        let mut state = MockState::default();
+        state.fail_commands.insert("new_session".into());
+        let fx = make_bridge_routes("session-fail", state, std_routes(&["om_1"])).await;
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(replies(&fx.http, "om_1")
+            .iter()
+            .any(|b| b.contains("Failed to create session")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn channel_defaults_applied_and_image_cache_refreshed() {
+        let fx = make_bridge("defaults", done_events()).await;
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        // ensure_session applies channel defaults.
+        assert!(!ts::recorded_of(&fx.grpc, "set_model").is_empty());
+        assert!(!ts::recorded_of(&fx.grpc, "set_thinking_level").is_empty());
+        assert!(!ts::recorded_of(&fx.grpc, "set_permission_level").is_empty());
+        // get_state (image cache) ran and image_support=true cached.
+        assert!(*fx.bridge.image_support.read().await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolve_sender_name_paths() {
+        let fx = make_bridge("resolve-name", done_events()).await;
+        // Enabled + API ok → Some(name).
+        assert_eq!(
+            fx.bridge.resolve_sender_name("ou_1").await.as_deref(),
+            Some("Alice")
+        );
+        // API failure → None.
+        assert_eq!(fx.bridge.resolve_sender_name("ou_missing").await, None);
+        // Disabled in config → None without an API call.
+        let mut state = MockState::default();
+        let fx2 = make_bridge_cfg("resolve-off", std::mem::take(&mut state), |cfg| {
+            cfg.behavior.resolve_sender_names = false;
+        })
+        .await;
+        assert_eq!(fx2.bridge.resolve_sender_name("ou_1").await, None);
+        let calls = ts::requests_to(&fx2.http, "/contact/v3/users/ou_1");
+        assert!(calls.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bot_info_failure_leaves_empty_open_id() {
+        let mut routes = std_routes(&["om_1"]);
+        routes.retain(|r| r.path != "/bot/v3/info");
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge_routes("bot-info-fail", state, routes).await;
+        // Bot info failed → empty open_id; group mention detection disabled
+        // but p2p flow still works.
+        assert!(fx.bridge.bot_open_id.read().await.is_empty());
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bridge_new_fails_without_agent() {
+        ts::ensure_crypto_provider();
+        // No gRPC server at this addr → connect fails → Bridge::new errors.
+        let cfg = feishu_cfg("http://127.0.0.1:1", "open", "open");
+        let agent = Arc::new(AgentConfig {
+            grpc_addr: "127.0.0.1:1".into(),
+            cwd: "/tmp".into(),
+            model: String::new(),
+            thinking_level: String::new(),
+            permission_level: String::new(),
+        });
+        assert!(Bridge::new_for_test(agent, cfg, ts::temp_dir("no-agent"))
+            .await
+            .is_err());
+    }
 }
