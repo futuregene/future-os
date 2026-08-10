@@ -967,16 +967,21 @@ async fn save_refs_and_url(refs: &Map<String, Value>, url: &str) -> Result<(), S
     save_browser_config(&config).await.map_err(String::from)
 }
 
+/// `config.connection.endpoint || DEFAULT_ENDPOINT` — extracted so the
+/// empty-endpoint fallback is unit-testable (validated config files always
+/// carry an endpoint, so only a hand-built config reaches it).
+fn config_endpoint_or_default(config: &BrowserConfig) -> String {
+    let endpoint = config.connection.endpoint();
+    if endpoint.is_empty() {
+        DEFAULT_ENDPOINT.to_string()
+    } else {
+        endpoint.to_string()
+    }
+}
+
 async fn endpoint_for(args: &Map<String, Value>) -> String {
     let config = load_browser_config().await.unwrap_or_default();
-    string_arg(args, "endpoint").unwrap_or_else(|| {
-        let endpoint = config.connection.endpoint();
-        if endpoint.is_empty() {
-            DEFAULT_ENDPOINT.to_string()
-        } else {
-            endpoint.to_string()
-        }
-    })
+    string_arg(args, "endpoint").unwrap_or_else(|| config_endpoint_or_default(&config))
 }
 
 fn port_from_endpoint(endpoint: &str) -> Option<i64> {
@@ -2147,10 +2152,7 @@ mod tests {
         let body =
             format!(r#"{{"Browser":"Chrome/126.0.0.0","webSocketDebuggerUrl":"{ws_url}"}}"#);
         tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    break;
-                };
+            while let Ok((mut socket, _)) = listener.accept().await {
                 let body = body.clone();
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2330,6 +2332,256 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
                 .ends_with(&format!("profile-{resolved}")),
             "{sc}"
         );
+    }
+
+    // ── Safari start path ─────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_safari_already_running_persists_config() {
+        let (_g, _e, _d) = isolated_home().await;
+        // Mock safaridriver: /status + session creation.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json("/status", 200, r#"{"ready":true}"#),
+            crate::test_server::HttpRoute::json(
+                "/session",
+                200,
+                r#"{"sessionId":"sid-9","value":{}}"#,
+            ),
+        ])
+        .await;
+        let port: i64 = base.rsplit(':').next().unwrap().parse().unwrap();
+        let result = browser_start(&args(&[
+            ("browser", json!("safari")),
+            ("port", json!(port)),
+            ("url", json!("http://safari/")),
+        ]))
+        .await
+        .unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["status"], json!("already_running"));
+        assert_eq!(sc["browserKind"], json!("safari"));
+        assert_eq!(sc["port"], json!(port));
+        // The webdriver connection config was persisted.
+        let saved = load_browser_config().await.unwrap();
+        assert_eq!(saved.connection.protocol(), "webdriver");
+        assert_eq!(saved.connection.session_id(), Some("sid-9"));
+        assert_eq!(saved.active_url.as_deref(), Some("http://safari/"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_safari_permission_error_is_actionable() {
+        let (_g, _e, _d) = isolated_home().await;
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json("/status", 200, r#"{"ready":true}"#),
+            crate::test_server::HttpRoute::json(
+                "/session",
+                500,
+                r#"{"value":{"error":"session not created","message":"Allow Remote Automation"}}"#,
+            ),
+        ])
+        .await;
+        let port: i64 = base.rsplit(':').next().unwrap().parse().unwrap();
+        let result = browser_start(&args(&[
+            ("browser", json!("safari")),
+            ("port", json!(port)),
+        ]))
+        .await
+        .unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["status"], json!("permission_required"));
+        assert_eq!(
+            sc["actionRequired"]["command"],
+            json!("safaridriver --enable")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_safari_other_error_propagates() {
+        let (_g, _e, _d) = isolated_home().await;
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json("/status", 200, r#"{"ready":true}"#),
+            crate::test_server::HttpRoute::json(
+                "/session",
+                500,
+                r#"{"value":{"error":"unknown error","message":"weird failure"}}"#,
+            ),
+        ])
+        .await;
+        let port: i64 = base.rsplit(':').next().unwrap().parse().unwrap();
+        let err = browser_start(&args(&[
+            ("browser", json!("safari")),
+            ("port", json!(port)),
+        ]))
+        .await
+        .unwrap_err();
+        assert!(err.contains("weird failure"), "{err}");
+    }
+
+    // ── with_session retry + ensure_browser auto-start ────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_session_webdriver_requires_session_id() {
+        // Hand-built config: the empty session id fails before any network.
+        // (File-backed configs can never reach this: a blank sessionId fails
+        // validation, a missing one recovers to the default CDP config.)
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Webdriver {
+                browser_kind: "safari".to_string(),
+                endpoint: "http://x".to_string(),
+                session_id: String::new(),
+                driver_pid: None,
+            },
+            ..Default::default()
+        };
+        let err = create_session(&config, "http://x").await.err().unwrap();
+        assert_eq!(err, "sessionId required for webdriver");
+
+        // A valid webdriver config builds a Safari session.
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Webdriver {
+                browser_kind: "safari".to_string(),
+                endpoint: "http://x".to_string(),
+                session_id: "s1".to_string(),
+                driver_pid: None,
+            },
+            ..Default::default()
+        };
+        let session = create_session(&config, "http://x").await.unwrap();
+        assert_eq!(session.kind(), "safari");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ensure_browser_auto_start_success() {
+        let (_g, _e, _d) = isolated_home().await;
+        // Needs the default 9222 port; skip when the user's own browser
+        // holds it.
+        if std::net::TcpListener::bind("127.0.0.1:9222").is_err() {
+            return;
+        }
+        let _server = serve_json_version_on(9222, "ws://127.0.0.1:1/ws").await;
+        // No explicit endpoint; config endpoint unreachable-at-first is not
+        // required here: the DEFAULT endpoint is what ensure_browser checks.
+        let endpoint = ensure_browser(&Map::new()).await.unwrap();
+        assert_eq!(endpoint, DEFAULT_ENDPOINT);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ensure_browser_auto_start_failure_propagates() {
+        let (_g, _e, _d) = isolated_home().await;
+        if std::net::TcpListener::bind("127.0.0.1:9222").is_err() {
+            return;
+        }
+        // Nothing on 9222 and no browser binary → browser_start fails.
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = Some(None);
+        let err = ensure_browser(&Map::new()).await.unwrap_err();
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
+        assert!(err.contains("Could not find Chrome or Edge"), "{err}");
+    }
+
+    // ── create_session refinement arms ────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_session_refine_failure_keeps_chromium() {
+        let (_g, _e, _d) = isolated_home().await;
+        // /json/version answers ONCE (for ensure_browser), then fails (the
+        // refinement probe) → browserKind stays "chromium".
+        let mock = crate::test_cdp::MockCdp::start().await;
+        let version_ok = format!(
+            r#"{{"Browser":"Chrome/126","webSocketDebuggerUrl":"{}"}}"#,
+            mock.ws_url
+        );
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::sequence(
+                "/json/version",
+                vec![
+                    // 1: ensure_browser reachability probe.
+                    (200, &version_ok),
+                    // 2: create_session's refinement probe → fails → keep
+                    //    "chromium".
+                    (500, "{}"),
+                    // 3: the session's own init resolve (must succeed).
+                    (200, &version_ok),
+                ],
+            ),
+        ])
+        .await;
+        save_cdp_config(&base, "chromium").await;
+        let (out, _cap) = Output::memory();
+        let result = call_browser_tool(
+            "browser",
+            &args(&[("command", json!("tabs")), ("action", json!("list"))]),
+            &out,
+        )
+        .await
+        .unwrap();
+        assert_eq!(structured(&result)["tabCount"], json!(1));
+        // Not refined.
+        let saved = load_browser_config().await.unwrap();
+        assert_eq!(saved.connection.browser_kind(), "chromium");
+    }
+
+    // ── list_tabs / misc arms ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_tabs_unexpected_variant_yields_empty() {
+        let (_g, _e, _d) = isolated_home().await;
+        // tabs(new) succeeds, but the follow-up list returns a non-List
+        // variant → empty tabs in the response.
+        let mut ctx = ctx_with(
+            MockSession {
+                tabs_new: Some(Ok(InternalTabsResult::New {
+                    page: page_info("p9"),
+                    index: 0,
+                })),
+                tabs_list: Some(Ok(InternalTabsResult::Close {
+                    url: "u".to_string(),
+                    index: 0,
+                })),
+                ..MockSession::default()
+            },
+            BrowserConfig::default(),
+            args(&[("action", json!("new"))]),
+        );
+        let result = browser_tabs(&mut ctx).await.unwrap();
+        assert_eq!(structured(&result)["tabCount"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn mock_session_kind_protocol_and_screenshot_error() {
+        let (_g, _e, dir) = isolated_home().await;
+        let mut session = MockSession::default();
+        assert_eq!(session.kind(), "mock");
+        assert_eq!(session.protocol(), "cdp");
+        session.screenshot_result = Some(Err("snap boom".to_string()));
+        let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
+        let err = browser_screenshot(&mut ctx).await.unwrap_err();
+        assert_eq!(err, "snap boom");
+        // Screenshot failure leaves no file behind in the temp dir.
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn config_endpoint_or_default_arms() {
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: String::new(),
+            },
+            ..Default::default()
+        };
+        assert_eq!(config_endpoint_or_default(&config), DEFAULT_ENDPOINT);
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: "http://x/".to_string(),
+            },
+            ..Default::default()
+        };
+        assert_eq!(config_endpoint_or_default(&config), "http://x/");
     }
 }
 
