@@ -322,6 +322,52 @@ fn verify_ledger_reports() {
     assert_eq!(report.total_events, 0);
 }
 
+#[test]
+fn delete_dirless_goal_and_append_skip_arms() {
+    let (_d, root) = fresh_store("s13");
+    let mut store = Store::open(&root).unwrap();
+    // Registered but no goal dir on disk → delete skips the remove.
+    store.register(&Goal::new("g_dirless", "x", "/tmp")).unwrap();
+    store.delete_goal("g_dirless").unwrap();
+    assert!(!store.registered("g_dirless"));
+    // A garbage ledger line is skipped by the append dedup scan.
+    registered_goal(&mut store, "g1");
+    let events_path = store.goal_dir("g1").join("events.jsonl");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&events_path)
+        .unwrap()
+        .write_all(b"{broken\n")
+        .unwrap();
+    store
+        .append(Event::TodoAdded {
+            goal_id: "g1".into(),
+            todo: Todo::advancement("t1", "x"),
+            ts: now_epoch(),
+        })
+        .unwrap();
+}
+
+#[test]
+fn verify_conflict_dedup_arm() {
+    let (_d, root) = fresh_store("s14");
+    let mut store = Store::open(&root).unwrap();
+    registered_goal(&mut store, "g1");
+    // Three lines sharing an id with TWO distinct payloads: the conflict is
+    // recorded once even though the mismatch is seen twice.
+    let events_path = store.goal_dir("g1").join("events.jsonl");
+    let a = serde_json::json!({"event_id":"e3","kind":"goal_started","goal_id":"g1","ts":1});
+    let b = serde_json::json!({"event_id":"e3","kind":"goal_started","goal_id":"g1","ts":2});
+    let c = serde_json::json!({"event_id":"e3","kind":"goal_started","goal_id":"g1","ts":3});
+    std::fs::write(
+        &events_path,
+        format!("{}\n{}\n{}\n", a, b, c),
+    )
+    .unwrap();
+    let report = store.verify("g1").unwrap();
+    assert_eq!(report.conflicts.len(), 1, "{report:?}");
+}
+
 // ── apply matrix (append + replay state assertions) ────────────────────────
 
 #[test]

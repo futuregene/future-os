@@ -164,3 +164,23 @@ fn smoke_unknown_profile_errors() {
     let store = open_store(&cr);
     assert!(run_smoke(&store, "no-such-profile").is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn smoke_unwritable_root_fails_check() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ro-root");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut perms = std::fs::metadata(&root).unwrap().permissions();
+    perms.set_mode(0o555);
+    std::fs::set_permissions(&root, perms).unwrap();
+    let store = Store::open(root.to_str().unwrap()).unwrap();
+    let result = run_smoke(&store, "release-gate").unwrap();
+    let c = check(&result, "root_writable");
+    assert!(!c.passed, "{c:?}");
+    // Restore writability so the tempdir can be cleaned up.
+    let mut perms = std::fs::metadata(&root).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&root, perms).unwrap();
+}

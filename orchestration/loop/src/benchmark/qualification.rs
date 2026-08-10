@@ -298,6 +298,33 @@ mod tests {
         assert!(!result.passed);
         assert_eq!(result.rounds_used, 0);
         assert_eq!(result.failure_class, "runner_error");
+        // Exercise the unreachable-by-design stub arms so coverage sees them
+        // (they must bail, never panic-free return).
+        let request = case.request();
+        let handle = super::super::adapter::RunHandle {
+            run_id: "r".to_string(),
+            external_id: "e".to_string(),
+        };
+        let observation = super::super::adapter::Observation {
+            terminal_state: "completed".to_string(),
+            error: None,
+            tools: vec![],
+            evidence: String::new(),
+            tokens_in: 0,
+            tokens_out: 0,
+            cost: 0.0,
+        };
+        assert_eq!(adapter.id(), "broken");
+        assert!(adapter.launch(&request).is_err());
+        assert!(adapter.observe(&handle).is_err());
+        assert!(adapter.ingest(&request, &handle, &observation).is_err());
+        let ingest = super::super::adapter::IngestResult {
+            benchmark_run: Default::default(),
+            observation,
+            passed: false,
+        };
+        assert!(adapter.classify(&request, &ingest).is_err());
+        assert!(adapter.ledger(&request, &ingest, None, 0).is_err());
     }
 
     #[test]
