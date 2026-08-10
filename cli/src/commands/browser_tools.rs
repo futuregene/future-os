@@ -1101,6 +1101,7 @@ mod tests {
         press_result: Option<Result<InternalActionResult, String>>,
         screenshot_result: Option<Result<Vec<u8>, String>>,
         /// Custom evaluate responder (checked before the defaults).
+        #[allow(clippy::type_complexity)]
         on_eval: Option<Box<dyn Fn(&EvaluateRequest) -> Result<Value, String> + Send + Sync>>,
         /// Snapshot function result (items etc.).
         snapshot_value: Value,
@@ -1285,6 +1286,7 @@ mod tests {
     // ── Test scaffolding ──────────────────────────────────────────────
 
     /// Isolated FUTURE_HOME (browser config) + the shared env lock.
+    #[allow(clippy::type_complexity)]
     async fn isolated_home() -> (
         tokio::sync::MutexGuard<'static, ()>,
         crate::test_env::EnvGuard,
@@ -1357,25 +1359,27 @@ mod tests {
     #[tokio::test]
     async fn tabs_list_and_default_action() {
         let (_g, _e, _d) = isolated_home().await;
-        let mut session = MockSession::default();
-        session.tabs_list = Some(Ok(InternalTabsResult::List {
-            tabs: vec![
-                InternalTabInfo {
-                    page_id: "a".to_string(),
-                    index: 0,
-                    title: "TA".to_string(),
-                    url: "http://a/".to_string(),
-                    active: true,
-                },
-                InternalTabInfo {
-                    page_id: "b".to_string(),
-                    index: 1,
-                    title: "TB".to_string(),
-                    url: "http://b/".to_string(),
-                    active: false,
-                },
-            ],
-        }));
+        let session = MockSession {
+            tabs_list: Some(Ok(InternalTabsResult::List {
+                tabs: vec![
+                    InternalTabInfo {
+                        page_id: "a".to_string(),
+                        index: 0,
+                        title: "TA".to_string(),
+                        url: "http://a/".to_string(),
+                        active: true,
+                    },
+                    InternalTabInfo {
+                        page_id: "b".to_string(),
+                        index: 1,
+                        title: "TB".to_string(),
+                        url: "http://b/".to_string(),
+                        active: false,
+                    },
+                ],
+            })),
+            ..MockSession::default()
+        };
         // No "action" arg → defaults to list.
         let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
         let result = browser_tabs(&mut ctx).await.unwrap();
@@ -1389,12 +1393,14 @@ mod tests {
     #[tokio::test]
     async fn tabs_list_unexpected_variant_yields_empty() {
         let (_g, _e, _d) = isolated_home().await;
-        let mut session = MockSession::default();
         // List answered with a non-List variant → empty tabs vec.
-        session.tabs_list = Some(Ok(InternalTabsResult::Close {
-            url: "u".to_string(),
-            index: 0,
-        }));
+        let session = MockSession {
+            tabs_list: Some(Ok(InternalTabsResult::Close {
+                url: "u".to_string(),
+                index: 0,
+            })),
+            ..MockSession::default()
+        };
         let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
         let result = browser_tabs(&mut ctx).await.unwrap();
         assert_eq!(structured(&result)["tabCount"], json!(0));
@@ -1574,8 +1580,8 @@ mod tests {
     #[tokio::test]
     async fn snapshot_formats_lines_refs_and_states() {
         let (_g, _e, _d) = isolated_home().await;
-        let mut session = MockSession::default();
-        session.snapshot_value = json!({
+        let session = MockSession {
+            snapshot_value: json!({
             "title": "Snap T", "url": "http://snap/",
             "items": [
                 {"ref": "b1", "selector": "#go", "role": "button", "name": "Go",
@@ -1586,7 +1592,9 @@ mod tests {
                  "tag": "a", "disabled": false, "checked": null, "href": "https://d/"},
                 {"ref": "t4", "selector": "p", "role": "text", "name": "hello"},
             ],
-        });
+            }),
+            ..MockSession::default()
+        };
         let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
         let result = browser_snapshot(&mut ctx).await.unwrap();
         let text = result.text.as_ref().expect("text");
@@ -1658,8 +1666,10 @@ mod tests {
     #[tokio::test]
     async fn click_by_ref_uses_saved_refs() {
         let (_g, _e, _d) = isolated_home().await;
-        let mut config = BrowserConfig::default();
-        config.refs = Some(args(&[("b1", json!("#saved-sel"))]));
+        let config = BrowserConfig {
+            refs: Some(args(&[("b1", json!("#saved-sel"))])),
+            ..Default::default()
+        };
         let mut ctx = ctx_with(
             MockSession::default(),
             config,
@@ -1812,12 +1822,14 @@ mod tests {
     #[tokio::test]
     async fn console_filters_by_level_and_notes_empty() {
         let (_g, _e, _d) = isolated_home().await;
-        let mut session = MockSession::default();
-        session.console_logs = json!([
-            {"level": "log", "text": "hi", "time": "t1"},
-            {"level": "error", "text": "boom", "time": "t2"},
-            "not-an-object",
-        ]);
+        let session = MockSession {
+            console_logs: json!([
+                {"level": "log", "text": "hi", "time": "t1"},
+                {"level": "error", "text": "boom", "time": "t2"},
+                "not-an-object",
+            ]),
+            ..MockSession::default()
+        };
         let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
         let result = browser_console(&mut ctx).await.unwrap();
         let sc = structured(&result);
@@ -1825,11 +1837,13 @@ mod tests {
         assert!(sc.get("note").is_none());
 
         // Level filter.
-        let mut session = MockSession::default();
-        session.console_logs = json!([
-            {"level": "log", "text": "hi", "time": "t1"},
-            {"level": "error", "text": "boom", "time": "t2"},
-        ]);
+        let session = MockSession {
+            console_logs: json!([
+                {"level": "log", "text": "hi", "time": "t1"},
+                {"level": "error", "text": "boom", "time": "t2"},
+            ]),
+            ..MockSession::default()
+        };
         let mut ctx = ctx_with(
             session,
             BrowserConfig::default(),
@@ -1851,8 +1865,10 @@ mod tests {
             .contains("No buffered console messages"));
 
         // Non-array value → empty + note.
-        let mut session = MockSession::default();
-        session.console_logs = json!("junk");
+        let session = MockSession {
+            console_logs: json!("junk"),
+            ..MockSession::default()
+        };
         let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
         let result = browser_console(&mut ctx).await.unwrap();
         assert!(structured(&result).get("note").is_some());
@@ -2576,10 +2592,12 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
     #[tokio::test]
     async fn mock_session_kind_protocol_and_screenshot_error() {
         let (_g, _e, dir) = isolated_home().await;
-        let mut session = MockSession::default();
+        let session = MockSession {
+            screenshot_result: Some(Err("snap boom".to_string())),
+            ..MockSession::default()
+        };
         assert_eq!(session.kind(), "mock");
         assert_eq!(session.protocol(), "cdp");
-        session.screenshot_result = Some(Err("snap boom".to_string()));
         let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
         let err = browser_screenshot(&mut ctx).await.unwrap_err();
         assert_eq!(err, "snap boom");

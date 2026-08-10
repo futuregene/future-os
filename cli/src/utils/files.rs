@@ -220,10 +220,8 @@ mod tests {
         if let Some(p) = std::env::var_os("PATH") {
             paths.extend(std::env::split_paths(&p));
         }
-        let _env = crate::test_env::EnvGuard::set(&[(
-            "PATH",
-            std::env::join_paths(paths).unwrap().into(),
-        )]);
+        let _env =
+            crate::test_env::EnvGuard::set(&[("PATH", std::env::join_paths(paths).unwrap())]);
         assert_eq!(which("anything").await, None);
     }
 }

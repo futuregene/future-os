@@ -951,7 +951,7 @@ mod tests {
         }
         let _env = EnvGuard::set(&[
             ("HOME", dir.path().as_os_str().to_owned()),
-            ("PATH", std::env::join_paths(paths).unwrap().into()),
+            ("PATH", std::env::join_paths(paths).unwrap()),
             ("FUTURE_AGENT_GRPC_ADDR", OsString::from(addr)),
         ]);
 
@@ -1203,7 +1203,7 @@ mod tests {
         }
         let _env = EnvGuard::set(&[
             ("HOME", dir.path().as_os_str().to_owned()),
-            ("PATH", std::env::join_paths(paths).unwrap().into()),
+            ("PATH", std::env::join_paths(paths).unwrap()),
             ("FUTURE_AGENT_GRPC_ADDR", OsString::from(addr)),
         ]);
 
