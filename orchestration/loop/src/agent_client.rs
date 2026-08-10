@@ -11,6 +11,13 @@ use future_rpc::proto::future_agent_client::FutureAgentClient;
 use future_rpc::proto::{RpcCommand, StreamEvent, StreamRequest};
 use serde_json::Value;
 
+/// Agent gRPC address (`host:port`). Defaults to the local agent; overridable
+/// via FUTURE_LOOP_AGENT_ADDR so tests can point the control plane at a mock
+/// server (mirrors the BROWSER_LAUNCHER_OVERRIDE test-hook precedent in cli).
+pub fn agent_addr() -> String {
+    std::env::var("FUTURE_LOOP_AGENT_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string())
+}
+
 /// What the agent reported at the end of one bounded turn (agent_end).
 #[derive(Debug, Clone)]
 pub struct RunSummary {
