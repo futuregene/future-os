@@ -303,6 +303,30 @@ fn run_turn_error_event_and_stream_failure() {
     });
 }
 
+#[test]
+fn run_turn_live_log_without_tool_name() {
+    rt().block_on(async {
+        // tool_start WITHOUT tool_name → the live-log line has no tool field.
+        let events = vec![
+            ev("mine", 0, "tool_start", "{}"),
+            ev("mine", 1, "agent_end", "{\"state\":\"completed\"}"),
+        ];
+        let (addr, _) = spawn_mock(MockState {
+            events,
+            ..Default::default()
+        })
+        .await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("live.jsonl");
+        let summary = client.run_turn("sess", "mine", Some(&live)).await.unwrap();
+        assert!(summary.tools.is_empty());
+        let log = std::fs::read_to_string(&live).unwrap();
+        assert!(log.contains("tool_start"), "{log}");
+        assert!(!log.contains("\"tool\":"), "{log}");
+    });
+}
+
 // ── execute_turn ───────────────────────────────────────────────────────────
 
 #[test]
@@ -452,6 +476,25 @@ fn turn_succeeded_matrix() {
         Some(1),
     ));
     assert!(!turn_succeeded(&r));
+}
+
+#[test]
+fn writeback_missing_todo_guards() {
+    // monitor poll for a todo that does not exist → early return, no panic.
+    let (mut goal, _) = sample_goal_with_todo();
+    let mut record = sample_record("completed");
+    record.todo_id = "ghost".into();
+    writeback(&mut goal, &record, Some(true), None);
+    writeback(&mut goal, &record, Some(false), None);
+    assert!(goal.history.is_empty());
+    // succeeded turn for a missing todo → completion skipped, history pushed.
+    writeback(&mut goal, &record, None, Some((true, vec![])));
+    assert_eq!(goal.history.len(), 1);
+    // failed turn for a missing todo → no failed_attempts bump.
+    let mut failed = sample_record("error");
+    failed.todo_id = "ghost".into();
+    writeback(&mut goal, &failed, None, None);
+    assert_eq!(goal.todos.len(), 1);
 }
 
 #[test]

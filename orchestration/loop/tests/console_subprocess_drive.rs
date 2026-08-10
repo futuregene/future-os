@@ -157,6 +157,46 @@ fn worker_bridge_failed_turns_hit_max_turns() {
 }
 
 #[test]
+fn worker_bridge_successor_chain_on_non_final_todo() {
+    let root = tmp_root("bridge-succ");
+    let gid = init_goal(&root, "bridge successors");
+    // A second open todo → completing the selected one names it as successor.
+    let (_, _, code) = run(&root, &["todo", "add", "--goal", &gid, "--text", "second task"]);
+    assert_eq!(code, 0);
+    let mut child = Command::new(bin())
+        .env("FUTURE_LOOP_ROOT", &root)
+        .args(["worker-bridge", "--goal", &gid, "--max-turns", "2"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::{BufRead, BufReader, Read};
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let json_start = line.find('{').unwrap();
+    let packet: serde_json::Value = serde_json::from_str(&line[json_start..]).unwrap();
+    let todo_id = packet["todo_id"].as_str().unwrap().to_string();
+    let answer = format!(
+        "{{\"todo_id\":\"{todo_id}\",\"terminal_state\":\"completed\",\"evidence\":\"done\",\"tools\":[\"shell\"]}}\n"
+    );
+    child.stdin.as_mut().unwrap().write_all(answer.as_bytes()).unwrap();
+    // writeback print, then EOF (stdin closed) → worker finished close.
+    drop(child.stdin.take());
+    let mut rest = String::new();
+    Read::read_to_string(&mut reader, &mut rest).unwrap();
+    assert!(rest.contains("BRIDGE writeback"), "{rest}");
+    let status = child.wait().unwrap();
+    assert!(status.success());
+    // The completed todo carries the remaining one as its successor.
+    let store = future_loop::store::Store::open(&root).unwrap();
+    let g = store.replay(&gid).unwrap().unwrap();
+    let done = g.todos.iter().find(|t| t.id == todo_id).unwrap();
+    assert_eq!(done.successor_ids.len(), 1, "{done:?}");
+}
+
+#[test]
 fn worker_bridge_stops_when_should_run_false() {
     let root = tmp_root("bridge-stop");
     let gid = init_goal(&root, "bridge stopped goal");
