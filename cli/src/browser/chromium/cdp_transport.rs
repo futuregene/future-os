@@ -337,6 +337,10 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = accept_async(stream).await.unwrap();
+            // Let the client subscribe() first: the broadcast channel keeps
+            // no history, so a Close emitted before the receiver exists is
+            // lost and the test times out (flaked on fast Linux CI runners).
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let _ = ws.send(Message::Close(None)).await;
             // Bounded hold: keeps the socket through the client assertions,
             // then closes so this task (and its closing lines) complete.
@@ -360,6 +364,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let _ws = accept_async(stream).await.unwrap();
+            // Same subscribe-before-drop window as variant A.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             drop(_ws); // abrupt drop
         });
         let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
