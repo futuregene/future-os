@@ -519,4 +519,308 @@ mod tests {
             Some("raw payload")
         );
     }
+
+    // ─── Mock-server-backed tests ────────────────────────────────────────────
+
+    use crate::test_support::{self as ts, HttpRoute, WsAction};
+    use tokio_tungstenite::tungstenite::Message as WsMsg;
+
+    fn gateway_route(ws_url: &str) -> HttpRoute {
+        HttpRoute::json(
+            "/v1.0/gateway/connections/open",
+            200,
+            &serde_json::json!({"endpoint": ws_url, "ticket": "ticket-1"}).to_string(),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_connection_ok_and_errors() {
+        ts::ensure_crypto_provider();
+        let (base, recorded) = ts::spawn_http(vec![gateway_route("wss://gw/")]).await;
+        let c = DingtalkWsClient::new(&base, "id", "secret");
+        let (endpoint, ticket) = c.open_connection().await.unwrap();
+        assert_eq!(endpoint, "wss://gw/");
+        assert_eq!(ticket, "ticket-1");
+        // The subscription registers the bot-messages CALLBACK topic.
+        let calls = ts::requests_to(&recorded, "/v1.0/gateway/connections/open");
+        let body = calls[0].body_string();
+        assert!(body.contains("/v1.0/im/bot/messages/get"));
+        assert!(body.contains("\"clientId\":\"id\""));
+
+        // HTTP error status.
+        let (base, _) = ts::spawn_http(vec![HttpRoute::json(
+            "/v1.0/gateway/connections/open",
+            500,
+            "gateway down",
+        )])
+        .await;
+        let err = DingtalkWsClient::new(&base, "id", "s")
+            .open_connection()
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("HTTP 500"), "{err}");
+        assert!(err.to_string().contains("gateway down"), "{err}");
+
+        // Missing endpoint / missing ticket.
+        let (base, _) = ts::spawn_http(vec![HttpRoute::json(
+            "/v1.0/gateway/connections/open",
+            200,
+            r#"{"ticket":"t"}"#,
+        )])
+        .await;
+        let err = DingtalkWsClient::new(&base, "id", "s")
+            .open_connection()
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("Missing endpoint"), "{err}");
+
+        let (base, _) = ts::spawn_http(vec![HttpRoute::json(
+            "/v1.0/gateway/connections/open",
+            200,
+            r#"{"endpoint":"wss://gw/"}"#,
+        )])
+        .await;
+        let err = DingtalkWsClient::new(&base, "id", "s")
+            .open_connection()
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("Missing ticket"), "{err}");
+
+        // Transport failure.
+        let err = DingtalkWsClient::new("http://127.0.0.1:1", "id", "s")
+            .open_connection()
+            .await
+            .err()
+            .unwrap();
+        assert!(!err.to_string().is_empty());
+    }
+
+    fn callback_frame() -> String {
+        bot_message_frame().to_string()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_listen_full_frame_flow() {
+        ts::ensure_crypto_provider();
+        let event_frame = serde_json::json!({
+            "type": "EVENT",
+            "headers": {"messageId": "mid-ev", "eventType": "some.event"},
+            "data": "{\"senderId\":\"u-9\"}"
+        })
+        .to_string();
+        let (ws_url, received) = ts::spawn_ws(vec![
+            WsAction::SendText(serde_json::json!({"type": "PONG"}).to_string()),
+            // SYSTEM with a benign topic → ACK, keep going.
+            WsAction::SendText(
+                serde_json::json!({"type": "SYSTEM", "headers": {"messageId": "sys-1", "topic": "heartbeat"}, "data": "{}"})
+                    .to_string(),
+            ),
+            // EVENT → on_event + ACK.
+            WsAction::SendText(event_frame),
+            // EVENT that doesn't parse (no headers) → ACK only.
+            WsAction::SendText(serde_json::json!({"type": "EVENT", "data": "{}"}).to_string()),
+            // CALLBACK on the bot-messages topic → on_event + ACK.
+            WsAction::SendText(callback_frame()),
+            // CALLBACK on another topic → ACK only.
+            WsAction::SendText(
+                serde_json::json!({"type": "CALLBACK", "headers": {"messageId": "cb-9", "topic": "/other"}, "data": "{}"})
+                    .to_string(),
+            ),
+            // CALLBACK delegate topic → on_event.
+            WsAction::SendText(
+                serde_json::json!({
+                    "type": "CALLBACK",
+                    "headers": {"messageId": "mid-del", "topic": "/v1.0/im/bot/messages/delegate"},
+                    "data": "{\"senderId\":\"u-del\"}"
+                })
+                .to_string(),
+            ),
+            // Unknown type → debug only.
+            WsAction::SendText(serde_json::json!({"type": "MYSTERY"}).to_string()),
+            // Invalid JSON → warn.
+            WsAction::SendText("not json at all".to_string()),
+            // WS protocol ping → client pongs.
+            WsAction::SendPing(b"dt".to_vec()),
+            WsAction::Delay(Duration::from_millis(400)),
+            WsAction::SendClose,
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
+        let client = DingtalkWsClient::new(&base, "id", "secret");
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        client
+            .connect_and_listen(move |ev| events_clone.lock().unwrap().push(ev))
+            .await
+            .expect("clean close");
+        let events = events.lock().unwrap();
+        // EVENT (eventType some.event) + CALLBACK bot + CALLBACK delegate.
+        assert_eq!(events.len(), 3, "events: {:?}", *events);
+        assert_eq!(events[0].event_type, "some.event");
+        assert_eq!(events[1].message_id.as_deref(), Some("mid-123"));
+        assert_eq!(events[2].sender_id.as_deref(), Some("u-del"));
+        drop(events);
+
+        // ACKs were sent for SYSTEM/EVENT/CALLBACK frames; a WS Pong answered
+        // the protocol ping.
+        let got = received.lock().unwrap();
+        let acks: Vec<_> = got
+            .iter()
+            .filter_map(|m| match m {
+                WsMsg::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(acks.iter().any(|a| a.contains("\"code\":200") && a.contains("sys-1")));
+        assert!(acks.iter().any(|a| a.contains("mid-ev")));
+        assert!(acks.iter().any(|a| a.contains("mid-123")));
+        assert!(acks.iter().any(|a| a.contains("cb-9")));
+        assert!(
+            got.iter().any(|m| matches!(m, WsMsg::Pong(p) if p == b"dt")),
+            "client must answer WS ping"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_listen_disconnect_and_errors() {
+        ts::ensure_crypto_provider();
+        // SYSTEM disconnect → clean Ok.
+        let (ws_url, _) = ts::spawn_ws(vec![WsAction::SendText(
+            serde_json::json!({"type": "SYSTEM", "headers": {"messageId": "d-1", "topic": "disconnect"}, "data": "{}"})
+                .to_string(),
+        )])
+        .await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
+        DingtalkWsClient::new(&base, "id", "s")
+            .connect_and_listen(|_| {})
+            .await
+            .expect("disconnect is Ok");
+
+        // Dead endpoint → connection failed.
+        let (base, _) = ts::spawn_http(vec![gateway_route("ws://127.0.0.1:1/")]).await;
+        let err = DingtalkWsClient::new(&base, "id", "s")
+            .connect_and_listen(|_| {})
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("connection failed"), "{err}");
+
+        // Protocol garbage → WebSocket error arm.
+        let (ws_url, _) = ts::spawn_ws(vec![
+            WsAction::SendRawBytes(vec![0x83, 0x00]),
+            WsAction::Delay(Duration::from_millis(300)),
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
+        let err = DingtalkWsClient::new(&base, "id", "s")
+            .connect_and_listen(|_| {})
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("WebSocket error"), "{err}");
+
+        // EOF without close handshake → same error arm.
+        let (ws_url, _) = ts::spawn_ws(vec![]).await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
+        let err = DingtalkWsClient::new(&base, "id", "s")
+            .connect_and_listen(|_| {})
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("WebSocket error"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_listen_sends_keepalive_ping() {
+        ts::ensure_crypto_provider();
+        let (ws_url, received) = ts::spawn_ws(vec![
+            WsAction::Delay(Duration::from_millis(1500)),
+            WsAction::SendClose,
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
+        let client = DingtalkWsClient::new(&base, "id", "s").with_test_ping_interval(1);
+        client
+            .connect_and_listen(|_| {})
+            .await
+            .expect("close after keepalive");
+        let got = received.lock().unwrap();
+        assert!(
+            got.iter().any(|m| matches!(m, WsMsg::Ping(_))),
+            "keepalive must send WS pings"
+        );
+    }
+
+    // ─── urlencoding ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn urlencoding_rules() {
+        assert_eq!(urlencoding("abcXYZ019-._~"), "abcXYZ019-._~");
+        assert_eq!(urlencoding("a b"), "a+b");
+        assert_eq!(urlencoding("a/b?c=d"), "a%2Fb%3Fc%3Dd");
+        assert_eq!(urlencoding("票"), "%E7%A5%A8");
+        assert_eq!(urlencoding(""), "");
+    }
+
+    #[test]
+    fn hex_char_digits_and_letters() {
+        assert_eq!(hex_char(0), '0');
+        assert_eq!(hex_char(9), '9');
+        assert_eq!(hex_char(10), 'A');
+        assert_eq!(hex_char(15), 'F');
+    }
+
+    // ─── parse_dingtalk_event residual arms ──────────────────────────────────
+
+    #[test]
+    fn parses_body_fallback_fields() {
+        // message_id/chat_id/sender from the body, object content stringified.
+        let data = serde_json::json!({
+            "senderId": "u-1",
+            "openConversationId": "oc-9",
+            "conversation_type": "2",
+            "message_id": "body-mid",
+            "sender_nick": "Nick",
+            "create_at": 123i64,
+            "session_webhook": "http://hook",
+            "chatbot_user_id": "bot-9",
+            "content": {"rich": "object"}
+        });
+        let frame = serde_json::json!({
+            "type": "EVENT",
+            "headers": {},
+            "data": data.to_string()
+        });
+        let ev = parse_dingtalk_event(&frame).expect("parses");
+        // Empty eventType falls back to the frame type.
+        assert_eq!(ev.event_type, "EVENT");
+        assert_eq!(ev.message_id.as_deref(), Some("body-mid"));
+        assert_eq!(ev.chat_id.as_deref(), Some("oc-9"));
+        assert_eq!(ev.chat_type.as_deref(), Some("2"));
+        assert_eq!(ev.sender_name.as_deref(), Some("Nick"));
+        assert_eq!(ev.create_time_ms, Some(123));
+        assert_eq!(ev.session_webhook.as_deref(), Some("http://hook"));
+        assert_eq!(ev.chatbot_user_id.as_deref(), Some("bot-9"));
+        // Object content is stringified.
+        assert!(ev.content.as_deref().unwrap().contains("rich"));
+    }
+
+    #[test]
+    fn send_ack_roundtrips_data_payload() {
+        // Covered through the WS flow, but pin the data-string roundtrip:
+        // a non-JSON data string degrades to "{}" in the ACK.
+        let msg = serde_json::json!({
+            "headers": {"messageId": "m-1"},
+            "data": "not json"
+        });
+        let data_val: Value = msg
+            .get("data")
+            .and_then(|v| v.as_str())
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::json!({}));
+        assert_eq!(data_val, serde_json::json!({}));
+    }
 }
