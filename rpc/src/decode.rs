@@ -420,6 +420,7 @@ pub(crate) fn events_since_from_proto(events: &proto::EventsSince) -> EventsSinc
         events: events.events.iter().map(replay_event_from_proto).collect(),
         truncated: events.truncated,
         projection: events.projection.as_ref().map(projection_from_proto),
+        has_more: events.has_more,
     }
 }
 
@@ -1011,10 +1012,12 @@ mod tests {
             }],
             truncated: true,
             projection: None,
+            has_more: true,
         }));
         let payload = decode_events_since(&resp).unwrap();
         assert_eq!(payload.run_id, "r1");
         assert!(payload.truncated);
+        assert!(payload.has_more);
         assert_eq!(payload.events.len(), 1);
 
         let resp = resp_with_data(r#"{"runId":"r2","events":[],"truncated":false}"#);

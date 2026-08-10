@@ -306,6 +306,15 @@ fn get_events_since_wire_parity() {
 }
 
 #[test]
+fn get_events_since_has_more_wire_parity() {
+    // A paged response (hasMore: true) must survive the typed round-trip;
+    // the flag is absent on the wire when false (legacy shape).
+    let mut fixture = get_events_since_fixture();
+    fixture["hasMore"] = json!(true);
+    assert_command_parity("get_events_since", fixture);
+}
+
+#[test]
 fn get_events_since_with_projection_parity() {
     let fixture = json!({
         "runId": "r1",

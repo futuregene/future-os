@@ -108,6 +108,35 @@ pub struct AgentPromptResponse {
     pub session_recreated: bool,
 }
 
+/// Events requested per get_events_since page. A long run's journal far
+/// exceeds the gRPC message cap when returned whole (every event crosses the
+/// wire about three times under the typed dual-write), so full-tail reads
+/// page through it. The server additionally bounds a page by a
+/// serialized-size budget, keeping pages safe even for runs with multi-MB
+/// tool outputs.
+const EVENTS_PAGE_SIZE: i64 = 50_000;
+
+/// Cursor advance for the get_events_since page loop: `Some(next)` to keep
+/// paging from `next`, `None` when the tail is complete. Terminates on a
+/// malformed has_more page (no advancing idx) instead of re-requesting the
+/// same cursor forever.
+fn next_events_cursor(page: &serde_json::Value, cursor: i64) -> Option<i64> {
+    let has_more = page
+        .get("hasMore")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !has_more {
+        return None;
+    }
+    let last_idx = page
+        .get("events")
+        .and_then(|value| value.as_array())
+        .and_then(|events| events.last())
+        .and_then(|event| event.get("idx"))
+        .and_then(|value| value.as_i64());
+    last_idx.filter(|idx| *idx > cursor)
+}
+
 /// Fetch the agent's buffered events for a session's current run (P1c backfill).
 /// `since_idx = -1` returns the requested run's retained prefix. A stale or
 /// unknown `run_id` is an explicit error and never realigns to another run.
@@ -115,28 +144,60 @@ pub struct AgentPromptResponse {
 /// JSON — shape `{ runId, events: [{ type, data, runId, idx }] }`. Lets a phone /
 /// web client that joined an in-flight run mid-stream reconstruct the prefix it
 /// missed, keyed by the same `runId`/`idx` the live events carry (so it dedupes).
+///
+/// Paged under the hood (`max_events`): the returned envelope holds the
+/// complete tail regardless of journal size.
 pub async fn get_events_since(
     session_id: String,
     run_id: String,
     since_idx: i64,
 ) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
-    let command = crate::agent_proto::RpcCommand {
-        run_id,
-        since_idx,
-        ..base_command("get_events_since", session_id)
-    };
-    let response = client
-        .execute_command(command)
-        .await
-        .map_err(|status| format!("get_events_since failed: {status}"))?
-        .into_inner()
-        .ok_or_rpc_error("get_events_since returned an error")?;
-    if response.data.is_empty() {
-        Ok(serde_json::json!({ "events": [] }))
-    } else {
-        Ok(future_rpc::decode::response_data(&response))
+    let mut cursor = since_idx;
+    let mut merged: Option<serde_json::Value> = None;
+    loop {
+        let command = crate::agent_proto::RpcCommand {
+            run_id: run_id.clone(),
+            since_idx: cursor,
+            max_events: EVENTS_PAGE_SIZE,
+            ..base_command("get_events_since", session_id.clone())
+        };
+        let response = client
+            .execute_command(command)
+            .await
+            .map_err(|status| format!("get_events_since failed: {status}"))?
+            .into_inner()
+            .ok_or_rpc_error("get_events_since returned an error")?;
+        let page = if response.data.is_empty() {
+            serde_json::json!({ "events": [] })
+        } else {
+            future_rpc::decode::response_data(&response)
+        };
+        let next = next_events_cursor(&page, cursor);
+        match &mut merged {
+            None => merged = Some(page),
+            Some(total) => {
+                if let (Some(total_events), Some(page_events)) = (
+                    total
+                        .get_mut("events")
+                        .and_then(|value| value.as_array_mut()),
+                    page.get("events").and_then(|value| value.as_array()),
+                ) {
+                    total_events.extend(page_events.iter().cloned());
+                }
+            }
+        }
+        match next {
+            Some(next_cursor) => cursor = next_cursor,
+            None => break,
+        }
     }
+    let mut result = merged.unwrap_or_else(|| serde_json::json!({ "events": [] }));
+    // The merged envelope describes the complete tail, not one page.
+    if let Some(object) = result.as_object_mut() {
+        object.remove("hasMore");
+    }
+    Ok(result)
 }
 
 /// Fetch a session's full message history from the agent (LLM Message shape:
@@ -1341,6 +1402,43 @@ mod watchdog_tests {
             WATCHDOG_ORPHAN_SECS,
         );
         assert_eq!(action, ActiveRunAction::SettleOrphaned);
+    }
+}
+
+#[cfg(test)]
+mod events_paging_tests {
+    use super::next_events_cursor;
+    use serde_json::json;
+
+    #[test]
+    fn stops_when_the_page_reports_no_tail() {
+        // hasMore absent (legacy server) or false ends the loop.
+        let page = json!({"events": [{"idx": 3}]});
+        assert_eq!(next_events_cursor(&page, -1), None);
+        let page = json!({"events": [{"idx": 3}], "hasMore": false});
+        assert_eq!(next_events_cursor(&page, -1), None);
+    }
+
+    #[test]
+    fn advances_to_the_last_event_idx_while_has_more() {
+        let page = json!({"events": [{"idx": 3}, {"idx": 7}], "hasMore": true});
+        assert_eq!(next_events_cursor(&page, -1), Some(7));
+        assert_eq!(next_events_cursor(&page, 7), None); // idx must advance
+    }
+
+    #[test]
+    fn malformed_has_more_pages_terminate_instead_of_looping() {
+        // No events, no idx, or a non-advancing idx would re-request the same
+        // cursor forever — the loop must bail.
+        assert_eq!(next_events_cursor(&json!({"hasMore": true}), -1), None);
+        assert_eq!(
+            next_events_cursor(&json!({"events": [], "hasMore": true}), -1),
+            None
+        );
+        assert_eq!(
+            next_events_cursor(&json!({"events": [{"idx": 5}], "hasMore": true}), 5),
+            None
+        );
     }
 }
 

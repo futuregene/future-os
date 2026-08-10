@@ -20,6 +20,46 @@ macro_rules! rlock {
     };
 }
 
+/// Serialized-size budget for one paged `get_events_since` response. Every
+/// event crosses the wire about three times (JSON `data` dual-write, typed
+/// `ReplayEvent.data`, typed `EventPayload`), so this much journal-serialized
+/// content stays well under the 32 MiB gRPC message cap.
+const EVENTS_PAGE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
+
+/// Per-event wire size beyond the `data` payload (type, run/event ids,
+/// timestamp, idx…), approximating the journal line.
+const EVENT_WIRE_OVERHEAD: usize = 320;
+
+/// Cut `events` to one page for a paging caller (`max_events > 0`): at most
+/// `max_events` entries, and at most [`EVENTS_PAGE_BYTE_BUDGET`] of estimated
+/// serialized size, whichever comes first. The first event always goes out —
+/// even when it alone exceeds the budget — so the caller's cursor always
+/// advances. Returns the page plus whether a tail remains. `max_events <= 0`
+/// is the legacy unlimited behavior: no cut, `has_more = false`.
+fn page_events_tail(events: Vec<SseEvent>, max_events: i64) -> (Vec<SseEvent>, bool) {
+    if max_events <= 0 || events.is_empty() {
+        return (events, false);
+    }
+    let count_cap = usize::try_from(max_events).unwrap_or(usize::MAX);
+    let mut bytes = 0usize;
+    let mut cut = 0usize;
+    for event in &events {
+        if cut >= count_cap {
+            break;
+        }
+        let size = event.data.len() + EVENT_WIRE_OVERHEAD;
+        if cut > 0 && bytes + size > EVENTS_PAGE_BYTE_BUDGET {
+            break;
+        }
+        bytes += size;
+        cut += 1;
+    }
+    let has_more = cut < events.len();
+    let mut page = events;
+    page.truncate(cut);
+    (page, has_more)
+}
+
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
     let cmd_type = &cmd.cmd_type;
@@ -489,6 +529,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // A cursor older than the replay ring returns a complete compressed
             // projection instead of a knowingly incomplete event tail.
             let truncated = projection.is_some();
+            // Paging (proto max_events): a long run's journal far exceeds the
+            // gRPC message cap when returned whole, so a paging caller gets the
+            // tail cut to its page size (bounded by a serialized-size budget)
+            // and re-requests from the last idx while has_more is set.
+            let (events, has_more) = page_events_tail(events, cmd.max_events);
             // Typed payload (audit item 1): ReplayEventPayload / EventsSincePayload.
             let events = events
                 .iter()
@@ -508,6 +553,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 events,
                 truncated,
                 projection,
+                has_more,
             };
             RpcResponse::ok(
                 id,
@@ -3341,6 +3387,128 @@ mod tests {
         assert!(resp["error"]
             .as_str()
             .is_some_and(|error| error.contains("not configured") || error.contains("not known")));
+    }
+
+    fn chunk_event(data_size: usize) -> SseEvent {
+        SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "x".repeat(data_size)}),
+        )
+    }
+
+    #[test]
+    fn page_events_tail_unlimited_without_max_events() {
+        let events = vec![chunk_event(10); 3];
+        for max_events in [0, -1] {
+            let (page, has_more) = super::page_events_tail(events.clone(), max_events);
+            assert_eq!(page.len(), 3);
+            assert!(!has_more);
+        }
+    }
+
+    #[test]
+    fn page_events_tail_count_cap_sets_has_more() {
+        let events = vec![chunk_event(10); 5];
+        let (page, has_more) = super::page_events_tail(events, 2);
+        assert_eq!(page.len(), 2);
+        assert!(has_more);
+
+        // Exact fit: no tail remains, has_more stays false.
+        let events = vec![chunk_event(10); 2];
+        let (page, has_more) = super::page_events_tail(events, 2);
+        assert_eq!(page.len(), 2);
+        assert!(!has_more);
+    }
+
+    #[test]
+    fn page_events_tail_byte_budget_cuts_before_count_cap() {
+        // Events sized to exactly a quarter of the budget (data = text plus
+        // the 11-byte `{"text":""}` JSON envelope): four fit, the fifth is
+        // cut even though the count cap allows more.
+        let quarter = super::EVENTS_PAGE_BYTE_BUDGET / 4 - super::EVENT_WIRE_OVERHEAD - 11;
+        let events = vec![chunk_event(quarter); 5];
+        let (page, has_more) = super::page_events_tail(events, 10);
+        assert_eq!(page.len(), 4);
+        assert!(has_more);
+    }
+
+    #[test]
+    fn page_events_tail_oversized_first_event_still_progresses() {
+        // A single event larger than the budget must still go out alone —
+        // otherwise the caller's cursor never advances and paging deadlocks.
+        let events = vec![
+            chunk_event(super::EVENTS_PAGE_BYTE_BUDGET + 1),
+            chunk_event(10),
+        ];
+        let (page, has_more) = super::page_events_tail(events, 10);
+        assert_eq!(page.len(), 1);
+        assert!(has_more);
+    }
+
+    #[test]
+    fn get_events_since_pages_a_live_run_with_max_events() {
+        let state = make_app_state();
+        let session = state.get_session("default").expect("default session");
+        let broadcaster = {
+            let sess = session.read();
+            sess.broadcaster.start_run("run_page".to_string(), 1);
+            sess.broadcaster.clone()
+        };
+        for idx in 0..5 {
+            broadcaster.broadcast(SseEvent::new(
+                "text_chunk",
+                serde_json::json!({"text": format!("chunk-{idx}")}),
+            ));
+        }
+
+        // Page 1: since the beginning, two events per page.
+        let mut cmd = make_cmd("get_events_since");
+        cmd.run_id = "run_page".to_string();
+        cmd.since_idx = -1;
+        cmd.max_events = 2;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let data = &resp["data"];
+        // The paged envelope must still encode its typed payload (dual-write).
+        assert!(future_rpc::encode::response_payload("get_events_since", data).is_some());
+        let events = data["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(data["hasMore"], true);
+        assert_eq!(events[0]["idx"], 0);
+        assert_eq!(events[1]["idx"], 1);
+
+        // Page 2 follows from the last idx; the final page reports no tail.
+        let mut cursor = events.last().unwrap()["idx"].as_i64().unwrap();
+        let mut seen = events.len();
+        loop {
+            let mut cmd = make_cmd("get_events_since");
+            cmd.run_id = "run_page".to_string();
+            cmd.since_idx = cursor;
+            cmd.max_events = 2;
+            let resp = parse_response(&handle_command_internal(&state, cmd));
+            let data = &resp["data"];
+            let events = data["events"].as_array().unwrap();
+            seen += events.len();
+            let has_more = data["hasMore"].as_bool().unwrap_or(false);
+            if let Some(last) = events.last() {
+                cursor = last["idx"].as_i64().unwrap();
+            }
+            if !has_more {
+                break;
+            }
+            assert!(!events.is_empty(), "has_more page must not be empty");
+        }
+        assert_eq!(seen, 5);
+        assert_eq!(cursor, 4);
+
+        // Legacy unpaged read: the whole tail, no hasMore key on the wire.
+        let mut cmd = make_cmd("get_events_since");
+        cmd.run_id = "run_page".to_string();
+        cmd.since_idx = -1;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        let data = &resp["data"];
+        assert_eq!(data["events"].as_array().unwrap().len(), 5);
+        assert!(data.get("hasMore").is_none());
     }
 
     #[test]
