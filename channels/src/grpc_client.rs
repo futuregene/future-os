@@ -704,10 +704,7 @@ mod tests {
             data: ImageData::Base64("data:image/png;base64,abc".into()),
             file_path: Some("/tmp/img.png".into()),
         };
-        match &img.data {
-            ImageData::Base64(d) => assert!(d.starts_with("data:")),
-            _ => panic!("expected Base64"),
-        }
+        assert!(matches!(&img.data, ImageData::Base64(d) if d.starts_with("data:")));
     }
 
     #[test]
@@ -717,10 +714,7 @@ mod tests {
             data: ImageData::Url("https://example.com/img.png".into()),
             file_path: None,
         };
-        match &img.data {
-            ImageData::Url(u) => assert!(u.starts_with("https://")),
-            _ => panic!("expected Url"),
-        }
+        assert!(matches!(&img.data, ImageData::Url(u) if u.starts_with("https://")));
     }
 
     // ─── Live calls against the mock gRPC agent ──────────────────────────────
