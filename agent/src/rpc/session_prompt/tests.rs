@@ -349,6 +349,8 @@ enum Script {
     Fail(String),
     /// Send events, then hold the stream open (never closes).
     Stall(Vec<StreamEvent>),
+    /// Wait for the signal, then deliver the events.
+    Gated(Arc<tokio::sync::Notify>, Vec<StreamEvent>),
 }
 
 impl ScriptedProvider {
@@ -377,6 +379,10 @@ impl LLMProvider for ScriptedProvider {
         let (events, stall) = match script {
             Script::Events(events) => (events, false),
             Script::Stall(events) => (events, true),
+            Script::Gated(notify, events) => {
+                notify.notified().await;
+                (events, false)
+            }
             Script::Fail(error) => return Err(anyhow::Error::msg(error)),
         };
         let (tx, rx) = mpsc::channel(events.len().max(1));
@@ -420,6 +426,15 @@ fn run_fixture(provider: Arc<dyn LLMProvider>, name: &str) -> RunFixture {
 impl RunFixture {
     fn workspace(&self) -> &PathBuf {
         &self.workspace
+    }
+
+    /// The on-disk transcript path for session "s1" (may not exist yet).
+    fn transcript_file(&self) -> PathBuf {
+        self.workspace
+            .parent()
+            .unwrap()
+            .join("sessions")
+            .join("s1.jsonl")
     }
 }
 
@@ -703,4 +718,363 @@ async fn prompt_abort_produces_cancelled_terminal() {
     session.abort_run(Some(&lease.run_id)).unwrap();
     wait_for_run_end(&session).await;
     assert!(session.runtime.snapshot().is_none());
+}
+
+// ─── batch 2: enqueue/persist/finalize edge arms ───────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn enqueue_duplicate_run_id_via_transcript() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "dupe-run");
+    let mut session = fixture.session;
+    // Persist a transcript that already contains a marker for run-dupe.
+    let snapshot = crate::session::Session::snapshot(
+        "s1".to_string(),
+        session.cwd.clone(),
+        "mock".to_string(),
+        String::new(),
+        String::new(),
+        vec![crate::session::SessionEntry::run_started("run-dupe", 1)],
+    );
+    session.session_manager.save(&snapshot).unwrap();
+
+    let result = session.enqueue_prompt(
+        "hi",
+        &[],
+        &[],
+        Some("run-dupe"),
+        "req-new",
+        crate::runtime::BusyPolicy::EnqueueIfBusy,
+    );
+    let error = result.unwrap_err();
+    assert!(error.to_string().contains("already exists"), "{error}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn enqueue_same_request_twice_returns_existing_ack() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![Script::Stall(vec![text_event("running")])]),
+        "idempotent",
+    );
+    let mut session = fixture.session;
+    let first = session
+        .enqueue_prompt(
+            "same body",
+            &[],
+            &[],
+            None,
+            "req-idem",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(
+        first.accepted_state,
+        crate::runtime::RunAcceptedState::Running
+    );
+    // Identical re-submission is a no-op returning the original ack.
+    let second = session
+        .enqueue_prompt(
+            "same body",
+            &[],
+            &[],
+            None,
+            "req-idem",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(
+        second.accepted_state,
+        crate::runtime::RunAcceptedState::Existing
+    );
+    assert_eq!(second.run_id, first.run_id);
+    session.abort_run(Some(&first.run_id)).unwrap();
+    wait_for_run_end(&session).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn enqueue_with_sandbox_policy_parses_tier() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("ok")]), "tier");
+    let mut session = fixture.session;
+    session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+        tier: crate::sandbox::SandboxTier::Manual,
+    });
+    let ack = session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-tier",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(
+        ack.accepted_state,
+        crate::runtime::RunAcceptedState::Running
+    );
+    wait_for_run_end(&session).await;
+    assert_eq!(session.messages.read().last().unwrap().text(), "ok");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_with_unknown_thinking_level_uses_zero_budget() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("ok")]), "weird-level");
+    let mut session = fixture.session;
+    session.set_thinking_level("ultra"); // not a known level → 0 budget arm
+    session.prompt("hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    assert_eq!(session.messages.read().last().unwrap().text(), "ok");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_verbose_logs_user_message() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("ok")]), "verbose");
+    let mut session = fixture.session;
+    session.agent_loop.write().await.verbose = true;
+    session.prompt("loud question", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    assert_eq!(session.messages.read().last().unwrap().text(), "ok");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_persist_failure_aborts_run_with_error() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("unused")]), "persist-fail");
+    // A directory where the transcript file should be breaks persistence.
+    let transcript = fixture.transcript_file();
+    let mut session = fixture.session;
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(&transcript).unwrap();
+
+    let result = session.prompt("hi", &[], &[], None, None);
+    assert!(result.is_err());
+    let _ = std::fs::remove_dir_all(&transcript);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_second_run_uses_fast_append_path() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("first"), text_turn("second")]),
+        "two-runs",
+    );
+    let mut session = fixture.session;
+    session.prompt("one", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    session.prompt("two", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+
+    let messages = session.messages.read().clone();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[3].text(), "second");
+    // Both runs' markers coexist in the transcript.
+    let loaded = session.session_manager.load("s1").unwrap();
+    let terminals = loaded
+        .entries
+        .iter()
+        .filter(|e| e.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL)
+        .count();
+    assert_eq!(terminals, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_with_explicit_name_and_provenance_persists_info() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("ok")]), "provenance");
+    let mut session = fixture.session;
+    session.set_session_name("explicit name");
+    session.created_by = "gui".to_string();
+    session.source_meta = serde_json::json!({"thread": "t-1"});
+    session.prompt("hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+
+    let loaded = session.session_manager.load("s1").unwrap();
+    assert_eq!(loaded.name, "explicit name");
+    let info = loaded
+        .entries
+        .iter()
+        .rev()
+        .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+        .and_then(|e| e.content.clone())
+        .unwrap();
+    assert_eq!(info["created_by"], "gui");
+    assert_eq!(info["source_meta"]["thread"], "t-1");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_with_project_context_file() {
+    let provider = ScriptedProvider::new(vec![text_turn("ok")]);
+    let fixture = run_fixture(provider, "context");
+    std::fs::write(fixture.workspace().join("CLAUDE.md"), "# ctx").unwrap();
+    let mut session = fixture.session;
+    session.prompt("hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    assert_eq!(session.messages.read().last().unwrap().text(), "ok");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_auto_compaction_with_small_history_completes() {
+    // 50k tokens reported against a 64k window forces the compaction attempt.
+    // (A compact() failure needs a history with no valid cut point, which the
+    // public session flow cannot produce — a finished tool turn always leaves
+    // ≥3 messages. That arm is covered by the run_loop unit test.)
+    let provider = ScriptedProvider::new(vec![
+        Script::Events(vec![
+            event_with_tool_call(
+                "toolcall_start",
+                "call-1",
+                "read",
+                serde_json::json!({"path": "x"}),
+            ),
+            simple_event("toolcall_end"),
+            StreamEvent {
+                event_type: "usage".to_string(),
+                usage: Some(crate::types::Usage {
+                    prompt_tokens: 50_000,
+                    completion_tokens: 100,
+                    total_tokens: 50_100,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                    credit_cost: None,
+                }),
+                ..Default::default()
+            },
+            simple_event("stop"),
+        ]),
+        text_turn("compacted reply"),
+    ]);
+    let fixture = run_fixture(provider, "compact-small");
+    let mut session = fixture.session;
+    session.model = "glm-4.5v".to_string();
+    session.prompt("short", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+
+    let loaded = session.session_manager.load("s1").unwrap();
+    let terminal = loaded
+        .entries
+        .iter()
+        .rev()
+        .find(|e| e.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL)
+        .and_then(|e| e.content.clone())
+        .unwrap();
+    assert_eq!(terminal["state"], crate::session::RUN_STATE_COMPLETED);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_mid_run_append_failure_heals_via_full_rewrite() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![Script::Gated(
+        gate.clone(),
+        vec![text_event("late answer"), simple_event("stop")],
+    )]);
+    let fixture = run_fixture(provider, "heal");
+    let transcript = fixture.transcript_file();
+    let mut session = fixture.session;
+    session.prompt("hi", &[], &[], None, None).unwrap();
+
+    // Wait for the user message to hit disk, then remove the transcript so
+    // the mid-run assistant append fails (open-for-append on a missing file).
+    for _ in 0..200 {
+        if transcript.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    std::fs::remove_file(&transcript).unwrap();
+
+    gate.notify_one();
+    wait_for_run_end(&session).await;
+
+    // The refused commit healed with a full rewrite: the reply is on disk.
+    let loaded = session.session_manager.load("s1").unwrap();
+    assert!(loaded.entries.iter().any(|e| {
+        e.content
+            .as_ref()
+            .is_some_and(|c| c.to_string().contains("late answer"))
+    }));
+    assert!(loaded
+        .entries
+        .iter()
+        .any(|e| e.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_persistence_commit_and_rewrite_failure_marks_degraded() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("doomed")]), "degraded");
+    let mut session = fixture.session;
+    // The commit is refused and the healing rewrite fails → the run is
+    // marked persistence_degraded instead of reporting a false completion.
+    session.persistence.fail_next_commit();
+    session.persistence.fail_next_rewrite();
+    session.prompt("hi", &[], &[], None, None).unwrap();
+
+    let mut degraded = false;
+    for _ in 0..300 {
+        if session
+            .runtime
+            .snapshot()
+            .is_some_and(|snap| snap.phase == crate::runtime::RunPhase::PersistenceDegraded)
+        {
+            degraded = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(degraded, "run ended in persistence_degraded phase");
+}
+
+// HOME_ENV_LOCK is a plain Mutex by design: it must exclude TestHome
+// redirects in OTHER threads for the whole test, including across awaits.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_workspace_permission_routes_through_approval_gate() {
+    let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+    let outside = dirs::home_dir()
+        .unwrap()
+        .join(format!("futureos-gate-target-{}.txt", std::process::id()));
+    let provider = ScriptedProvider::new(vec![
+        Script::Events(vec![
+            event_with_tool_call(
+                "toolcall_start",
+                "call-1",
+                "write",
+                serde_json::json!({"path": outside.to_string_lossy(), "content": "ok"}),
+            ),
+            simple_event("toolcall_end"),
+            simple_event("stop"),
+        ]),
+        text_turn("done"),
+    ]);
+    let fixture = run_fixture(provider, "gate");
+    let gate = fixture.session.approval_gate.clone();
+    let mut session = fixture.session;
+    session.set_permission_level("workspace");
+    session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+        tier: crate::sandbox::SandboxTier::Manual,
+    });
+    // The outside path is past the sandbox boundary → the gate asks; the
+    // decider approves, so the write proceeds.
+    let decider = std::thread::spawn(move || {
+        for _ in 0..2000 {
+            let pending = gate.pending_for_session("s1");
+            if let Some(first) = pending.first() {
+                let request_id = first["approval_request_id"].as_str().unwrap().to_string();
+                let _ = gate.decide(
+                    &request_id,
+                    "s1",
+                    crate::rpc::ApprovalDecision {
+                        approved: true,
+                        note: String::new(),
+                        status: crate::rpc::ApprovalDecisionStatus::Approved,
+                    },
+                );
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("approval request never appeared");
+    });
+    session.prompt("write", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    decider.join().unwrap();
+    let messages = session.messages.read().clone();
+    assert!(messages.iter().any(|m| m.role == "tool"));
+    assert!(outside.exists());
+    let _ = std::fs::remove_file(&outside);
 }

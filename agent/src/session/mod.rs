@@ -3444,6 +3444,291 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(dir);
     }
+    // ── coverage batch: load healing, summaries, gc, timestamps ────────────
+
+    #[test]
+    fn find_unterminated_run_ignores_a_closed_run() {
+        let entries = vec![
+            SessionEntry::run_started("run-a", 1),
+            SessionEntry::run_terminal("run-a", RUN_STATE_COMPLETED, 5, 100, None),
+        ];
+        assert_eq!(find_unterminated_run(&entries), None);
+    }
+
+    #[test]
+    fn append_run_start_closes_an_unterminated_run() {
+        let (_dir, manager) = temp_manager("runstart-open");
+        let snapshot = Session::snapshot(
+            "s1".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                SessionEntry::new_user("user", serde_json::json!("first")),
+                SessionEntry::run_started("run-open", 1),
+            ],
+        );
+        manager.save(&snapshot).unwrap();
+
+        manager
+            .append_run_start(
+                "s1",
+                SessionEntry::new_user("user", serde_json::json!("second")),
+                SessionEntry::run_started("run-new", 2),
+            )
+            .unwrap();
+        let loaded = manager.load("s1").unwrap();
+        // The open run was closed with an interrupted terminal marker.
+        let healed = loaded
+            .entries
+            .iter()
+            .find(|e| {
+                e.entry_type == ENTRY_TYPE_RUN_TERMINAL
+                    && e.content
+                        .as_ref()
+                        .and_then(|c| c.get("run_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("run-open")
+            })
+            .expect("interrupted terminal appended");
+        assert_eq!(
+            healed.content.as_ref().unwrap()["state"],
+            RUN_STATE_INTERRUPTED_BY_RESTART
+        );
+        // …followed by the new user message and the new run's start marker.
+        let last = loaded.entries.last().unwrap();
+        assert_eq!(last.entry_type, ENTRY_TYPE_RUN_STARTED);
+    }
+
+    #[test]
+    fn append_run_start_on_clean_history_appends_two_entries() {
+        let (_dir, manager) = temp_manager("runstart-clean");
+        let snapshot = Session::snapshot(
+            "s1".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                SessionEntry::new_user("user", serde_json::json!("first")),
+                SessionEntry::run_started("run-a", 1),
+                SessionEntry::run_terminal("run-a", RUN_STATE_COMPLETED, 1, 1, None),
+            ],
+        );
+        manager.save(&snapshot).unwrap();
+        let before = manager.load("s1").unwrap().entries.len();
+        manager
+            .append_run_start(
+                "s1",
+                SessionEntry::new_user("user", serde_json::json!("second")),
+                SessionEntry::run_started("run-b", 2),
+            )
+            .unwrap();
+        let after = manager.load("s1").unwrap().entries.len();
+        assert_eq!(after - before, 2, "no healing entry needed");
+    }
+
+    #[test]
+    fn gc_orphan_run_data_handles_missing_root_and_stray_files() {
+        let (dir, manager) = temp_manager("gc-missing");
+        // No run-events root at all → Ok(0).
+        assert_eq!(manager.gc_orphan_run_data().unwrap(), 0);
+        // A stray FILE under the root is skipped (only dirs are reclaimed).
+        let root = manager.run_data_path("x").parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("stray-file"), "x").unwrap();
+        assert_eq!(manager.gc_orphan_run_data().unwrap(), 0);
+        assert!(root.join("stray-file").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_skips_corrupt_last_line_but_rejects_corrupt_middle_line() {
+        let (_dir, manager) = temp_manager("corrupt-tail");
+        let snapshot = Session::snapshot(
+            "s1".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![SessionEntry::new_user("user", serde_json::json!("ok"))],
+        );
+        manager.save(&snapshot).unwrap();
+        let path = manager.find("s1").unwrap();
+        // Append a half-written (corrupt) line — a crash during append.
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str("{\"id\":\"partial\",\"timestamp\":\"2026");
+        std::fs::write(&path, content).unwrap();
+        let loaded = manager.load("s1").unwrap();
+        assert_eq!(loaded.entries.len(), 1, "corrupt tail skipped");
+
+        // A corrupt MIDDLE line is a hard error.
+        let valid = serde_json::to_string(&SessionEntry::new_user("user", serde_json::json!("x")))
+            .unwrap();
+        std::fs::write(&path, format!("{valid}\n{{corrupt\n{valid}\n")).unwrap();
+        let err = manager.load("s1").unwrap_err();
+        assert!(err.to_string().contains("parse entry at line 2"));
+    }
+
+    #[test]
+    fn deserialize_timestamp_space_variants_and_default() {
+        // Space separator with timezone (no fraction).
+        let entry: SessionEntry = serde_json::from_str(
+            r#"{"id":"t","type":"user","role":"user","timestamp":"2026-07-17 12:44:27+08:00"}"#,
+        )
+        .unwrap();
+        assert_eq!(entry.timestamp.format("%Y").to_string(), "2026");
+        // Space separator with fraction and timezone.
+        let entry: SessionEntry = serde_json::from_str(
+            r#"{"id":"t","type":"user","role":"user","timestamp":"2026-07-17 12:44:27.161+08:00"}"#,
+        )
+        .unwrap();
+        assert_eq!(entry.timestamp.format("%Y").to_string(), "2026");
+        // Missing timestamp → default (now).
+        let entry: SessionEntry =
+            serde_json::from_str(r#"{"id":"t","type":"user","role":"user"}"#).unwrap();
+        let age = chrono::Local::now() - entry.timestamp;
+        assert!(age.num_seconds() < 60);
+    }
+
+    #[test]
+    fn list_all_enumerates_and_filters_by_cwd() {
+        let (dir, manager) = temp_manager("list-all");
+        for (id, cwd) in [("s-a", "/ws/one"), ("s-b", "/ws/two")] {
+            let snapshot = Session::snapshot(
+                id.to_string(),
+                cwd.to_string(),
+                "mock".to_string(),
+                String::new(),
+                String::new(),
+                vec![SessionEntry::new_user("user", serde_json::json!("hi"))],
+            );
+            manager.save(&snapshot).unwrap();
+        }
+        let all = manager.list_all().unwrap();
+        assert_eq!(all.len(), 2);
+        // Directory missing → empty list.
+        let (dir2, missing) = temp_manager("list-missing");
+        drop(dir2);
+        assert!(missing.list_all().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn summary_reads_model_change_and_fallback_mtime() {
+        let (_dir, manager) = temp_manager("summary");
+        let snapshot = Session::snapshot(
+            "s1".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                SessionEntry::session_info(
+                    serde_json::json!({"cwd": "/tmp", "model": "first/model"}),
+                    "first/model".to_string(),
+                    "low".to_string(),
+                ),
+                SessionEntry::new_user("user", serde_json::json!("hi")),
+                SessionEntry {
+                    id: generate_id(),
+                    entry_type: ENTRY_TYPE_MODEL_CHANGE.to_string(),
+                    role: ENTRY_TYPE_SYSTEM.to_string(),
+                    content: Some(serde_json::json!({"model": "second/model"})),
+                    tool_calls: vec![],
+                    timestamp: Local::now(),
+                    tool_call_id: String::new(),
+                    name: String::new(),
+                    tool_args: String::new(),
+                    thinking: String::new(),
+                    meta: None,
+                },
+            ],
+        );
+        manager.save(&snapshot).unwrap();
+        let summaries = manager.list_all().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].model, "second/model");
+    }
+
+    #[test]
+    fn delete_reclaims_run_data_directory() {
+        let (dir, manager) = temp_manager("delete-gc");
+        let snapshot = Session::snapshot(
+            "s1".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![SessionEntry::new_user("user", serde_json::json!("hi"))],
+        );
+        manager.save(&snapshot).unwrap();
+        std::fs::create_dir_all(manager.run_data_path("s1")).unwrap();
+        manager.delete("s1").unwrap();
+        assert!(!manager.run_data_path("s1").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dedupe_tool_entries_drops_placeholder_when_real_result_arrives() {
+        let (_dir, manager) = temp_manager("dedupe");
+        let placeholder = SessionEntry::new_tool(
+            "call-1",
+            "[Tool execution lost — worker crashed before the result was written]",
+        );
+        let real = SessionEntry::new_tool("call-1", "real output");
+        let snapshot = Session::snapshot(
+            "s1".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                SessionEntry::new_user("user", serde_json::json!("hi")),
+                placeholder,
+                real,
+            ],
+        );
+        manager.save(&snapshot).unwrap();
+        let loaded = manager.load("s1").unwrap();
+        let tool_entries: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .collect();
+        assert_eq!(tool_entries.len(), 1);
+        assert_eq!(
+            tool_entries[0].content.as_ref().unwrap(),
+            &serde_json::json!("real output")
+        );
+    }
+
+    #[test]
+    fn entries_to_agent_messages_rehydrates_image_attachments() {
+        // A user entry whose meta carries an image attachment gets an image
+        // block when the model supports images.
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("pic.png");
+        // A real PNG (the loader decodes it for re-encoding).
+        image::RgbImage::from_fn(8, 8, |_, _| image::Rgb([1u8, 2, 3]))
+            .save(&image)
+            .unwrap();
+        let mut user = SessionEntry::new_user("user", serde_json::json!("look"));
+        user.meta = Some(serde_json::json!({
+            "attachments": [{"kind": "image", "path": image.to_string_lossy(), "name": "pic.png"}]
+        }));
+        let messages = entries_to_agent_messages(&[user], true);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0]
+                .content
+                .iter()
+                .any(|b| matches!(b, crate::types::ContentBlock::Image { .. })),
+            "image block rehydrated: {:?}",
+            messages[0].content
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3678,4 +3963,5 @@ mod fork_tests {
         let manager = Manager::new(missing);
         assert!(manager.list_ids().unwrap().is_empty());
     }
+
 }
