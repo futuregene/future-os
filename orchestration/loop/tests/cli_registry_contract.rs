@@ -69,7 +69,7 @@ fn help_lists_all_pre_existing_commands_in_groups() {
         "── handoff ──",
         "handoff --goal G",
         "── cli ──",
-        "registry [--json]",
+        "registry [--format json|--json]",
     ] {
         assert!(
             out.contains(expected),

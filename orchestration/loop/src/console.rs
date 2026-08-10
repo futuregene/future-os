@@ -107,6 +107,16 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
     {
         bail!("unknown command `{}` (try `{prog} --help`)", args[0]);
     }
+    // P0-3②: `<command> --help` / `-h` prints the command's usage from the
+    // registry instead of the flag being silently swallowed by argument
+    // parsing (previously `--help` on a subcommand was a no-op boolean).
+    if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        print!(
+            "{}",
+            render_command_help(&registry, &args[0], include_experimental)
+        );
+        return Ok(());
+    }
     let mut store = Store::open(&root_dir())?;
     match args[0].as_str() {
         "goal" => cmd_goal(&mut store, &args[1..]),
@@ -182,7 +192,7 @@ fn build_cli_registry() -> CommandRegistry {
         goal,
         "status",
         "project the active state",
-        "status [--goal G]",
+        "status [--goal G] [--format json]",
     );
     r.command(
         goal,
@@ -220,13 +230,13 @@ fn build_cli_registry() -> CommandRegistry {
         todo,
         "lease",
         "task lease lifecycle (claim/renew/release/expire/status)",
-        "lease claim|renew|release|expire|status --goal G --todo-id T --agent-id A",
+        "lease claim|renew|release|expire|status --goal G --todo-id T [--agent-id A] [--format json (status)]",
     );
     r.command(
         todo,
         "task-graph",
         "todo dependency graph (G-14)",
-        "task-graph --goal G",
+        "task-graph --goal G [--format json]",
     );
 
     let agent = r.group("agent", "agent sessions");
@@ -234,7 +244,13 @@ fn build_cli_registry() -> CommandRegistry {
         agent,
         "agent",
         "register/onboard agents",
-        "agent onboard --goal G --agent-id A [--capabilities c1,c2] | agent list --goal G",
+        "agent onboard --goal G --agent-id A [--capabilities c1,c2]",
+    );
+    r.command(
+        agent,
+        "list",
+        "registered agents + live execution status (leases)",
+        "agent list --goal G [--format json]",
     );
     r.command(
         agent,
@@ -302,7 +318,7 @@ fn build_cli_registry() -> CommandRegistry {
         ops,
         "history",
         "goal run history (ledger-derived)",
-        "history --goal G",
+        "history --goal G [--format json]",
     );
     r.command(
         ops,
@@ -314,13 +330,13 @@ fn build_cli_registry() -> CommandRegistry {
         ops,
         "todo-event",
         "event history of one todo",
-        "todo-event --goal G --todo-id T",
+        "todo-event --goal G --todo-id T [--format json]",
     );
     r.command(
         ops,
         "evidence-log",
         "evidence trail (attached + run + completion evidence)",
-        "evidence-log --goal G [--todo-id T]",
+        "evidence-log --goal G [--todo-id T] [--format json]",
     );
     r.command(ops, "backup", "back up a goal", "backup --goal G");
     r.command(
@@ -345,7 +361,7 @@ fn build_cli_registry() -> CommandRegistry {
         ops,
         "scheduler",
         "scheduler tick/show/record-host-failure",
-        "scheduler tick|show|record-host-failure --goal G [--agent-id A]",
+        "scheduler tick|show|record-host-failure --goal G [--agent-id A] [--format json (show)]",
     );
     r.command(
         ops,
@@ -401,13 +417,13 @@ fn build_cli_registry() -> CommandRegistry {
         work_items,
         "attention",
         "project the attention queue",
-        "attention [--goal G] [--all]",
+        "attention [--goal G] [--all] [--format json]",
     );
     r.command(
         work_items,
         "inbox",
         "project the operator inbox urgency",
-        "inbox --project DIR [--scope addressed_only|configured_chat_all] [--name NAME]",
+        "inbox --project DIR [--scope addressed_only|configured_chat_all] [--name NAME] [--format json]",
     );
 
     let handoff = r.group("handoff", "project handoff (G-17)");
@@ -423,7 +439,7 @@ fn build_cli_registry() -> CommandRegistry {
         cli,
         "registry",
         "inspect the CLI registry (groups/commands)",
-        "registry [--json] [--include-experimental]",
+        "registry [--format json|--json] [--include-experimental]",
     );
 
     let benchmark = r.group("benchmark", "benchmark closed loop (G-18)");
@@ -522,6 +538,7 @@ fn cmd_capability_hook(
     let registry = crate::capabilities::CapabilityRegistry::with_builtin();
     let mut input = None;
     let mut goal_id = None;
+    reject_unknown_flags(args, &["--input", "--goal"])?;
     parse_pairs(args, |k, v| match k {
         "--input" => input = Some(v),
         "--goal" => goal_id = Some(v),
@@ -570,6 +587,39 @@ fn cli_help(registry: &CommandRegistry, include_experimental: bool) -> Result<()
     Ok(())
 }
 
+/// P0-3②: render the per-command help for `<command> --help` — the command's
+/// summary + usage from the registry (pure, unit-testable; the caller prints).
+fn render_command_help(
+    registry: &CommandRegistry,
+    command: &str,
+    include_experimental: bool,
+) -> String {
+    if let Some((group, def)) = registry.find(command, include_experimental) {
+        let mark = if def.experimental {
+            " (experimental)"
+        } else {
+            ""
+        };
+        format!(
+            "{} — {}{}\n\nusage: {}\n\ngroup: {} — {}\n\nfull command list: {} --help\n",
+            def.name,
+            def.summary,
+            mark,
+            def.usage,
+            group.name,
+            group.summary,
+            prog()
+        )
+    } else if let Some((capability_id, _purpose)) = resolve_capability_hook(command) {
+        format!(
+            "{command} — capability command hook ({capability_id})\n\nusage: {command} [--input TEXT]\n"
+        )
+    } else {
+        // Unreachable: main_from_args validates the command before help.
+        format!("unknown command `{command}` (try `{} --help`)\n", prog())
+    }
+}
+
 // ── goal ───────────────────────────────────────────────────────────────────
 
 fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
@@ -584,6 +634,7 @@ fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
     let mut cwd = None;
     let mut goal_id = None;
     let mut goal_doc = None;
+    reject_unknown_flags(args, &["--cwd", "--goal-doc", "--goal-id", "--objective"])?;
     parse_pairs(args, |k, v| match k {
         "--objective" => objective = Some(v),
         "--cwd" => cwd = Some(v),
@@ -637,6 +688,7 @@ fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
 fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut reason = "cancelled by user".to_string();
+    reject_unknown_flags(args, &["--goal", "--reason"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--reason" => reason = v,
@@ -665,6 +717,7 @@ fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
 fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut force = false;
+    reject_unknown_flags(args, &["--force", "--goal"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--force" => force = true,
@@ -724,6 +777,35 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut cadence = None;
     let mut verify: Option<String> = None;
     let mut max_validation_attempts: Option<u32> = None;
+    reject_unknown_flags(
+        args,
+        &[
+            "--action-kind",
+            "--blocks",
+            "--cadence",
+            "--capability-binding-ref",
+            "--class",
+            "--continuation-policy",
+            "--defer-secs",
+            "--gate-question",
+            "--global-gate",
+            "--goal",
+            "--goal-bound",
+            "--max-validation-attempts",
+            "--monitor-policy",
+            "--monitor-target",
+            "--note",
+            "--priority",
+            "--required-capability",
+            "--required-write-scope",
+            "--resume-when",
+            "--role",
+            "--task-repository",
+            "--text",
+            "--title",
+            "--verify",
+        ],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--goal-bound" => goal_bound = true,
         "--global-gate" => global_gate = true,
@@ -791,13 +873,23 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
         todo.status = crate::state::TodoStatus::Deferred;
         // Numeric `--resume-when N` defers N seconds from now (real deadline,
         // same semantics as --defer-secs); non-numeric keeps legacy +3600s
-        // placeholder (text hint only).
-        if let Ok(secs) = rw.trim().parse::<u64>() {
-            todo.resume_when =
-                Some(std::time::SystemTime::now() + std::time::Duration::from_secs(secs));
-        } else {
-            todo.resume_when =
-                Some(std::time::SystemTime::now() + std::time::Duration::from_secs(3600));
+        // placeholder (text hint only) — and warns about it (P0-3④).
+        match parse_resume_when(&rw) {
+            ResumeWhen::Defer(secs) => {
+                todo.resume_when =
+                    Some(std::time::SystemTime::now() + std::time::Duration::from_secs(secs));
+            }
+            ResumeWhen::TextHint(text) => {
+                eprintln!(
+                    "{}",
+                    resume_when_text_hint_warning(
+                        &text,
+                        "a 1-hour placeholder deadline is applied"
+                    )
+                );
+                todo.resume_when =
+                    Some(std::time::SystemTime::now() + std::time::Duration::from_secs(3600));
+            }
         }
     }
     if let Some(n) = note {
@@ -882,6 +974,7 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
     let mut todo_id = None;
     let mut agent_id = None;
     let mut lease_secs = 3600u64;
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--lease-secs", "--todo-id"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -931,6 +1024,7 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     }
     let mut goal_id = None;
     let mut agent_id = None;
+    reject_unknown_flags(args, &["--agent-id", "--goal"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
@@ -957,6 +1051,10 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
     let mut capabilities = vec![];
+    reject_unknown_flags(
+        args,
+        &["--agent-id", "--capabilities", "--capability", "--goal"],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
@@ -990,6 +1088,7 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
 /// one (each concurrent run needs its own unique id).
 fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
             goal_id = Some(v);
@@ -1023,6 +1122,11 @@ fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
         println!("no agents registered for {goal_id}");
         return Ok(());
     }
+    let rows = agent_list_rows(&goal, &last_active, now);
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
     println!(
         "agents registered for {goal_id} ({}):",
         goal.registered_agents.len()
@@ -1031,35 +1135,24 @@ fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
         "  {:<12} {:<8} {:<32} {:<14} {:<12}",
         "agent_id", "status", "work-on", "capabilities", "last-active"
     );
-    for aid in &goal.registered_agents {
-        let mut work: Vec<String> = Vec::new();
-        for t in goal.todos.iter() {
-            if t.claimed_by.as_deref() == Some(aid.as_str())
-                && t.lease_expires_at.map(|e| e > now).unwrap_or(false)
-            {
-                let left = t.lease_expires_at.unwrap().saturating_sub(now);
-                work.push(format!("{} (lease {} left)", t.id, human_dur(left)));
-            }
-        }
-        let status = if work.is_empty() { "idle" } else { "running" };
-        let work_label = if work.is_empty() {
+    for row in &rows {
+        let work_label = if row.work_on.is_empty() {
             "-".to_string()
         } else {
-            work.join("; ")
+            row.work_on.join("; ")
         };
-        let caps = goal
-            .agent_profiles
-            .iter()
-            .find(|p| p.id == *aid)
-            .map(|p| p.capabilities.join(","))
-            .unwrap_or_else(|| "-".to_string());
-        let last = last_active
-            .get(aid)
-            .map(|ts| format!("{} ago", human_dur(now.saturating_sub(*ts))))
+        let caps = if row.capabilities.is_empty() {
+            "-".to_string()
+        } else {
+            row.capabilities.join(",")
+        };
+        let last = row
+            .last_active_ts
+            .map(|ts| format!("{} ago", human_dur(now.saturating_sub(ts))))
             .unwrap_or_else(|| "-".to_string());
         println!(
             "  {:<12} {:<8} {:<32} {:<14} {:<12}",
-            aid, status, work_label, caps, last
+            row.agent_id, row.status, work_label, caps, last
         );
     }
     println!(
@@ -1067,6 +1160,70 @@ fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
          to avoid duplicate ids (each parallel worker needs its own unique id)"
     );
     Ok(())
+}
+
+/// One row of the `agent list` projection (P0-3③: serializable so the
+/// command has a `--format json` form; also keeps the text table testable).
+#[derive(Debug, Clone, serde::Serialize)]
+struct AgentListRow {
+    agent_id: String,
+    /// "running" = holds a live lease; "idle" = registered, no live lease.
+    status: String,
+    /// Human-readable live lease labels (todo id + remaining time).
+    work_on: Vec<String>,
+    capabilities: Vec<String>,
+    last_active_ts: Option<u64>,
+}
+
+/// Build the agent-list projection rows (event-derived last-active map +
+/// live lease scan). Pure, unit-testable.
+fn agent_list_rows(goal: &Goal, last_active: &HashMap<String, u64>, now: u64) -> Vec<AgentListRow> {
+    goal.registered_agents
+        .iter()
+        .map(|aid| {
+            let mut work: Vec<String> = Vec::new();
+            for t in goal.todos.iter() {
+                if t.claimed_by.as_deref() == Some(aid.as_str())
+                    && t.lease_expires_at.map(|e| e > now).unwrap_or(false)
+                {
+                    let left = t.lease_expires_at.unwrap().saturating_sub(now);
+                    work.push(format!("{} (lease {} left)", t.id, human_dur(left)));
+                }
+            }
+            let status = if work.is_empty() { "idle" } else { "running" };
+            let caps = goal
+                .agent_profiles
+                .iter()
+                .find(|p| p.id == *aid)
+                .map(|p| p.capabilities.clone())
+                .unwrap_or_default();
+            AgentListRow {
+                agent_id: aid.clone(),
+                status: status.to_string(),
+                work_on: work,
+                capabilities: caps,
+                last_active_ts: last_active.get(aid).copied(),
+            }
+        })
+        .collect()
+}
+
+/// P0-3③: JSON projection of one todo's lease state
+/// (`lease status --format json`). Pure, unit-testable.
+fn lease_status_json(
+    todo_id: &str,
+    status: &crate::work_items::task_lease::LeaseStatus,
+) -> serde_json::Value {
+    use crate::work_items::task_lease::LeaseStatus;
+    match status {
+        LeaseStatus::Free => serde_json::json!({"todo_id": todo_id, "lease": "free"}),
+        LeaseStatus::Active { owner, expires_at } => serde_json::json!({
+            "todo_id": todo_id, "lease": "active", "owner": owner, "expires_at": expires_at,
+        }),
+        LeaseStatus::Expired { owner, expires_at } => serde_json::json!({
+            "todo_id": todo_id, "lease": "expired", "owner": owner, "expired_at": expires_at,
+        }),
+    }
 }
 
 /// Compact human duration ("59s" / "4m12s" / "3h59m") for lease/activity
@@ -1087,6 +1244,16 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut no_follow_up = false;
     let mut successor = None;
     let mut evidence = None;
+    reject_unknown_flags(
+        args,
+        &[
+            "--evidence",
+            "--goal",
+            "--no-follow-up",
+            "--successor",
+            "--todo-id",
+        ],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -1155,6 +1322,7 @@ fn cmd_gate(store: &mut Store, args: &[String]) -> Result<()> {
     let mut todo_id = None;
     let mut decision = None;
     let mut note = None;
+    reject_unknown_flags(args, &["--decision", "--goal", "--note", "--todo-id"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -1194,6 +1362,7 @@ fn cmd_backup(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut list = false;
     let mut restore = None;
+    reject_unknown_flags(args, &["--goal", "--list", "--restore"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--list" => list = true,
@@ -1223,6 +1392,7 @@ fn cmd_authority(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut write_scope = None;
     let mut require = None;
+    reject_unknown_flags(args, &["--goal", "--require-approval", "--write-scope"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--write-scope" => write_scope = Some(v),
@@ -1264,6 +1434,10 @@ fn cmd_authority(store: &mut Store, args: &[String]) -> Result<()> {
 fn cmd_replan(store: &mut Store, args: &[String]) -> Result<()> {
     if args.first().map(|s| s.as_str()) == Some("obligations") {
         let mut goal_id = None;
+        reject_unknown_flags(
+            &args[1..],
+            &["--delta-kind", "--format", "--goal", "--json"],
+        )?;
         parse_pairs(&args[1..], |k, v| {
             if k == "--goal" {
                 goal_id = Some(v)
@@ -1274,6 +1448,10 @@ fn cmd_replan(store: &mut Store, args: &[String]) -> Result<()> {
             .replay(&goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
         let obligations = crate::work_items::replan_obligation::unfulfilled_obligations(&goal);
+        if wants_json(&args[1..]) {
+            println!("{}", serde_json::to_string_pretty(&obligations)?);
+            return Ok(());
+        }
         if obligations.is_empty() {
             println!("no unfulfilled replan obligations for {goal_id}");
             return Ok(());
@@ -1286,6 +1464,7 @@ fn cmd_replan(store: &mut Store, args: &[String]) -> Result<()> {
     }
     let mut goal_id = None;
     let mut delta_kinds: Vec<String> = vec![];
+    reject_unknown_flags(args, &["--delta-kind", "--format", "--goal", "--json"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--delta-kind" => delta_kinds.push(v),
@@ -1323,6 +1502,7 @@ fn cmd_profile(store: &mut Store, args: &[String]) -> Result<()> {
     }
     let mut goal_id = None;
     let mut outcome_floor = None;
+    reject_unknown_flags(&args[1..], &["--goal", "--outcome-floor"])?;
     parse_pairs(&args[1..], |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--outcome-floor" => outcome_floor = Some(v),
@@ -1359,6 +1539,7 @@ fn cmd_profile(store: &mut Store, args: &[String]) -> Result<()> {
 fn cmd_status(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_filter = None;
     let mut format = String::new();
+    reject_unknown_flags(args, &["--format", "--goal"])?;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
             goal_filter = Some(v)
@@ -1521,6 +1702,7 @@ fn quota_should_run(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut format_json = false;
     let mut agent_id = None;
+    reject_unknown_flags(args, &["--agent-id", "--format", "--goal"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--format" => format_json = v == "json",
@@ -1555,6 +1737,7 @@ fn quota_usage(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut format_json = false;
     let mut all = false;
+    reject_unknown_flags(args, &["--all", "--format", "--goal"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--format" => format_json = v == "json",
@@ -1605,6 +1788,7 @@ fn quota_usage(store: &Store, args: &[String]) -> Result<()> {
 /// `loopx quota spend --goal G` — per-source slot spend breakdown.
 fn quota_spend(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
+    reject_unknown_flags(args, &["--goal"])?;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
             goal_id = Some(v)
@@ -1716,6 +1900,16 @@ fn scheduler_tick(store: &Store, args: &[String]) -> Result<()> {
     let mut cadence_class = "monitor_backoff".to_string();
     let mut progression: Vec<i64> = vec![];
     let mut action = "tick_next".to_string();
+    reject_unknown_flags(
+        args,
+        &[
+            "--action",
+            "--agent-id",
+            "--cadence-class",
+            "--goal",
+            "--progression",
+        ],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--cadence-class" => cadence_class = v,
         "--progression" => {
@@ -1781,9 +1975,10 @@ fn scheduler_tick(store: &Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `loopx scheduler show --goal G [--agent-id A]` — print the persisted
-/// scheduler state (or "no state yet").
+/// `loopx scheduler show --goal G [--agent-id A] [--format json]` — print the
+/// persisted scheduler state (or "no state yet").
 fn scheduler_show(store: &Store, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--agent-id", "--format", "--goal", "--json"])?;
     let (goal_id, agent) = scheduler_scope(store, args, "codex-app")?;
     use crate::scheduler::state as st;
     let state = st::load_scheduler_state(
@@ -1793,7 +1988,13 @@ fn scheduler_show(store: &Store, args: &[String]) -> Result<()> {
         st::CODEX_APP_STATEFUL_BACKOFF_STATE_KEY,
     );
     match state {
-        Some(s) => print!("{}", crate::cli_projection::render_scheduler_state(&s)),
+        Some(s) => {
+            if wants_json(args) {
+                println!("{}", serde_json::to_string_pretty(&s)?);
+            } else {
+                print!("{}", crate::cli_projection::render_scheduler_state(&s));
+            }
+        }
         None => println!(
             "no scheduler state for goal {goal_id} agent {agent} (run `scheduler tick` first)"
         ),
@@ -1810,6 +2011,17 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
     let mut observed_rrule = None;
     let mut failure_kind = None;
     let mut count = 1u32;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--failure-count",
+            "--failure-kind",
+            "--goal",
+            "--observed-rrule",
+            "--target-rrule",
+        ],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--target-rrule" => target_rrule = Some(v),
         "--observed-rrule" => observed_rrule = Some(v),
@@ -1895,6 +2107,7 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
 /// `future-loop models [--format json]` — list models available from the
 /// agent (auth.json / models.json merged with the built-in catalog).
 async fn cmd_models(args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--format", "--json"])?;
     let json = args.iter().any(|a| a == "--format" || a == "--json");
     let mut client =
         crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
@@ -1987,6 +2200,19 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut agent_id = None;
     let mut anonymous = false;
     let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--anonymous",
+            "--goal",
+            "--lease-secs",
+            "--max-turn-secs",
+            "--max-turns",
+            "--model",
+            "--thinking-level",
+        ],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--model" => model = Some(v),
@@ -2526,6 +2752,7 @@ fn cmd_store(store: &mut Store, args: &[String]) -> Result<()> {
 }
 
 fn goal_arg(args: &[String]) -> Result<String> {
+    reject_unknown_flags(args, &["--goal"])?;
     let mut goal_id = None;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
@@ -2545,6 +2772,7 @@ fn cmd_backfill(store: &mut Store, args: &[String]) -> Result<()> {
     let mut from = None;
     let mut privacy = "local_private".to_string();
     let mut dry_run = false;
+    reject_unknown_flags(args, &["--dry-run", "--from", "--goal", "--privacy"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--from" => from = Some(v),
@@ -2615,6 +2843,7 @@ fn cmd_privacy(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut level = "public_safe".to_string();
     let mut format_json = false;
+    reject_unknown_flags(args, &["--format", "--goal", "--level"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--level" => level = v,
@@ -2687,10 +2916,22 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).ok_or_else(|| {
         anyhow::anyhow!("lease requires a subcommand (claim|renew|release|expire|status)")
     })?;
+    let json = wants_json(args);
     let mut goal_id = None;
     let mut todo_id = None;
     let mut agent_id = None;
     let mut lease_secs = 0u64;
+    reject_unknown_flags(
+        &args[1..],
+        &[
+            "--agent-id",
+            "--format",
+            "--goal",
+            "--json",
+            "--lease-secs",
+            "--todo-id",
+        ],
+    )?;
     parse_pairs(&args[1..], |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -2711,7 +2952,15 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
         let todo = goal
             .todo(&todo_id)
             .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
-        match lease::lease_status(todo, now) {
+        let status = lease::lease_status(todo, now);
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&lease_status_json(&todo_id, &status))?
+            );
+            return Ok(());
+        }
+        match status {
             lease::LeaseStatus::Free => println!("todo {todo_id}: lease FREE"),
             lease::LeaseStatus::Active { owner, expires_at } => {
                 println!("todo {todo_id}: lease ACTIVE (owner={owner} expires_at={expires_at})")
@@ -2814,6 +3063,10 @@ fn cmd_runs(store: &Store, args: &[String]) -> Result<()> {
     let mut cutoff = None;
     let mut rebuild = false;
     let mut format_json = false;
+    reject_unknown_flags(
+        &args[1..],
+        &["--cutoff", "--format", "--goal", "--keep", "--rebuild"],
+    )?;
     parse_pairs(&args[1..], |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--keep" => keep = v.parse().unwrap_or(50),
@@ -2985,6 +3238,64 @@ fn validation_status_label(status: &crate::state::ValidationStatus) -> &'static 
     }
 }
 
+/// P0-3①: reject unknown `--flags` instead of silently ignoring them.
+///
+/// Every command handler validates its argument list against the flags it
+/// actually parses, so a typo (`--gaol`) fails loudly with a help hint
+/// instead of being silently swallowed (which used to surface as a
+/// confusing "--goal required" or, worse, as silently ignored input).
+/// `--help` and the global `--include-experimental` are always allowed.
+fn reject_unknown_flags(args: &[String], known: &[&str]) -> Result<()> {
+    for a in args {
+        if !a.starts_with("--") || a == "--help" || a == "--include-experimental" {
+            continue;
+        }
+        if !known.contains(&a.as_str()) {
+            bail!("unknown flag `{a}` (try `{} --help`)", prog());
+        }
+    }
+    Ok(())
+}
+
+/// P0-3③: does the arg list request JSON output? Accepts both `--json`
+/// and `--format json` so every read-only command speaks the same dialect.
+fn wants_json(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--json" {
+            return true;
+        }
+        if args[i] == "--format" && args.get(i + 1).map(|s| s.as_str()) == Some("json") {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// P0-3④: classify a `--resume-when` value — numeric N means "defer N
+/// seconds from now" (a real deadline); anything else is a text-only hint.
+enum ResumeWhen {
+    Defer(u64),
+    TextHint(String),
+}
+
+fn parse_resume_when(value: &str) -> ResumeWhen {
+    match value.trim().parse::<u64>() {
+        Ok(secs) => ResumeWhen::Defer(secs),
+        Err(_) => ResumeWhen::TextHint(value.to_string()),
+    }
+}
+
+/// P0-3④: the warning printed when `--resume-when` is a text hint —
+/// previously the no-deadline behavior was silent (FUTURE.md known quirk).
+fn resume_when_text_hint_warning(value: &str, consequence: &str) -> String {
+    format!(
+        "warning: `--resume-when \"{value}\"` is not numeric — storing it as a text hint only \
+         ({consequence}). Use a numeric value (seconds) to schedule a real deadline."
+    )
+}
+
 fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
     let mut i = 0;
     while i < args.len() {
@@ -3012,6 +3323,7 @@ fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
 fn cmd_heartbeat(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
+    reject_unknown_flags(args, &["--agent-id", "--goal"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
@@ -3035,6 +3347,7 @@ async fn cmd_worker_bridge(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
     let mut max_turns = 6u32;
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--max-turns"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
@@ -3057,6 +3370,7 @@ async fn cmd_worker_bridge(store: &mut Store, args: &[String]) -> Result<()> {
 /// (GET / , GET /goals.json). Read-only projection; ledger stays the truth.
 fn cmd_serve_status(store: &Store, args: &[String]) -> Result<()> {
     let mut port = 8791u16;
+    reject_unknown_flags(args, &["--port"])?;
     parse_pairs(args, |k, v| {
         if k == "--port" {
             port = v.parse().unwrap_or(8791)
@@ -3083,6 +3397,7 @@ fn cmd_capability(store: &mut Store, args: &[String]) -> Result<()> {
         let catalog = crate::capabilities::catalog::CapabilityCatalog::with_builtin();
         let include_experimental = args.iter().any(|a| a == "--include-experimental");
         let mut name = None;
+        reject_unknown_flags(&args[1..], &["--input", "--name"])?;
         parse_pairs(&args[1..], |k, v| {
             if k == "--name" {
                 name = Some(v)
@@ -3134,6 +3449,7 @@ fn cmd_capability(store: &mut Store, args: &[String]) -> Result<()> {
     let mut name = None;
     let mut input = None;
     let mut goal_id = None;
+    reject_unknown_flags(&args[1..], &["--input", "--name", "--goal"])?;
     parse_pairs(&args[1..], |k, v| match k {
         "--name" => name = Some(v),
         "--input" => input = Some(v),
@@ -3193,6 +3509,7 @@ fn cmd_extension(store: &Store, args: &[String]) -> Result<()> {
         "install" | "upgrade" => {
             let mut manifest_path = None;
             let mut execute = false;
+            reject_unknown_flags(&args[1..], &["--execute", "--id", "--manifest"])?;
             parse_pairs(&args[1..], |k, v| match k {
                 "--manifest" => manifest_path = Some(v),
                 "--execute" => execute = true,
@@ -3223,6 +3540,7 @@ fn cmd_extension(store: &Store, args: &[String]) -> Result<()> {
         "enable" | "disable" | "rollback" => {
             let mut id = None;
             let mut execute = false;
+            reject_unknown_flags(&args[1..], &["--execute", "--id", "--manifest"])?;
             parse_pairs(&args[1..], |k, v| match k {
                 "--id" => id = Some(v),
                 "--execute" => execute = true,
@@ -3246,6 +3564,7 @@ fn cmd_extension(store: &Store, args: &[String]) -> Result<()> {
         }
         "status" => {
             let mut id = None;
+            reject_unknown_flags(&args[1..], &["--execute", "--id", "--manifest"])?;
             parse_pairs(&args[1..], |k, v| {
                 if k == "--id" {
                     id = Some(v)
@@ -3297,6 +3616,7 @@ fn cmd_catalog(store: &Store, args: &[String]) -> Result<()> {
     let catalog = crate::capabilities::catalog::CapabilityCatalog::with_builtin();
     let mut name = None;
     let mut json = false;
+    reject_unknown_flags(args, &["--format", "--json", "--name"])?;
     parse_pairs(args, |k, v| match k {
         "--name" => name = Some(v),
         "--format" => json = v == "json",
@@ -3360,6 +3680,7 @@ fn cmd_scope(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
     let mut exclude: Vec<String> = vec![];
+    reject_unknown_flags(args, &["--agent-id", "--exclude", "--goal"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
@@ -3403,6 +3724,7 @@ fn cmd_scope(store: &Store, args: &[String]) -> Result<()> {
 fn cmd_lane(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
+    reject_unknown_flags(args, &["--agent-id", "--goal"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
@@ -3441,6 +3763,23 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
             let mut kind = "observe".to_string();
             let mut capabilities: Vec<String> = vec![];
             let mut summary = None;
+            reject_unknown_flags(
+                &args[1..],
+                &[
+                    "--adapter-id",
+                    "--agent-id",
+                    "--authority-ref",
+                    "--capabilities",
+                    "--decision-id",
+                    "--goal",
+                    "--host-capabilities",
+                    "--kind",
+                    "--outcome",
+                    "--receipt-id",
+                    "--summary",
+                    "--target-agent-id",
+                ],
+            )?;
             parse_pairs(&args[1..], |k, v| match k {
                 "--goal" => goal_id = Some(v),
                 "--agent-id" => supervisor_id = Some(v),
@@ -3489,6 +3828,23 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
             let mut outcome = "rejected".to_string();
             let mut authority_ref = None;
             let mut host_capabilities: Vec<String> = vec![];
+            reject_unknown_flags(
+                &args[1..],
+                &[
+                    "--adapter-id",
+                    "--agent-id",
+                    "--authority-ref",
+                    "--capabilities",
+                    "--decision-id",
+                    "--goal",
+                    "--host-capabilities",
+                    "--kind",
+                    "--outcome",
+                    "--receipt-id",
+                    "--summary",
+                    "--target-agent-id",
+                ],
+            )?;
             parse_pairs(&args[1..], |k, v| match k {
                 "--goal" => goal_id = Some(v),
                 "--decision-id" => decision_id = Some(v),
@@ -3531,6 +3887,23 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
         }
         "events" => {
             let mut goal_id = None;
+            reject_unknown_flags(
+                &args[1..],
+                &[
+                    "--adapter-id",
+                    "--agent-id",
+                    "--authority-ref",
+                    "--capabilities",
+                    "--decision-id",
+                    "--goal",
+                    "--host-capabilities",
+                    "--kind",
+                    "--outcome",
+                    "--receipt-id",
+                    "--summary",
+                    "--target-agent-id",
+                ],
+            )?;
             parse_pairs(&args[1..], |k, v| {
                 if k == "--goal" {
                     goal_id = Some(v)
@@ -3553,6 +3926,7 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
 fn cmd_handoff(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut write = false;
+    reject_unknown_flags(args, &["--goal", "--write"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--write" => write = true,
@@ -3602,6 +3976,7 @@ fn cmd_handoff(store: &Store, args: &[String]) -> Result<()> {
 /// order; cycles fail closed.
 fn cmd_task_graph(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
             goal_id = Some(v)
@@ -3613,6 +3988,10 @@ fn cmd_task_graph(store: &Store, args: &[String]) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
     let graph = crate::work_items::task_graph::build_task_graph(&goal)
         .map_err(|e| anyhow::anyhow!("task graph failed closed: {e}"))?;
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&graph)?);
+        return Ok(());
+    }
     println!(
         "task graph: {} nodes, {} edges",
         graph.nodes.len(),
@@ -3635,6 +4014,7 @@ fn cmd_task_graph(store: &Store, args: &[String]) -> Result<()> {
 fn cmd_attention(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut all = false;
+    reject_unknown_flags(args, &["--all", "--format", "--goal", "--json"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--all" => all = true,
@@ -3659,6 +4039,10 @@ fn cmd_attention(store: &Store, args: &[String]) -> Result<()> {
         bail!("attention requires --goal G or --all");
     }
     let queue = crate::work_items::attention::build_attention_queue(items);
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&queue)?);
+        return Ok(());
+    }
     println!(
         "attention queue: {} item(s) | user/controller={} controller={} codex={} monitor={}",
         queue.item_count,
@@ -3686,6 +4070,10 @@ fn cmd_inbox(store: &Store, args: &[String]) -> Result<()> {
         .unwrap_or_else(|_| ".".to_string());
     let mut scope = "addressed_only".to_string();
     let mut name = "operator".to_string();
+    reject_unknown_flags(
+        args,
+        &["--format", "--json", "--name", "--project", "--scope"],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--project" => project = v,
         "--scope" => scope = v,
@@ -3703,6 +4091,10 @@ fn cmd_inbox(store: &Store, args: &[String]) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let urgency =
         crate::work_items::operator_inbox::project_operator_inbox_urgency(&config, &pending);
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&urgency)?);
+        return Ok(());
+    }
     println!(
         "operator inbox: enabled={} pending={} question={} mention={} reply={} attention_required={} reply_due={}",
         urgency.enabled,
@@ -3719,11 +4111,12 @@ fn cmd_inbox(store: &Store, args: &[String]) -> Result<()> {
 
 // ── registry (G-26) ────────────────────────────────────────────────────────
 
-/// `loopx registry [--json] [--include-experimental]` — inspect the CLI
-/// registry (groups + commands) — the aggregated help surface.
+/// `loopx registry [--format json|--json] [--include-experimental]` — inspect
+/// the CLI registry (groups + commands) — the aggregated help surface.
 fn cmd_registry(registry: &CommandRegistry, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--format", "--json"])?;
     let include_experimental = args.iter().any(|a| a == "--include-experimental");
-    if args.iter().any(|a| a == "--json") {
+    if wants_json(args) {
         let payload: serde_json::Value = registry
             .groups()
             .iter()
@@ -3778,6 +4171,7 @@ fn cmd_benchmark_protocol(store: &Store, args: &[String]) -> Result<()> {
     let mut route = None;
     let mut max_rounds = None;
     let mut json = false;
+    reject_unknown_flags(args, &["--json", "--max-rounds", "--route"])?;
     parse_pairs(args, |k, v| match k {
         "--route" => route = Some(v),
         "--max-rounds" => max_rounds = v.parse::<u32>().ok(),
@@ -3828,6 +4222,7 @@ fn cmd_benchmark_ledger(store: &Store, args: &[String]) -> Result<()> {
     let mut case_id = None;
     let mut json = false;
     let mut dir = None;
+    reject_unknown_flags(args, &["--benchmark-id", "--case-id", "--dir", "--json"])?;
     parse_pairs(args, |k, v| match k {
         "--benchmark-id" => benchmark_id = Some(v),
         "--case-id" => case_id = Some(v),
@@ -3891,6 +4286,21 @@ async fn cmd_benchmark_run(store: &Store, args: &[String]) -> Result<()> {
     let mut agent_addr = None;
     let mut ledger_dir = None;
     let mut stub = false;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-addr",
+            "--arm-id",
+            "--benchmark-id",
+            "--case-id",
+            "--expected-evidence",
+            "--ledger-dir",
+            "--max-rounds",
+            "--route",
+            "--stub",
+            "--task",
+        ],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--benchmark-id" => benchmark_id = Some(v),
         "--case-id" => case_id = Some(v),
@@ -4004,6 +4414,7 @@ fn cmd_replay_record(store: &Store, args: &[String]) -> Result<()> {
     let mut case_id = None;
     let mut agent_id = None;
     let mut out = None;
+    reject_unknown_flags(args, &["--agent-id", "--case-id", "--goal", "--out"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--case-id" => case_id = Some(v),
@@ -4045,6 +4456,7 @@ fn cmd_replay_run(store: &Store, args: &[String]) -> Result<()> {
     use crate::replay::decision_replay::DecisionReplay;
     let mut path = None;
     let mut json = false;
+    reject_unknown_flags(args, &["--case", "--json"])?;
     parse_pairs(args, |k, v| match k {
         "--case" => path = Some(v),
         "--json" => json = true,
@@ -4087,6 +4499,10 @@ fn cmd_replay_run(store: &Store, args: &[String]) -> Result<()> {
 /// packet.
 fn cmd_replay_corpus_build(store: &Store, args: &[String]) -> Result<()> {
     use crate::replay::corpus::{build_model_behavior_corpus, PatchCase};
+    reject_unknown_flags(
+        args,
+        &["--ablate", "--goal", "--out", "--patch", "--patch-name"],
+    )?;
     let mut goal_id = None;
     let mut out = None;
     let mut ablations: Vec<String> = vec![];
@@ -4160,6 +4576,7 @@ fn cmd_replay_corpus_run(store: &Store, args: &[String]) -> Result<()> {
     let mut repeats = 3u32;
     let mut seed = 0u64;
     let mut json = false;
+    reject_unknown_flags(args, &["--corpus", "--json", "--repeats", "--seed"])?;
     parse_pairs(args, |k, v| match k {
         "--corpus" => corpus_path = Some(v),
         "--repeats" => repeats = v.parse::<u32>().unwrap_or(3),
@@ -4222,6 +4639,7 @@ fn cmd_replay(store: &Store, args: &[String]) -> Result<()> {
 fn cmd_canary(store: &Store, args: &[String]) -> Result<()> {
     let mut profile = None;
     let mut json = false;
+    reject_unknown_flags(args, &["--json", "--profile"])?;
     parse_pairs(args, |k, v| match k {
         "--profile" => profile = Some(v),
         "--json" => json = true,
@@ -4285,6 +4703,7 @@ fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
 fn cmd_diagnose(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut format_json = false;
+    reject_unknown_flags(args, &["--format", "--goal"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--format" => format_json = v == "json",
@@ -4358,6 +4777,7 @@ fn cmd_diagnose(store: &Store, args: &[String]) -> Result<()> {
 async fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_filter = None;
     let mut agent_addr = None;
+    reject_unknown_flags(args, &["--agent-addr", "--goal"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_filter = Some(v),
         "--agent-addr" => agent_addr = Some(v),
@@ -4442,6 +4862,7 @@ async fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
 /// decision summary per run.
 fn cmd_history(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
             goal_id = Some(v);
@@ -4451,6 +4872,10 @@ fn cmd_history(store: &Store, args: &[String]) -> Result<()> {
     let goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&goal.history)?);
+        return Ok(());
+    }
     if goal.history.is_empty() {
         println!("goal {goal_id}: no runs recorded");
         return Ok(());
@@ -4496,6 +4921,7 @@ fn cmd_turn(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
     let mut agent_id = None;
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--todo-id"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -4522,6 +4948,7 @@ fn cmd_turn(store: &Store, args: &[String]) -> Result<()> {
 fn cmd_todo_event(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json", "--todo-id"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -4534,6 +4961,10 @@ fn cmd_todo_event(store: &Store, args: &[String]) -> Result<()> {
         .iter()
         .filter(|se| event_touches_todo(&se.event, &todo_id))
         .collect();
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&relevant)?);
+        return Ok(());
+    }
     if relevant.is_empty() {
         println!("todo {todo_id}: no events in goal {goal_id}");
         return Ok(());
@@ -4723,6 +5154,7 @@ fn describe_event(event: &crate::store::Event) -> String {
 fn cmd_evidence_log(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json", "--todo-id"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -4730,54 +5162,24 @@ fn cmd_evidence_log(store: &Store, args: &[String]) -> Result<()> {
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let events = store.events(&goal_id)?;
-    let mut printed = 0usize;
-    for se in &events {
-        use crate::store::Event;
-        match &se.event {
-            Event::EvidenceAttached {
-                todo_id: tid,
-                evidence,
-                ..
-            } => {
-                if todo_id.as_deref().map(|t| t == tid).unwrap_or(true) {
-                    println!(
-                        "[attached] todo={tid}: {}",
-                        crate::decision::truncate(evidence, 200)
-                    );
-                    printed += 1;
-                }
-            }
-            Event::RunRecorded { record, .. } => {
-                if todo_id
-                    .as_deref()
-                    .map(|t| t == record.todo_id)
-                    .unwrap_or(true)
-                    && !record.evidence.trim().is_empty()
-                {
-                    println!(
-                        "[run #{}] todo={}: {}",
-                        record.turn,
-                        record.todo_id,
-                        crate::decision::truncate(&record.evidence, 200)
-                    );
-                    printed += 1;
-                }
-            }
-            Event::TodoCompleted {
-                todo_id: tid,
-                evidence: Some(evidence),
-                ..
-            } if todo_id.as_deref().map(|t| t == tid).unwrap_or(true) => {
-                println!(
-                    "[completed] todo={tid}: {}",
-                    crate::decision::truncate(evidence, 200)
-                );
-                printed += 1;
-            }
-            _ => {}
+    let entries = collect_evidence_entries(&events, todo_id.as_deref());
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+    for entry in &entries {
+        let evidence = crate::decision::truncate(&entry.evidence, 200);
+        match entry.source.as_str() {
+            "attached" => println!("[attached] todo={}: {evidence}", entry.todo_id),
+            "run" => println!(
+                "[run #{}] todo={}: {evidence}",
+                entry.turn.unwrap_or_default(),
+                entry.todo_id
+            ),
+            _ => println!("[completed] todo={}: {evidence}", entry.todo_id),
         }
     }
-    if printed == 0 {
+    if entries.is_empty() {
         println!(
             "goal {goal_id}: no evidence recorded{}",
             todo_id
@@ -4785,9 +5187,67 @@ fn cmd_evidence_log(store: &Store, args: &[String]) -> Result<()> {
                 .unwrap_or_default()
         );
     } else {
-        println!("({printed} evidence item(s))");
+        println!("({} evidence item(s))", entries.len());
     }
     Ok(())
+}
+
+/// One evidence-log entry (P0-3③: serializable so `evidence-log` has a
+/// `--format json` form; the text view renders the same rows truncated).
+#[derive(Debug, Clone, serde::Serialize)]
+struct EvidenceEntry {
+    /// attached | run | completed
+    source: String,
+    todo_id: String,
+    turn: Option<u32>,
+    evidence: String,
+}
+
+/// Project the evidence-bearing events of a goal into evidence-log rows
+/// (optionally filtered to one todo). Pure, unit-testable.
+fn collect_evidence_entries(
+    events: &[crate::store::StoredEvent],
+    todo_filter: Option<&str>,
+) -> Vec<EvidenceEntry> {
+    let matches = |tid: &str| todo_filter.map(|t| t == tid).unwrap_or(true);
+    let mut out = Vec::new();
+    for se in events {
+        use crate::store::Event;
+        match &se.event {
+            Event::EvidenceAttached {
+                todo_id: tid,
+                evidence,
+                ..
+            } if matches(tid) => out.push(EvidenceEntry {
+                source: "attached".to_string(),
+                todo_id: tid.clone(),
+                turn: None,
+                evidence: evidence.clone(),
+            }),
+            Event::RunRecorded { record, .. }
+                if matches(&record.todo_id) && !record.evidence.trim().is_empty() =>
+            {
+                out.push(EvidenceEntry {
+                    source: "run".to_string(),
+                    todo_id: record.todo_id.clone(),
+                    turn: Some(record.turn),
+                    evidence: record.evidence.clone(),
+                });
+            }
+            Event::TodoCompleted {
+                todo_id: tid,
+                evidence: Some(evidence),
+                ..
+            } if matches(tid) => out.push(EvidenceEntry {
+                source: "completed".to_string(),
+                todo_id: tid.clone(),
+                turn: None,
+                evidence: evidence.clone(),
+            }),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// `loopx todo archive --goal G --todo-id T` — archive a todo
@@ -4795,6 +5255,7 @@ fn cmd_evidence_log(store: &Store, args: &[String]) -> Result<()> {
 fn todo_archive(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
+    reject_unknown_flags(args, &["--goal", "--todo-id"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -4825,6 +5286,7 @@ fn todo_supersede(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
     let mut reason = None;
+    reject_unknown_flags(args, &["--goal", "--reason", "--todo-id"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -4874,7 +5336,20 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     let mut priority = None;
     let mut resume_when = None;
     let mut blocks: Option<Vec<String>> = None;
-    let mut unknown_flags: Vec<String> = vec![];
+    reject_unknown_flags(
+        args,
+        &[
+            "--blocks",
+            "--evidence",
+            "--goal",
+            "--note",
+            "--priority",
+            "--resume-when",
+            "--status",
+            "--text",
+            "--todo-id",
+        ],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -4898,15 +5373,8 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
                     .collect()
             });
         }
-        "--help" | "-h" => {
-            eprintln!("usage: todo update --goal G --todo-id T [--text T] [--status S] [--evidence E] [--note N] [--priority P0|P1|P2] [--resume-when N|TEXT] [--blocks a,b]");
-            std::process::exit(0);
-        }
-        other => unknown_flags.push(other.to_string()),
+        _ => {}
     });
-    if !unknown_flags.is_empty() {
-        anyhow::bail!("todo update: unknown flag(s): {}", unknown_flags.join(", "));
-    }
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
     let goal = store
@@ -4924,14 +5392,23 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     // `--resume-when N` with a numeric N means "defer N seconds from now"
     // (same semantics as `--defer-secs`), so a deferred/monitor todo actually
     // becomes due. A non-numeric value keeps the legacy text-only behavior
-    // (resume_when_text hint, no real deadline).
-    let resume_when_parsed = resume_when.as_deref().map(|rw| {
-        if let Ok(secs) = rw.trim().parse::<u64>() {
-            format!("defer:{secs}")
-        } else {
-            rw.to_string()
-        }
-    });
+    // (resume_when_text hint, no real deadline) — and now warns about it
+    // (P0-3④) instead of silently scheduling nothing.
+    let resume_when_parsed = resume_when
+        .as_deref()
+        .map(|rw| match parse_resume_when(rw) {
+            ResumeWhen::Defer(secs) => format!("defer:{secs}"),
+            ResumeWhen::TextHint(text) => {
+                eprintln!(
+                    "{}",
+                    resume_when_text_hint_warning(
+                        &text,
+                        "no deadline is scheduled; the todo stays deferred until updated again"
+                    )
+                );
+                text
+            }
+        });
     store.append(Event::TodoUpdated {
         goal_id: goal_id.clone(),
         todo_id: todo_id.clone(),
@@ -5556,5 +6033,392 @@ mod coverage_tests {
         refresh_next_action(&store, "gs").unwrap();
         sync_compat(&store, "gs").unwrap();
         assert!(store.goal_dir("gs").join("ACTIVE_GOAL_STATE.md").exists());
+    }
+}
+
+// ── P0-3 CLI quirks tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod cli_quirks_tests {
+    use super::*;
+
+    fn tmp_store(tag: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-p03-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Store::open(dir.to_string_lossy().as_ref()).unwrap()
+    }
+
+    fn open_goal_with_todo(store: &mut Store, goal_id: &str) {
+        let goal = Goal::new(goal_id, "objective", "/tmp");
+        store.register(&goal).unwrap();
+        let ts = goal.created_at;
+        store
+            .append(Event::GoalStarted {
+                goal_id: goal_id.into(),
+                ts,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: goal_id.into(),
+                todo: Todo::advancement("t1", "shared work"),
+                ts,
+            })
+            .unwrap();
+    }
+
+    // ① unknown flags are rejected, not silently ignored ───────────────────
+
+    #[test]
+    fn reject_unknown_flags_accepts_known_and_positionals() {
+        let args = vec!["--goal".to_string(), "g1".to_string(), "status".to_string()];
+        assert!(reject_unknown_flags(&args, &["--goal"]).is_ok());
+    }
+
+    #[test]
+    fn reject_unknown_flags_fails_loudly_on_typo() {
+        let args = vec!["--gaol".to_string(), "g1".to_string()];
+        let err = reject_unknown_flags(&args, &["--goal"]).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unknown flag `--gaol`"), "got: {msg}");
+        assert!(msg.contains("--help"), "hint missing: {msg}");
+    }
+
+    #[test]
+    fn reject_unknown_flags_allows_help_and_global_flags() {
+        let args = vec!["--help".to_string(), "--include-experimental".to_string()];
+        assert!(reject_unknown_flags(&args, &["--goal"]).is_ok());
+    }
+
+    #[test]
+    fn unknown_flag_errors_end_to_end_on_read_and_write_commands() {
+        let mut store = tmp_store("e2e-unknown");
+        open_goal_with_todo(&mut store, "g1");
+        // read-only command
+        let err = cmd_status(&store, &["--bogus".to_string()]).unwrap_err();
+        assert!(format!("{err}").contains("unknown flag `--bogus`"));
+        // write command
+        let err = todo_update(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                "--bogus".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("unknown flag `--bogus`"));
+    }
+
+    // ② subcommand --help renders from the registry ────────────────────────
+
+    #[test]
+    fn render_command_help_shows_usage_for_registered_command() {
+        let registry = build_cli_registry();
+        let help = render_command_help(&registry, "status", false);
+        assert!(help.contains("status [--goal G]"), "got: {help}");
+        assert!(help.contains("usage: "), "got: {help}");
+        assert!(help.contains("group: goal"), "got: {help}");
+    }
+
+    #[test]
+    fn render_command_help_unknown_command_falls_back() {
+        let registry = build_cli_registry();
+        let help = render_command_help(&registry, "nope-not-a-command", false);
+        assert!(help.contains("unknown command"), "got: {help}");
+    }
+
+    // ③ --format json detection + read-only JSON projections ───────────────
+
+    #[test]
+    fn wants_json_detects_both_dialects() {
+        assert!(wants_json(&["--json".to_string()]));
+        assert!(wants_json(&["--format".to_string(), "json".to_string()]));
+        assert!(!wants_json(&["--format".to_string(), "text".to_string()]));
+        assert!(!wants_json(&["--goal".to_string(), "g1".to_string()]));
+        assert!(!wants_json(&[]));
+    }
+
+    #[test]
+    fn lease_status_json_projects_all_three_states() {
+        use crate::work_items::task_lease::LeaseStatus;
+        let free = lease_status_json("t1", &LeaseStatus::Free);
+        assert_eq!(free["lease"], "free");
+        assert_eq!(free["todo_id"], "t1");
+        let active = lease_status_json(
+            "t1",
+            &LeaseStatus::Active {
+                owner: "alice".to_string(),
+                expires_at: 123,
+            },
+        );
+        assert_eq!(active["lease"], "active");
+        assert_eq!(active["owner"], "alice");
+        assert_eq!(active["expires_at"], 123);
+        let expired = lease_status_json(
+            "t1",
+            &LeaseStatus::Expired {
+                owner: "bob".to_string(),
+                expires_at: 99,
+            },
+        );
+        assert_eq!(expired["lease"], "expired");
+        assert_eq!(expired["expired_at"], 99);
+    }
+
+    #[test]
+    fn agent_list_rows_marks_live_lease_holder_running() {
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.registered_agents = vec!["alice".to_string(), "bob".to_string()];
+        goal.agent_profiles = vec![crate::state::AgentProfile {
+            id: "alice".to_string(),
+            capabilities: vec!["code".to_string()],
+        }];
+        let mut todo = Todo::advancement("t1", "work");
+        todo.claimed_by = Some("alice".to_string());
+        todo.lease_expires_at = Some(2_000);
+        goal.todos.push(todo);
+        let mut last_active = HashMap::new();
+        last_active.insert("alice".to_string(), 900u64);
+        let rows = agent_list_rows(&goal, &last_active, 1_000);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].agent_id, "alice");
+        assert_eq!(rows[0].status, "running");
+        assert_eq!(rows[0].work_on.len(), 1);
+        assert_eq!(rows[0].capabilities, vec!["code".to_string()]);
+        assert_eq!(rows[0].last_active_ts, Some(900));
+        assert_eq!(rows[1].agent_id, "bob");
+        assert_eq!(rows[1].status, "idle");
+        // rows serialize (the --format json path)
+        let json = serde_json::to_string(&rows).unwrap();
+        assert!(json.contains("\"status\":\"running\""));
+    }
+
+    #[test]
+    fn collect_evidence_entries_covers_all_sources_and_filter() {
+        use crate::store::StoredEvent;
+        let mk = |event: Event| StoredEvent {
+            event_id: String::new(),
+            producer: None,
+            source_ref: None,
+            source_section: None,
+            source_line: None,
+            privacy: None,
+            event,
+        };
+        let events = vec![
+            mk(Event::EvidenceAttached {
+                goal_id: "g1".into(),
+                todo_id: "t1".into(),
+                evidence: "attached-ev".into(),
+                ts: 1,
+            }),
+            mk(Event::RunRecorded {
+                goal_id: "g1".into(),
+                record: crate::state::RunRecord {
+                    turn: 3,
+                    todo_id: "t2".into(),
+                    run_id: "r1".into(),
+                    validation: None,
+                    terminal_state: "continue".into(),
+                    error: None,
+                    tokens_in_delta: 0,
+                    tokens_out_delta: 0,
+                    cost_delta: 0.0,
+                    tools: vec![],
+                    evidence: "run-ev".into(),
+                    recorded_at: 2,
+                    spend_source: None,
+                },
+                ts: 2,
+            }),
+            mk(Event::TodoCompleted {
+                goal_id: "g1".into(),
+                todo_id: "t1".into(),
+                no_follow_up: true,
+                successor_ids: vec![],
+                evidence: Some("completed-ev".into()),
+                ts: 3,
+            }),
+        ];
+        let all = collect_evidence_entries(&events, None);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].source, "attached");
+        assert_eq!(all[1].source, "run");
+        assert_eq!(all[1].turn, Some(3));
+        assert_eq!(all[2].source, "completed");
+        let filtered = collect_evidence_entries(&events, Some("t1"));
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|e| e.todo_id == "t1"));
+        // entries serialize (the --format json path)
+        assert!(serde_json::to_string(&all).is_ok());
+    }
+
+    #[test]
+    fn json_flags_accepted_end_to_end_on_new_read_commands() {
+        let mut store = tmp_store("e2e-json");
+        open_goal_with_todo(&mut store, "g1");
+        let json = "--format".to_string();
+        let val = "json".to_string();
+        // lease status
+        cmd_lease(
+            &mut store,
+            &[
+                "status".to_string(),
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                json.clone(),
+                val.clone(),
+            ],
+        )
+        .unwrap();
+        // agent list (empty registry → text "no agents"; json flag accepted)
+        cmd_agent_list(
+            &store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                json.clone(),
+                val.clone(),
+            ],
+        )
+        .unwrap();
+        // task-graph
+        cmd_task_graph(
+            &store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                json.clone(),
+                val.clone(),
+            ],
+        )
+        .unwrap();
+        // history
+        cmd_history(
+            &store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                json.clone(),
+                val.clone(),
+            ],
+        )
+        .unwrap();
+        // todo-event
+        cmd_todo_event(
+            &store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                json.clone(),
+                val.clone(),
+            ],
+        )
+        .unwrap();
+        // evidence-log
+        cmd_evidence_log(
+            &store,
+            &["--goal".to_string(), "g1".to_string(), json.clone(), val],
+        )
+        .unwrap();
+        // replan obligations
+        cmd_replan(
+            &mut store,
+            &[
+                "obligations".to_string(),
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+    }
+
+    // ④ text --resume-when warns (no deadline) ─────────────────────────────
+
+    #[test]
+    fn parse_resume_when_classifies_numeric_vs_text() {
+        match parse_resume_when("300") {
+            ResumeWhen::Defer(secs) => assert_eq!(secs, 300),
+            _ => panic!("numeric must classify as Defer"),
+        }
+        match parse_resume_when("  60  ") {
+            ResumeWhen::Defer(secs) => assert_eq!(secs, 60),
+            _ => panic!("padded numeric must classify as Defer"),
+        }
+        match parse_resume_when("when the build is green") {
+            ResumeWhen::TextHint(text) => assert_eq!(text, "when the build is green"),
+            _ => panic!("text must classify as TextHint"),
+        }
+    }
+
+    #[test]
+    fn resume_when_text_hint_warning_names_value_and_consequence() {
+        let w = resume_when_text_hint_warning("next week", "no deadline is scheduled");
+        assert!(w.contains("`--resume-when \"next week\"`"), "got: {w}");
+        assert!(w.contains("text hint only"), "got: {w}");
+        assert!(w.contains("no deadline is scheduled"), "got: {w}");
+        assert!(w.contains("numeric value (seconds)"), "got: {w}");
+    }
+
+    #[test]
+    fn todo_update_text_resume_when_defers_without_deadline() {
+        let mut store = tmp_store("e2e-resume-text");
+        open_goal_with_todo(&mut store, "g1");
+        todo_update(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                "--resume-when".to_string(),
+                "after review".to_string(),
+            ],
+        )
+        .unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        let todo = goal.todo("t1").unwrap();
+        assert_eq!(todo.status, crate::state::TodoStatus::Deferred);
+        assert_eq!(todo.resume_when_text.as_deref(), Some("after review"));
+        // text hint → NO real deadline
+        assert!(todo.resume_when.is_none());
+    }
+
+    #[test]
+    fn todo_update_numeric_resume_when_sets_real_deadline() {
+        let mut store = tmp_store("e2e-resume-num");
+        open_goal_with_todo(&mut store, "g1");
+        let before = SystemTime::now();
+        todo_update(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                "--resume-when".to_string(),
+                "120".to_string(),
+            ],
+        )
+        .unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        let todo = goal.todo("t1").unwrap();
+        assert_eq!(todo.status, crate::state::TodoStatus::Deferred);
+        let deadline = todo.resume_when.expect("numeric sets a deadline");
+        assert!(deadline >= before + std::time::Duration::from_secs(120));
     }
 }
