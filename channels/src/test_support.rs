@@ -296,7 +296,12 @@ impl HttpRoute {
 
     /// Hang for `delay` before answering (client-timeout tests).
     pub fn slow(path: &str, delay: Duration) -> Self {
-        let mut response = HttpRoute::json(path, 200, "{}").responses.remove(0);
+        Self::slow_json(path, "{}", delay)
+    }
+
+    /// Hang for `delay`, then answer with this JSON body.
+    pub fn slow_json(path: &str, body: &str, delay: Duration) -> Self {
+        let mut response = HttpRoute::json(path, 200, body).responses.remove(0);
         response.delay = delay;
         HttpRoute::single(path, response)
     }
