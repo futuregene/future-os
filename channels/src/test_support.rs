@@ -543,6 +543,9 @@ pub async fn spawn_ws(script: Vec<WsAction>) -> (String, WsReceived) {
                         }
                     }
                 }
+                // Script finished: tear the connection down so the client
+                // sees EOF (both halves must drop for the socket to close).
+                reader.abort();
                 drop(sink);
                 let _ = reader.await;
             });

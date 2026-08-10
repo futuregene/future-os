@@ -266,16 +266,14 @@ impl FeishuWsClient {
                                 }
                             }
                         }
-                        Some(Ok(WsMessage::Close(_))) => {
-                            info!("WebSocket closed by server");
+                        Some(Ok(WsMessage::Close(_))) | None => {
+                            // tungstenite yields None only after a completed
+                            // close handshake; EOF without one surfaces as Err.
+                            info!("WebSocket closed/ended");
                             return Ok(());
                         }
                         Some(Err(e)) => {
                             return Err(anyhow!("WebSocket error: {}", e));
-                        }
-                        None => {
-                            info!("WebSocket stream ended");
-                            return Ok(());
                         }
                         _ => {}
                     }
@@ -659,5 +657,400 @@ mod tests {
     #[test]
     fn non_text_types_never_mention() {
         assert!(!is_bot_mentioned(r#"{"image_key":"k"}"#, "image", "ou_bot"));
+    }
+
+    // ─── Mock-server-backed tests ────────────────────────────────────────────
+
+    use crate::test_support::{self as ts, HttpRoute, WsAction};
+    use tokio_tungstenite::tungstenite::Message as WsMsg;
+
+    fn pbbp2_frame(frame_type: &str, payload: &[u8]) -> Vec<u8> {
+        let frame = WsFrame {
+            seq_id: 1,
+            log_id: 2,
+            service: 0,
+            method: 0,
+            headers: vec![Header {
+                key: "type".into(),
+                value: frame_type.into(),
+            }],
+            payload: payload.to_vec(),
+            payload_encoding: String::new(),
+            payload_type: String::new(),
+            log_id_new: String::new(),
+        };
+        let mut buf = Vec::new();
+        frame.encode(&mut buf).expect("encode frame");
+        buf
+    }
+
+    fn message_event_json() -> String {
+        serde_json::json!({
+            "header": {"event_type": "im.message.receive_v1", "tenant_key": "t", "app_id": "a"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_1"}},
+                "message": {
+                    "message_id": "om_1", "chat_id": "oc_1", "chat_type": "p2p",
+                    "message_type": "text", "content": "{\"text\":\"hi\"}",
+                    "create_time": "1700000000000",
+                    "mentions": [{"id": {"open_id": "ou_bot"}}],
+                    "root_id": "om_root", "parent_id": "om_parent"
+                }
+            }
+        })
+        .to_string()
+    }
+
+    fn bootstrap_route(ws_url: &str) -> HttpRoute {
+        HttpRoute::json(
+            "/callback/ws/endpoint",
+            200,
+            &serde_json::json!({
+                "code": 0, "msg": "ok",
+                "data": {"URL": ws_url, "ClientConfig": {"PingInterval": 20}}
+            })
+            .to_string(),
+        )
+    }
+
+    /// Bootstrap without a ClientConfig — the client keeps its own timers.
+    fn bootstrap_route_no_cfg(ws_url: &str) -> HttpRoute {
+        HttpRoute::json(
+            "/callback/ws/endpoint",
+            200,
+            &serde_json::json!({"code": 0, "msg": "ok", "data": {"URL": ws_url}})
+                .to_string(),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bootstrap_ok_and_ping_interval_clamps() {
+        ts::ensure_crypto_provider();
+        // PingInterval 20 → inside [15,60], applied verbatim.
+        let (base, recorded) = ts::spawn_http(vec![bootstrap_route("ws://x/")]).await;
+        let c = FeishuWsClient::new(&base, "app", "secret");
+        let (url, cfg) = c.bootstrap_ws().await.unwrap();
+        assert_eq!(url, "ws://x/");
+        assert_eq!(cfg.unwrap().ping_interval, Some(20));
+        let calls = ts::requests_to(&recorded, "/callback/ws/endpoint");
+        assert!(calls[0].body_string().contains("\"AppID\":\"app\""));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bootstrap_error_arms() {
+        ts::ensure_crypto_provider();
+        // code != 0
+        let (base, _) = ts::spawn_http(vec![HttpRoute::json(
+            "/callback/ws/endpoint",
+            200,
+            r#"{"code":500,"msg":"bad creds"}"#,
+        )])
+        .await;
+        let err = FeishuWsClient::new(&base, "a", "s")
+            .bootstrap_ws()
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("bad creds"), "{err}");
+
+        // missing data
+        let (base, _) = ts::spawn_http(vec![HttpRoute::json(
+            "/callback/ws/endpoint",
+            200,
+            r#"{"code":0}"#,
+        )])
+        .await;
+        let err = FeishuWsClient::new(&base, "a", "s")
+            .bootstrap_ws()
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("missing data"), "{err}");
+
+        // empty URL
+        let (base, _) = ts::spawn_http(vec![HttpRoute::json(
+            "/callback/ws/endpoint",
+            200,
+            r#"{"code":0,"data":{"URL":""}}"#,
+        )])
+        .await;
+        let err = FeishuWsClient::new(&base, "a", "s")
+            .bootstrap_ws()
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("missing URL"), "{err}");
+
+        // transport failure
+        let err = FeishuWsClient::new("http://127.0.0.1:1", "a", "s")
+            .bootstrap_ws()
+            .await
+            .err()
+            .unwrap();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_listen_full_frame_flow() {
+        ts::ensure_crypto_provider();
+        let (ws_url, received) = ts::spawn_ws(vec![
+            // pbbp2 ping → client replies with a binary pong frame.
+            WsAction::SendBinary(pbbp2_frame("ping", b"")),
+            // A real message event → on_event fires.
+            WsAction::SendBinary(pbbp2_frame("event", message_event_json().as_bytes())),
+            // Malformed event payload → warn, continue.
+            WsAction::SendBinary(pbbp2_frame("event", b"not json")),
+            // Event JSON that doesn't map to a known event → ignored.
+            WsAction::SendBinary(pbbp2_frame("event", br#"{"header":{}}"#)),
+            // pbbp2 pong → debug only.
+            WsAction::SendBinary(pbbp2_frame("pong", b"")),
+            // Unknown frame type → debug.
+            WsAction::SendBinary(pbbp2_frame("mystery", b"")),
+            // Undecodable protobuf → warn.
+            WsAction::SendBinary(vec![0xff, 0xff, 0xff]),
+            // WS protocol ping → client replies Pong.
+            WsAction::SendPing(b"hb".to_vec()),
+            WsAction::Delay(Duration::from_millis(200)),
+            WsAction::SendClose,
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(vec![bootstrap_route(&ws_url)]).await;
+        let client = FeishuWsClient::new(&base, "app", "secret");
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        client
+            .connect_and_listen(move |ev| events_clone.lock().unwrap().push(ev))
+            .await
+            .expect("clean close");
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1, "only the valid message event parses");
+        let ev = &events[0];
+        assert_eq!(ev.event_type, "im.message.receive_v1");
+        assert_eq!(ev.message_id.as_deref(), Some("om_1"));
+        assert_eq!(ev.chat_id.as_deref(), Some("oc_1"));
+        assert_eq!(ev.chat_type.as_deref(), Some("p2p"));
+        assert_eq!(ev.sender_open_id.as_deref(), Some("ou_1"));
+        assert_eq!(ev.msg_type.as_deref(), Some("text"));
+        assert_eq!(ev.content.as_deref(), Some("{\"text\":\"hi\"}"));
+        assert_eq!(ev.create_time_ms, Some(1700000000000));
+        assert_eq!(ev.root_id.as_deref(), Some("om_root"));
+        assert_eq!(ev.parent_id.as_deref(), Some("om_parent"));
+        assert_eq!(ev.tenant_key.as_deref(), Some("t"));
+        assert_eq!(ev.app_id.as_deref(), Some("a"));
+        assert!(ev.mentions.is_some());
+        drop(events);
+        // Client sent a pbbp2 pong (binary) and a WS Pong.
+        let got = received.lock().unwrap();
+        let binary_pong = got.iter().any(|m| matches!(m, WsMsg::Binary(b) if !b.is_empty()));
+        let ws_pong = got.iter().any(|m| matches!(m, WsMsg::Pong(p) if p == b"hb"));
+        assert!(binary_pong, "client must answer pbbp2 ping with pong frame");
+        assert!(ws_pong, "client must answer WS ping with pong");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_listen_stream_end_and_ws_failure() {
+        ts::ensure_crypto_provider();
+        // Script exhausts without a Close frame → EOF without close handshake
+        // → WebSocket protocol error.
+        let (ws_url, _) = ts::spawn_ws(vec![]).await;
+        let (base, _) = ts::spawn_http(vec![bootstrap_route(&ws_url)]).await;
+        let client = FeishuWsClient::new(&base, "app", "secret");
+        let err = client.connect_and_listen(|_| {}).await.err().unwrap();
+        assert!(err.to_string().contains("WebSocket error"), "{err}");
+
+        // Dead WS endpoint → connection failed error.
+        let (base, _) = ts::spawn_http(vec![bootstrap_route("ws://127.0.0.1:1/")]).await;
+        let client = FeishuWsClient::new(&base, "app", "secret");
+        let err = client
+            .connect_and_listen(|_| {})
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("connection failed"), "{err}");
+
+        // Protocol garbage → WebSocket error arm.
+        let (ws_url, _) = ts::spawn_ws(vec![
+            WsAction::SendRawBytes(vec![0x83, 0x00]), // reserved opcode
+            WsAction::Delay(Duration::from_millis(300)),
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(vec![bootstrap_route(&ws_url)]).await;
+        let client = FeishuWsClient::new(&base, "app", "secret");
+        let err = client
+            .connect_and_listen(|_| {})
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("WebSocket error"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_listen_heartbeat_timeout() {
+        ts::ensure_crypto_provider();
+        // Server stays silent; ping=1s + heartbeat=0s → the second tick
+        // (t≈1s, elapsed 1s > 0s) errors out.
+        let (ws_url, _) = ts::spawn_ws(vec![WsAction::Delay(Duration::from_secs(5))]).await;
+        let (base, _) = ts::spawn_http(vec![bootstrap_route_no_cfg(&ws_url)]).await;
+        let client = FeishuWsClient::new(&base, "app", "secret").with_test_timers(1, 0);
+        let err = client
+            .connect_and_listen(|_| {})
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("heartbeat timeout"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_listen_sends_protocol_ping() {
+        ts::ensure_crypto_provider();
+        // ping_interval=1s, generous heartbeat → the tick sends a WS Ping.
+        let (ws_url, received) = ts::spawn_ws(vec![
+            WsAction::Delay(Duration::from_millis(1500)),
+            WsAction::SendClose,
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(vec![bootstrap_route_no_cfg(&ws_url)]).await;
+        let client = FeishuWsClient::new(&base, "app", "secret").with_test_timers(1, 120);
+        client
+            .connect_and_listen(|_| {})
+            .await
+            .expect("close after pings");
+        let got = received.lock().unwrap();
+        assert!(
+            got.iter().any(|m| matches!(m, WsMsg::Ping(_))),
+            "client must send protocol pings"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn server_ping_interval_clamped_and_applied() {
+        ts::ensure_crypto_provider();
+        // PingInterval 100 → clamped to 60, connection proceeds.
+        let (ws_url, _) = ts::spawn_ws(vec![WsAction::SendClose]).await;
+        let routes = vec![HttpRoute::json(
+            "/callback/ws/endpoint",
+            200,
+            &serde_json::json!({
+                "code": 0,
+                "data": {"URL": ws_url, "ClientConfig": {"PingInterval": 100}}
+            })
+            .to_string(),
+        )];
+        let (base, _) = ts::spawn_http(routes).await;
+        let client = FeishuWsClient::new(&base, "app", "secret");
+        client.connect_and_listen(|_| {}).await.expect("ok");
+        assert_eq!(*client.ping_interval.read().await, 60);
+    }
+
+    // ─── parse_feishu_event ──────────────────────────────────────────────────
+
+    #[test]
+    fn parse_event_requires_header_event_and_type() {
+        assert!(parse_feishu_event(&serde_json::json!({})).is_none());
+        assert!(parse_feishu_event(&serde_json::json!({"header": {}})).is_none());
+        assert!(parse_feishu_event(
+            &serde_json::json!({"header": {"event_type": 1}, "event": {}})
+        )
+        .is_none());
+        // Known type but no message object → None.
+        assert!(parse_feishu_event(&serde_json::json!({
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {}
+        }))
+        .is_none());
+        // Unknown event type → None.
+        assert!(parse_feishu_event(&serde_json::json!({
+            "header": {"event_type": "im.chat.updated"},
+            "event": {"message": {}}
+        }))
+        .is_none());
+        // Missing sender → None.
+        assert!(parse_feishu_event(&serde_json::json!({
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {"message": {"message_id": "om"}}
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn parse_event_legacy_msg_type_and_bad_create_time() {
+        let ev = parse_feishu_event(&serde_json::json!({
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_1"}},
+                "message": {
+                    "message_id": "om_1", "chat_id": "oc_1",
+                    "msg_type": "text", "content": "{}",
+                    "create_time": "not-a-number"
+                }
+            }
+        }))
+        .expect("parses");
+        assert_eq!(ev.msg_type.as_deref(), Some("text"));
+        assert_eq!(ev.create_time_ms, None);
+    }
+
+    #[test]
+    fn parse_card_action_event_full_and_minimal() {
+        let full = parse_feishu_event(&serde_json::json!({
+            "header": {"event_type": "card.action.trigger", "tenant_key": "t", "app_id": "a"},
+            "event": {
+                "action": {"value": {"action": "approve", "approval_request_id": "r1"}},
+                "context": {"open_message_id": "om_1", "chat_id": "oc_1"},
+                "operator": {"open_id": "ou_1"}
+            }
+        }))
+        .expect("card action parses");
+        assert_eq!(full.event_type, "card.action.trigger");
+        assert_eq!(full.message_id.as_deref(), Some("om_1"));
+        assert_eq!(full.chat_id.as_deref(), Some("oc_1"));
+        assert_eq!(full.sender_open_id.as_deref(), Some("ou_1"));
+        assert_eq!(full.msg_type.as_deref(), Some("card_action"));
+        let content: serde_json::Value =
+            serde_json::from_str(full.content.as_deref().unwrap()).unwrap();
+        assert_eq!(content["action"], "approve");
+
+        // Missing context/operator → those fields are None.
+        let minimal = parse_feishu_event(&serde_json::json!({
+            "header": {"event_type": "card.action.trigger"},
+            "event": {"action": {"value": {"action": "reject"}}}
+        }))
+        .expect("minimal card action");
+        assert_eq!(minimal.message_id, None);
+        assert_eq!(minimal.sender_open_id, None);
+
+        // Missing action / value → None.
+        assert!(parse_feishu_event(&serde_json::json!({
+            "header": {"event_type": "card.action.trigger"},
+            "event": {}
+        }))
+        .is_none());
+        assert!(parse_feishu_event(&serde_json::json!({
+            "header": {"event_type": "card.action.trigger"},
+            "event": {"action": {}}
+        }))
+        .is_none());
+    }
+
+    // ─── is_bot_mentioned_in_mentions ────────────────────────────────────────
+
+    #[test]
+    fn mentions_v2_all_id_forms() {
+        let obj = serde_json::json!([{"id": {"open_id": "ou_bot"}}]);
+        assert!(is_bot_mentioned_in_mentions(obj.as_array().unwrap(), "ou_bot"));
+        let string = serde_json::json!([{"id": "ou_bot"}]);
+        assert!(is_bot_mentioned_in_mentions(string.as_array().unwrap(), "ou_bot"));
+        let none_id = serde_json::json!([{"name": "no-id"}]);
+        assert!(!is_bot_mentioned_in_mentions(none_id.as_array().unwrap(), "ou_bot"));
+        let other = serde_json::json!([{"id": {"open_id": "ou_other"}}]);
+        assert!(!is_bot_mentioned_in_mentions(other.as_array().unwrap(), "ou_bot"));
+    }
+
+    // ─── mention id matching: user_id object fallback ────────────────────────
+
+    #[test]
+    fn text_mention_matches_user_id_field() {
+        let content = r#"{"text":"hi","mentions":[{"id":{"user_id":"ou_bot"}}]}"#;
+        assert!(is_bot_mentioned(content, "text", "ou_bot"));
     }
 }
