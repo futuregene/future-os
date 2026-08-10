@@ -497,6 +497,36 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ensure_symlink_remove_and_create_failures() {
+        let _guard = crate::test_env::lock_env().await;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("future");
+        tokio::fs::write(&source, "x").await.unwrap();
+
+        // Remove failure: destination is a symlink elsewhere, and the
+        // containing directory is read-only.
+        let sub = dir.path().join("bin");
+        tokio::fs::create_dir_all(&sub).await.unwrap();
+        let dest = sub.join("future");
+        tokio::fs::symlink("/bin/sh", &dest).await.unwrap();
+        tokio::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555))
+            .await
+            .unwrap();
+        let err = ensure_symlink(&source, dest.clone()).await.unwrap_err();
+        assert!(!err.is_empty(), "remove must fail in a read-only dir");
+
+        // Create failure: destination does not exist, dir still read-only.
+        tokio::fs::remove_file(&dest).await.unwrap_err();
+        let err = ensure_symlink(&source, dest).await.unwrap_err();
+        assert!(!err.is_empty(), "create must fail in a read-only dir");
+        tokio::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn ensure_symlink_metadata_error_beyond_not_found() {
         let _guard = crate::test_env::lock_env().await;

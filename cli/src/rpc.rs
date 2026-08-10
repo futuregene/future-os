@@ -935,6 +935,25 @@ mod tests {
         assert!(err.contains("No previous session to continue"), "{err}");
     }
 
+    /// run --continue non-verbose: no "Continuing ..." line.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_continue_nonverbose_is_quiet() {
+        let mut agent = fresh_run_agent();
+        agent.responses.insert(
+            "list_sessions".into(),
+            "{\"sessions\":[{\"id\":\"s1\",\"updated_at\":\"2026-08-09T00:00:00Z\"}]}".into(),
+        );
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hi");
+        config.continue_last = true;
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.session_id, "s1");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(!stderr.contains("Continuing session"), "stderr: {stderr}");
+    }
+
     /// run --continue with only malformed session rows → inner error arm.
     #[tokio::test(flavor = "multi_thread")]
     async fn run_continue_with_malformed_sessions_errors() {

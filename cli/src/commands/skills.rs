@@ -75,14 +75,10 @@ pub async fn skills(command: &str, args: &[String], out: &Output) -> Result<(), 
                 return Ok(());
             };
             let version_idx = args.iter().position(|a| a == "--version");
-            let mut version = version_idx.and_then(|i| args.get(i + 1)).cloned();
+            let version = version_idx.and_then(|i| args.get(i + 1)).cloned();
             // Strip leading "v" if the user provided it (e.g. "v1.0" → "1.0")
             // to avoid a double "v" in output.
-            if let Some(v) = &version {
-                if let Some(stripped) = v.strip_prefix('v') {
-                    version = Some(stripped.to_string());
-                }
-            }
+            let version = version.map(|v| v.strip_prefix('v').map(str::to_string).unwrap_or(v));
             install_skill(name, version.as_deref(), out).await?;
             crate::rpc::notify_agent_refresh_skills().await;
         }
@@ -125,14 +121,15 @@ async fn list_skills(out: &Output) {
         return;
     }
 
-    // Check which skills are installed.
+    // Check which skills are installed (a missing skills dir just means
+    // nothing is installed).
     let mut installed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    if let Ok(mut entries) = tokio::fs::read_dir(skills_dir()).await {
+    let entries = tokio::fs::read_dir(skills_dir()).await;
+    if let Ok(mut entries) = entries {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if let Some(ver) =
-                read_skill_md_version(&skills_dir().join(&name).join("SKILL.md")).await
-            {
+            let ver = read_skill_md_version(&skills_dir().join(&name).join("SKILL.md")).await;
+            if let Some(ver) = ver {
                 installed.insert(name, ver);
             }
         }
@@ -591,10 +588,8 @@ pub async fn read_skill_md_version(skill_md_path: &Path) -> Option<String> {
                             .as_str()
                             .map(str::to_string)
                             .or_else(|| v.as_f64().map(|n| format!("{n}")));
-                        if let Some(version) = as_string {
-                            if !version.is_empty() {
-                                return Some(version);
-                            }
+                        if let Some(version) = as_string.filter(|v| !v.is_empty()) {
+                            return Some(version);
                         }
                     }
                 } else if let Some(v) = meta_rest.strip_prefix("version:") {
@@ -836,6 +831,34 @@ mod tests {
     }
 
     /// Minimal stored ZIP archive understood by the system `unzip`.
+    #[tokio::test]
+    async fn download_skill_zip_transport_failure() {
+        let _guard = crate::test_env::lock_env().await;
+        let err = download_skill_zip("http://127.0.0.1:1", "a", "1.0")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Network error"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn flatten_single_subdir_read_failure() {
+        let _guard = crate::test_env::lock_env().await;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // Exactly one child, a directory, unreadable → read_dir fails.
+        let single = dir.path().join("only");
+        tokio::fs::create_dir_all(&single).await.unwrap();
+        tokio::fs::set_permissions(&single, std::fs::Permissions::from_mode(0o000))
+            .await
+            .unwrap();
+        let err = flatten_single_subdir(dir.path()).await.unwrap_err();
+        assert!(!err.is_empty());
+        tokio::fs::set_permissions(&single, std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn copy_recursive_error_arms() {
