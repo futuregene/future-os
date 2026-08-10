@@ -148,7 +148,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "replay" => cmd_replay(&store, &args[1..]),
         "canary" => cmd_canary(&store, &args[1..]),
         "version" => cmd_version(&store, &args[1..]),
-        "doctor" => cmd_doctor(&store, &args[1..]),
+        "doctor" => cmd_doctor(&store, &args[1..]).await,
         "history" => cmd_history(&store, &args[1..]),
         "turn" => cmd_turn(&store, &args[1..]),
         "todo-event" => cmd_todo_event(&store, &args[1..]),
@@ -1811,7 +1811,7 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
 /// agent (auth.json / models.json merged with the built-in catalog).
 async fn cmd_models(args: &[String]) -> Result<()> {
     let json = args.iter().any(|a| a == "--format" || a == "--json");
-    let mut client = crate::agent_client::AgentClient::connect("127.0.0.1:50051").await?;
+    let mut client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
     let data = client.list_models().await?;
     let models = data["models"].as_array().cloned().unwrap_or_default();
     let default_model = data["defaultModel"].as_str().unwrap_or("");
@@ -1918,7 +1918,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     // (and stays unit-testable without an agent server).
     let agent_id = ensure_run_identity(store, &goal_id, agent_id.as_deref(), anonymous)?;
 
-    let mut client = crate::agent_client::AgentClient::connect("127.0.0.1:50051").await?;
+    let mut client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
     let goal0 = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
@@ -1998,7 +1998,7 @@ async fn steer_todo_updates(events_path: std::path::PathBuf, todo_id: String, se
                 continue;
             };
             if client.is_none() {
-                client = crate::agent_client::AgentClient::connect("127.0.0.1:50051")
+                client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr())
                     .await
                     .ok();
             }
@@ -2275,7 +2275,7 @@ async fn run_turns(
             })?;
             println!("   poll result: {result} (no_change_count={no_change_count})");
         }
-        if succeeded {
+        if succeeded && mode != crate::contract::TurnMode::MonitorPoll {
             store.append(Event::TodoCompleted {
                 goal_id: goal_id.to_string(),
                 todo_id: todo_id.clone(),
@@ -4155,7 +4155,7 @@ fn cmd_diagnose(store: &Store, args: &[String]) -> Result<()> {
 
 /// `loopx doctor [--goal G] [--agent-addr ADDR]` — run the diagnostic
 /// surface: canary release-gate + per-goal ledger/decision checks.
-fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
+async fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_filter = None;
     let mut agent_addr = None;
     parse_pairs(args, |k, v| match k {
@@ -4202,12 +4202,11 @@ fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
             Err(e) => failures.push(format!("goal {goal_id}: {e}")),
         }
     }
-    // gRPC reachability probe (only when --agent-addr is given).
+    // gRPC reachability probe (only when --agent-addr is given). Awaited
+    // directly — a nested block_on here would panic inside console::run's
+    // runtime (the probe used to build its own current_thread runtime).
     if let Some(addr) = &agent_addr {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let probe = runtime.block_on(async {
+        let probe = async {
             let mut client = crate::agent_client::AgentClient::connect(addr).await?;
             let session = client.new_session("/tmp").await?;
             let totals = client.session_totals(&session).await?;
@@ -4215,7 +4214,8 @@ fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
                 "session {session} live (tokens_in={} tokens_out={})",
                 totals.tokens_in, totals.tokens_out
             ))
-        });
+        }
+        .await;
         match probe {
             Ok(detail) => println!("  [ok] agent gRPC {addr}: {detail}"),
             Err(e) => {
