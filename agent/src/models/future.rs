@@ -841,4 +841,167 @@ mod tests {
         assert_eq!(model.cost.cache_read, 500.0);
         assert_eq!(model.cost.cache_write, 0.0); // None → 0
     }
+
+    // ─── fetch/cache/refresh against a mock server ─────────────────────────
+
+    /// HTTP server: answers up to 8 requests with a canned (status, body).
+    fn mock_json_server(status: u16, body: String) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..8 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut sink = [0u8; 8192];
+                let _ = stream.read(&mut sink);
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                if stream.write_all(response.as_bytes()).is_err() {
+                    return;
+                }
+                let _ = stream.flush();
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// Serializes tests that touch the process-global future-models statics.
+    static FUTURE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn future_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        FUTURE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn reset_future_cache_state() {
+        FUTURE_MODELS_LAST_ATTEMPT.store(0, Ordering::Relaxed);
+        // A refresh thread from an earlier test may still hold the flag under
+        // heavy load; wait briefly rather than inherit a stuck in-flight.
+        for _ in 0..200 {
+            if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        *FUTURE_MODELS_MEMORY_CACHE.write() = None;
+    }
+
+    #[test]
+    fn fetch_future_models_parses_data_and_array_forms() {
+        let _guard = future_test_lock();
+        let entry = r#"{"id":"future-model-1","name":"Future One","context_length":128000}"#;
+        let base = mock_json_server(200, format!(r#"{{"data":[{entry}]}}"#));
+        let models = fetch_future_models("k", &base).expect("data form parses");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "future-model-1");
+
+        let base = mock_json_server(200, format!("[{entry}]"));
+        let models = fetch_future_models("k", &base).expect("array form parses");
+        assert_eq!(models.len(), 1);
+
+        // HTTP error → None.
+        let base = mock_json_server(500, "{}".to_string());
+        assert!(fetch_future_models("k", &base).is_none());
+
+        // Unparseable body → None.
+        let base = mock_json_server(200, "not json".to_string());
+        assert!(fetch_future_models("k", &base).is_none());
+
+        // Connection refused → None (no server listening here).
+        assert!(fetch_future_models("k", "http://127.0.0.1:1").is_none());
+    }
+
+    #[test]
+    fn sync_future_models_cache_warms_disk_and_memory() {
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        let entry = r#"{"id":"sync-model","name":"Synced","context_length":64000}"#;
+        let base = mock_json_server(200, format!(r#"{{"data":[{entry}]}}"#));
+        // Point the future provider at the mock via auth.json baseUrl.
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            format!(r#"{{"future": {{"type": "api_key", "key": "k", "base_url": "{base}/api"}}}}"#),
+        )
+        .unwrap();
+
+        let synced = sync_future_models_cache();
+        assert!(synced);
+        // The in-process cache now serves the model…
+        let cached_ids: Vec<String> = FUTURE_MODELS_MEMORY_CACHE
+            .read()
+            .as_ref()
+            .unwrap()
+            .models
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        assert_eq!(cached_ids, ["sync-model"]);
+        // …and the disk cache was written.
+        let disk = load_future_models_cache().unwrap();
+        assert_eq!(disk.models[0].id, "sync-model");
+    }
+
+    #[test]
+    fn get_future_models_with_cache_prefers_memory_then_disk() {
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+
+        // Seed only the memory cache → returned directly.
+        let mem_model = convert_future_model(
+            serde_json::from_str(r#"{"id":"mem-model"}"#).unwrap(),
+            "http://x/v1",
+        );
+        *FUTURE_MODELS_MEMORY_CACHE.write() = Some(FutureModelsCache {
+            fetched_at: 1,
+            models: vec![mem_model],
+        });
+        let models = get_future_models_with_cache("k", "http://127.0.0.1:1");
+        assert_eq!(models[0].id, "mem-model");
+
+        // Clear memory; seed only the disk cache → disk arm re-seeds memory.
+        reset_future_cache_state();
+        // save_future_models_cache_inner does not create parent dirs.
+        std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+        let disk_model = convert_future_model(
+            serde_json::from_str(r#"{"id":"disk-model"}"#).unwrap(),
+            "http://x/v1",
+        );
+        save_future_models_cache_inner(&FutureModelsCache {
+            fetched_at: 1,
+            models: vec![disk_model],
+        });
+        let models = get_future_models_with_cache("k", "http://127.0.0.1:1");
+        assert_eq!(models[0].id, "disk-model");
+        assert!(FUTURE_MODELS_MEMORY_CACHE.read().is_some());
+        drop(home);
+    }
+
+    #[test]
+    fn spawn_refresh_respects_backoff_window() {
+        let _guard = future_test_lock();
+        reset_future_cache_state();
+        // First call spawns a refresh thread (fetch to a dead port fails fast).
+        spawn_future_models_refresh("k", "http://127.0.0.1:1");
+        // The attempt timestamp is now fresh — an immediate second call hits
+        // the backoff window and returns without spawning.
+        spawn_future_models_refresh("k", "http://127.0.0.1:1");
+        assert!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed) > 0);
+        // Wait for the refresh thread to release the single-flight flag.
+        for _ in 0..100 {
+            if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("refresh thread never released the in-flight flag");
+    }
 }

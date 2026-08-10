@@ -991,4 +991,215 @@ mod tests {
         assert!(!queue.knows_request("request-1"));
         assert!(queue.knows_request("request-3"));
     }
+
+    // ─── coverage batch: error arms ────────────────────────────────────────
+
+    #[test]
+    fn cancellation_reason_names() {
+        assert_eq!(QueuedCancellationReason::Cancelled.as_str(), "cancelled");
+        assert_eq!(QueuedCancellationReason::Superseded.as_str(), "superseded");
+        assert_eq!(
+            QueuedCancellationReason::SessionDeleted.as_str(),
+            "session_deleted"
+        );
+    }
+
+    #[test]
+    fn accept_requires_client_request_id() {
+        let queue = queue();
+        let result = queue.accept("  ", None, BusyPolicy::EnqueueIfBusy, serde_json::json!({}));
+        assert!(matches!(
+            result.unwrap_err(),
+            RunQueueError::MissingClientRequestId
+        ));
+    }
+
+    #[test]
+    fn accept_rejects_supersede_policy_via_plain_accept() {
+        let queue = queue();
+        let result = queue.accept(
+            "r1",
+            None,
+            BusyPolicy::SupersedeSession,
+            serde_json::json!({}),
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            RunQueueError::SupersedeRequiresSessionOperation
+        ));
+    }
+
+    #[test]
+    fn accept_reports_queue_bytes_exceeded() {
+        let queue = InMemoryRunQueue::with_limits("s", 1, 128, 60, 64, 256);
+        let big = serde_json::json!({"message": "x".repeat(32)});
+        let first = queue.accept("r1", None, BusyPolicy::EnqueueIfBusy, big.clone());
+        assert!(first.is_ok());
+        let second = queue.accept("r2", None, BusyPolicy::EnqueueIfBusy, big);
+        assert!(matches!(
+            second.unwrap_err(),
+            RunQueueError::QueueBytesExceeded { .. }
+        ));
+    }
+
+    #[test]
+    fn accept_reports_duplicate_run_id() {
+        let queue = queue();
+        queue
+            .accept(
+                "r1",
+                Some("run-x"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({}),
+            )
+            .unwrap();
+        let result = queue.accept(
+            "r2",
+            Some("run-x"),
+            BusyPolicy::EnqueueIfBusy,
+            serde_json::json!({}),
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            RunQueueError::DuplicateRunId(id) if id == "run-x"
+        ));
+    }
+
+    #[test]
+    fn start_next_reports_active_and_empty() {
+        let queue = queue();
+        assert!(matches!(
+            queue.start_next(1).unwrap_err(),
+            RunQueueError::QueueEmpty
+        ));
+        queue
+            .accept(
+                "r1",
+                Some("run-1"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({}),
+            )
+            .unwrap();
+        queue.start_next(1).unwrap();
+        assert!(matches!(
+            queue.start_next(2).unwrap_err(),
+            RunQueueError::ActiveRunExists(id) if id == "run-1"
+        ));
+    }
+
+    #[test]
+    fn finish_active_rejects_unknown_or_stale_run() {
+        let queue = queue();
+        let result = queue.finish_active("run-ghost");
+        assert!(matches!(
+            result.unwrap_err(),
+            RunQueueError::RunNotActive { expected: None, actual } if actual == "run-ghost"
+        ));
+    }
+
+    #[test]
+    fn supersede_validates_request_and_run_ids() {
+        let queue = queue();
+        // Empty request id.
+        let result = queue.supersede(" ", None, serde_json::json!({}));
+        assert!(matches!(
+            result.unwrap_err(),
+            RunQueueError::MissingClientRequestId
+        ));
+        // Unsafe requested run id.
+        let result = queue.supersede("r1", Some("bad id!"), serde_json::json!({}));
+        assert!(matches!(
+            result.unwrap_err(),
+            RunQueueError::InvalidRunId(_)
+        ));
+        // Conflicting reuse of a client_request_id.
+        queue
+            .supersede("r1", None, serde_json::json!({"message": "one"}))
+            .unwrap();
+        let result = queue.supersede("r1", None, serde_json::json!({"message": "two"}));
+        assert!(matches!(
+            result.unwrap_err(),
+            RunQueueError::DuplicateRequestConflict(_)
+        ));
+        // Identical reuse returns the existing ack.
+        let (ack, cancelled, _) = queue
+            .supersede("r1", None, serde_json::json!({"message": "one"}))
+            .unwrap();
+        assert!(cancelled.is_empty());
+        assert_eq!(ack.accepted_state, RunAcceptedState::Existing);
+        // Duplicate requested run id across different requests.
+        queue
+            .supersede("r2", Some("run-dup"), serde_json::json!({}))
+            .unwrap();
+        let result = queue.supersede("r3", Some("run-dup"), serde_json::json!({}));
+        assert!(matches!(
+            result.unwrap_err(),
+            RunQueueError::DuplicateRunId(_)
+        ));
+    }
+
+    #[test]
+    fn supersede_reports_oversized_request() {
+        let queue = InMemoryRunQueue::with_limits("s", 1, 128, 1024, 8, 256);
+        let big = serde_json::json!({"message": "x".repeat(64)});
+        let result = queue.supersede("r1", None, big);
+        assert!(matches!(
+            result.unwrap_err(),
+            RunQueueError::RequestTooLarge { .. }
+        ));
+    }
+
+    #[test]
+    fn supersede_respects_global_budget_on_replace() {
+        let budget = std::sync::Arc::new(GlobalQueueBudget::new(1, usize::MAX));
+        let queue =
+            InMemoryRunQueue::with_limits_and_global("s", 1, 128, 65536, 65536, 256, budget);
+        queue
+            .accept(
+                "r1",
+                None,
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"m": "a"}),
+            )
+            .unwrap();
+        // The global budget is exhausted by the queued run; supersede's
+        // replace path must still work (it releases first) — and the count
+        // arm fires when the replacement would exceed the count limit.
+        let result = queue.supersede("r2", None, serde_json::json!({"m": "b"}));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn existing_ack_for_queued_request_reports_position() {
+        let queue = queue();
+        // An active run makes subsequent accepts queue with positions.
+        queue
+            .accept(
+                "r1",
+                Some("run-1"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({}),
+            )
+            .unwrap();
+        queue.start_next(1).unwrap();
+        queue
+            .accept(
+                "r2",
+                Some("run-2"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"m": 1}),
+            )
+            .unwrap();
+        // Same payload + request id → the existing ack carries the position.
+        let ack = queue
+            .accept(
+                "r2",
+                Some("run-2"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"m": 1}),
+            )
+            .unwrap();
+        assert_eq!(ack.accepted_state, RunAcceptedState::Existing);
+        assert!(ack.queue_position.is_some());
+    }
 }

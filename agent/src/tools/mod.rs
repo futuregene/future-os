@@ -2107,4 +2107,215 @@ mod tests {
         let all = all_tools();
         assert_eq!(coding.len(), all.len());
     }
+
+    // ── coverage batch: shell timeouts, truncation, edit/write errors ──────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_timeout_kills_process_and_reports_partial_output() {
+        // Partial output is drained and reported after the kill.
+        let result = run_shell("echo partial-out; sleep 30", 1, false, "").await;
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(error.contains("partial-out"), "{error}");
+
+        // No output at all → the shorter error form.
+        let result = run_shell("sleep 30", 1, false, "").await;
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("no output captured"), "{error}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_output_is_truncated_beyond_max_keep() {
+        // seq 1..120000 ≈ 670 KB > MAX_KEEP (500 KB).
+        let result = run_shell("seq 1 120000", 30, false, "").await.unwrap();
+        assert!(result.contains("truncated"), "{result:.200}");
+        assert!(result.contains("120000"), "tail kept: {result:.200}");
+    }
+
+    #[test]
+    fn soft_fail_command_detection() {
+        assert!(!is_soft_fail_command(""));
+        assert!(!is_soft_fail_command("grep foo | head"));
+        assert!(is_soft_fail_command("grep foo file.txt"));
+        assert!(is_soft_fail_command("diff a b"));
+    }
+
+    #[test]
+    fn dangerous_command_rejection_tolerates_empty_segments() {
+        // Trailing operator → empty final segment takes the continue arm.
+        assert!(reject_dangerous_command("ls && ").is_ok());
+        assert!(reject_dangerous_command("echo hi").is_ok());
+        assert!(reject_dangerous_command("rm -rf ~").is_err());
+        assert!(reject_dangerous_command("sudo rm -rf ~").is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn edit_handler_reports_missing_and_unmatched_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("edit-me.txt");
+        std::fs::write(&file, "hello world").unwrap();
+
+        // Missing parameters entirely.
+        let result = edit_handler(serde_json::json!({
+            "path": file.to_string_lossy()
+        }))
+        .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing required parameters"));
+
+        // oldText not present in the file.
+        let result = edit_handler(serde_json::json!({
+            "path": file.to_string_lossy(),
+            "oldText": "not there",
+            "newText": "x"
+        }))
+        .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("could not find the text to replace"));
+
+        // Batch edits: one applies, one doesn't → aggregated error.
+        let result = edit_handler(serde_json::json!({
+            "path": file.to_string_lossy(),
+            "edits": [
+                {"oldText": "hello", "newText": "goodbye"},
+                {"oldText": "missing", "newText": "x"}
+            ]
+        }))
+        .await;
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("1 of 2 edit(s) could not be applied"),
+            "{error}"
+        );
+        assert!(error.contains("missing"), "{error}");
+
+        // All batch edits apply.
+        let result = edit_handler(serde_json::json!({
+            "path": file.to_string_lossy(),
+            "edits": [
+                {"oldText": "hello", "newText": "goodbye"},
+                {"oldText": "world", "newText": "there"}
+            ]
+        }))
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "goodbye there");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn write_handler_creates_missing_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a/b/c/deep.txt");
+        let result = write_handler(serde_json::json!({
+            "path": file.to_string_lossy(),
+            "content": "deep"
+        }))
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "deep");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_escalated_prequest_approval_paths() {
+        let ws = std::env::temp_dir().join(format!("futureos-esc-{}", crate::utils::generate_id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let sandbox = crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            ws.to_string_lossy().as_ref(),
+        );
+        if !sandbox.wraps_shell() {
+            // Platform without an OS sandbox: escalated runs fall through.
+            return;
+        }
+        // Approved pre-execution escalation runs unsandboxed.
+        let approve: crate::sandbox::EscalationRequester =
+            Arc::new(|_request| crate::sandbox::EscalationDecision::Approved);
+        let result = with_tool_scope(
+            ScopeOptions {
+                workspace: ws.to_string_lossy().to_string(),
+                permission_level: "all".to_string(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox: Arc::new(sandbox),
+                escalation: Some(approve),
+                on_sandboxed: None,
+            },
+            run_shell("echo escalated-ok", 10, true, "because test"),
+        )
+        .await;
+        assert!(result.unwrap().contains("escalated-ok"));
+
+        // Denied escalation is an error, not a silent fallback.
+        let sandbox = crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            ws.to_string_lossy().as_ref(),
+        );
+        let deny: crate::sandbox::EscalationRequester =
+            Arc::new(|_request| crate::sandbox::EscalationDecision::Denied("no way".to_string()));
+        let result = with_tool_scope(
+            ScopeOptions {
+                workspace: ws.to_string_lossy().to_string(),
+                permission_level: "all".to_string(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox: Arc::new(sandbox),
+                escalation: Some(deny),
+                on_sandboxed: None,
+            },
+            run_shell("echo nope", 10, true, "because test"),
+        )
+        .await;
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("not approved: no way"), "{error}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[allow(clippy::await_holding_lock)] // HOME must stay pinned across awaits
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_sandbox_denial_triggers_post_hoc_escalation() {
+        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let ws =
+            std::env::temp_dir().join(format!("futureos-esc2-{}", crate::utils::generate_id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let sandbox = crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            ws.to_string_lossy().as_ref(),
+        );
+        if !sandbox.wraps_shell() {
+            return;
+        }
+        // A write outside every writable root is denied by Seatbelt; the
+        // escalation requester approves, so the command re-runs unsandboxed.
+        let target = dirs::home_dir()
+            .unwrap()
+            .join(format!("futureos-escalated-{}.txt", std::process::id()));
+        let approve: crate::sandbox::EscalationRequester =
+            Arc::new(|_request| crate::sandbox::EscalationDecision::Approved);
+        let command = format!("touch {}", target.display());
+        let result = with_tool_scope(
+            ScopeOptions {
+                workspace: ws.to_string_lossy().to_string(),
+                permission_level: "all".to_string(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox: Arc::new(sandbox),
+                escalation: Some(approve),
+                on_sandboxed: None,
+            },
+            run_shell(&command, 15, false, ""),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(target.exists(), "unsandboxed re-run created the file");
+        let _ = std::fs::remove_file(&target);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
 }

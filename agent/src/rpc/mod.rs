@@ -719,4 +719,250 @@ mod tests {
         };
         assert!(state.get_session("").is_none());
     }
+
+    // ─── coverage batch: hydrate + get_state arms ──────────────────────────
+
+    fn bare_app_state() -> (tempfile::TempDir, AppState) {
+        struct EmptyP;
+        #[async_trait::async_trait]
+        impl crate::types::LLMProvider for EmptyP {
+            async fn stream_chat(
+                &self,
+                _model: String,
+                _messages: Vec<crate::types::Message>,
+                _tools: Vec<crate::types::ToolDef>,
+                _system_prompt: String,
+            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
+            {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+            }
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_dir = dir.path().join("sessions");
+        let state = AppState {
+            agent_instance_id: "agent-test-instance".to_string(),
+            sessions: std::sync::Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            queue_budget: std::sync::Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+            session_manager: std::sync::Arc::new(crate::session::Manager::new(session_dir)),
+            welcome_version: "1.0".to_string(),
+            welcome_cwd: "/tmp".to_string(),
+            welcome_skills: std::sync::Arc::new(parking_lot::RwLock::new(vec![])),
+            welcome_context: std::sync::Arc::new(parking_lot::RwLock::new(vec![])),
+            welcome_exts: vec![],
+            explicit_session: false,
+            approval_gate: crate::rpc::ApprovalGate::default(),
+            verbose: false,
+            shutting_down: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            model_registry: std::sync::Arc::new(parking_lot::RwLock::new(
+                crate::models::Registry::new(),
+            )),
+            loop_template: std::sync::Arc::new(crate::agent::Loop::new(
+                std::sync::Arc::new(EmptyP),
+                "test-model",
+            )),
+        };
+        (dir, state)
+    }
+
+    #[test]
+    fn get_session_hydrates_disk_session_without_model() {
+        let (_dir, state) = bare_app_state();
+        // A persisted session with no model info anywhere → the hydrate path
+        // applies the registry/loop default model.
+        let snapshot = crate::session::Session::snapshot(
+            "hyd-1".to_string(),
+            "/tmp".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::new_user(
+                "user",
+                serde_json::json!("hello"),
+            )],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+
+        let session = state.get_session("hyd-1").expect("hydrated from disk");
+        assert!(
+            !session.read().model.is_empty(),
+            "default model applied on hydrate"
+        );
+        // Second fetch hits the live map.
+        assert!(state.get_session("hyd-1").is_some());
+    }
+
+    #[test]
+    fn get_state_reports_active_run_and_estimates_cost() {
+        let (_dir, state) = bare_app_state();
+        let snapshot = crate::session::Session::snapshot(
+            "s-run".to_string(),
+            "/tmp".to_string(),
+            "deepseek/deepseek-chat".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": "/tmp", "model": "deepseek/deepseek-chat"}),
+                    "deepseek/deepseek-chat".to_string(),
+                    "low".to_string(),
+                ),
+                crate::session::SessionEntry::run_started("run-done", 1),
+                crate::session::SessionEntry::run_terminal(
+                    "run-done",
+                    crate::session::RUN_STATE_COMPLETED,
+                    5,
+                    100,
+                    None,
+                ),
+            ],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+
+        let session = state.get_session("s-run").unwrap();
+        session
+            .read()
+            .runtime
+            .begin(Some("run-live"), Some("request-live"))
+            .unwrap();
+        // Token counters make the token×price estimation arm observable.
+        session
+            .read()
+            .tokens_in
+            .store(1_000_000, std::sync::atomic::Ordering::Relaxed);
+
+        let value = get_state_internal(&state, "s-run", Some("run-done")).expect("state");
+        assert_eq!(value["activeRun"]["runId"], "run-live");
+        assert_eq!(value["requestedRun"]["run_id"], "run-done");
+        // deepseek-chat is in the catalog with a non-zero price, so the
+        // estimate replaces the (zero) API cost.
+        assert!(value["totalCost"].as_f64().unwrap() > 0.0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn get_state_lists_recent_terminal_acks() {
+        let (_dir, state) = bare_app_state();
+        let snapshot = crate::session::Session::snapshot(
+            "s-acks".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": "/tmp", "model": "mock"}),
+                    "mock".to_string(),
+                    "low".to_string(),
+                ),
+                crate::session::SessionEntry::new_user("user", serde_json::json!("hi")),
+            ],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+        let session = state.get_session("s-acks").unwrap();
+        // An active run forces the next prompt to queue; cancelling it then
+        // records a terminal ack.
+        session
+            .read()
+            .runtime
+            .begin(Some("run-blocker"), Some("request-blocker"))
+            .unwrap();
+        {
+            let mut sess = session.write();
+            sess.enqueue_prompt(
+                "queued",
+                &[],
+                &[],
+                None,
+                "req-ack",
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+            )
+            .unwrap();
+            let queued = sess.scheduler.queued();
+            let run_id = queued[0].run_id.clone();
+            sess.cancel_queued_run(&run_id, crate::runtime::QueuedCancellationReason::Cancelled)
+                .unwrap();
+        }
+
+        let value = get_state_internal(&state, "s-acks", None).expect("state");
+        let acks = value["recentTerminalAcks"].as_array().unwrap();
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0]["clientRequestId"], "req-ack");
+        // Legacy snake_case aliases are dual-written.
+        assert!(acks[0].get("client_request_id").is_some());
+    }
+
+    #[test]
+    fn reload_all_credentials_applies_default_to_model_less_sessions() {
+        let _home = crate::test_support::TestHome::new();
+        let auth_path = _home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            r#"{"deepseek": {"type": "api_key", "key": "k"}}"#,
+        )
+        .unwrap();
+
+        let (_dir, state) = bare_app_state();
+        // A live session with NO model — the reload resolves + applies one.
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "bare".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new({
+                    struct EmptyP;
+                    #[async_trait::async_trait]
+                    impl crate::types::LLMProvider for EmptyP {
+                        async fn stream_chat(
+                            &self,
+                            _model: String,
+                            _messages: Vec<crate::types::Message>,
+                            _tools: Vec<crate::types::ToolDef>,
+                            _system_prompt: String,
+                        ) -> anyhow::Result<
+                            tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>,
+                        > {
+                            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                            Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+                        }
+                    }
+                    EmptyP
+                }),
+                "test-model",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        state.create_session(session);
+
+        state.reload_all_credentials();
+        let session = state.get_session("bare").unwrap();
+        assert!(
+            !session.read().model.is_empty(),
+            "model-less session got the credentialled default"
+        );
+    }
+
+    #[test]
+    fn generate_session_html_formats_non_string_content() {
+        let messages = vec![
+            crate::types::Message {
+                role: "user".to_string(),
+                content: Some(serde_json::json!([{"type": "text", "text": "hi"}])),
+                ..Default::default()
+            },
+            crate::types::Message {
+                role: "assistant".to_string(),
+                content: None,
+                ..Default::default()
+            },
+        ];
+        let html = generate_session_html("s1", "model", "/cwd", &messages);
+        assert!(html.contains("user"));
+        assert!(html.contains("text"));
+    }
 }

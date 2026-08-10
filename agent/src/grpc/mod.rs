@@ -478,6 +478,9 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
 mod tests {
     use super::*;
     use crate::rpc::{SseBroadcaster, SseEvent};
+    use proto::future_agent_server::FutureAgent;
+    use std::sync::Arc;
+    use tokio_stream::wrappers::ReceiverStream;
 
     #[tokio::test]
     async fn broadcast_overflow_records_lag_through_grpc_mapper() {
@@ -505,5 +508,328 @@ mod tests {
         assert!(status.message().contains("session-lag"));
         assert!(status.message().contains("run-lag"));
         assert_eq!(broadcaster.lag_count(), 1);
+    }
+
+    // ─── service-level tests (direct handler calls) ─────────────────────────
+
+    fn grpc_app_state(verbose: bool) -> AppState {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let cwd = std::env::temp_dir()
+            .join(format!("futureos-grpc-test-{stamp}"))
+            .to_string_lossy()
+            .to_string();
+        let session_dir = std::env::temp_dir().join(format!(
+            "futureos-grpc-sess-{}",
+            crate::utils::generate_id()
+        ));
+        let model_registry = Arc::new(parking_lot::RwLock::new(crate::models::Registry::new()));
+        let session_manager = Arc::new(crate::session::Manager::new(session_dir));
+        let approval_gate = crate::rpc::ApprovalGate::default();
+        let queue_budget = Arc::new(crate::runtime::GlobalQueueBudget::defaults());
+        struct NoopProvider;
+        #[async_trait::async_trait]
+        impl crate::types::LLMProvider for NoopProvider {
+            async fn stream_chat(
+                &self,
+                _model: String,
+                _messages: Vec<crate::types::Message>,
+                _tools: Vec<crate::types::ToolDef>,
+                _system_prompt: String,
+            ) -> anyhow::Result<ReceiverStream<crate::types::StreamEvent>> {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                Ok(ReceiverStream::new(rx))
+            }
+        }
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "default".to_string(),
+            Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                Arc::new(NoopProvider),
+                "mock",
+            ))),
+            session_manager.clone(),
+            &cwd,
+            Arc::new(SseBroadcaster::new()),
+            approval_gate.clone(),
+            model_registry.clone(),
+            queue_budget.clone(),
+        );
+        let sessions: std::collections::HashMap<
+            String,
+            Arc<parking_lot::RwLock<crate::rpc::ServerSession>>,
+        > = [(
+            "default".to_string(),
+            Arc::new(parking_lot::RwLock::new(session)),
+        )]
+        .into_iter()
+        .collect();
+        AppState {
+            agent_instance_id: "grpc-test".to_string(),
+            sessions: Arc::new(parking_lot::RwLock::new(sessions)),
+            queue_budget,
+            session_manager,
+            welcome_version: "0.0.0".to_string(),
+            welcome_cwd: cwd,
+            welcome_skills: Arc::new(parking_lot::RwLock::new(vec![])),
+            welcome_context: Arc::new(parking_lot::RwLock::new(vec![])),
+            welcome_exts: vec![],
+            explicit_session: false,
+            approval_gate,
+            verbose,
+            shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            model_registry,
+            loop_template: Arc::new(crate::agent::Loop::new(Arc::new(NoopProvider), "mock")),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_command_converts_full_proto_command() {
+        let service = FutureAgentService {
+            state: grpc_app_state(true), // verbose logging branch
+        };
+        let cmd = proto::RpcCommand {
+            id: "cmd-1".to_string(),
+            r#type: "get_agent_info".to_string(),
+            session_id: "default".to_string(),
+            images: vec![
+                proto::ImageContent {
+                    r#type: "image".to_string(),
+                    file_path: "/tmp/pic.png".to_string(),
+                    content: Some(proto::image_content::Content::Url(
+                        "https://example.com/p.png".to_string(),
+                    )),
+                },
+                proto::ImageContent {
+                    r#type: "image".to_string(),
+                    file_path: String::new(),
+                    content: Some(proto::image_content::Content::Base64("aGk=".to_string())),
+                },
+                proto::ImageContent {
+                    r#type: "image".to_string(),
+                    file_path: String::new(),
+                    content: None,
+                },
+            ],
+            attachments: vec![
+                proto::Attachment {
+                    path: "/tmp/a.pdf".to_string(),
+                    kind: "file".to_string(),
+                    name: "a.pdf".to_string(),
+                    thumbnail: "/tmp/a.thumb".to_string(),
+                },
+                proto::Attachment {
+                    path: "/tmp/b.pdf".to_string(),
+                    kind: "file".to_string(),
+                    name: "b.pdf".to_string(),
+                    thumbnail: String::new(),
+                },
+            ],
+            sandbox_policy: Some(proto::SandboxPolicy {
+                tier: "manual".to_string(),
+            }),
+            auth_update: Some(proto::AuthUpdate {
+                provider: "custom".to_string(),
+                key: "k".to_string(),
+                clear_key: false,
+                base_url: "https://x".to_string(),
+                clear_base_url: false,
+                remove_entry: false,
+                remove_platform_base_url: false,
+            }),
+            provider_config: Some(proto::ProviderUpsert {
+                id: "custom".to_string(),
+                name: "Custom".to_string(),
+                api: "openai".to_string(),
+                base_url: "https://x".to_string(),
+                clear_base_url: false,
+                models: vec![proto::ProviderModel {
+                    id: "m1".to_string(),
+                    name: "Model One".to_string(),
+                    modalities: vec!["text".to_string()],
+                }],
+                create_only: false,
+                api_key: "k".to_string(),
+            }),
+            message: "hello".to_string(),
+            ..Default::default()
+        };
+        let response = service
+            .execute_command(tonic::Request::new(cmd))
+            .await
+            .expect("command succeeds");
+        let resp = response.into_inner();
+        assert!(resp.success, "{}", resp.error);
+        assert_eq!(resp.id, "cmd-1");
+        assert_eq!(resp.command, "get_agent_info");
+        assert!(resp.data.contains("agentInstanceId"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_command_unknown_command_returns_error_envelope() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let cmd = proto::RpcCommand {
+            id: "cmd-2".to_string(),
+            r#type: "frobnicate".to_string(),
+            session_id: "default".to_string(),
+            ..Default::default()
+        };
+        let response = service
+            .execute_command(tonic::Request::new(cmd))
+            .await
+            .expect("handler returns Ok envelope");
+        let resp = response.into_inner();
+        assert!(!resp.success);
+        assert!(resp.error.contains("unknown command"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_command_get_state_emits_typed_payload() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let cmd = proto::RpcCommand {
+            id: "cmd-3".to_string(),
+            r#type: "get_state".to_string(),
+            session_id: "default".to_string(),
+            ..Default::default()
+        };
+        let response = service
+            .execute_command(tonic::Request::new(cmd))
+            .await
+            .expect("command succeeds");
+        let resp = response.into_inner();
+        assert!(resp.success, "{}", resp.error);
+        assert!(resp.data.contains("\"sessionId\":\"default\""));
+        // get_state is a Tier-1 command — the typed payload is dual-written.
+        assert!(resp.payload.is_some(), "typed payload present");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_events_requires_and_resolves_session() {
+        let service = FutureAgentService {
+            state: grpc_app_state(true),
+        };
+
+        // Empty session id → failed_precondition.
+        let err = service
+            .stream_events(tonic::Request::new(proto::StreamRequest::default()))
+            .await
+            .map(|_| ())
+            .expect_err("expected an error");
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+
+        // Unknown session → not_found.
+        let err = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                session_id: "ghost".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .map(|_| ())
+            .expect_err("expected an error");
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_events_pings_then_streams_broadcasts() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let session = service.state.get_session("default").unwrap();
+        let response = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                session_id: "default".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("subscribes");
+        let mut stream = response.into_inner();
+        // First event is the initial ping.
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.r#type, "ping");
+        // Broadcasts arrive with the session id stamped by the mapper.
+        session.read().broadcaster.broadcast(SseEvent::new(
+            "session_name_changed",
+            serde_json::json!({"name": "renamed"}),
+        ));
+        let second = stream.next().await.unwrap().unwrap();
+        assert_eq!(second.r#type, "session_name_changed");
+        assert_eq!(second.session_id, "default");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_events_applies_event_type_filter() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let session = service.state.get_session("default").unwrap();
+        let response = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                session_id: "default".to_string(),
+                event_types: vec!["model_changed".to_string()],
+                ..Default::default()
+            }))
+            .await
+            .expect("subscribes");
+        let mut stream = response.into_inner();
+        // The initial ping is filtered out (not in event_types).
+        session.read().broadcaster.broadcast(SseEvent::new(
+            "thinking_level_changed",
+            serde_json::json!({}),
+        ));
+        session.read().broadcaster.broadcast(SseEvent::new(
+            "model_changed",
+            serde_json::json!({"model": "mock"}),
+        ));
+        let event = stream.next().await.unwrap().unwrap();
+        assert_eq!(event.r#type, "model_changed");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_events_atomic_attach_replays_active_run() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let session = service.state.get_session("default").unwrap();
+        {
+            let sess = session.read();
+            sess.broadcaster.start_run("run-live".to_string(), 1);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "text_chunk",
+                serde_json::json!({"text": "in-flight"}),
+            ));
+        }
+        let response = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                session_id: "default".to_string(),
+                atomic_attach: true,
+                run_id: "run-live".to_string(),
+                after_idx: -1,
+                ..Default::default()
+            }))
+            .await
+            .expect("atomic attach succeeds");
+        let mut stream = response.into_inner();
+        let event = stream.next().await.unwrap().unwrap();
+        assert_eq!(event.r#type, "text_chunk");
+        assert_eq!(event.run_id, "run-live");
+
+        // Attaching to a different (stale) run fails.
+        let err = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                session_id: "default".to_string(),
+                atomic_attach: true,
+                run_id: "run-stale".to_string(),
+                after_idx: -1,
+                ..Default::default()
+            }))
+            .await
+            .map(|_| ())
+            .expect_err("expected an error");
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
     }
 }
