@@ -836,6 +836,101 @@ mod tests {
     }
 
     /// Minimal stored ZIP archive understood by the system `unzip`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn copy_recursive_error_arms() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+
+        // dest parent is a regular file → create_dir_all fails.
+        let src = dir.path().join("srcdir");
+        tokio::fs::create_dir_all(&src).await.unwrap();
+        let blocker = dir.path().join("blocker");
+        tokio::fs::write(&blocker, "x").await.unwrap();
+        assert!(copy_recursive(&src, &blocker.join("child")).await.is_err());
+
+        // A file src copied under a file → tokio::fs::copy fails.
+        let file_src = dir.path().join("f.txt");
+        tokio::fs::write(&file_src, "x").await.unwrap();
+        assert!(copy_recursive(&file_src, &blocker.join("kid"))
+            .await
+            .is_err());
+
+        // src dir unreadable → read_dir fails.
+        use std::os::unix::fs::PermissionsExt;
+        let locked = dir.path().join("locked");
+        tokio::fs::create_dir_all(&locked).await.unwrap();
+        tokio::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .await
+            .unwrap();
+        assert!(copy_recursive(&locked, &dir.path().join("d2"))
+            .await
+            .is_err());
+        tokio::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+
+        // A locked CHILD dir → the recursion `?` propagates the error.
+        let outer = dir.path().join("outer");
+        tokio::fs::create_dir_all(outer.join("inner"))
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(outer.join("inner"), std::fs::Permissions::from_mode(0o000))
+            .await
+            .unwrap();
+        assert!(copy_recursive(&outer, &dir.path().join("d3"))
+            .await
+            .is_err());
+        tokio::fs::set_permissions(outer.join("inner"), std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unzip_spawn_failure_and_install_skill_fs_errors() {
+        let _guard = crate::test_env::lock_env().await;
+        // unzip not on PATH → spawn error.
+        let dir = tempfile::tempdir().unwrap();
+        let _path =
+            crate::test_env::EnvGuard::set(&[("PATH", dir.path().as_os_str().to_os_string())]);
+        let err = unzip(Path::new("/x.zip"), Path::new("/dest"))
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+        drop(_path);
+
+        // install_skill: existing dest as a FILE → remove_dir_all fails.
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let zip = make_zip(&[("future-x/", ""), ("future-x/SKILL.md", "v")]);
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::binary(
+            "/client/v1/skills/future-x/versions/1.0/download",
+            200,
+            zip,
+        )])
+        .await;
+        point_platform_at(&base).await;
+        // dest exists as a regular FILE (is_update → remove_dir_all fails).
+        let dest = skills_dir().join("future-x");
+        tokio::fs::create_dir_all(skills_dir()).await.unwrap();
+        tokio::fs::write(&dest, "not a dir").await.unwrap();
+        let (out, _cap) = Output::memory();
+        let err = install_skill("future-x", Some("1.0"), &out)
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+
+        // skills_dir itself is a FILE → create_dir_all(dest) fails.
+        tokio::fs::remove_file(&dest).await.unwrap();
+        tokio::fs::remove_dir_all(skills_dir()).await.unwrap();
+        tokio::fs::write(skills_dir(), "not a dir").await.unwrap();
+        let (out, _cap) = Output::memory();
+        let err = install_skill("future-x", Some("1.0"), &out)
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
     fn make_zip(entries: &[(&str, &str)]) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();
         let mut central: Vec<u8> = Vec::new();

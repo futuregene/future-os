@@ -2391,6 +2391,7 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
 
     // ── Safari start path ─────────────────────────────────────────────
 
+    #[cfg(target_os = "macos")] // safari webdriver path errors out pre-network elsewhere
     #[tokio::test(flavor = "multi_thread")]
     async fn start_safari_already_running_persists_config() {
         let (_g, _e, _d) = isolated_home().await;
@@ -2423,6 +2424,7 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         assert_eq!(saved.active_url.as_deref(), Some("http://safari/"));
     }
 
+    #[cfg(target_os = "macos")] // safari webdriver path errors out pre-network elsewhere
     #[tokio::test(flavor = "multi_thread")]
     async fn start_safari_permission_error_is_actionable() {
         let (_g, _e, _d) = isolated_home().await;
@@ -2450,6 +2452,7 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         );
     }
 
+    #[cfg(target_os = "macos")] // safari webdriver path errors out pre-network elsewhere
     #[tokio::test(flavor = "multi_thread")]
     async fn start_safari_other_error_propagates() {
         let (_g, _e, _d) = isolated_home().await;
