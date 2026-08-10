@@ -2820,4 +2820,225 @@ mod tests {
             "stderr: {stderr}"
         );
     }
+
+    // ── Remainder coverage batteries ──────────────────────────────────
+
+    #[test]
+    fn parse_tool_args_double_encoded_and_non_object() {
+        // A candidate that parses to a STRING containing JSON is parsed
+        // again (extra encoded layer from Windows process creation).
+        let raw = r#""{\"a\":1}""#;
+        let parsed = parse_tool_args(raw).unwrap();
+        assert_eq!(parsed.get("a"), Some(&json!(1)));
+
+        // A candidate parsing to a non-object (bare number) falls through
+        // to the relaxed cmd-object recovery, which also fails → error.
+        let err = parse_tool_args("123").unwrap_err();
+        assert!(err.contains("--args must be a JSON object"), "{err}");
+    }
+
+    #[test]
+    fn parse_cmd_object_rejects_malformed_fields() {
+        // Field without a colon → None (relaxed path; strict JSON fails first).
+        assert!(parse_tool_args("{a}").is_err());
+        // Colon at position 0 → None.
+        assert!(parse_tool_args("{:1}").is_err());
+        // Empty key after quote-stripping → None (the second field makes the
+        // strict parse fail so the relaxed path runs).
+        assert!(parse_tool_args(r#"{"":1, a:2}"#).is_err());
+        // Non-braced input → None from parse_cmd_object.
+        assert!(parse_tool_args("nope").is_err());
+    }
+
+    #[test]
+    fn parse_cmd_value_literal_edges() {
+        // true / false / null.
+        assert_eq!(parse_cmd_value("true"), json!(true));
+        assert_eq!(parse_cmd_value("null"), Value::Null);
+        // Integer and float literals.
+        assert_eq!(parse_cmd_value("42"), json!(42));
+        assert_eq!(parse_cmd_value("-7"), json!(-7));
+        assert_eq!(parse_cmd_value("1.5"), json!(1.5));
+        assert_eq!(parse_cmd_value("-2.5"), json!(-2.5));
+        // Quoted strings are unwrapped.
+        assert_eq!(parse_cmd_value("\"hi\""), json!("hi"));
+        // Nested object and array forms.
+        assert_eq!(parse_cmd_value("{a:1}"), json!({"a": 1}));
+        assert_eq!(parse_cmd_value("[]"), json!([]));
+        assert_eq!(parse_cmd_value("[1,x]"), json!([1, "x"]));
+        // Not-quite-numbers stay strings.
+        assert_eq!(parse_cmd_value("-"), json!("-"));
+        assert_eq!(parse_cmd_value("1.2.3"), json!("1.2.3"));
+        assert_eq!(parse_cmd_value("12a"), json!("12a"));
+        assert_eq!(parse_cmd_value(""), json!(""));
+    }
+
+    #[test]
+    fn literal_predicates() {
+        assert!(!is_integer_literal(""));
+        assert!(!is_integer_literal("-"));
+        assert!(is_integer_literal("-9"));
+        assert!(!is_integer_literal("1.5"));
+        assert!(!is_number_literal(""));
+        assert!(!is_number_literal("-"));
+        assert!(!is_number_literal("1.2.3"));
+        assert!(is_number_literal("-.5"));
+        assert!(is_number_literal("5."));
+    }
+
+    #[test]
+    fn example_flags_non_object_json() {
+        assert_eq!(example_flags("[1,2]"), "");
+        assert_eq!(example_flags("42"), "");
+    }
+
+    #[tokio::test]
+    async fn tools_call_flag_value_edges() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
+        async fn run(args: &[&str]) -> (Result<(), String>, String) {
+            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            let (out, cap) = Output::memory();
+            let result = tools("call", &args, &out).await;
+            let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+            (result, stderr)
+        }
+
+        // --input / --mask immediately followed by another flag → treated
+        // as absent (no value consumed).
+        let (result, _stderr) = run(&["read_image", "--input", "--raw", "--prompt", "x"]).await;
+        // Falls through to the API-key load (no key in the isolated HOME).
+        assert!(result.is_err());
+
+        // int_min failures.
+        let (result, stderr) = run(&["search_paper", "--queries", "[\"q\"]", "--max_k", "0"]).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        assert!(stderr.contains("--max_k must be a positive integer"), "{stderr}");
+        let (result, stderr) =
+            run(&["get_paper", "--paper_id", "x", "--max_tokens", "0"]).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        assert!(stderr.contains("--max_tokens must be a positive integer"), "{stderr}");
+
+        // file_type normalization: invalid value errors, valid upper-case
+        // is lowercased and accepted (fails later at the API-key load).
+        let (result, stderr) = run(&[
+            "parse_doc",
+            "--doc_b64",
+            "eA==",
+            "--file_type",
+            "TXT",
+        ])
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        assert!(stderr.contains("--file_type must be \"pdf\" or \"docx\""), "{stderr}");
+        let (result, stderr) = run(&[
+            "parse_doc",
+            "--doc_b64",
+            "eA==",
+            "--file_type",
+            "PDF",
+        ])
+        .await;
+        assert!(!stderr.contains("--file_type"), "{stderr}");
+        assert!(result.is_err());
+
+        // --timeout must be positive.
+        let (result, stderr) = run(&["web_search", "--query", "q", "--timeout", "-1"]).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        assert!(stderr.contains("--timeout must be >= 1 second"), "{stderr}");
+    }
+
+    #[tokio::test]
+    async fn format_image_result_defaults_and_skips() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+        // Missing size/quality/format → defaults; image_edit verb; a
+        // non-record image and an image without b64 are skipped.
+        let sc = json!({
+            "images": [
+                "junk",
+                {"format": "webp"},
+                {"b64_json": b64},
+            ],
+        });
+        let result = format_image_result("image_edit", &sc, None).await;
+        assert!(result.contains("[Image edited: unknown unknown png]"), "got: {result}");
+        assert!(result.contains("future-image-"), "got: {result}");
+        assert!(result.contains(".png"), "got: {result}");
+
+        // Header prompt line + empty images → no save section.
+        let sc = json!({"size": "1x1", "quality": "hd", "format": "png", "prompt": "a fox"});
+        let result = format_image_result("image_gen", &sc, None).await;
+        assert!(result.contains("[Image generated: 1x1 hd png]"), "got: {result}");
+        assert!(result.contains("Prompt: a fox"), "got: {result}");
+        assert!(!result.contains("Saved:"), "got: {result}");
+
+        // Multi-image output path WITHOUT any dot (incl. directories) →
+        // `path_N.ext`. (/tmp is dot-free; tempfile dirs are not.)
+        let out = format!("/tmp/futurecli-noext-{}", std::process::id());
+        let sc = json!({"images": [{"b64_json": b64}, {"b64_json": b64, "format": "jpeg"}]});
+        let result = format_image_result("image_gen", &sc, Some(&out)).await;
+        assert!(result.contains("noext-"), "got: {result}");
+        assert!(result.contains("_1.png"), "got: {result}");
+        assert!(result.contains("_2.jpg"), "got: {result}");
+        let _ = std::fs::remove_file(format!("{out}_1.png"));
+        let _ = std::fs::remove_file(format!("{out}_2.jpg"));
+
+        // Default image dir + multi-image suffixes (_1/_2) with bad b64
+        // skipped silently (write fails, path still listed).
+        let sc = json!({"images": [{"b64_json": "!!bad!!"}, {"b64_json": b64}]});
+        let result = format_image_result("image_gen", &sc, None).await;
+        assert!(result.contains("future-image-"), "got: {result}");
+        assert!(result.contains("_1.png"), "got: {result}");
+        assert!(result.contains("_2.png"), "got: {result}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tools_call_browser_success_print_path() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        // Point the browser config at a mock CDP browser, then call the
+        // console command through tools_call's browser branch.
+        let mock = crate::test_cdp::MockCdp::start().await;
+        crate::browser::browser_state::save_browser_config(
+            &crate::browser::types::BrowserConfig {
+                version: 2,
+                connection: crate::browser::types::BrowserConnectionConfig::Cdp {
+                    browser_kind: "chrome".to_string(),
+                    endpoint: mock.http_url.clone(),
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (out, cap) = Output::memory();
+        tools(
+            "call",
+            &[
+                "browser".to_string(),
+                "--command".to_string(),
+                "console".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("\"logs\""), "stdout: {stdout}");
+    }
+
+    #[test]
+    fn find_tool_entry_merges_browser_catalog() {
+        assert!(find_tool_entry("browser").is_some());
+        assert!(find_tool_entry("browser_open").is_none());
+        assert!(!browser_tool_catalog().is_empty());
+    }
 }
