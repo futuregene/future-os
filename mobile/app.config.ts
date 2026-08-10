@@ -8,19 +8,13 @@ function futureVersion(): string {
   }).trim();
 }
 
-function gitCommitCount(): string {
-  return execFileSync("git", ["rev-list", "--count", "HEAD"], {
-    cwd: __dirname,
-    encoding: "utf8",
-  }).trim();
-}
-
 const version = futureVersion();
 const bundleVersion = version.split(/[-+]/)[0];
-// Store build numbers must be monotonic integers. CI injects FUTURE_BUILD_NUMBER
-// (the git commit count); local builds derive it the same way. TestFlight/app
-// stores reject the `-<hash>` suffix, so this stays a plain number.
-const buildNumber = process.env.FUTURE_BUILD_NUMBER || gitCommitCount();
+// Store build numbers (CFBundleVersion / Android versionCode) must be monotonic
+// integers. CI injects FUTURE_BUILD_NUMBER (a repo-wide counter that never
+// resets); local dev builds just use a constant — TestFlight/Play enforce
+// monotonicity only, not that the number corresponds to any git commit.
+const buildNumber = process.env.FUTURE_BUILD_NUMBER || "1";
 
 const config: ExpoConfig = {
   name: "FutureOS",
