@@ -2137,6 +2137,30 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn get_state_shape_error_and_bad_endpoint() {
+        // get_state with a JSON shape that fails RpcSessionState
+        // deserialization → the map_err arm.
+        let addr = spawn_api_mock(ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([(
+                "get_state".to_string(),
+                r#"{"queuedRuns":"not-an-array"}"#.to_string(),
+            )]))),
+            ..Default::default()
+        })
+        .await;
+        let (client, _e, _c) = GrpcClient::new(&addr);
+        assert!(client.get_state().await.is_err());
+        client.disconnect();
+
+        // execute_unary with an unparseable address → from_shared arm.
+        assert!(
+            execute_unary("bad addr with spaces", RpcCommand::default(), 1)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn poked_exit_with_stop_set_returns_manager() {
         // Latch stop WITHOUT notifying, then change the session (poke): the
         // stale subscription exits Poked and the manager's post-Poked stop

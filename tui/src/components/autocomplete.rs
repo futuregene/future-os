@@ -1035,13 +1035,15 @@ mod tests {
             trigger: "/",
             completions: Vec::new(),
         }));
-        let last_items = Rc::new(RefCell::new(vec!["stale".to_string()]));
-        let cb = Rc::clone(&last_items);
+        // (Record the length, not the values: the query below never matches,
+        // so a value-mapping closure would never be invoked.)
+        let last_len = Rc::new(RefCell::new(usize::MAX));
+        let cb = Rc::clone(&last_len);
         manager.on_items = Some(Box::new(move |items| {
-            *cb.borrow_mut() = items.iter().map(|i| i.value.clone()).collect();
+            *cb.borrow_mut() = items.len();
         }));
         manager.query("hello", 5);
-        assert!(last_items.borrow().is_empty());
+        assert_eq!(*last_len.borrow(), 0);
         assert!(manager.active_context().is_none());
     }
 
@@ -1129,6 +1131,38 @@ mod tests {
         // reserved for slash commands).
         assert!(provider.r#match("ls /usr/lo", 10).is_some());
         assert!(provider.r#match("cat .git", 8).is_some());
+    }
+
+    #[test]
+    fn file_path_home_unset_falls_back_to_root() {
+        // `~` expansion with HOME unset → the "/"-fallback closure.
+        let _g = crate::test_env::lock();
+        let old_home = env::var_os("HOME").expect("HOME set in test env");
+        env::remove_var("HOME");
+        let provider = FilePathProvider::new(Some("/tmp".into()));
+        let ctx = AutocompleteContext {
+            text: "~/x".into(),
+            cursor_pos: 3,
+            token: "~/x".into(),
+            token_start: 0,
+        };
+        // Resolved to "/x" → parent "/" → read_dir ok or empty; the point
+        // is the fallback arm ran.
+        let _ = provider.get_completions(&ctx);
+        env::set_var("HOME", old_home);
+    }
+
+    #[test]
+    fn file_path_parentless_resolution_uses_dot() {
+        // Empty cwd + relative token → resolved "" has no parent → "." arm.
+        let provider = FilePathProvider::new(Some(String::new()));
+        let ctx = AutocompleteContext {
+            text: String::new(),
+            cursor_pos: 0,
+            token: String::new(),
+            token_start: 0,
+        };
+        let _ = provider.get_completions(&ctx);
     }
 
     #[test]

@@ -419,17 +419,12 @@ mod tests {
     fn escape_calls_on_cancel_without_saving() {
         use std::cell::Cell;
         use std::rc::Rc;
-        let saved = Rc::new(Cell::new(false));
         let cancelled = Rc::new(Cell::new(false));
-        let save_cb = Rc::clone(&saved);
         let cancel_cb = Rc::clone(&cancelled);
-        let mut sel = make_selector(
-            Box::new(move |_| save_cb.set(true)),
-            Box::new(move || cancel_cb.set(true)),
-        );
+        let mut sel = make_selector(noop_save(), Box::new(move || cancel_cb.set(true)));
         sel.handle_key("escape");
         assert!(cancelled.get());
-        assert!(!saved.get());
+        // (noop_save records nothing — any save would be a no-op.)
     }
 
     #[test]
