@@ -179,6 +179,51 @@ mod tests {
         (conn, session, server)
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn created_event_edge_shapes_use_defaults() {
+        let (conn, _session, server) = connect(vec![]).await;
+        let tracker = ExecutionContextTracker::new(&_session);
+
+        // No "context" object → ignored.
+        conn.dispatch_test(None, "Runtime.executionContextCreated", &json!({}));
+        // Context without id / auxData / name → id 0, "" frame, default.
+        conn.dispatch_test(
+            None,
+            "Runtime.executionContextCreated",
+            &json!({"context": {}}),
+        );
+        // auxData present but partial → is_default honored, frame "".
+        conn.dispatch_test(
+            None,
+            "Runtime.executionContextCreated",
+            &json!({"context": {"id": 7, "auxData": {"isDefault": false}}}),
+        );
+        // Destroyed without id → removes id 0 (the first default entry).
+        conn.dispatch_test(None, "Runtime.executionContextDestroyed", &json!({}));
+        // Cleared empties everything.
+        conn.dispatch_test(None, "Runtime.executionContextsCleared", &json!({}));
+
+        // A subsequent default-world lookup must NOT find the cleared ones.
+        let result = tracker
+            .get_main_world_context_id("any", &Deadline::new(120))
+            .await;
+        assert!(result.is_err());
+        drop(server);
+    }
+
+    #[test]
+    fn execution_context_info_shape() {
+        let info = ExecutionContextInfo {
+            context_id: 3,
+            frame_id: "f".to_string(),
+            is_default: true,
+            name: "n".to_string(),
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.context_id, 3);
+        let _ = format!("{info:?}");
+    }
+
     fn created(id: i64, frame_id: &str, is_default: bool) -> Value {
         json!({
             "sessionId": "sess-1",

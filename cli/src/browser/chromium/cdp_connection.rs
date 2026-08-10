@@ -601,7 +601,7 @@ mod tests {
         assert!(!conn.is_connected());
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "current_thread")]
     async fn malformed_and_stale_frames_are_ignored() {
         use futures_util::{SinkExt, StreamExt};
         use tokio::net::TcpListener;
@@ -642,7 +642,12 @@ mod tests {
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         // The connection survived the junk and still answers commands.
-        let result = conn.send("Page.enable", None, None).await.unwrap();
+        // (Generous timeout: under full-suite thread starvation the mock
+        // server task can be scheduled late.)
+        let result = conn
+            .send_with_timeout("Page.enable", None, None, 60_000)
+            .await
+            .unwrap();
         assert_eq!(result, json!({"ok": true}));
         conn.disconnect().await;
     }

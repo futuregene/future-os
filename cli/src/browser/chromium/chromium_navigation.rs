@@ -349,4 +349,128 @@ mod tests {
         assert!(!result.did_navigate);
         drop(server);
     }
+
+    // ── Remainder coverage via the mock browser ───────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_navigation_error_text_and_send_failure() {
+        let mock = crate::test_cdp::MockCdp::start().await;
+        mock.state.lock().unwrap().navigate_error_text = Some("net::ERR_X".to_string());
+        let (conn, session) = {
+            let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+            (conn.clone(), CdpSession::new("S-1", conn))
+        };
+        let result = wait_for_explicit_navigation(&session, "http://x/", &deadline(500))
+            .await
+            .unwrap();
+        assert!(!result.did_navigate);
+        assert_eq!(result.error_text.as_deref(), Some("net::ERR_X"));
+
+        // Page.navigate send failure → Err.
+        mock.state.lock().unwrap().navigate_error_text = None;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Page.navigate".to_string());
+        let err = wait_for_explicit_navigation(&session, "http://x/", &deadline(500))
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_navigation_same_document_and_missing_load_event() {
+        let mock = crate::test_cdp::MockCdp::start().await;
+        // Same-document (no loaderId) → did_navigate + same_document.
+        mock.state.lock().unwrap().navigate_same_document = true;
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        let session = CdpSession::new("S-1", conn.clone());
+        let result = wait_for_explicit_navigation(&session, "http://x/#f", &deadline(500))
+            .await
+            .unwrap();
+        assert!(result.did_navigate);
+        assert_eq!(result.same_document, Some(true));
+
+        // loaderId present but DOMContentLoaded never arrives → still
+        // navigated after the bounded wait (non-matching events ignored).
+        {
+            let mut state = mock.state.lock().unwrap();
+            state.navigate_same_document = false;
+            state.suppress_loaded_event = true;
+        }
+        let result = wait_for_explicit_navigation(&session, "http://y/", &deadline(150))
+            .await
+            .unwrap();
+        assert!(result.did_navigate);
+        assert_eq!(result.same_document, None);
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn observer_ignores_non_domcontentloaded_and_same_loader() {
+        let (url, server) = scripted_nav_server(vec![]).await;
+        let conn = CdpConnection::connect(&url, 5000).await.unwrap();
+        let session = CdpSession::new("", conn.clone());
+
+        let observer = ActionNavigationObserver::new("main", "loader-old");
+        observer.arm(&session);
+        // Same loader id → not a new navigation.
+        conn.dispatch_test(
+            None,
+            "Page.lifecycleEvent",
+            &json!({"frameId": "main", "loaderId": "loader-old", "name": "DOMContentLoaded"}),
+        );
+        // New loader but a non-DOMContentLoaded name (recorded as new
+        // loader, but loaded-set lacks it → wait reports navigation once
+        // the loader switch is seen).
+        conn.dispatch_test(
+            None,
+            "Page.lifecycleEvent",
+            &json!({"frameId": "main", "loaderId": "loader-new", "name": "load"}),
+        );
+        // Event without loaderId → ignored entirely.
+        conn.dispatch_test(
+            None,
+            "Page.lifecycleEvent",
+            &json!({"frameId": "main", "name": "DOMContentLoaded"}),
+        );
+        let result = observer.wait(&deadline(200)).await.unwrap();
+        observer.dispose();
+        // New loader id was registered (navigation started) even though the
+        // DOMContentLoaded for it never arrived within the deadline.
+        assert!(result.did_navigate);
+        drop(server);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn observer_disposed_short_circuits_arm_and_wait() {
+        let (url, server) = scripted_nav_server(vec![]).await;
+        let conn = CdpConnection::connect(&url, 5000).await.unwrap();
+        let session = CdpSession::new("", conn.clone());
+
+        let observer = ActionNavigationObserver::new("main", "loader-old");
+        observer.dispose();
+        // arm() after dispose is a no-op.
+        observer.arm(&session);
+        // wait() after dispose resolves immediately with no navigation.
+        let started = std::time::Instant::now();
+        let result = observer.wait(&deadline(5_000)).await.unwrap();
+        assert!(started.elapsed().as_millis() < 100);
+        assert!(!result.did_navigate);
+        drop(server);
+    }
+
+    #[test]
+    fn navigation_result_default() {
+        let r = NavigationResult::default();
+        assert!(!r.did_navigate);
+        assert!(r.new_url.is_none());
+        assert!(r.error_text.is_none());
+        assert!(r.same_document.is_none());
+        let cloned = r.clone();
+        assert!(!cloned.did_navigate);
+        let _ = format!("{r:?}");
+    }
 }

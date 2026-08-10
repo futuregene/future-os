@@ -296,4 +296,71 @@ mod tests {
         router.dispatch(Some("s"), "test", &json!({}));
         assert_eq!(ok.lock().unwrap().as_slice(), &["still called"]);
     }
+
+    #[test]
+    fn dispatch_without_any_handlers_is_a_noop() {
+        let router = Arc::new(CdpEventRouter::new());
+        // No handlers registered at all: specific + wildcard lookups miss.
+        router.dispatch(Some("s"), "Nothing", &json!({}));
+        router.dispatch(None, "Nothing", &json!({}));
+    }
+
+    #[test]
+    fn dispatch_with_none_session_does_not_double_fire() {
+        // sessionId None: specific key == wildcard key → one invocation.
+        let router = Arc::new(CdpEventRouter::new());
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        router.add(None, "Ev", Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }));
+        router.dispatch(None, "Ev", &json!({}));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn unsubscribe_with_siblings_keeps_key_and_double_unsubscribe_is_noop() {
+        let router = Arc::new(CdpEventRouter::new());
+        let count = Arc::new(AtomicUsize::new(0));
+        let c1 = count.clone();
+        let c2 = count.clone();
+        let first = router.add(Some("s"), "Ev", Arc::new(move |_| {
+            c1.fetch_add(1, Ordering::SeqCst);
+        }));
+        router.add(Some("s"), "Ev", Arc::new(move |_| {
+            c2.fetch_add(1, Ordering::SeqCst);
+        }));
+        // Removing the first leaves the second registered under the key.
+        first.unsubscribe();
+        router.dispatch(Some("s"), "Ev", &json!({}));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        // Unsubscribing a key that no longer exists is a no-op.
+        let lone_router = Arc::new(CdpEventRouter::new());
+        let h = lone_router.add(Some("x"), "Ev", Arc::new(|_| {}));
+        h.unsubscribe();
+        // (key removed above) — build a fresh handle against the same key.
+        let h2 = lone_router.add(Some("x"), "Ev", Arc::new(|_| {}));
+        h2.unsubscribe();
+        lone_router.dispatch(Some("x"), "Ev", &json!({}));
+    }
+
+    #[test]
+    fn clear_session_without_matches_keeps_others() {
+        let router = Arc::new(CdpEventRouter::new());
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        router.add(Some("keep"), "Ev", Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }));
+        router.clear_session("absent");
+        router.dispatch(Some("keep"), "Ev", &json!({}));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn event_key_shapes() {
+        assert_eq!(event_key(None, "M"), "browser::M");
+        assert_eq!(event_key(Some("s"), "M"), "s::M");
+    }
 }

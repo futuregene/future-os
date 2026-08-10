@@ -96,3 +96,119 @@ pub fn cdp_connection(endpoint: &str) -> BrowserConnectionConfig {
         endpoint: endpoint.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_server::{spawn_http, HttpRoute};
+
+    fn free_port() -> i64 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port() as i64;
+        drop(listener);
+        port
+    }
+
+    #[tokio::test]
+    async fn resolve_port_reuses_live_endpoint() {
+        // An HTTP endpoint answering /json/version on the requested port is
+        // reused as-is.
+        let base = spawn_http(vec![HttpRoute::json("/json/version", 200, "{}")]).await;
+        let port: i64 = base.rsplit(':').next().unwrap().parse().unwrap();
+        assert_eq!(resolve_port(port).await.unwrap(), port);
+    }
+
+    #[tokio::test]
+    async fn resolve_port_free_occupied_and_exhausted() {
+        let free = free_port();
+        assert_eq!(resolve_port(free).await.unwrap(), free);
+
+        // Occupied by a NON-HTTP listener → scan to the next free port.
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = held.local_addr().unwrap().port() as i64;
+        let resolved = resolve_port(taken).await.unwrap();
+        assert!(resolved > taken && resolved < taken + 50);
+        drop(held);
+
+        // Exhaustion: 50 consecutive occupied ports → error.
+        let first = free_port();
+        let mut holders = Vec::new();
+        let mut blocked = true;
+        for p in first..first + 50 {
+            match std::net::TcpListener::bind(("127.0.0.1", p as u16)) {
+                Ok(l) => holders.push(l),
+                Err(_) => {
+                    blocked = false;
+                    break;
+                }
+            }
+        }
+        if blocked {
+            let err = resolve_port(first).await.unwrap_err();
+            assert!(err.contains("No available browser debugging port"), "{err}");
+        }
+        drop(holders);
+    }
+
+    #[tokio::test]
+    async fn endpoint_reachable_variants() {
+        let base = spawn_http(vec![HttpRoute::json("/json/version", 200, "{}")]).await;
+        assert!(endpoint_reachable(&base).await);
+        let base = spawn_http(vec![HttpRoute::json("/json/version", 500, "{}")]).await;
+        assert!(!endpoint_reachable(&base).await);
+        assert!(!endpoint_reachable("http://127.0.0.1:1").await);
+    }
+
+    #[tokio::test]
+    async fn port_has_listener_probe() {
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = held.local_addr().unwrap().port() as i64;
+        assert!(port_has_listener(taken).await);
+        drop(held);
+        assert!(!port_has_listener(free_port()).await);
+    }
+
+    #[tokio::test]
+    async fn default_profile_dir_follows_future_home() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        let path = default_profile_dir();
+        assert_eq!(path, dir.path().join("agent").join("browser").join("profile"));
+    }
+
+    #[test]
+    fn launcher_lookup_with_explicit_path() {
+        let (command, kind) = find_browser_launcher(Some("/custom/chrome")).unwrap();
+        assert_eq!(command, "/custom/chrome");
+        assert_eq!(kind, "chrome");
+        assert_eq!(
+            launcher_from_executable(Some("/custom/chrome")).as_deref(),
+            Some("/custom/chrome")
+        );
+        let launcher = Launcher::discover(Some("/custom/chrome")).unwrap();
+        assert_eq!(launcher.command, "/custom/chrome");
+        assert!(launcher.args.is_empty());
+    }
+
+    #[test]
+    fn launcher_lookup_platform_discovery_runs() {
+        // Platform discovery (no explicit path) — outcome depends on the
+        // host; just exercise the lookup both ways.
+        let _ = find_browser_launcher(None);
+        let _ = launcher_from_executable(None);
+        let _ = Launcher::discover(None);
+    }
+
+    #[test]
+    fn error_message_and_config_shape() {
+        assert!(no_browser_found_message("extra").contains("extra"));
+        let conn = cdp_connection("http://e:1");
+        assert_eq!(conn.protocol(), "cdp");
+        assert_eq!(conn.browser_kind(), "chromium");
+        assert_eq!(conn.endpoint(), "http://e:1");
+    }
+}

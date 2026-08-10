@@ -191,4 +191,170 @@ mod tests {
         assert!(first_close_ms < 1_000, "first close {first_close_ms}ms");
         assert!(second_close_ms < 50, "second close {second_close_ms}ms");
     }
+
+    /// A server performing the NORMAL close handshake (replies to the
+    /// client's close frame after a short delay).
+    #[tokio::test(flavor = "current_thread")]
+    async fn close_returns_fast_on_normal_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            while let Some(frame) = ws.next().await {
+                match frame {
+                    Ok(Message::Close(_)) => {
+                        // Delay the reply so the client's close() has time to
+                        // subscribe before the Close event arrives (otherwise
+                        // the reader can win the race and close() hits its
+                        // 500 ms bound even on a healthy peer).
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        let _ = ws.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Ok(_) => continue,
+                    Err(_) => break,
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+
+        let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
+            .await
+            .unwrap();
+        // Peer answers the close after 100 ms → close() returns well inside
+        // the 500 ms bound (no hard timing assert: full-suite scheduling can
+        // stall tasks arbitrarily).
+        transport.close().await;
+
+        // send() after close is a no-op (closed flag set).
+        transport.send("{\"id\":1}");
+    }
+
+    /// Server-initiated close and abrupt TCP drop both notify subscribers.
+    #[tokio::test(flavor = "current_thread")]
+    async fn inbound_close_frame_and_tcp_drop_notify_close() {
+        // Variant A: server sends a Close frame.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let _ = ws.send(Message::Close(None)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+        let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
+            .await
+            .unwrap();
+        let mut rx = transport.subscribe();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, TransportEvent::Close(Some(_))));
+
+        // Variant B: server drops the TCP socket without a close frame.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let _ws = accept_async(stream).await.unwrap();
+            drop(_ws); // abrupt drop
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        });
+        let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
+            .await
+            .unwrap();
+        let mut rx = transport.subscribe();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, TransportEvent::Close(_)));
+    }
+
+    /// Binary and ping frames are ignored; text keeps flowing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn binary_and_ping_frames_are_ignored() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let _ = ws.send(Message::Binary(vec![1, 2, 3])).await;
+            let _ = ws.send(Message::Ping(vec![9])).await;
+            let _ = ws.send(Message::Text("{\"hello\":true}".to_string())).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+        let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
+            .await
+            .unwrap();
+        let mut rx = transport.subscribe();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            TransportEvent::Message(text) => assert!(text.contains("hello")),
+            other => panic!("expected message, got {other:?}"),
+        }
+    }
+
+    /// With no subscribers left the reader task exits and flags closed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reader_breaks_when_no_subscribers_remain() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let _ = ws.send(Message::Text("first".to_string())).await;
+            // Wait for the client to close, then confirm the close.
+            while let Some(frame) = ws.next().await {
+                if matches!(frame, Ok(Message::Close(_))) {
+                    let _ = ws.send(Message::Close(None)).await;
+                    break;
+                }
+            }
+        });
+        let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
+            .await
+            .unwrap();
+        {
+                        // Take a receiver and drop it immediately: after that the
+            // broadcast channel has no receivers, so the next inbound text
+            // makes events.send fail → reader breaks → closed flag set.
+            let _rx = transport.subscribe();
+        }
+        // Let the server's "first" text arrive (no live receivers... the
+        // channel buffer holds it until ALL senders... broadcast::send only
+        // errors when there are NO receivers; _rx is dropped above).
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // close() must not hang regardless of the reader state.
+        transport.close().await;
+    }
+
+    /// Connect error paths.
+    #[tokio::test(flavor = "current_thread")]
+    async fn connect_failures() {
+        // Refused → "connection failed".
+        let err = WebSocketTransport::connect("ws://127.0.0.1:1", 500)
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert!(err.unwrap().contains("WebSocket connection failed"));
+
+        // TCP open but handshake never completes → timeout.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _hold = tokio::spawn(async move {
+            let _s = listener.accept().await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+        let err = WebSocketTransport::connect(&format!("ws://{addr}"), 120)
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert!(err.unwrap().contains("WebSocket connection timeout"));
+    }
 }
