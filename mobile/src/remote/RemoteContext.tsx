@@ -13,20 +13,18 @@ import {
   applyStreamEvent,
   emptyTimeline,
   markApprovalDecision,
+  normalizeReplayEvents,
   timelineFromEntries,
   timelineFromHistory,
+  timelineFromProjection,
+  stripRunItems,
+  type ReplayEventWire,
   type TimelineState,
 } from "./eventReducer";
 import { RemoteClient } from "./client";
 import { claimPairingCode, ensureFreshCredentials, revokeCredentials } from "./pairing";
 import { isDesktopOnline } from "./presence";
-import {
-  advanceCursor,
-  newCursor,
-  nextEvent,
-  rebuildCursorFromEvents,
-  type RunCursor,
-} from "./runCursor";
+import { advanceCursor, newCursor, nextEvent, type RunCursor } from "./runCursor";
 import {
   clearCredentials,
   loadCredentials,
@@ -78,8 +76,12 @@ interface EntriesData {
 }
 
 interface EventsData {
-  events: StreamEvent[];
+  /** Raw replay events — the RPC serializes them with snake_case `run_id`. */
+  events?: ReplayEventWire[];
   truncated?: boolean;
+  /** Coalesced replica of a run whose event ring overflowed — replaces the
+   *  session's timeline wholesale (see `timelineFromProjection`). */
+  projection?: { run_id?: string; cursor?: number; events?: ReplayEventWire[] } | null;
 }
 
 interface PromptAck {
@@ -166,24 +168,37 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [draft, setDraft] = useState(false);
   const [draftMode, setDraftMode] = useState<"chat" | "workspace">("chat");
   const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
-  const [timeline, setTimeline] = useState<TimelineState>(emptyTimeline);
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
   const [busy, setBusy] = useState(false);
   const [clock, setClock] = useState(Date.now());
+  // Per-session timelines: events for EVERY session are consumed (the desktop
+  // observer mirrors all of them), so a background run keeps advancing and
+  // switching to it renders its live state without a fresh history load. The
+  // draft (a conversation with no session yet) lives under the "" key until a
+  // prompt ack binds it to a real session.
+  const [timelines, setTimelines] = useState<Record<string, TimelineState>>({});
+  const timelinesRef = useRef<Record<string, TimelineState>>({});
+  const cursorsRef = useRef<Record<string, RunCursor>>({});
+  // Live agent-side renames (`session_name_changed`, data: {name}) are not
+  // persisted by the desktop store, so the snapshot title would go stale; the
+  // override wins until the next sessions snapshot reflects it. Read via the
+  // ref inside long-lived closures (the NATS callbacks) to avoid a stale
+  // capture or forcing a client re-create on every rename.
+  const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>({});
+  const titleOverridesRef = useRef<Record<string, string>>({});
   const clientRef = useRef<RemoteClient | null>(null);
   const credentialsRef = useRef<RemoteCredentials | null>(null);
   const selectedRef = useRef("");
-  const presenceRef = useRef<Presence | null>(null);
-  const timelineRef = useRef<TimelineState>(emptyTimeline());
-  const recoverRef = useRef<() => Promise<void>>(async () => undefined);
+  const recoverRef = useRef<(sessionId?: string) => Promise<void>>(async () => undefined);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const scheduleReconnectRef = useRef<() => void>(() => undefined);
-  // Integrity: sync lock + pending buffer + per-run cursor for gap detection.
+  // Integrity: sync lock + pending buffer + per-session run cursors for gap
+  // detection. Events from any session are applied against that session's
+  // cache; a gap in one session never blocks another.
   const syncLockRef = useRef(false);
   const pendingRef = useRef<{ event: StreamEvent; sessionId: string }[]>([]);
-  const cursorRef = useRef<RunCursor>(newCursor());
   const gapInFlightRef = useRef(false);
 
   useEffect(() => {
@@ -193,18 +208,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     selectedRef.current = selectedSessionId;
   }, [selectedSessionId]);
   useEffect(() => {
-    presenceRef.current = presence;
-  }, [presence]);
+    timelinesRef.current = timelines;
+  }, [timelines]);
   useEffect(() => {
-    timelineRef.current = timeline;
-  }, [timeline]);
+    titleOverridesRef.current = titleOverrides;
+  }, [titleOverrides]);
 
   const refreshSessions = useCallback(async () => {
     const client = clientRef.current;
     if (!client) return;
     try {
       const response = await client.request<SessionsData>({ type: "list_sessions" }, "list");
-      const list = response.data.sessions ?? [];
+      const overrides = titleOverridesRef.current;
+      const list = (response.data.sessions ?? []).map(session => ({
+        ...session,
+        title: overrides[session.sessionId] ?? session.title,
+      }));
       const { finished, next } = detectFinished(lastStatusRef.current, list);
       lastStatusRef.current = next;
       setSessions(list);
@@ -245,10 +264,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   const handleEvent = useCallback(
     (event: StreamEvent, sessionId: string) => {
-      if (!sessionId || sessionId !== selectedRef.current) return;
+      const sid = sessionId || "";
+      if (!sid) return;
       // While a recovery/resync is in progress, buffer live events.
       if (syncLockRef.current) {
-        pendingRef.current.push({ event, sessionId });
+        pendingRef.current.push({ event, sessionId: sid });
         return;
       }
       if (event.type === "run_snapshot") {
@@ -257,23 +277,79 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         // incrementally — a coalesced chunk's text spans idx values already
         // applied — so heal wholesale: recover resyncs history + live tail,
         // rebuilds the cursor, and folds buffered events.
-        void recoverRef.current();
+        void recoverRef.current(sid);
         return;
       }
-      const verdict = nextEvent(cursorRef.current, event.runId, event.idx);
+      if (event.type === "session_name_changed") {
+        // Agent-side rename (TUI `/name`, agent-driven). The desktop store is
+        // not updated, so the sessions-snapshot title would go stale; remember
+        // the new name until the snapshot catches up, then re-read the list so
+        // the override reaches the sidebar immediately.
+        try {
+          const data = JSON.parse(event.data) as Record<string, unknown>;
+          const name = typeof data.name === "string" ? data.name.trim() : "";
+          if (name) {
+            setTitleOverrides(prev => ({ ...prev, [sid]: name }));
+            void refreshSessions();
+          }
+        } catch {
+          // Ignore a malformed rename payload.
+        }
+      }
+      if (event.type === "approval_decision") {
+        // A decision made on another device (desktop/TUI) resolves the pending
+        // card here — otherwise it would linger until the session was reopened.
+        try {
+          const data = JSON.parse(event.data) as Record<string, unknown>;
+          const approvalId = data.approval_request_id;
+          const status = data.status;
+          if (
+            approvalId &&
+            (status === "approved" || status === "rejected" || status === "cancelled")
+          ) {
+            const decision = status as "approved" | "rejected" | "cancelled";
+            const approvalRequestId = approvalId as string;
+            setTimelines(prev => {
+              const tl = prev[sid];
+              if (!tl) return prev;
+              const has = tl.items.some(
+                item =>
+                  item.kind === "approval" &&
+                  item.payload.approval_request_id === approvalRequestId,
+              );
+              if (!has) return prev;
+              return { ...prev, [sid]: markApprovalDecision(tl, approvalRequestId, decision) };
+            });
+          }
+        } catch {
+          // Ignore a malformed decision payload.
+        }
+      }
+      // Every session's events are consumed — the desktop observer mirrors all
+      // of them, so a background run keeps advancing in its own cache and a
+      // later switch to it renders its live state.
+      let cursor = cursorsRef.current[sid];
+      if (!cursor) {
+        cursor = newCursor();
+        cursorsRef.current[sid] = cursor;
+      }
+      const verdict = nextEvent(cursor, event.runId, event.idx);
       if (verdict.kind === "dup") return;
       if (verdict.kind === "gap") {
         // Buffer the gap-triggering event; do NOT apply out of order.
-        pendingRef.current.push({ event, sessionId });
+        pendingRef.current.push({ event, sessionId: sid });
         syncLockRef.current = true;
-        void fillGapRef.current(sessionId, event.runId ?? "", verdict.fromIdx);
+        void fillGapRef.current(sid, event.runId ?? "", verdict.fromIdx);
         return;
       }
       // "apply" or "untracked"
       if (verdict.kind === "apply") {
-        advanceCursor(cursorRef.current, event.runId!, verdict.idx);
+        advanceCursor(cursor, event.runId!, verdict.idx);
       }
-      setTimeline(state => applyStreamEvent(state, event));
+      setTimelines(prev => ({
+        ...prev,
+        [sid]: applyStreamEvent(prev[sid] ?? emptyTimeline(), event),
+      }));
       if (event.type === "agent_end") {
         void refreshSessions();
       }
@@ -287,7 +363,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     setDraft(false);
     setDraftMode("chat");
     setDraftWorkspaceId("");
-    setTimeline(emptyTimeline());
+    // Keep the per-session timeline caches — reopening a conversation renders
+    // its live state without a fresh history load.
     void refreshSessions();
     void refreshWorkspaces();
   }, [refreshSessions, refreshWorkspaces]);
@@ -310,10 +387,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           setPresence(nextPresence);
         },
         onSessions: sessionList => {
+          const overrides = titleOverridesRef.current;
           const list: RemoteSession[] = sessionList.map(s => ({
             sessionId: s.sessionId,
             threadId: s.threadId,
-            title: s.title,
+            title: overrides[s.sessionId] ?? s.title,
             mode: s.mode,
             workspaceId: s.workspaceId,
             streaming: s.streaming,
@@ -335,7 +413,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           } else if (currentId) {
             const streaming =
               sessionList.find(session => session.sessionId === currentId)?.streaming ?? false;
-            setTimeline(state => ({ ...state, streaming }));
+            setTimelines(prev => {
+              const existing = prev[currentId];
+              return existing && existing.streaming !== streaming
+                ? { ...prev, [currentId]: { ...existing, streaming } }
+                : prev;
+            });
           }
         },
         onWorkspaces: workspaceList => {
@@ -478,7 +561,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setWorkspaces([]);
       setSelectedSessionId("");
       setDraft(false);
-      setTimeline(emptyTimeline());
+      setTimelines({});
+      cursorsRef.current = {};
+      setTitleOverrides({});
+      titleOverridesRef.current = {};
       setPhase("unpaired");
       setError(null);
     } finally {
@@ -526,63 +612,130 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     return timelineFromHistory(history);
   }, []);
 
-  const backfill = useCallback(
-    async (sessionId: string, initial: TimelineState, runId?: string, sinceIdx?: number) => {
+  // ── Gap-fill and full-resync (integrity layer) ──
+
+  /**
+   * Top up a session's timeline with the tail of its active run (the events
+   * after the run's high-water cursor). The agent's `events_since` reads a
+   * settled run's durable journal and an in-flight run's live ring, so this
+   * both resyncs a fresh open and heals a mid-run reconnect. When the ring
+   * overflowed, the returned projection replaces the run's partial items
+   * wholesale.
+   */
+  const hydrateActiveRun = useCallback(
+    async (
+      sessionId: string,
+      base: TimelineState,
+      cursor: RunCursor,
+      preserveCache: boolean,
+      activeRunId: string,
+    ): Promise<TimelineState> => {
       const client = clientRef.current;
-      if (!client) return initial;
+      if (!client || !activeRunId) return { ...base, streaming: false };
+      // A fresh history base carries the run's partial persisted entries; the
+      // replay below supersedes them, so drop them first. A live cache's items
+      // are the real events and are kept.
+      const baseForReplay = preserveCache ? base : stripRunItems(base, activeRunId);
+      const sinceIdx = cursor.get(activeRunId) ?? -1;
+      let response: EventsData;
       try {
-        const response = await client.request<EventsData>(
-          { type: "get_events_since", sessionId, runId, sinceIdx: sinceIdx ?? -1 },
-          sessionId,
-        );
-        let next = initial;
-        for (const event of response.data.events ?? []) next = applyStreamEvent(next, event);
-        if (response.data.truncated) {
-          next = {
-            ...next,
-            items: [
-              ...next.items,
-              {
-                id: `truncated:${Date.now()}`,
-                kind: "notice",
-                tone: "warning",
-                text: "truncated",
-              },
-            ],
-          };
-        }
-        return next;
+        response = (
+          await client.request<EventsData>(
+            { type: "get_events_since", sessionId, runId: activeRunId, sinceIdx },
+            sessionId,
+          )
+        ).data;
       } catch {
-        return initial;
+        return { ...baseForReplay, streaming: true };
       }
+      if (response.projection?.events?.length) {
+        // The ring overflowed; the projection is the whole run and replaces
+        // the run's partial items — the cache's live events for this run (the
+        // replayed ones carry the run_id) and history's partial entries alike.
+        // User bubbles survive stripRunItems, so the transcript order holds.
+        const baseStripped = stripRunItems(baseForReplay, activeRunId);
+        const projectionEvents = normalizeReplayEvents(response.projection.events);
+        const projected = timelineFromProjection(projectionEvents);
+        const cursorIdx =
+          response.projection.cursor ??
+          projectionEvents.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
+        advanceCursor(cursor, activeRunId, cursorIdx);
+        const settled = projectionEvents.some(ev => ev.type === "agent_end");
+        return {
+          ...baseStripped,
+          items: [...baseStripped.items, ...projected.items],
+          streaming: !settled,
+        };
+      }
+      let next = baseForReplay;
+      const events = normalizeReplayEvents(response.events);
+      for (const ev of events) next = applyStreamEvent(next, ev);
+      for (const ev of events) {
+        if (ev.runId && ev.idx != null) advanceCursor(cursor, ev.runId, ev.idx);
+      }
+      const settled = events.some(ev => ev.type === "agent_end");
+      // Empty replay means the cursor was already caught up (the active run
+      // ended between get_state and this request) — preserve the base's
+      // streaming state instead of assuming the run is still live.
+      return { ...next, streaming: events.length > 0 ? !settled : base.streaming };
     },
     [],
   );
 
-  // ── Gap-fill and full-resync (integrity layer) ──
-
   const fullResync = useCallback(
     async (sessionId: string) => {
-      let next = await loadHistory(sessionId);
-      const streaming =
-        presenceRef.current?.sessions?.find(s => s.sessionId === sessionId)?.streaming ?? false;
-      if (streaming) next = await backfill(sessionId, next);
-      next = { ...next, streaming };
-      // Rebuild cursor from the resynced timeline events.
-      const cursor = cursorRef.current;
-      for (const item of next.items) {
-        if (
-          item.runId &&
-          "idx" in item &&
-          typeof (item as Record<string, unknown>).idx === "number"
-        ) {
-          advanceCursor(cursor, item.runId, (item as unknown as { idx: number }).idx);
-        }
+      const client = clientRef.current;
+      if (!client) return;
+      let activeRunId = "";
+      try {
+        const state = await client.request<RemoteSessionState>(
+          { type: "get_state", sessionId },
+          sessionId,
+        );
+        activeRunId = state.data.activeRun?.runId ?? "";
+      } catch {
+        // Fall through with an empty run id — history-only resync.
       }
-      setTimeline(next);
+      const cursor = cursorsRef.current[sessionId] ?? newCursor();
+      cursorsRef.current[sessionId] = cursor;
+      const history = await loadHistory(sessionId);
+      const next = await hydrateActiveRun(sessionId, history, cursor, false, activeRunId);
+      setTimelines(prev => ({ ...prev, [sessionId]: next }));
     },
-    [backfill, loadHistory],
+    [hydrateActiveRun, loadHistory],
   );
+
+  /** Fold buffered events (from any session) into each session's cache. */
+  const flushPendingLock = useCallback(() => {
+    const pending = pendingRef.current;
+    pendingRef.current = [];
+    if (pending.length === 0) return;
+    const toApply: { sessionId: string; event: StreamEvent }[] = [];
+    let retrySessionId: string | null = null;
+    for (const { event, sessionId } of pending) {
+      const cursor = cursorsRef.current[sessionId] ?? (cursorsRef.current[sessionId] = newCursor());
+      const verdict = nextEvent(cursor, event.runId, event.idx);
+      if (verdict.kind === "dup") continue;
+      if (verdict.kind === "gap") {
+        retrySessionId = sessionId;
+        continue;
+      }
+      if (verdict.kind === "apply") advanceCursor(cursor, event.runId!, verdict.idx);
+      toApply.push({ sessionId, event });
+    }
+    if (toApply.length > 0) {
+      // Functional update so this merges over the latest state (hydration may
+      // have landed a new cache since the pending events were buffered).
+      setTimelines(prev => {
+        const next = { ...prev };
+        for (const { sessionId, event } of toApply) {
+          next[sessionId] = applyStreamEvent(next[sessionId] ?? emptyTimeline(), event);
+        }
+        return next;
+      });
+    }
+    if (retrySessionId) void fullResync(retrySessionId);
+  }, [fullResync]);
 
   const fillGapRef = useRef<(sessionId: string, runId: string, fromIdx: number) => Promise<void>>(
     async () => undefined,
@@ -595,11 +748,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       try {
         const client = clientRef.current;
         if (!client) throw new Error("no client");
-        const response = await client.request<EventsData>(
-          { type: "get_events_since", sessionId, runId, sinceIdx: fromIdx },
-          sessionId,
-        );
-        const events = response.data.events ?? [];
+        const response = (
+          await client.request<EventsData>(
+            { type: "get_events_since", sessionId, runId, sinceIdx: fromIdx },
+            sessionId,
+          )
+        ).data;
+        const events = normalizeReplayEvents(response.events);
         const firstIdx = events.length > 0 ? events[0]!.idx : undefined;
         // If the agent buffer overflowed (dropped head), firstIdx will be > fromIdx+1.
         if (events.length > 0 && firstIdx != null && firstIdx > fromIdx + 1) {
@@ -607,38 +762,21 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           return;
         }
         // Apply fetched events in order (dedup in reducer handles overlaps).
-        setTimeline(prev => events.reduce((state, ev) => applyStreamEvent(state, ev), prev));
+        setTimelines(prev => {
+          const next = prev[sessionId] ?? emptyTimeline();
+          return {
+            ...prev,
+            [sessionId]: events.reduce((state, ev) => applyStreamEvent(state, ev), next),
+          };
+        });
         // Advance cursor for all fetched events.
+        const cursor = cursorsRef.current[sessionId] ?? newCursor();
+        cursorsRef.current[sessionId] = cursor;
         for (const ev of events) {
-          if (ev.runId && ev.idx != null) advanceCursor(cursorRef.current, ev.runId, ev.idx);
+          if (ev.runId && ev.idx != null) advanceCursor(cursor, ev.runId, ev.idx);
         }
         // Flush pending buffer (may contain the gap-triggering event + subsequent ones).
-        const pending = pendingRef.current;
-        pendingRef.current = [];
-        if (pending.length > 0) {
-          setTimeline(prev => {
-            let state = prev;
-            for (const { event } of pending) {
-              const v = nextEvent(cursorRef.current, event.runId, event.idx);
-              if (v.kind === "dup") continue;
-              if (v.kind === "gap") {
-                // Another gap during flush — retry once, then full resync.
-                void (async () => {
-                  try {
-                    await fullResync(sessionId);
-                  } finally {
-                    syncLockRef.current = false;
-                    gapInFlightRef.current = false;
-                  }
-                })();
-                return state;
-              }
-              if (v.kind === "apply") advanceCursor(cursorRef.current, event.runId!, v.idx);
-              state = applyStreamEvent(state, event);
-            }
-            return state;
-          });
-        }
+        flushPendingLock();
       } catch {
         // Request failed (agent restart, etc.) — degrade to full resync.
         try {
@@ -652,43 +790,34 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         gapInFlightRef.current = false;
       }
     };
-  }, [fullResync]);
+  }, [flushPendingLock, fullResync]);
 
   useEffect(() => {
-    recoverRef.current = async () => {
+    recoverRef.current = async (sessionId?: string) => {
       syncLockRef.current = true;
       try {
         await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
-        const sessionId = selectedRef.current;
-        if (!sessionId) return;
-        let next = await loadHistory(sessionId);
-        // Use fresh presence snapshot for streaming (not stale timelineRef).
-        const streaming =
-          presenceRef.current?.sessions?.find(s => s.sessionId === sessionId)?.streaming ?? false;
-        if (streaming) next = await backfill(sessionId, next);
-        next = { ...next, streaming };
-        // Rebuild cursor from the recovered state.
-        cursorRef.current = newCursor();
-        rebuildCursorFromEvents(
-          cursorRef.current,
-          (next as TimelineState & { items: { runId?: string; idx?: number }[] }).items,
-        );
-        setTimeline(next);
-        // Fold any events buffered during recovery.
-        const pending = pendingRef.current;
-        pendingRef.current = [];
-        if (pending.length > 0) {
-          setTimeline(prev =>
-            pending.reduce((state, { event }) => applyStreamEvent(state, event), prev),
-          );
+        const targets = new Set<string>();
+        if (sessionId) {
+          targets.add(sessionId);
+        } else {
+          // A reconnect can drop events for ANY cached conversation (NATS is
+          // at-most-once) — resync every cached session, not just the open one.
+          if (selectedRef.current) targets.add(selectedRef.current);
+          for (const id of Object.keys(timelinesRef.current)) {
+            if (id) targets.add(id);
+          }
         }
+        for (const target of targets) await fullResync(target);
+        // Fold any events buffered during recovery.
+        flushPendingLock();
       } catch (nextError) {
         setError(nextError instanceof Error ? nextError.message : String(nextError));
       } finally {
         syncLockRef.current = false;
       }
     };
-  }, [backfill, loadHistory, refreshModels, refreshSessions, refreshWorkspaces]);
+  }, [flushPendingLock, fullResync, refreshModels, refreshSessions, refreshWorkspaces]);
 
   const selectSession = useCallback(
     async (sessionId: string) => {
@@ -705,39 +834,39 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         nextUnread.delete(sessionId);
         return nextUnread;
       });
-      // Clear the previous conversation up front — it must not stay on screen
-      // while the new session's history is in flight.
-      setTimeline(emptyTimeline());
       try {
-        let next = await loadHistory(sessionId);
-        const streaming =
-          presenceRef.current?.sessions?.find(session => session.sessionId === sessionId)
-            ?.streaming ?? false;
-        if (streaming) next = await backfill(sessionId, next);
-        next = { ...next, streaming };
-        // Reset cursor for the new session.
-        cursorRef.current = newCursor();
-        rebuildCursorFromEvents(
-          cursorRef.current,
-          (next as TimelineState & { items: { runId?: string; idx?: number }[] }).items,
-        );
-        setTimeline(next);
-        // Fold any events buffered during the switch.
-        const pending = pendingRef.current;
-        pendingRef.current = [];
-        if (pending.length > 0) {
-          setTimeline(prev =>
-            pending.reduce((state, { event }) => applyStreamEvent(state, event), prev),
-          );
-        }
-        const response = await client.request<RemoteSessionState>(
+        const cached = timelinesRef.current[sessionId];
+        const cursor = cursorsRef.current[sessionId] ?? newCursor();
+        cursorsRef.current[sessionId] = cursor;
+        const state = await client.request<RemoteSessionState>(
           { type: "get_state", sessionId },
           sessionId,
         );
-        const currentModel = response.data.model ?? "";
+        const currentModel = state.data.model ?? "";
         const matchingModel = models.find(model => modelReference(model) === currentModel);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
-        setThinkingLevelState(response.data.thinkingLevel ?? "off");
+        setThinkingLevelState(state.data.thinkingLevel ?? "off");
+        const activeRunId = state.data.activeRun?.runId ?? "";
+        if (cached) {
+          // A live cache is authoritative — just top up its active run's tail
+          // (a run that started or progressed while we were away).
+          const hydrated =
+            activeRunId && !cached.streaming
+              ? await hydrateActiveRun(sessionId, cached, cursor, true, activeRunId)
+              : cached;
+          setTimelines(prev =>
+            prev[sessionId] && prev[sessionId] === cached
+              ? { ...prev, [sessionId]: hydrated }
+              : prev,
+          );
+        } else {
+          // No cache yet: load history, then overlay the active run's tail.
+          const history = await loadHistory(sessionId);
+          const next = await hydrateActiveRun(sessionId, history, cursor, false, activeRunId);
+          setTimelines(prev => ({ ...prev, [sessionId]: next }));
+        }
+        // Fold any events buffered during the switch.
+        flushPendingLock();
       } catch (nextError) {
         setError(nextError instanceof Error ? nextError.message : String(nextError));
       } finally {
@@ -745,7 +874,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         setBusy(false);
       }
     },
-    [backfill, loadHistory, models],
+    [flushPendingLock, hydrateActiveRun, loadHistory, models],
   );
 
   const newConversation = useCallback(
@@ -763,7 +892,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setDraft(true);
       setDraftMode(mode);
       setDraftWorkspaceId(workspaceId);
-      setTimeline(emptyTimeline());
+      setTimelines(prev => ({ ...prev, "": emptyTimeline() }));
       setModelId(defaultModel);
       setThinkingLevelState((lastThinking as ThinkingLevel | null) ?? "off");
     },
@@ -773,11 +902,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const sendMessage = useCallback(
     async (text: string) => {
       const client = clientRef.current;
-      if (!client || timeline.streaming || busy || !text.trim()) return;
-      const wasDraft = draft;
-      const optimisticTimeline = appendUserMessage(timeline, text.trim());
+      if (!client || busy || !text.trim()) return;
+      const currentTimeline = timelinesRef.current[selectedRef.current] ?? emptyTimeline();
+      if (currentTimeline.streaming) return;
+      const optimisticTimeline = appendUserMessage(currentTimeline, text.trim());
       setBusy(true);
-      setTimeline(optimisticTimeline);
+      setTimelines(prev => ({ ...prev, [selectedRef.current]: optimisticTimeline }));
       try {
         const response = await client.request<PromptAck>(
           {
@@ -795,84 +925,49 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         );
         const nextSessionId = response.data.sessionId;
         if (nextSessionId && nextSessionId !== selectedRef.current) {
+          // A draft just got bound to a real session. Its live events have been
+          // landing in the real session's cache all along (handleEvent consumes
+          // every session), so migrate the optimistic user bubble from the ""
+          // placeholder cache and finish hydrating the run's tail.
+          const draftTimeline = timelinesRef.current[""];
           selectedRef.current = nextSessionId;
           setSelectedSessionId(nextSessionId);
           setDraft(false);
           setDraftMode("chat");
           setDraftWorkspaceId("");
-          await refreshSessions();
-        }
-        if (wasDraft && nextSessionId) {
-          // Catch up on the run's first events: while the draft had no session
-          // id, handleEvent dropped them at the session filter. Merge the
-          // fetched prefix into the LATEST timeline under the sync lock —
-          // rebasing onto the stale pre-prompt snapshot would wipe live events
-          // that already landed (the streaming placeholder vanished, then was
-          // recreated by the next event with a receipt-time anchor, visibly
-          // restarting the footer timer mid-run).
-          syncLockRef.current = true;
-          try {
-            const catchup = await client.request<EventsData>(
-              { type: "get_events_since", sessionId: nextSessionId, sinceIdx: -1 },
-              nextSessionId,
+          setTimelines(prev => {
+            const draftItems = draftTimeline?.items ?? [];
+            const current = prev[nextSessionId] ?? emptyTimeline();
+            // The user_message mirror may have landed the same prompt in the
+            // real session's cache before this migration runs — keep the
+            // landed bubble instead of stacking the optimistic one on it.
+            const draftUser = draftItems.find(
+              item => item.kind === "message" && item.role === "user",
             );
-            const events = catchup.data.events ?? [];
-            // Apply-all (seenEvents dedups) rather than cursor verdicts: events
-            // predating the cursor's first sighting of this run are still
-            // missing and must land, not be skipped as "dup".
-            setTimeline(prev => {
-              let next = events.reduce((state, ev) => applyStreamEvent(state, ev), prev);
-              if (catchup.data.truncated) {
-                next = {
-                  ...next,
-                  items: [
-                    ...next.items,
-                    {
-                      id: `truncated:${Date.now()}`,
-                      kind: "notice",
-                      tone: "warning",
-                      text: "truncated",
-                    },
-                  ],
-                };
-              }
-              return next;
-            });
-            for (const ev of events) {
-              if (ev.runId && ev.idx != null) advanceCursor(cursorRef.current, ev.runId, ev.idx);
-            }
-            // Fold live events buffered while the catch-up was in flight.
-            const pending = pendingRef.current;
-            pendingRef.current = [];
-            if (pending.length > 0) {
-              setTimeline(prev => {
-                let state = prev;
-                for (const { event } of pending) {
-                  const verdict = nextEvent(cursorRef.current, event.runId, event.idx);
-                  if (verdict.kind === "dup") continue;
-                  if (verdict.kind === "gap") {
-                    // A live event leapfrogged the catch-up — heal wholesale
-                    // (recover re-syncs history, backfill, cursor, pending).
-                    void recoverRef.current();
-                    return state;
-                  }
-                  state = applyStreamEvent(state, event);
-                }
-                return state;
-              });
-            }
-          } catch {
-            // Desktop without get_events_since (or a dropped connection): the
-            // live stream and the next gap check carry on regardless.
-          } finally {
-            syncLockRef.current = false;
-          }
+            const alreadyLanded =
+              draftUser?.kind === "message" &&
+              current.items.some(
+                item =>
+                  item.kind === "message" &&
+                  item.role === "user" &&
+                  item.text.trim() === draftUser.text.trim(),
+              );
+            return {
+              ...prev,
+              [nextSessionId]: {
+                ...current,
+                items: alreadyLanded ? current.items : [...draftItems, ...current.items],
+              },
+              ...(draftItems.length === 0 || alreadyLanded ? { "": emptyTimeline() } : {}),
+            };
+          });
+          await refreshSessions();
         }
       } finally {
         setBusy(false);
       }
     },
-    [busy, draft, draftMode, draftWorkspaceId, modelId, refreshSessions, thinkingLevel, timeline],
+    [busy, draft, draftMode, draftWorkspaceId, modelId, refreshSessions, thinkingLevel],
   );
 
   const abort = useCallback(async () => {
@@ -935,12 +1030,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       },
       sessionId,
     );
-    setTimeline(state => markApprovalDecision(state, id, decision));
+    setTimelines(prev => {
+      const tl = prev[sessionId];
+      return tl ? { ...prev, [sessionId]: markApprovalDecision(tl, id, decision) } : prev;
+    });
   }, []);
 
   const desktopOnline = useMemo(
     () => phase === "connected" && isDesktopOnline(presence, clock),
     [clock, phase, presence],
+  );
+  // The selected conversation's timeline — derived from the per-session cache
+  // so ChatScreen reads it exactly as before. An empty draft (no session yet)
+  // renders the "" cache.
+  const timeline = useMemo(
+    () => timelines[selectedSessionId || ""] ?? emptyTimeline(),
+    [selectedSessionId, timelines],
   );
   const selectedTitle =
     sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
@@ -1002,12 +1107,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedTitle,
       sendMessage,
       sessions,
+      timeline,
       unreadSessions,
       workspaces,
       setModel,
       setThinkingLevel,
       thinkingLevel,
-      timeline,
       unpair,
     ],
   );

@@ -30,6 +30,12 @@ const thinkingLevels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hig
 // detection and the scroll target so the two never disagree.
 const AT_LATEST_THRESHOLD = 32;
 
+// The fade band above the composer dock (styles.composerFade) is part of the
+// dock's visual footprint: the list's bottom padding must clear it too, or a
+// settled reply's footer ("time · tokens" + copy) rests under the
+// semi-transparent gradient.
+const COMPOSER_FADE_CLEARANCE = 48;
+
 export function ChatScreen() {
   const { t } = useTranslation();
   const remote = useRemote();
@@ -194,7 +200,9 @@ export function ChatScreen() {
           <FlatList
             contentContainerStyle={[
               styles.timeline,
-              { paddingBottom: composerHeight + spacing.lg + keyboardLift },
+              {
+                paddingBottom: composerHeight + COMPOSER_FADE_CLEARANCE + spacing.lg + keyboardLift,
+              },
               timelineItems.length === 0 && styles.emptyTimeline,
             ]}
             data={transcriptItems}
@@ -479,7 +487,13 @@ const styles = StyleSheet.create({
     left: 0,
     backgroundColor: colors.surface,
   },
-  composerFade: { position: "absolute", top: -80, right: 0, left: 0, height: 84 },
+  composerFade: {
+    position: "absolute",
+    top: -COMPOSER_FADE_CLEARANCE,
+    right: 0,
+    left: 0,
+    height: COMPOSER_FADE_CLEARANCE + 4,
+  },
   backToLatest: {
     position: "absolute",
     top: -48,
