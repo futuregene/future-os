@@ -12,6 +12,8 @@ pub mod output;
 pub mod rpc;
 #[cfg(test)]
 pub mod test_env;
+#[cfg(test)]
+pub mod test_server;
 pub mod types;
 pub mod utils;
 pub mod version;

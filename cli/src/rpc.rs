@@ -782,3 +782,766 @@ pub async fn notify_agent_refresh_skills() {
 pub fn grpc_addr_env() -> String {
     grpc_addr()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_server::{spawn_mock, stream_event, MockAgent};
+
+    // ── addr / helpers ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn grpc_addr_default_and_env_override() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_AGENT_GRPC_ADDR"]);
+        assert_eq!(grpc_addr(), "127.0.0.1:50051");
+        assert_eq!(grpc_addr_env(), "127.0.0.1:50051");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("10.0.0.1:1234"),
+        )]);
+        assert_eq!(grpc_addr(), "10.0.0.1:1234");
+        assert_eq!(grpc_addr_env(), "10.0.0.1:1234");
+    }
+
+    #[test]
+    fn now_id_is_millis() {
+        let id = now_id();
+        let millis: u128 = id.parse().expect("numeric id");
+        assert!(millis > 1_000_000_000_000); // past 2001-09-09
+    }
+
+    #[test]
+    fn parse_updated_at_formats() {
+        assert_eq!(parse_updated_at("2026-08-06T12:00:00Z"), 1786017600000);
+        assert_eq!(
+            parse_updated_at("2026-08-06 12:00:00"),
+            1786017600000
+        );
+        assert_eq!(parse_updated_at("garbage"), 0);
+    }
+
+    // ── execute_command surface ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn one_shot_methods_roundtrip() {
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("get_agent_info".into(), "{\"version\":\"1.0\"}".into());
+        agent
+            .responses
+            .insert("list_models".into(), "{\"models\":[]}".into());
+        agent.responses.insert(
+            "get_state".into(),
+            "{\"model\":\"m1\",\"thinkingLevel\":\"high\"}".into(),
+        );
+        agent.responses.insert(
+            "list_sessions".into(),
+            "{\"sessions\":[{\"id\":\"s1\"}]}".into(),
+        );
+        agent
+            .responses
+            .insert("get_session_entries".into(), "{\"entries\":[]}".into());
+        agent
+            .responses
+            .insert("delete_session".into(), "{\"deleted\":true}".into());
+        agent
+            .responses
+            .insert("switch_session".into(), "{\"cancelled\":false}".into());
+        agent
+            .responses
+            .insert("fork".into(), "{\"cancelled\":false}".into());
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s9\"}".into());
+        agent
+            .responses
+            .insert("notify".into(), "not json at all".into());
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+
+        assert_eq!(client.get_agent_info().await.unwrap()["version"], "1.0");
+        assert!(client.list_models().await.unwrap()["models"].is_array());
+        let state = client.get_state(Some("s1")).await.unwrap();
+        assert_eq!(state["model"], "m1");
+        let state = client.get_state(None).await.unwrap();
+        assert_eq!(state["thinkingLevel"], "high");
+        assert_eq!(
+            client.list_sessions().await.unwrap()["sessions"][0]["id"],
+            "s1"
+        );
+        assert!(client.get_session_entries("s1").await.unwrap()["entries"].is_array());
+        assert_eq!(client.delete_session("s1").await.unwrap()["deleted"], true);
+        assert_eq!(client.switch_session("s1").await.unwrap()["cancelled"], false);
+        assert!(client.fork("e1", "s1").await.unwrap()["cancelled"].is_boolean());
+        assert_eq!(client.new_session("/tmp").await.unwrap()["sessionId"], "s9");
+
+        // Field-carrying commands land on the wire.
+        client.rename_session("s1", "hello").await.unwrap();
+        client.set_model("m2", "s1").await.unwrap();
+        client.set_thinking_level("low", "s1").await.unwrap();
+        client
+            .set_tools(&["a".to_string(), "b".to_string()], "s1")
+            .await
+            .unwrap();
+        client.disable_tools("s1").await.unwrap();
+        client.disable_builtin_tools("s1").await.unwrap();
+        client.set_system_prompt("p", "s1").await.unwrap();
+        client.append_system_prompt("q", "s1").await.unwrap();
+        client.set_ephemeral(true, "s1").await.unwrap();
+        client.set_permission_level("full", "s1").await.unwrap();
+        client.set_cwd("/work", "s1").await.unwrap();
+        client.prompt("hi", "s1").await.unwrap();
+
+        let seen = agent.seen.lock().expect("seen");
+        let by_type = |t: &str| seen.iter().find(|c| c.r#type == t).expect(t).clone();
+        assert_eq!(by_type("set_session_name").name, "hello");
+        assert_eq!(by_type("set_session_name").session_id, "s1");
+        assert_eq!(by_type("set_model").model_id, "m2");
+        assert_eq!(by_type("set_thinking_level").level, "low");
+        assert_eq!(by_type("set_tools").tools, vec!["a", "b"]);
+        assert_eq!(by_type("set_system_prompt").system_prompt, "p");
+        assert_eq!(by_type("append_system_prompt").system_prompt, "q");
+        assert!(by_type("set_ephemeral").ephemeral);
+        assert_eq!(by_type("set_permission_level").level, "full");
+        assert_eq!(by_type("set_cwd").cwd, "/work");
+        assert_eq!(by_type("prompt").message, "hi");
+        assert_eq!(by_type("fork").entry_id, "e1");
+        assert_eq!(by_type("new_session").created_by, "cli");
+        assert_eq!(by_type("get_session_entries").session_id, "s1");
+        // get_state without a session leaves the field empty.
+        let no_session = seen
+            .iter()
+            .filter(|c| c.r#type == "get_state")
+            .find(|c| c.session_id.is_empty());
+        assert!(no_session.is_some());
+        // Every command got a millis id assigned.
+        assert!(seen.iter().all(|c| !c.id.is_empty()));
+        drop(seen);
+
+        // Non-JSON data passes through as a string; empty data → Null.
+        // (Unknown command types return the default "{}" → Null object.)
+        let raw = client
+            .execute_command("notify", RpcCommand::default(), None, 5)
+            .await
+            .unwrap();
+        assert_eq!(raw, Value::String("not json at all".to_string()));
+        let empty = client
+            .execute_command("unknown_type", RpcCommand::default(), None, 5)
+            .await
+            .unwrap();
+        assert_eq!(empty, json!({}));
+    }
+
+    #[tokio::test]
+    async fn empty_data_yields_null() {
+        let agent = MockAgent::respond("get_agent_info", "");
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        assert_eq!(client.get_agent_info().await.unwrap(), Value::Null);
+    }
+
+    #[tokio::test]
+    async fn error_surface_variants() {
+        let mut agent = MockAgent::default();
+        agent.fail_types.insert("list_models".into());
+        agent.fail_silent_types.insert("get_state".into());
+        agent.status_empty_types.insert("list_sessions".into());
+        agent.status_message_types.insert("delete_session".into());
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+
+        // success=false with an error string surfaces it.
+        assert_eq!(client.list_models().await.unwrap_err(), "boom");
+        // success=false with empty error → "unknown error".
+        assert_eq!(client.get_state(None).await.unwrap_err(), "unknown error");
+        // tonic Status without message → Status Display fallback.
+        let err = client.list_sessions().await.unwrap_err();
+        assert!(err.contains("Unknown"), "err: {err}");
+        // tonic Status with a message surfaces the message.
+        assert_eq!(client.delete_session("s1").await.unwrap_err(), "transport down");
+    }
+
+    #[tokio::test]
+    async fn connect_failure_is_err() {
+        let client = RunClient::new("127.0.0.1:1");
+        assert!(client.get_agent_info().await.is_err());
+        // Endpoint parse failure (garbage addr) also surfaces as Err.
+        let client = RunClient::new("not a valid addr %%");
+        assert!(client.get_agent_info().await.is_err());
+    }
+
+    // ── streaming ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn stream_events_accumulates_text_and_events() {
+        let agent = MockAgent {
+            events: vec![
+                stream_event("text_chunk", "{\"text\":\"hel\"}"),
+                stream_event("text_chunk", "{\"text\":\"lo\"}"),
+                stream_event("tool_start", "{\"tool_name\":\"bash\",\"tool_args\":{\"cmd\":\"ls\"}}"),
+                stream_event("error", "{\"error\":\"nope\"}"),
+                stream_event("agent_end", "{}"),
+                // Never reached: agent_end breaks the loop.
+                stream_event("text_chunk", "{\"text\":\"late\"}"),
+            ],
+            ..Default::default()
+        };
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let seen_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = seen_text.clone();
+        let (events, text) = client
+            .stream_events(
+                "s1",
+                Some(Box::new(move |c: &str| sink.lock().unwrap().push_str(c))),
+                true,
+                &out,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "hello");
+        assert_eq!(*seen_text.lock().unwrap(), "hello");
+        // text chunks + tool_start + error + agent_end (the late event dropped).
+        assert_eq!(events.len(), 5);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("⚙ bash {\"cmd\":\"ls\"}"), "stderr: {stderr}");
+        assert!(stderr.contains("Error: nope"), "stderr: {stderr}");
+        // Envelope fields on every event.
+        assert_eq!(events[0]["type"], "text_chunk");
+        assert_eq!(events[0]["text"], "hel");
+        assert!(events[0].get("projectionSnapshot").is_some());
+    }
+
+    #[tokio::test]
+    async fn stream_events_edge_inputs() {
+        let agent = MockAgent {
+            events: vec![
+                // Unparseable data → event dropped.
+                StreamEvent {
+                    r#type: "text_chunk".into(),
+                    data: "{bad".into(),
+                    ..Default::default()
+                },
+                // Non-object data → dropped.
+                stream_event("text_chunk", "[1,2]"),
+                // Empty data → event kept with empty object payload.
+                stream_event("lifecycle", ""),
+                // Empty type → "message".
+                StreamEvent {
+                    r#type: "".into(),
+                    data: "{}".into(),
+                    ..Default::default()
+                },
+                // tool_start fallbacks: `name`/`input` fields, empty input.
+                stream_event("tool_start", "{\"name\":\"read\"}"),
+                // tool_start with string input, clipped at 80 chars.
+                stream_event(
+                    "tool_start",
+                    &format!("{{\"tool_name\":\"big\",\"tool_args\":\"{}\"}}", "x".repeat(100)),
+                ),
+                // error without payload → "unknown".
+                stream_event("error", "{}"),
+            ],
+            ..Default::default()
+        };
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let (events, text) = client
+            .stream_events("s1", None, true, &out)
+            .await
+            .unwrap();
+        assert_eq!(text, "");
+        // Dropped: bad JSON + array. Kept: lifecycle, message, 2 tool_start, error.
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[0]["type"], "lifecycle");
+        assert_eq!(events[1]["type"], "message");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("⚙ read"), "stderr: {stderr}");
+        assert!(stderr.contains(&"x".repeat(80)), "clip at 80: {stderr}");
+        assert!(!stderr.contains(&"x".repeat(81)), "clip at 80: {stderr}");
+        assert!(stderr.contains("Error: unknown"), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn stream_events_not_verbose_hides_tool_lines() {
+        let agent = MockAgent {
+            events: vec![stream_event("tool_start", "{\"tool_name\":\"bash\"}")],
+            ..Default::default()
+        };
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        // Stream end (Ok(None)) terminates without agent_end.
+        let (events, _) = client.stream_events("s1", None, false, &out).await.unwrap();
+        assert_eq!(events.len(), 1);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_events_mid_stream_error_resolves_partial() {
+        let agent = MockAgent {
+            events: vec![stream_event("text_chunk", "{\"text\":\"a\"}")],
+            stream_error_after: true,
+            ..Default::default()
+        };
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let (events, text) = client.stream_events("s1", None, false, &out).await.unwrap();
+        assert_eq!(text, "a");
+        assert_eq!(events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stream_events_rpc_failures() {
+        // stream_events RPC rejected with a message-bearing Status.
+        let agent = MockAgent {
+            stream_status_error: Some(tonic::Status::unavailable("stream down")),
+            ..Default::default()
+        };
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        assert_eq!(
+            client.stream_events("s1", None, false, &out).await.unwrap_err(),
+            "stream down"
+        );
+        // Message-less Status → Display fallback; and connect failure.
+        let agent = MockAgent {
+            stream_status_error: Some(tonic::Status::new(tonic::Code::Unknown, "")),
+            ..Default::default()
+        };
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let err = client.stream_events("s1", None, false, &out).await.unwrap_err();
+        assert!(err.contains("Unknown"), "err: {err}");
+        let client = RunClient::new("127.0.0.1:1");
+        assert!(client.stream_events("s1", None, false, &out).await.is_err());
+        let client = RunClient::new("garbage addr %%");
+        assert!(client.stream_events("s1", None, false, &out).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_event_envelope_includes_snapshot_events() {
+        let agent = MockAgent {
+            events: vec![StreamEvent {
+                r#type: "agent_end".into(),
+                data: "{}".into(),
+                session_id: "s1".into(),
+                run_id: "r1".into(),
+                epoch: 2,
+                idx: 3,
+                event_id: "e1".into(),
+                timestamp: "2026-08-10T00:00:00Z".into(),
+                projection_snapshot: true,
+                snapshot_cursor: 7,
+                snapshot_events: vec![future_rpc::proto::ProjectedRunEvent {
+                    r#type: "text_chunk".into(),
+                    data: "{\"text\":\"x\"}".into(),
+                    idx: 1,
+                    payload: None,
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let (events, _) = client.stream_events("s1", None, false, &out).await.unwrap();
+        let event = &events[0];
+        assert_eq!(event["sessionId"], "s1");
+        assert_eq!(event["runId"], "r1");
+        assert_eq!(event["epoch"], 2);
+        assert_eq!(event["idx"], 3);
+        assert_eq!(event["eventId"], "e1");
+        assert_eq!(event["timestamp"], "2026-08-10T00:00:00Z");
+        assert_eq!(event["projectionSnapshot"], true);
+        assert_eq!(event["snapshotCursor"], 7);
+        assert_eq!(event["snapshotEvents"][0]["type"], "text_chunk");
+        assert_eq!(event["snapshotEvents"][0]["idx"], 1);
+    }
+
+    // ── run() orchestration ─────────────────────────────────────────
+
+    fn run_config(message: &str) -> RunConfig {
+        RunConfig {
+            message: message.to_string(),
+            cwd: "/tmp".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Mock pre-loaded for a fresh-session run: new_session + agent_end event.
+    fn fresh_run_agent() -> MockAgent {
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-new\"}".into());
+        agent.events = vec![
+            stream_event("text_chunk", "{\"text\":\"answer\"}"),
+            stream_event("agent_end", "{}"),
+        ];
+        agent
+    }
+
+    #[tokio::test]
+    async fn run_fresh_session_text_mode() {
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hello");
+        config.verbose = true;
+        config.mode = "text".to_string();
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.session_id, "s-new");
+        assert_eq!(result.text, "answer");
+        assert_eq!(result.events.len(), 2);
+        assert!(result.model.is_none());
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        // Text streamed live + trailing newline added.
+        assert_eq!(stdout, "answer\n");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Connecting to"), "stderr: {stderr}");
+        assert!(stderr.contains("Created session s-new"), "stderr: {stderr}");
+        assert!(stderr.contains("Running..."), "stderr: {stderr}");
+        // set_cwd fires because cwd is non-empty.
+        assert_eq!(agent.seen_of("set_cwd").len(), 1);
+        assert_eq!(agent.seen_of("prompt")[0].message, "hello");
+        assert_eq!(agent.seen_of("prompt")[0].session_id, "s-new");
+    }
+
+    #[tokio::test]
+    async fn run_fresh_session_json_mode_with_final_state() {
+        let mut agent = fresh_run_agent();
+        agent.responses.insert(
+            "get_state".into(),
+            "{\"model\":\"m1\",\"thinkingLevel\":\"high\"}".into(),
+        );
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hello");
+        config.mode = "json".to_string();
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.model.as_deref(), Some("m1"));
+        assert_eq!(result.thinking_level.as_deref(), Some("high"));
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json out");
+        assert_eq!(parsed["sessionId"], "s-new");
+        assert_eq!(parsed["model"], "m1");
+        assert_eq!(parsed["thinkingLevel"], "high");
+        assert_eq!(parsed["text"], "answer");
+        assert_eq!(parsed["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn run_no_session_sets_ephemeral() {
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hi");
+        config.no_session = true;
+        config.verbose = true;
+        client.run(&config, &out).await.expect("run");
+        let seen = agent.seen_of("set_ephemeral");
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].ephemeral);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Created ephemeral session s-new"));
+    }
+
+    #[tokio::test]
+    async fn run_applies_full_configuration() {
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("hi");
+        config.verbose = true;
+        config.model = Some("m-x".to_string());
+        config.thinking = Some("max".to_string());
+        config.tools = Some(vec!["bash".to_string()]);
+        config.no_builtin_tools = true;
+        config.system_prompt = Some("sys".to_string());
+        config.append_system_prompt = Some("app".to_string());
+        config.permission = Some("strict".to_string());
+        client.run(&config, &out).await.expect("run");
+        for t in [
+            "set_model",
+            "set_thinking_level",
+            "set_tools",
+            "disable_builtin_tools",
+            "set_system_prompt",
+            "append_system_prompt",
+            "set_permission_level",
+            "set_cwd",
+        ] {
+            assert_eq!(agent.seen_of(t).len(), 1, "missing {t}");
+        }
+        let stderr_config = agent.seen_of("set_model");
+        assert_eq!(stderr_config[0].model_id, "m-x");
+        // tools Some(empty) → no set_tools call; no_tools → disable_tools.
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("hi");
+        config.tools = Some(vec![]);
+        client.run(&config, &out).await.expect("run");
+        assert!(agent.seen_of("set_tools").is_empty());
+
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("hi");
+        config.no_tools = true;
+        client.run(&config, &out).await.expect("run");
+        assert_eq!(agent.seen_of("disable_tools").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_explicit_session_switch() {
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hi");
+        config.session = Some("s-explicit".to_string());
+        config.verbose = true;
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.session_id, "s-explicit");
+        assert_eq!(agent.seen_of("switch_session")[0].session_id, "s-explicit");
+        // No new_session needed.
+        assert!(agent.seen_of("new_session").is_empty());
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Switched to session s-explicit"));
+    }
+
+    #[tokio::test]
+    async fn run_continue_last_picks_most_recent() {
+        let mut agent = fresh_run_agent();
+        agent.responses.insert(
+            "list_sessions".into(),
+            "{\"sessions\":[\
+                {\"id\":\"old\",\"updated_at\":\"2026-08-01T00:00:00Z\"},\
+                {\"id\":\"new\",\"session_name\":\"Latest\",\"updated_at\":\"2026-08-09T00:00:00Z\"},\
+                {\"bogus\":true},\
+                {\"id\":\"naive\",\"updated_at\":\"2026-08-08 12:00:00\"}\
+            ]}"
+            .into(),
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hi");
+        config.continue_last = true;
+        config.verbose = true;
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.session_id, "new");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Continuing session Latest..."), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn run_continue_without_sessions_errors() {
+        let mut agent = fresh_run_agent();
+        agent
+            .responses
+            .insert("list_sessions".into(), "{\"sessions\":[]}".into());
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("hi");
+        config.continue_last = true;
+        let err = client.run(&config, &out).await.unwrap_err();
+        assert!(err.contains("No previous session to continue"), "err: {err}");
+    }
+
+    #[tokio::test]
+    async fn run_fork_with_explicit_parent() {
+        let mut agent = fresh_run_agent();
+        agent.responses.insert(
+            "fork".into(),
+            "{\"cancelled\":false,\"sessionId\":\"s-forked\"}".into(),
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hi");
+        config.fork = Some("entry-1".to_string());
+        config.session = Some("s-parent".to_string());
+        config.verbose = true;
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.session_id, "s-forked");
+        assert_eq!(agent.seen_of("fork")[0].entry_id, "entry-1");
+        assert_eq!(agent.seen_of("fork")[0].session_id, "s-parent");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Forking from entry entry-1..."));
+    }
+
+    #[tokio::test]
+    async fn run_fork_without_session_picks_latest() {
+        let mut agent = fresh_run_agent();
+        agent.responses.insert(
+            "list_sessions".into(),
+            "{\"sessions\":[{\"id\":\"s-latest\",\"updated_at\":\"2026-08-09T00:00:00Z\"}]}".into(),
+        );
+        agent
+            .responses
+            .insert("fork".into(), "{\"cancelled\":false}".into());
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("hi");
+        config.fork = Some("e9".to_string());
+        let result = client.run(&config, &out).await.expect("run");
+        // No sessionId in fork response → stays on the parent.
+        assert_eq!(result.session_id, "s-latest");
+        assert_eq!(agent.seen_of("fork")[0].session_id, "s-latest");
+    }
+
+    #[tokio::test]
+    async fn run_fork_cancelled_errors() {
+        let mut agent = fresh_run_agent();
+        agent.responses.insert(
+            "list_sessions".into(),
+            "{\"sessions\":[{\"id\":\"s1\",\"updated_at\":\"2026-08-09T00:00:00Z\"}]}".into(),
+        );
+        agent
+            .responses
+            .insert("fork".into(), "{\"cancelled\":true}".into());
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("hi");
+        config.fork = Some("e9".to_string());
+        assert_eq!(client.run(&config, &out).await.unwrap_err(), "Fork was cancelled");
+    }
+
+    #[tokio::test]
+    async fn run_fork_without_any_session_errors() {
+        let mut agent = fresh_run_agent();
+        agent
+            .responses
+            .insert("list_sessions".into(), "{\"sessions\":[]}".into());
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("hi");
+        config.fork = Some("e9".to_string());
+        let err = client.run(&config, &out).await.unwrap_err();
+        assert_eq!(err, "No previous session to fork from.");
+        // Sessions present but all unparseable → same error.
+        let mut agent = fresh_run_agent();
+        agent
+            .responses
+            .insert("list_sessions".into(), "{\"sessions\":[{\"bogus\":1}]}".into());
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let err = client.run(&config, &out).await.unwrap_err();
+        assert_eq!(err, "No previous session to fork from.");
+    }
+
+    #[tokio::test]
+    async fn run_new_session_missing_id_errors() {
+        let mut agent = MockAgent::default();
+        agent.responses.insert("new_session".into(), "{}".into());
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = run_config("hi");
+        assert_eq!(
+            client.run(&config, &out).await.unwrap_err(),
+            "new_session returned no sessionId"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_prompt_failure_propagates() {
+        let mut agent = fresh_run_agent();
+        agent.fail_types.insert("prompt".into());
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = run_config("hi");
+        assert_eq!(client.run(&config, &out).await.unwrap_err(), "boom");
+    }
+
+    #[tokio::test]
+    async fn run_get_state_failure_is_ignored() {
+        let mut agent = fresh_run_agent();
+        agent.fail_types.insert("get_state".into());
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("hi");
+        config.mode = "json".to_string();
+        let result = client.run(&config, &out).await.expect("run");
+        assert!(result.model.is_none());
+        assert!(result.thinking_level.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_text_mode_trailing_newline_rules() {
+        // Text already ending in \n → no extra newline.
+        let mut agent = fresh_run_agent();
+        agent.events = vec![stream_event("text_chunk", "{\"text\":\"done\\n\"}")];
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hi");
+        config.mode = "text".to_string();
+        client.run(&config, &out).await.expect("run");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "done\n");
+
+        // Empty text → nothing at all.
+        let mut agent = fresh_run_agent();
+        agent.events = vec![stream_event("agent_end", "{}")];
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hi");
+        config.mode = "text".to_string();
+        client.run(&config, &out).await.expect("run");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "");
+    }
+
+    #[tokio::test]
+    async fn notify_agent_refresh_skills_best_effort() {
+        let _guard = crate::test_env::lock_env().await;
+        // Against a live mock: covers the success path.
+        let agent = MockAgent::default();
+        let addr = spawn_mock(agent.clone()).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(addr),
+        )]);
+        notify_agent_refresh_skills().await;
+        // Wait for the fire-and-forget call to land.
+        for _ in 0..40 {
+            if !agent.seen_of("refresh_skills").is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(agent.seen_of("refresh_skills").len(), 1);
+        // Against a dead port: errors are swallowed.
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
+        notify_agent_refresh_skills().await;
+    }
+}

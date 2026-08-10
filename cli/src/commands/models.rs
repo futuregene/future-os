@@ -266,4 +266,88 @@ mod tests {
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(stdout.starts_with("{\"error\":"), "stdout: {stdout}");
     }
+
+    /// Mock agent serving two providers' worth of models.
+    async fn models_mock() -> (String, crate::test_server::MockAgent) {
+        let agent = crate::test_server::MockAgent::respond(
+            "list_models",
+            "{\"models\":[\
+                {\"id\":\"k3\",\"label\":\"Kimi K3\",\"provider\":\"future\",\"supportsImages\":true,\"thinkingLevel\":\"xhigh\",\"contextWindow\":262144},\
+                {\"id\":\"k2\",\"label\":\"Kimi K2\",\"provider\":\"future\",\"contextWindow\":131072},\
+                {\"id\":\"gpt-5\",\"label\":\"GPT-5\",\"provider\":\"openai\",\"supportsImages\":false,\"thinkingLevel\":\"off\",\"contextWindow\":400000}\
+            ],\"defaultModel\":\"k3\"}",
+        );
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        (addr, agent)
+    }
+
+    #[tokio::test]
+    async fn models_text_output_groups_by_provider() {
+        let (addr, _agent) = models_mock().await;
+        let (out, cap) = Output::memory();
+        let args = vec![addr];
+        models(&args, &out).await.expect("models");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        // BTreeMap ordering: future before openai.
+        let future_pos = stdout.find("Provider: future  (2 models)").expect("future group");
+        let openai_pos = stdout.find("Provider: openai  (1 models)").expect("openai group");
+        assert!(future_pos < openai_pos);
+        // Padding, context window humanization, flags, default marker.
+        assert!(stdout.contains("Model: k3"), "stdout: {stdout}");
+        assert!(stdout.contains("ctx: 262K"), "stdout: {stdout}");
+        assert!(stdout.contains("  image"), "stdout: {stdout}");
+        assert!(stdout.contains("  thinking:xhigh"), "stdout: {stdout}");
+        assert!(stdout.contains("  [default]"), "stdout: {stdout}");
+        // thinking:off renders no thinking segment.
+        assert!(!stdout.contains("thinking:off"), "stdout: {stdout}");
+        assert!(stdout.contains("3 models, 2 providers.  Default model: k3"));
+    }
+
+    #[tokio::test]
+    async fn models_json_output_shape() {
+        let (addr, _agent) = models_mock().await;
+        let (out, cap) = Output::memory();
+        let args = vec!["--json".to_string(), addr];
+        models(&args, &out).await.expect("models");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["providers"], json!(["future", "openai"]));
+        assert_eq!(parsed["defaultModel"], "k3");
+        assert_eq!(parsed["totalModels"], 3);
+        let future_rows = parsed["models"]["future"].as_array().unwrap();
+        // Sorted by id within a provider.
+        assert_eq!(future_rows[0]["id"], "k2");
+        assert_eq!(future_rows[1]["id"], "k3");
+        assert_eq!(future_rows[1]["isDefault"], true);
+        assert_eq!(future_rows[1]["contextWindow"], 262144);
+        assert_eq!(future_rows[1]["supportsImages"], true);
+        assert_eq!(future_rows[1]["thinkingLevel"], "xhigh");
+        assert_eq!(parsed["models"]["openai"][0]["isDefault"], false);
+    }
+
+    #[tokio::test]
+    async fn models_missing_fields_and_empty_list() {
+        // Malformed rows are filtered; absent models key → empty.
+        let agent = crate::test_server::MockAgent::respond(
+            "list_models",
+            "{\"models\":[{\"id\":\"ok\",\"label\":\"L\",\"provider\":\"p\"},{\"id\":\"broken\"}]}",
+        );
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let (out, cap) = Output::memory();
+        models(&["--json".to_string(), addr], &out).await.expect("models");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["totalModels"], 1);
+        // Missing optional fields default.
+        assert_eq!(parsed["models"]["p"][0]["thinkingLevel"], "");
+        assert_eq!(parsed["models"]["p"][0]["supportsImages"], false);
+        assert_eq!(parsed["defaultModel"], "");
+
+        let agent = crate::test_server::MockAgent::respond("list_models", "{}");
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let (out, cap) = Output::memory();
+        models(&[addr], &out).await.expect("models");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("0 models, 0 providers."), "stdout: {stdout}");
+    }
 }
