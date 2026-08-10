@@ -4018,17 +4018,17 @@ mod tests {
     fn switch_session_validates_and_succeeds() {
         let state = make_app_state();
 
-        let mut cmd = make_cmd_for("switch_session", "");
+        let cmd = make_cmd_for("switch_session", "");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
         assert!(resp["error"].as_str().unwrap().contains("No session selected"));
 
-        let mut cmd = make_cmd_for("switch_session", "ghost");
+        let cmd = make_cmd_for("switch_session", "ghost");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
         assert!(resp["error"].as_str().unwrap().contains("not found"));
 
-        let mut cmd = make_cmd_for("switch_session", "default");
+        let cmd = make_cmd_for("switch_session", "default");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert_eq!(resp["data"]["cancelled"], false);
@@ -4037,7 +4037,7 @@ mod tests {
     #[test]
     fn delete_session_requires_session_id() {
         let state = make_app_state();
-        let mut cmd = make_cmd_for("delete_session", "");
+        let cmd = make_cmd_for("delete_session", "");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
         assert!(resp["error"]
@@ -4063,7 +4063,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir_all(&path).unwrap();
 
-        let mut cmd = make_cmd_for("delete_session", "ghost");
+        let cmd = make_cmd_for("delete_session", "ghost");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
         assert_eq!(resp["error_code"], "delete_failed");
@@ -4092,7 +4092,7 @@ mod tests {
     #[test]
     fn get_fork_messages_unknown_session_returns_empty() {
         let state = make_app_state();
-        let mut cmd = make_cmd_for("get_fork_messages", "ghost");
+        let cmd = make_cmd_for("get_fork_messages", "ghost");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         assert_eq!(resp["data"]["messages"], serde_json::json!([]));
@@ -4120,7 +4120,7 @@ mod tests {
             vec![user_plain, user_blocks, assistant],
         );
 
-        let mut cmd = make_cmd_for("get_fork_messages", "fork-src");
+        let cmd = make_cmd_for("get_fork_messages", "fork-src");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         let messages = resp["data"]["messages"].as_array().unwrap();
@@ -4199,7 +4199,7 @@ mod tests {
                 ),
             ],
         );
-        let mut cmd = make_cmd_for("new_session", "ns-restore");
+        let cmd = make_cmd_for("new_session", "ns-restore");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         let session = state.get_session("ns-restore").unwrap();
@@ -5057,7 +5057,7 @@ mod tests {
         .unwrap();
 
         let state = make_app_state();
-        let mut cmd = make_cmd_for("new_session", "ns-settings");
+        let cmd = make_cmd_for("new_session", "ns-settings");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         let session = state.get_session("ns-settings").unwrap();
@@ -5078,7 +5078,7 @@ mod tests {
                 serde_json::json!("hi"),
             )],
         );
-        let mut cmd = make_cmd_for("new_session", "ns-nomodel");
+        let cmd = make_cmd_for("new_session", "ns-nomodel");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
         let session = state.get_session("ns-nomodel").unwrap();

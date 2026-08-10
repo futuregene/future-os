@@ -999,6 +999,892 @@ fn fold_steering_into_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::StreamContext;
+    use crate::types::{AgentTool, LLMProvider, ToolDef};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    // ── scripted provider infrastructure ────────────────────────────────────
+
+    enum Script {
+        /// Send all events, then close the channel (stream end).
+        Events(Vec<StreamEvent>),
+        /// Fail the stream_chat call itself.
+        Fail(String),
+        /// Send the events, then go silent forever (channel stays open).
+        PartialThenStall(Vec<StreamEvent>),
+    }
+
+    struct ScriptedProvider {
+        scripts: parking_lot::Mutex<std::collections::VecDeque<Script>>,
+        system_prompts: parking_lot::Mutex<Vec<String>>,
+    }
+
+    impl ScriptedProvider {
+        fn new(scripts: Vec<Script>) -> Arc<Self> {
+            Arc::new(Self {
+                scripts: parking_lot::Mutex::new(scripts.into()),
+                system_prompts: parking_lot::Mutex::new(vec![]),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for ScriptedProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDef>,
+            system_prompt: String,
+        ) -> Result<ReceiverStream<StreamEvent>> {
+            self.system_prompts.lock().push(system_prompt);
+            let script = self
+                .scripts
+                .lock()
+                .pop_front()
+                .expect("test ran out of scripted responses");
+            match script {
+                Script::Events(events) => {
+                    let (tx, rx) = mpsc::channel(events.len().max(1));
+                    for event in events {
+                        let _ = tx.try_send(event);
+                    }
+                    drop(tx);
+                    Ok(ReceiverStream::new(rx))
+                }
+                Script::PartialThenStall(events) => {
+                    let (tx, rx) = mpsc::channel(events.len().max(1));
+                    for event in events {
+                        let _ = tx.try_send(event);
+                    }
+                    std::mem::forget(tx); // keep the stream open forever
+                    Ok(ReceiverStream::new(rx))
+                }
+                Script::Fail(error) => Err(anyhow!(error)),
+            }
+        }
+    }
+
+    fn ev_text(text: &str) -> StreamEvent {
+        StreamEvent {
+            event_type: "text_delta".to_string(),
+            text: text.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn ev_stop() -> StreamEvent {
+        StreamEvent {
+            event_type: "stop".to_string(),
+            stop_reason: "end_turn".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn ev_usage(prompt: i64, completion: i64, credit_cost: Option<f64>) -> StreamEvent {
+        StreamEvent {
+            event_type: "usage".to_string(),
+            usage: Some(crate::types::Usage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: prompt + completion,
+                cache_read_tokens: Some(3),
+                cache_write_tokens: Some(2),
+                credit_cost,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn ev_toolcall_start(index: usize, id: &str, name: &str, args: &str) -> StreamEvent {
+        StreamEvent {
+            event_type: "toolcall_start".to_string(),
+            tool_id: id.to_string(),
+            tool_name: name.to_string(),
+            tc_index: index,
+            tool_call: Some(ToolCall {
+                id: id.to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: name.to_string(),
+                    arguments: serde_json::Value::String(args.to_string()),
+                },
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn ev_toolcall_delta(index: usize, text: &str) -> StreamEvent {
+        StreamEvent {
+            event_type: "toolcall_delta".to_string(),
+            tc_index: index,
+            text: text.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn ev_toolcall_end() -> StreamEvent {
+        StreamEvent {
+            event_type: "toolcall_end".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn echo_tool() -> AgentTool {
+        fn handler(args: serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>> {
+            Box::pin(async move { Ok(format!("echo: {args}")) })
+        }
+        AgentTool {
+            def: ToolDef {
+                tool_type: "function".to_string(),
+                function: crate::types::FunctionDef {
+                    name: "echo".to_string(),
+                    description: "echo the args".to_string(),
+                    parameters: serde_json::json!({}),
+                },
+            },
+            handler,
+            guidelines: vec![],
+        }
+    }
+
+    fn user_messages(text: &str) -> Vec<AgentMessage> {
+        vec![AgentMessage::new_user("user", serde_json::json!(text))]
+    }
+
+    fn noop_on_text(_: String) {}
+
+    // ── run_streaming_with_messages ─────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_streams_simple_text_reply() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("Hello"),
+            ev_text(" world"),
+            ev_stop(),
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let collected = Arc::new(parking_lot::Mutex::new(String::new()));
+        let collected2 = collected.clone();
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                move |chunk| {
+                    collected2.lock().push_str(&chunk);
+                },
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "Hello world");
+        assert_eq!(*collected.lock(), "Hello world");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[1].text(), "Hello world");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_records_thinking_and_usage() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            StreamEvent {
+                event_type: "thinking_start".to_string(),
+                ..Default::default()
+            },
+            StreamEvent {
+                event_type: "thinking_delta".to_string(),
+                text: "deep ".to_string(),
+                ..Default::default()
+            },
+            StreamEvent {
+                event_type: "thinking_delta".to_string(),
+                text: "thought".to_string(),
+                ..Default::default()
+            },
+            StreamEvent {
+                event_type: "thinking_end".to_string(),
+                ..Default::default()
+            },
+            ev_usage(10, 5, Some(0.25)),
+            ev_text("answer"),
+            ev_stop(),
+        ])]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "answer");
+        assert_eq!(messages[1].thinking, "deep thought");
+        assert_eq!(
+            loop_.cumulative_input_tokens.load(std::sync::atomic::Ordering::Relaxed),
+            10
+        );
+        assert_eq!(
+            loop_.cumulative_output_tokens.load(std::sync::atomic::Ordering::Relaxed),
+            5
+        );
+        assert_eq!(
+            loop_
+                .cumulative_cache_read_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            3
+        );
+        assert_eq!(
+            loop_
+                .cumulative_cache_write_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        // credit_cost is applied once from the final usage, not per chunk.
+        assert!((*loop_.cumulative_cost.lock() - 0.25).abs() < f64::EPSILON);
+        assert_eq!(
+            loop_.last_prompt_tokens.load(std::sync::atomic::Ordering::Relaxed),
+            15
+        );
+        drop(provider);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_executes_tool_then_answers() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_toolcall_start(0, "call-1", "echo", "{\"text\":\"hi\""),
+                ev_toolcall_delta(0, ", \"more\":1}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let mut loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        loop_.verbose = true; // exercise the verbose logging arms
+        let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let tool_events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let ctx = StreamContext {
+            model: "mock".to_string(),
+            system_prompt: "sys".to_string(),
+            save_callback: Some({
+                let saved = saved.clone();
+                Arc::new(move |m: &AgentMessage| saved.lock().push(m.role.clone()))
+            }),
+            tool_event_callback: Some({
+                let tool_events = tool_events.clone();
+                Arc::new(move |e: StreamEvent| tool_events.lock().push(e.event_type.clone()))
+            }),
+            ..Default::default()
+        };
+        let (text, messages) = loop_
+            .run_streaming_with_messages(user_messages("go"), &ctx, noop_on_text, |_| {}, None)
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        // user, assistant(tool_calls), tool result, assistant(text)
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[1].tool_calls.len(), 1);
+        assert_eq!(messages[1].tool_calls[0].name, "echo");
+        assert_eq!(messages[2].role, "tool");
+        assert!(messages[2].text().contains("echo:"));
+        let tool_events = tool_events.lock().clone();
+        assert!(tool_events.contains(&"tool_start".to_string()));
+        assert!(tool_events.contains(&"tool_end".to_string()));
+        // save_callback fired for assistant + tool messages.
+        assert!(saved.lock().len() >= 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_rejects_assistant_last_message() {
+        let provider = ScriptedProvider::new(vec![]);
+        let loop_ = Loop::new(provider, "mock");
+        let mut messages = user_messages("hi");
+        messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::text("stale")],
+            ..Default::default()
+        });
+        let result = loop_
+            .run_streaming_with_messages(messages, &StreamContext::default(), noop_on_text, |_| {}, None)
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("conversation ended with an assistant message"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_respects_max_turns() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_toolcall_start(0, "c1", "echo", "{}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![
+                ev_toolcall_start(0, "c2", "echo", "{}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+        ]);
+        let config = crate::types::AgentConfig {
+            max_turns: 1,
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock")
+            .with_tools(vec![echo_tool()])
+            .with_config(config);
+        let result = loop_
+            .run_streaming_with_messages(
+                user_messages("loop forever"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("turn limit"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_returns_early_when_interrupt_flag_set() {
+        let provider = ScriptedProvider::new(vec![]);
+        let loop_ = Loop::new(provider, "mock");
+        loop_
+            .interrupt_flag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "");
+        assert_eq!(messages.len(), 1, "no assistant reply was produced");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_handles_stream_error_event() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("partial"),
+            StreamEvent {
+                event_type: "error".to_string(),
+                error_text: "upstream exploded".to_string(),
+                ..Default::default()
+            },
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let ctx = StreamContext {
+            save_callback: Some({
+                let saved = saved.clone();
+                Arc::new(move |m: &AgentMessage| saved.lock().push(m.role.clone()))
+            }),
+            ..Default::default()
+        };
+        let (text, messages) = loop_
+            .run_streaming_with_messages(user_messages("hi"), &ctx, noop_on_text, |_| {}, None)
+            .await
+            .unwrap();
+        assert_eq!(text, "");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].text(), "partial");
+        assert!(!saved.lock().is_empty(), "partial reply persisted");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_marks_truncated_stop_as_incomplete() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("cut off"),
+            StreamEvent {
+                event_type: "stop".to_string(),
+                stop_reason: "truncated".to_string(),
+                ..Default::default()
+            },
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "cut off");
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_times_out_a_stalled_stream() {
+        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("stuck")])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "stuck");
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_retries_then_succeeds() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Fail("transient boom".to_string()),
+            Script::Events(vec![ev_text("recovered"), ev_stop()]),
+        ]);
+        let config = crate::types::AgentConfig {
+            max_retries: 2,
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "recovered");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_returns_error_after_retries_exhausted() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Fail("boom 1".to_string()),
+            Script::Fail("boom 2".to_string()),
+        ]);
+        let config = crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let result = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("boom 2"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_fails_when_forced_compaction_finds_no_cut() {
+        let provider = ScriptedProvider::new(vec![Script::Fail(
+            "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
+                .to_string(),
+        )]);
+        let config = crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        // A single short user message cannot be compacted → hard failure.
+        let result = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("context compaction failed"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_compacts_then_retries_on_context_length_error() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Fail(
+                "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
+                    .to_string(),
+            ),
+            Script::Events(vec![ev_text("recovered"), ev_stop()]),
+        ]);
+        let config = crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        // A long multi-turn history gives compaction a valid cut point.
+        let mut messages = Vec::new();
+        for i in 0..12 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            messages.push(AgentMessage {
+                role: role.to_string(),
+                content: vec![ContentBlock::text(format!("message {i} ").repeat(200))],
+                ..Default::default()
+            });
+        }
+        messages.push(AgentMessage::new_user("user", serde_json::json!("fresh question")));
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext::default(),
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |e: StreamEvent| events.lock().push(e.event_type.clone())
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "recovered");
+        assert!(events.lock().contains(&"compaction_end".to_string()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_folds_steering_notes_into_system_prompt() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        loop_
+            .steering_notes
+            .lock()
+            .push("be brief".to_string());
+        let ctx = StreamContext {
+            system_prompt: "base".to_string(),
+            ..Default::default()
+        };
+        let _ = loop_
+            .run_streaming_with_messages(user_messages("hi"), &ctx, noop_on_text, |_| {}, None)
+            .await
+            .unwrap();
+        let prompts = provider.system_prompts.lock().clone();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains("base"));
+        assert!(prompts[0].contains("be brief"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_applies_transform_context_and_emits_compaction_event() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let config = crate::types::AgentConfig {
+            transform_context: Some(Arc::new(|messages: Vec<Message>, _| {
+                // Keep only the last message — a fake compaction.
+                messages.into_iter().last().into_iter().collect()
+            })),
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let mut messages = user_messages("old");
+        messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::text("older reply")],
+            ..Default::default()
+        });
+        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (text, final_messages) = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext::default(),
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |e: StreamEvent| events.lock().push(e.event_type.clone())
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "ok");
+        assert!(events.lock().contains(&"compaction_end".to_string()));
+        // The in-memory history was replaced by the compacted transform result.
+        assert!(final_messages.len() <= 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_errors_when_compaction_failed_flag_set() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let config = crate::types::AgentConfig {
+            transform_context: Some(Arc::new(|messages: Vec<Message>, _| messages)),
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        loop_
+            .compaction_failed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("context compaction failed"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_stop_condition_short_circuits_the_loop() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_toolcall_start(0, "c1", "echo", "{}"),
+            ev_toolcall_end(),
+            ev_stop(),
+        ])]);
+        let config = crate::types::AgentConfig {
+            stop_condition: Some(Arc::new(|_, _| true)),
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock")
+            .with_tools(vec![echo_tool()])
+            .with_config(config);
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "");
+        // The scripted tool turn was never followed by a second LLM call
+        // (provider had exactly one script; a second call would panic).
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_interrupt_mid_stream_keeps_partial_reply() {
+        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![
+            ev_text("before interrupt"),
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (interrupt_tx, interrupt_rx) = mpsc::channel::<()>(1);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = interrupt_tx.send(()).await;
+        });
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                Some(interrupt_rx),
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].text(), "before interrupt");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_handles_toolcall_streaming_edge_cases() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                // Delta before any start → placeholder that the later start replaces.
+                ev_toolcall_delta(0, "{\"pre"),
+                ev_toolcall_start(0, "call-1", "echo", "{\"pre"),
+                // Same-id start at the same index appends longer args.
+                ev_toolcall_start(0, "call-1", "echo", "{\"pre\":1}"),
+                // Delta on a placeholder-less slot after the real start appends.
+                ev_toolcall_delta(0, ", \"post\":2}"),
+                // A second tool call at index 1.
+                ev_toolcall_start(1, "call-2", "echo", "{}"),
+                // Usage piggy-backed on the end event.
+                StreamEvent {
+                    event_type: "toolcall_end".to_string(),
+                    usage: Some(crate::types::Usage {
+                        prompt_tokens: 7,
+                        completion_tokens: 3,
+                        total_tokens: 10,
+                        cache_read_tokens: None,
+                        cache_write_tokens: None,
+                        credit_cost: None,
+                    }),
+                    ..Default::default()
+                },
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        let assistant = &messages[1];
+        // The pre-start delta created a placeholder (empty id/name) that was
+        // finalized when the real start arrived; then call-1 and call-2.
+        assert_eq!(assistant.tool_calls.len(), 3);
+        assert_eq!(assistant.tool_calls[0].name, "");
+        assert_eq!(assistant.tool_calls[1].id, "call-1");
+        assert_eq!(assistant.tool_calls[2].id, "call-2");
+        // call-1's args were concatenated verbatim (same-id start append +
+        // non-'{' delta): `{"pre":1}` + `, "post":2}`.
+        let args = match &assistant.tool_calls[1].args {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        assert_eq!(args, "{\"pre\":1}, \"post\":2}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_skips_remaining_tools_after_interrupt() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_toolcall_start(0, "c1", "echo", "{}"),
+                ev_toolcall_start(1, "c2", "echo", "{}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("after"), ev_stop()]),
+        ]);
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let config = crate::types::AgentConfig {
+            after_tool_call: Some({
+                let flag = flag.clone();
+                Arc::new(move |_, _, _, _, _| {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    None
+                })
+            }),
+            ..Default::default()
+        };
+        let mut loop_ = Loop::new(provider, "mock")
+            .with_tools(vec![echo_tool()])
+            .with_config(config);
+        loop_.interrupt_flag = flag;
+        let (_, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        // The second tool call was never executed: it got a cancellation
+        // placeholder instead of an echo result.
+        let tool_messages: Vec<_> = messages.iter().filter(|m| m.role == "tool").collect();
+        assert_eq!(tool_messages.len(), 2);
+        assert!(tool_messages[0].text().contains("echo:"));
+        assert!(tool_messages[1].text().contains("was skipped due to user interrupt"));
+    }
+
+    // ── pure helpers ────────────────────────────────────────────────────────
+
+    #[test]
+    fn tool_call_args_complete_checks_json_balance() {
+        let mut call = AgentToolCall {
+            id: "c1".to_string(),
+            name: "echo".to_string(),
+            args: serde_json::Value::String("{\"a\":1}".to_string()),
+        };
+        assert!(tool_call_args_complete(&call));
+        call.args = serde_json::Value::String("{\"a\":1".to_string());
+        assert!(!tool_call_args_complete(&call));
+        call.args = serde_json::Value::Null;
+        assert!(!tool_call_args_complete(&call));
+    }
+
+    #[test]
+    fn finalize_agent_tool_call_parses_and_repairs_args() {
+        let complete = AgentToolCall {
+            id: "c1".to_string(),
+            name: "echo".to_string(),
+            args: serde_json::Value::String("{\"a\":1}".to_string()),
+        };
+        let finalized = finalize_agent_tool_call(complete);
+        assert_eq!(finalized.id, "c1");
+        assert_eq!(finalized.function.name, "echo");
+        assert_eq!(
+            finalized.function.arguments,
+            serde_json::Value::String("{\"a\":1}".to_string())
+        );
+
+        let partial = AgentToolCall {
+            id: "c2".to_string(),
+            name: "echo".to_string(),
+            args: serde_json::Value::String("{\"a\":\"x".to_string()),
+        };
+        let finalized = finalize_agent_tool_call(partial);
+        // The truncated JSON was repaired into something parseable.
+        let args = finalized.function.arguments;
+        let args_str = match &args {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        assert!(serde_json::from_str::<serde_json::Value>(&args_str).is_ok());
+    }
+
+    #[test]
+    fn repair_partial_json_object_handles_common_truncations() {
+        assert_eq!(repair_partial_json_object("not an object"), None);
+        assert_eq!(repair_partial_json_object("{}"), Some("{}".to_string()));
+        let repaired = repair_partial_json_object("{\"key\": \"value").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["key"], "value");
+        let repaired = repair_partial_json_object("{\"a\": {\"b\": 1").unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(&repaired).is_ok());
+        // Unclosed arrays are NOT repaired (best-effort brace balancing only).
+        let attempted = repair_partial_json_object("{\"a\": [1, 2").unwrap();
+        assert!(attempted.ends_with('}'));
+        assert!(serde_json::from_str::<serde_json::Value>(&attempted).is_err());
+    }
+
+    #[test]
+    fn has_unclosed_string_detects_open_quotes() {
+        assert!(!has_unclosed_string("\"closed\""));
+        assert!(has_unclosed_string("\"open"));
+        assert!(!has_unclosed_string("\"escaped \\\" quote\""));
+        assert!(has_unclosed_string("\"trailing escape\\"));
+    }
 
     #[test]
     fn steering_fold_returns_base_when_empty() {
