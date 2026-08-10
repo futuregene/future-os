@@ -35,3 +35,11 @@ pub use skills::{
 pub use tools::{all_tools, coding_tools};
 pub use types::{AgentMessage, AgentTool, LLMProvider, Message, StreamEvent, ToolDef};
 pub use utils::{default_config_dir, default_session_dir, generate_id};
+
+/// Process-global guard serializing tests that redirect `$HOME` (TestHome in
+/// rpc::commands) against tests whose assertions read `dirs::home_dir()`
+/// (secret-guard tests in rpc::approval). `$HOME` is process-wide mutable
+/// state; without a shared lock a redirect window flips another test's
+/// home-derived expectations under parallel execution.
+#[cfg(test)]
+pub(crate) static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

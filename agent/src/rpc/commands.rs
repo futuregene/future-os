@@ -2235,10 +2235,13 @@ mod tests {
     // ── Config-write commands (set_auth / upsert_provider / delete_provider) ──
     // Success paths write auth.json/models.json under $HOME, so they run under
     // a redirected HOME. The guard is process-global (HOME is global) and
-    // serialized on TEST_HOME_LOCK so parallel tests never observe each other's
-    // redirection.
-
-    static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // serialized on crate::HOME_ENV_LOCK so parallel tests never observe each
+    // other's redirection.
+    fn home_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
 
     struct TestHome {
         previous_home: Option<std::ffi::OsString>,
@@ -2249,9 +2252,7 @@ mod tests {
 
     impl TestHome {
         fn new() -> Self {
-            let guard = TEST_HOME_LOCK
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
+            let guard = home_env_lock();
             let previous_home = std::env::var_os("HOME");
             let previous_userprofile = std::env::var_os("USERPROFILE");
             // NOT under the system temp dir: parallel sandbox tests evaluate
