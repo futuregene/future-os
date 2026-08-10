@@ -32,6 +32,18 @@ fn stream_idle_timeout_secs() -> u64 {
     STREAM_IDLE_TIMEOUT_SECS
 }
 
+/// Tool-call idle timeout — same test seam (FUTURE_TEST_TOOL_IDLE_SECS).
+fn stream_tool_call_idle_timeout_secs() -> u64 {
+    #[cfg(test)]
+    if let Some(secs) = std::env::var("FUTURE_TEST_TOOL_IDLE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return secs;
+    }
+    STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS
+}
+
 /// HTTP request timeout for a single LLM call. Defaults to 30 min (1800 s);
 /// override with the FUTURE_LLM_TIMEOUT_SECS env var without rebuilding.
 fn llm_timeout_secs() -> u64 {
@@ -543,7 +555,7 @@ impl crate::types::LLMProvider for Client {
 
             loop {
                 let idle_timeout_secs = if in_tool_call {
-                    STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS
+                    stream_tool_call_idle_timeout_secs()
                 } else {
                     stream_idle_timeout_secs()
                 };
@@ -627,7 +639,7 @@ impl crate::types::LLMProvider for Client {
                         if in_tool_call
                             && last_sse_event_at.elapsed()
                                 >= std::time::Duration::from_secs(
-                                    STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS,
+                                    stream_tool_call_idle_timeout_secs(),
                                 )
                         {
                             let _ = tx
@@ -1201,5 +1213,245 @@ mod tests {
         assert_eq!(last.event_type, "stop");
         assert_eq!(last.stop_reason, "truncated");
         std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
+    }
+
+    #[test]
+    fn llm_timeout_env_override() {
+        std::env::set_var("FUTURE_LLM_TIMEOUT_SECS", "120");
+        assert_eq!(llm_timeout_secs(), 120);
+        // Below the floor → default.
+        std::env::set_var("FUTURE_LLM_TIMEOUT_SECS", "5");
+        assert_eq!(llm_timeout_secs(), DEFAULT_TIMEOUT_SECS);
+        std::env::set_var("FUTURE_LLM_TIMEOUT_SECS", "garbage");
+        assert_eq!(llm_timeout_secs(), DEFAULT_TIMEOUT_SECS);
+        std::env::remove_var("FUTURE_LLM_TIMEOUT_SECS");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_done_closes_open_thinking_and_toolcall_blocks() {
+        // thinking_delta + toolcall_start with no matching ends, then [DONE].
+        let sse = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        let thinking_end = types.iter().position(|t| *t == "thinking_end");
+        let toolcall_end = types.iter().position(|t| *t == "toolcall_end");
+        let stop = types.iter().rposition(|t| *t == "stop").unwrap();
+        assert!(thinking_end.is_some(), "{types:?}");
+        assert!(toolcall_end.is_some(), "{types:?}");
+        assert!(thinking_end.unwrap() < stop && toolcall_end.unwrap() < stop);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_finish_tool_calls_emits_pending_tool_end() {
+        // toolcall_start, then finish_reason=tool_calls without an explicit
+        // toolcall_end chunk → the mapper closes the block itself.
+        let sse = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let tool_ends: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == "toolcall_end")
+            .collect();
+        assert!(
+            tool_ends
+                .iter()
+                .any(|e| e.stop_reason == "tool_calls"),
+            "auto-closed tool call: {events:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_finish_stop_closes_thinking_block() {
+        let sse = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        let thinking_end = types.iter().position(|t| *t == "thinking_end");
+        assert!(thinking_end.is_some(), "{types:?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_discards_oversized_undelimited_buffer() {
+        // 1.2 MiB of SSE data without a \n\n delimiter trips the buffer guard.
+        let filler = "x".repeat(1_200_000);
+        let sse = format!("data: {filler}");
+        let server = mock_server(move |_| (200, "text/event-stream", sse.clone()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        // The stream ended without a terminal event → truncated stop.
+        let last = events.last().unwrap();
+        assert_eq!(last.event_type, "stop");
+        assert_eq!(last.stop_reason, "truncated");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_malformed_chunk_yields_error_event() {
+        // Invalid chunked-encoding body → reqwest stream error arm.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut sink = [0u8; 8192];
+            let _ = stream.read(&mut sink);
+            let body = "HTTP/1.1 200 X\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\nZZZ\r\nnot-a-chunk\r\n";
+            let _ = stream.write_all(body.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.read(&mut sink);
+        });
+        let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        assert!(
+            events.iter().any(|e| e.event_type == "error"),
+            "decode error surfaced: {events:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_consumer_drop_stops_reading() {
+        // A server that streams forever; the client task must notice the
+        // dropped receiver instead of draining until the idle timeout.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut sink = [0u8; 8192];
+            let _ = stream.read(&mut sink);
+            let chunk = "7\r\ndata: x\r\n";
+            let head = format!(
+                "HTTP/1.1 200 X\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{chunk}"
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.flush();
+            // Keep writing slowly forever; writes fail once the client is gone.
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if stream.write_all(chunk.as_bytes()).is_err() {
+                    break;
+                }
+                let _ = stream.flush();
+            }
+        });
+        let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        drop(rx); // consumer goes away mid-stream
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // No assertion needed beyond "returns promptly" — the read loop exited
+        // via ConsumerDropped rather than hanging this test.
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_upstream_eof_closes_thinking_block() {
+        // thinking_delta then the connection closes (no [DONE]).
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\n";
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        assert!(types.contains(&"thinking_end"), "{types:?}");
+        let last = events.last().unwrap();
+        assert_eq!(last.event_type, "stop");
+        assert_eq!(last.stop_reason, "truncated");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_tool_call_idle_forces_tool_end() {
+        std::env::set_var("FUTURE_TEST_TOOL_IDLE_SECS", "1");
+        // toolcall_start chunk, then the next chunk only arrives after the
+        // tool-call idle window — the read loop force-closes the call.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut sink = [0u8; 8192];
+            let _ = stream.read(&mut sink);
+            let first = "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{}\"}}]}}]}\n\n";
+            let head = format!(
+                "HTTP/1.1 200 X\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n",
+                first.len(),
+                first
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.flush();
+            // A second chunk after the (test-seamed) 1s tool-call idle window.
+            // It carries NO data: line, so last_sse_event_at stays stale and
+            // the idle check fires on receipt.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            let _ = stream.write_all(b"2\r\n\n\n");
+            let _ = stream.flush();
+            let _ = stream.read(&mut sink);
+        });
+        let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        std::env::remove_var("FUTURE_TEST_TOOL_IDLE_SECS");
+        let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        assert!(types.contains(&"toolcall_start"), "{types:?}");
+        assert!(types.contains(&"toolcall_end"), "{types:?}");
+        assert!(types.contains(&"stop"), "{types:?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn client_key_and_thinking_setters() {
+        let client = Client::new("https://api.test", "key-1", None, None);
+        client.set_api_key("key-2");
+        assert_eq!(*client.api_key.read(), "key-2");
+        client.update_thinking("low", 4000);
+        assert_eq!(*client.thinking_level.read(), "low");
+        assert_eq!(*client.thinking_budget.read(), 4000);
     }
 }

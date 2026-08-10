@@ -1766,10 +1766,7 @@ mod tests {
         assert_eq!(assistant.tool_calls[2].id, "call-2");
         // call-1's args were concatenated verbatim (same-id start append +
         // non-'{' delta): `{"pre":1}` + `, "post":2}`.
-        let args = match &assistant.tool_calls[1].args {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
+        let args = assistant.tool_calls[1].args.as_str().unwrap();
         assert_eq!(args, "{\"pre\":1}, \"post\":2}");
     }
 
@@ -1856,11 +1853,8 @@ mod tests {
         let finalized = finalize_agent_tool_call(partial);
         // The truncated JSON was repaired into something parseable.
         let args = finalized.function.arguments;
-        let args_str = match &args {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        assert!(serde_json::from_str::<serde_json::Value>(&args_str).is_ok());
+        let args_str = args.as_str().unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(args_str).is_ok());
     }
 
     #[test]
@@ -1884,6 +1878,376 @@ mod tests {
         assert!(has_unclosed_string("\"open"));
         assert!(!has_unclosed_string("\"escaped \\\" quote\""));
         assert!(has_unclosed_string("\"trailing escape\\"));
+    }
+
+    // ── run_loop batch 2: interrupts, verbose arms, merge variants ─────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_verbose_covers_logging_arms() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                StreamEvent {
+                    event_type: "thinking_start".to_string(),
+                    ..Default::default()
+                },
+                StreamEvent {
+                    event_type: "thinking_delta".to_string(),
+                    text: "ponder".to_string(),
+                    ..Default::default()
+                },
+                StreamEvent {
+                    event_type: "thinking_end".to_string(),
+                    ..Default::default()
+                },
+                StreamEvent {
+                    event_type: "text_start".to_string(),
+                    ..Default::default()
+                },
+                ev_text("chunk"),
+                StreamEvent {
+                    event_type: "text_end".to_string(),
+                    ..Default::default()
+                },
+                ev_toolcall_start(0, "c1", "echo", "{}"),
+                StreamEvent {
+                    event_type: "tool_start".to_string(),
+                    tool_name: "echo".to_string(),
+                    ..Default::default()
+                },
+                StreamEvent {
+                    event_type: "tool_end".to_string(),
+                    tool_name: "echo".to_string(),
+                    ..Default::default()
+                },
+                // Usage piggy-backed on the terminal stop.
+                StreamEvent {
+                    event_type: "stop".to_string(),
+                    stop_reason: "tool_calls".to_string(),
+                    usage: Some(crate::types::Usage {
+                        prompt_tokens: 5,
+                        completion_tokens: 1,
+                        total_tokens: 6,
+                        cache_read_tokens: None,
+                        cache_write_tokens: None,
+                        credit_cost: Some(0.1),
+                    }),
+                    ..Default::default()
+                },
+            ]),
+            Script::Events(vec![ev_text("final"), ev_stop()]),
+        ]);
+        let mut loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        loop_.verbose = true;
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "final");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_interrupt_while_connecting_returns_early() {
+        struct PendProvider;
+        #[async_trait::async_trait]
+        impl LLMProvider for PendProvider {
+            async fn stream_chat(
+                &self,
+                _model: String,
+                _messages: Vec<Message>,
+                _tools: Vec<ToolDef>,
+                _system_prompt: String,
+            ) -> Result<ReceiverStream<StreamEvent>> {
+                std::future::pending::<()>().await;
+                unreachable!("never resolves");
+            }
+        }
+        let loop_ = Loop::new(Arc::new(PendProvider), "mock");
+        let (interrupt_tx, interrupt_rx) = mpsc::channel::<()>(1);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = interrupt_tx.send(()).await;
+        });
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                Some(interrupt_rx),
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_interrupt_during_retry_backoff_returns_early() {
+        struct FailOnSignalProvider {
+            release: tokio::sync::Notify,
+        }
+        #[async_trait::async_trait]
+        impl LLMProvider for FailOnSignalProvider {
+            async fn stream_chat(
+                &self,
+                _model: String,
+                _messages: Vec<Message>,
+                _tools: Vec<ToolDef>,
+                _system_prompt: String,
+            ) -> Result<ReceiverStream<StreamEvent>> {
+                self.release.notified().await;
+                Err(anyhow!("signalled failure"))
+            }
+        }
+        let provider = Arc::new(FailOnSignalProvider {
+            release: tokio::sync::Notify::new(),
+        });
+        let config = crate::types::AgentConfig {
+            max_retries: 3,
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider.clone(), "mock").with_config(config);
+        let flag = loop_.interrupt_flag.clone();
+        let runner = tokio::spawn(async move {
+            loop_
+                .run_streaming_with_messages(
+                    user_messages("hi"),
+                    &StreamContext::default(),
+                    noop_on_text,
+                    |_| {},
+                    None,
+                )
+                .await
+        });
+        // Let the call start, then release the failure and interrupt while the
+        // 2s backoff sleep is in flight.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        provider.release.notify_one();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (text, _) = runner.await.unwrap().unwrap();
+        assert_eq!(text, "");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_stream_idle_timeout_with_interrupt_channel() {
+        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("stuck")])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (_interrupt_tx, interrupt_rx) = mpsc::channel::<()>(1);
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                Some(interrupt_rx),
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "stuck");
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_interrupt_with_finalized_tool_call_writes_placeholders() {
+        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![
+            ev_toolcall_start(0, "c1", "echo", "{}"),
+            ev_toolcall_end(),
+        ])]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let (interrupt_tx, interrupt_rx) = mpsc::channel::<()>(1);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = interrupt_tx.send(()).await;
+        });
+        let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let ctx = StreamContext {
+            save_callback: Some({
+                let saved = saved.clone();
+                Arc::new(move |m: &AgentMessage| saved.lock().push(m.role.clone()))
+            }),
+            ..Default::default()
+        };
+        let (_, messages) = loop_
+            .run_streaming_with_messages(user_messages("hi"), &ctx, noop_on_text, |_| {}, Some(interrupt_rx))
+            .await
+            .unwrap();
+        // Partial assistant carries the finalized tool call, followed by its
+        // cancellation placeholder.
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1].tool_calls.len(), 1);
+        assert_eq!(messages[2].role, "tool");
+        assert!(messages[2].text().contains("was not executed due to interrupt"));
+        assert_eq!(saved.lock().len(), 2, "assistant + placeholder persisted");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_toolcall_merge_and_delta_variants() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                // Same-id start with a longer non-prefix arg string → replace.
+                ev_toolcall_start(0, "c1", "echo", "{\"a\""),
+                ev_toolcall_start(0, "c1", "echo", "zz{\"longer\""),
+                // Same-id start with shorter args → keep existing.
+                ev_toolcall_start(0, "c1", "echo", "z"),
+                // Start with no tool_call payload (args Null)…
+                StreamEvent {
+                    event_type: "toolcall_start".to_string(),
+                    tool_id: "c2".to_string(),
+                    tool_name: "echo".to_string(),
+                    tc_index: 1,
+                    tool_call: None,
+                    ..Default::default()
+                },
+                // …then a same-id start with real args → replace the Null.
+                ev_toolcall_start(1, "c2", "echo", "{\"b\":2"),
+                // Delta on non-String args → set to String.
+                StreamEvent {
+                    event_type: "toolcall_start".to_string(),
+                    tool_id: "c3".to_string(),
+                    tool_name: "echo".to_string(),
+                    tc_index: 2,
+                    tool_call: Some(ToolCall {
+                        id: "c3".to_string(),
+                        call_type: "function".to_string(),
+                        function: crate::types::ToolCallFn {
+                            name: "echo".to_string(),
+                            arguments: serde_json::Value::Null,
+                        },
+                    }),
+                    ..Default::default()
+                },
+                ev_toolcall_delta(2, "{\"c\":3"),
+                // Full-state replacement delta (starts with '{' and extends).
+                ev_toolcall_start(3, "c4", "echo", "{\"d\":"),
+                ev_toolcall_delta(3, "{\"d\":4}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        let calls = &messages[1].tool_calls;
+        assert_eq!(calls.len(), 4);
+        assert_eq!(
+            calls[0].args,
+            serde_json::Value::String("zz{\"longer\"".to_string())
+        );
+        assert_eq!(
+            calls[2].args,
+            serde_json::Value::String("{\"c\":3}".to_string()),
+            "delta-set args get brace-repaired at finalize"
+        );
+        assert_eq!(
+            calls[3].args,
+            serde_json::Value::String("{\"d\":4}".to_string())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_slow_provider_exercises_await_polling() {
+        struct SlowProvider {
+            delay: Duration,
+        }
+        #[async_trait::async_trait]
+        impl LLMProvider for SlowProvider {
+            async fn stream_chat(
+                &self,
+                _model: String,
+                _messages: Vec<Message>,
+                _tools: Vec<ToolDef>,
+                _system_prompt: String,
+            ) -> Result<ReceiverStream<StreamEvent>> {
+                tokio::time::sleep(self.delay).await;
+                let (tx, rx) = mpsc::channel(2);
+                let _ = tx.try_send(StreamEvent {
+                    event_type: "text_delta".to_string(),
+                    text: "slow".to_string(),
+                    ..Default::default()
+                });
+                let _ = tx.try_send(StreamEvent {
+                    event_type: "stop".to_string(),
+                    stop_reason: "end_turn".to_string(),
+                    ..Default::default()
+                });
+                drop(tx);
+                Ok(ReceiverStream::new(rx))
+            }
+        }
+        // Without an interrupt channel (None arm of await_or_interrupt).
+        let loop_ = Loop::new(Arc::new(SlowProvider {
+            delay: Duration::from_millis(120),
+        }), "mock");
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "slow");
+
+        // With an interrupt channel that never fires (Some arm + poll sleep).
+        let loop_ = Loop::new(Arc::new(SlowProvider {
+            delay: Duration::from_millis(120),
+        }), "mock");
+        let (_tx, interrupt_rx) = mpsc::channel::<()>(1);
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                Some(interrupt_rx),
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "slow");
+    }
+
+    #[test]
+    fn repair_partial_tool_args_normalizes_values() {
+        // Empty string becomes an empty object.
+        let mut args = serde_json::Value::String(String::new());
+        repair_partial_tool_args(&mut args);
+        assert_eq!(args, serde_json::Value::String("{}".to_string()));
+        // Already valid → unchanged.
+        let mut args = serde_json::Value::String("{\"a\":1}".to_string());
+        repair_partial_tool_args(&mut args);
+        assert_eq!(args, serde_json::Value::String("{\"a\":1}".to_string()));
+        // Non-string values pass through.
+        let mut args = serde_json::json!({"a": 1});
+        repair_partial_tool_args(&mut args);
+        assert_eq!(args, serde_json::json!({"a": 1}));
+        // Unrepairable (not an object) → unchanged.
+        let mut args = serde_json::Value::String("[1,2".to_string());
+        repair_partial_tool_args(&mut args);
+        assert_eq!(args, serde_json::Value::String("[1,2".to_string()));
+        // Repaired in place.
+        let mut args = serde_json::Value::String("{\"a\":1".to_string());
+        repair_partial_tool_args(&mut args);
+        assert_eq!(args, serde_json::Value::String("{\"a\":1}".to_string()));
     }
 
     #[test]
