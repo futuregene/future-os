@@ -1004,7 +1004,10 @@ mod tests {
             timeouts: DEFAULT_TIMEOUTS,
             active_page_id: None,
         });
-        let err = s.open("http://x/", OpenPageOptions::default()).await.unwrap_err();
+        let err = s
+            .open("http://x/", OpenPageOptions::default())
+            .await
+            .unwrap_err();
         assert_eq!(err, "ChromiumSession requires CDP protocol");
     }
 
@@ -1017,7 +1020,10 @@ mod tests {
             .fail_methods
             .insert("Target.setDiscoverTargets".to_string());
         let mut s = session_over(&mock);
-        let err = s.open("http://x/", OpenPageOptions::default()).await.unwrap_err();
+        let err = s
+            .open("http://x/", OpenPageOptions::default())
+            .await
+            .unwrap_err();
         assert!(err.contains("mock failure"), "{err}");
     }
 
@@ -1030,7 +1036,10 @@ mod tests {
             .fail_methods
             .insert("Page.getFrameTree".to_string());
         let mut s = session_over(&mock);
-        let err = s.open("http://x/", OpenPageOptions::default()).await.unwrap_err();
+        let err = s
+            .open("http://x/", OpenPageOptions::default())
+            .await
+            .unwrap_err();
         assert!(err.contains("mock failure"), "{err}");
     }
 
@@ -1093,8 +1102,16 @@ mod tests {
         // mouseMoved + mousePressed + mouseReleased.
         assert_eq!(mock.commands_of("Input.dispatchMouseEvent").len(), 3);
         // Preload script added and removed around the dispatch.
-        assert_eq!(mock.commands_of("Page.addScriptToEvaluateOnNewDocument").len(), 1);
-        assert_eq!(mock.commands_of("Page.removeScriptToEvaluateOnNewDocument").len(), 1);
+        assert_eq!(
+            mock.commands_of("Page.addScriptToEvaluateOnNewDocument")
+                .len(),
+            1
+        );
+        assert_eq!(
+            mock.commands_of("Page.removeScriptToEvaluateOnNewDocument")
+                .len(),
+            1
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1103,7 +1120,12 @@ mod tests {
         mock.state.lock().unwrap().element_check = json!({"exists": false});
         let mut s = session_over(&mock);
         let err = s
-            .click(&target("#ghost"), ClickOptions { timeout_ms: Some(300) })
+            .click(
+                &target("#ghost"),
+                ClickOptions {
+                    timeout_ms: Some(300),
+                },
+            )
             .await
             .unwrap_err();
         assert_eq!(err, "Element not found: \"#ghost\"");
@@ -1113,7 +1135,8 @@ mod tests {
     fn element_check_state_matrix() {
         // Pure state-shaping sanity for the mock (used by click tests).
         let mut state = crate::test_cdp::MockCdpState::default();
-        state.element_check = json!({"exists": true, "connected": false, "visible": true, "disabled": false});
+        state.element_check =
+            json!({"exists": true, "connected": false, "visible": true, "disabled": false});
         assert_eq!(state.element_check["connected"], json!(false));
     }
 
@@ -1125,7 +1148,12 @@ mod tests {
             json!({"exists": true, "connected": false, "visible": true, "disabled": false});
         let mut s = session_over(&mock);
         let err = s
-            .click(&target("#x"), ClickOptions { timeout_ms: Some(250) })
+            .click(
+                &target("#x"),
+                ClickOptions {
+                    timeout_ms: Some(250),
+                },
+            )
             .await
             .unwrap_err();
         assert!(err.contains("Element not found"), "{err}");
@@ -1135,7 +1163,12 @@ mod tests {
             json!({"exists": true, "connected": true, "visible": false, "disabled": false});
         let mut s = session_over(&mock);
         let err = s
-            .click(&target("#x"), ClickOptions { timeout_ms: Some(250) })
+            .click(
+                &target("#x"),
+                ClickOptions {
+                    timeout_ms: Some(250),
+                },
+            )
             .await
             .unwrap_err();
         assert!(err.contains("Element not found"), "{err}");
@@ -1145,7 +1178,12 @@ mod tests {
             json!({"exists": true, "connected": true, "visible": true, "disabled": true});
         let mut s = session_over(&mock);
         let err = s
-            .click(&target("#x"), ClickOptions { timeout_ms: Some(5_000) })
+            .click(
+                &target("#x"),
+                ClickOptions {
+                    timeout_ms: Some(5_000),
+                },
+            )
             .await
             .unwrap_err();
         assert_eq!(
@@ -1160,7 +1198,10 @@ mod tests {
         mock.state.lock().unwrap().click_meta =
             json!({"href": "http://fallback/", "hasSubmitter": false});
         let mut s = session_over(&mock);
-        let result = s.click(&target("a.link"), ClickOptions::default()).await.unwrap();
+        let result = s
+            .click(&target("a.link"), ClickOptions::default())
+            .await
+            .unwrap();
         assert!(result.did_navigate);
         // The fallback issued a second Page.navigate to the href.
         let navigations = mock.commands_of("Page.navigate");
@@ -1177,7 +1218,10 @@ mod tests {
             state.click_state = json!({"defaultPrevented": true, "submitSeen": false});
         }
         let mut s = session_over(&mock);
-        let result = s.click(&target("a.link"), ClickOptions::default()).await.unwrap();
+        let result = s
+            .click(&target("a.link"), ClickOptions::default())
+            .await
+            .unwrap();
         assert!(!result.did_navigate);
         assert!(mock.commands_of("Page.navigate").is_empty());
     }
@@ -1185,8 +1229,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn click_submitter_fallback_runs_request_submit() {
         let mock = MockCdp::start().await;
-        mock.state.lock().unwrap().click_meta =
-            json!({"href": null, "hasSubmitter": true});
+        mock.state.lock().unwrap().click_meta = json!({"href": null, "hasSubmitter": true});
         let mut s = session_over(&mock);
         let result = s
             .click(&target("button.go"), ClickOptions::default())
@@ -1217,12 +1260,10 @@ mod tests {
             .await
             .unwrap();
         let evals = mock.commands_of("Runtime.evaluate");
-        assert!(
-            !evals.iter().any(|p| p["expression"]
-                .as_str()
-                .unwrap_or("")
-                .contains("requestSubmit"))
-        );
+        assert!(!evals.iter().any(|p| p["expression"]
+            .as_str()
+            .unwrap_or("")
+            .contains("requestSubmit")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1230,7 +1271,10 @@ mod tests {
         let mock = MockCdp::start().await;
         mock.state.lock().unwrap().navigate_on_input = true;
         let mut s = session_over(&mock);
-        let result = s.click(&target("#go"), ClickOptions::default()).await.unwrap();
+        let result = s
+            .click(&target("#go"), ClickOptions::default())
+            .await
+            .unwrap();
         assert!(result.did_navigate);
         // Native navigation observed → no state-read, no fallbacks.
         assert!(mock.commands_of("Page.navigate").is_empty());
@@ -1248,7 +1292,12 @@ mod tests {
             .insert("Runtime.evaluate".to_string());
         let mut s = session_over(&mock);
         let err = s
-            .click(&target("#x"), ClickOptions { timeout_ms: Some(250) })
+            .click(
+                &target("#x"),
+                ClickOptions {
+                    timeout_ms: Some(250),
+                },
+            )
             .await
             .unwrap_err();
         assert!(err.contains("Element not found"), "{err}");
@@ -1313,7 +1362,7 @@ mod tests {
         assert_eq!(events[0]["type"], json!("keyDown"));
         assert_eq!(events[1]["type"], json!("keyUp"));
 
-        // Enter with a target: rawKeyDown + char (+ focus eval + keyUp... 
+        // Enter with a target: rawKeyDown + char (+ focus eval + keyUp...
         // Enter path dispatches rawKeyDown+char then the keyUp from the table).
         let mut s = session_over(&mock);
         let before = mock.commands_of("Input.dispatchKeyEvent").len();
@@ -1342,7 +1391,10 @@ mod tests {
         let mock = MockCdp::start().await;
         mock.state.lock().unwrap().navigate_on_input = true;
         let mut s = session_over(&mock);
-        let result = s.press("Enter", None, PressOptions::default()).await.unwrap();
+        let result = s
+            .press("Enter", None, PressOptions::default())
+            .await
+            .unwrap();
         assert!(result.did_navigate);
     }
 
@@ -1418,12 +1470,14 @@ mod tests {
         let evals = mock.commands_of("Runtime.evaluate");
         let fn_eval = evals
             .iter()
-            .find(|p| p["expression"].as_str().unwrap_or("").contains("function(a, b)"))
+            .find(|p| {
+                p["expression"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("function(a, b)")
+            })
             .expect("function eval recorded");
-        assert!(fn_eval["expression"]
-            .as_str()
-            .unwrap()
-            .contains("1,\"x\""));
+        assert!(fn_eval["expression"].as_str().unwrap().contains("1,\"x\""));
         assert_eq!(fn_eval["awaitPromise"], json!(true));
 
         // Send failure propagates.
@@ -1481,7 +1535,9 @@ mod tests {
     async fn disconnect_is_idempotent() {
         let mock = MockCdp::start().await;
         let mut s = session_over(&mock);
-        s.open("http://x/", OpenPageOptions::default()).await.unwrap();
+        s.open("http://x/", OpenPageOptions::default())
+            .await
+            .unwrap();
         s.disconnect().await.unwrap();
         // Second disconnect: nothing to tear down → Ok.
         s.disconnect().await.unwrap();
@@ -1494,8 +1550,12 @@ mod tests {
         // open() then click(): the second init() call returns early.
         let mock = MockCdp::start().await;
         let mut s = session_over(&mock);
-        s.open("http://x/", OpenPageOptions::default()).await.unwrap();
-        s.click(&target("#go"), ClickOptions::default()).await.unwrap();
+        s.open("http://x/", OpenPageOptions::default())
+            .await
+            .unwrap();
+        s.click(&target("#go"), ClickOptions::default())
+            .await
+            .unwrap();
         // One setDiscoverTargets for both operations.
         assert_eq!(mock.commands_of("Target.setDiscoverTargets").len(), 1);
     }
@@ -1575,7 +1635,9 @@ mod tests {
             None
         }));
         let mut s = session_over(&mock);
-        s.click(&target("#go"), ClickOptions::default()).await.unwrap();
+        s.click(&target("#go"), ClickOptions::default())
+            .await
+            .unwrap();
         let moves = mock.commands_of("Input.dispatchMouseEvent");
         assert_eq!(moves[0]["x"], json!(0));
         assert_eq!(moves[0]["y"], json!(0));
@@ -1585,10 +1647,7 @@ mod tests {
     async fn type_clear_focus_failure_propagates() {
         let mock = MockCdp::start().await;
         // The element check passes but the focus/clear eval fails.
-        mock.state
-            .lock()
-            .unwrap()
-            .eval_error_on_substring = Some("el.focus".to_string());
+        mock.state.lock().unwrap().eval_error_on_substring = Some("el.focus".to_string());
         let mut s = session_over(&mock);
         let err = s
             .r#type(

@@ -570,12 +570,8 @@ mod tests {
         let mock = MockCdp::start().await;
         {
             let mut state = mock.state.lock().unwrap();
-            state
-                .close_connection_on
-                .insert("Kill.switch".to_string());
-            state
-                .no_reply_methods
-                .insert("Never.answered".to_string());
+            state.close_connection_on.insert("Kill.switch".to_string());
+            state.no_reply_methods.insert("Never.answered".to_string());
         }
         let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
 
@@ -623,14 +619,16 @@ mod tests {
                 "[1,2,3]",
                 r#"{"id": 99, "method": "Both.idAndMethod"}"#,
                 r#"{"id": 12345, "result": {"stale": true}}"#, // unknown id
-                r#"{"method": 42}"#,                            // non-string method
+                r#"{"method": 42}"#,                           // non-string method
             ];
             for frame in junk {
                 let _ = ws.send(Message::Text(frame.to_string())).await;
             }
             // Now answer real commands forever.
             while let Some(frame) = ws.next().await {
-                let Ok(Message::Text(text)) = frame else { break };
+                let Ok(Message::Text(text)) = frame else {
+                    break;
+                };
                 let v: Value = serde_json::from_str(&text).unwrap();
                 let id = v.get("id").and_then(Value::as_u64).unwrap();
                 let _ = ws
@@ -819,7 +817,9 @@ mod tests {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = accept_async(stream).await.unwrap();
             while let Some(frame) = ws.next().await {
-                let Ok(Message::Text(text)) = frame else { break };
+                let Ok(Message::Text(text)) = frame else {
+                    break;
+                };
                 let v: Value = serde_json::from_str(&text).unwrap();
                 let id = v.get("id").and_then(Value::as_u64).unwrap();
                 // Error object without code/message → defaults kick in.

@@ -2914,32 +2914,26 @@ mod tests {
         // int_min failures.
         let (result, stderr) = run(&["search_paper", "--queries", "[\"q\"]", "--max_k", "0"]).await;
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-        assert!(stderr.contains("--max_k must be a positive integer"), "{stderr}");
-        let (result, stderr) =
-            run(&["get_paper", "--paper_id", "x", "--max_tokens", "0"]).await;
+        assert!(
+            stderr.contains("--max_k must be a positive integer"),
+            "{stderr}"
+        );
+        let (result, stderr) = run(&["get_paper", "--paper_id", "x", "--max_tokens", "0"]).await;
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-        assert!(stderr.contains("--max_tokens must be a positive integer"), "{stderr}");
+        assert!(
+            stderr.contains("--max_tokens must be a positive integer"),
+            "{stderr}"
+        );
 
         // file_type normalization: invalid value errors, valid upper-case
         // is lowercased and accepted (fails later at the API-key load).
-        let (result, stderr) = run(&[
-            "parse_doc",
-            "--doc_b64",
-            "eA==",
-            "--file_type",
-            "TXT",
-        ])
-        .await;
+        let (result, stderr) = run(&["parse_doc", "--doc_b64", "eA==", "--file_type", "TXT"]).await;
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-        assert!(stderr.contains("--file_type must be \"pdf\" or \"docx\""), "{stderr}");
-        let (result, stderr) = run(&[
-            "parse_doc",
-            "--doc_b64",
-            "eA==",
-            "--file_type",
-            "PDF",
-        ])
-        .await;
+        assert!(
+            stderr.contains("--file_type must be \"pdf\" or \"docx\""),
+            "{stderr}"
+        );
+        let (result, stderr) = run(&["parse_doc", "--doc_b64", "eA==", "--file_type", "PDF"]).await;
         assert!(!stderr.contains("--file_type"), "{stderr}");
         assert!(result.is_err());
 
@@ -2965,14 +2959,20 @@ mod tests {
             ],
         });
         let result = format_image_result("image_edit", &sc, None).await;
-        assert!(result.contains("[Image edited: unknown unknown png]"), "got: {result}");
+        assert!(
+            result.contains("[Image edited: unknown unknown png]"),
+            "got: {result}"
+        );
         assert!(result.contains("future-image-"), "got: {result}");
         assert!(result.contains(".png"), "got: {result}");
 
         // Header prompt line + empty images → no save section.
         let sc = json!({"size": "1x1", "quality": "hd", "format": "png", "prompt": "a fox"});
         let result = format_image_result("image_gen", &sc, None).await;
-        assert!(result.contains("[Image generated: 1x1 hd png]"), "got: {result}");
+        assert!(
+            result.contains("[Image generated: 1x1 hd png]"),
+            "got: {result}"
+        );
         assert!(result.contains("Prompt: a fox"), "got: {result}");
         assert!(!result.contains("Saved:"), "got: {result}");
 
@@ -3007,16 +3007,14 @@ mod tests {
         // Point the browser config at a mock CDP browser, then call the
         // console command through tools_call's browser branch.
         let mock = crate::test_cdp::MockCdp::start().await;
-        crate::browser::browser_state::save_browser_config(
-            &crate::browser::types::BrowserConfig {
-                version: 2,
-                connection: crate::browser::types::BrowserConnectionConfig::Cdp {
-                    browser_kind: "chrome".to_string(),
-                    endpoint: mock.http_url.clone(),
-                },
-                ..Default::default()
+        crate::browser::browser_state::save_browser_config(&crate::browser::types::BrowserConfig {
+            version: 2,
+            connection: crate::browser::types::BrowserConnectionConfig::Cdp {
+                browser_kind: "chrome".to_string(),
+                endpoint: mock.http_url.clone(),
             },
-        )
+            ..Default::default()
+        })
         .await
         .unwrap();
         let (out, cap) = Output::memory();

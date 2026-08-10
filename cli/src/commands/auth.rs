@@ -917,7 +917,9 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();
         let path = auth_file_path();
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
 
         // Entry exists but has NO key → JSON "Not logged in.".
         tokio::fs::write(&path, r#"{"future": {"base_url": "http://p/api"}}"#)
@@ -929,7 +931,9 @@ mod tests {
         assert_eq!(stdout.trim(), r#"{"error":"Not logged in."}"#);
 
         // Key but NO base_url → get_platform_url fallback for the endpoint.
-        tokio::fs::write(&path, r#"{"future": {"key": "k"}}"#).await.unwrap();
+        tokio::fs::write(&path, r#"{"future": {"key": "k"}}"#)
+            .await
+            .unwrap();
         let (out, cap) = Output::memory();
         credential(true, &out).await.unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
@@ -942,7 +946,9 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();
         let path = auth_file_path();
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
         // Entry with key + type + base_url → all insert arms run.
         tokio::fs::write(
             &path,
@@ -977,7 +983,9 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();
         let path = auth_file_path();
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
 
         // Valid JSON but not an object → "must contain a JSON object".
         tokio::fs::write(&path, "[1,2]").await.unwrap();
@@ -1005,11 +1013,11 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let dir = tempfile::tempdir().unwrap();
         // $HOME/.future is a REGULAR FILE → create_dir_all(agent) fails.
-        tokio::fs::write(dir.path().join(".future"), "x").await.unwrap();
-        let _home = crate::test_env::EnvGuard::set(&[(
-            "HOME",
-            dir.path().as_os_str().to_os_string(),
-        )]);
+        tokio::fs::write(dir.path().join(".future"), "x")
+            .await
+            .unwrap();
+        let _home =
+            crate::test_env::EnvGuard::set(&[("HOME", dir.path().as_os_str().to_os_string())]);
         let err = write_auth_file(&json!({})).await.unwrap_err();
         assert!(!err.is_empty());
     }
@@ -1018,10 +1026,8 @@ mod tests {
     async fn write_auth_file_write_failure() {
         let _guard = crate::test_env::lock_env().await;
         let dir = tempfile::tempdir().unwrap();
-        let _home = crate::test_env::EnvGuard::set(&[(
-            "HOME",
-            dir.path().as_os_str().to_os_string(),
-        )]);
+        let _home =
+            crate::test_env::EnvGuard::set(&[("HOME", dir.path().as_os_str().to_os_string())]);
         // auth.json as a DIRECTORY: mkdir succeeds, the file write fails.
         let agent_dir = dir.path().join(".future").join("agent");
         tokio::fs::create_dir_all(agent_dir.join("auth.json"))

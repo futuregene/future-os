@@ -486,12 +486,22 @@ mod tests {
     #[tokio::test]
     async fn create_session_id_locations_and_missing() {
         // W3C root-level sessionId.
-        let base = mock(vec![("/session", 200, r#"{"sessionId":"s-root","value":{}}"#)]).await;
+        let base = mock(vec![(
+            "/session",
+            200,
+            r#"{"sessionId":"s-root","value":{}}"#,
+        )])
+        .await;
         let client = WebDriverClient::new(&base);
         assert_eq!(client.create_session(None).await.unwrap(), "s-root");
 
         // safaridriver nests it under value.
-        let base = mock(vec![("/session", 200, r#"{"value":{"sessionId":"s-nested"}}"#)]).await;
+        let base = mock(vec![(
+            "/session",
+            200,
+            r#"{"value":{"sessionId":"s-nested"}}"#,
+        )])
+        .await;
         let client = WebDriverClient::new(&base);
         let caps = json!({"browserName": "safari"});
         assert_eq!(
@@ -506,7 +516,10 @@ mod tests {
         let base = mock(vec![("/session", 200, r#"{"value":{}}"#)]).await;
         let client = WebDriverClient::new(&base);
         let err = client.create_session(None).await.unwrap_err();
-        assert!(err.contains("No sessionId in createSession response"), "{err}");
+        assert!(
+            err.contains("No sessionId in createSession response"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -573,8 +586,12 @@ mod tests {
 
     #[tokio::test]
     async fn execute_script_value_deserialization() {
-        let base =
-            mock(vec![("/session/s1/execute/sync", 200, r#"{"value":{"a":1}}"#)]).await;
+        let base = mock(vec![(
+            "/session/s1/execute/sync",
+            200,
+            r#"{"value":{"a":1}}"#,
+        )])
+        .await;
         let client = WebDriverClient::new(&base);
         let v: Value = client.execute_script("s1", "return 1", &[]).await.unwrap();
         assert_eq!(v, json!({"a": 1}));
@@ -597,7 +614,10 @@ mod tests {
         .await;
         let client = WebDriverClient::new(&base);
         assert_eq!(
-            client.find_element("s1", "css selector", "#a").await.unwrap(),
+            client
+                .find_element("s1", "css selector", "#a")
+                .await
+                .unwrap(),
             "el-1"
         );
 
@@ -626,7 +646,10 @@ mod tests {
         )])
         .await;
         let client = WebDriverClient::new(&base);
-        let ids = client.find_elements("s1", "css selector", "div").await.unwrap();
+        let ids = client
+            .find_elements("s1", "css selector", "div")
+            .await
+            .unwrap();
         assert_eq!(ids, vec!["a", "b", "c"]);
     }
 
@@ -634,8 +657,16 @@ mod tests {
     async fn element_interaction_methods() {
         let base = mock(vec![
             ("/session/s1/element/e1/text", 200, r#"{"value":"hello"}"#),
-            ("/session/s1/element/e1/attribute/href", 200, r#"{"value":"http://l"}"#),
-            ("/session/s1/element/e1/attribute/missing", 200, r#"{"value":null}"#),
+            (
+                "/session/s1/element/e1/attribute/href",
+                200,
+                r#"{"value":"http://l"}"#,
+            ),
+            (
+                "/session/s1/element/e1/attribute/missing",
+                200,
+                r#"{"value":null}"#,
+            ),
             ("/session/s1/element/e1/enabled", 200, r#"{"value":true}"#),
             ("/session/s1/element/e2/enabled", 200, "{}"),
         ])
@@ -657,7 +688,10 @@ mod tests {
                 .unwrap(),
             None
         );
-        client.send_keys_to_element("s1", "e1", "abc").await.unwrap();
+        client
+            .send_keys_to_element("s1", "e1", "abc")
+            .await
+            .unwrap();
         client.clear_element("s1", "e1").await.unwrap();
         assert!(client.is_element_enabled("s1", "e1").await.unwrap());
         assert!(!client.is_element_enabled("s1", "e2").await.unwrap());
@@ -675,7 +709,12 @@ mod tests {
             b"png-bytes".to_vec()
         );
 
-        let base = mock(vec![("/session/s1/screenshot", 200, r#"{"value":"!!bad!!"}"#)]).await;
+        let base = mock(vec![(
+            "/session/s1/screenshot",
+            200,
+            r#"{"value":"!!bad!!"}"#,
+        )])
+        .await;
         let client = WebDriverClient::new(&base);
         let err = client.take_screenshot("s1").await.unwrap_err();
         assert!(err.contains("Failed to decode screenshot"), "{err}");
@@ -684,9 +723,17 @@ mod tests {
     #[tokio::test]
     async fn window_and_tab_management() {
         let base = mock(vec![
-            ("/session/s1/window/handles", 200, r#"{"value":["h1","h2"]}"#),
+            (
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1","h2"]}"#,
+            ),
             ("/session/s1/window", 200, r#"{"value":"h1"}"#),
-            ("/session/s1/window/new", 200, r#"{"value":{"handle":"h3"}}"#),
+            (
+                "/session/s1/window/new",
+                200,
+                r#"{"value":{"handle":"h3"}}"#,
+            ),
         ])
         .await;
         let client = WebDriverClient::new(&base);

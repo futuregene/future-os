@@ -311,9 +311,13 @@ mod tests {
         let router = Arc::new(CdpEventRouter::new());
         let count = Arc::new(AtomicUsize::new(0));
         let c = count.clone();
-        router.add(None, "Ev", Arc::new(move |_| {
-            c.fetch_add(1, Ordering::SeqCst);
-        }));
+        router.add(
+            None,
+            "Ev",
+            Arc::new(move |_| {
+                c.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
         router.dispatch(None, "Ev", &json!({}));
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
@@ -324,12 +328,20 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let c1 = count.clone();
         let c2 = count.clone();
-        let first = router.add(Some("s"), "Ev", Arc::new(move |_| {
-            c1.fetch_add(1, Ordering::SeqCst);
-        }));
-        router.add(Some("s"), "Ev", Arc::new(move |_| {
-            c2.fetch_add(1, Ordering::SeqCst);
-        }));
+        let first = router.add(
+            Some("s"),
+            "Ev",
+            Arc::new(move |_| {
+                c1.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        router.add(
+            Some("s"),
+            "Ev",
+            Arc::new(move |_| {
+                c2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
         // Removing the first leaves the second registered under the key.
         first.unsubscribe();
         router.dispatch(Some("s"), "Ev", &json!({}));
@@ -350,9 +362,13 @@ mod tests {
         let router = Arc::new(CdpEventRouter::new());
         let count = Arc::new(AtomicUsize::new(0));
         let c = count.clone();
-        router.add(Some("keep"), "Ev", Arc::new(move |_| {
-            c.fetch_add(1, Ordering::SeqCst);
-        }));
+        router.add(
+            Some("keep"),
+            "Ev",
+            Arc::new(move |_| {
+                c.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
         router.clear_session("absent");
         router.dispatch(Some("keep"), "Ev", &json!({}));
         assert_eq!(count.load(Ordering::SeqCst), 1);

@@ -1817,14 +1817,20 @@ mod tests {
         let (out, cap) = Output::memory();
         skills("update", &[], &out).await.unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("up to date") || stdout.contains("Up to date"), "{stdout}");
+        assert!(
+            stdout.contains("up to date") || stdout.contains("Up to date"),
+            "{stdout}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn dispatch_install_strips_leading_v() {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();
-        let zip = make_zip(&[("future-x/", ""), ("future-x/SKILL.md", "---\nversion: 1.0\n---\n")]);
+        let zip = make_zip(&[
+            ("future-x/", ""),
+            ("future-x/SKILL.md", "---\nversion: 1.0\n---\n"),
+        ]);
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::binary(
             // The v-stripped version must be used in the download path.
             "/client/v1/skills/future-x/versions/1.0/download",
@@ -1840,7 +1846,11 @@ mod tests {
         let (out, cap) = Output::memory();
         skills(
             "install",
-            &["future-x".to_string(), "--version".to_string(), "v1.0".to_string()],
+            &[
+                "future-x".to_string(),
+                "--version".to_string(),
+                "v1.0".to_string(),
+            ],
             &out,
         )
         .await
@@ -1865,7 +1875,10 @@ mod tests {
         let (out, cap) = Output::memory();
         update_skills(&out).await.unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert!(stdout.contains("up to date") || stdout.contains("Up to date"), "{stdout}");
+        assert!(
+            stdout.contains("up to date") || stdout.contains("Up to date"),
+            "{stdout}"
+        );
     }
 
     #[tokio::test]
@@ -1906,12 +1919,9 @@ mod tests {
 
         // Metadata JSON with a NUMERIC version → f64 stringification.
         let path = dir.path().join("SKILL.md");
-        tokio::fs::write(
-            &path,
-            "---\nname: x\nmetadata: {\"version\": 1.5}\n---\n",
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(&path, "---\nname: x\nmetadata: {\"version\": 1.5}\n---\n")
+            .await
+            .unwrap();
         assert_eq!(read_skill_md_version(&path).await, Some("1.5".to_string()));
 
         // Metadata JSON with an EMPTY version → falls through to None.

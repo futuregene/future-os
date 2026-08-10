@@ -17,8 +17,7 @@ const SAFARIDRIVER_PATH: &str = "/usr/bin/safaridriver";
 /// the fallback default is `/bin/sh` so launch-path tests never spawn the
 /// REAL safaridriver (`sh --port N` exits immediately and never serves).
 #[cfg(test)]
-static SAFARIDRIVER_PATH_OVERRIDE: std::sync::Mutex<Option<String>> =
-    std::sync::Mutex::new(None);
+static SAFARIDRIVER_PATH_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// The safaridriver executable path (honors the test override).
 #[cfg(not(test))]
@@ -416,7 +415,11 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         )
         .unwrap();
         let sh = dir.path().join("safaridriver");
-        std::fs::write(&sh, format!("#!/bin/sh\nexec python3 {} \"$2\"\n", py.display())).unwrap();
+        std::fs::write(
+            &sh,
+            format!("#!/bin/sh\nexec python3 {} \"$2\"\n", py.display()),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

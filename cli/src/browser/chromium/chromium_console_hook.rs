@@ -193,12 +193,14 @@ mod tests {
         assert_eq!(removes[0]["identifier"], json!("preload-1"));
 
         // Action errors propagate (and the preload is still removed).
-        let err: Result<(), String> = with_temporary_preload(&session, async {
-            Err("action boom".to_string())
-        })
-        .await;
+        let err: Result<(), String> =
+            with_temporary_preload(&session, async { Err("action boom".to_string()) }).await;
         assert_eq!(err.unwrap_err(), "action boom");
-        assert_eq!(mock.commands_of("Page.removeScriptToEvaluateOnNewDocument").len(), 2);
+        assert_eq!(
+            mock.commands_of("Page.removeScriptToEvaluateOnNewDocument")
+                .len(),
+            2
+        );
 
         // Add-script failure → Err before the action runs.
         mock.state
@@ -206,8 +208,7 @@ mod tests {
             .unwrap()
             .fail_methods
             .insert("Page.addScriptToEvaluateOnNewDocument".to_string());
-        let err: Result<(), String> =
-            with_temporary_preload(&session, async { Ok(()) }).await;
+        let err: Result<(), String> = with_temporary_preload(&session, async { Ok(()) }).await;
         assert!(err.unwrap_err().contains("mock failure"));
         conn.disconnect().await;
     }

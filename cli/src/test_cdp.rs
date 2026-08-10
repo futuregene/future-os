@@ -260,8 +260,13 @@ fn handle_cdp_message(state_arc: &Arc<Mutex<MockCdpState>>, text: &str) -> Optio
                 "error": {"code": -32000, "message": "mock failure"},
             })]);
         }
-        let result =
-            dispatch_method(&mut state, &method, &params, session_id.as_deref(), &mut events);
+        let result = dispatch_method(
+            &mut state,
+            &method,
+            &params,
+            session_id.as_deref(),
+            &mut events,
+        );
         if let Some(extra) = state.events_after_response.get(&method) {
             events.extend(extra.iter().cloned());
         }

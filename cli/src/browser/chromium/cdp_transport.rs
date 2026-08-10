@@ -323,7 +323,7 @@ mod tests {
             .await
             .unwrap();
         {
-                        // Take a receiver and drop it immediately: after that the
+            // Take a receiver and drop it immediately: after that the
             // broadcast channel has no receivers, so the next inbound text
             // makes events.send fail → reader breaks → closed flag set.
             let _rx = transport.subscribe();

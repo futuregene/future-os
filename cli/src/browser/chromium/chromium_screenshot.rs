@@ -128,7 +128,9 @@ mod tests {
 
         // Invalid base64 → decode error.
         mock.state.lock().unwrap().screenshot_b64 = "!!!bad!!!".to_string();
-        let err = capture_screenshot(&session, &opts(false)).await.unwrap_err();
+        let err = capture_screenshot(&session, &opts(false))
+            .await
+            .unwrap_err();
         assert!(err.contains("Failed to decode screenshot"), "{err}");
 
         // getLayoutMetrics failure (full page path).
@@ -148,7 +150,9 @@ mod tests {
             .unwrap()
             .fail_methods
             .insert("Page.captureScreenshot".to_string());
-        let err = capture_screenshot(&session, &opts(false)).await.unwrap_err();
+        let err = capture_screenshot(&session, &opts(false))
+            .await
+            .unwrap_err();
         assert!(err.contains("mock failure"), "{err}");
         conn.disconnect().await;
     }

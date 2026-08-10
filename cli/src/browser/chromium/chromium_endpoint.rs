@@ -135,7 +135,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_edge_and_lowercase_browser_field() {
         for (body, kind) in [
-            (r#"{"Browser":"Edg/120","webSocketDebuggerUrl":"ws://x/ws"}"#, "edge"),
+            (
+                r#"{"Browser":"Edg/120","webSocketDebuggerUrl":"ws://x/ws"}"#,
+                "edge",
+            ),
             (
                 r#"{"browser":"Chromium/119","webSocketDebuggerUrl":"ws://x/ws"}"#,
                 "chromium",
@@ -204,7 +207,10 @@ mod tests {
             identify_browser(&json!({"Browser": "Microsoft Edge/120"})),
             "edge"
         );
-        assert_eq!(identify_browser(&json!({"Browser": "Chrome/126"})), "chrome");
+        assert_eq!(
+            identify_browser(&json!({"Browser": "Chrome/126"})),
+            "chrome"
+        );
         assert_eq!(
             identify_browser(&json!({"Browser": "Chromium/119"})),
             "chromium"
@@ -227,6 +233,9 @@ mod tests {
         );
         // No recognizable marker → default chromium.
         assert_eq!(identify_browser(&json!({})), "chromium");
-        assert_eq!(identify_browser(&json!({"Browser": "Safari/17"})), "chromium");
+        assert_eq!(
+            identify_browser(&json!({"Browser": "Safari/17"})),
+            "chromium"
+        );
     }
 }

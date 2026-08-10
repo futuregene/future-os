@@ -1590,10 +1590,19 @@ mod tests {
         let mut ctx = ctx_with(session, BrowserConfig::default(), Map::new());
         let result = browser_snapshot(&mut ctx).await.unwrap();
         let text = result.text.as_ref().expect("text");
-        assert!(text.starts_with("Page: Snap T\nURL: http://snap/\n\n"), "{text}");
+        assert!(
+            text.starts_with("Page: Snap T\nURL: http://snap/\n\n"),
+            "{text}"
+        );
         assert!(text.contains("- button \"Go\" [ref=b1] disabled"), "{text}");
-        assert!(text.contains("- checkbox \"Agree\" [ref=c1] checked=true"), "{text}");
-        assert!(text.contains("- link \"Docs\" [ref=a1] href=https://d/"), "{text}");
+        assert!(
+            text.contains("- checkbox \"Agree\" [ref=c1] checked=true"),
+            "{text}"
+        );
+        assert!(
+            text.contains("- link \"Docs\" [ref=a1] href=https://d/"),
+            "{text}"
+        );
         assert!(text.contains("- text \"hello\" [ref=t4]"), "{text}");
         let sc = structured(&result);
         let elements = sc["elements"].as_array().unwrap();
@@ -1791,7 +1800,11 @@ mod tests {
         assert_eq!(sc["scrolled"]["target"], json!("#pane"));
         assert_eq!(sc["scrolled"]["amount"], json!(50));
         let calls = log.lock().unwrap().clone();
-        assert!(calls[0].contains("document.querySelector"), "{:?}", calls[0]);
+        assert!(
+            calls[0].contains("document.querySelector"),
+            "{:?}",
+            calls[0]
+        );
     }
 
     // ── console ───────────────────────────────────────────────────────
@@ -1940,7 +1953,9 @@ mod tests {
         })
         .await
         .unwrap();
-        let ep = wait_for_saved_endpoint("http://unused/", 2_000).await.unwrap();
+        let ep = wait_for_saved_endpoint("http://unused/", 2_000)
+            .await
+            .unwrap();
         assert_eq!(ep, base);
     }
 
@@ -1973,7 +1988,10 @@ mod tests {
         let (_g, _e, _d) = isolated_home().await;
         let a = args(&[("endpoint", json!("http://127.0.0.1:1"))]);
         let err = ensure_browser(&a).await.unwrap_err();
-        assert!(err.contains("Local browser endpoint is not reachable"), "{err}");
+        assert!(
+            err.contains("Local browser endpoint is not reachable"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -2149,8 +2167,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
             .await
             .expect("bind fixed port");
-        let body =
-            format!(r#"{{"Browser":"Chrome/126.0.0.0","webSocketDebuggerUrl":"{ws_url}"}}"#);
+        let body = format!(r#"{{"Browser":"Chrome/126.0.0.0","webSocketDebuggerUrl":"{ws_url}"}}"#);
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 let body = body.clone();
@@ -2186,14 +2203,18 @@ mod tests {
         let endpoint = format!("http://127.0.0.1:{port}");
 
         // First call: existing endpoint (default 9222) differs → update note.
-        let result = browser_start(&args(&[("port", json!(port))])).await.unwrap();
+        let result = browser_start(&args(&[("port", json!(port))]))
+            .await
+            .unwrap();
         let sc = structured(&result);
         assert_eq!(sc["status"], json!("already_running"));
         assert_eq!(sc["endpoint"], json!(endpoint));
         assert!(sc["note"].as_str().unwrap().contains("was updated"), "{sc}");
 
         // Second call: config now points at the same endpoint → plain note.
-        let result = browser_start(&args(&[("port", json!(port))])).await.unwrap();
+        let result = browser_start(&args(&[("port", json!(port))]))
+            .await
+            .unwrap();
         let sc = structured(&result);
         assert_eq!(
             sc["note"],
@@ -2267,7 +2288,10 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         assert_eq!(sc["status"], json!("started"));
         assert_eq!(sc["port"], json!(port));
         assert_eq!(sc["requestedPort"], json!(port));
-        assert!(sc["profileDir"].as_str().unwrap().contains("profile"), "{sc}");
+        assert!(
+            sc["profileDir"].as_str().unwrap().contains("profile"),
+            "{sc}"
+        );
         // Config saved with the active url.
         let saved = load_browser_config().await.unwrap();
         assert_eq!(saved.active_url.as_deref(), Some("http://home/"));
@@ -2297,7 +2321,10 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         drop(holder);
         let sc = structured(&result);
         assert_eq!(sc["status"], json!("starting"));
-        assert!(sc["note"].as_str().unwrap().contains("did not answer"), "{sc}");
+        assert!(
+            sc["note"].as_str().unwrap().contains("did not answer"),
+            "{sc}"
+        );
         // The scanned port differs from the occupied requested one.
         assert_ne!(sc["port"], json!(taken));
         assert_eq!(sc["requestedPort"], json!(taken));
@@ -2492,20 +2519,18 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
             r#"{{"Browser":"Chrome/126","webSocketDebuggerUrl":"{}"}}"#,
             mock.ws_url
         );
-        let base = crate::test_server::spawn_http(vec![
-            crate::test_server::HttpRoute::sequence(
-                "/json/version",
-                vec![
-                    // 1: ensure_browser reachability probe.
-                    (200, &version_ok),
-                    // 2: create_session's refinement probe → fails → keep
-                    //    "chromium".
-                    (500, "{}"),
-                    // 3: the session's own init resolve (must succeed).
-                    (200, &version_ok),
-                ],
-            ),
-        ])
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sequence(
+            "/json/version",
+            vec![
+                // 1: ensure_browser reachability probe.
+                (200, &version_ok),
+                // 2: create_session's refinement probe → fails → keep
+                //    "chromium".
+                (500, "{}"),
+                // 3: the session's own init resolve (must succeed).
+                (200, &version_ok),
+            ],
+        )])
         .await;
         save_cdp_config(&base, "chromium").await;
         let (out, _cap) = Output::memory();
@@ -2584,4 +2609,3 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         assert_eq!(config_endpoint_or_default(&config), "http://x/");
     }
 }
-

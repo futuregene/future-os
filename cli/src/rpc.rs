@@ -891,10 +891,9 @@ mod tests {
                     "{{\"sessions\":[{{\"id\":\"s1\",\"updated_at\":\"2026-08-06 12:00:00\",\"session_name\":\"{name}\"}}]}}"
                 ),
             );
-            agent.responses.insert(
-                "new_session".into(),
-                "{\"sessionId\":\"s-new\"}".into(),
-            );
+            agent
+                .responses
+                .insert("new_session".into(), "{\"sessionId\":\"s-new\"}".into());
             let addr = crate::test_server::spawn_mock(agent.clone()).await;
             let client = RunClient::new(&addr);
             let (out, cap) = Output::memory();

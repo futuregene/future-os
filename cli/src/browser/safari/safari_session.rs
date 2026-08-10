@@ -580,8 +580,12 @@ mod tests {
 
     #[tokio::test]
     async fn find_one_translates_xpath_and_text_prefixes() {
-        let base =
-            mock(vec![HttpRoute::json("/session/s1/element", 200, r#"{"value":"e9"}"#)]).await;
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/element",
+            200,
+            r#"{"value":"e9"}"#,
+        )])
+        .await;
         let s = session(&base);
         assert_eq!(s.find_one("xpath=//div").await.unwrap(), "e9");
         assert_eq!(s.find_one("text=Hello").await.unwrap(), "e9");
@@ -656,7 +660,10 @@ mod tests {
         .await;
         let mut s = session(&base);
         // Mapped key without a target → sent to body element.
-        let r = s.press("Enter", None, PressOptions::default()).await.unwrap();
+        let r = s
+            .press("Enter", None, PressOptions::default())
+            .await
+            .unwrap();
         assert!(!r.did_navigate);
         assert_eq!(r.page_id, "h1");
         // Unmapped key passes through verbatim; with target.
@@ -670,7 +677,11 @@ mod tests {
     #[tokio::test]
     async fn tabs_list_switches_through_handles() {
         let base = mock(vec![
-            HttpRoute::json("/session/s1/window/handles", 200, r#"{"value":["h1","h2"]}"#),
+            HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1","h2"]}"#,
+            ),
             HttpRoute::sequence(
                 "/session/s1/window",
                 vec![
@@ -707,10 +718,18 @@ mod tests {
     #[tokio::test]
     async fn tabs_new_with_and_without_url() {
         let base = mock(vec![
-            HttpRoute::json("/session/s1/window/new", 200, r#"{"value":{"handle":"h2"}}"#),
+            HttpRoute::json(
+                "/session/s1/window/new",
+                200,
+                r#"{"value":{"handle":"h2"}}"#,
+            ),
             HttpRoute::json("/session/s1/url", 200, r#"{"value":"http://new/"}"#),
             HttpRoute::json("/session/s1/execute/sync", 200, r#"{"value":null}"#),
-            HttpRoute::json("/session/s1/window/handles", 200, r#"{"value":["h1","h2"]}"#),
+            HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1","h2"]}"#,
+            ),
             HttpRoute::json("/session/s1/title", 200, r#"{"value":"NT"}"#),
         ])
         .await;
@@ -737,7 +756,11 @@ mod tests {
     #[tokio::test]
     async fn tabs_select_and_invalid_index() {
         let base = mock(vec![
-            HttpRoute::json("/session/s1/window/handles", 200, r#"{"value":["h1","h2"]}"#),
+            HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1","h2"]}"#,
+            ),
             HttpRoute::json("/session/s1/window", 200, r#"{"value":null}"#),
             HttpRoute::json("/session/s1/execute/sync", 200, r#"{"value":null}"#),
             HttpRoute::json("/session/s1/title", 200, r#"{"value":"T2"}"#),
@@ -760,7 +783,11 @@ mod tests {
     #[tokio::test]
     async fn tabs_close_switches_back_to_last_remaining() {
         let base = mock(vec![
-            HttpRoute::json("/session/s1/window/handles", 200, r#"{"value":["h1","h2"]}"#),
+            HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1","h2"]}"#,
+            ),
             HttpRoute::json("/session/s1/window", 200, r#"{"value":null}"#),
             HttpRoute::json("/session/s1/url", 200, r#"{"value":"u1"}"#),
         ])
@@ -791,9 +818,12 @@ mod tests {
 
     #[tokio::test]
     async fn evaluate_expression_and_function() {
-        let base =
-            mock(vec![HttpRoute::json("/session/s1/execute/sync", 200, r#"{"value":{"k":2}}"#)])
-                .await;
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/execute/sync",
+            200,
+            r#"{"value":{"k":2}}"#,
+        )])
+        .await;
         let mut s = session(&base);
         let v = s
             .evaluate(&EvaluateRequest::Expression {

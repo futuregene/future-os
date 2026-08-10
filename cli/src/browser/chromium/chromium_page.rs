@@ -492,7 +492,10 @@ mod tests {
         assert!(mgr.get_page("nope").is_none());
         // No active configured → last in order.
         assert_eq!(mgr.get_active_page_id().as_deref(), Some("T-2"));
-        assert_eq!(mgr.get_tab_order(), vec!["T-1".to_string(), "T-2".to_string()]);
+        assert_eq!(
+            mgr.get_tab_order(),
+            vec!["T-1".to_string(), "T-2".to_string()]
+        );
 
         // Target.setDiscoverTargets + getTargets + 2 attaches happened.
         assert_eq!(mock.commands_of("Target.setDiscoverTargets").len(), 1);
@@ -503,13 +506,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn initialize_restores_tab_order_and_active_page() {
         let (mock, conn, mut mgr) = manager_over_mock().await;
-        mgr.initialize(
-            Some(&["T-2".to_string(), "T-1".to_string()]),
-            Some("T-1"),
-        )
-        .await
-        .unwrap();
-        assert_eq!(mgr.get_tab_order(), vec!["T-2".to_string(), "T-1".to_string()]);
+        mgr.initialize(Some(&["T-2".to_string(), "T-1".to_string()]), Some("T-1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            mgr.get_tab_order(),
+            vec!["T-2".to_string(), "T-1".to_string()]
+        );
         assert_eq!(mgr.get_active_page_id().as_deref(), Some("T-1"));
 
         // Unknown active id is ignored → falls back to last.
@@ -742,7 +745,9 @@ mod tests {
             r#type: "page".to_string(),
         });
         assert_eq!(
-            mgr.connection.get_target_by_session_id("SID-X").map(|t| t.target_id),
+            mgr.connection
+                .get_target_by_session_id("SID-X")
+                .map(|t| t.target_id),
             Some("T-1".to_string())
         );
         conn.disconnect().await;

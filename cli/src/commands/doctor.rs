@@ -924,8 +924,13 @@ mod tests {
         // All five binaries resolvable on PATH (fake versions).
         let bin_dir = dir.path().join("bin");
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
-        for name in ["future", "future-agent", "future-tui", "future-desktop", "future-channel"]
-        {
+        for name in [
+            "future",
+            "future-agent",
+            "future-tui",
+            "future-desktop",
+            "future-channel",
+        ] {
             let path = bin_dir.join(name);
             tokio::fs::write(&path, "#!/bin/sh\necho \"future v1.0.0\"\n")
                 .await
@@ -1173,8 +1178,13 @@ mod tests {
         // the `which` binary itself stays resolvable.
         let bin_dir = dir.path().join("bin");
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
-        for name in ["future", "future-agent", "future-tui", "future-desktop", "future-channel"]
-        {
+        for name in [
+            "future",
+            "future-agent",
+            "future-tui",
+            "future-desktop",
+            "future-channel",
+        ] {
             let path = bin_dir.join(name);
             tokio::fs::write(&path, "#!/bin/sh\necho \"future v1.0.0\"\n")
                 .await
@@ -1233,7 +1243,10 @@ mod tests {
         assert_eq!(code, 0);
         assert!(stderr.is_empty());
         // The models-only provider gets the bare "custom" label.
-        assert!(stdout.contains("models-only \u{1b}[2m(custom)\u{1b}[0m"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("models-only \u{1b}[2m(custom)\u{1b}[0m"),
+            "stdout: {stdout}"
+        );
         // Everything ok → the all-clear line.
         assert!(stdout.contains("All checks passed."), "stdout: {stdout}");
     }
@@ -1290,8 +1303,7 @@ mod tests {
         // Restore so the tempdir cleanup succeeds.
         for rel in ["auth.json", "models.json", "settings.json"] {
             let path = dir.path().join(".future").join("agent").join(rel);
-            let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
-                .await;
+            let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).await;
         }
     }
 
@@ -1304,6 +1316,9 @@ mod tests {
         tokio::fs::create_dir_all(skills_dir()).await.unwrap();
         let (_, stdout, _) = run_doctor().await;
         assert!(stdout.contains("No skills installed."), "stdout: {stdout}");
-        assert!(!stdout.contains("(directory not found)"), "stdout: {stdout}");
+        assert!(
+            !stdout.contains("(directory not found)"),
+            "stdout: {stdout}"
+        );
     }
 }

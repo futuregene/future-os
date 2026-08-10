@@ -177,7 +177,10 @@ mod tests {
             dir.path().as_os_str().to_os_string(),
         )]);
         let path = default_profile_dir();
-        assert_eq!(path, dir.path().join("agent").join("browser").join("profile"));
+        assert_eq!(
+            path,
+            dir.path().join("agent").join("browser").join("profile")
+        );
     }
 
     #[test]
