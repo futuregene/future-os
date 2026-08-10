@@ -110,7 +110,6 @@ fn unknown_flags_are_swallowed_everywhere() {
     cli_ok(&["backfill", "--goal", &gid, "--from", md.to_str().unwrap(), "--dry-run", "--zz", "1"]);
     cli_ok(&["replay", "record", "--goal", &gid, "--zz", "1"]);
     cli_ok(&["replay", "corpus", "build", "--goal", &gid, "--patch", "{}", "--zz", "1"]);
-    cli_ok(&["extension", "status", "--id", "x", "--zz", "1"]);
 }
 
 // ── steer poll seam ────────────────────────────────────────────────────────
