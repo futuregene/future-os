@@ -165,4 +165,16 @@ mod tests {
         assert!(!cfg.api_domain().ends_with("/open-apis"));
         assert!(cfg.api_domain().ends_with("feishu.cn"));
     }
+
+    #[test]
+    fn full_url_domains_pass_through_verbatim() {
+        let cfg = make_config("http://127.0.0.1:8080/");
+        assert_eq!(cfg.api_base(), "http://127.0.0.1:8080");
+        assert_eq!(cfg.api_domain(), "http://127.0.0.1:8080");
+        assert_eq!(cfg.ws_base(), "ws://127.0.0.1:8080");
+
+        let cfg = make_config("https://gw.example.com");
+        assert_eq!(cfg.api_base(), "https://gw.example.com");
+        assert_eq!(cfg.ws_base(), "wss://gw.example.com");
+    }
 }

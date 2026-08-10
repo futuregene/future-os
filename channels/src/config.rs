@@ -145,9 +145,7 @@ impl ChannelConfig {
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let config = Self::default();
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
+                if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
                 std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
                 anyhow::bail!(
                     "Default config written to {}. Edit it and restart.",

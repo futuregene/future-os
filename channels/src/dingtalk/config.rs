@@ -73,4 +73,15 @@ mod tests {
         assert_eq!(dc.client_secret, "ding_secret");
         assert_eq!(dc.domain, "api.dingtalk.com");
     }
+
+    #[test]
+    fn base_url_adds_https_to_bare_domains() {
+        assert_eq!(base_url("api.dingtalk.com"), "https://api.dingtalk.com");
+    }
+
+    #[test]
+    fn base_url_passes_full_urls_through() {
+        assert_eq!(base_url("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
+        assert_eq!(base_url("https://gw.example.com/"), "https://gw.example.com");
+    }
 }
