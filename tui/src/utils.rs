@@ -1492,7 +1492,10 @@ mod tests {
         // Thai AM (U+0E33) → NIKHAHIT + SARA AA.
         assert_eq!(normalize_terminal_output("\u{0e33}"), "\u{0e4d}\u{0e32}");
         // Lao AM (U+0EB3) decomposes too.
-        assert_eq!(normalize_terminal_output("x\u{0eb3}y"), "x\u{0ecd}\u{0eb2}y");
+        assert_eq!(
+            normalize_terminal_output("x\u{0eb3}y"),
+            "x\u{0ecd}\u{0eb2}y"
+        );
         // Tabs are replaced with 3 spaces along the way.
         assert_eq!(normalize_terminal_output("a\tb"), "a   b");
     }
@@ -1576,10 +1579,7 @@ mod tests {
     fn feed_osc8_sets_and_clears_link() {
         let mut t = AnsiCodeTracker::new();
         t.feed("\x1b]8;;https://example.com\x07");
-        assert_eq!(
-            t.get_state().link.as_deref(),
-            Some("https://example.com")
-        );
+        assert_eq!(t.get_state().link.as_deref(), Some("https://example.com"));
         t.feed("\x1b]8;;\x07");
         assert_eq!(t.get_state().link.as_deref(), Some(""));
     }
@@ -1677,7 +1677,10 @@ mod tests {
         let mut t = AnsiCodeTracker::new();
         assert_eq!(t.get_osc8_link(), "");
         t.feed("\x1b]8;;https://x.example\x07");
-        assert_eq!(t.get_osc8_link(), "\x1b]8;id=future_tui;https://x.example\x07");
+        assert_eq!(
+            t.get_osc8_link(),
+            "\x1b]8;id=future_tui;https://x.example\x07"
+        );
         assert_eq!(t.get_osc8_close(), "\x1b]8;;\x07");
     }
 

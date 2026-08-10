@@ -1696,8 +1696,7 @@ impl MarkdownRenderer {
                 .enumerate()
                 .map(|(i, min_w)| {
                     let delta = natural_widths[i].saturating_sub(*min_w);
-                    let grow =
-                        (delta as f64 / total_grow as f64 * extra as f64).floor() as usize;
+                    let grow = (delta as f64 / total_grow as f64 * extra as f64).floor() as usize;
                     min_w + grow
                 })
                 .collect();
@@ -2457,24 +2456,48 @@ mod tests {
     #[test]
     fn type_name_covers_every_block_variant() {
         assert_eq!(
-            MdBlock::Heading { depth: 1, inline: vec![] }.type_name(),
+            MdBlock::Heading {
+                depth: 1,
+                inline: vec![]
+            }
+            .type_name(),
             "heading"
         );
-        assert_eq!(MdBlock::Paragraph { inline: vec![] }.type_name(), "paragraph");
         assert_eq!(
-            MdBlock::Code { text: String::new(), lang: String::new() }.type_name(),
+            MdBlock::Paragraph { inline: vec![] }.type_name(),
+            "paragraph"
+        );
+        assert_eq!(
+            MdBlock::Code {
+                text: String::new(),
+                lang: String::new()
+            }
+            .type_name(),
             "code"
         );
-        assert_eq!(MdBlock::Blockquote { blocks: vec![] }.type_name(), "blockquote");
         assert_eq!(
-            MdBlock::List { ordered: false, start: None, items: vec![] }.type_name(),
+            MdBlock::Blockquote { blocks: vec![] }.type_name(),
+            "blockquote"
+        );
+        assert_eq!(
+            MdBlock::List {
+                ordered: false,
+                start: None,
+                items: vec![]
+            }
+            .type_name(),
             "list"
         );
         assert_eq!(MdBlock::Hr.type_name(), "hr");
         assert_eq!(MdBlock::Html { raw: String::new() }.type_name(), "html");
         assert_eq!(MdBlock::Space.type_name(), "space");
         assert_eq!(
-            MdBlock::Table { header: vec![], rows: vec![], raw: String::new() }.type_name(),
+            MdBlock::Table {
+                header: vec![],
+                rows: vec![],
+                raw: String::new()
+            }
+            .type_name(),
             "table"
         );
         assert_eq!(MdBlock::Text { inline: vec![] }.type_name(), "text");
@@ -2602,10 +2625,8 @@ mod tests {
             strikethrough: true,
             underline: true,
         };
-        let mut r = MarkdownRenderer::with_theme_and_style(
-            MarkdownThemePartial::default(),
-            Some(style),
-        );
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
         let lines = r.render_text("styled text", 40);
         let joined = lines.join("\n");
         assert!(joined.contains("38;5;196"));
@@ -2664,23 +2685,42 @@ mod tests {
         let blocks = vec![
             MdBlock::Paragraph {
                 inline: vec![
-                    MdInline::Text { text: "hello ".to_string() },
-                    MdInline::Strong { inline: vec![MdInline::Text { text: "bold".into() }] },
-                    MdInline::Codespan { text: "code".into() },
+                    MdInline::Text {
+                        text: "hello ".to_string(),
+                    },
+                    MdInline::Strong {
+                        inline: vec![MdInline::Text {
+                            text: "bold".into(),
+                        }],
+                    },
+                    MdInline::Codespan {
+                        text: "code".into(),
+                    },
                     MdInline::Br,
-                    MdInline::Em { inline: vec![MdInline::Text { text: "em".into() }] },
-                    MdInline::Del { inline: vec![MdInline::Text { text: "del".into() }] },
+                    MdInline::Em {
+                        inline: vec![MdInline::Text { text: "em".into() }],
+                    },
+                    MdInline::Del {
+                        inline: vec![MdInline::Text { text: "del".into() }],
+                    },
                     MdInline::Link {
                         inline: vec![MdInline::Text { text: "lnk".into() }],
                         href: String::new(),
                     },
-                    MdInline::Html { raw: "<b>raw</b>".into() },
+                    MdInline::Html {
+                        raw: "<b>raw</b>".into(),
+                    },
                     MdInline::Image,
                     MdInline::Checkbox,
                 ],
             },
-            MdBlock::Text { inline: vec![MdInline::Text { text: "txt".into() }] },
-            MdBlock::Code { text: "c1\nc2".into(), lang: String::new() },
+            MdBlock::Text {
+                inline: vec![MdInline::Text { text: "txt".into() }],
+            },
+            MdBlock::Code {
+                text: "c1\nc2".into(),
+                lang: String::new(),
+            },
             MdBlock::Hr, // ignored
         ];
         let text = blockquote_raw_text(&blocks);
@@ -2706,7 +2746,11 @@ mod tests {
         let ctx = bare_ctx(&mut r);
         // Top-level Text block.
         let out = r.render_block(
-            &MdBlock::Text { inline: vec![MdInline::Text { text: "tight".into() }] },
+            &MdBlock::Text {
+                inline: vec![MdInline::Text {
+                    text: "tight".into(),
+                }],
+            },
             60,
             None,
             &ctx,
@@ -2719,7 +2763,10 @@ mod tests {
         assert!(space.iter().all(|l| l.trim().is_empty()));
         // Code block followed by a non-space block gets a spacer line.
         let ctx = bare_ctx(&mut r);
-        let code = MdBlock::Code { text: "x = 1".into(), lang: String::new() };
+        let code = MdBlock::Code {
+            text: "x = 1".into(),
+            lang: String::new(),
+        };
         let with_next = r.render_block(&code, 60, Some("paragraph"), &ctx);
         let ctx = bare_ctx(&mut r);
         let without_next = r.render_block(&code, 60, None, &ctx);
@@ -2743,20 +2790,33 @@ mod tests {
         let mut r = MarkdownRenderer::new();
         let ctx = bare_ctx(&mut r);
         let item: Vec<MdBlock> = vec![
-            MdBlock::Code { text: "item code".into(), lang: "rs".into() },
-            MdBlock::Html { raw: "<i>x</i>".into() },
+            MdBlock::Code {
+                text: "item code".into(),
+                lang: "rs".into(),
+            },
+            MdBlock::Html {
+                raw: "<i>x</i>".into(),
+            },
             MdBlock::Blockquote {
                 blocks: vec![MdBlock::Paragraph {
-                    inline: vec![MdInline::Text { text: "q in item".into() }],
+                    inline: vec![MdInline::Text {
+                        text: "q in item".into(),
+                    }],
                 }],
             },
             MdBlock::Hr, // renders nothing inline
-            MdBlock::Table { header: vec![], rows: vec![], raw: String::new() }, // nothing
+            MdBlock::Table {
+                header: vec![],
+                rows: vec![],
+                raw: String::new(),
+            }, // nothing
             MdBlock::List {
                 ordered: false,
                 start: None,
                 items: vec![vec![MdBlock::Text {
-                    inline: vec![MdInline::Text { text: "nested".into() }],
+                    inline: vec![MdInline::Text {
+                        text: "nested".into(),
+                    }],
                 }]],
             },
         ];
@@ -2776,7 +2836,14 @@ mod tests {
         let ctx = bare_ctx(&mut r);
         let header = vec![vec![MdInline::Text { text: "A".into() }]];
         let rows = vec![vec![vec![MdInline::Text { text: "1".into() }]]];
-        let narrow = r.render_table(&header, &rows, "| A |\n|---|\n| 1 |", 2, Some("paragraph"), &ctx);
+        let narrow = r.render_table(
+            &header,
+            &rows,
+            "| A |\n|---|\n| 1 |",
+            2,
+            Some("paragraph"),
+            &ctx,
+        );
         assert!(narrow.iter().any(|l| l.contains('A')));
         assert!(narrow.last().unwrap().is_empty());
 
@@ -2842,7 +2909,10 @@ mod tests {
             }
         }
         fn text_ev(s: &str) -> (Event<'static>, std::ops::Range<usize>) {
-            (Event::Text(CowStr::Boxed(s.to_string().into_boxed_str())), 0..1)
+            (
+                Event::Text(CowStr::Boxed(s.to_string().into_boxed_str())),
+                0..1,
+            )
         }
         let rng = || 0..1;
 
@@ -2901,7 +2971,7 @@ mod tests {
             (Event::End(TagEnd::CodeBlock), rng()),
         ]);
         let (blocks, _) = p.parse_blocks(None, (0, 0), false, false);
-        let debug = format!("{:?}", &blocks[0]);
+        let debug = format!("{:?}", blocks[0]);
         assert!(debug.starts_with("Code"));
         assert!(debug.contains("text: \"code\""));
 
@@ -2952,7 +3022,10 @@ mod tests {
                 rng(),
             ),
             text_ev("inner"),
-            (Event::End(TagEnd::Heading(pulldown_cmark::HeadingLevel::H2)), rng()),
+            (
+                Event::End(TagEnd::Heading(pulldown_cmark::HeadingLevel::H2)),
+                rng(),
+            ),
             text_ev("after"),
             (Event::End(TagEnd::Emphasis), rng()),
         ]);
@@ -2972,7 +3045,10 @@ mod tests {
         // parse_bare_text_block: all inline event kinds.
         let mut p = parser_with(vec![
             (Event::TaskListMarker(false), rng()),
-            (Event::Code(CowStr::Boxed("c".to_string().into_boxed_str())), rng()),
+            (
+                Event::Code(CowStr::Boxed("c".to_string().into_boxed_str())),
+                rng(),
+            ),
             (
                 Event::InlineHtml(CowStr::Boxed("<b>".to_string().into_boxed_str())),
                 rng(),
@@ -3052,10 +3128,8 @@ mod tests {
             strikethrough: false,
             underline: false,
         };
-        let mut r = MarkdownRenderer::with_theme_and_style(
-            MarkdownThemePartial::default(),
-            Some(style),
-        );
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
         // An image-only inline run renders just the style prefix, which is
         // then stripped back off.
         let ctx = bare_ctx(&mut r);
@@ -3073,7 +3147,11 @@ mod tests {
 
         // blockquote_raw_text drops trailing empty lines.
         let blocks = vec![
-            MdBlock::Paragraph { inline: vec![MdInline::Text { text: "real".into() }] },
+            MdBlock::Paragraph {
+                inline: vec![MdInline::Text {
+                    text: "real".into(),
+                }],
+            },
             MdBlock::Paragraph { inline: vec![] },
         ];
         assert_eq!(blockquote_raw_text(&blocks), "real");
@@ -3102,13 +3180,13 @@ mod tests {
         // Exercise the skip/`other` arms; assertions are loose — the point
         // is driving the parser paths without panicking.
         let cases = [
-            "- a\n\n>\n",              // blank-ish blockquote marker after a list
+            "- a\n\n>\n",                         // blank-ish blockquote marker after a list
             "- [ ] task\n\n- [x] done\n\npara\n", // loose task list
-            "<div>\nblock\n</div>\n\npara\n",   // html block
-            "text\n<span>inline</span>\nmore\n", // inline html mid-paragraph
+            "<div>\nblock\n</div>\n\npara\n",     // html block
+            "text\n<span>inline</span>\nmore\n",  // inline html mid-paragraph
             "<!-- comment -->\n\npara\n",
-            "##\n",                    // empty heading
-            "```\n\n```\n",            // empty fenced code
+            "##\n",                        // empty heading
+            "```\n\n```\n",                // empty fenced code
             "    indented\n\n\t tabbed\n", // indented code with tab line
         ];
         for md in cases {
@@ -3128,10 +3206,8 @@ mod tests {
             strikethrough: false,
             underline: false,
         };
-        let mut r = MarkdownRenderer::with_theme_and_style(
-            MarkdownThemePartial::default(),
-            Some(style),
-        );
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
         // Two renders: the second hits the cached style prefix.
         let _ = r.render_text("<b>hi</b>", 40);
         let _ = r.render_text("<b>hi again</b>", 40);
@@ -3145,10 +3221,8 @@ mod tests {
             strikethrough: false,
             underline: false,
         };
-        let mut r = MarkdownRenderer::with_theme_and_style(
-            MarkdownThemePartial::default(),
-            Some(style),
-        );
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
         let lines = r.render_text("<u>html</u>", 40);
         assert!(!lines.is_empty());
     }
@@ -3172,10 +3246,8 @@ mod tests {
             strikethrough: true,
             underline: true,
         };
-        let mut r = MarkdownRenderer::with_theme_and_style(
-            MarkdownThemePartial::default(),
-            Some(style),
-        );
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
         let lines = r.render_text("<div>\nblock html\n</div>", 60);
         let joined = lines.join("\n");
         assert!(joined.contains("38;5;99"));
@@ -3220,10 +3292,16 @@ mod tests {
                 ordered: false,
                 start: None,
                 items: vec![vec![MdBlock::Text {
-                    inline: vec![MdInline::Text { text: "deep".into() }],
+                    inline: vec![MdInline::Text {
+                        text: "deep".into(),
+                    }],
                 }]],
             },
-            MdBlock::Text { inline: vec![MdInline::Text { text: "tail".into() }] },
+            MdBlock::Text {
+                inline: vec![MdInline::Text {
+                    text: "tail".into(),
+                }],
+            },
         ]];
         let lines = r.render_list(false, None, &items, 0, &ctx);
         let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
@@ -3240,7 +3318,10 @@ mod tests {
             ..Default::default()
         });
         let ctx = bare_ctx(&mut r);
-        let item = vec![MdBlock::Code { text: "fn x()".into(), lang: "rs".into() }];
+        let item = vec![MdBlock::Code {
+            text: "fn x()".into(),
+            lang: "rs".into(),
+        }];
         let lines = r.render_list_item(&item, 0, &ctx);
         assert!(strip_ansi_codes(&lines.join("\n")).contains("HL fn x()"));
     }
@@ -3286,12 +3367,20 @@ mod tests {
 
         // Remainder distribution: cols grown below natural with spare room.
         let header = vec![
-            vec![MdInline::Text { text: "aa bb".into() }],
-            vec![MdInline::Text { text: "cc dd".into() }],
+            vec![MdInline::Text {
+                text: "aa bb".into(),
+            }],
+            vec![MdInline::Text {
+                text: "cc dd".into(),
+            }],
         ];
         let rows = vec![vec![
-            vec![MdInline::Text { text: "ee ff".into() }],
-            vec![MdInline::Text { text: "gg hh".into() }],
+            vec![MdInline::Text {
+                text: "ee ff".into(),
+            }],
+            vec![MdInline::Text {
+                text: "gg hh".into(),
+            }],
         ]];
         let ctx = bare_ctx(&mut r);
         let lines = r.render_table(&header, &rows, "", 14, None, &ctx);
@@ -3325,14 +3414,14 @@ mod tests {
             strikethrough: false,
             underline: false,
         };
-        let mut r = MarkdownRenderer::with_theme_and_style(
-            MarkdownThemePartial::default(),
-            Some(style),
-        );
+        let mut r =
+            MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
         // A run ending in Strong pushes the prefix last → stripped.
         let ctx = bare_ctx(&mut r);
         let out = r.render_inline_tokens(
-            &[MdInline::Strong { inline: vec![MdInline::Text { text: "b".into() }] }],
+            &[MdInline::Strong {
+                inline: vec![MdInline::Text { text: "b".into() }],
+            }],
             &ctx,
         );
         assert!(!out.ends_with(&ctx.style_prefix));

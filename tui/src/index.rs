@@ -1133,15 +1133,24 @@ mod tests {
     #[test]
     fn parse_value_options() {
         let a = args(&[
-            "--session", "s1",
-            "--fork", "e9",
-            "--provider", "openai",
-            "--api-key", "sk-test",
-            "--thinking", "high",
-            "--system-prompt", "be nice",
-            "--mode", "json",
-            "--prompt-template", "t1",
-            "--skill", "review",
+            "--session",
+            "s1",
+            "--fork",
+            "e9",
+            "--provider",
+            "openai",
+            "--api-key",
+            "sk-test",
+            "--thinking",
+            "high",
+            "--system-prompt",
+            "be nice",
+            "--mode",
+            "json",
+            "--prompt-template",
+            "t1",
+            "--skill",
+            "review",
         ]);
         assert_eq!(a.session.as_deref(), Some("s1"));
         assert_eq!(a.fork.as_deref(), Some("e9"));
@@ -1185,8 +1194,7 @@ mod tests {
         let file = dir.path().join("abs.txt");
         std::fs::write(&file, "contents").unwrap();
         let abs = file.to_str().unwrap().to_string();
-        let prompt =
-            build_initial_prompt(&[abs.clone()], &[]).expect("prompt built");
+        let prompt = build_initial_prompt(std::slice::from_ref(&abs), &[]).expect("prompt built");
         assert!(prompt.contains(&format!("<file name=\"{abs}\">")));
         assert!(prompt.contains("contents"));
     }
@@ -1272,10 +1280,7 @@ mod tests {
             request: tonic::Request<RpcCommand>,
         ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
-            self.seen_commands
-                .lock()
-                .unwrap()
-                .push(cmd.r#type.clone());
+            self.seen_commands.lock().unwrap().push(cmd.r#type.clone());
             if self.unary_status_types.contains(&cmd.r#type) {
                 return Err(tonic::Status::new(tonic::Code::Unknown, ""));
             }
@@ -1309,8 +1314,13 @@ mod tests {
             }))
         }
 
-        type StreamEventsStream =
-            Pin<Box<dyn tokio_stream::Stream<Item = Result<future_rpc::proto::StreamEvent, tonic::Status>> + Send>>;
+        type StreamEventsStream = Pin<
+            Box<
+                dyn tokio_stream::Stream<
+                        Item = Result<future_rpc::proto::StreamEvent, tonic::Status>,
+                    > + Send,
+            >,
+        >;
 
         async fn stream_events(
             &self,
@@ -1322,9 +1332,7 @@ mod tests {
             let events = self.events.clone();
             let canned = stream::iter(events.into_iter().map(Ok));
             if self.stream_error_after {
-                let err = stream::once(async {
-                    Err(tonic::Status::internal("mid-stream boom"))
-                });
+                let err = stream::once(async { Err(tonic::Status::internal("mid-stream boom")) });
                 return Ok(tonic::Response::new(Box::pin(canned.chain(err))));
             }
             if self.hold_open {
@@ -1343,7 +1351,11 @@ mod tests {
         drop(listener);
         // Spawn the serve future directly — no async-block tail that never
         // completes.
-        tokio::spawn(Server::builder().add_service(FutureAgentServer::new(agent)).serve(addr));
+        tokio::spawn(
+            Server::builder()
+                .add_service(FutureAgentServer::new(agent))
+                .serve(addr),
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
         format!("127.0.0.1:{}", addr.port())
     }
@@ -1365,7 +1377,9 @@ mod tests {
             ..Default::default()
         })
         .await;
-        let resp = execute_unary(&addr, RpcCommand::default(), 5).await.unwrap();
+        let resp = execute_unary(&addr, RpcCommand::default(), 5)
+            .await
+            .unwrap();
         assert!(resp.success);
 
         // Server-reported failure surfaces the error string.
@@ -1397,14 +1411,19 @@ mod tests {
     async fn apply_cli_options_sends_all_blocks() {
         let addr = spawn_mock(MockAgent::default()).await;
         let a = args(&[
-            "--model", "sonnet",
-            "--thinking", "high",
-            "--system-prompt", "sp",
-            "--tools", "read,shell",
+            "--model",
+            "sonnet",
+            "--thinking",
+            "high",
+            "--system-prompt",
+            "sp",
+            "--tools",
+            "read,shell",
             "--no-tools",
             "--no-session",
             "--no-builtin-tools",
-            "--append-system-prompt", "extra",
+            "--append-system-prompt",
+            "extra",
         ]);
         apply_cli_options(&addr, "s1", &a).await.unwrap();
     }
@@ -1734,7 +1753,11 @@ mod tests {
             ..Default::default()
         }));
         // With and without a search term.
-        let code = run(&["--list-models".to_string(), "--grpc-addr".to_string(), addr.clone()]);
+        let code = run(&[
+            "--list-models".to_string(),
+            "--grpc-addr".to_string(),
+            addr.clone(),
+        ]);
         assert_eq!(code, ExitCode::SUCCESS);
         let code = run(&[
             "--list-models".to_string(),
@@ -1828,7 +1851,12 @@ mod tests {
             ],
             ..Default::default()
         }));
-        let code = run(&["-p".to_string(), "hello".to_string(), "--grpc-addr".to_string(), addr]);
+        let code = run(&[
+            "-p".to_string(),
+            "hello".to_string(),
+            "--grpc-addr".to_string(),
+            addr,
+        ]);
         restore_env("HOME", old_home);
         assert_eq!(code, ExitCode::SUCCESS);
     }
@@ -1886,7 +1914,11 @@ mod tests {
                 let saved = libc::dup(0);
                 assert!(saved >= 0);
                 assert_ne!(libc::dup2(slave, 0), -1);
-                Self { master, slave, saved }
+                Self {
+                    master,
+                    slave,
+                    saved,
+                }
             }
         }
 
@@ -1917,6 +1949,7 @@ mod tests {
     /// the main event loop runs, and a ctrl+c byte through the PTY quits.
     #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
     async fn interactive_loop_runs_and_ctrl_c_quits() {
         let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
@@ -1995,7 +2028,14 @@ mod tests {
             })
             .await;
             let pty = PtyStdin::install();
-            Self { addr, seen, _home: home, old_home, pty, unary_delay_ms }
+            Self {
+                addr,
+                seen,
+                _home: home,
+                old_home,
+                pty,
+                unary_delay_ms,
+            }
         }
 
         fn args(&self) -> CliArgs {
@@ -2045,6 +2085,7 @@ mod tests {
     /// A real SIGINT quits via the exit-signal callback + ExitSignal arm.
     #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
     async fn interactive_sigint_quits_via_exit_signal() {
         let _guard = crate::test_env::lock();
         let fx = InteractiveFixture::new().await;
@@ -2062,6 +2103,7 @@ mod tests {
     /// mock answers slowly so startup is guaranteed to be in flight.
     #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
     async fn interactive_ctrl_c_during_startup() {
         let _guard = crate::test_env::lock();
         let fx = InteractiveFixture::with_delay(500).await;
@@ -2079,6 +2121,7 @@ mod tests {
     /// SIGINT during startup drives the ExitSignal startup arm.
     #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
     async fn interactive_sigint_during_startup() {
         let _guard = crate::test_env::lock();
         let fx = InteractiveFixture::with_delay(500).await;
@@ -2096,6 +2139,7 @@ mod tests {
     /// The mock is slow so startup is still in flight for the first raise.
     #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
     async fn interactive_resize_during_and_after_startup() {
         let _guard = crate::test_env::lock();
         let fx = InteractiveFixture::with_delay(400).await;
@@ -2118,6 +2162,7 @@ mod tests {
     /// CLI messages become the initial prompt (sent after startup).
     #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
     async fn interactive_with_initial_prompt_message() {
         let _guard = crate::test_env::lock();
         let fx = InteractiveFixture::new().await;

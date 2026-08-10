@@ -1503,7 +1503,6 @@ mod tests {
         assert_eq!(input.history, vec!["same"]);
     }
 
-
     // ─── UTF-16 helper edge cases ─────────────────────────────────────
 
     #[test]
@@ -1513,7 +1512,7 @@ mod tests {
         assert_eq!(u16_to_byte("a\u{1F600}b", 2), 1); // second emoji unit
         assert_eq!(u16_to_byte("a\u{1F600}b", 3), 5); // just past it
         assert_eq!(u16_to_byte("ab", 9), 2); // past the end → len
-        // Newline search across astral chars.
+                                             // Newline search across astral chars.
         assert_eq!(last_newline_u16("\u{1F600}\n", 2), Some(2));
         assert_eq!(last_newline_u16("ab", 5), None);
         assert_eq!(first_newline_u16("\u{1F600}x\n", 0), Some(3));
@@ -1690,8 +1689,8 @@ mod tests {
         input.set_value("foo bar  ", None);
         input.handle_key("ctrl+left");
         assert_eq!(input.cursor, 4); // start of "bar"
-        // Backwards onto punctuation runs: first stop ends "bar", the
-        // second crosses the "..." run.
+                                     // Backwards onto punctuation runs: first stop ends "bar", the
+                                     // second crosses the "..." run.
         input.set_value("foo...bar", None);
         input.handle_key("ctrl+left");
         assert_eq!(input.cursor, 6);
@@ -1709,7 +1708,7 @@ mod tests {
         input.set_value("  foo bar", Some(0));
         input.handle_key("ctrl+right");
         assert_eq!(input.cursor, 5); // end of "foo"
-        // Forwards through punctuation.
+                                     // Forwards through punctuation.
         input.set_value("..foo", Some(0));
         input.handle_key("ctrl+right");
         assert_eq!(input.cursor, 2);

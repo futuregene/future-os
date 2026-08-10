@@ -832,7 +832,7 @@ impl ChatArea {
     pub(crate) fn plain_messages(&self) -> Vec<(ChatRole, String)> {
         self.messages
             .iter()
-            .map(|m| (m.role.clone(), crate::utils::strip_ansi_codes(&m.content)))
+            .map(|m| (m.role, crate::utils::strip_ansi_codes(&m.content)))
             .collect()
     }
 
@@ -2094,7 +2094,10 @@ mod tests {
         assert_eq!(RunState::Failed.label(), "failed");
         assert_eq!(RunState::Cancelled.label(), "cancelled");
         assert_eq!(RunState::Superseded.label(), "superseded");
-        assert_eq!(RunState::LostOnAgentRestart.label(), "lost_on_agent_restart");
+        assert_eq!(
+            RunState::LostOnAgentRestart.label(),
+            "lost_on_agent_restart"
+        );
     }
 
     #[test]
@@ -2280,11 +2283,7 @@ mod tests {
             ChatRole::System,
             "plain note\n\nanother note",
         ));
-        let plain: Vec<String> = chat
-            .render_all(W)
-            .into_iter()
-            .map(|l| strip(&l))
-            .collect();
+        let plain: Vec<String> = chat.render_all(W).into_iter().map(|l| strip(&l)).collect();
         assert!(plain.iter().any(|l| l.contains("plain note")));
         assert!(plain.iter().any(|l| l.contains("another note")));
     }
@@ -2400,11 +2399,7 @@ mod tests {
         let mut msg = ChatMessage::new("u1".into(), ChatRole::User, "question");
         msg.run_state = Some(RunState::Cancelled);
         chat.add_message(msg);
-        let plain: Vec<String> = chat
-            .render_all(W)
-            .into_iter()
-            .map(|l| strip(&l))
-            .collect();
+        let plain: Vec<String> = chat.render_all(W).into_iter().map(|l| strip(&l)).collect();
         assert!(plain.iter().any(|l| l.contains("cancelled")));
 
         // Queued without a position renders a bare "queued" label.
@@ -2432,11 +2427,7 @@ mod tests {
         // A rewrite that no longer starts with the cached prefix invalidates
         // the streaming cache and still renders correctly.
         chat.update_last_message("completely different content");
-        let plain: Vec<String> = chat
-            .render(W)
-            .into_iter()
-            .map(|l| strip(&l))
-            .collect();
+        let plain: Vec<String> = chat.render(W).into_iter().map(|l| strip(&l)).collect();
         assert!(plain.iter().any(|l| l.contains("completely different")));
     }
 }

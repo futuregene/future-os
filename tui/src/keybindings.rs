@@ -599,7 +599,10 @@ mod tests {
         overrides.insert("b".into(), String::new());
         km.apply_overrides(overrides);
         let map = km.get_binding_map();
-        assert_eq!(map.get("a").map(Vec::as_slice), Some(&["two".to_string()][..]));
+        assert_eq!(
+            map.get("a").map(Vec::as_slice),
+            Some(&["two".to_string()][..])
+        );
         assert!(!map.contains_key("b"));
     }
 

@@ -628,7 +628,10 @@ mod tests {
         sel.handle_input("down");
         assert_eq!(sel.selected_index, 1);
         sel.invalidate();
-        assert!(sel.as_any().downcast_ref::<ScopedModelsSelector>().is_some());
+        assert!(sel
+            .as_any()
+            .downcast_ref::<ScopedModelsSelector>()
+            .is_some());
         assert!(sel
             .as_any_mut()
             .downcast_mut::<ScopedModelsSelector>()

@@ -127,6 +127,7 @@ mod tests {
         restore_env("HOME", old_home);
     }
 
+    #[cfg(unix)]
     #[test]
     fn raw_write_stderr_writes_bytes() {
         raw_write_stderr(b"");

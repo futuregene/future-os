@@ -849,7 +849,12 @@ mod tests {
         // Reassembling the chunk payloads reproduces the original payload.
         let mut reassembled = String::new();
         for chunk in seq.split("\x1b_G").skip(1) {
-            let data = chunk.split(';').nth(1).unwrap().strip_suffix("\x1b\\").unwrap();
+            let data = chunk
+                .split(';')
+                .nth(1)
+                .unwrap()
+                .strip_suffix("\x1b\\")
+                .unwrap();
             reassembled.push_str(data);
         }
         assert_eq!(reassembled, payload);

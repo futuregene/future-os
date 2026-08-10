@@ -139,7 +139,7 @@ impl Terminal {
         // (Windows can genuinely fail on non-console handles).
         #[cfg(test)]
         if FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst) {
-            return Err(io::Error::new(io::ErrorKind::Other, "injected test failure"));
+            return Err(io::Error::other("injected test failure"));
         }
         let backend = Arc::new(platform::Backend::new()?);
         let size = Arc::new(Mutex::new(backend.size()));
@@ -662,13 +662,21 @@ mod tests {
                 let saved = libc::dup(0);
                 assert!(saved >= 0);
                 assert_ne!(libc::dup2(slave, 0), -1);
-                Self { master, slave, saved }
+                Self {
+                    master,
+                    slave,
+                    saved,
+                }
             }
         }
 
         fn write(&self, data: &str) {
             unsafe {
-                libc::write(self.master, data.as_ptr() as *const libc::c_void, data.len());
+                libc::write(
+                    self.master,
+                    data.as_ptr() as *const libc::c_void,
+                    data.len(),
+                );
             }
         }
 
@@ -742,7 +750,7 @@ mod tests {
         t.set_progress(true);
         assert!(t.progress_thread.is_some());
         t.set_progress(true); // already running — no second thread
-        // Let the keepalive thread fire at least once.
+                              // Let the keepalive thread fire at least once.
         std::thread::sleep(Duration::from_millis(TERMINAL_PROGRESS_KEEPALIVE_MS + 200));
         t.set_progress(false);
         assert!(t.progress_thread.is_none());
@@ -830,6 +838,7 @@ mod tests {
         t.drain_input(10, 60_000); // max_ms wins over idle
     }
 
+    #[cfg(unix)]
     #[test]
     fn start_rejects_non_tty_and_double_start() {
         let _g = terminal_test_lock();
@@ -939,7 +948,12 @@ mod tests {
         assert!(!mok.load(Ordering::SeqCst));
         assert!(!keys::is_kitty_protocol_active());
         // With nothing active it still restores + writes the trailing newline.
-        restore_terminal_for_exit(&backend, &AtomicBool::new(false), &AtomicBool::new(false), &lock);
+        restore_terminal_for_exit(
+            &backend,
+            &AtomicBool::new(false),
+            &AtomicBool::new(false),
+            &lock,
+        );
     }
 
     #[test]
@@ -1017,7 +1031,10 @@ mod tests {
 
         // A lone ESC is buffered, then flushed after the idle timeout.
         pty.write("\x1b");
-        assert!(spin_until(|| input_rx.try_iter().any(|s| s == "\x1b"), 2000));
+        assert!(spin_until(
+            || input_rx.try_iter().any(|s| s == "\x1b"),
+            2000
+        ));
 
         // SIGWINCH through the self-pipe → resize callback.
         unsafe { libc::raise(libc::SIGWINCH) };
@@ -1132,7 +1149,12 @@ mod tests {
         // die_with_signal, which the test build substitutes with a panic.
         unsafe { libc::raise(libc::SIGTERM) };
         let got = spin_until(
-            || panic_rx.try_recv().map(|m| m == "die_with_signal(15)").unwrap_or(false),
+            || {
+                panic_rx
+                    .try_recv()
+                    .map(|m| m == "die_with_signal(15)")
+                    .unwrap_or(false)
+            },
             2000,
         );
         let _ = std::panic::take_hook();

@@ -655,10 +655,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    fn list_with_callbacks(
-        log: &Rc<RefCell<Vec<String>>>,
-        max_visible: usize,
-    ) -> SelectList {
+    fn list_with_callbacks(log: &Rc<RefCell<Vec<String>>>, max_visible: usize) -> SelectList {
         let events = Rc::clone(log);
         let selected = Rc::clone(log);
         let cancelled = Rc::clone(log);

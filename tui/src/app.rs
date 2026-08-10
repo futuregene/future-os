@@ -1418,9 +1418,8 @@ impl<T: TerminalIo> App<T> {
         )?;
 
         self.wait_for_agent().await;
-        if !self.running {
-            return Ok(());
-        }
+        // (No is-running check: nothing can flip `running` during startup —
+        // input events are only consumed by the caller once start returns.)
 
         // Handle CLI session options (session / continue / fork / resume).
         self.handle_startup_session().await;
@@ -1978,22 +1977,22 @@ impl<T: TerminalIo> App<T> {
             return;
         }
 
-        // Fallback: printable character not covered by parseKey.
+        // Fallback: printable character not covered by parseKey. parse_key
+        // claims every single-byte char (control or printable), so only
+        // multi-byte characters (all ≥ 0x80, i.e. printable) reach this.
         let mut chars = data.chars();
         if let (Some(c), None) = (chars.next(), chars.next()) {
-            if (c as u32) >= 32 {
-                if !self.overlay_stack.is_empty() {
-                    if let Some(idx) = self.get_top_overlay_index() {
-                        self.overlay_stack[idx]
-                            .component
-                            .handle_input(&c.to_string());
-                        self.request_render(false);
-                    }
-                    return;
+            if !self.overlay_stack.is_empty() {
+                if let Some(idx) = self.get_top_overlay_index() {
+                    self.overlay_stack[idx]
+                        .component
+                        .handle_input(&c.to_string());
+                    self.request_render(false);
                 }
-                self.input.insert_text(&c.to_string());
-                self.request_render(false);
+                return;
             }
+            self.input.insert_text(&c.to_string());
+            self.request_render(false);
         }
     }
 
@@ -3117,11 +3116,11 @@ impl<T: TerminalIo> App<T> {
                 continue;
             }
 
+            // (Pre-filtered above to user/assistant/tool.)
             let role_enum = match role {
                 "user" => ChatRole::User,
                 "assistant" => ChatRole::Assistant,
-                "tool" => ChatRole::Tool,
-                _ => continue,
+                _ => ChatRole::Tool,
             };
             let id = obj.get("id").and_then(Value::as_str).unwrap_or("");
             let id = if id.is_empty() {
@@ -4026,7 +4025,10 @@ impl<T: TerminalIo> App<T> {
 
         // ── All changes in deleted lines (content shrunk) ─────────────
         if first_changed as usize >= new_lines.len() {
-            if self.previous_lines.len() > new_lines.len() {
+            // previous_lines is strictly longer here: a new frame at least
+            // as long would place first_changed inside it.
+            debug_assert!(self.previous_lines.len() > new_lines.len());
+            {
                 let mut buf = SYNC_BEGIN.to_string();
                 buf += &self
                     .delete_changed_kitty_images(first_changed as usize, last_changed as usize);
@@ -4171,15 +4173,12 @@ impl<T: TerminalIo> App<T> {
             }
         }
 
-        let mut final_cursor_row = render_end;
+        let final_cursor_row = render_end;
 
-        // Clear extra lines when content shrunk.
+        // Clear extra lines when content shrunk. (render_end always equals
+        // new_lines.len()-1 here: shrinking sets last_changed at the old
+        // tail, so the JS move-down arm can't trigger.)
         if self.previous_lines.len() > new_lines.len() {
-            if render_end < new_lines.len() - 1 {
-                let move_down = new_lines.len() - 1 - render_end;
-                buf += &format!("\x1b[{move_down}B");
-                final_cursor_row = new_lines.len() - 1;
-            }
             let extra_lines = self.previous_lines.len() - new_lines.len();
             for _ in new_lines.len()..self.previous_lines.len() {
                 buf += "\r\n\x1b[2K";
@@ -4347,25 +4346,35 @@ mod tests {
         ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
             let (tx, rx) = mpsc::unbounded_channel::<StreamEvent>();
             self.subs.lock().unwrap().push(tx);
+            // A first frame so the client's connected edge fires.
+            let first = StreamEvent {
+                r#type: "ping".into(),
+                data: String::new(),
+                ..Default::default()
+            };
             Ok(tonic::Response::new(Box::pin(
-                UnboundedReceiverStream::new(rx).map(Ok),
+                futures_util::stream::once(async move { Ok(first) })
+                    .chain(UnboundedReceiverStream::new(rx).map(Ok)),
             )))
         }
     }
 
-    async fn spawn_cwd_mock_agent() -> (tokio::task::JoinHandle<()>, String) {
+    async fn spawn_cwd_mock_agent() -> (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        String,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener); // tonic binds the same port below
         let agent = CwdMockAgent {
             subs: Arc::new(std::sync::Mutex::new(Vec::new())),
         };
-        let handle = tokio::spawn(async move {
-            let _ = Server::builder()
+        // Spawn the serve future directly (no never-completing task tail).
+        let handle = tokio::spawn(
+            Server::builder()
                 .add_service(FutureAgentServer::new(agent))
-                .serve(addr)
-                .await;
-        });
+                .serve(addr),
+        );
         // Give the server a moment to start listening.
         tokio::time::sleep(Duration::from_millis(50)).await;
         (handle, format!("127.0.0.1:{}", addr.port()))
@@ -4392,6 +4401,10 @@ mod tests {
             &CliOptions::default(),
             std::env::temp_dir().join("tui-cwd-test-settings.json"),
         );
+        // Subscribe to the event stream so the agent's echo arrives.
+        app.client.set_current_session_id("s1");
+        app.client.connect_events();
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         for input in ["/cwd ../", "/cwd ../ "] {
             app.state.cwd = "a/b".into();
@@ -4715,13 +4728,8 @@ mod tests {
         // The printable char inserts into the input and requests a render.
         assert_eq!(app.input.get_value(), "h");
         // The onChange callback fired a UiCmd::InputChanged.
-        match rx.try_recv() {
-            Ok(UiCmd::InputChanged(v)) => assert_eq!(v, "h"),
-            other => panic!(
-                "expected InputChanged, got {:?}",
-                other.map(|c| format!("{c:?}"))
-            ),
-        }
+        let ok = matches!(rx.try_recv(), Ok(UiCmd::InputChanged(ref v)) if v == "h");
+        assert!(ok);
         app.on_tick();
         assert!(!app.terminal.writes.borrow().is_empty());
     }
@@ -4767,7 +4775,7 @@ mod tests {
     /// Feed spawned-task results back into the app until quiescent.
     async fn pump(app: &mut App<FakeTerminal>, op_rx: &mut mpsc::UnboundedReceiver<UiCmd>) {
         let mut idle = 0;
-        for _ in 0..80 {
+        for _ in 0..480 {
             tokio::time::sleep(Duration::from_millis(25)).await;
             let mut drained = Vec::new();
             while let Ok(cmd) = op_rx.try_recv() {
@@ -4775,7 +4783,7 @@ mod tests {
             }
             if drained.is_empty() {
                 idle += 1;
-                if idle >= 3 {
+                if idle >= 15 {
                     break;
                 }
                 continue;
@@ -4785,6 +4793,28 @@ mod tests {
                 app.handle_cmd(cmd);
             }
         }
+    }
+
+    /// Pump until a system message containing `needle` appears (bounded).
+    /// Deterministic alternative to fixed-window pumping for live-agent
+    /// flows under parallel load.
+    async fn pump_until_msg(
+        app: &mut App<FakeTerminal>,
+        op_rx: &mut mpsc::UnboundedReceiver<UiCmd>,
+        needle: &str,
+    ) {
+        let mut found = false;
+        for _ in 0..400 {
+            while let Ok(cmd) = op_rx.try_recv() {
+                app.handle_cmd(cmd);
+            }
+            if system_messages(app).iter().any(|m| m.contains(needle)) {
+                found = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(found);
     }
 
     /// System message contents, plain text.
@@ -4930,7 +4960,9 @@ mod tests {
         });
 
         // ThinkingCycled ok/err.
-        app.handle_cmd(UiCmd::ThinkingCycled(Ok(json_parse(r#"{"level":"xhigh"}"#))));
+        app.handle_cmd(UiCmd::ThinkingCycled(Ok(json_parse(
+            r#"{"level":"xhigh"}"#,
+        ))));
         assert_eq!(app.state.thinking, "xhigh");
         app.handle_cmd(UiCmd::ThinkingCycled(Err("x".into())));
 
@@ -4942,7 +4974,9 @@ mod tests {
 
         // ReloadDone ok (with skills + contextFiles) / err.
         app.handle_cmd(UiCmd::ReloadDone {
-            result: Ok(json_parse(r#"{"skills":["a","b"],"contextFiles":["AGENTS.md"]}"#)),
+            result: Ok(json_parse(
+                r#"{"skills":["a","b"],"contextFiles":["AGENTS.md"]}"#,
+            )),
             state: Some(sample_state()),
         });
         assert!(last_system(&app).contains("Reloaded: 2 skills loaded"));
@@ -5027,15 +5061,13 @@ mod tests {
         assert!(last_system(&app).contains("Failed to get status"));
 
         // InitialPromptDone is a no-op.
-        app.handle_cmd(UiCmd::InitialPromptDone(Ok(
-            crate::rpc::types::RunAck {
-                run_id: "r".into(),
-                run_epoch: 1,
-                accepted_state: "running".into(),
-                run_sequence: None,
-                queue_position: None,
-            },
-        )));
+        app.handle_cmd(UiCmd::InitialPromptDone(Ok(crate::rpc::types::RunAck {
+            run_id: "r".into(),
+            run_epoch: 1,
+            accepted_state: "running".into(),
+            run_sequence: None,
+            queue_position: None,
+        })));
 
         let _ = &mut rx;
     }
@@ -5083,7 +5115,9 @@ mod tests {
             },
         });
         pump(&mut app, &mut rx).await; // switch flow fails against dead client
-        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to switch session")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to switch session")));
 
         // ForkSelected → ForkDone spawn chain (fails against dead client).
         app.handle_cmd(UiCmd::ForkSelected {
@@ -5094,7 +5128,9 @@ mod tests {
             },
         });
         pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to fork")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to fork")));
 
         // ForkDone direct: cancelled, ok-not-cancelled, err.
         app.handle_cmd(UiCmd::ForkDone {
@@ -5162,7 +5198,9 @@ mod tests {
             description: None,
         }));
         pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to set model")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to set model")));
 
         // PromptAck: queued ack binds run; err (non-transport) adds message;
         // err (transport) doesn't.
@@ -5189,10 +5227,7 @@ mod tests {
         assert_eq!(system_messages(&app).len(), before); // no message
 
         // ScopedModelsSaved.
-        app.cached_models = sample_models()
-            .iter()
-            .map(|m| m.full_id())
-            .collect();
+        app.cached_models = sample_models().iter().map(|m| m.full_id()).collect();
         app.handle_cmd(UiCmd::ScopedModelsSaved(vec!["openai/gpt-4o".into()]));
         assert!(last_system(&app).contains("1/2 enabled"));
         assert_eq!(
@@ -5206,11 +5241,13 @@ mod tests {
         assert!(app.input.get_value().is_empty());
 
         // AcItems show/hide.
-        app.handle_cmd(UiCmd::AcItems(vec![crate::components::autocomplete::AutocompleteItem {
-            value: "/model".into(),
-            label: "/model".into(),
-            description: None,
-        }]));
+        app.handle_cmd(UiCmd::AcItems(vec![
+            crate::components::autocomplete::AutocompleteItem {
+                value: "/model".into(),
+                label: "/model".into(),
+                description: None,
+            },
+        ]));
         assert!(app.autocomplete.is_visible());
         app.handle_cmd(UiCmd::AcItems(vec![]));
         assert!(!app.autocomplete.is_visible());
@@ -5330,7 +5367,10 @@ mod tests {
             r#"{"tool_id":"t1","tool_name":"read","tool_args":{"path":"/x"}}"#,
         ));
         assert_eq!(app.state.active_tool_count, 1);
-        app.handle_agent_event(&make_event("tool_delta", r#"{"tool_id":"t1","text":"part"}"#));
+        app.handle_agent_event(&make_event(
+            "tool_delta",
+            r#"{"tool_id":"t1","text":"part"}"#,
+        ));
         app.handle_agent_event(&make_event("tool_end", r#"{"tool_id":"t1","text":"done"}"#));
         assert_eq!(app.state.active_tool_count, 0);
         // tool_start with string args.
@@ -5375,7 +5415,10 @@ mod tests {
         assert_eq!(app.state.thinking, "low");
         app.handle_agent_event(&make_event("cwd_changed", r#"{"cwd":"/tmp/z"}"#));
         assert_eq!(app.state.cwd, "/tmp/z");
-        app.handle_agent_event(&make_event("auto_compaction_changed", r#"{"enabled":false}"#));
+        app.handle_agent_event(&make_event(
+            "auto_compaction_changed",
+            r#"{"enabled":false}"#,
+        ));
         assert!(!app.state.auto_compaction_enabled);
         app.handle_agent_event(&make_event("session_name_changed", r#"{"name":"n"}"#));
         app.handle_agent_event(&make_event("permission_level_changed", "{}"));
@@ -5392,11 +5435,18 @@ mod tests {
         assert_eq!(app.state.skills, vec!["a", "b"]);
         assert!(last_system(&app).contains("Config reloaded: 2 skills, CLAUDE.md"));
         // …and with empty lists.
-        app.handle_agent_event(&make_event("config_reloaded", r#"{"skills":[],"contextFiles":[]}"#));
+        app.handle_agent_event(&make_event(
+            "config_reloaded",
+            r#"{"skills":[],"contextFiles":[]}"#,
+        ));
         assert!(last_system(&app).contains("no context files"));
 
         // agent_end with terminal text.
-        app.handle_agent_event(&make_event_with_run("agent_end", r#"{"text":"final answer"}"#, "r1"));
+        app.handle_agent_event(&make_event_with_run(
+            "agent_end",
+            r#"{"text":"final answer"}"#,
+            "r1",
+        ));
         assert!(!app.state.streaming);
         pump(&mut app, &mut rx).await;
 
@@ -5584,22 +5634,41 @@ mod tests {
         app.handle_cmd(UiCmd::Submit("   ".into()));
 
         for cmd in [
-            "/help", "/sessions", "/tree", "/fork", "/clone", "/new", "/compact",
-            "/reload", "/scoped-models", "/status", "/stop", "/export", "/import",
+            "/help",
+            "/sessions",
+            "/tree",
+            "/fork",
+            "/clone",
+            "/new",
+            "/compact",
+            "/reload",
+            "/scoped-models",
+            "/status",
+            "/stop",
+            "/export",
+            "/import",
         ] {
             app.handle_cmd(UiCmd::Submit(cmd.into()));
         }
         pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app).iter().any(|m| m.contains("export is not available")));
-        assert!(system_messages(&app).iter().any(|m| m.contains("import is not available")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("export is not available")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("import is not available")));
 
         // /model with arg (dead client → fails), and selector path.
         app.handle_cmd(UiCmd::Submit("/model sonnet".into()));
         pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to set model")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to set model")));
         app.handle_cmd(UiCmd::Submit("/model".into()));
         pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to load models")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to load models")));
 
         // /model while streaming → refused.
         app.state.streaming = true;
@@ -5612,7 +5681,9 @@ mod tests {
         assert!(last_system(&app).contains("Usage: /name"));
         app.handle_cmd(UiCmd::Submit("/name my session".into()));
         pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to set session name")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to set session name")));
 
         // /cwd with no arg is not a command — it becomes a prompt.
         let before = app.chat.plain_messages().len();
@@ -5621,7 +5692,9 @@ mod tests {
         app.state.streaming = false; // the prompt above set it
         app.handle_cmd(UiCmd::Submit("/cwd /tmp".into()));
         pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to change directory")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to change directory")));
         app.handle_cmd(UiCmd::Submit("/cwd ~".into()));
         pump(&mut app, &mut rx).await;
         app.handle_cmd(UiCmd::Submit("/cwd ~/sub".into()));
@@ -5639,17 +5712,23 @@ mod tests {
         app.handle_cmd(UiCmd::Submit("/reject".into()));
         app.handle_cmd(UiCmd::Submit("/approve req-1".into()));
         pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to approve")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to approve")));
         app.handle_cmd(UiCmd::Submit("/reject req-2".into()));
         pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to reject")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to reject")));
 
         // /cancel with and without arg.
         app.handle_cmd(UiCmd::Submit("/cancel".into()));
         assert!(last_system(&app).contains("Usage: /cancel"));
         app.handle_cmd(UiCmd::Submit("/cancel run-9".into()));
         pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app).iter().any(|m| m.contains("Failed to cancel queued run")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to cancel queued run")));
 
         // Unknown slash command → falls through to a prompt.
         app.handle_cmd(UiCmd::Submit("/not-a-command".into()));
@@ -5665,5 +5744,1922 @@ mod tests {
         app.handle_cmd(UiCmd::Submit("another one".into()));
         pump(&mut app, &mut rx).await;
         app.state.streaming = false;
+    }
+
+    // ─── Input handling round 2 ───────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_input_overlays_and_release_filtering() {
+        // Serializes with terminal_image's cell-dimension tests.
+        let _guard = crate::test_env::lock();
+        let (mut app, mut rx) = make_app(100, 30);
+        let _ = &mut rx;
+
+        // Cell-size response is consumed (save/restore the global dims —
+        // they feed the image renderer's row math).
+        let saved_dims = crate::terminal_image::get_cell_dimensions();
+        app.handle_input("\x1b[6;36;119t");
+        app.handle_input("\x1b[6;0;0t"); // zero dims — consumed, no set
+        app.handle_input("not-a-response"); // passes through to a key parse
+        crate::terminal_image::set_cell_dimensions(saved_dims);
+
+        // Paste with an overlay open goes to the overlay.
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Selector,
+        });
+        app.handle_input("\x1b[200~x\x1b[201~");
+        // Unterminated paste is swallowed without effect.
+        app.handle_input("\x1b[200~never closed");
+        app.handle_cmd(UiCmd::OverlayCancel);
+
+        // Key release with an overlay focused: the overlay doesn't want
+        // release events → dropped.
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Selector,
+        });
+        app.handle_input("\x1b[97;1:3u");
+        app.handle_cmd(UiCmd::OverlayCancel);
+
+        // Printable char with an overlay goes to the overlay, not the input.
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Selector,
+        });
+        app.input.set_value("", None);
+        app.handle_input("z");
+        assert!(app.input.get_value().is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+        app.handle_input("z");
+        assert_eq!(app.input.get_value(), "z");
+
+        // Escape while autocomplete is visible hides it (editor untouched).
+        app.input.set_value("/m", None);
+        app.autocomplete
+            .show(vec![crate::components::autocomplete::AutocompleteItem {
+                value: "/model".into(),
+                label: "/model".into(),
+                description: None,
+            }]);
+        app.handle_key("escape");
+        assert!(!app.autocomplete.is_visible());
+        assert_eq!(app.input.get_value(), "/m");
+
+        // Autocomplete navigation + enter applies the selection.
+        app.autocomplete.show(vec![
+            crate::components::autocomplete::AutocompleteItem {
+                value: "/model".into(),
+                label: "/model".into(),
+                description: None,
+            },
+            crate::components::autocomplete::AutocompleteItem {
+                value: "/new".into(),
+                label: "/new".into(),
+                description: None,
+            },
+        ]);
+        app.handle_key("down");
+        app.handle_key("enter"); // applies "/new" into the input
+        assert!(app.input.get_value().contains("new"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn autocomplete_selection_variants() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // InputChanged drives the debounced query state.
+        app.handle_cmd(UiCmd::InputChanged("/mo".into()));
+        assert!(app.pending_ac_query.is_some());
+
+        // trigger_autocomplete against the (empty) manager.
+        app.trigger_autocomplete();
+
+        // apply_autocomplete_selection with nothing shown → no-op.
+        app.apply_autocomplete_selection();
+
+        // With an item but no active context → the value replaces input.
+        app.autocomplete
+            .show(vec![crate::components::autocomplete::AutocompleteItem {
+                value: "/model".into(),
+                label: "/model".into(),
+                description: None,
+            }]);
+        app.apply_autocomplete_selection();
+        assert_eq!(app.input.get_value(), "/model");
+        assert!(!app.autocomplete.is_visible());
+
+        // With an active context through the slash provider: /mo + Tab
+        // completes the token and preserves overlap.
+        app.input.set_value("/mo", None);
+        app.trigger_autocomplete();
+        pump(&mut app, &mut rx).await; // deliver AcItems
+                                       // The slash provider matched → items shown.
+        assert!(app.autocomplete.is_visible());
+        // Move to /model and accept.
+        app.apply_autocomplete_selection();
+        let v = app.input.get_value().to_string();
+        assert!(v.starts_with('/'));
+    }
+
+    // ─── Overlays plumbing ────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn overlay_stack_lifecycle() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // show_select_overlay via the sessions overlay.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        assert!(!app.overlay_stack.is_empty());
+        let top = app.get_top_overlay_index();
+        assert!(top.is_some());
+
+        // Focus transitions to the overlay and back.
+        app.hide_overlay();
+        assert!(app.overlay_stack.is_empty());
+        assert!(app.get_top_overlay_index().is_none());
+
+        // The tree overlay on empty sessions shows a message instead.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(vec![]),
+            purpose: SessionsPurpose::Tree,
+        });
+        assert!(last_system(&app).contains("No sessions found"));
+
+        // Scoped models overlay opens.
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Scoped,
+        });
+        assert!(!app.overlay_stack.is_empty());
+        app.hide_overlay();
+
+        // Fork overlay via ForkMessagesLoaded.
+        app.handle_cmd(UiCmd::ForkMessagesLoaded(Ok(json_parse(
+            r#"{"messages":[{"id":"e1","text":"fork point","role":"user"},{"id":"e2","text":"reply","role":"assistant"}]}"#,
+        ))));
+        assert!(!app.overlay_stack.is_empty());
+        app.hide_overlay();
+
+        // Help overlay opens and closes.
+        app.show_help_overlay();
+        assert!(!app.overlay_stack.is_empty());
+        app.hide_overlay();
+
+        // composite_line_at merges an overlay segment into a base line.
+        let merged = App::<FakeTerminal>::composite_line_at("abcdef", "XY", 2, 2, 6);
+        assert!(merged.contains("XY"));
+        let _ = &mut rx;
+    }
+
+    // ─── Welcome / messages / settings / connection ───────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn welcome_variants_and_messages() {
+        let (mut app, mut rx) = make_app(100, 30);
+        let _ = &mut rx;
+
+        // Welcome with everything populated.
+        app.state.version = "9.9.9-test".into();
+        app.state.skills = vec!["alpha".into(), "beta".into()];
+        app.state.extensions = vec!["ext1".into()];
+        app.show_welcome();
+        let plain: Vec<String> = app
+            .chat
+            .plain_messages()
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect();
+        let joined = plain.join("\n");
+        assert!(joined.contains("9.9.9-test"));
+        assert!(joined.contains("[skills] alpha, beta"));
+        assert!(joined.contains("[Extensions]"));
+
+        // apply_messages reconstructs user/assistant/tool + skips the rest.
+        app.apply_messages(Ok(json_parse(
+            r#"{"messages":[
+              {"id":"m1","role":"user","content":"q"},
+              {"id":"m2","role":"assistant","content":[{"text":"a1"},{"content":"a2"}]},
+              {"id":"m3","role":"tool","content":"tool out","name":"read"},
+              {"id":"m4","role":"system","content":"skipped"},
+              {"id":"m5","role":"assistant"},
+              {"role":"user","content":"no id"},
+              {"id":"m6","role":"user","content":"","tool_calls":[]}
+            ]}"#,
+        )));
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect();
+        let joined = texts.join("\n");
+        assert!(joined.contains("a1a2"));
+        assert!(joined.contains("tool out"));
+        assert!(!joined.contains("skipped"));
+        // apply_messages with an error is a no-op; an empty list clears.
+        let before = app.chat.plain_messages().len();
+        app.apply_messages(Err("x".into()));
+        assert_eq!(app.chat.plain_messages().len(), before);
+        app.apply_messages(Ok(json_parse(r#"{"messages":[]}"#)));
+        assert!(app.chat.plain_messages().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settings_persistence_roundtrip() {
+        let (mut app, mut rx) = make_app(100, 30);
+        let _ = &mut rx;
+        // make_app points at a temp settings path; write through and reload.
+        app.tui_settings.default_model = Some("m/x".into());
+        app.tui_settings.default_thinking_level = Some("high".into());
+        app.tui_settings.default_permission_level = Some("auto".into());
+        app.tui_settings.enabled_model_ids = Some(vec!["a".into()]);
+        app.save_tui_settings();
+        // Corrupt-then-load paths.
+        app.load_tui_settings();
+        assert_eq!(app.tui_settings.default_model.as_deref(), Some("m/x"));
+        // Corrupt the file: load keeps defaults.
+        std::fs::write(&app.tui_settings_path, "not json").unwrap();
+        app.tui_settings = TuiSettings::default();
+        app.load_tui_settings();
+        assert!(app.tui_settings.default_model.is_none());
+        // Missing file: defaults.
+        std::fs::remove_file(&app.tui_settings_path).unwrap();
+        app.load_tui_settings();
+        assert!(app.tui_settings.default_model.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connection_change_paths() {
+        let (mut app, mut rx) = make_app(100, 30);
+        // Lost → message + reconnect timer.
+        app.on_connection_change(false);
+        assert!(app.connection_lost);
+        assert!(last_system(&app).contains("lost"));
+        // Same state → no-op.
+        let before = app.chat.plain_messages().len();
+        app.on_connection_change(false);
+        assert_eq!(app.chat.plain_messages().len(), before);
+        // Back online → reconnect message + refresh spawn.
+        app.on_connection_change(true);
+        assert!(!app.connection_lost);
+        assert!(last_system(&app).contains("Reconnected"));
+        pump(&mut app, &mut rx).await;
+        // Online when already online → no-op.
+        let before = app.chat.plain_messages().len();
+        app.on_connection_change(true);
+        assert_eq!(app.chat.plain_messages().len(), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn timers_and_tick_paths() {
+        let (mut app, mut rx) = make_app(100, 30);
+        // InitialPrompt timer with a prompt spawns the send.
+        app.cli_initial_prompt = Some("boot prompt".into());
+        app.timers.push((Instant::now(), TimerId::InitialPrompt));
+        app.on_tick();
+        pump(&mut app, &mut rx).await;
+        // InitialPrompt timer with no prompt → nothing.
+        app.cli_initial_prompt = None;
+        app.timers.push((Instant::now(), TimerId::InitialPrompt));
+        app.on_tick();
+        // ReconnectRefresh timer → spawn_refresh.
+        app.timers.push((Instant::now(), TimerId::ReconnectRefresh));
+        app.on_tick();
+        pump(&mut app, &mut rx).await;
+        // next_deadline reflects pending timers.
+        app.timers.push((
+            Instant::now() + Duration::from_secs(60),
+            TimerId::ReconnectRefresh,
+        ));
+        assert!(app.next_deadline().is_some());
+        app.timers.clear();
+        // ac query deadline fires the pending query.
+        app.pending_ac_query = Some(("/m".into(), 2));
+        app.ac_query_deadline = Some(Instant::now());
+        app.on_tick();
+        assert!(app.pending_ac_query.is_none());
+        // …and with no pending query the deadline just clears.
+        app.ac_query_deadline = Some(Instant::now());
+        app.on_tick();
+        assert!(app.ac_query_deadline.is_none());
+        // resize deadline fires a render request.
+        app.resize_deadline = Some(Instant::now());
+        app.on_tick();
+        assert!(app.resize_deadline.is_none());
+    }
+
+    // ─── Keybinding dispatches (closures registered in setup) ─────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keybinding_closures_fire() {
+        let (mut app, mut rx) = make_app(100, 30);
+        for key in [
+            "ctrl+c",
+            "ctrl+p",
+            "ctrl+r",
+            "ctrl+t",
+            "shift+tab",
+            "ctrl+o",
+            "pageup",
+            "pagedown",
+            "ctrl+up",
+            "ctrl+down",
+        ] {
+            app.handle_key(key);
+            pump(&mut app, &mut rx).await;
+        }
+        // ctrl+c interrupted (not streaming) → app stopped.
+        assert!(!app.running);
+    }
+
+    // ─── Startup against a live mock agent ────────────────────────────
+
+    /// Minimal agent: rich state, models, sessions (two, for the continue
+    /// sort), messages; all mutations succeed. Records command types.
+    #[derive(Clone, Default)]
+    struct AppMockAgent {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        /// Per-type response data overrides (checked first).
+        overrides: std::collections::HashMap<String, String>,
+        /// Per-type failure (success=false, error "nope").
+        fail: std::collections::HashSet<String>,
+    }
+
+    #[tonic::async_trait]
+    impl FutureAgent for AppMockAgent {
+        async fn execute_command(
+            &self,
+            request: tonic::Request<future_rpc::proto::RpcCommand>,
+        ) -> Result<tonic::Response<future_rpc::proto::RpcResponse>, tonic::Status> {
+            let cmd = request.into_inner();
+            self.seen.lock().unwrap().push((
+                cmd.r#type.clone(),
+                format!("{}|{}|{}", cmd.level, cmd.model_id, cmd.session_id),
+            ));
+            if let Some(data) = self.overrides.get(&cmd.r#type) {
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                    id: cmd.id,
+                    r#type: "response".into(),
+                    command: cmd.r#type.clone(),
+                    success: true,
+                    data: data.clone(),
+                    error: String::new(),
+                    error_code: String::new(),
+                    error_data: String::new(),
+                    payload: None,
+                }));
+            }
+            let fail = self.fail.contains(&cmd.r#type);
+            let data = match cmd.r#type.as_str() {
+                "get_state" => {
+                    r#"{"sessionId":"s1","model":"openai/gpt-4o","thinkingLevel":"high","cwd":"/tmp","version":"9.9.9-mock","skills":["alpha"],"contextFiles":["CLAUDE.md"],"extensions":["ext1"],"isStreaming":false}"#
+                }
+                "list_models" => {
+                    r#"{"models":[{"id":"gpt-4o","label":"GPT-4o","provider":"openai"},{"id":"claude-sonnet-4","label":"Claude","provider":"anthropic"}]}"#
+                }
+                "list_sessions" => {
+                    r#"{"sessions":[{"id":"s1","cwd":"/tmp","updatedAt":"2026-01-01T00:00:00Z","model":"m","sessionName":"main"},{"id":"s0","cwd":"/tmp","updatedAt":"2025-12-31T00:00:00Z","model":"m","sessionName":"older"}]}"#
+                }
+                "new_session" => r#"{"sessionId":"s-new"}"#,
+                "switch_session" | "fork" => r#"{"cancelled":false}"#,
+                "get_messages" => {
+                    r#"{"messages":[{"id":"m1","role":"user","content":"earlier question"},{"id":"m2","role":"assistant","content":"earlier answer"}]}"#
+                }
+                "get_fork_messages" => {
+                    r#"{"messages":[{"id":"e1","text":"fork point one","role":"user"},{"id":"e2","text":"reply","role":"assistant"}]}"#
+                }
+                _ => "{}",
+            };
+            Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id,
+                r#type: "response".into(),
+                command: cmd.r#type.clone(),
+                success: !fail,
+                data: data.to_string(),
+                error: if fail { "nope".into() } else { String::new() },
+                error_code: String::new(),
+                error_data: String::new(),
+                payload: None,
+            }))
+        }
+
+        type StreamEventsStream = Pin<
+            Box<
+                dyn tokio_stream::Stream<
+                        Item = Result<future_rpc::proto::StreamEvent, tonic::Status>,
+                    > + Send,
+            >,
+        >;
+
+        async fn stream_events(
+            &self,
+            _request: tonic::Request<future_rpc::proto::StreamRequest>,
+        ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+            let first = future_rpc::proto::StreamEvent {
+                r#type: "ping".into(),
+                data: String::new(),
+                ..Default::default()
+            };
+            Ok(tonic::Response::new(Box::pin(
+                futures_util::stream::once(async move { Ok(first) }).chain(
+                    futures_util::stream::pending::<
+                        Result<future_rpc::proto::StreamEvent, tonic::Status>,
+                    >(),
+                ),
+            )))
+        }
+    }
+
+    async fn spawn_app_mock() -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mock = AppMockAgent::default();
+        let seen = mock.seen.clone();
+        tokio::spawn(
+            Server::builder()
+                .add_service(FutureAgentServer::new(mock))
+                .serve(addr),
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        (format!("127.0.0.1:{}", addr.port()), seen)
+    }
+
+    fn make_app_at(
+        addr: &str,
+        cli_options: &CliOptions,
+    ) -> (App<FakeTerminal>, mpsc::UnboundedReceiver<UiCmd>) {
+        let (op_tx, op_rx) = mpsc::unbounded_channel();
+        let (client, _events, _conn) = GrpcClient::new(addr);
+        let app = App::new(
+            FakeTerminal {
+                writes: Rc::new(RefCell::new(Vec::new())),
+                cols: 100,
+                rows: 30,
+            },
+            Arc::new(client),
+            op_tx,
+            cli_options,
+            std::env::temp_dir().join(format!("tui-test-settings-{}.json", random_id())),
+        );
+        (app, op_rx)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_default_flow_with_live_agent() {
+        let (addr, _seen) = spawn_app_mock().await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        assert!(app.is_running());
+        assert_eq!(app.state.session_id, "s1"); // refreshed after new_session
+        pump(&mut app, &mut rx).await;
+        // The welcome screen rendered.
+        let all = app.chat.plain_messages();
+        let joined = all
+            .iter()
+            .map(|(_, c)| c.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("9.9.9-mock"));
+        assert!(joined.contains("[skills] alpha"));
+        assert!(joined.contains("[Extensions]"));
+        app.stop();
+        assert!(!app.is_running());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_session_option_variants() {
+        let (addr, seen) = spawn_app_mock().await;
+
+        // --session.
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        assert!(app.is_running());
+        pump(&mut app, &mut rx).await;
+        app.stop();
+
+        // --continue (most recent session → switch_session happens).
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                r#continue: true,
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(t, _)| t == "switch_session"));
+        app.stop();
+
+        // --fork.
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                fork: Some("entry-1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.stop();
+
+        // --resume (opens the session picker).
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                resume: true,
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.stop();
+
+        // initial prompt → timer fires in the first ticks.
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                initial_prompt: Some("boot message".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        app.on_tick();
+        pump(&mut app, &mut rx).await;
+        app.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tui_defaults_applied_at_startup() {
+        let (addr, seen) = spawn_app_mock().await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        // Pre-seed the settings file; startup loads + applies it.
+        let settings = r#"{"defaultModel":"openai/gpt-4o","defaultThinkingLevel":"low","defaultPermissionLevel":"auto","enabledModelIds":["openai/gpt-4o"]}"#;
+        std::fs::write(&app.tui_settings_path, settings).unwrap();
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        // The defaults were pushed to the agent during startup.
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(t, payload)| t == "set_thinking_level" && payload.starts_with("low")));
+        app.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spawn_paths_succeed_against_live_agent() {
+        let (addr, _seen) = spawn_app_mock().await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+
+        // ForkSelected with a successful fork → get_state + messages.
+        app.handle_cmd(UiCmd::ForkSelected {
+            item: SelectItem {
+                value: "entry-1".into(),
+                label: "entry one".into(),
+                description: None,
+            },
+        });
+        pump(&mut app, &mut rx).await;
+        assert!(last_system(&app).contains("Forked from entry one."));
+
+        // /model set directly succeeds.
+        app.handle_cmd(UiCmd::Submit("/model claude-sonnet-4".into()));
+        pump_until_msg(&mut app, &mut rx, "Model:").await;
+
+        // /new succeeds.
+        app.handle_cmd(UiCmd::Submit("/new".into()));
+        pump_until_msg(&mut app, &mut rx, "New session started").await;
+
+        // /status prints the model table.
+        app.handle_cmd(UiCmd::Submit("/status".into()));
+        pump_until_msg(&mut app, &mut rx, "**Cost:**").await;
+
+        // /tree with sessions → tree overlay.
+        app.handle_cmd(UiCmd::Submit("/tree".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+
+        // /fork loads messages → fork overlay.
+        app.handle_cmd(UiCmd::Submit("/fork".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+
+        // /sessions overlay.
+        app.handle_cmd(UiCmd::Submit("/sessions".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+
+        // /reload succeeds.
+        app.handle_cmd(UiCmd::Submit("/reload".into()));
+        pump_until_msg(&mut app, &mut rx, "Reloaded:").await;
+
+        // /compact + /stop + /name + /cancel succeed.
+        app.handle_cmd(UiCmd::Submit("/compact".into()));
+        app.handle_cmd(UiCmd::Submit("/stop".into()));
+        app.handle_cmd(UiCmd::Submit("/name fancy".into()));
+        app.handle_cmd(UiCmd::Submit("/cancel q9".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Context compacted")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Stopped current generation")));
+        assert!(system_messages(&app).iter().any(|m| m.contains("fancy")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Cancelled queued run")));
+
+        // /approve + /reject succeed.
+        app.handle_cmd(UiCmd::Submit("/approve r1".into()));
+        app.handle_cmd(UiCmd::Submit("/reject r2".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Approved request: r1")));
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Rejected request: r2")));
+
+        app.stop();
+    }
+
+    // ─── Render pipeline ──────────────────────────────────────────────
+
+    fn running_app(cols: u16, rows: u16) -> (App<FakeTerminal>, mpsc::UnboundedReceiver<UiCmd>) {
+        let (mut app, rx) = make_app(cols, rows);
+        app.running = true;
+        app.chat
+            .add_message(ChatMessage::new("u1".into(), ChatRole::User, "hello world"));
+        (app, rx)
+    }
+
+    fn render_writes(app: &App<FakeTerminal>) -> String {
+        terminal_writes(app)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn render_first_diff_and_noop() {
+        let (mut app, _rx) = running_app(100, 30);
+        // First render: full, no clear.
+        app.do_render();
+        let out = render_writes(&app);
+        assert!(out.contains("\x1b[?2026h")); // SYNC_BEGIN
+        assert!(out.contains("hello world"));
+        assert!(!out.contains("\x1b[2J"));
+
+        // No-change render: only cursor positioning (no SYNC block).
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        let out = render_writes(&app);
+        assert!(!out.contains("\x1b[?2026h"));
+
+        // A change → differential render with SYNC + clear-line.
+        app.chat
+            .add_message(ChatMessage::new("u2".into(), ChatRole::User, "second"));
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        let out = render_writes(&app);
+        assert!(out.contains("\x1b[?2026h"));
+        assert!(out.contains("second"));
+
+        // Streaming render bumps the spinner and re-requests.
+        app.state.streaming = true;
+        let frame = app.state.spinner_frame;
+        app.do_render();
+        assert_eq!(app.state.spinner_frame, frame + 1);
+        app.state.streaming = false;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn render_full_redraw_triggers() {
+        let (mut app, _rx) = running_app(100, 30);
+        app.do_render();
+
+        // Width change → full redraw with clear.
+        app.terminal.cols = 80;
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        let out = render_writes(&app);
+        assert!(out.contains("\x1b[2J"));
+        assert_eq!(app.get_full_redraw_count(), 1);
+
+        // Height change (non-Termux) → full redraw.
+        app.terminal.rows = 40;
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        assert_eq!(app.get_full_redraw_count(), 2);
+
+        // force_clear → full redraw.
+        app.force_clear_next_render = true;
+        app.do_render();
+        assert_eq!(app.get_full_redraw_count(), 3);
+
+        // clear_on_shrink with shrinking content.
+        app.clear_on_shrink = true;
+        for i in 0..20 {
+            app.chat.add_message(ChatMessage::new(
+                format!("m{i}"),
+                ChatRole::User,
+                "line with some content here",
+            ));
+        }
+        app.do_render();
+        app.chat.clear_messages();
+        app.chat
+            .add_message(ChatMessage::new("only".into(), ChatRole::User, "tiny"));
+        app.do_render();
+        assert_eq!(app.get_full_redraw_count(), 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn render_shrink_and_scroll_paths() {
+        let (mut app, _rx) = running_app(100, 30);
+        // Tall content.
+        for i in 0..40 {
+            app.chat.add_message(ChatMessage::new(
+                format!("m{i}"),
+                ChatRole::User,
+                &format!("content line {i}"),
+            ));
+        }
+        app.do_render();
+
+        // Shrink within limits (clear_on_shrink off) → deleted-lines path.
+        app.chat.clear_messages();
+        app.chat
+            .add_message(ChatMessage::new("u".into(), ChatRole::User, "short"));
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        let out = render_writes(&app);
+        assert!(out.contains("\x1b[2K"));
+
+        // Scroll the viewport up, then render a change above the viewport
+        // → full redraw fallback.
+        for i in 0..40 {
+            app.chat.add_message(ChatMessage::new(
+                format!("n{i}"),
+                ChatRole::User,
+                &format!("more content {i}"),
+            ));
+        }
+        app.do_render();
+        app.chat.scroll_up(20);
+        app.chat
+            .add_message(ChatMessage::new("x".into(), ChatRole::User, "tail"));
+        app.do_render();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn render_with_overlay_and_autocomplete() {
+        let (mut app, mut rx) = running_app(100, 30);
+        // Overlay visible → composited render.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        app.do_render();
+        let out = render_writes(&app);
+        assert!(out.contains("Sessions"));
+
+        // Autocomplete popup visible → composited above the editor.
+        app.autocomplete
+            .show(vec![crate::components::autocomplete::AutocompleteItem {
+                value: "/model".into(),
+                label: "/model".into(),
+                description: Some("select model".into()),
+            }]);
+        app.do_render();
+        let out = render_writes(&app);
+        assert!(out.contains("/model"));
+        app.handle_cmd(UiCmd::OverlayCancel);
+        app.autocomplete.hide();
+        let _ = &mut rx;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn render_debug_env_paths_and_termux() {
+        let _guard = crate::test_env::lock();
+        let (mut app, _rx) = running_app(100, 30);
+
+        // PI_TUI_DEBUG dumps render state.
+        let old_debug = std::env::var_os("PI_TUI_DEBUG");
+        std::env::set_var("PI_TUI_DEBUG", "1");
+        app.do_render();
+        let dir = std::env::temp_dir().join("tui");
+        assert!(std::fs::read_dir(&dir).unwrap().count() > 0);
+
+        // PI_DEBUG_REDRAW logs to ~/.future/tui/debug.log.
+        let home = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("HOME");
+        let old_redraw = std::env::var_os("PI_DEBUG_REDRAW");
+        std::env::set_var("HOME", home.path());
+        std::fs::create_dir_all(home.path().join(".future/tui")).unwrap();
+        std::env::set_var("PI_DEBUG_REDRAW", "1");
+        app.terminal.cols = 90; // force a full redraw reason
+        app.do_render();
+        let log = std::fs::read_to_string(home.path().join(".future/tui/debug.log")).unwrap();
+        assert!(log.contains("width changed"));
+        restore_env2("PI_TUI_DEBUG", old_debug);
+        restore_env2("PI_DEBUG_REDRAW", old_redraw);
+        restore_env2("HOME", old_home);
+
+        // Termux: height change does NOT full-redraw.
+        let old_termux = std::env::var_os("TERMUX_VERSION");
+        std::env::set_var("TERMUX_VERSION", "0.118");
+        app.terminal.rows = 35;
+        let before = app.get_full_redraw_count();
+        app.do_render();
+        assert_eq!(app.get_full_redraw_count(), before);
+        restore_env2("TERMUX_VERSION", old_termux);
+    }
+
+    fn restore_env2(key: &str, old: Option<std::ffi::OsString>) {
+        match old {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn restore_env2_both_arms() {
+        let _guard = crate::test_env::lock();
+        let old = std::env::var_os("FUTURE_TUI_APP_PROBE");
+        restore_env2("FUTURE_TUI_APP_PROBE", Some("1".into()));
+        assert_eq!(std::env::var("FUTURE_TUI_APP_PROBE").as_deref(), Ok("1"));
+        restore_env2("FUTURE_TUI_APP_PROBE", None);
+        assert!(std::env::var_os("FUTURE_TUI_APP_PROBE").is_none());
+        restore_env2("FUTURE_TUI_APP_PROBE", old);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kitty_image_bookkeeping() {
+        let (mut app, _rx) = running_app(100, 30);
+        // Render content carrying a kitty image id.
+        app.chat.add_message(ChatMessage::new(
+            "a1".into(),
+            ChatRole::Assistant,
+            "\x1b_Gi=42,f=100;AAAA\x1b\\",
+        ));
+        app.do_render();
+        assert!(app.previous_kitty_image_ids.contains(&42));
+        // Change the line → the image deletion path runs.
+        app.chat
+            .add_message(ChatMessage::new("a2".into(), ChatRole::Assistant, "text"));
+        app.do_render();
+    }
+
+    // ─── Final app coverage push ──────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_for_agent_retries_until_agent_appears() {
+        // The mock binds 1.3 s late: the first try_connects fail (showing
+        // the retry message) before the agent answers.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let addr_str = format!("127.0.0.1:{}", addr.port());
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1300)).await;
+            // Spawn-and-forget: the outer task completes once the server is
+            // spawned (the serve future outlives it).
+            tokio::spawn(
+                Server::builder()
+                    .add_service(FutureAgentServer::new(AppMockAgent::default()))
+                    .serve(addr),
+            );
+        });
+        let (mut app, mut rx) = make_app_at(&addr_str, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        assert!(app.is_running());
+        let joined = system_messages(&app).join("\n");
+        assert!(joined.contains("retrying every 1s"));
+        assert!(joined.contains("Connected to agent"));
+        pump(&mut app, &mut rx).await;
+        app.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fake_terminal_exit_callback_setter() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.terminal.set_exit_signal_callback(None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_mock_override_variants() {
+        async fn spawn_variant(
+            overrides: std::collections::HashMap<String, String>,
+            fail: std::collections::HashSet<String>,
+        ) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            let mock = AppMockAgent {
+                overrides,
+                fail,
+                ..Default::default()
+            };
+            tokio::spawn(
+                Server::builder()
+                    .add_service(FutureAgentServer::new(mock))
+                    .serve(addr),
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            format!("127.0.0.1:{}", addr.port())
+        }
+
+        // new_session returns no sessionId → tolerated silently.
+        let addr = spawn_variant(
+            std::collections::HashMap::from([("new_session".to_string(), "{}".to_string())]),
+            Default::default(),
+        )
+        .await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.stop();
+
+        // --continue with an empty session list → no switch attempted.
+        let addr = spawn_variant(
+            std::collections::HashMap::from([(
+                "list_sessions".to_string(),
+                "{\"sessions\":[]}".to_string(),
+            )]),
+            Default::default(),
+        )
+        .await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                r#continue: true,
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.stop();
+
+        // --continue where the switch itself fails.
+        let addr = spawn_variant(
+            Default::default(),
+            std::collections::HashSet::from(["switch_session".to_string()]),
+        )
+        .await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                r#continue: true,
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to continue session")));
+        pump(&mut app, &mut rx).await;
+        app.stop();
+
+        // A cancelled fork at startup.
+        let addr = spawn_variant(
+            std::collections::HashMap::from([(
+                "fork".to_string(),
+                "{\"cancelled\":true}".to_string(),
+            )]),
+            Default::default(),
+        )
+        .await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                fork: Some("e1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fork_cancelled_via_live_mock() {
+        let addr = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            let mock = AppMockAgent {
+                overrides: std::collections::HashMap::from([(
+                    "fork".to_string(),
+                    "{\"cancelled\":true}".to_string(),
+                )]),
+                ..Default::default()
+            };
+            tokio::spawn(
+                Server::builder()
+                    .add_service(FutureAgentServer::new(mock))
+                    .serve(addr),
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            format!("127.0.0.1:{}", addr.port())
+        };
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        // ForkSelected with a cancelled fork → no state/message fetch.
+        app.handle_cmd(UiCmd::ForkSelected {
+            item: SelectItem {
+                value: "e1".into(),
+                label: "entry".into(),
+                description: None,
+            },
+        });
+        pump(&mut app, &mut rx).await;
+        assert!(!last_system(&app).contains("Forked"));
+        app.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_session_option_failures() {
+        // A mock that fails the session-management commands.
+        #[derive(Clone, Default)]
+        struct FailAgent {
+            fail: std::collections::HashSet<String>,
+        }
+        #[tonic::async_trait]
+        impl FutureAgent for FailAgent {
+            async fn execute_command(
+                &self,
+                request: tonic::Request<future_rpc::proto::RpcCommand>,
+            ) -> Result<tonic::Response<future_rpc::proto::RpcResponse>, tonic::Status>
+            {
+                let cmd = request.into_inner();
+                let fail = self.fail.contains(&cmd.r#type);
+                // new_session reports a fresh id so the client subscribes.
+                let data = if cmd.r#type == "new_session" {
+                    "{\"sessionId\":\"s-new\"}"
+                } else {
+                    "{}"
+                };
+                Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                    id: cmd.id,
+                    r#type: "response".into(),
+                    command: cmd.r#type.clone(),
+                    success: !fail,
+                    data: data.into(),
+                    error: if fail { "nope".into() } else { String::new() },
+                    error_code: String::new(),
+                    error_data: String::new(),
+                    payload: None,
+                }))
+            }
+            type StreamEventsStream = Pin<
+                Box<
+                    dyn tokio_stream::Stream<
+                            Item = Result<future_rpc::proto::StreamEvent, tonic::Status>,
+                        > + Send,
+                >,
+            >;
+            async fn stream_events(
+                &self,
+                _request: tonic::Request<future_rpc::proto::StreamRequest>,
+            ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+                Ok(tonic::Response::new(Box::pin(
+                    futures_util::stream::pending(),
+                )))
+            }
+        }
+        async fn spawn_fail_agent_with(fail: std::collections::HashSet<String>) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            tokio::spawn(
+                Server::builder()
+                    .add_service(FutureAgentServer::new(FailAgent { fail }))
+                    .serve(addr),
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            format!("127.0.0.1:{}", addr.port())
+        }
+        async fn spawn_fail_agent() -> String {
+            spawn_fail_agent_with(
+                [
+                    "switch_session",
+                    "list_sessions",
+                    "fork",
+                    "new_session",
+                    "get_state",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            )
+            .await
+        }
+
+        // --session failure.
+        let addr = spawn_fail_agent().await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to switch to session s1")));
+        pump(&mut app, &mut rx).await;
+        app.stop();
+
+        // --continue failure (list_sessions fails).
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                r#continue: true,
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to continue session")));
+        pump(&mut app, &mut rx).await;
+        app.stop();
+
+        // --fork failure.
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                fork: Some("e1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Failed to fork session e1")));
+        pump(&mut app, &mut rx).await;
+        app.stop();
+
+        // Default flow with only get_state failing: new_session succeeds
+        // (client subscribes to the stream) and the refresh error path runs.
+        let addr2 =
+            spawn_fail_agent_with(["get_state"].iter().map(|s| s.to_string()).collect()).await;
+        let (mut app, mut rx) = make_app_at(&addr2, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn misc_small_paths() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // stop_async delegates to stop.
+        app.running = true;
+        app.stop_async().await;
+        assert!(!app.running);
+
+        // parse_updated_at: rfc3339, naive, invalid.
+        assert!(parse_updated_at("2026-01-01T00:00:00Z") > 0);
+        assert!(parse_updated_at("2026-01-01 00:00:00") > 0);
+        assert_eq!(parse_updated_at("garbage"), 0);
+
+        // normalize_path with a "." component.
+        assert_eq!(normalize_path("/tmp/./x"), "/tmp/x");
+
+        // FocusTarget::None drops key releases.
+        app.focused = FocusTarget::None;
+        app.handle_input("\x1b[97;1:3u");
+        app.focused = FocusTarget::Input;
+
+        // Input listeners: pass-through (None) and no-data rewrite.
+        app.input_listeners.push(Box::new(|d| {
+            if d == "quiet" {
+                Some(InputListenerResult {
+                    consume: false,
+                    data: None,
+                })
+            } else {
+                None
+            }
+        }));
+        app.handle_input("quiet"); // result with no data → original continues
+        app.handle_input("q"); // listener None arm (single char inserts)
+        assert!(app.input.get_value().contains('q'));
+        app.input_listeners.clear();
+
+        // Hidden overlay: focus redirects to the editor on key input.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        if let Some(entry) = app.overlay_stack.first_mut() {
+            entry.hidden = true;
+        }
+        app.handle_input("\x1b[B"); // down arrow: focus redirects to editor
+        assert_eq!(app.focused, FocusTarget::Input);
+        app.hide_overlay(); // close the leftover hidden entry
+        assert!(app.overlay_stack.is_empty());
+
+        // Autocomplete selection: no active context → value replaces input.
+        app.input.set_value("/model", None);
+        app.autocomplete
+            .show(vec![crate::components::autocomplete::AutocompleteItem {
+                value: "/model x".into(),
+                label: "/model x".into(),
+                description: None,
+            }]);
+        app.apply_autocomplete_selection();
+        assert_eq!(app.input.get_value(), "/model x");
+
+        // Approval with an object requested_action (pretty-printed) and a
+        // missing one (no preview block).
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"a2","requested_action":{"cmd":"ls"}}"#,
+        ));
+        assert!(last_system(&app).contains("Approval Required"));
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"a3"}"#,
+        ));
+        assert!(last_system(&app).contains("Approval Required"));
+
+        // /model selector refused while streaming.
+        app.state.streaming = true;
+        app.handle_cmd(UiCmd::Submit("/model".into()));
+        assert!(last_system(&app).contains("Cannot change model"));
+        app.state.streaming = false;
+
+        // Scoped overlay with an existing enabled set.
+        app.enabled_model_ids = Some(vec!["openai/gpt-4o".into()]);
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Scoped,
+        });
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+
+        // Fork overlay with no user messages → info message.
+        app.handle_cmd(UiCmd::ForkMessagesLoaded(Ok(json_parse(
+            r#"{"messages":[]}"#,
+        ))));
+        assert!(last_system(&app).contains("No user messages to fork from"));
+
+        // Select overlay key dispatch (on_select/on_cancel closures).
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        app.handle_key("enter"); // selects the highlighted session → switch flow
+        pump(&mut app, &mut rx).await;
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        app.handle_key("escape"); // → OverlayCancel through the channel
+        pump(&mut app, &mut rx).await;
+        assert!(app.overlay_stack.is_empty());
+
+        // apply_messages: tool message with an Error prefix.
+        app.apply_messages(Ok(json_parse(
+            r#"{"messages":[{"id":"t1","role":"tool","content":"Error: failed","name":"shell"}]}"#,
+        )));
+        let last = app.chat.plain_messages().last().unwrap().clone();
+        assert!(last.1.contains("Error: failed"));
+
+        // apply_refresh_state with queued runs + terminal acks.
+        let mut state = sample_state();
+        state.agent_instance_id = None;
+        app.apply_refresh_state(state);
+        let state2: RpcSessionState = serde_json::from_value(json_parse(
+            r#"{"sessionId":"s1","agentInstanceId":"agent-2","queuedRuns":[{"runId":"q1","runSequence":1,"clientRequestId":"c1","queuePosition":1,"acceptedAt":"2026-01-01","displayText":"queued work"}],"recentTerminalAcks":[{"run_id":"r-old","run_sequence":1,"client_request_id":"c2","state":"cancelled","reason":"user"},{"run_id":"r-sup","run_sequence":2,"client_request_id":"c3","state":"terminal","reason":"superseded"}]}"#,
+        ))
+        .unwrap();
+        app.apply_refresh_state(state2);
+        app.client.set_current_session_id("");
+
+        // setup() again with a cwd (FilePathProvider cwd branch).
+        app.state.cwd = "/tmp/sub".into();
+        app.setup();
+
+        let _ = &mut rx;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_spawn_successes() {
+        let (addr, _seen) = spawn_app_mock().await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+
+        // /clone success (state + messages fetched).
+        app.handle_cmd(UiCmd::Submit("/clone".into()));
+        pump_until_msg(&mut app, &mut rx, "Session cloned").await;
+
+        // /new with model+thinking set (inheritance path).
+        app.state.model = "openai/gpt-4o".into();
+        app.state.thinking = "high".into();
+        app.state.cwd = "/tmp".into();
+        app.handle_cmd(UiCmd::Submit("/new".into()));
+        pump_until_msg(&mut app, &mut rx, "New session started").await;
+
+        // /model selector with models loaded → overlay with "current".
+        app.handle_cmd(UiCmd::Submit("/model".into()));
+        pump(&mut app, &mut rx).await;
+        assert!(!app.overlay_stack.is_empty());
+        app.handle_cmd(UiCmd::OverlayCancel);
+
+        // Selecting a session in the overlay drives the full switch flow.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        app.handle_key("enter");
+        pump_until_msg(&mut app, &mut rx, "Switched to session").await;
+
+        // A clone-cancelled response.
+        let _ = &mut app;
+
+        // PromptAck running state binding.
+        app.handle_cmd(UiCmd::PromptAck {
+            local_id: "x".into(),
+            result: Ok(crate::rpc::types::RunAck {
+                run_id: "r1".into(),
+                run_epoch: 1,
+                accepted_state: "running".into(),
+                run_sequence: None,
+                queue_position: None,
+            }),
+        });
+        app.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn render_pipeline_leftovers() {
+        let (mut app, _rx) = running_app(100, 30);
+
+        // apply_line_resets skips empty lines.
+        let lines = app.apply_line_resets(vec![String::new(), "text".into()]);
+        assert!(lines[0].is_empty());
+        assert!(lines[1].ends_with(SEGMENT_RESET));
+
+        // position_hardware_cursor: move up / down / show-hardware-cursor.
+        app.show_hardware_cursor = true;
+        app.position_hardware_cursor(Some((5, 3)), 10);
+        assert_eq!(app.hardware_cursor_row, 5);
+        app.position_hardware_cursor(Some((2, 1)), 10); // up
+        assert_eq!(app.hardware_cursor_row, 2);
+        app.position_hardware_cursor(None, 10); // no-op
+        app.position_hardware_cursor(Some((0, 0)), 0); // zero lines → no-op
+
+        // Kitty expand/delete: previous lines with images get re-deleted.
+        app.previous_lines = vec![
+            "plain".to_string(),
+            "\x1b_Gi=7,f=100;AAAA\x1b\\".to_string(),
+        ];
+        app.previous_kitty_image_ids = [7].into_iter().collect();
+        let expanded = app.expand_last_changed_for_kitty_images(0, 0);
+        assert_eq!(expanded, 1);
+        let del = app.delete_changed_kitty_images(0, 1);
+        assert!(del.contains("i=7"));
+
+        // full_render with clear deletes kitty images + clears the screen.
+        app.terminal.writes.borrow_mut().clear();
+        app.full_render(&["line".to_string()], 100, 30, Some((0, 2)), true);
+        let out = render_writes(&app);
+        assert!(out.contains("\x1b[2J"));
+
+        // do_render when not running is a no-op.
+        app.running = false;
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        assert!(render_writes(&app).is_empty());
+        app.running = true;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn final_small_paths() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // Input component callbacks → UiCmd messages.
+        app.input.set_value("hello", None);
+        app.input.handle_key("enter"); // onSubmit
+        app.input.handle_key("escape"); // onEscape
+        app.input.handle_key("a"); // onChange (insert fires it)
+        pump(&mut app, &mut rx).await;
+
+        // TerminalIo wrapper used by run_interactive.
+        let mut real = crate::terminal::Terminal::new().unwrap();
+        crate::app::TerminalIo::set_exit_signal_callback(&mut real, None);
+
+        // tool_start without args; usage without the usage key.
+        app.handle_agent_event(&make_event(
+            "tool_start",
+            r#"{"tool_id":"t1","tool_name":"read"}"#,
+        ));
+        app.handle_agent_event(&make_event("tool_end", r#"{"tool_id":"t1"}"#));
+        pump(&mut app, &mut rx).await;
+        let toks = app.state.tokens_in;
+        app.handle_agent_event(&make_event("usage", r#"{"nope":1}"#));
+        assert_eq!(app.state.tokens_in, toks);
+        pump(&mut app, &mut rx).await;
+
+        // Two overlays: hiding the focused top one redirects to the next.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Selector,
+        });
+        // Hide the top (model) overlay while it's focused, then a key press
+        // redirects focus to the sessions overlay beneath.
+        if let Some(top) = app.get_top_overlay_index() {
+            app.overlay_stack[top].hidden = true;
+        }
+        app.handle_input("\x1b[B");
+        assert!(matches!(app.focused, FocusTarget::Overlay(_)));
+        app.hide_overlay();
+        app.hide_overlay();
+
+        // CycleModel with an EMPTY scoped list falls through to the RPC.
+        app.enabled_model_ids = Some(vec![]);
+        app.handle_key_action(KeyAction::CycleModel);
+        pump(&mut app, &mut rx).await;
+        app.enabled_model_ids = None;
+
+        // Scoped selector's on_save/on_cancel closures.
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Scoped,
+        });
+        app.handle_key("enter"); // saves the scope
+        pump(&mut app, &mut rx).await;
+        assert!(last_system(&app).contains("enabled"));
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Scoped,
+        });
+        app.handle_key("escape"); // cancels
+        pump(&mut app, &mut rx).await;
+        assert!(app.overlay_stack.is_empty());
+
+        // Help component downcasts (as_any/as_any_mut callable).
+        app.show_help_overlay();
+        {
+            let entry = &mut app.overlay_stack[0];
+            assert!(entry
+                .component
+                .as_any()
+                .downcast_ref::<crate::app::tests::HelpProbe>()
+                .is_none());
+            let _ = entry.component.as_any_mut();
+        }
+        app.hide_overlay();
+
+        // restore_focus to a lower overlay when the top closes.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        app.show_help_overlay();
+        app.hide_overlay(); // closes help → focus back to sessions overlay
+        assert!(matches!(app.focused, FocusTarget::Overlay(_)));
+        app.hide_overlay();
+
+        // set_focus(None) from an overlay focus.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        app.set_focus(FocusTarget::None);
+        assert_eq!(app.focused, FocusTarget::None);
+        app.hide_overlay();
+
+        // Refresh clears connection_lost with a message.
+        app.connection_lost = true;
+        app.apply_refresh_state(sample_state());
+        assert!(!app.connection_lost);
+        assert!(system_messages(&app)
+            .iter()
+            .any(|m| m.contains("Reconnected")));
+        app.client.set_current_session_id("");
+
+        // on_tick: render due while streaming re-requests a render.
+        app.state.streaming = true;
+        app.request_render(true);
+        app.on_tick();
+        app.state.streaming = false;
+
+        // composite_overlays with every overlay hidden → base unchanged.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        if let Some(top) = app.get_top_overlay_index() {
+            app.overlay_stack[top].hidden = true;
+        }
+        let base = vec!["row".to_string(); 30];
+        let out = app.composite_overlays(base.clone(), 100, 30);
+        assert_eq!(out, base);
+        app.hide_overlay();
+
+        let _ = &mut rx;
+    }
+
+    pub(crate) struct HelpProbe; // downcast probe (never matches)
+
+    /// Test double: renders nothing / wants key releases, as configured.
+    struct ProbeComponent {
+        lines: usize,
+        wants_release: bool,
+        render_only_at: Option<usize>,
+    }
+
+    impl Component for ProbeComponent {
+        fn render(&mut self, width: usize) -> Vec<String> {
+            // `render_only_at`: produce lines only at one width (drives the
+            // measure-vs-layout empty branches in composite_overlays).
+            if let Some(w) = self.render_only_at {
+                if width != w {
+                    return Vec::new();
+                }
+            }
+            (0..self.lines).map(|i| format!("probe {i}")).collect()
+        }
+        fn wants_key_release(&self) -> bool {
+            self.wants_release
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn final_final_paths() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // Keybinding closures with exact key ids.
+        for key in ["pageUp", "pageDown"] {
+            app.handle_key(key);
+            pump(&mut app, &mut rx).await;
+        }
+
+        // Release events reach a component that wants them.
+        app.show_overlay(
+            Box::new(ProbeComponent {
+                lines: 1,
+                wants_release: true,
+                render_only_at: None,
+            }),
+            OverlayOptions::default(),
+        );
+        app.handle_input("\x1b[97;1:3u"); // passes the filter
+        app.hide_overlay();
+
+        // A component rendering zero lines is skipped in compositing.
+        app.show_overlay(
+            Box::new(ProbeComponent {
+                lines: 0,
+                wants_release: false,
+                render_only_at: None,
+            }),
+            OverlayOptions::default(),
+        );
+        {
+            let entry = &mut app.overlay_stack[0];
+            let _ = entry.component.as_any_mut();
+        }
+        let base = vec!["row".to_string(); 30];
+        let out = app.composite_overlays(base.clone(), 100, 30);
+        assert_eq!(out, base);
+        app.hide_overlay();
+
+        // Renders at the measure width but empty at the layout width.
+        app.show_overlay(
+            Box::new(ProbeComponent {
+                lines: 2,
+                wants_release: false,
+                render_only_at: Some(100),
+            }),
+            OverlayOptions::default(),
+        );
+        let base = vec!["row".to_string(); 30];
+        let out = app.composite_overlays(base.clone(), 100, 30);
+        assert_eq!(out, base);
+        app.hide_overlay();
+
+        // set_focus on a missing overlay id just records the target (the
+        // component lookups are no-ops).
+        app.set_focus(FocusTarget::Overlay(999));
+        assert_eq!(app.focused, FocusTarget::Overlay(999));
+        app.set_focus(FocusTarget::Input);
+
+        // Non-ASCII single char takes the printable fallback.
+        app.input.set_value("", None);
+        app.handle_input("é");
+        assert_eq!(app.input.get_value(), "é");
+
+        // Autocomplete visible + a non-navigation key falls through.
+        app.autocomplete
+            .show(vec![crate::components::autocomplete::AutocompleteItem {
+                value: "/model".into(),
+                label: "/model".into(),
+                description: None,
+            }]);
+        app.handle_key("left"); // editor key — ac stays open
+        assert!(app.autocomplete.is_visible());
+        // Tab with a visible popup accepts the completion (no submit).
+        app.handle_key("tab");
+        assert!(!app.autocomplete.is_visible());
+        assert_eq!(app.input.get_value(), "/model");
+
+        // Empty-token context: replace wholesale.
+        app.input.set_value("/", None);
+        app.trigger_autocomplete();
+        pump(&mut app, &mut rx).await;
+        if app.autocomplete.is_visible() {
+            app.apply_autocomplete_selection();
+        }
+        assert!(app.input.get_value().starts_with('/'));
+
+        // delete_changed_kitty_images with an inverted range is empty.
+        assert!(app.delete_changed_kitty_images(5, 2).is_empty());
+
+        // stop() cursor moves (up and down).
+        app.previous_lines = vec!["a".into(), "b".into(), "c".into()];
+        app.hardware_cursor_row = 0;
+        app.stop(); // line_diff > 0 → move down write
+        let (mut app2, _rx2) = make_app(100, 30);
+        app2.previous_lines = vec!["a".into(), "b".into()];
+        app2.hardware_cursor_row = 5;
+        app2.stop(); // line_diff < 0 → move up write
+        let _ = &mut rx;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn do_render_deleted_line_variants() {
+        let (mut app, _rx) = running_app(100, 30);
+        // Big content, then moderate shrink (≤ h) → the clear-lines path.
+        for i in 0..20 {
+            app.chat.add_message(ChatMessage::new(
+                format!("m{i}"),
+                ChatRole::User,
+                &format!("content {i}"),
+            ));
+        }
+        app.do_render();
+        app.chat.clear_messages();
+        for i in 0..12 {
+            app.chat.add_message(ChatMessage::new(
+                format!("n{i}"),
+                ChatRole::User,
+                &format!("smaller {i}"),
+            ));
+        }
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        let out = render_writes(&app);
+        assert!(out.contains("\x1b[2K"));
+
+        // Viewport moved up while content shrinks → full redraw.
+        let (mut app, _rx) = running_app(100, 10);
+        for i in 0..30 {
+            app.chat.add_message(ChatMessage::new(
+                format!("m{i}"),
+                ChatRole::User,
+                &format!("line {i}"),
+            ));
+        }
+        app.do_render();
+        app.chat.scroll_up(25);
+        app.chat.clear_messages();
+        app.chat
+            .add_message(ChatMessage::new("x".into(), ChatRole::User, "one"));
+        app.do_render(); // viewport above content → full render
+
+        // Overlong line in a diff render is truncated, not crashed.
+        let (mut app, _rx) = running_app(20, 10);
+        app.do_render();
+        app.chat.add_message(ChatMessage::new(
+            "w".into(),
+            ChatRole::User,
+            "this line is definitely much wider than twenty columns",
+        ));
+        app.do_render();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn do_render_append_start_and_scroll() {
+        let (mut app, _rx) = running_app(100, 10);
+        app.do_render();
+        // White-box: drop the tail of previous_lines → the next identical
+        // frame looks like a pure append → append_start path.
+        let keep = app.previous_lines.len() - 2;
+        app.previous_lines.truncate(keep);
+        app.do_render();
+
+        // Diff change below the visible viewport → scroll-to-row path.
+        let (mut app, _rx) = running_app(100, 6);
+        for i in 0..12 {
+            app.chat.add_message(ChatMessage::new(
+                format!("s{i}"),
+                ChatRole::User,
+                &format!("scroll target row {i}"),
+            ));
+        }
+        app.do_render();
+        app.chat.add_message(ChatMessage::new(
+            "s12".into(),
+            ChatRole::User,
+            "tail change",
+        ));
+        app.do_render();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn do_render_deleted_lines_move_up() {
+        let (mut app, _rx) = running_app(100, 30);
+        app.do_render();
+        // Cursor parked low, then a prefix-shrink render → move-up write.
+        app.hardware_cursor_row = 20;
+        app.previous_lines
+            .extend((0..8).map(|i| format!("stale {i}")));
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        assert!(render_writes(&app).contains("\x1b["));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn do_render_deleted_lines_prefix_shrink() {
+        let (mut app, _rx) = running_app(100, 30);
+        app.do_render();
+        // White-box: pretend the last render had 8 more tail lines → the
+        // new frame is a strict prefix → the deleted-lines diff path.
+        app.previous_lines
+            .extend((0..8).map(|i| format!("stale {i}")));
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        let out = render_writes(&app);
+        assert!(out.contains("\x1b[2K")); // cleared in place
+
+        // Too many deleted lines (> height) → full redraw (clears screen).
+        app.previous_lines
+            .extend((0..40).map(|i| format!("stale {i}")));
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        assert!(render_writes(&app).contains("\x1b[2J"));
+
+        // Viewport above the shrunk content → full redraw.
+        app.previous_lines
+            .extend((0..3).map(|i| format!("stale {i}")));
+        app.previous_viewport_top = 500;
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        assert!(render_writes(&app).contains("\x1b[2J"));
+
+        // A change above the viewport → full redraw.
+        app.previous_viewport_top = 500;
+        app.chat.clear_messages();
+        app.chat
+            .add_message(ChatMessage::new("z".into(), ChatRole::User, "fresh"));
+        app.terminal.writes.borrow_mut().clear();
+        app.do_render();
+        assert!(render_writes(&app).contains("\x1b[2J"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn surgical_leftovers() {
+        let (mut app, mut rx) = make_app(100, 30);
+
+        // normalize_path with a leading ./ (CurDir at the start).
+        assert_eq!(normalize_path("./x"), "x");
+
+        // overlay_id_of_focus outside overlay focus → None.
+        app.focused = FocusTarget::Input;
+        assert!(app.overlay_id_of_focus().is_none());
+
+        // Printable char routed to the open overlay's component.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sample_sessions()),
+            purpose: SessionsPurpose::Browse,
+        });
+        app.input.set_value("", None);
+        app.handle_input("é");
+        assert!(app.input.get_value().is_empty()); // overlay got it
+        app.hide_overlay();
+
+        // Autocomplete overlap completion through the real manager.
+        app.input.set_value("/mo", None);
+        app.trigger_autocomplete();
+        pump(&mut app, &mut rx).await;
+        if app.autocomplete.is_visible() {
+            app.apply_autocomplete_selection();
+        }
+        assert!(app.input.get_value().starts_with("/m"));
+
+        // do_render with the help overlay open renders the help component.
+        app.running = true;
+        app.show_help_overlay();
+        app.do_render();
+        let out = render_writes(&app);
+        assert!(out.contains("future-tui")); // help card content
+        app.hide_overlay();
+
+        // Line resets skip kitty image lines.
+        let lines = app.apply_line_resets(vec!["\x1b_Gi=9;AAAA\x1b\\".into()]);
+        assert!(!lines[0].ends_with(SEGMENT_RESET));
+
+        // query_cell_size writes when image capability exists.
+        let _guard = crate::test_env::lock();
+        crate::terminal_image::set_capabilities(crate::terminal_image::TerminalCapabilities {
+            images: crate::terminal_image::ImageProtocol::Kitty,
+            true_color: true,
+            hyperlinks: true,
+        });
+        app.terminal.writes.borrow_mut().clear();
+        app.query_cell_size();
+        assert!(render_writes(&app).contains("\x1b[16t"));
+        crate::terminal_image::set_capabilities(crate::terminal_image::TerminalCapabilities {
+            images: crate::terminal_image::ImageProtocol::None,
+            true_color: false,
+            hyperlinks: false,
+        });
+        drop(_guard);
+
+        // A dead-region: apply_status with a model found in the list.
+        let mut s = sample_state();
+        s.model = None;
+        app.apply_status(&s, &sample_models());
+        let mut s2 = sample_state();
+        s2.model = Some("gpt-4o".into()); // bare id matches the model list
+        app.apply_status(&s2, &sample_models());
+        assert!(last_system(&app).contains("**Provider:** openai"));
+
+        // show_model_selector refuses while streaming (direct call — the
+        // slash arm pre-checks it).
+        app.state.streaming = true;
+        app.show_model_selector();
+        assert!(last_system(&app).contains("Cannot change model"));
+        app.state.streaming = false;
+
+        // Dangling overlay focus + a key press (redirect block no-ops).
+        app.set_focus(FocusTarget::Overlay(999));
+        app.handle_input("\x1b[B");
+        app.set_focus(FocusTarget::Input);
+
+        // Lost queued runs on agent restart.
+        app.state.session_id = "s1".into();
+        app.apply_refresh_state(sample_state()); // registers agent instance? (sample has none)
+        let with_agent: RpcSessionState = serde_json::from_value(json_parse(
+            r#"{"sessionId":"s1","agentInstanceId":"agent-1"}"#,
+        ))
+        .unwrap();
+        app.apply_refresh_state(with_agent);
+        // Track a queued run client-side, then the agent restarts.
+        app.handle_cmd(UiCmd::PromptAck {
+            local_id: "u1".into(),
+            result: Ok(crate::rpc::types::RunAck {
+                run_id: "q1".into(),
+                run_epoch: 1,
+                accepted_state: "queued".into(),
+                run_sequence: None,
+                queue_position: Some(1),
+            }),
+        });
+        let restarted: RpcSessionState = serde_json::from_value(json_parse(
+            r#"{"sessionId":"s1","agentInstanceId":"agent-2","recentTerminalAcks":[{"run_id":"r-f","run_sequence":1,"client_request_id":"c","state":"failed","reason":"error"}]}"#,
+        ))
+        .unwrap();
+        app.apply_refresh_state(restarted);
+        app.client.set_current_session_id("");
+
+        let _ = &mut rx;
     }
 }

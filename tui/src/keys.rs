@@ -1541,13 +1541,33 @@ mod tests {
     #[test]
     fn kitty_functional_equivalents_cover_the_whole_map() {
         let expected: [(i64, i64); 27] = [
-            (57399, 48), (57400, 49), (57401, 50), (57402, 51), (57403, 52),
-            (57404, 53), (57405, 54), (57406, 55), (57407, 56), (57408, 57),
-            (57409, 46), (57410, 47), (57411, 42), (57412, 45), (57413, 43),
-            (57415, 61), (57416, 44), (57417, ARROW_LEFT), (57418, ARROW_RIGHT),
-            (57419, ARROW_UP), (57420, ARROW_DOWN), (57421, FUNC_PAGE_UP),
-            (57422, FUNC_PAGE_DOWN), (57423, FUNC_HOME), (57424, FUNC_END),
-            (57425, FUNC_INSERT), (57426, FUNC_DELETE),
+            (57399, 48),
+            (57400, 49),
+            (57401, 50),
+            (57402, 51),
+            (57403, 52),
+            (57404, 53),
+            (57405, 54),
+            (57406, 55),
+            (57407, 56),
+            (57408, 57),
+            (57409, 46),
+            (57410, 47),
+            (57411, 42),
+            (57412, 45),
+            (57413, 43),
+            (57415, 61),
+            (57416, 44),
+            (57417, ARROW_LEFT),
+            (57418, ARROW_RIGHT),
+            (57419, ARROW_UP),
+            (57420, ARROW_DOWN),
+            (57421, FUNC_PAGE_UP),
+            (57422, FUNC_PAGE_DOWN),
+            (57423, FUNC_HOME),
+            (57424, FUNC_END),
+            (57425, FUNC_INSERT),
+            (57426, FUNC_DELETE),
         ];
         for (from, to) in expected {
             assert_eq!(kitty_functional_equivalent(from), Some(to));
@@ -1559,7 +1579,10 @@ mod tests {
 
     #[test]
     fn shifted_letter_identity_drops_shift_for_uppercase() {
-        assert_eq!(normalize_shifted_letter_identity_codepoint(65, MOD_SHIFT), 97);
+        assert_eq!(
+            normalize_shifted_letter_identity_codepoint(65, MOD_SHIFT),
+            97
+        );
         assert_eq!(normalize_shifted_letter_identity_codepoint(65, 0), 65);
         // Lock modifiers are masked out before the shift check.
         assert_eq!(
@@ -1753,7 +1776,10 @@ mod tests {
         // Plain printable.
         assert_eq!(decode_kitty_printable("\x1b[97u").as_deref(), Some("a"));
         // Shift with an explicit shifted key uses it.
-        assert_eq!(decode_kitty_printable("\x1b[97:65;2u").as_deref(), Some("A"));
+        assert_eq!(
+            decode_kitty_printable("\x1b[97:65;2u").as_deref(),
+            Some("A")
+        );
         // Shift without a shifted key keeps the base codepoint.
         assert_eq!(decode_kitty_printable("\x1b[97;2u").as_deref(), Some("a"));
         // Ctrl/Alt modifiers are not printable.

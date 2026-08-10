@@ -135,7 +135,10 @@ fn install_signal_handlers() {
         for &sig in &TERM_SIGNALS {
             debug_assert_eq!(libc::sigaction(sig, &sa, std::ptr::null_mut()), 0);
         }
-        debug_assert_eq!(libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut()), 0);
+        debug_assert_eq!(
+            libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut()),
+            0
+        );
     }
 }
 
@@ -768,11 +771,7 @@ mod tests {
                 let mut got = 0usize;
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
                 while got < expected && std::time::Instant::now() < deadline {
-                    let n = libc::read(
-                        read_fd,
-                        sink.as_mut_ptr() as *mut libc::c_void,
-                        sink.len(),
-                    );
+                    let n = libc::read(read_fd, sink.as_mut_ptr() as *mut libc::c_void, sink.len());
                     if n > 0 {
                         got += n as usize;
                     } else {

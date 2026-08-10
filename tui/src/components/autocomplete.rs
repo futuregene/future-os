@@ -1358,11 +1358,19 @@ mod tests {
             let prefix = format!("{sub}/");
             let got: Vec<String> = items
                 .iter()
-                .map(|i| i.label.strip_prefix(&prefix).unwrap_or(&i.label).to_string())
+                .map(|i| {
+                    i.label
+                        .strip_prefix(&prefix)
+                        .unwrap_or(&i.label)
+                        .to_string()
+                })
                 .collect();
             // Directories first, then files, alphabetical within each kind.
-            let want: Vec<String> =
-                dirs.iter().chain(files.iter()).map(|s| s.to_string()).collect();
+            let want: Vec<String> = dirs
+                .iter()
+                .chain(files.iter())
+                .map(|s| s.to_string())
+                .collect();
             assert_eq!(got, want);
         }
     }

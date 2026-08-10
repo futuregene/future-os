@@ -535,11 +535,13 @@ mod tests {
             }));
         assert!(is_focusable(selector.as_ref()));
         set_component_focused(selector.as_mut(), true);
-        assert!(selector
-            .as_any()
-            .downcast_ref::<ScopedModelsSelector>()
-            .unwrap()
-            .focused);
+        assert!(
+            selector
+                .as_any()
+                .downcast_ref::<ScopedModelsSelector>()
+                .unwrap()
+                .focused
+        );
 
         struct Bare;
         impl Component for Bare {

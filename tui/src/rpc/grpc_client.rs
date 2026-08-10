@@ -1135,8 +1135,10 @@ mod tests {
     }
 
     /// Bind an ephemeral port, serve the mock agent, return (join handle, addr).
-    async fn spawn_mock_agent(
-    ) -> (tokio::task::JoinHandle<Result<(), tonic::transport::Error>>, String) {
+    async fn spawn_mock_agent() -> (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        String,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener); // tonic binds the same port below
@@ -1145,8 +1147,11 @@ mod tests {
         };
         // Spawn the serve future directly — no async-block tail that can
         // never complete.
-        let handle =
-            tokio::spawn(Server::builder().add_service(FutureAgentServer::new(agent)).serve(addr));
+        let handle = tokio::spawn(
+            Server::builder()
+                .add_service(FutureAgentServer::new(agent))
+                .serve(addr),
+        );
         // Give the server a moment to start listening.
         tokio::time::sleep(Duration::from_millis(50)).await;
         (handle, format!("127.0.0.1:{}", addr.port()))
@@ -1317,7 +1322,11 @@ mod tests {
         drop(listener);
         // Spawn the serve future directly (no async block → no never-taken
         // completion tail).
-        tokio::spawn(Server::builder().add_service(FutureAgentServer::new(mock)).serve(addr));
+        tokio::spawn(
+            Server::builder()
+                .add_service(FutureAgentServer::new(mock))
+                .serve(addr),
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
         format!("127.0.0.1:{}", addr.port())
     }
@@ -1366,7 +1375,10 @@ mod tests {
         let (client, _events, _conn) = GrpcClient::new(&addr);
 
         // new_session with a sessionId updates the current session.
-        let v = client.new_session(None, Some("m"), Some("high")).await.unwrap();
+        let v = client
+            .new_session(None, Some("m"), Some("high"))
+            .await
+            .unwrap();
         assert_eq!(v.get("sessionId").and_then(Value::as_str), Some("s-new"));
         assert_eq!(client.get_current_session_id(), "s-new");
 
@@ -1570,13 +1582,13 @@ mod tests {
 
     /// Mock whose event stream is fed by a test-owned channel of Results
     /// (so tests can inject stream errors).
+    type SharedEventRx = Arc<
+        tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<Result<StreamEvent, tonic::Status>>>>,
+    >;
+
     #[derive(Clone)]
     struct EventfulMock {
-        rx: Arc<
-            tokio::sync::Mutex<
-                Option<mpsc::UnboundedReceiver<Result<StreamEvent, tonic::Status>>>,
-            >,
-        >,
+        rx: SharedEventRx,
     }
 
     #[tonic::async_trait]
@@ -1598,9 +1610,8 @@ mod tests {
                 payload: None,
             }))
         }
-        type StreamEventsStream = Pin<
-            Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>,
-        >;
+        type StreamEventsStream =
+            Pin<Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>>;
         async fn stream_events(
             &self,
             _request: tonic::Request<StreamRequest>,
@@ -1617,19 +1628,26 @@ mod tests {
         }
     }
 
-    async fn spawn_eventful_mock(
-    ) -> (mpsc::UnboundedSender<Result<StreamEvent, tonic::Status>>, String) {
+    async fn spawn_eventful_mock() -> (
+        mpsc::UnboundedSender<Result<StreamEvent, tonic::Status>>,
+        String,
+    ) {
         let (tx, rx) = mpsc::unbounded_channel::<Result<StreamEvent, tonic::Status>>();
         let shared_rx = Arc::new(tokio::sync::Mutex::new(Some(rx)));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
         let mock = EventfulMock { rx: shared_rx };
-        tokio::spawn(Server::builder().add_service(FutureAgentServer::new(mock)).serve(addr));
+        tokio::spawn(
+            Server::builder()
+                .add_service(FutureAgentServer::new(mock))
+                .serve(addr),
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
         (tx, format!("127.0.0.1:{}", addr.port()))
     }
 
+    #[allow(clippy::result_large_err)] // mock helper mirrors the real stream error type
     fn stream_event(t: &str, data: &str, run_id: &str) -> Result<StreamEvent, tonic::Status> {
         Ok(StreamEvent {
             r#type: t.into(),
@@ -1653,7 +1671,8 @@ mod tests {
         tx.send(stream_event("text_chunk", "not json", "")).unwrap();
         // A run-scoped event that is neither start nor end skips the
         // bookkeeping arms.
-        tx.send(stream_event("text_chunk", "{\"text\":\"x\"}", "r0")).unwrap();
+        tx.send(stream_event("text_chunk", "{\"text\":\"x\"}", "r0"))
+            .unwrap();
         // agent_start marks the run active…
         tx.send(stream_event("agent_start", "{}", "r1")).unwrap();
         assert!(spin_until_bool(&client, true).await);
@@ -1907,7 +1926,11 @@ mod tests {
         let agent = MockAgent {
             event_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
-        tokio::spawn(Server::builder().add_service(FutureAgentServer::new(agent)).serve(addr2));
+        tokio::spawn(
+            Server::builder()
+                .add_service(FutureAgentServer::new(agent))
+                .serve(addr2),
+        );
         wait_conn(&mut conn, true, "reconnect").await;
         assert!(client.is_connected());
         client.disconnect();
@@ -2013,7 +2036,8 @@ mod tests {
         tx.send(stream_event("ping", "{}", "")).unwrap();
         wait_connected(&mut conn).await;
         // A stream-level error → Lost → disconnect notification.
-        tx.send(Err(tonic::Status::internal("mid-stream boom"))).unwrap();
+        tx.send(Err(tonic::Status::internal("mid-stream boom")))
+            .unwrap();
         wait_conn(&mut conn, false, "disconnect on stream error").await;
         client.disconnect();
     }
@@ -2111,5 +2135,4 @@ mod tests {
         let (_tx, mut rx) = watch::channel(true);
         wait_connected(&mut rx).await;
     }
-
 }

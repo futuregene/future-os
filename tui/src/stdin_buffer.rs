@@ -569,11 +569,26 @@ mod tests {
         // Parameter bytes only — still waiting for the final byte.
         assert!(matches!(is_complete_csi_sequence("\x1b[1"), Incomplete));
         // SGR mouse: complete only with M/m and three numeric fields.
-        assert!(matches!(is_complete_csi_sequence("\x1b[<0;10;20M"), Complete));
-        assert!(matches!(is_complete_csi_sequence("\x1b[<0;10;20m"), Complete));
-        assert!(matches!(is_complete_csi_sequence("\x1b[<0;10M"), Incomplete));
-        assert!(matches!(is_complete_csi_sequence("\x1b[<0;10;20"), Incomplete));
-        assert!(matches!(is_complete_csi_sequence("\x1b[<0;10;xyM"), Incomplete));
+        assert!(matches!(
+            is_complete_csi_sequence("\x1b[<0;10;20M"),
+            Complete
+        ));
+        assert!(matches!(
+            is_complete_csi_sequence("\x1b[<0;10;20m"),
+            Complete
+        ));
+        assert!(matches!(
+            is_complete_csi_sequence("\x1b[<0;10M"),
+            Incomplete
+        ));
+        assert!(matches!(
+            is_complete_csi_sequence("\x1b[<0;10;20"),
+            Incomplete
+        ));
+        assert!(matches!(
+            is_complete_csi_sequence("\x1b[<0;10;xyM"),
+            Incomplete
+        ));
         assert!(matches!(is_complete_csi_sequence("\x1b[<M"), Incomplete));
         // '<' payload whose final byte is in 0x40..=0x7e but not M/m.
         assert!(matches!(is_complete_csi_sequence("\x1b[<A"), Incomplete));
@@ -587,9 +602,18 @@ mod tests {
         assert!(matches!(is_complete_dcs_sequence("\x1bX"), Complete));
         assert!(matches!(is_complete_apc_sequence("\x1bX"), Complete));
         // OSC terminates on BEL or ST.
-        assert!(matches!(is_complete_osc_sequence("\x1b]0;title\x07"), Complete));
-        assert!(matches!(is_complete_osc_sequence("\x1b]0;title\x1b\\"), Complete));
-        assert!(matches!(is_complete_osc_sequence("\x1b]0;title"), Incomplete));
+        assert!(matches!(
+            is_complete_osc_sequence("\x1b]0;title\x07"),
+            Complete
+        ));
+        assert!(matches!(
+            is_complete_osc_sequence("\x1b]0;title\x1b\\"),
+            Complete
+        ));
+        assert!(matches!(
+            is_complete_osc_sequence("\x1b]0;title"),
+            Incomplete
+        ));
         // DCS/APC terminate on ST only.
         assert!(matches!(is_complete_dcs_sequence("\x1bPq\x1b\\"), Complete));
         assert!(matches!(is_complete_dcs_sequence("\x1bPq"), Incomplete));
