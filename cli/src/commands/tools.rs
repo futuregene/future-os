@@ -1874,4 +1874,748 @@ mod tests {
         let result = format_image_result("image_edit", &sc, None).await;
         assert_eq!(result, "[Image edited: unknown unknown png]\nPrompt: x");
     }
+
+    // ── helpers ─────────────────────────────────────────────────────
+
+    #[test]
+    fn str_of_and_js_string_coercion() {
+        assert_eq!(str_of(Some(&json!("s"))), "s");
+        assert_eq!(str_of(Some(&json!(1))), "");
+        assert_eq!(str_of(None), "");
+        assert_eq!(js_string(&json!("s")), "s");
+        assert_eq!(js_string(&json!(42)), "42");
+        assert_eq!(js_string(&json!(true)), "true");
+        assert_eq!(js_string(&json!(null)), "");
+        assert_eq!(js_string(&json!([1])), "");
+    }
+
+    #[test]
+    fn mcp_error_code_and_message() {
+        assert_eq!(mcp_error_code(&json!({"code": -32600})), "-32600");
+        assert_eq!(mcp_error_code(&json!({"code": "E"})), "E");
+        assert_eq!(mcp_error_code(&json!({})), "unknown");
+        assert_eq!(mcp_error_message(&json!({"message": "m"})), "m");
+        assert_eq!(mcp_error_message(&json!({})), "unknown error");
+    }
+
+    #[test]
+    fn find_tool_entry_and_image_output_dir() {
+        assert!(find_tool_entry("search_paper").is_some());
+        assert!(find_tool_entry("no-such-tool").is_none());
+        // Browser tools are merged into the catalog too.
+        assert!(find_tool_entry("browser").is_some() || find_tool_entry("browser_open").is_some() || !browser_tool_catalog().is_empty());
+        let dir = image_output_dir();
+        assert!(dir.ends_with(".future/agent/images") || dir.ends_with(".future\\agent\\images"));
+    }
+
+    #[test]
+    fn translate_error_tool_specific_and_default() {
+        // Tool-specific pattern wins.
+        let t = translate_error("image_gen", "azure_image_transport_failed: boom").unwrap();
+        assert!(t.retryable);
+        assert!(t.description.contains("transport"));
+        // Default fallback for unknown tools.
+        let t = translate_error("whatever", "HTTP 429 too many").unwrap();
+        assert!(t.description.contains("Rate limited"));
+        // Case-insensitive.
+        let t = translate_error("parse_doc", "UNSUPPORTED FILE TYPE").unwrap();
+        assert!(!t.retryable);
+        // No match → None.
+        assert!(translate_error("search_paper", "something else entirely").is_none());
+    }
+
+    // ── format_* structured-content renderers ───────────────────────
+
+    #[test]
+    fn format_search_paper_variants() {
+        // Missing / empty results.
+        assert_eq!(format_search_paper(&json!({})), "No papers found.");
+        assert_eq!(format_search_paper(&json!({"results": []})), "No papers found.");
+        // Results rows with no papers are skipped; all-empty → fallback.
+        assert_eq!(
+            format_search_paper(&json!({"results": [{"query": "q", "papers": []}]})),
+            "No papers found."
+        );
+        let sc = json!({"results": [{
+            "query": "crispr",
+            "papers": [
+                {"title": "T", "authors": "A B", "journal": "Nat", "year": "2025", "doi": "10.1/x", "url": "http://u", "ai_summary": "sum"},
+                {"title": "", "journal": "J"},
+                {"year": "2024"},
+                {"authors": "Solo"}
+            ]
+        }]});
+        let out = format_search_paper(&sc);
+        assert!(out.contains("## Search Results: \"crispr\" (4 papers)"), "out: {out}");
+        assert!(out.contains("### 1. T"), "out: {out}");
+        assert!(out.contains("**Authors:** A B"));
+        assert!(out.contains("**Journal:** Nat (2025)"));
+        assert!(out.contains("**DOI:** 10.1/x"));
+        assert!(out.contains("**URL:** http://u"));
+        assert!(out.contains("\nsum"));
+        assert!(out.contains("### 2. Untitled"), "out: {out}");
+        assert!(out.contains("**Journal:** J\n") || out.contains("**Journal:** J"), "out: {out}");
+        assert!(out.contains("**Journal:** (2024)"), "out: {out}");
+    }
+
+    #[test]
+    fn format_get_paper_variants() {
+        assert_eq!(format_get_paper(&json!({})), "No paper found.");
+        assert_eq!(format_get_paper(&json!({"paper": [1]})), "No paper found.");
+        let sc = json!({"paper": {
+            "title": "Paper T", "authors": "A", "journal": "J", "year": "2025",
+            "doi": "10.1/x", "pubmed_id": "123", "url": "http://u", "body_text": "BODY"
+        }});
+        let out = format_get_paper(&sc);
+        assert!(out.contains("# Paper T"));
+        assert!(out.contains("**DOI:** 10.1/x | **PMID:** 123"));
+        assert!(out.contains("BODY"));
+        // Minimal: no title, no body.
+        let out = format_get_paper(&json!({"paper": {}}));
+        assert!(out.contains("# Untitled"), "out: {out}");
+        assert!(out.contains("(No body text available)"), "out: {out}");
+        // Journal without year; year without journal.
+        assert!(format_get_paper(&json!({"paper": {"journal": "J"}})).contains("**Journal:** J\n"));
+        assert!(format_get_paper(&json!({"paper": {"year": "2024"}})).contains("**Journal:** (2024)"));
+    }
+
+    #[test]
+    fn format_web_search_variants() {
+        assert_eq!(
+            format_web_search(&json!({"query": "q"})),
+            "## Search Results: \"q\"\n\nNo results found."
+        );
+        assert_eq!(
+            format_web_search(&json!({"query": "q", "results": []})),
+            "## Search Results: \"q\"\n\nNo results found."
+        );
+        let sc = json!({"query": "q", "results": [
+            {"title": "T", "link": "http://l", "snippet": "s"},
+            {"link": "http://only-link"},
+            "not-a-record"
+        ]});
+        let out = format_web_search(&sc);
+        assert!(out.contains("## Search Results: \"q\" (3 results)"), "out: {out}");
+        assert!(out.contains("1. **T**"));
+        assert!(out.contains("   http://l"));
+        assert!(out.contains("   s"));
+        assert!(out.contains("2. **Untitled**"), "out: {out}");
+    }
+
+    #[test]
+    fn format_fetch_url_variants() {
+        // No title → heading omitted; empty content → placeholder.
+        let out = format_fetch_url(&json!({}));
+        assert!(out.contains("**URL:** (unknown)"), "out: {out}");
+        assert!(out.contains("(No content)"), "out: {out}");
+        assert!(!out.contains("# "), "out: {out}");
+        let out = format_fetch_url(&json!({"url": "http://u", "title": "T", "content": "C"}));
+        assert!(out.contains("# T"));
+        assert!(out.contains("**URL:** http://u"));
+        assert!(out.contains("C"));
+    }
+
+    #[test]
+    fn format_read_image_and_parse_doc() {
+        assert_eq!(format_read_image(&json!({})), "(No answer)");
+        assert_eq!(format_read_image(&json!({"answer": "A"})), "A");
+        assert_eq!(format_parse_doc(&json!({})), "(No content)");
+        assert_eq!(format_parse_doc(&json!({"markdown": "# MD"})), "# MD");
+    }
+
+    #[tokio::test]
+    async fn format_tool_result_routing() {
+        let make = |text: &str, sc: Option<Value>| CallToolResponse {
+            text: text.to_string(),
+            structured_content: sc,
+        };
+        // No structured content → raw text.
+        assert_eq!(format_tool_result("web_search", &make("plain", None), None).await, "plain");
+        // Known tools route to their renderer.
+        assert_eq!(
+            format_tool_result("web_search", &make("", Some(json!({"query": "q"}))), None).await,
+            "## Search Results: \"q\"\n\nNo results found."
+        );
+        assert_eq!(
+            format_tool_result("read_image", &make("", Some(json!({"answer": "A"}))), None).await,
+            "A"
+        );
+        // Unknown tool: structured content pretty-printed when text is empty…
+        let out = format_tool_result("mystery", &make("", Some(json!({"a": 1}))), None).await;
+        assert!(out.contains("\"a\": 1"), "out: {out}");
+        // …and text preferred when present.
+        assert_eq!(
+            format_tool_result("mystery", &make("txt", Some(json!({"a": 1}))), None).await,
+            "txt"
+        );
+    }
+
+    // ── load_api_key ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn load_api_key_resolution_order() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // 1. FUTURE_API_KEY wins.
+        let _env = crate::test_env::EnvGuard::set(&[
+            ("FUTURE_API_KEY", std::ffi::OsString::from("env-key")),
+            ("FUTURE_API_TEST_KEY", std::ffi::OsString::from("")),
+        ]);
+        assert_eq!(load_api_key().await.unwrap(), "env-key");
+        drop(_env);
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
+        // 2. auth.json key.
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        tokio::fs::write(&path, "{\"future\": {\"key\": \"file-key\"}}")
+            .await
+            .unwrap();
+        assert_eq!(load_api_key().await.unwrap(), "file-key");
+        // 3. No key → not-logged-in message.
+        tokio::fs::write(&path, "{\"future\": {}}").await.unwrap();
+        let err = load_api_key().await.unwrap_err();
+        assert!(err.contains("Not logged in"), "err: {err}");
+        // future not an object.
+        tokio::fs::write(&path, "{\"future\": 5}").await.unwrap();
+        assert!(load_api_key().await.unwrap_err().contains("Not logged in"));
+        // Non-object auth.json → error message.
+        tokio::fs::write(&path, "[1]").await.unwrap();
+        let err = load_api_key().await.unwrap_err();
+        assert!(err.contains("must be a JSON object"), "err: {err}");
+        // Invalid JSON → parse error propagates.
+        tokio::fs::write(&path, "{bad").await.unwrap();
+        assert!(!load_api_key().await.unwrap_err().is_empty());
+        // 4. ENOENT → not-logged-in; FUTURE_API_TEST_KEY rescues.
+        tokio::fs::remove_file(&path).await.unwrap();
+        let err = load_api_key().await.unwrap_err();
+        assert!(err.contains("Not logged in"), "err: {err}");
+        let _env2 = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_API_TEST_KEY",
+            std::ffi::OsString::from("test-key"),
+        )]);
+        assert_eq!(load_api_key().await.unwrap(), "test-key");
+        // Empty FUTURE_API_KEY is ignored (JS falsy).
+        let _env3 = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_API_KEY",
+            std::ffi::OsString::from(""),
+        )]);
+        assert_eq!(load_api_key().await.unwrap(), "test-key");
+    }
+
+    // ── MCP-backed list/describe/call ───────────────────────────────
+
+    /// Auth env: FUTURE_API_KEY set + platform pointed at the mock.
+    async fn mcp_env(base: &str) -> (crate::test_env::EnvGuard, crate::test_env::EnvGuard) {
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        tokio::fs::write(&path, format!("{{\"future\": {{\"key\": \"sk\", \"base_url\": \"{base}\"}}}}"))
+            .await
+            .unwrap();
+        let guard = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_API_KEY",
+            std::ffi::OsString::from("sk"),
+        )]);
+        (guard, crate::test_env::EnvGuard::set(&[]))
+    }
+
+    #[tokio::test]
+    async fn tools_list_text_and_json_with_remote() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    // initialize, notifications/initialized, tools/list —
+                    // twice: the text-mode and json-mode invocations each run
+                    // the full MCP handshake chain.
+                    ("data: {\"result\":{}}\n\n", Some("sess-1")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"result\":{\"tools\":[{\"name\":\"search_paper\",\"description\":\"REMOTE desc\"},{\"name\":\"image_edit\",\"description\":\"remote image_edit\"},{\"name\":\"remote_only\"},{\"name\":42}]}}\n\n", None),
+                    ("data: {\"result\":{}}\n\n", Some("sess-2")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"result\":{\"tools\":[{\"name\":\"search_paper\",\"description\":\"REMOTE desc\"},{\"name\":\"image_edit\",\"description\":\"remote image_edit\"},{\"name\":\"remote_only\"},{\"name\":42}]}}\n\n", None),
+                ],
+            ),
+        ])
+        .await;
+        let _env = mcp_env(&base).await;
+
+        let (out, cap) = Output::memory();
+        tools("list", &[], &out).await.expect("list");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        // Local description wins over the remote one for known tools.
+        assert!(stdout.contains("Search academic papers"), "stdout: {stdout}");
+        assert!(!stdout.contains("REMOTE desc"), "stdout: {stdout}");
+        // Remote-only tool listed with its (default empty) description.
+        assert!(stdout.contains("remote_only"), "stdout: {stdout}");
+        assert!(stdout.contains("[needs --input]"), "stdout: {stdout}");
+        assert!(stdout.contains("tools available."), "stdout: {stdout}");
+
+        // JSON mode.
+        let (out, cap) = Output::memory();
+        tools("list", &["--json".to_string()], &out).await.expect("list");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        let arr = parsed.as_array().unwrap();
+        let remote_only = arr.iter().find(|t| t["name"] == "remote_only").unwrap();
+        assert_eq!(remote_only["description"], "");
+        assert!(remote_only.get("needsInput").is_none());
+        let image_edit = arr.iter().find(|t| t["name"] == "image_edit").unwrap();
+        assert_eq!(image_edit["needsInput"], true);
+    }
+
+    #[tokio::test]
+    async fn tools_list_remote_unavailable_paths() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // No auth at all → load_api_key fails → warning in text mode…
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
+        let (out, cap) = Output::memory();
+        tools("list", &[], &out).await.expect("list");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Remote tools unavailable:"), "stderr: {stderr}");
+        assert!(stderr.contains("Showing local tools only."), "stderr: {stderr}");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(!stdout.contains("search_paper"), "stdout: {stdout}");
+
+        // …and silently omitted in JSON mode (local tools only).
+        let (out, cap) = Output::memory();
+        tools("list", &["--json".to_string()], &out).await.expect("list");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.is_empty(), "stderr: {stderr}");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert!(parsed.as_array().unwrap().iter().all(|t| t["name"] != "search_paper"));
+
+        // Remote call fails (bad gateway) → same warning path with the error.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/api/v1/mcp",
+            502,
+            "{}",
+        )])
+        .await;
+        let _env2 = mcp_env(&base).await;
+        let (out, cap) = Output::memory();
+        tools("list", &[], &out).await.expect("list");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("502"), "stderr: {stderr}");
+
+        // tools/list returns an error object → wrapped message.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    ("data: {\"result\":{}}\n\n", Some("s")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"error\":{\"code\":-1,\"message\":\"list broke\"}}\n\n", None),
+                ],
+            ),
+        ])
+        .await;
+        let _env3 = mcp_env(&base).await;
+        let (out, cap) = Output::memory();
+        tools("list", &[], &out).await.expect("list");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("tools/list failed: code=-1, message=list broke"), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn tools_describe_variants() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // --help.
+        let (out, cap) = Output::memory();
+        tools("describe", &["--help".to_string()], &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Usage: future tools describe"));
+        // Missing name → usage + exit code.
+        let (out, cap) = Output::memory();
+        tools("describe", &[], &out).await.unwrap();
+        assert_eq!(out.exit_code(), 1);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Usage: future tools describe"));
+
+        // Local tool: flags + args + example.
+        let (out, cap) = Output::memory();
+        tools("describe", &["image_edit".to_string()], &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("  image_edit"), "stdout: {stdout}");
+        assert!(stdout.contains("--input <path>"), "stdout: {stdout}");
+        assert!(stdout.contains("--mask <path>"), "stdout: {stdout}");
+        assert!(stdout.contains("--output <path>"), "stdout: {stdout}");
+        assert!(stdout.contains("--timeout <secs>"), "stdout: {stdout}");
+        assert!(stdout.contains("--prompt"), "stdout: {stdout}");
+        assert!(stdout.contains("future tools call image_edit --input <file>"), "stdout: {stdout}");
+
+        // search_paper example renders array JSON + quoted string flags.
+        let (out, cap) = Output::memory();
+        tools("describe", &["search_paper".to_string()], &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("--queries '["), "stdout: {stdout}");
+        assert!(stdout.contains("--max_results_per_query 8"), "stdout: {stdout}");
+
+        // Unknown tool with no remote → not found error.
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
+        let (out, cap) = Output::memory();
+        let err = tools("describe", &["nope".to_string()], &out).await.unwrap_err();
+        assert_eq!(err, crate::HANDLED_EXIT);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Tool not found: nope"), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn tools_describe_remote_fallback() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    ("data: {\"result\":{}}\n\n", Some("s")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"result\":{\"tools\":[{\"name\":\"remote_gem\",\"description\":\"A remote tool\"}]}}\n\n", None),
+                ],
+            ),
+        ])
+        .await;
+        let _env = mcp_env(&base).await;
+        let (out, cap) = Output::memory();
+        tools("describe", &["remote_gem".to_string()], &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("  remote_gem"), "stdout: {stdout}");
+        assert!(stdout.contains("  A remote tool"), "stdout: {stdout}");
+        assert!(stdout.contains("Remote tool — use --args with JSON"), "stdout: {stdout}");
+        assert!(stdout.contains("future tools call remote_gem --args"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn tools_call_validation_battery() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
+        async fn run(args: &[&str]) -> (Result<(), String>, String, i32) {
+            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            let (out, cap) = Output::memory();
+            let result = tools("call", &args, &out).await;
+            let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+            (result, stderr, out.exit_code())
+        }
+
+        // --help.
+        let (result, _, _) = run(&["--help"]).await;
+        assert!(result.is_ok());
+        // Missing tool name / flag as name.
+        let (result, stderr, code) = run(&[]).await;
+        assert!(result.is_ok() && code == 1 && stderr.contains("Usage:"), "{stderr}");
+        let (result, stderr, code) = run(&["--raw"]).await;
+        assert!(result.is_ok() && code == 1 && stderr.contains("Usage:"), "{stderr}");
+
+        // Required args.
+        let (result, stderr, _) = run(&["search_paper"]).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        assert!(stderr.contains("search_paper requires: --queries"), "{stderr}");
+        assert!(stderr.contains("future tools describe search_paper"), "{stderr}");
+
+        // queries must be a non-empty array of non-empty strings.
+        for bad in ["[]", "[\"  \"]", "[1]", "\"text\""] {
+            let (result, stderr, _) = run(&["search_paper", "--queries", bad]).await;
+            assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+            assert!(stderr.contains("--queries must be a non-empty array"), "{bad}: {stderr}");
+        }
+
+        // Numeric ranges.
+        let (result, stderr, _) = run(&["image_gen", "--prompt", "x", "--n", "0"]).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        assert!(stderr.contains("--n must be an integer between 1 and 10"), "{stderr}");
+        let (_, stderr, _) = run(&["image_gen", "--prompt", "x", "--n", "11"]).await;
+        assert!(stderr.contains("--n must be an integer between 1 and 10"), "{stderr}");
+        let (_, stderr, _) = run(&["image_gen", "--prompt", "x", "--n", "abc"]).await;
+        assert!(stderr.contains("--n must be an integer between 1 and 10"), "{stderr}");
+        let (_, stderr, _) = run(&["web_search", "--query", "q", "--count", "51"]).await;
+        assert!(stderr.contains("--count must be an integer between 1 and 50"), "{stderr}");
+        let (_, stderr, _) = run(&["get_paper", "--paper_id", "PMID:1", "--max_k", "0"]).await;
+        assert!(stderr.contains("--max_k must be a positive integer"), "{stderr}");
+        let (_, stderr, _) = run(&["read_image", "--question", "q", "--max_tokens", "-1"]).await;
+        assert!(stderr.contains("--max_tokens must be a positive integer"), "{stderr}");
+
+        // file_type normalization + rejection.
+        let (_, stderr, _) = run(&["parse_doc", "--file_type", "txt"]).await;
+        assert!(stderr.contains("--file_type must be \"pdf\" or \"docx\", got: \"txt\""), "{stderr}");
+
+        // Negative --timeout.
+        let (_, stderr, _) = run(&["web_search", "--query", "q", "--timeout", "-5"]).await;
+        assert!(stderr.contains("--timeout must be >= 1 second, got: -5"), "{stderr}");
+
+        // Unreadable --input / --mask.
+        let (result, stderr, _) = run(&["read_image", "--question", "q", "--input", "/no/such/file.png"]).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        assert!(stderr.contains("cannot read input file: /no/such/file.png"), "{stderr}");
+        let (result, stderr, _) = run(&["image_edit", "--prompt", "x", "--mask", "/no/such/mask.png"]).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        assert!(stderr.contains("cannot read mask file: /no/such/mask.png"), "{stderr}");
+    }
+
+    #[tokio::test]
+    async fn tools_call_input_mask_base64_and_file_type_lowercasing() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Record the tool arguments the MCP server receives.
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = crate::test_server::spawn_http_recording(
+            vec![crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    ("data: {\"result\":{}}\n\n", Some("s")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n\n", None),
+                ],
+            )],
+            Some(requests.clone()),
+        )
+        .await;
+        let _env = mcp_env(&base).await;
+
+        // parse_doc: input → doc_b64; file_type uppercased → lowercased.
+        let doc = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(doc.path(), b"PDF").unwrap();
+        let (out, cap) = Output::memory();
+        tools(
+            "call",
+            &[
+                "parse_doc".to_string(),
+                "--input".to_string(),
+                doc.path().to_str().unwrap().to_string(),
+                "--file_type".to_string(),
+                "PDF".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("call");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "done\n");
+        let recorded = requests.lock().unwrap();
+        let call = recorded.iter().find(|r| r.contains("tools/call")).expect("call");
+        assert!(call.contains("doc_b64"), "call: {call}");
+        assert!(call.contains("UERG"), "base64 of PDF: {call}");
+        assert!(call.contains("file_type"), "call: {call}");
+        drop(recorded);
+
+        // image_edit: input → image_b64, mask → mask_b64.
+        let requests2 = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = crate::test_server::spawn_http_recording(
+            vec![crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    ("data: {\"result\":{}}\n\n", Some("s")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"result\":{\"content\":[]}}\n\n", None),
+                ],
+            )],
+            Some(requests2.clone()),
+        )
+        .await;
+        let _env = mcp_env(&base).await;
+        let img = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(img.path(), b"IMG").unwrap();
+        let mask = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(mask.path(), b"MSK").unwrap();
+        let (out, _) = Output::memory();
+        tools(
+            "call",
+            &[
+                "image_edit".to_string(),
+                "--prompt".to_string(),
+                "x".to_string(),
+                "--input".to_string(),
+                img.path().to_str().unwrap().to_string(),
+                "--mask".to_string(),
+                mask.path().to_str().unwrap().to_string(),
+                // --input/--mask values starting with "--" are ignored.
+                "--timeout".to_string(),
+                "30".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("call");
+        let recorded = requests2.lock().unwrap();
+        let call = recorded.iter().find(|r| r.contains("tools/call")).expect("call");
+        assert!(call.contains("image_b64"), "call: {call}");
+        assert!(call.contains("mask_b64"), "call: {call}");
+    }
+
+    #[tokio::test]
+    async fn tools_call_content_block_variants_and_raw() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // content blocks: text / resource / other / non-record.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    ("data: {\"result\":{}}\n\n", Some("s")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"},{\"type\":\"resource\",\"resource\":{\"uri\":\"u\"}},{\"type\":\"weird\",\"x\":1},\"str\"]}}\n\n", None),
+                ],
+            ),
+        ])
+        .await;
+        let _env = mcp_env(&base).await;
+        let (out, cap) = Output::memory();
+        tools("call", &["web_search".to_string(), "--query".to_string(), "q".to_string()], &out)
+            .await
+            .expect("call");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("hello"), "stdout: {stdout}");
+        assert!(stdout.contains("\"uri\": \"u\""), "stdout: {stdout}");
+        assert!(stdout.contains("\"weird\""), "stdout: {stdout}");
+
+        // --raw with structured content → pretty JSON.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    ("data: {\"result\":{}}\n\n", Some("s")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"result\":{\"structuredContent\":{\"query\":\"q\"},\"content\":[]}}\n\n", None),
+                ],
+            ),
+        ])
+        .await;
+        let _env = mcp_env(&base).await;
+        let (out, cap) = Output::memory();
+        tools(
+            "call",
+            &["web_search".to_string(), "--query".to_string(), "q".to_string(), "--raw".to_string()],
+            &out,
+        )
+        .await
+        .expect("call");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("\"query\": \"q\""), "stdout: {stdout}");
+
+        // --raw with only text → text.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    ("data: {\"result\":{}}\n\n", Some("s")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"raw text\"}]}}\n\n", None),
+                ],
+            ),
+        ])
+        .await;
+        let _env = mcp_env(&base).await;
+        let (out, cap) = Output::memory();
+        tools(
+            "call",
+            &["web_search".to_string(), "--query".to_string(), "q".to_string(), "--raw".to_string()],
+            &out,
+        )
+        .await
+        .expect("call");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "raw text\n");
+    }
+
+    #[tokio::test]
+    async fn tools_call_error_translation_surface() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // tools/call error matching a translation.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    ("data: {\"result\":{}}\n\n", Some("s")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"error\":{\"code\":-1,\"message\":\"insufficient_credit\"}}\n\n", None),
+                ],
+            ),
+        ])
+        .await;
+        let _env = mcp_env(&base).await;
+        let (out, cap) = Output::memory();
+        let err = tools("call", &["image_gen".to_string(), "--prompt".to_string(), "x".to_string()], &out)
+            .await
+            .unwrap_err();
+        assert_eq!(err, crate::HANDLED_EXIT);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Error: Account balance too low"), "stderr: {stderr}");
+        assert!(stderr.contains("Fix: Top up your account"), "stderr: {stderr}");
+        assert!(stderr.contains("Use \"future tools describe image_gen\" for help."), "stderr: {stderr}");
+        // Non-retryable → no retry hint.
+        assert!(!stderr.contains("retry should work"), "stderr: {stderr}");
+
+        // Retryable translation → retry hint.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    ("data: {\"result\":{}}\n\n", Some("s")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"error\":{\"code\":-1,\"message\":\"This operation was aborted\"}}\n\n", None),
+                ],
+            ),
+        ])
+        .await;
+        let _env = mcp_env(&base).await;
+        let (out, cap) = Output::memory();
+        let _ = tools("call", &["fetch_url".to_string(), "--url".to_string(), "http://x".to_string()], &out)
+            .await;
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("(This is usually temporary — retry should work.)"), "stderr: {stderr}");
+
+        // Untranslated error → raw message form.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::sse_sequence(
+                "/api/v1/mcp",
+                vec![
+                    ("data: {\"result\":{}}\n\n", Some("s")),
+                    ("data: {}\n\n", None),
+                    ("data: {\"error\":{\"code\":7,\"message\":\"weird failure\"}}\n\n", None),
+                ],
+            ),
+        ])
+        .await;
+        let _env = mcp_env(&base).await;
+        let (out, cap) = Output::memory();
+        let _ = tools("call", &["web_search".to_string(), "--query".to_string(), "q".to_string()], &out)
+            .await;
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Error calling web_search: code=7, message=weird failure"), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn tools_call_auth_failure_propagates() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
+        let (out, _) = Output::memory();
+        let err = tools("call", &["web_search".to_string(), "--query".to_string(), "q".to_string()], &out)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Not logged in"), "err: {err}");
+    }
+
+    #[tokio::test]
+    async fn tools_call_browser_tool_error_path() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _fh = crate::test_env::EnvGuard::temp_home();
+        // Unknown browser subcommand → call_browser_tool error branch.
+        let (out, cap) = Output::memory();
+        let result = tools(
+            "call",
+            &["browser".to_string(), "--command".to_string(), "bogus".to_string()],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Unknown browser command: \"bogus\""), "stderr: {stderr}");
+    }
 }

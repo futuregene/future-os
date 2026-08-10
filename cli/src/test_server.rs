@@ -150,31 +150,83 @@ pub fn stream_event(r#type: &str, data: &str) -> StreamEvent {
 
 // ── HTTP mock ───────────────────────────────────────────────────────────────
 
-/// One canned HTTP route: exact path → one or more (status, body) responses.
-/// With multiple responses they are consumed in order (device-code polling
-/// tests); the last one repeats once exhausted.
+/// One canned HTTP response.
+pub struct HttpResponse {
+    pub status: u16,
+    pub content_type: String,
+    pub extra_headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    /// Sleep this long BEFORE responding (timeout tests).
+    pub delay: Duration,
+}
+
+/// One canned HTTP route: exact path → one or more responses. With multiple
+/// responses they are consumed in order (device-code polling tests); the
+/// last one repeats once exhausted.
 pub struct HttpRoute {
     pub path: String,
-    pub responses: Vec<(u16, Vec<u8>)>,
+    pub responses: Vec<HttpResponse>,
     pub index: std::sync::atomic::AtomicUsize,
 }
 
 impl HttpRoute {
-    pub fn json(path: &str, status: u16, body: &str) -> Self {
+    fn single(path: &str, response: HttpResponse) -> Self {
         HttpRoute {
             path: path.to_string(),
-            responses: vec![(status, body.as_bytes().to_vec())],
+            responses: vec![response],
             index: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
+    pub fn json(path: &str, status: u16, body: &str) -> Self {
+        HttpRoute::single(
+            path,
+            HttpResponse {
+                status,
+                content_type: "application/json".to_string(),
+                extra_headers: vec![],
+                body: body.as_bytes().to_vec(),
+                delay: Duration::ZERO,
+            },
+        )
+    }
+
     /// Binary body variant (zip downloads).
     pub fn binary(path: &str, status: u16, body: Vec<u8>) -> Self {
-        HttpRoute {
-            path: path.to_string(),
-            responses: vec![(status, body)],
-            index: std::sync::atomic::AtomicUsize::new(0),
-        }
+        HttpRoute::single(
+            path,
+            HttpResponse {
+                status,
+                content_type: "application/octet-stream".to_string(),
+                extra_headers: vec![],
+                body,
+                delay: Duration::ZERO,
+            },
+        )
+    }
+
+    /// SSE variant (MCP): `data: ...` body with an optional session header.
+    pub fn sse(path: &str, body: &str, session_id: Option<&str>) -> Self {
+        let extra_headers = session_id
+            .map(|sid| vec![("mcp-session-id".to_string(), sid.to_string())])
+            .unwrap_or_default();
+        HttpRoute::single(
+            path,
+            HttpResponse {
+                status: 200,
+                content_type: "text/event-stream".to_string(),
+                extra_headers,
+                body: body.as_bytes().to_vec(),
+                delay: Duration::ZERO,
+            },
+        )
+    }
+
+    /// Hang for `delay` before answering (client-timeout tests).
+    pub fn slow(path: &str, delay: Duration) -> Self {
+        let mut response = HttpRoute::json(path, 200, "{}").responses.remove(0);
+        response.delay = delay;
+        HttpRoute::single(path, response)
     }
 
     /// Stateful route: successive calls return successive responses.
@@ -183,7 +235,34 @@ impl HttpRoute {
             path: path.to_string(),
             responses: responses
                 .into_iter()
-                .map(|(s, b)| (s, b.as_bytes().to_vec()))
+                .map(|(s, b)| HttpResponse {
+                    status: s,
+                    content_type: "application/json".to_string(),
+                    extra_headers: vec![],
+                    body: b.as_bytes().to_vec(),
+                    delay: Duration::ZERO,
+                })
+                .collect(),
+            index: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Stateful SSE route: (body, session_id) pairs consumed in order —
+    /// the MCP initialize → notify → call request chain hits one path.
+    pub fn sse_sequence(path: &str, responses: Vec<(&str, Option<&str>)>) -> Self {
+        HttpRoute {
+            path: path.to_string(),
+            responses: responses
+                .into_iter()
+                .map(|(b, sid)| HttpResponse {
+                    status: 200,
+                    content_type: "text/event-stream".to_string(),
+                    extra_headers: sid
+                        .map(|s| vec![("mcp-session-id".to_string(), s.to_string())])
+                        .unwrap_or_default(),
+                    body: b.as_bytes().to_vec(),
+                    delay: Duration::ZERO,
+                })
                 .collect(),
             index: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -243,16 +322,42 @@ pub async fn spawn_http_recording(
                     .unwrap_or("/")
                     .to_string();
                 let route = routes.iter().find(|r| r.path == path);
-                let (status, body): (u16, Vec<u8>) = match route {
+                let response_data = match route {
                     Some(r) => {
                         let i = r
                             .index
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                             .min(r.responses.len() - 1);
-                        r.responses[i].clone()
+                        let (status, content_type, extra_headers, body, delay) = {
+                            let r = &r.responses[i];
+                            (
+                                r.status,
+                                r.content_type.clone(),
+                                r.extra_headers.clone(),
+                                r.body.clone(),
+                                r.delay,
+                            )
+                        };
+                        (
+                            status,
+                            content_type,
+                            extra_headers,
+                            body,
+                            delay,
+                        )
                     }
-                    None => (404, b"{}".to_vec()),
+                    None => (
+                        404,
+                        "application/json".to_string(),
+                        vec![],
+                        b"{}".to_vec(),
+                        Duration::ZERO,
+                    ),
                 };
+                let (status, content_type, extra_headers, body, delay) = response_data;
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
                 let reason = match status {
                     200 => "OK",
                     201 => "Created",
@@ -262,10 +367,14 @@ pub async fn spawn_http_recording(
                     500 => "Internal Server Error",
                     _ => "Status",
                 };
-                let head = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                let mut head = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
                     body.len()
                 );
+                for (name, value) in &extra_headers {
+                    head.push_str(&format!("{name}: {value}\r\n"));
+                }
+                head.push_str("\r\n");
                 let mut response = head.into_bytes();
                 response.extend_from_slice(&body);
                 let _ = socket.write_all(&response).await;
