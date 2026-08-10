@@ -12,7 +12,7 @@ struct HelpEntry {
     desc: &'static str,
 }
 
-const SHORTCUTS: [HelpEntry; 8] = [
+const SHORTCUTS: [HelpEntry; 9] = [
     HelpEntry {
         key: "ctrl+c",
         desc: "interrupt",
@@ -28,6 +28,10 @@ const SHORTCUTS: [HelpEntry; 8] = [
     HelpEntry {
         key: "ctrl+t",
         desc: "cycle thinking",
+    },
+    HelpEntry {
+        key: "ctrl+o",
+        desc: "expand/collapse thinking",
     },
     HelpEntry {
         key: "tab",
@@ -253,5 +257,12 @@ mod tests {
                 assert!(!strip_ansi_codes(&line).contains('\x1b'));
             }
         }
+    }
+
+    #[test]
+    fn pad_end_pads_and_leaves_long_strings_untouched() {
+        assert_eq!(pad_end("ab", 4), "ab  ");
+        assert_eq!(pad_end("abcde", 5), "abcde");
+        assert_eq!(pad_end("abcdef", 3), "abcdef");
     }
 }

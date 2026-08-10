@@ -175,3 +175,58 @@ fn claim_requires_registration() {
     assert!(!g.is_registered_agent(Some("alice")));
     assert!(g.is_registered_agent(None));
 }
+
+// ── Contract: try_claim_todo is atomic (check+append under one lock) ───────
+// Regression: concurrent `run --agent-id` processes both passed the old
+// check-then-append path and the last claim won → double execution.
+fn store_with_todo(tag: &str) -> (String, Store) {
+    let root = tmp_root(tag);
+    let mut store = Store::open(&root).unwrap();
+    let g = Goal::new("g1", "objective", &root);
+    store.register(&g).unwrap();
+    let ts = g.created_at;
+    store
+        .append(Event::GoalStarted {
+            goal_id: "g1".into(),
+            ts,
+        })
+        .unwrap();
+    store
+        .append(Event::TodoAdded {
+            goal_id: "g1".into(),
+            todo: Todo::advancement("t1", "work"),
+            ts,
+        })
+        .unwrap();
+    (root, store)
+}
+
+#[test]
+fn atomic_claim_conflict_is_reported() {
+    let (_root, store) = store_with_todo("atomic-conflict");
+    assert!(store.try_claim_todo("g1", "t1", "alice", 3600).unwrap());
+    // A different agent loses atomically (no overwrite in the ledger).
+    assert!(!store.try_claim_todo("g1", "t1", "bob", 3600).unwrap());
+    // The holder reclaiming (renewal) succeeds.
+    assert!(store.try_claim_todo("g1", "t1", "alice", 3600).unwrap());
+}
+
+#[test]
+fn atomic_claim_after_expiry_or_release() {
+    let (_root, mut store) = store_with_todo("atomic-expiry");
+    // Lease of 0s is immediately expired → another agent may claim.
+    assert!(store.try_claim_todo("g1", "t1", "alice", 0).unwrap());
+    assert!(store.try_claim_todo("g1", "t1", "bob", 3600).unwrap());
+    // A third agent cannot claim while bob's lease is live.
+    assert!(!store.try_claim_todo("g1", "t1", "carol", 3600).unwrap());
+    // An explicit release frees the todo immediately.
+    store
+        .append(Event::TodoReleased {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            agent_id: "bob".into(),
+            ts: now_epoch(),
+        })
+        .unwrap();
+    assert!(store.try_claim_todo("g1", "t1", "carol", 3600).unwrap());
+}

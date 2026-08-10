@@ -72,6 +72,12 @@ pub struct Loop {
     /// Cached model registry — avoids re-deserialising the 906-model catalog
     /// on auto-compaction checks and image-support queries inside the hot loop.
     pub model_registry: Option<Arc<parking_lot::RwLock<crate::models::Registry>>>,
+    /// Mid-turn steering notes: orchestrators/injected operator messages that
+    /// must reach a RUNNING turn. The run loop drains this cell at every step
+    /// and appends pending notes to the system prompt of the next LLM call.
+    /// Shared between the shared Loop and its `independent_copy` snapshot (like
+    /// the compaction cells) so notes written mid-run are seen by the snapshot.
+    pub steering_notes: Arc<Mutex<Vec<String>>>,
 }
 
 impl Loop {
@@ -97,6 +103,7 @@ impl Loop {
             compaction_occurred: Arc::new(AtomicBool::new(false)),
             stream_incomplete: Arc::new(AtomicBool::new(false)),
             model_registry: None,
+            steering_notes: Arc::new(Mutex::new(vec![])),
         }
     }
 
@@ -134,6 +141,9 @@ impl Loop {
         copy.verbose = self.verbose;
         copy.parallel_tools = self.parallel_tools;
         copy.model_registry = self.model_registry.clone();
+        // Share the steering cell with the snapshot so notes pushed while the
+        // snapshot runs are delivered at its next step boundary.
+        copy.steering_notes = self.steering_notes.clone();
         copy
     }
 

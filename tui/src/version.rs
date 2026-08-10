@@ -9,3 +9,14 @@ pub const VERSION: &str = env!("FUTURE_TUI_VERSION");
 pub fn is_release() -> bool {
     !VERSION.starts_with('0')
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_release_matches_version_prefix() {
+        assert!(!VERSION.is_empty());
+        assert_eq!(is_release(), !VERSION.starts_with('0'));
+    }
+}

@@ -77,6 +77,7 @@ pub async fn execute_turn(
     prev: Option<&RunRecord>,
     boundary_injected: bool,
     decision_summary: Option<&crate::contract::ShouldRunPacket>,
+    runs_dir: Option<std::path::PathBuf>,
 ) -> Result<RunRecord> {
     if !boundary_injected {
         client
@@ -87,6 +88,10 @@ pub async fn execute_turn(
         Some(packet) => compose_turn_envelope(goal, todo, Some(packet), prev),
         None => compose_turn_message(goal, todo, prev),
     };
+    // Surface the backing agent session id so in-turn tooling (e.g. trace
+    // converters) can locate the real session deterministically instead of
+    // guessing by file mtime.
+    let message = format!("session: {session_id}\n{message}");
     // Idempotency key owned by the orchestrator — retry must not double-execute.
     let client_request_id = format!("turn-{}-{}", turn, todo.id);
 
@@ -94,7 +99,10 @@ pub async fn execute_turn(
     let run_id = client
         .prompt(session_id, &message, &client_request_id)
         .await?;
-    let summary: RunSummary = client.run_turn(session_id, &run_id).await?;
+    let live_path = runs_dir.map(|d| d.join(format!("{run_id}.live.jsonl")));
+    let summary: RunSummary = client
+        .run_turn(session_id, &run_id, live_path.as_deref())
+        .await?;
     let after = client.session_totals(session_id).await?;
     let terminal_state = summary.terminal_state.clone();
 

@@ -287,6 +287,29 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn run_accepted_state_as_str_and_parse_roundtrip() {
+        for (state, raw) in [
+            (RunAcceptedState::Existing, "existing"),
+            (RunAcceptedState::Running, "running"),
+            (RunAcceptedState::Queued, "queued"),
+        ] {
+            assert_eq!(state.as_str(), raw);
+            assert_eq!(RunAcceptedState::parse(raw), Some(state));
+        }
+        assert_eq!(RunAcceptedState::parse("bogus"), None);
+    }
+
+    #[test]
+    fn run_ack_existing_carries_no_queue_identity() {
+        let value = serde_json::to_value(RunAck::existing("run-c".into(), 2)).unwrap();
+        assert_eq!(value["run_id"], "run-c");
+        assert_eq!(value["run_epoch"], 2);
+        assert_eq!(value["accepted_state"], "existing");
+        assert!(value.get("run_sequence").is_none());
+        assert!(value.get("queue_position").is_none());
+    }
+
+    #[test]
     fn run_ack_omits_unallocated_queue_identity() {
         let value = serde_json::to_value(RunAck::running("run-a".into(), 7)).unwrap();
         assert_eq!(value["run_id"], "run-a");

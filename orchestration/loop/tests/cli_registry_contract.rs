@@ -54,6 +54,7 @@ fn help_lists_all_pre_existing_commands_in_groups() {
         "gate resolve --goal G",
         "── agent ──",
         "agent onboard --goal G",
+        "agent list --goal G",
         "── capability ──",
         "capability list|propose|commands",
         "── extension ──",

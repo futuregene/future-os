@@ -184,16 +184,23 @@ fn next_random() -> u64 {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0x9e37_79b9_7f4a_7c15);
         let addr = &STATE as *const _ as u64;
-        state = nanos ^ addr.rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15;
-        if state == 0 {
-            state = 0x2545_f491_4f6c_dd1d;
-        }
+        state = seed_from_time_and_addr(nanos, addr);
     }
     state ^= state >> 12;
     state ^= state << 25;
     state ^= state >> 27;
     STATE.store(state, Ordering::Relaxed);
     state.wrapping_mul(0x2545_f491_4f6c_dd1d)
+}
+
+/// Derive the initial xorshift state from time + address entropy, with a
+/// fixed nonzero fallback (xorshift degenerates at state 0).
+fn seed_from_time_and_addr(nanos: u64, addr: u64) -> u64 {
+    let state = nanos ^ addr.rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15;
+    if state == 0 {
+        return 0x2545_f491_4f6c_dd1d;
+    }
+    state
 }
 
 /// Port of `Math.floor(Math.random() * 0xfffffffe) + 1` → [1, 0xfffffffe].
@@ -378,9 +385,8 @@ pub fn get_jpeg_dimensions(base64_data: &str) -> Option<ImageDimensions> {
                 height_px: height as usize,
             });
         }
-        if offset + 3 >= buffer.len() {
-            return None;
-        }
+        // NOTE: the TS defensive `offset + 3 >= buffer.length` check is
+        // subsumed by the loop guard (`offset + 9 < len` ⇒ `offset + 3 < len`).
         let length = read_u16be(&buffer, offset + 2);
         if length < 2 {
             return None;
@@ -419,10 +425,8 @@ pub fn get_webp_dimensions(base64_data: &str) -> Option<ImageDimensions> {
     }
 
     let chunk = std::str::from_utf8(&buffer[12..16]).ok()?;
+    // All chunk arms read within 30 bytes — guaranteed by the guard above.
     if chunk == "VP8 " {
-        if buffer.len() < 30 {
-            return None;
-        }
         let width = (read_u16le(&buffer, 26) & 0x3fff) as usize;
         let height = (read_u16le(&buffer, 28) & 0x3fff) as usize;
         return Some(ImageDimensions {
@@ -430,9 +434,6 @@ pub fn get_webp_dimensions(base64_data: &str) -> Option<ImageDimensions> {
             height_px: height,
         });
     } else if chunk == "VP8L" {
-        if buffer.len() < 25 {
-            return None;
-        }
         let bits = read_u32le(&buffer, 21);
         let width = (bits & 0x3fff) as usize + 1;
         let height = ((bits >> 14) & 0x3fff) as usize + 1;
@@ -441,9 +442,6 @@ pub fn get_webp_dimensions(base64_data: &str) -> Option<ImageDimensions> {
             height_px: height,
         });
     } else if chunk == "VP8X" {
-        if buffer.len() < 30 {
-            return None;
-        }
         let width =
             (buffer[24] as u32 | (buffer[25] as u32) << 8 | (buffer[26] as u32) << 16) as usize + 1;
         let height =
@@ -502,25 +500,22 @@ pub fn render_image(
         });
     }
 
-    if caps.images == ImageProtocol::Iterm2 {
-        let sequence = encode_iterm2(
-            base64_data,
-            &Iterm2EncodeOptions {
-                width: Some(max_width.to_string()),
-                height: Some("auto".to_string()),
-                name: None,
-                preserve_aspect_ratio: options.preserve_aspect_ratio,
-                inline: None,
-            },
-        );
-        return Some(RenderImageResult {
-            sequence,
-            rows,
-            image_id: None,
-        });
-    }
-
-    None
+    // Iterm2 is the only remaining protocol (None returned above).
+    let sequence = encode_iterm2(
+        base64_data,
+        &Iterm2EncodeOptions {
+            width: Some(max_width.to_string()),
+            height: Some("auto".to_string()),
+            name: None,
+            preserve_aspect_ratio: options.preserve_aspect_ratio,
+            inline: None,
+        },
+    );
+    Some(RenderImageResult {
+        sequence,
+        rows,
+        image_id: None,
+    })
 }
 
 pub fn hyperlink(text: &str, url: &str) -> String {
@@ -621,13 +616,13 @@ pub fn delete_kitty_images(ids: &std::collections::BTreeSet<u32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_env::ENV_LOCK;
+    use crate::test_env::lock as env_lock;
     use base64::Engine as _;
 
     /// Deterministic env snapshot/restore under ENV_LOCK. Mirrors the TS
     /// tests which set process.env directly.
     fn with_env(caps_env: &[(&str, &str)], f: impl FnOnce()) {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         let keys = [
             "TERM_PROGRAM",
             "TERM",
@@ -663,6 +658,24 @@ mod tests {
             assert!(caps.true_color);
             assert!(caps.hyperlinks);
         });
+    }
+
+    #[test]
+    fn detects_alacritty_caps() {
+        // Pre-set a managed variable so with_env's restore path (which
+        // re-installs saved values) is exercised too.
+        {
+            let _guard = env_lock();
+            env::set_var("TERM_PROGRAM", "outer");
+        }
+        with_env(&[("TERM_PROGRAM", "alacritty")], || {
+            let caps = detect_capabilities();
+            assert_eq!(caps.images, ImageProtocol::None);
+            assert!(caps.true_color);
+            assert!(caps.hyperlinks);
+        });
+        let _guard = env_lock();
+        env::remove_var("TERM_PROGRAM");
     }
 
     #[test]
@@ -747,7 +760,7 @@ mod tests {
 
     #[test]
     fn capabilities_cache_and_reset() {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         env::remove_var("TERM_PROGRAM");
         env::remove_var("TERM");
         env::remove_var("COLORTERM");
@@ -822,6 +835,29 @@ mod tests {
             },
         );
         assert_eq!(seq, "\x1b_Ga=T,f=100,q=2,C=1;QUJD\x1b\\");
+    }
+
+    #[test]
+    fn encode_kitty_three_chunks_cover_middle_branch() {
+        // > 2 chunks: first carries params + m=1, middle chunks bare m=1,
+        // the last m=0.
+        let payload = "A".repeat(4096 * 2 + 10);
+        let seq = encode_kitty(&payload, &KittyEncodeOptions::default());
+        assert_eq!(seq.matches("\x1b_G").count(), 3);
+        assert!(seq.contains("m=1"));
+        assert!(seq.contains("m=0;"));
+        // Reassembling the chunk payloads reproduces the original payload.
+        let mut reassembled = String::new();
+        for chunk in seq.split("\x1b_G").skip(1) {
+            let data = chunk
+                .split(';')
+                .nth(1)
+                .unwrap()
+                .strip_suffix("\x1b\\")
+                .unwrap();
+            reassembled.push_str(data);
+        }
+        assert_eq!(reassembled, payload);
     }
 
     #[test]
@@ -993,6 +1029,108 @@ mod tests {
     }
 
     #[test]
+    fn jpeg_dimension_edge_cases() {
+        // Too short / bad magic.
+        assert!(get_jpeg_dimensions(&b64(&[0x00])).is_none());
+        assert!(get_jpeg_dimensions(&b64(&[0x00, 0x00])).is_none());
+        // No SOF marker: non-0xff bytes are skipped until the window closes.
+        let mut buf = vec![0xff, 0xd8];
+        buf.extend_from_slice(&[0x00; 20]);
+        assert!(get_jpeg_dimensions(&b64(&buf)).is_none());
+        // A segment whose declared length is < 2 is invalid.
+        let buf = [
+            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert!(get_jpeg_dimensions(&b64(&buf)).is_none());
+        // A valid-length non-SOF segment is skipped, then the buffer ends.
+        let buf = [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x02];
+        assert!(get_jpeg_dimensions(&b64(&buf)).is_none());
+    }
+
+    #[test]
+    fn gif_dimension_edge_cases() {
+        // Too short / bad signature.
+        assert!(get_gif_dimensions(&b64(&[0u8; 5])).is_none());
+        assert!(get_gif_dimensions(&b64(&[0u8; 10])).is_none());
+    }
+
+    fn webp_buf(chunk: &[u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; 30];
+        buf[0..4].copy_from_slice(b"RIFF");
+        buf[8..12].copy_from_slice(b"WEBP");
+        buf[12..16].copy_from_slice(chunk);
+        buf
+    }
+
+    #[test]
+    fn webp_dimension_edge_cases() {
+        // Too short / bad RIFF / bad WEBP.
+        assert!(get_webp_dimensions(&b64(&[0u8; 10])).is_none());
+        assert!(get_webp_dimensions(&b64(&[0u8; 30])).is_none());
+        let mut bad = webp_buf(b"VP8 ");
+        bad[8] = b'X';
+        assert!(get_webp_dimensions(&b64(&bad)).is_none());
+
+        // VP8 (lossy): LE width/height at 26/28, masked to 14 bits.
+        let mut buf = webp_buf(b"VP8 ");
+        buf[26] = 0x40;
+        buf[27] = 0x01; // 0x140 = 320
+        buf[28] = 0x80;
+        buf[29] = 0x02; // 0x280 = 640
+        let dims = get_webp_dimensions(&b64(&buf)).unwrap();
+        assert_eq!((dims.width_px, dims.height_px), (320, 640));
+
+        // VP8L: 14-bit (width-1)/(height-1) packed in the LE u32 at 21.
+        let mut buf = webp_buf(b"VP8L");
+        let bits: u32 = 9 | (4 << 14); // width 10, height 5
+        buf[21] = (bits & 0xff) as u8;
+        buf[22] = ((bits >> 8) & 0xff) as u8;
+        buf[23] = ((bits >> 16) & 0xff) as u8;
+        buf[24] = ((bits >> 24) & 0xff) as u8;
+        let dims = get_webp_dimensions(&b64(&buf)).unwrap();
+        assert_eq!((dims.width_px, dims.height_px), (10, 5));
+
+        // VP8X: 24-bit (width-1) at 24..27 and (height-1) at 27..30.
+        let mut buf = webp_buf(b"VP8X");
+        buf[24] = 0x2f;
+        buf[25] = 0x01; // 0x12f + 1 = 304
+        buf[27] = 0x63; // 0x63 + 1 = 100
+        let dims = get_webp_dimensions(&b64(&buf)).unwrap();
+        assert_eq!((dims.width_px, dims.height_px), (304, 100));
+
+        // Unknown chunk type → None.
+        assert!(get_webp_dimensions(&b64(&webp_buf(b"VP8?"))).is_none());
+    }
+
+    #[test]
+    fn js_number_mirrors_js_semantics() {
+        assert_eq!(js_number(""), Some(0.0));
+        assert_eq!(js_number("   "), Some(0.0));
+        assert_eq!(js_number("42"), Some(42.0));
+        assert_eq!(js_number("abc"), None);
+    }
+
+    #[test]
+    fn extract_kitty_image_ids_early_returns() {
+        assert!(extract_kitty_image_ids("").is_empty());
+        // Kitty prefix with no terminating ';'.
+        assert!(extract_kitty_image_ids("\x1b_Ga=T").is_empty());
+    }
+
+    #[test]
+    fn seed_from_time_and_addr_has_nonzero_fallback() {
+        // Craft inputs that mix to zero → fixed fallback kicks in.
+        let nanos = 0x1234_5678_9abc_def0u64;
+        let addr = (nanos ^ 0x9e37_79b9_7f4a_7c15u64).rotate_right(17);
+        assert_eq!(seed_from_time_and_addr(nanos, addr), 0x2545_f491_4f6c_dd1d);
+        // Ordinary input passes through the mix.
+        assert_eq!(
+            seed_from_time_and_addr(1, 0),
+            1u64 ^ 0x9e37_79b9_7f4a_7c15u64
+        );
+    }
+
+    #[test]
     fn image_dimensions_by_mime() {
         let p = b64(&png_bytes());
         assert!(get_image_dimensions(&p, "image/png").is_some());
@@ -1002,7 +1140,7 @@ mod tests {
 
     #[test]
     fn render_image_kitty() {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         set_capabilities(TerminalCapabilities {
             images: ImageProtocol::Kitty,
             true_color: true,
@@ -1023,7 +1161,7 @@ mod tests {
 
     #[test]
     fn render_image_iterm2() {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         set_capabilities(TerminalCapabilities {
             images: ImageProtocol::Iterm2,
             true_color: true,
@@ -1043,7 +1181,7 @@ mod tests {
 
     #[test]
     fn render_image_none_capabilities_returns_null() {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         set_capabilities(TerminalCapabilities {
             images: ImageProtocol::None,
             true_color: true,
@@ -1121,7 +1259,7 @@ mod tests {
 
     #[test]
     fn cell_dimensions_global() {
-        let _guard = ENV_LOCK.lock();
+        let _guard = env_lock();
         let saved = get_cell_dimensions();
         set_cell_dimensions(CellDimensions {
             width_px: 10,

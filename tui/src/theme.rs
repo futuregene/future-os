@@ -337,4 +337,24 @@ mod tests {
         assert_eq!(DEFAULT_THEME.success, 76);
         assert_eq!(DEFAULT_THEME.dim_fg, 245);
     }
+
+    #[test]
+    fn wrapped_styles_emit_exact_sequences() {
+        assert_eq!(italic("x"), "\x1b[3mx\x1b[m");
+        assert_eq!(underline("x"), "\x1b[4mx\x1b[m");
+        assert_eq!(strikethrough("x"), "\x1b[9mx\x1b[m");
+        assert_eq!(reset("x"), "\x1b[mx\x1b[m");
+    }
+
+    #[test]
+    fn raw_styles_omit_trailing_reset() {
+        assert_eq!(fg_raw(42, "x"), "\x1b[38;5;42mx");
+        assert_eq!(bg_raw(42, "x"), "\x1b[48;5;42mx");
+        assert_eq!(bold_raw("x"), "\x1b[1mx");
+        assert_eq!(dim_raw("x"), "\x1b[2mx");
+        assert_eq!(italic_raw("x"), "\x1b[3mx");
+        assert_eq!(underline_raw("x"), "\x1b[4mx");
+        assert_eq!(strikethrough_raw("x"), "\x1b[9mx");
+        assert_eq!(reverse_raw("x"), "\x1b[7mx");
+    }
 }

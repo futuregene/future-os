@@ -65,6 +65,9 @@ channel/
 /profile-results/
 /agent-profile.svg
 
+# Coverage reports (scripts/coverage.sh)
+/coverage/
+
 # loop control plane runtime state (never commit)
 .codex/
 .future/loop/

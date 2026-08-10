@@ -36,6 +36,9 @@ pub const R_OK: u32 = 4;
 /// treats X_OK as F_OK (executability is not a file attribute), so any mode
 /// check reduces to existence.
 pub async fn can_access(path: &str, mode: u32) -> bool {
+    // `meta` is only consumed by the `#[cfg(unix)]` permission check below —
+    // on Windows the metadata call doubles as the existence check.
+    #[cfg_attr(windows, allow(unused_variables))]
     let meta = match tokio::fs::metadata(path).await {
         Ok(meta) => meta,
         Err(_) => return false,

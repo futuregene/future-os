@@ -13,6 +13,7 @@
 //! State lives under `--root` (default `~/.future/loop/`), one goal per
 //! directory, event-sourced: `loop status` replays the ledger each time.
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use crate::cli::registry::CommandRegistry;
@@ -235,6 +236,12 @@ fn build_cli_registry() -> CommandRegistry {
     );
     r.command(
         agent,
+        "list",
+        "registered agents + live execution status (leases)",
+        "agent list --goal G",
+    );
+    r.command(
+        agent,
         "scope",
         "identity-scoped agent frontier (G-16)",
         "scope --goal G --agent-id A [--exclude X]",
@@ -389,8 +396,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "run",
-        "drive one bounded gRPC turn",
-        "run --goal G [--model M] [--thinking-level L] [--max-turns N]",
+        "drive one bounded gRPC turn (requires --agent-id; auto-registers)",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N]",
     );
 
     let work_items = r.group("work-items", "attention / operator inbox (G-15)");
@@ -878,6 +885,9 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     if args.first().map(|s| s.as_str()) == Some("onboard") {
         return cmd_agent_onboard(store, &args[1..]);
     }
+    if args.first().map(|s| s.as_str()) == Some("list") {
+        return cmd_agent_list(store, &args[1..]);
+    }
     let mut goal_id = None;
     let mut agent_id = None;
     parse_pairs(args, |k, v| match k {
@@ -909,7 +919,9 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
-        "--capability" => capabilities = v.split(',').map(|s| s.trim().to_string()).collect(),
+        "--capability" | "--capabilities" => {
+            capabilities = v.split(',').map(|s| s.trim().to_string()).collect()
+        }
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -925,6 +937,107 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     })?;
     println!("agent `{agent_id}` onboarded (capabilities={capabilities:?}) ✔");
     Ok(())
+}
+
+/// `future loop agent list --goal G` — registered agents + their current
+/// execution status. Status is derived from the live task-lease ledger:
+/// `running` = the agent holds a live lease on a todo right now (shown with
+/// the lease's remaining time); `idle` = registered but holding no lease.
+/// Also shows declared capabilities and the agent's most recent activity.
+/// Intended as the pre-flight check before `agent register`/`onboard`, so
+/// parallel workers reuse existing ids instead of re-registering the same
+/// one (each concurrent run needs its own unique id).
+fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+
+    // Event-derived metadata: most recent activity timestamp per agent
+    // (registration, onboarding, or any lease transition).
+    let now = now_epoch();
+    let mut last_active: HashMap<String, u64> = HashMap::new();
+    for ev in store.events(&goal_id).unwrap_or_default() {
+        let (agent, ts) = match &ev.event {
+            Event::AgentRegistered { agent_id, ts, .. }
+            | Event::AgentOnboarded { agent_id, ts, .. }
+            | Event::TodoClaimed { agent_id, ts, .. }
+            | Event::TodoRenewed { agent_id, ts, .. }
+            | Event::TodoReleased { agent_id, ts, .. } => (agent_id.as_str(), *ts),
+            _ => continue,
+        };
+        last_active
+            .entry(agent.to_string())
+            .and_modify(|t| *t = (*t).max(ts))
+            .or_insert(ts);
+    }
+
+    if goal.registered_agents.is_empty() {
+        println!("no agents registered for {goal_id}");
+        return Ok(());
+    }
+    println!(
+        "agents registered for {goal_id} ({}):",
+        goal.registered_agents.len()
+    );
+    println!(
+        "  {:<12} {:<8} {:<32} {:<14} {:<12}",
+        "agent_id", "status", "work-on", "capabilities", "last-active"
+    );
+    for aid in &goal.registered_agents {
+        let mut work: Vec<String> = Vec::new();
+        for t in goal.todos.iter() {
+            if t.claimed_by.as_deref() == Some(aid.as_str())
+                && t.lease_expires_at.map(|e| e > now).unwrap_or(false)
+            {
+                let left = t.lease_expires_at.unwrap().saturating_sub(now);
+                work.push(format!("{} (lease {} left)", t.id, human_dur(left)));
+            }
+        }
+        let status = if work.is_empty() { "idle" } else { "running" };
+        let work_label = if work.is_empty() {
+            "-".to_string()
+        } else {
+            work.join("; ")
+        };
+        let caps = goal
+            .agent_profiles
+            .iter()
+            .find(|p| p.id == *aid)
+            .map(|p| p.capabilities.join(","))
+            .unwrap_or_else(|| "-".to_string());
+        let last = last_active
+            .get(aid)
+            .map(|ts| format!("{} ago", human_dur(now.saturating_sub(*ts))))
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "  {:<12} {:<8} {:<32} {:<14} {:<12}",
+            aid, status, work_label, caps, last
+        );
+    }
+    println!(
+        "hint: agent ids are goal-scoped; check this list before `agent register`/`onboard` \
+         to avoid duplicate ids (each parallel worker needs its own unique id)"
+    );
+    Ok(())
+}
+
+/// Compact human duration ("59s" / "4m12s" / "3h59m") for lease/activity
+/// display in `agent list`.
+fn human_dur(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
@@ -1212,11 +1325,17 @@ fn cmd_profile(store: &mut Store, args: &[String]) -> Result<()> {
 
 fn cmd_status(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_filter = None;
+    let mut format = String::new();
     parse_pairs(args, |k, v| {
         if k == "--goal" {
             goal_filter = Some(v)
+        } else if k == "--format" {
+            format = v;
         }
     });
+    if format == "json" {
+        return print_status_json(store, goal_filter);
+    }
     if let Some(g) = goal_filter {
         let goal = store
             .replay(&g)?
@@ -1234,6 +1353,37 @@ fn cmd_status(store: &Store, args: &[String]) -> Result<()> {
             println!();
         }
     }
+    Ok(())
+}
+
+/// `loop status --format json` — machine-readable projection (goal, todos
+/// with priority/class/status/blocks, terminal flag). Added because piping
+/// the human-readable status used to silently yield nothing scriptable.
+fn print_status_json(store: &Store, goal_filter: Option<String>) -> Result<()> {
+    let mut out = vec![];
+    let ids: Vec<String> = match &goal_filter {
+        Some(g) => vec![g.clone()],
+        None => store.registry().iter().map(|e| e.goal_id.clone()).collect(),
+    };
+    for gid in ids {
+        let goal = store
+            .replay(&gid)?
+            .ok_or_else(|| anyhow::anyhow!("goal {gid} not found"))?;
+        out.push(serde_json::json!({
+            "goal_id": goal.goal_id,
+            "objective": goal.objective,
+            "status": goal.status,
+            "todos": goal.todos.iter().map(|t| serde_json::json!({
+                "id": t.id,
+                "text": t.text,
+                "class": format!("{:?}", t.class),
+                "status": status_label(t),
+                "priority": format!("{:?}", t.priority),
+                "blocks": t.blocked_by_gate.clone().unwrap_or_default(),
+            })).collect::<Vec<_>>(),
+        }));
+    }
+    println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
@@ -1695,21 +1845,78 @@ async fn cmd_models(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Default task-lease length for a `run` turn (4h — long LLM/compute turns
+/// routinely exceed the old 1h lease, which would let another worker steal
+/// the todo mid-turn once the lease expired).
+const DEFAULT_RUN_LEASE_SECS: u64 = 4 * 3600;
+
+/// Resolve run identity (G-27): `run` REQUIRES `--agent-id` so the lease
+/// mechanism actually engages — an anonymous run claims nothing and hides
+/// nothing, so two agentless runs deterministically race on the same todo.
+/// An id that is not yet registered is auto-registered on first use (replay
+/// is idempotent, so `run` never needs a separate `agent register` step).
+/// `--anonymous` opts back into the legacy uncoordinated one-shot path.
+/// Returns the resolved agent id (None for `--anonymous`).
+pub fn ensure_run_identity(
+    store: &mut Store,
+    goal_id: &str,
+    agent_id: Option<&str>,
+    anonymous: bool,
+) -> Result<Option<String>> {
+    match (agent_id, anonymous) {
+        (Some(aid), _) => {
+            let goal = store
+                .replay(goal_id)?
+                .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+            if !goal.is_registered_agent(Some(aid)) {
+                store.append(Event::AgentRegistered {
+                    goal_id: goal_id.to_string(),
+                    agent_id: aid.to_string(),
+                    ts: now_epoch(),
+                })?;
+                println!("agent `{aid}` auto-registered for {goal_id} ✔");
+            }
+            Ok(Some(aid.to_string()))
+        }
+        (None, true) => {
+            println!(
+                "⚠ anonymous run: no lease coordination — parallel runs may race on the same todo"
+            );
+            Ok(None)
+        }
+        (None, false) => bail!(
+            "run requires --agent-id <name> (or --anonymous for an uncoordinated one-shot run); \
+             check existing ids with `{} agent list --goal {goal_id}`",
+            prog()
+        ),
+    }
+}
+
 async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut model = None;
     let mut thinking = None;
     let mut max_turns = 6u32;
+    let mut max_turn_secs = 0u64;
     let mut agent_id = None;
+    let mut anonymous = false;
+    let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--model" => model = Some(v),
         "--thinking-level" => thinking = Some(v),
         "--max-turns" => max_turns = v.parse().unwrap_or(6),
+        "--max-turn-secs" => max_turn_secs = v.parse().unwrap_or(0),
         "--agent-id" => agent_id = Some(v),
+        "--lease-secs" => lease_secs = v.parse().unwrap_or(DEFAULT_RUN_LEASE_SECS),
+        "--anonymous" => anonymous = true,
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+
+    // Identity gate BEFORE any gRPC/session work — fail fast with a hint
+    // (and stays unit-testable without an agent server).
+    let agent_id = ensure_run_identity(store, &goal_id, agent_id.as_deref(), anonymous)?;
 
     let mut client = crate::agent_client::AgentClient::connect("127.0.0.1:50051").await?;
     let goal0 = store
@@ -1734,7 +1941,9 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         &goal_id,
         &session_id,
         max_turns,
+        lease_secs,
         agent_id.as_deref(),
+        max_turn_secs,
     )
     .await;
     if let Err(e) = client.delete_session(&session_id).await {
@@ -1743,16 +1952,81 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     result
 }
 
+/// Mid-turn steering watcher: tail the goal ledger; when the orchestrator
+/// updates the CURRENT todo's text mid-turn (`todo update --text`), inject the
+/// new instructions into the running session via the `steer` RPC (drained by
+/// the agent at its next step boundary). Runs as a background task for the
+/// duration of one turn; never completes on its own (all error paths retry).
+async fn steer_todo_updates(events_path: std::path::PathBuf, todo_id: String, session_id: String) {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut offset = std::fs::metadata(&events_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let mut client: Option<crate::agent_client::AgentClient> = None;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        let Ok(meta) = std::fs::metadata(&events_path) else {
+            continue;
+        };
+        if meta.len() <= offset {
+            continue;
+        }
+        let mut buf = String::new();
+        {
+            let Ok(mut f) = std::fs::File::open(&events_path) else {
+                continue;
+            };
+            if f.seek(SeekFrom::Start(offset)).is_err() {
+                continue;
+            }
+            if f.read_to_string(&mut buf).is_err() {
+                continue;
+            }
+            offset = meta.len();
+        }
+        for line in buf.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("kind").and_then(|k| k.as_str()) != Some("todo_updated") {
+                continue;
+            }
+            if v.get("todo_id").and_then(|t| t.as_str()) != Some(todo_id.as_str()) {
+                continue;
+            }
+            let Some(new_text) = v.get("text").and_then(|t| t.as_str()) else {
+                continue;
+            };
+            if client.is_none() {
+                client = crate::agent_client::AgentClient::connect("127.0.0.1:50051")
+                    .await
+                    .ok();
+            }
+            if let Some(c) = client.as_mut() {
+                let msg = format!(
+                    "ORCHESTRATOR STEERING (todo {todo_id} updated mid-turn — new instructions below; adjust your current work accordingly):\n{new_text}"
+                );
+                if c.steer(&session_id, &msg).await.is_err() {
+                    client = None; // reconnect on the next event
+                }
+            }
+        }
+    }
+}
+
 /// One `run` = one bounded turn loop against a fresh agent session. `cmd_run`
 /// owns the session lifecycle (create before, delete after); this function
 /// only executes turns and writes back their ledger effects.
+#[allow(clippy::too_many_arguments)]
 async fn run_turns(
     client: &mut crate::agent_client::AgentClient,
     store: &mut Store,
     goal_id: &str,
     session_id: &str,
     max_turns: u32,
+    lease_secs: u64,
     agent_id: Option<&str>,
+    max_turn_secs: u64,
 ) -> Result<()> {
     let mut turn = 0u32;
     loop {
@@ -1800,37 +2074,70 @@ async fn run_turns(
         }
 
         // bounded_delivery / monitor_poll: execute one turn.
-        let Some(todo_id) = packet
-            .interaction_contract
-            .agent_channel
-            .selected_todo
-            .clone()
-        else {
-            println!("   no selected todo; stopping");
-            break;
-        };
-        // Claim with a lease BEFORE executing (parallel `run --agent-id`
-        // workers compete for different todos; leased todos are hidden from
-        // other agents' frontiers until the lease expires or work completes).
-        if let Some(aid) = &agent_id {
-            let now = crate::state::now_epoch();
-            if let Some(t) = goal.todo(&todo_id) {
-                if !t.claimed_by_other(Some(aid), now) {
-                    store.append(Event::TodoClaimed {
-                        goal_id: goal_id.to_string(),
-                        todo_id: todo_id.clone(),
-                        agent_id: aid.to_string(),
-                        lease_expires_at: now + 3600,
-                        ts: now,
+        // Claim with a lease BEFORE executing — atomically (check+append under
+        // one lock) so two concurrent `run --agent-id` workers can never both
+        // win the same todo; on contention, re-decide against the fresh
+        // ledger and pick the next runnable todo (up to 3 re-decides).
+        let mut packet = packet;
+        let mut todo_id_opt = None;
+        for _ in 0..3 {
+            let Some(tid) = packet
+                .interaction_contract
+                .agent_channel
+                .selected_todo
+                .clone()
+            else {
+                break;
+            };
+            match &agent_id {
+                Some(aid) => {
+                    if store.try_claim_todo(goal_id, &tid, aid, lease_secs)? {
+                        todo_id_opt = Some(tid);
+                        break;
+                    }
+                    println!("   ⚔ claim race lost on {tid} — re-deciding");
+                    let fresh = store.replay(goal_id)?.ok_or_else(|| {
+                        anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
                     })?;
+                    packet = decide_for(&fresh, SystemTime::now(), agent_id);
+                    if packet.interaction_contract.mode
+                        != crate::contract::TurnMode::BoundedDelivery
+                        && packet.interaction_contract.mode
+                            != crate::contract::TurnMode::MonitorPoll
+                    {
+                        todo_id_opt = None;
+                        break;
+                    }
+                }
+                None => {
+                    todo_id_opt = Some(tid);
+                    break;
                 }
             }
         }
+        let Some(todo_id) = todo_id_opt else {
+            println!("   no selected todo; stopping");
+            break;
+        };
+        let goal = store
+            .replay(goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
         let todo = goal.todo(&todo_id).unwrap().clone();
         let boundary = store
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
-        let record = execute_turn(
+        let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+        let _ = std::fs::create_dir_all(&runs_dir);
+        // Mid-turn steering: watch the ledger for orchestrator `todo update`s
+        // targeting THIS todo and inject them into the running session (the
+        // turn envelope is only composed at turn start, so without this the
+        // agent never sees updates until the next turn). Aborted after the turn.
+        let steer_handle = tokio::spawn(steer_todo_updates(
+            store.goal_dir(goal_id).join("events.jsonl"),
+            todo_id.clone(),
+            session_id.to_string(),
+        ));
+        let turn_future = execute_turn(
             client,
             session_id,
             &boundary,
@@ -1841,14 +2148,38 @@ async fn run_turns(
             // G-9: embed the decision summary (mode/reason/arbitration) in
             // the turn envelope.
             Some(&packet),
-        )
-        .await?;
+            Some(runs_dir),
+        );
+        let record = if max_turn_secs > 0 {
+            // Wall-clock budget per turn: a long turn that never sees new
+            // instructions is an observability hole; bound it so orchestrators
+            // can relaunch on a safe cadence (context replays from the ledger).
+            match tokio::time::timeout(std::time::Duration::from_secs(max_turn_secs), turn_future)
+                .await
+            {
+                Ok(r) => r?,
+                Err(_) => {
+                    steer_handle.abort();
+                    println!(
+                        "   ⏱ turn exceeded --max-turn-secs ({max_turn_secs}s) — stopping run gracefully; relaunch to continue"
+                    );
+                    return Ok(());
+                }
+            }
+        } else {
+            turn_future.await?
+        };
+        steer_handle.abort();
         println!(
             "   run={} state={} tools=[{}] cost=¥{:.4}",
             record.run_id,
             record.terminal_state,
             record.tools.join(", "),
             record.cost_delta
+        );
+        println!(
+            "   live log: .future/loop/runs/{}.live.jsonl",
+            record.run_id
         );
         if let Some(v) = &record.validation {
             println!(
@@ -2460,7 +2791,7 @@ fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
         let k = args[i].as_str();
         if k.starts_with("--") {
             // boolean flags (no value) are followed by another flag or end.
-            if matches!(k, "--no-follow-up" | "--help" | "-h") {
+            if matches!(k, "--no-follow-up" | "--anonymous" | "--help" | "-h") {
                 f(k, "true".to_string());
                 i += 1;
             } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {
@@ -4333,6 +4664,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     let mut priority = None;
     let mut resume_when = None;
     let mut blocks: Option<Vec<String>> = None;
+    let mut unknown_flags: Vec<String> = vec![];
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
@@ -4356,13 +4688,23 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
                     .collect()
             });
         }
-        _ => {}
+        "--help" | "-h" => {
+            eprintln!("usage: todo update --goal G --todo-id T [--text T] [--status S] [--evidence E] [--note N] [--priority P0|P1|P2] [--resume-when N|TEXT] [--blocks a,b]");
+            std::process::exit(0);
+        }
+        other => unknown_flags.push(other.to_string()),
     });
+    if !unknown_flags.is_empty() {
+        anyhow::bail!("todo update: unknown flag(s): {}", unknown_flags.join(", "));
+    }
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
-    store
+    let goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if goal.todo(&todo_id).is_none() {
+        anyhow::bail!("todo {todo_id} not found in goal {goal_id}");
+    }
     if status.as_deref() == Some("done") {
         bail!(
             "todo update --status done is not allowed — use `todo complete --no-follow-up|--successor` \

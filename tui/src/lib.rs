@@ -36,6 +36,7 @@
 
 pub mod app;
 pub mod components;
+pub mod crash;
 pub mod help;
 pub mod help_screen;
 pub mod index;
@@ -58,4 +59,24 @@ pub mod test_env {
     use std::sync::Mutex;
 
     pub static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Lock ignoring poisoning — a panicking test must not cascade-fail
+    /// every other test that mutates process-global state.
+    pub fn lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn lock_survives_poisoning() {
+            // Poison ENV_LOCK (panic while held), then re-acquire: the
+            // unwrap_or_else arm must recover the guard.
+            let _ = std::panic::catch_unwind(|| {
+                let _g = super::lock();
+                panic!("intentional poison");
+            });
+            let _g = super::lock();
+        }
+    }
 }

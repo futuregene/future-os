@@ -32,8 +32,23 @@ mod parity;
 
 #[cfg(test)]
 mod tests {
-    use super::proto::{RpcResponse, StreamEvent};
+    use super::proto::{response_payload, PromptAck, RpcResponse, SessionState, StreamEvent};
     use prost::Message;
+
+    /// Extract the GetState variant, panicking on anything else. The panic
+    /// arm stays covered by `expect_get_state_rejects_other_kinds`.
+    fn expect_get_state(kind: response_payload::Kind) -> SessionState {
+        match kind {
+            response_payload::Kind::GetState(state) => state,
+            other => panic!("unexpected payload kind: {other:?}"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "unexpected payload kind")]
+    fn expect_get_state_rejects_other_kinds() {
+        expect_get_state(response_payload::Kind::Prompt(PromptAck::default()));
+    }
 
     /// Smoke test: generated types round-trip through the wire encoding.
     #[test]
@@ -96,12 +111,8 @@ mod tests {
         let decoded = RpcResponse::decode(resp.encode_to_vec().as_slice()).unwrap();
         assert_eq!(resp, decoded);
         let kind = decoded.payload.unwrap().kind.unwrap();
-        match kind {
-            response_payload::Kind::GetState(state) => {
-                assert_eq!(state.session_id.as_deref(), Some("s1"))
-            }
-            other => panic!("unexpected payload kind: {other:?}"),
-        }
+        let state = expect_get_state(kind);
+        assert_eq!(state.session_id.as_deref(), Some("s1"));
 
         let event = StreamEvent {
             r#type: "tool_end".to_string(),

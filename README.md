@@ -152,6 +152,7 @@ future tui       # terminal UI
 |---|---|
 | `ctrl+p` | Cycle model |
 | `ctrl+t` | Cycle thinking level |
+| `ctrl+o` | Expand / collapse thinking |
 | `ctrl+r` | Browse sessions |
 | `ctrl+c` | Interrupt / exit |
 | `tab` | Autocomplete |

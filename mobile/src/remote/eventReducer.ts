@@ -40,28 +40,170 @@ export function timelineFromHistory(messages: HistoryMessage[]): TimelineState {
   return { ...emptyTimeline(), items };
 }
 
-/** Display entries from `get_session_entries` — carries user attachments. */
+/** Accumulator for one user→assistant exchange (run) in history. */
+interface HistoryExchange {
+  user: TimelineItem | null;
+  /** id of the run's (last) assistant entry — the reply bubble's stable id. */
+  assistantId: string;
+  /** Thinking and tool rows for the run, in entry order. */
+  secondary: TimelineItem[];
+  /** All of the run's streamed text, merged into one bubble. */
+  finalText: string;
+  runId?: string;
+  durationMs?: number;
+  outputTokens?: number;
+}
+
+function newHistoryExchange(user: TimelineItem | null): HistoryExchange {
+  return { user, assistantId: "", secondary: [], finalText: "" };
+}
+
+/**
+ * Display entries from `get_session_entries` — mirrors the desktop
+ * entryProjection so history reads like the live transcript: each exchange
+ * renders the user message, the run's thinking/tool rows, then the merged
+ * reply bubble. The agent's JSONL groups a run as one user entry followed by
+ * assistant entries (text + thinking + tool_calls) and tool result entries.
+ */
 export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
   const items: TimelineItem[] = [];
+  let exchange: HistoryExchange | null = null;
+  const flush = () => {
+    if (!exchange) return;
+    if (exchange.user) items.push(exchange.user);
+    items.push(...exchange.secondary);
+    const hasReply =
+      exchange.finalText.trim().length > 0 ||
+      exchange.durationMs != null ||
+      exchange.outputTokens != null;
+    if (hasReply) {
+      items.push({
+        id: exchange.assistantId || `history:assistant:${items.length}`,
+        kind: "message",
+        role: "assistant",
+        text: exchange.finalText,
+        ...(exchange.runId ? { runId: exchange.runId } : {}),
+        ...(exchange.durationMs != null ? { durationMs: exchange.durationMs } : {}),
+        ...(exchange.outputTokens != null ? { outputTokens: exchange.outputTokens } : {}),
+      });
+    }
+    exchange = null;
+  };
   entries.forEach((entry, index) => {
-    if (entry.role !== "user" && entry.role !== "assistant") return;
-    const text = typeof entry.content === "string" ? entry.content : "";
-    const attachments = (entry.meta?.attachments ?? []).filter(
-      (attachment): attachment is HistoryAttachment =>
-        !!attachment && typeof attachment.path === "string" && attachment.path.length > 0,
-    );
-    if (!text.trim() && attachments.length === 0) return;
-    items.push({
-      id: `history:${entry.id ?? index}`,
-      kind: "message",
-      role: entry.role,
-      text,
-      ...(attachments.length > 0 ? { attachments } : {}),
-      ...(typeof entry.duration_ms === "number" ? { durationMs: entry.duration_ms } : {}),
-      ...(typeof entry.output_tokens === "number" ? { outputTokens: entry.output_tokens } : {}),
-    });
+    if (entry.role === "user") {
+      flush();
+      const text = typeof entry.content === "string" ? entry.content : "";
+      const attachments = (entry.meta?.attachments ?? []).filter(
+        (attachment): attachment is HistoryAttachment =>
+          !!attachment && typeof attachment.path === "string" && attachment.path.length > 0,
+      );
+      const user =
+        text.trim().length > 0 || attachments.length > 0
+          ? {
+              id: `history:${entry.id ?? index}`,
+              kind: "message" as const,
+              role: "user" as const,
+              text,
+              ...(attachments.length > 0 ? { attachments } : {}),
+            }
+          : null;
+      exchange = newHistoryExchange(user);
+      return;
+    }
+    if (entry.role !== "assistant") return;
+    if (!exchange) exchange = newHistoryExchange(null);
+    const key = entry.id ?? `assistant:${index}`;
+    exchange.assistantId = `history:${key}`;
+    if (typeof entry.meta?.run_id === "string" && entry.meta.run_id)
+      exchange.runId = entry.meta.run_id;
+    if (typeof entry.output_tokens === "number") exchange.outputTokens = entry.output_tokens;
+    if (typeof entry.duration_ms === "number") exchange.durationMs = entry.duration_ms;
+    if (typeof entry.thinking === "string" && entry.thinking.trim().length > 0) {
+      exchange.secondary.push({
+        id: `history:${key}:thinking`,
+        kind: "thinking",
+        text: entry.thinking,
+        complete: true,
+        ...(exchange.runId ? { runId: exchange.runId } : {}),
+      });
+    }
+    if (typeof entry.content === "string" && entry.content.trim().length > 0) {
+      exchange.finalText = exchange.finalText
+        ? `${exchange.finalText}\n\n${entry.content}`
+        : entry.content;
+    }
+    if (entry.tool_calls?.length) {
+      for (const [toolIndex, call] of entry.tool_calls.entries()) {
+        const name = call.function?.name ?? "";
+        if (!name) continue;
+        const detail = toolDetail(name, call.function?.arguments);
+        exchange.secondary.push({
+          id: `history:${key}:tool:${call.id ?? toolIndex}`,
+          kind: "tool",
+          toolId: call.id ?? `history-tool:${toolIndex}`,
+          name,
+          complete: true,
+          ...(detail ? { detail } : {}),
+          ...(exchange.runId ? { runId: exchange.runId } : {}),
+        });
+      }
+    }
   });
+  flush();
   return { ...emptyTimeline(), items };
+}
+
+/**
+ * Rebuild a session's timeline from a folded run projection (`projection.events`
+ * returned by `get_events_since`). The projection is a coalesced replica of a
+ * run whose event ring overflowed — individual events are in-order and carry
+ * their own idx, so folding them through the normal reducer reproduces the
+ * same transcript as if the run had streamed live. Each project contains the
+ * whole run, so the caller replaces the session's cache wholesale.
+ */
+export function timelineFromProjection(events: StreamEvent[]): TimelineState {
+  return events.reduce((state, event) => applyStreamEvent(state, event), emptyTimeline());
+}
+
+/**
+ * Drop a run's timeline items so a replay of that run (from `get_events_since`)
+ * can supersede them without duplicating the reply. History carries the run's
+ * partial persisted entries (the agent appends them as it streams); the event
+ * replay is authoritative. User bubbles and items of other runs are kept.
+ */
+export function stripRunItems(timeline: TimelineState, runId: string): TimelineState {
+  return {
+    ...timeline,
+    items: timeline.items.filter(item =>
+      item.kind === "message" && item.role === "user" ? true : item.runId !== runId,
+    ),
+  };
+}
+
+/** A raw replay event as the agent's `get_events_since` returns it (snake_case). */
+export interface ReplayEventWire {
+  type?: string;
+  data?: string;
+  run_id?: string;
+  idx?: number;
+  [key: string]: unknown;
+}
+
+/**
+ * Normalize `get_events_since` replay events (which the RPC serializes with
+ * snake_case `run_id`) into the mobile `StreamEvent` shape (`runId`). The NATS
+ * live mirror uses camelCase, so events arriving over the socket need no
+ * normalization — only this backfill path does.
+ */
+export function normalizeReplayEvents(events: ReplayEventWire[] | undefined | null): StreamEvent[] {
+  return (events ?? [])
+    .filter((event): event is ReplayEventWire => !!event && typeof event === "object")
+    .map(event => ({
+      type: typeof event.type === "string" ? event.type : "",
+      data: typeof event.data === "string" ? event.data : "",
+      runId: typeof event.run_id === "string" ? event.run_id : "",
+      idx: typeof event.idx === "number" ? event.idx : undefined,
+    }));
 }
 
 function eventData(event: StreamEvent): Record<string, unknown> {
@@ -78,6 +220,33 @@ function textValue(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/**
+ * The tool call's display target — mirrors the desktop `toolActivityModel.
+ * targetFromArgs`: the command for shell, the file path otherwise. Args may
+ * arrive as an object (live `tool_args`, history `function.arguments`) or as
+ * a JSON string.
+ */
+function toolDetail(name: string, argsValue: unknown): string | undefined {
+  let args: Record<string, unknown> | null = null;
+  if (isRecord(argsValue)) {
+    args = argsValue;
+  } else if (typeof argsValue === "string") {
+    try {
+      const parsed: unknown = JSON.parse(argsValue);
+      if (isRecord(parsed)) args = parsed;
+    } catch {
+      args = null;
+    }
+  }
+  if (!args) return undefined;
+  if (name === "shell") return stringValue(args.command);
+  return stringValue(args.path) ?? stringValue(args.file_path) ?? stringValue(args.filePath);
 }
 
 // Output (completion) tokens from a usage-bearing event — mirrors the desktop
@@ -141,16 +310,16 @@ function ensureAssistantItem(
 }
 
 /**
- * Upsert a secondary item (thinking / tool) while keeping the run's assistant
- * placeholder last as long as it is still empty. The placeholder hosts the live
- * indicator and, eventually, the reply text — and chronologically the reasoning
- * and tool work precedes the answer, the order the desktop renders inline.
- * Without this the placeholder, created first by agent_start, would sit *above*
- * the thinking/tool cards and the answer text would appear over its own
- * reasoning. Once the placeholder holds text, new secondary items append (the
- * phone merges a run's text into one bubble, so true interleave isn't modeled).
+ * Upsert a secondary item (thinking / tool) before the run's assistant
+ * placeholder. The phone merges a run's streamed text into one bubble and
+ * always renders it last — reasoning and tool work read above the answer,
+ * the same overall shape the desktop renders inline — so the insertion
+ * applies even once the placeholder holds text: a model that streams an
+ * interim remark before its first tool call would otherwise push every
+ * tool row below the reply. Without any placeholder (late join) the item
+ * appends and ensureAssistantItem recreates the bubble after it.
  */
-function upsertBeforeEmptyPlaceholder(
+function upsertBeforeAssistant(
   items: TimelineItem[],
   placeholderId: string,
   id: string,
@@ -160,7 +329,7 @@ function upsertBeforeEmptyPlaceholder(
   const index = items.findIndex(item => item.id === id);
   if (index >= 0) return items.map((item, i) => (i === index ? update(item) : item));
   const placeholderIndex = items.findIndex(
-    item => item.id === placeholderId && item.kind === "message" && item.text.trim().length === 0,
+    item => item.id === placeholderId && item.kind === "message",
   );
   const item = create();
   if (placeholderIndex < 0) return [...items, item];
@@ -247,7 +416,7 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       const assistantId = `assistant:${idKey}`;
       const id = `thinking:${idKey}`;
       const chunk = textValue(data.text);
-      items = upsertBeforeEmptyPlaceholder(
+      items = upsertBeforeAssistant(
         items,
         assistantId,
         id,
@@ -268,19 +437,25 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       const toolId = textValue(data.tool_id) || `tool-${event.idx ?? items.length}`;
       const id = `tool:${toolId}`;
       const assistantId = `assistant:${runId ?? event.idx ?? items.length}`;
-      // Same ordering rule as thinking: tool rows precede the answer bubble.
-      items = upsertBeforeEmptyPlaceholder(
+      // Same ordering rule as thinking: tool rows precede the answer bubble,
+      // even when the bubble already holds streamed text.
+      items = upsertBeforeAssistant(
         items,
         assistantId,
         id,
-        () => ({
-          id,
-          kind: "tool",
-          toolId,
-          name: textValue(data.tool_name) || "tool",
-          complete: false,
-          runId,
-        }),
+        () => {
+          const name = textValue(data.tool_name) || "tool";
+          const detail = toolDetail(name, data.tool_args);
+          return {
+            id,
+            kind: "tool" as const,
+            toolId,
+            name,
+            complete: false,
+            runId,
+            ...(detail ? { detail } : {}),
+          };
+        },
         item => item,
       );
       items = ensureAssistantItem(items, assistantId, runId, Date.now());
@@ -336,6 +511,36 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
         },
       ];
       break;
+    case "user_message": {
+      // The desktop observer mirrors prompts sent from ANY client (desktop,
+      // TUI, another phone), so every device renders the user bubble live.
+      // Dedup mirrors the desktop rule (useThreadMessages): skip when the
+      // last user bubble has identical text — that is this device's own
+      // optimistic send re-delivered through the mirror.
+      const text = textValue(data.text);
+      if (!text.trim()) break;
+      let lastUser: TimelineItem | undefined;
+      for (let i = items.length - 1; i >= 0; i -= 1) {
+        const item = items[i];
+        if (!item) continue;
+        if (item.kind === "message" && item.role === "user") {
+          lastUser = item;
+          break;
+        }
+      }
+      if (lastUser && lastUser.kind === "message" && lastUser.text.trim() === text.trim()) break;
+      items = [
+        ...items,
+        {
+          id: `user:${Date.now()}:${items.length}`,
+          kind: "message",
+          role: "user",
+          text,
+          runId,
+        },
+      ];
+      break;
+    }
     case "agent_end": {
       streaming = false;
       const endedAt = Date.now();
@@ -358,6 +563,13 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
         if (next.kind === "message" && endTokens > 0) next.outputTokens = endTokens;
         return next;
       });
+      // NATS is at-most-once: a dropped thinking_end must not leave the row
+      // reading "thinking" forever — the run's end closes it.
+      items = items.map(item =>
+        item.kind === "thinking" && !item.complete && item.runId === runId
+          ? { ...item, complete: true }
+          : item,
+      );
       break;
     }
     default:
