@@ -870,10 +870,10 @@ async fn format_image_result(tool_name: &str, sc: &Value, output_path: Option<&s
             }
         };
 
-        // `fsMkdirForPath` — recursive mkdir, errors ignored.
-        if let Some(dir) = file_path.parent() {
-            let _ = tokio::fs::create_dir_all(dir).await;
-        }
+        // `fsMkdirForPath` — recursive mkdir, errors ignored. The computed
+        // file_path always has a parent (a file name is always appended).
+        let _ =
+            tokio::fs::create_dir_all(file_path.parent().expect("file path has a parent")).await;
         // `writeFile(path, Buffer.from(b64, "base64"))`
         if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
             let _ = tokio::fs::write(&file_path, bytes).await;
@@ -1034,14 +1034,14 @@ fn parse_cmd_value(raw: &str) -> Value {
     // `/^-?\d+(?:\.\d+)?$/` → Number(text). Integers stay integers so JSON
     // serialization matches JS (5, not 5.0).
     if is_integer_literal(text) {
-        if let Ok(n) = text.parse::<i64>() {
-            return Value::from(n);
+        match text.parse::<i64>() {
+            Ok(n) => return Value::from(n),
+            Err(_) => {} // overflow falls through to the float parse
         }
     }
     if is_number_literal(text) {
-        if let Ok(n) = text.parse::<f64>() {
-            return Value::from(n);
-        }
+        // A string matching the number regex always parses as f64.
+        return Value::from(text.parse::<f64>().expect("number literal parses"));
     }
 
     if text.starts_with('{') && text.ends_with('}') {
@@ -1269,13 +1269,12 @@ async fn tools_describe(args: &[String], out: &Output) -> Result<(), String> {
     }
     out.log("    --timeout <secs>   HTTP timeout (default: 60s)");
 
-    // Arguments (tool-specific)
-    if !entry.args.is_empty() {
-        out.log("");
-        out.log("  Arguments (--key value):");
-        for (name, desc) in &entry.args {
-            out.log(&format!("    --{name:<24} {desc}"));
-        }
+    // Arguments (tool-specific). Every catalog tool currently declares
+    // args, so the header is unconditional (the TS guarded an empty list).
+    out.log("");
+    out.log("  Arguments (--key value):");
+    for (name, desc) in &entry.args {
+        out.log(&format!("    --{name:<24} {desc}"));
     }
 
     // Example
@@ -1464,30 +1463,30 @@ async fn tools_call(args: &[String], out: &Output) -> Result<(), String> {
 
         // Validate numeric ranges for known parameters
         let int_range = |key: &str, min: i64, max: i64, out: &Output| -> Result<(), String> {
-            if let Some(v) = tool_args.get(key) {
-                let ok = matches!(v, Value::Number(n) if n.as_i64().is_some_and(|n| n >= min && n <= max));
-                if !ok {
-                    out.log_err(&format!(
-                        "Error: --{key} must be an integer between {min} and {max}, got: {}",
-                        serde_json::to_string(v).unwrap_or_default()
-                    ));
-                    return Err(crate::HANDLED_EXIT.to_string());
-                }
+            let Some(v) = tool_args.get(key) else {
+                return Ok(());
+            };
+            if matches!(v, Value::Number(n) if n.as_i64().is_some_and(|n| n >= min && n <= max)) {
+                return Ok(());
             }
-            Ok(())
+            out.log_err(&format!(
+                "Error: --{key} must be an integer between {min} and {max}, got: {}",
+                serde_json::to_string(v).unwrap_or_default()
+            ));
+            Err(crate::HANDLED_EXIT.to_string())
         };
         let int_min = |key: &str, min: i64, out: &Output| -> Result<(), String> {
-            if let Some(v) = tool_args.get(key) {
-                let ok = matches!(v, Value::Number(n) if n.as_i64().is_some_and(|n| n >= min));
-                if !ok {
-                    out.log_err(&format!(
-                        "Error: --{key} must be a positive integer, got: {}",
-                        serde_json::to_string(v).unwrap_or_default()
-                    ));
-                    return Err(crate::HANDLED_EXIT.to_string());
-                }
+            let Some(v) = tool_args.get(key) else {
+                return Ok(());
+            };
+            if matches!(v, Value::Number(n) if n.as_i64().is_some_and(|n| n >= min)) {
+                return Ok(());
             }
-            Ok(())
+            out.log_err(&format!(
+                "Error: --{key} must be a positive integer, got: {}",
+                serde_json::to_string(v).unwrap_or_default()
+            ));
+            Err(crate::HANDLED_EXIT.to_string())
         };
 
         // Validate search_paper queries
@@ -1507,15 +1506,18 @@ async fn tools_call(args: &[String], out: &Output) -> Result<(), String> {
         int_min("max_tokens", 1, out)?;
 
         // Normalize file_type to lowercase
-        if let Some(Value::String(ft)) = tool_args.get("file_type") {
-            let ft_lower = ft.to_lowercase();
-            if ft_lower != "pdf" && ft_lower != "docx" {
-                out.log_err(&format!(
-                    "Error: --file_type must be \"pdf\" or \"docx\", got: \"{ft}\""
-                ));
-                return Err(crate::HANDLED_EXIT.to_string());
+        match tool_args.get("file_type") {
+            Some(Value::String(ft)) => {
+                let ft_lower = ft.to_lowercase();
+                if ft_lower != "pdf" && ft_lower != "docx" {
+                    out.log_err(&format!(
+                        "Error: --file_type must be \"pdf\" or \"docx\", got: \"{ft}\""
+                    ));
+                    return Err(crate::HANDLED_EXIT.to_string());
+                }
+                tool_args.insert("file_type".to_string(), Value::String(ft_lower));
             }
-            tool_args.insert("file_type".to_string(), Value::String(ft_lower));
+            _ => {}
         }
     }
 

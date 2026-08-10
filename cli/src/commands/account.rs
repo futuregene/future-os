@@ -401,6 +401,35 @@ mod tests {
         assert!(!stderr.is_empty());
     }
 
+    #[tokio::test]
+    async fn platform_get_non_json_body_errors() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        // 200 with a non-JSON body → the json() decode error arm.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/account/balance",
+            200,
+            "not json",
+        )])
+        .await;
+        write_auth(&base).await;
+        let (code, _, stderr) = run(&["account", "balance"]).await;
+        assert_eq!(code, 1);
+        assert!(!stderr.is_empty());
+
+        // profile --json path with a valid payload.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/account/profile",
+            200,
+            r#"{"email":"a@b.c","user_id":"u1","email_verified":true,"created_at":"2026-01-01"}"#,
+        )])
+        .await;
+        write_auth(&base).await;
+        let (code, stdout, _) = run(&["account", "profile", "--json"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("a@b.c"), "{stdout}");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn account_auth_file_unreadable() {

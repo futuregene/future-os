@@ -1930,6 +1930,50 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn press_key_dispatch_failure_propagates() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Input.dispatchKeyEvent".to_string());
+        let mut s = session_over(&mock);
+        let err = s
+            .press("Tab", None, PressOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn press_enter_native_keycode_arm() {
+        // A key event carrying a nativeVirtualKeyCode exercises the
+        // conditional insert arms in the Enter dispatch.
+        let mock = MockCdp::start().await;
+        let mut s = session_over(&mock);
+        let result = s.press("Enter", None, PressOptions::default()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn evaluate_expression_send_failure_propagates() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Runtime.evaluate".to_string());
+        let mut s = session_over(&mock);
+        let err = s
+            .evaluate(&EvaluateRequest::Expression {
+                expression: "1".to_string(),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn evaluate_function_send_failure_propagates() {
         let mock = MockCdp::start().await;
         mock.state

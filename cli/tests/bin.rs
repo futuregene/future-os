@@ -78,6 +78,14 @@ fn embedded_loop_unknown_command() {
 }
 
 #[test]
+fn embedded_loop_help_succeeds() {
+    // The Ok arm of main's run_loop dispatch.
+    let (code, stdout, _) = future(&["loop", "--help"]);
+    assert_eq!(code, Some(0));
+    assert!(stdout.contains("future loop"), "stdout: {stdout}");
+}
+
+#[test]
 fn tools_call_reads_args_from_stdin() {
     use std::io::Write;
     use std::process::Stdio;

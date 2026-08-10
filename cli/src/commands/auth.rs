@@ -229,35 +229,29 @@ pub async fn credential(json: bool, out: &Output) -> Result<(), String> {
 pub async fn logout(out: &Output) -> Result<(), String> {
     let auth_file = load_auth_file().await?;
     let current = get_future_auth_entry(&auth_file);
-    let mut removed_key = false;
 
-    if let Some(current) = current {
-        if current.key.is_some() {
-            // `const next = { ...current }; delete next.key;` — the sanitized
-            // entry (type/key/base_url only) minus the key.
-            let mut next = Map::new();
-            if let Some(type_) = current.type_ {
-                next.insert("type".to_string(), Value::String(type_));
-            }
-            if let Some(base_url) = current.base_url {
-                next.insert("base_url".to_string(), Value::String(base_url));
-            }
-            let mut auth_file = auth_file;
-            if let Some(obj) = auth_file.as_object_mut() {
-                obj.insert(FUTURE_AUTH_PROVIDER.to_string(), Value::Object(next));
-            }
-            write_auth_file(&auth_file).await?;
-            out.log(&format!(
-                "Removed Future API key from {}",
-                auth_file_path().display()
-            ));
-            removed_key = true;
-        }
-    }
-
-    if !removed_key {
+    let Some(current) = current.filter(|c| c.key.is_some()) else {
         out.log("Not logged in.");
+        return Ok(());
+    };
+    // `const next = { ...current }; delete next.key;` — the sanitized
+    // entry (type/key/base_url only) minus the key.
+    let mut next = Map::new();
+    if let Some(type_) = current.type_ {
+        next.insert("type".to_string(), Value::String(type_));
     }
+    if let Some(base_url) = current.base_url {
+        next.insert("base_url".to_string(), Value::String(base_url));
+    }
+    let mut auth_file = auth_file;
+    if let Some(obj) = auth_file.as_object_mut() {
+        obj.insert(FUTURE_AUTH_PROVIDER.to_string(), Value::Object(next));
+    }
+    write_auth_file(&auth_file).await?;
+    out.log(&format!(
+        "Removed Future API key from {}",
+        auth_file_path().display()
+    ));
     Ok(())
 }
 
@@ -374,11 +368,11 @@ async fn save_auth(
 /// `writeAuthFile(authFile)` — mkdir -p, write pretty JSON + newline, 0600.
 async fn write_auth_file(auth_file: &Value) -> Result<(), String> {
     let path = auth_file_path();
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
+    // Invariant: auth_file_path() is always `<home>/.future/agent/auth.json`.
+    let parent = path.parent().expect("auth file path has a parent");
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|e| e.to_string())?;
     // Serializing plain JSON values is infallible.
     let contents = format!(
         "{}\n",
@@ -564,6 +558,125 @@ mod tests {
         let (code, stdout, _) = run(&["auth", "credential", "--json"]).await;
         assert_eq!(code, 0);
         assert!(stdout.contains("\"error\""), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn logout_without_any_future_entry_reports_not_logged_in() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, r#"{"openai":{"key":"keep"}}"#)
+            .await
+            .unwrap();
+        let (code, stdout, _) = run(&["auth", "logout"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "Not logged in.\n");
+        // The other provider's entry was left alone.
+        let after: Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
+        assert_eq!(after["openai"]["key"], "keep");
+    }
+
+    #[tokio::test]
+    async fn write_auth_file_failures() {
+        let _guard = crate::test_env::lock_env().await;
+
+        // HOME points at a regular FILE → create_dir_all(parent) fails.
+        let tmp = tempfile::tempdir().unwrap();
+        let file_home = tmp.path().join("home-file");
+        tokio::fs::write(&file_home, "x").await.unwrap();
+        let _env = EnvGuard::set(&[("HOME", file_home.as_os_str().to_os_string())]);
+        let err = write_auth_file(&json!({})).await.unwrap_err();
+        assert!(!err.is_empty());
+        drop(_env);
+
+        // auth.json exists as a DIRECTORY → the write fails.
+        let _home = EnvGuard::temp_home();
+        tokio::fs::create_dir_all(auth_file()).await.unwrap();
+        let err = write_auth_file(&json!({})).await.unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[tokio::test]
+    async fn login_with_invalid_auth_file_propagates_load_error() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let path = auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, "{not json").await.unwrap();
+        let (code, _, _) = run(&["auth", "login", "--url", "http://127.0.0.1:1"]).await;
+        assert_eq!(code, 1);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_poll_failure_arms() {
+        // Token poll returns a non-JSON body.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/code",
+                200,
+                "{\"device_code\":\"dc-1\",\"user_code\":\"U\",\"verification_uri\":\"https://x\",\"verification_uri_complete\":\"\",\"expires_in\":60,\"interval\":0}",
+            ),
+            crate::test_server::HttpRoute::json("/client/v1/oauth/device/token", 200, "not json"),
+        ])
+        .await;
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let opener = fake_opener_dir();
+        let _env = EnvGuard::set(&[("PATH", opener.path().as_os_str().to_os_string())]);
+        let (code, stdout, stderr) = run(&["auth", "login", "--url", &base]).await;
+        assert_eq!(code, 1, "code={code} stdout={stdout:?} stderr={stderr:?}");
+        assert!(stderr.contains("Network error"), "{stderr}");
+
+        // Token poll returns JSON in the wrong shape.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/code",
+                200,
+                "{\"device_code\":\"dc-1\",\"user_code\":\"U\",\"verification_uri\":\"https://x\",\"verification_uri_complete\":\"\",\"expires_in\":60,\"interval\":0}",
+            ),
+            crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/token",
+                200,
+                "{\"api_key\": 42}",
+            ),
+        ])
+        .await;
+        let (code, _, _) = run(&["auth", "login", "--url", &base]).await;
+        assert_eq!(code, 1);
+
+        // Token poll dies at the transport level (server drops the request).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            // First request: the device/code POST → a valid response.
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            let _ = socket.read(&mut buf).await;
+            let body = "{\"device_code\":\"dc\",\"user_code\":\"U\",\"verification_uri\":\"https://x\",\"verification_uri_complete\":\"\",\"expires_in\":60,\"interval\":0}";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(resp.as_bytes()).await;
+            let _ = socket.shutdown().await;
+            // The token poll connection is dropped unread. Bounded so the
+            // task completes in-test (exactly one poll happens: the network
+            // error propagates immediately).
+            let (socket, _) = listener.accept().await.expect("poll connection");
+            drop(socket);
+        });
+        let (code, _, _) = run(&["auth", "login", "--url", &format!("http://{addr}")]).await;
+        assert_eq!(code, 1);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     #[tokio::test]

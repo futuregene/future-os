@@ -160,13 +160,6 @@ mod tests {
         false
     }
 
-    /// Read until the client goes away, so the server task completes
-    /// promptly once the test drops its transport (its closing line must
-    /// execute inside the test).
-    async fn hold_until_peer_leaves(mut ws: ServerWs) {
-        while ws.next().await.is_some() {}
-    }
-
     /// Extract the text of a Message event (panic arm covered below).
     #[track_caller]
     fn expect_message(event: TransportEvent) -> String {
@@ -271,7 +264,9 @@ mod tests {
             if next_close_frame(&mut ws).await {
                 let _ = ws.send(Message::Close(None)).await;
             }
-            hold_until_peer_leaves(ws).await;
+            // Bounded hold: keeps the socket through the client assertions,
+            // then closes so this task (and its closing lines) complete.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         });
 
         let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
@@ -299,16 +294,15 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = accept_async(stream).await.unwrap();
-            // Flood without bound; the loop ends when the dropped client
-            // makes a send fail.
-            tokio::spawn(async move {
-                loop {
-                    if ws.send(Message::Text("x".to_string())).await.is_err() {
-                        break;
-                    }
+            // Bounded flood: ends either when the client vanishes (send
+            // error) or when the count is reached — the task always
+            // completes inside the test.
+            for _ in 0..60_000 {
+                if ws.send(Message::Text("x".to_string())).await.is_err() {
+                    break;
                 }
-                hold_until_peer_leaves(ws).await;
-            });
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         });
         let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
             .await
@@ -336,7 +330,9 @@ mod tests {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = accept_async(stream).await.unwrap();
             let _ = ws.send(Message::Close(None)).await;
-            hold_until_peer_leaves(ws).await;
+            // Bounded hold: keeps the socket through the client assertions,
+            // then closes so this task (and its closing lines) complete.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         });
         let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
             .await
@@ -404,7 +400,9 @@ mod tests {
             let _ = ws.send(Message::Binary(vec![1, 2, 3])).await;
             let _ = ws.send(Message::Ping(vec![9])).await;
             let _ = ws.send(Message::Text("{\"hello\":true}".to_string())).await;
-            hold_until_peer_leaves(ws).await;
+            // Bounded hold: keeps the socket through the client assertions,
+            // then closes so this task (and its closing lines) complete.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         });
         let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
             .await
@@ -429,7 +427,9 @@ mod tests {
             let mut ws = accept_async(stream).await.unwrap();
             let _ = ws.send(Message::Text("first".to_string())).await;
             // Just hold the socket; the assertions are client-side.
-            hold_until_peer_leaves(ws).await;
+            // Bounded hold: keeps the socket through the client assertions,
+            // then closes so this task (and its closing lines) complete.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         });
         let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
             .await

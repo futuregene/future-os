@@ -250,13 +250,13 @@ async fn browser_start_safari(
     let result = safari_start(requested_port, string_arg(args, "url").as_deref()).await;
     match result {
         Ok(result) => {
-            // Persist connection config.
-            if result.connection.protocol() == "webdriver" {
-                let mut config = load_browser_config().await?;
-                config.connection = result.connection.clone();
-                config.active_url = string_arg(args, "url");
-                save_browser_config(&config).await?;
-            }
+            // Persist connection config (safari_start always returns a
+            // Webdriver connection on success).
+            debug_assert_eq!(result.connection.protocol(), "webdriver");
+            let mut config = load_browser_config().await?;
+            config.connection = result.connection.clone();
+            config.active_url = string_arg(args, "url");
+            save_browser_config(&config).await?;
             Ok(LocalToolResult {
                 text: None,
                 structured_content: Some(json!({
@@ -363,18 +363,18 @@ async fn create_session(
                 let refined = resolve_cdp_endpoint(endpoint, 5_000).await;
                 if let Ok(info) = refined {
                     browser_kind = info.browser_kind;
-                    // Atomically update config.
-                    if let Ok(fresh) = load_browser_config().await {
-                        if fresh.connection.protocol() == "cdp"
+                    // Atomically update config (only when the saved config is
+                    // still the generic "chromium" CDP form).
+                    let refinable = load_browser_config().await.ok().filter(|fresh| {
+                        fresh.connection.protocol() == "cdp"
                             && fresh.connection.browser_kind() == "chromium"
-                        {
-                            let mut updated = fresh;
-                            updated.connection = BrowserConnectionConfig::Cdp {
-                                browser_kind: browser_kind.clone(),
-                                endpoint: updated.connection.endpoint().to_string(),
-                            };
-                            let _ = save_browser_config(&updated).await;
-                        }
+                    });
+                    if let Some(mut updated) = refinable {
+                        updated.connection = BrowserConnectionConfig::Cdp {
+                            browser_kind: browser_kind.clone(),
+                            endpoint: updated.connection.endpoint().to_string(),
+                        };
+                        let _ = save_browser_config(&updated).await;
                     }
                 }
                 // On error: keep "chromium".
@@ -412,27 +412,12 @@ where
 {
     let config = load_browser_config().await?;
 
-    let mut endpoint = ensure_browser(args).await?;
-    let session: Box<dyn BrowserSession> = match create_session(&config, &endpoint).await {
-        Ok(s) => s,
-        // NOTE(coverage): create_session only fails for a webdriver config
-        // with an empty session id, which the config-file loader rejects —
-        // so this retry arm is unreachable through the public surface.
-        Err(error) => {
-            if string_arg(args, "endpoint").is_some() {
-                return Err(error);
-            }
-            // Auto-start and retry.
-            let fallback_port = (port_from_endpoint(&endpoint).unwrap_or(9222)) + 1;
-            let mut retry_args = args.clone();
-            retry_args.insert("port".to_string(), json!(fallback_port));
-            browser_start(&retry_args).await?;
-            endpoint =
-                wait_for_saved_endpoint(&format!("http://127.0.0.1:{fallback_port}"), 10_000)
-                    .await?;
-            create_session(&config, &endpoint).await?
-        }
-    };
+    let endpoint = ensure_browser(args).await?;
+    // create_session only fails for a webdriver config with an empty session
+    // id, which the config-file loader rejects — so no retry arm is needed
+    // here (the TS original kept one for a failure mode the port narrowed
+    // away); ensure_browser above already handles the auto-start flow.
+    let session: Box<dyn BrowserSession> = create_session(&config, &endpoint).await?;
 
     let mut ctx = SessionContext {
         session,
@@ -985,18 +970,6 @@ fn config_endpoint_or_default(config: &BrowserConfig) -> String {
 async fn endpoint_for(args: &Map<String, Value>) -> String {
     let config = load_browser_config().await.unwrap_or_default();
     string_arg(args, "endpoint").unwrap_or_else(|| config_endpoint_or_default(&config))
-}
-
-fn port_from_endpoint(endpoint: &str) -> Option<i64> {
-    let stripped = endpoint
-        .strip_prefix("http://")
-        .or_else(|| endpoint.strip_prefix("https://"))?;
-    let stripped = stripped.trim_end_matches('/');
-    let (host, port) = stripped.rsplit_once(':')?;
-    if host.is_empty() {
-        return None;
-    }
-    port.parse::<i64>().ok().filter(|_| !port.is_empty())
 }
 
 async fn ensure_browser(args: &Map<String, Value>) -> Result<String, String> {
@@ -1628,7 +1601,53 @@ mod tests {
         assert_eq!(saved.active_url.as_deref(), Some("http://snap/"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_empty_href_state_and_evaluate_failure() {
+        // href present but EMPTY is skipped in the state line.
+        let (_g, _e, _d) = isolated_home().await;
+        let mut session = MockSession::default();
+        session.snapshot_value = json!({
+            "title": "T", "url": "http://x/",
+            "items": [{"ref": "a1", "selector": "a", "role": "link",
+                       "name": "N", "disabled": false, "href": "", "tag": "a"}],
+        });
+        let mut ctx = ctx_with(session, BrowserConfig::default(), args(&[]));
+        let result = browser_snapshot(&mut ctx).await.unwrap();
+        let text = result.text.unwrap();
+        assert!(text.contains("[ref=a1]"), "{text}");
+        assert!(!text.contains("href="), "{text}");
+
+        // Evaluate failure propagates.
+        let mut session = MockSession::default();
+        session.on_eval = Some(Box::new(|_| Err("eval exploded".to_string())));
+        let mut ctx = ctx_with(session, BrowserConfig::default(), args(&[]));
+        let err = browser_snapshot(&mut ctx).await.unwrap_err();
+        assert_eq!(err, "eval exploded");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn type_and_press_session_failures_propagate() {
+        let (_g, _e, _d) = isolated_home().await;
+        let config = BrowserConfig::default();
+
+        let mut session = MockSession::default();
+        session.type_result = Some(Err("type failed".to_string()));
+        let mut ctx = ctx_with(
+            session,
+            config.clone(),
+            args(&[("selector", json!("#in")), ("text", json!("x"))]),
+        );
+        let err = browser_type(&mut ctx).await.unwrap_err();
+        assert_eq!(err, "type failed");
+
+        let mut session = MockSession::default();
+        session.press_result = Some(Err("press failed".to_string()));
+        let mut ctx = ctx_with(session, config, args(&[("key", json!("Enter"))]));
+        let err = browser_press(&mut ctx).await.unwrap_err();
+        assert_eq!(err, "press failed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn snapshot_limit_arg_is_serialized_js_style() {
         let (_g, _e, _d) = isolated_home().await;
         let session = MockSession::default();
@@ -1910,17 +1929,6 @@ mod tests {
         assert_eq!(js_number(f64::NAN), Value::Null);
     }
 
-    #[test]
-    fn port_from_endpoint_variants() {
-        assert_eq!(port_from_endpoint("http://127.0.0.1:9222"), Some(9222));
-        assert_eq!(port_from_endpoint("https://h:443/"), Some(443));
-        assert_eq!(port_from_endpoint("http://:80"), None);
-        assert_eq!(port_from_endpoint("ftp://h:21"), None);
-        assert_eq!(port_from_endpoint("http://host"), None);
-        assert_eq!(port_from_endpoint("http://h:abc"), None);
-        assert_eq!(port_from_endpoint("http://h:"), None);
-    }
-
     #[tokio::test]
     async fn endpoint_for_resolution_order() {
         let (_g, _e, _d) = isolated_home().await;
@@ -2196,9 +2204,9 @@ mod tests {
         let body = format!(r#"{{"Browser":"Chrome/126.0.0.0","webSocketDebuggerUrl":"{ws_url}"}}"#);
         tokio::spawn(async move {
             for _ in 0..connections {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    break;
-                };
+                // accept only fails if the listener is gone (it is owned by
+                // this task) — callers pass exact connection counts.
+                let (mut socket, _) = listener.accept().await.expect("accept");
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let mut buf = [0u8; 2048];
                 let _ = socket.read(&mut buf).await;

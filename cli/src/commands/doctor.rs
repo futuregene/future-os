@@ -502,15 +502,15 @@ async fn check_providers() -> CheckResult {
     // `id → label`
     let mut all_providers: BTreeMap<String, String> = BTreeMap::new();
 
-    // Collect from auth.json.
-    if let Ok(raw) = tokio::fs::read_to_string(auth_file_path()).await {
-        if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
-            if let Some(obj) = parsed.as_object() {
-                for (id, v) in obj {
-                    if v.is_object() && v.get("key").is_some() {
-                        all_providers.insert(id.clone(), "[key]".to_string());
-                    }
-                }
+    // Collect from auth.json (missing/invalid JSON is treated as empty).
+    let raw = tokio::fs::read_to_string(auth_file_path())
+        .await
+        .unwrap_or_default();
+    let parsed = serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
+    if let Some(obj) = parsed.as_object() {
+        for (id, v) in obj {
+            if v.is_object() && v.get("key").is_some() {
+                all_providers.insert(id.clone(), "[key]".to_string());
             }
         }
     }
@@ -645,13 +645,13 @@ async fn check_skills() -> CheckResult {
                     let local_ver =
                         read_skill_md_version(&skills_dir.join(id).join("SKILL.md")).await;
                     // `if (localVer && skill?.latest_version && localVer !== skill.latest_version)`
-                    if let (Some(local), Some(skill)) = (local_ver.as_deref(), skill) {
-                        if let Some(latest) = skill.latest_version.as_deref() {
-                            if local != latest {
-                                needs_update.push(format!("{id}: {local} {DIM}→{RESET} {latest}"));
-                                continue;
-                            }
+                    let latest = skill.and_then(|s| s.latest_version.clone());
+                    match (local_ver.as_deref(), latest) {
+                        (Some(local), Some(latest)) if local != latest => {
+                            needs_update.push(format!("{id}: {local} {DIM}→{RESET} {latest}"));
+                            continue;
                         }
+                        _ => {}
                     }
                     let ver = local_ver.map(|v| format!(" (v{v})")).unwrap_or_default();
                     up_to_date.push(format!("{id}{ver}"));
@@ -1157,6 +1157,24 @@ mod tests {
         tokio::fs::write(&auth, "{not json").await.unwrap();
         let (code, _, _) = run_doctor().await;
         assert_eq!(code, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn doctor_component_without_version_output_falls_back() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        // A stub `future-agent` on PATH that prints nothing parseable → the
+        // version falls back to the bare path.
+        let bin_dir = std::env::var("PATH").unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let stub = std::path::Path::new(&bin_dir).join("future-agent");
+        std::fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("future-agent"), "stdout: {stdout}");
+        assert!(!stdout.contains("(v"), "stdout: {stdout}");
     }
 
     #[tokio::test]
