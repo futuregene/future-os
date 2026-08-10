@@ -486,6 +486,11 @@ mod tests {
         let (code, stdout, _) = run(&["models", "zzz", "--help"]).await;
         assert_eq!(code, 0);
         assert_eq!(stdout, format!("{}\n", help::MODELS_HELP));
+        // A plain rest arg routes into the text-mode listing (agent down →
+        // error exit).
+        let (code, _, stderr) = run(&["models", "zzz"]).await;
+        assert_eq!(code, 1);
+        assert!(!stderr.is_empty(), "stderr: {stderr}");
     }
 
     #[tokio::test]

@@ -781,4 +781,20 @@ mod tests {
         assert_eq!(conn.get("sessionId"), Some(&json!("s1")));
         assert_eq!(conn.get("driverPid"), Some(&json!(9)));
     }
+
+    #[test]
+    fn webdriver_fields_cdp_arm() {
+        let cdp = BrowserConnectionConfig::Cdp {
+            browser_kind: "chrome".to_string(),
+            endpoint: "http://e".to_string(),
+        };
+        assert_eq!(webdriver_fields(&cdp), (String::new(), None));
+        let wd = BrowserConnectionConfig::Webdriver {
+            browser_kind: "safari".to_string(),
+            endpoint: "http://e".to_string(),
+            session_id: "s".to_string(),
+            driver_pid: Some(3),
+        };
+        assert_eq!(webdriver_fields(&wd), ("s".to_string(), Some(3)));
+    }
 }

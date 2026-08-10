@@ -41,6 +41,15 @@ fn embedded_agent_help() {
 }
 
 #[test]
+fn embedded_agent_rejects_unknown_flag() {
+    // clap rejects the flag before the server starts → exit 1 through
+    // run_agent's error arm.
+    let (code, _, stderr) = future(&["agent", "--bogus-flag-xyz"]);
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains("Error"), "stderr: {stderr}");
+}
+
+#[test]
 fn embedded_tui_version_and_unknown_option() {
     let (code, stdout, _) = future(&["tui", "--version"]);
     assert_eq!(code, Some(0));

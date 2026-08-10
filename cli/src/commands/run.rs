@@ -474,6 +474,16 @@ mod tests {
     }
 
     #[test]
+    fn absolute_path_relative_input_joins_cwd() {
+        // Relative input is resolved against the process CWD (TS
+        // path.resolve semantics).
+        let cwd = std::env::current_dir().unwrap();
+        let expected = normalize_abs(cwd.join("rel/file.txt"));
+        assert_eq!(absolute_path("rel/file.txt"), expected);
+        assert_eq!(absolute_path("./rel"), normalize_abs(cwd.join("rel")));
+    }
+
+    #[test]
     fn parse_value_flags() {
         let parsed = parse(&[
             "--grpc-addr",

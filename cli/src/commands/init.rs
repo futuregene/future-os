@@ -476,4 +476,19 @@ mod tests {
             tokio::fs::canonicalize(&executable_path).await.unwrap()
         );
     }
+
+    #[tokio::test]
+    async fn ensure_symlink_metadata_error_beyond_not_found() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("future");
+        tokio::fs::write(&source, "x").await.unwrap();
+        // destination's PARENT is a regular file → symlink_metadata fails
+        // with ENOTDIR (not NotFound) → propagated.
+        let blocker = dir.path().join("blocker");
+        tokio::fs::write(&blocker, "x").await.unwrap();
+        let destination = blocker.join("future");
+        let err = ensure_symlink(&source, destination).await.unwrap_err();
+        assert!(!err.is_empty());
+    }
 }

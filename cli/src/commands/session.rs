@@ -841,4 +841,24 @@ mod tests {
         assert_eq!(value["sessions"][0]["id"], "s1");
         assert!(json_value(&[])["sessions"].as_array().unwrap().is_empty());
     }
+
+    #[tokio::test]
+    async fn session_no_subcommand_prints_help() {
+        let (out, cap) = Output::memory();
+        session(None, &[], &out).await.expect("ok");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, format!("{}\n", SESSION_HELP));
+    }
+
+    #[tokio::test]
+    async fn session_rename_usage_includes_name_placeholder() {
+        let (out, cap) = Output::memory();
+        let result = session(Some("rename"), &[], &out).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("Usage: future session rename <session-id> <name>"),
+            "stderr: {stderr}"
+        );
+    }
 }

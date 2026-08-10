@@ -469,10 +469,10 @@ mod tests {
         assert_eq!(sid, "sess-42");
         // initialize + fire-and-forget notification both hit the server.
         for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
             if requests.lock().unwrap().len() >= 2 {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
         }
         // Clone under a short-lived guard so no MutexGuard is held across
         // the awaits below (clippy::await_holding_lock).
@@ -547,10 +547,10 @@ mod tests {
         )
         .await;
         for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
             if !requests.lock().unwrap().is_empty() {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
         }
         assert_eq!(requests.lock().unwrap().len(), 1);
         // Dead server: errors are swallowed.

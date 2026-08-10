@@ -401,6 +401,27 @@ mod tests {
         assert!(!stderr.is_empty());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn account_auth_file_unreadable() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set(&[("HOME", dir.path().as_os_str().to_owned())]);
+        write_auth("http://127.0.0.1:1").await;
+        // chmod 000 → read fails with a non-NotFound IO error.
+        use std::os::unix::fs::PermissionsExt;
+        let auth_path = dir.path().join(".future").join("agent").join("auth.json");
+        tokio::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o000))
+            .await
+            .unwrap();
+        let (code, _, stderr) = run(&["account", "profile"]).await;
+        assert_eq!(code, 1);
+        assert!(!stderr.is_empty());
+        tokio::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o644))
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn auth_file_edge_cases() {
         let _guard = crate::test_env::lock_env().await;
