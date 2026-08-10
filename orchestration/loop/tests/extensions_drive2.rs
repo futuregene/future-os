@@ -93,6 +93,44 @@ fn doctor_gated_lifecycle_errors() {
 }
 
 #[test]
+fn doctor_gated_enable_and_rollback_via_state_surgery() {
+    let _g = LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let state_file = dir.path().join("state.json");
+    let good = manifest_with_entrypoint("ext-surg", "1.0.0", "sh");
+    install_extension(&good, &state_file, "install", true).unwrap();
+    // State surgery: point the stored manifest at a missing entrypoint so the
+    // enable doctor refuses.
+    let text = std::fs::read_to_string(&state_file).unwrap();
+    let broken = text.replace("\"sh\"", "\"definitely-not-a-real-cmd-xyz\"");
+    assert_ne!(text, broken);
+    std::fs::write(&state_file, &broken).unwrap();
+    let err = enable_extension("ext-surg", &state_file, true).unwrap_err();
+    assert!(err.contains("doctor"), "{err}");
+    // And a rollback whose TARGET manifest is broken refuses the same way:
+    // restore a good active manifest, dry-run a broken upgrade… no — craft
+    // directly: v1 broken on disk, v2 good active.
+    let dir2 = tempfile::tempdir().unwrap();
+    let state_file2 = dir2.path().join("state.json");
+    install_extension(&manifest_with_entrypoint("ext-rb", "1.0.0", "sh"), &state_file2, "install", true).unwrap();
+    install_extension(&manifest_with_entrypoint("ext-rb", "1.1.0", "sh"), &state_file2, "upgrade", true).unwrap();
+    // Break ONLY the rollback target (the 1.0.0 revision) in the state file.
+    let text = std::fs::read_to_string(&state_file2).unwrap();
+    // The first "sh" occurrence belongs to the older revision payload.
+    let idx = text.find("\"sh\"").unwrap();
+    let broken = format!(
+        "{}\"definitely-not-a-real-cmd-xyz\"{}",
+        &text[..idx],
+        &text[idx + 4..]
+    );
+    std::fs::write(&state_file2, &broken).unwrap();
+    let err = rollback_extension("ext-rb", &state_file2, true).unwrap_err();
+    assert!(err.contains("doctor"), "{err}");
+    // And the dry-run (no doctor) still works.
+    rollback_extension("ext-rb", &state_file2, false).unwrap();
+}
+
+#[test]
 fn revision_retention_overflow() {
     let _g = LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();

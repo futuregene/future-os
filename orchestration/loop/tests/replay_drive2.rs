@@ -51,12 +51,16 @@ fn corpus_run_full_packet_fail_closed() {
 
 #[test]
 fn corpus_run_semantic_drift_fails_gate() {
-    // candidate = full minus the selected todo → the rendered request loses
-    // the "TODO " section → semantic contract incomplete → equivalent case
-    // fails → corpus gate bails.
+    // candidate = full minus the selected todo fields → the rendered request
+    // loses the "TODO " section → semantic contract incomplete → equivalent
+    // case fails → corpus gate bails.
     let full = base_packet_json();
     let mut candidate = full.clone();
-    candidate.as_object_mut().unwrap().remove("selected_todo");
+    {
+        let obj = candidate.as_object_mut().unwrap();
+        obj.remove("selected_todo");
+        obj.remove("selected_todo_id");
+    }
     let case = case_json("c-drift", "equivalent", full, Some(candidate));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("corpus.json");

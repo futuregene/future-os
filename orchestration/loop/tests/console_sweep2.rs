@@ -203,3 +203,13 @@ fn doctor_goal_replay_error_arm() {
     let err = cli_err(&["doctor", "--goal", &gid]);
     assert!(err.contains("failure"), "{err}");
 }
+
+#[test]
+fn capability_commands_experimental_note() {
+    let _cr = cli_root();
+    // pr_review_queue is experimental: without the flag its commands are
+    // hidden and the note prints; with the flag they list.
+    cli_ok(&["capability", "commands", "--name", "pr_review_queue"]);
+    cli_ok(&["capability", "commands", "--name", "pr_review_queue", "--include-experimental"]);
+    cli_ok(&["catalog", "--name", "pr_review_queue"]);
+}
