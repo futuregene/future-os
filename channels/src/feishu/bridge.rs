@@ -1047,3 +1047,392 @@ fn save_received_file(data: &[u8], filename: &str) -> std::path::PathBuf {
     let _ = std::fs::write(&path, data);
     path
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+    use crate::test_support::{self as ts, HttpRoute, MockState};
+    use crate::feishu::config::{BehaviorConfig, FeishuConfig, PolicyConfig};
+
+    const TOKEN_ROUTE: &str = "/auth/v3/tenant_access_token/internal";
+
+    /// Standard Feishu REST routes for a message id: token, bot info, ACK
+    /// reactions, reply, CardKit lifecycle, resource download, user info.
+    fn std_routes(msg_id: &str) -> Vec<HttpRoute> {
+        vec![
+            HttpRoute::json(
+                TOKEN_ROUTE,
+                200,
+                r#"{"code":0,"tenant_access_token":"tok","expire":7200}"#,
+            ),
+            HttpRoute::json(
+                "/bot/v3/info",
+                200,
+                r#"{"code":0,"bot":{"open_id":"ou_bot","app_name":"Bot","app_id":"cli_1"}}"#,
+            ),
+            HttpRoute::json(
+                &format!("/im/v1/messages/{msg_id}/reactions"),
+                200,
+                r#"{"code":0,"data":{"reaction_id":"rid_1"}}"#,
+            ),
+            HttpRoute::json(
+                &format!("/im/v1/messages/{msg_id}/reactions/rid_1"),
+                200,
+                r#"{"code":0}"#,
+            ),
+            HttpRoute::json(
+                &format!("/im/v1/messages/{msg_id}/reply"),
+                200,
+                r#"{"code":0,"data":{"message_id":"om_reply"}}"#,
+            ),
+            HttpRoute::json("/cardkit/v1/cards", 200, r#"{"code":0,"data":{"card_id":"card_1"}}"#),
+            HttpRoute::json(
+                "/cardkit/v1/cards/card_1/elements/stream_out/content",
+                200,
+                r#"{"code":0}"#,
+            ),
+            HttpRoute::json("/cardkit/v1/cards/card_1", 200, r#"{"code":0}"#),
+            HttpRoute::json("/cardkit/v1/cards/card_1/settings", 200, ""),
+            HttpRoute::binary(
+                &format!("/im/v1/messages/{msg_id}/resources/img_k"),
+                200,
+                b"\x89PNGdata".to_vec(),
+            ),
+            HttpRoute::binary(
+                &format!("/im/v1/messages/{msg_id}/resources/file_k"),
+                200,
+                b"file-bytes".to_vec(),
+            ),
+            HttpRoute::json(
+                "/contact/v3/users/ou_1",
+                200,
+                r#"{"code":0,"data":{"user":{"name":"Alice"}}}"#,
+            ),
+        ]
+    }
+
+    fn feishu_cfg(base: &str, dm_policy: &str, group_policy: &str) -> FeishuConfig {
+        FeishuConfig {
+            app_id: "app".into(),
+            app_secret: "secret".into(),
+            domain: base.into(), // full URL → api_base()/api_domain() verbatim
+            policy: PolicyConfig {
+                dm_policy: dm_policy.into(),
+                dm_allowlist: vec!["ou_1".into()],
+                group_policy: group_policy.into(),
+                group_allowlist: vec!["oc_group".into()],
+                require_mention: true,
+            },
+            behavior: BehaviorConfig {
+                streaming: true,
+                resolve_sender_names: true,
+                max_image_mb: 10,
+            },
+        }
+    }
+
+    fn agent_cfg(addr: &str) -> Arc<AgentConfig> {
+        Arc::new(AgentConfig {
+            grpc_addr: addr.into(),
+            cwd: "/tmp".into(),
+            model: "future/k3".into(),
+            thinking_level: "high".into(),
+            permission_level: "all".into(),
+        })
+    }
+
+    struct Fixture {
+        bridge: Bridge,
+        grpc: ts::SharedState,
+        http: ts::RecordedRequests,
+        _home: ts::IsolatedHome,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    /// Core fixture builder is make_bridge_routes/make_bridge_cfg below.
+
+    /// Bridge over mocks with default open/open policy and the given events.
+    async fn make_bridge(label: &str, events: Vec<future_rpc::proto::StreamEvent>) -> Fixture {
+        let mut state = MockState::default();
+        state.events = events;
+        make_bridge_routes(label, state, std_routes("om_1")).await
+    }
+
+    /// Bridge over mocks with default policy and custom Feishu routes.
+    async fn make_bridge_routes(
+        label: &str,
+        state: MockState,
+        routes: Vec<HttpRoute>,
+    ) -> Fixture {
+        ts::ensure_crypto_provider();
+        let guard = ts::home_lock();
+        let home = ts::IsolatedHome::new(label);
+        let (base, http) = ts::spawn_http(routes).await;
+        let (addr, grpc) = ts::spawn_mock_grpc(state).await;
+        let cfg = feishu_cfg(&base, "open", "open");
+        let bridge = Bridge::new(agent_cfg(&addr), cfg)
+            .await
+            .expect("bridge builds over mocks");
+        Fixture {
+            bridge,
+            grpc,
+            http,
+            _home: home,
+            _guard: guard,
+        }
+    }
+
+    /// Bridge over mocks with standard routes and a custom policy config.
+    async fn make_bridge_cfg(
+        label: &str,
+        state: MockState,
+        customize: impl FnOnce(&str, &mut FeishuConfig),
+    ) -> Fixture {
+        ts::ensure_crypto_provider();
+        let guard = ts::home_lock();
+        let home = ts::IsolatedHome::new(label);
+        let (base, http) = ts::spawn_http(std_routes("om_1")).await;
+        let (addr, grpc) = ts::spawn_mock_grpc(state).await;
+        let mut cfg = feishu_cfg(&base, "open", "open");
+        customize(&base, &mut cfg);
+        let bridge = Bridge::new(agent_cfg(&addr), cfg)
+            .await
+            .expect("bridge builds over mocks");
+        Fixture {
+            bridge,
+            grpc,
+            http,
+            _home: home,
+            _guard: guard,
+        }
+    }
+
+    fn event(msg_id: &str) -> FeishuEvent {
+        FeishuEvent {
+            event_type: "im.message.receive_v1".into(),
+            message_id: Some(msg_id.into()),
+            chat_id: Some("oc_1".into()),
+            chat_type: Some("p2p".into()),
+            sender_open_id: Some("ou_1".into()),
+            msg_type: Some("text".into()),
+            content: Some(r#"{"text":"hello"}"#.into()),
+            root_id: None,
+            parent_id: None,
+            tenant_key: None,
+            app_id: None,
+            create_time_ms: None,
+            mentions: None,
+            raw: serde_json::json!({}),
+        }
+    }
+
+    /// Completed-run events for the agent side.
+    fn done_events() -> Vec<future_rpc::proto::StreamEvent> {
+        vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"agent answer"}"#),
+            ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
+        ]
+    }
+
+    /// Wait until the background prompt loop finished (DONE reaction sent).
+    async fn wait_done(http: &ts::RecordedRequests, msg_id: &str) -> bool {
+        let path = format!("/im/v1/messages/{msg_id}/reactions");
+        ts::wait_until(
+            || {
+                ts::requests_to(http, &path)
+                    .iter()
+                    .any(|r| r.body_string().contains("DONE"))
+            },
+            std::time::Duration::from_secs(10),
+        )
+        .await
+    }
+
+    // ─── Early-skip arms ─────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skips_events_with_missing_fields() {
+        let fx = make_bridge("missing-fields", done_events()).await;
+        // No chat_id.
+        let mut e = event("om_1");
+        e.chat_id = None;
+        fx.bridge.handle_event(e).await.unwrap();
+        // No sender.
+        let mut e = event("om_1");
+        e.sender_open_id = None;
+        fx.bridge.handle_event(e).await.unwrap();
+        // No message_id.
+        let mut e = event("om_1");
+        e.message_id = None;
+        fx.bridge.handle_event(e).await.unwrap();
+        // Nothing reached the agent, nothing sent to Feishu.
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dedup_skips_redelivered_message() {
+        let fx = make_bridge("dedup", done_events()).await;
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        let reacts_before = ts::requests_to(&fx.http, "/im/v1/messages/om_1/reactions").len();
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        let reacts_after = ts::requests_to(&fx.http, "/im/v1/messages/om_1/reactions").len();
+        assert_eq!(reacts_before, reacts_after, "duplicate must be skipped");
+        assert_eq!(ts::recorded_of(&fx.grpc, "prompt").len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_messages_skipped_and_dedup_set_bounded() {
+        let fx = make_bridge("stale-bound", done_events()).await;
+        let old_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            - 120_000;
+        for i in 0..1005 {
+            let mut e = event(&format!("om_stale_{i}"));
+            e.create_time_ms = Some(old_ms);
+            fx.bridge.handle_event(e).await.unwrap();
+        }
+        // All stale → nothing prompted; the dedup set was trimmed (>1000 →
+        // drop 500) and stays bounded.
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+        let len = fx.bridge.processed.read().await.len();
+        assert!(len <= 510, "dedup set should be trimmed, got {len}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bot_own_message_skipped() {
+        let fx = make_bridge("bot-self", done_events()).await;
+        let mut e = event("om_1");
+        e.sender_open_id = Some("ou_bot".into()); // the bot itself
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+    }
+
+    // ─── Policy paths ────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn p2p_denied_replies_with_reason() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        // allowlist policy, sender ou_stranger not in list.
+        let fx = make_bridge_cfg("p2p-deny", state, |_, cfg| {
+            cfg.policy.dm_policy = "allowlist".into();
+            cfg.policy.dm_allowlist = vec!["ou_someone_else".into()];
+        })
+        .await;
+        let mut e = event("om_1");
+        e.sender_open_id = Some("ou_stranger".into());
+        fx.bridge.handle_event(e).await.unwrap();
+        let replies = ts::requests_to(&fx.http, "/im/v1/messages/om_1/reply");
+        assert_eq!(replies.len(), 1);
+        assert!(replies[0].body_string().contains("not authorized"));
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_message_requires_mention() {
+        // Not mentioned → silently skipped (no ACK reaction at all).
+        let fx = make_bridge("group-nomention", done_events()).await;
+        let mut e = event("om_1");
+        e.chat_type = Some("group".into());
+        e.chat_id = Some("oc_group".into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+        assert!(ts::requests_to(&fx.http, "/im/v1/messages/om_1/reactions").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_mentioned_via_content_and_via_event_mentions() {
+        // Old API: mention embedded in the content JSON.
+        let fx = make_bridge("group-content-mention", done_events()).await;
+        let mut e = event("om_1");
+        e.chat_type = Some("group".into());
+        e.chat_id = Some("oc_group".into());
+        e.content = Some(r#"{"text":"hi","mentions":[{"id":{"open_id":"ou_bot"}}]}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        assert_eq!(ts::recorded_of(&fx.grpc, "prompt").len(), 1);
+        drop(fx);
+
+        // API v2: mentions on the event object.
+        let fx = make_bridge("group-event-mention", done_events()).await;
+        let mut e = event("om_1");
+        e.chat_type = Some("group".into());
+        e.chat_id = Some("oc_group".into());
+        e.mentions = Some(vec![serde_json::json!({"id": {"open_id": "ou_bot"}})]);
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_policy_denied_replies_with_reason() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        // Group policy disabled → deny even when mentioned.
+        let fx = make_bridge_cfg("group-deny", state, |_, cfg| {
+            cfg.policy.group_policy = "disabled".into();
+        })
+        .await;
+        let mut e = event("om_1");
+        e.chat_type = Some("group".into());
+        e.chat_id = Some("oc_group".into());
+        e.mentions = Some(vec![serde_json::json!({"id": "ou_bot"})]);
+        fx.bridge.handle_event(e).await.unwrap();
+        let replies = ts::requests_to(&fx.http, "/im/v1/messages/om_1/reply");
+        assert_eq!(replies.len(), 1);
+        assert!(replies[0].body_string().contains("disabled"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unknown_chat_type_falls_through_to_prompt() {
+        let fx = make_bridge("unknown-chat-type", done_events()).await;
+        let mut e = event("om_1");
+        e.chat_type = Some("thread".into()); // neither p2p nor group
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+    }
+
+    // ─── ACK reaction failure/timeout ────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ack_reaction_failure_still_processes() {
+        let mut routes = std_routes("om_1");
+        routes.retain(|r| r.path != "/im/v1/messages/om_1/reactions");
+        routes.push(HttpRoute::json(
+            "/im/v1/messages/om_1/reactions",
+            200,
+            r#"{"code":13,"msg":"rate limited"}"#,
+        ));
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge_routes("ack-fail", state, routes).await;
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        // Prompt still ran; agent_end react DONE also fails silently.
+        assert!(
+            ts::wait_until(|| !ts::recorded_of(&fx.grpc, "prompt").is_empty(), std::time::Duration::from_secs(5)).await,
+            "prompt should proceed despite ACK failure"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ack_reaction_timeout_continues_without_ack() {
+        let mut routes = std_routes("om_1");
+        routes.retain(|r| r.path != "/im/v1/messages/om_1/reactions");
+        routes.push(HttpRoute::slow_json(
+            "/im/v1/messages/om_1/reactions",
+            r#"{"code":0,"data":{"reaction_id":"rid_1"}}"#,
+            std::time::Duration::from_secs(7),
+        ));
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge_routes("ack-timeout", state, routes).await;
+        fx.bridge.handle_event(event("om_1")).await.unwrap();
+        assert!(
+            ts::wait_until(|| !ts::recorded_of(&fx.grpc, "prompt").is_empty(), std::time::Duration::from_secs(5)).await,
+            "prompt should proceed after ACK timeout"
+        );
+    }
+}
