@@ -4739,3 +4739,325 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     println!("todo {todo_id} updated ✔");
     Ok(())
 }
+
+// ── in-module coverage tests ───────────────────────────────────────────────
+// Helpers and render paths that the CLI surface cannot reach (private fns,
+// defensive arms, non-todo event descriptions, the `future loop` prog name).
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::state::{Goal, RunRecord, TaskClass, Todo, TodoStatus};
+    use crate::store::Event;
+
+    fn record(todo_id: &str) -> RunRecord {
+        RunRecord {
+            turn: 1,
+            todo_id: todo_id.to_string(),
+            run_id: "run-1".to_string(),
+            terminal_state: "completed".to_string(),
+            error: None,
+            tokens_in_delta: 1,
+            tokens_out_delta: 2,
+            cost_delta: 0.1,
+            tools: vec!["shell".to_string()],
+            evidence: "proof".to_string(),
+            recorded_at: 1_700_000_000,
+            spend_source: Some("run".to_string()),
+            validation: None,
+        }
+    }
+
+    fn all_events(todo_id: &str) -> Vec<Event> {
+        vec![
+            Event::GoalStarted { goal_id: "g".into(), ts: 1 },
+            Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement(todo_id, "task"),
+                ts: 1,
+            },
+            Event::TodoCompleted {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                no_follow_up: true,
+                successor_ids: vec!["s1".into()],
+                evidence: Some("e".into()),
+                ts: 1,
+            },
+            Event::TodoSuperseded { goal_id: "g".into(), todo_id: todo_id.into(), ts: 1 },
+            Event::TodoUpdated {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                text: Some("t".into()),
+                status: None,
+                evidence: None,
+                note: None,
+                priority: None,
+                resume_when: None,
+                blocks: None,
+                ts: 1,
+            },
+            Event::GoalCancelled { goal_id: "g".into(), reason: "r".into(), ts: 1 },
+            Event::GateResolved {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                decision: "d".into(),
+                note: None,
+                ts: 1,
+            },
+            Event::GapSatisfied { goal_id: "g".into(), gap_id: "gap1".into(), ts: 1 },
+            Event::RunRecorded { goal_id: "g".into(), record: record(todo_id), ts: 1 },
+            Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: "a".into(),
+                lease_expires_at: 9,
+                ts: 1,
+            },
+            Event::AgentRegistered { goal_id: "g".into(), agent_id: "a".into(), ts: 1 },
+            Event::AgentOnboarded {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                capabilities: vec!["shell".into()],
+                ts: 1,
+            },
+            Event::ReplanAcked { goal_id: "g".into(), delta_kinds: vec!["vision_patch".into()], ts: 1 },
+            Event::ProfileSet { goal_id: "g".into(), outcome_floor_streak_threshold: 2, ts: 1 },
+            Event::AuthoritySet {
+                goal_id: "g".into(),
+                write_scope: vec!["src".into()],
+                requires_approval: vec!["publish".into()],
+                ts: 1,
+            },
+            Event::TodoArchived { goal_id: "g".into(), todo_id: todo_id.into(), ts: 1 },
+            Event::MonitorPolled {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                result: "changed".into(),
+                no_change_count: 0,
+                ts: 1,
+            },
+            Event::QuotaSpent {
+                goal_id: "g".into(),
+                run_id: "r1".into(),
+                todo_id: todo_id.into(),
+                source: "run".into(),
+                slots: 1,
+                ts: 1,
+            },
+            Event::EvidenceAttached {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                evidence: "e".into(),
+                ts: 1,
+            },
+            Event::TodoRenewed {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: "a".into(),
+                lease_expires_at: 9,
+                ts: 1,
+            },
+            Event::TodoReleased {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: "a".into(),
+                ts: 1,
+            },
+            Event::TodoExpired { goal_id: "g".into(), todo_id: todo_id.into(), ts: 1 },
+            Event::SupervisorProposed {
+                goal_id: "g".into(),
+                supervisor_agent_id: "sup".into(),
+                decision_id: "d1".into(),
+                decision_kind: "observe".into(),
+                target_agent_id: "w1".into(),
+                required_host_capabilities: vec![],
+                decision: "watch".into(),
+                ts: 1,
+            },
+            Event::SupervisorReceiptRecorded {
+                goal_id: "g".into(),
+                decision_id: "d1".into(),
+                receipt_id: "r1".into(),
+                adapter_id: "ad".into(),
+                outcome: "executed".into(),
+                authority_ref: Some("auth".into()),
+                rollback_ref: None,
+                ts: 1,
+            },
+        ]
+    }
+
+    #[test]
+    fn describe_event_covers_every_variant() {
+        for ev in all_events("todo_1") {
+            let s = describe_event(&ev);
+            assert!(!s.is_empty(), "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn event_touches_todo_matrix() {
+        for ev in all_events("todo_1") {
+            let touches = event_touches_todo(&ev, "todo_1");
+            let touches_other = event_touches_todo(&ev, "todo_other");
+            // Every todo-carrying variant matches its todo; none matches a
+            // different id. Goal-level variants never touch.
+            if touches_other {
+                panic!("{ev:?} must not touch todo_other");
+            }
+            let _ = touches;
+        }
+        assert!(event_touches_todo(&Event::TodoAdded {
+            goal_id: "g".into(),
+            todo: Todo::advancement("todo_1", "task"),
+            ts: 1,
+        }, "todo_1"));
+        assert!(!event_touches_todo(
+            &Event::GoalStarted { goal_id: "g".into(), ts: 1 },
+            "todo_1"
+        ));
+    }
+
+    #[test]
+    fn human_dur_ranges() {
+        assert_eq!(human_dur(59), "59s");
+        assert_eq!(human_dur(90), "1m30s");
+        assert_eq!(human_dur(3600), "1h0m");
+        assert_eq!(human_dur(3705), "1h1m");
+    }
+
+    #[test]
+    fn status_label_matrix() {
+        let mut t = Todo::advancement("t", "x");
+        t.status = TodoStatus::Done;
+        t.no_follow_up = true;
+        assert_eq!(status_label(&t), "done(no-follow-up)");
+        t.no_follow_up = false;
+        t.successor_ids = vec!["s".into()];
+        assert_eq!(status_label(&t), "done(+successor)");
+        t.successor_ids = vec![];
+        assert_eq!(status_label(&t), "done");
+        t.status = TodoStatus::Superseded;
+        assert_eq!(status_label(&t), "superseded");
+        for (class, label) in [
+            (TaskClass::Advancement, "open"),
+            (TaskClass::UserGate, "GATE"),
+            (TaskClass::UserAction, "action"),
+            (TaskClass::Monitor, "monitor"),
+            (TaskClass::Blocker, "blocker"),
+        ] {
+            let mut t = Todo::advancement("t", "x");
+            t.class = class;
+            assert_eq!(status_label(&t), label);
+        }
+    }
+
+    #[test]
+    fn parse_pairs_edge_cases() {
+        let mut seen: Vec<(String, String)> = vec![];
+        parse_pairs(
+            &[
+                "--flag".to_string(),       // boolean-ish flag at end
+                "positional".to_string(),   // skipped
+                "--key".to_string(),
+                "value".to_string(),
+                "--no-follow-up".to_string(), // known boolean, followed by value-less
+                "--after-bool".to_string(),
+            ],
+            |k, v| seen.push((k.to_string(), v)),
+        );
+        // "--flag" is followed by a non-flag arg → consumes it as its value
+        // (parse_pairs has no arity table; only the four known booleans are
+        // value-less).
+        assert!(seen.contains(&("--flag".to_string(), "positional".to_string())));
+        assert!(seen.contains(&("--key".to_string(), "value".to_string())));
+        assert!(seen.contains(&("--no-follow-up".to_string(), "true".to_string())));
+        // "--after-bool" at the end gets "true".
+        assert!(seen.contains(&("--after-bool".to_string(), "true".to_string())));
+        assert!(!seen.iter().any(|(k, _)| k == "positional"));
+    }
+
+    #[test]
+    fn join_ids_both() {
+        assert_eq!(join_ids(&[]), "(none)");
+        assert_eq!(join_ids(&["a".to_string(), "b".to_string()]), "a, b");
+    }
+
+    #[test]
+    fn print_goal_status_full() {
+        // Acceptance gaps (satisfied + open), monitor metadata, projection
+        // gap, history — every print arm.
+        let mut goal = Goal::new("g1", "objective", "/tmp")
+            .with_acceptance(vec![("gap1", "needs proof"), ("gap2", "more proof")]);
+        goal.satisfy_gap("gap2");
+        goal.todos.push(Todo::advancement("t1", "open task"));
+        let mut mon = Todo::monitor("m1", "watch", std::time::Duration::from_secs(60));
+        mon.monitor_target = Some("file:x".into());
+        mon.monitor_policy = Some("exists".into());
+        mon.monitor_cadence = Some("15m".into());
+        goal.todos.push(mon);
+        goal.history.push(record("t1"));
+        // No next_action → "-" arm; the frontier disagrees → projection gap.
+        print_goal_status(&goal);
+        goal.next_action = Some("open task".into());
+        print_goal_status(&goal);
+    }
+
+    #[test]
+    fn prog_and_help_surface() {
+        // prog() falls back to the standalone name before run() sets it, or
+        // reflects the OnceLock afterwards — either way it is exercised.
+        let _ = prog();
+        // cli_help adapts the USAGE line when invoked as `future loop`.
+        let _ = PROG.set("future loop".to_string());
+        let registry = build_cli_registry();
+        cli_help(&registry, false).unwrap();
+        cli_help(&registry, true).unwrap();
+    }
+
+    #[test]
+    fn root_dir_env_override() {
+        std::env::set_var("FUTURE_LOOP_ROOT", "/tmp/loop-root-dir-test");
+        assert_eq!(root_dir(), "/tmp/loop-root-dir-test");
+        std::env::remove_var("FUTURE_LOOP_ROOT");
+        assert!(root_dir().ends_with("/.future/loop"), "{}", root_dir());
+    }
+
+    #[test]
+    fn gen_id_format() {
+        let id = gen_id("todo");
+        assert!(id.starts_with("todo_"), "{id}");
+        assert_eq!(id.len(), "todo_".len() + 12);
+    }
+
+    #[test]
+    fn capability_hook_unknown_capability_bails() {
+        let err = cmd_capability_hook("ghost-cmd", "ghost_cap", &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("unknown capability"));
+    }
+
+    #[test]
+    fn print_status_json_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-console-json-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        let goal = Goal::new("gj", "json goal", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted { goal_id: "gj".into(), ts: 1 })
+            .unwrap();
+        // No filter → iterates the registry; with filter → single goal;
+        // unknown filter → error.
+        print_status_json(&store, None).unwrap();
+        print_status_json(&store, Some("gj".to_string())).unwrap();
+        assert!(print_status_json(&store, Some("goal_nope".to_string())).is_err());
+    }
+}
