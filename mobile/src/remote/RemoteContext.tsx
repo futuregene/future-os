@@ -797,9 +797,18 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       syncLockRef.current = true;
       try {
         await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
-        const target = sessionId || selectedRef.current;
-        if (!target) return;
-        await fullResync(target);
+        const targets = new Set<string>();
+        if (sessionId) {
+          targets.add(sessionId);
+        } else {
+          // A reconnect can drop events for ANY cached conversation (NATS is
+          // at-most-once) — resync every cached session, not just the open one.
+          if (selectedRef.current) targets.add(selectedRef.current);
+          for (const id of Object.keys(timelinesRef.current)) {
+            if (id) targets.add(id);
+          }
+        }
+        for (const target of targets) await fullResync(target);
         // Fold any events buffered during recovery.
         flushPendingLock();
       } catch (nextError) {
@@ -929,14 +938,27 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           setTimelines(prev => {
             const draftItems = draftTimeline?.items ?? [];
             const current = prev[nextSessionId] ?? emptyTimeline();
+            // The user_message mirror may have landed the same prompt in the
+            // real session's cache before this migration runs — keep the
+            // landed bubble instead of stacking the optimistic one on it.
+            const draftUser = draftItems.find(
+              item => item.kind === "message" && item.role === "user",
+            );
+            const alreadyLanded =
+              draftUser?.kind === "message" &&
+              current.items.some(
+                item =>
+                  item.kind === "message" &&
+                  item.role === "user" &&
+                  item.text.trim() === draftUser.text.trim(),
+              );
             return {
               ...prev,
               [nextSessionId]: {
                 ...current,
-                items: [...draftItems, ...current.items],
+                items: alreadyLanded ? current.items : [...draftItems, ...current.items],
               },
-              // Drop the empty draft placeholder.
-              ...(draftItems.length === 0 ? { "": emptyTimeline() } : {}),
+              ...(draftItems.length === 0 || alreadyLanded ? { "": emptyTimeline() } : {}),
             };
           });
           await refreshSessions();

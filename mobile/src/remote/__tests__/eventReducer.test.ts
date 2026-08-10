@@ -197,6 +197,38 @@ describe("projection reducer", () => {
   });
 });
 
+describe("user message mirror", () => {
+  test("user_message from another device appends a user bubble", () => {
+    const state = applyStreamEvent(emptyTimeline(), {
+      type: "user_message",
+      data: JSON.stringify({ text: "check this" }),
+    });
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]).toMatchObject({ kind: "message", role: "user", text: "check this" });
+  });
+
+  test("a repeat of the last user bubble's text is deduped (own optimistic send)", () => {
+    const first = applyStreamEvent(emptyTimeline(), {
+      type: "user_message",
+      data: JSON.stringify({ text: "check this" }),
+    });
+    const repeat = applyStreamEvent(first, {
+      type: "user_message",
+      data: JSON.stringify({ text: "check this" }),
+    });
+    expect(repeat.items).toHaveLength(1);
+    // A genuinely new prompt still lands.
+    const next = applyStreamEvent(repeat, {
+      type: "user_message",
+      data: JSON.stringify({ text: "and this" }),
+    });
+    expect(next.items.map(item => item.kind === "message" && item.text)).toEqual([
+      "check this",
+      "and this",
+    ]);
+  });
+});
+
 describe("replay event normalization", () => {
   test("maps snake_case run_id to the camelCase StreamEvent shape", () => {
     const events = normalizeReplayEvents([

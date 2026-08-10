@@ -477,6 +477,36 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
         },
       ];
       break;
+    case "user_message": {
+      // The desktop observer mirrors prompts sent from ANY client (desktop,
+      // TUI, another phone), so every device renders the user bubble live.
+      // Dedup mirrors the desktop rule (useThreadMessages): skip when the
+      // last user bubble has identical text — that is this device's own
+      // optimistic send re-delivered through the mirror.
+      const text = textValue(data.text);
+      if (!text.trim()) break;
+      let lastUser: TimelineItem | undefined;
+      for (let i = items.length - 1; i >= 0; i -= 1) {
+        const item = items[i];
+        if (!item) continue;
+        if (item.kind === "message" && item.role === "user") {
+          lastUser = item;
+          break;
+        }
+      }
+      if (lastUser && lastUser.kind === "message" && lastUser.text.trim() === text.trim()) break;
+      items = [
+        ...items,
+        {
+          id: `user:${Date.now()}:${items.length}`,
+          kind: "message",
+          role: "user",
+          text,
+          runId,
+        },
+      ];
+      break;
+    }
     case "agent_end": {
       streaming = false;
       const endedAt = Date.now();
