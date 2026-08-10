@@ -318,6 +318,7 @@ pub(crate) fn events_since_to_proto(payload: &EventsSincePayload) -> proto::Even
         events: payload.events.iter().map(replay_event_to_proto).collect(),
         truncated: payload.truncated,
         projection: payload.projection.as_ref().map(projection_to_proto),
+        has_more: payload.has_more,
     }
 }
 

@@ -252,6 +252,15 @@ pub struct EventsSincePayload {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub projection: Option<ProjectionPayload>,
+    /// True when the page was cut short (request `max_events` / server size
+    /// budget) and more events follow. Absent on the wire when false so
+    /// legacy fixtures and old agents round-trip unchanged.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_more: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// A compressed projection snapshot (proto `ProjectionSnapshot`).

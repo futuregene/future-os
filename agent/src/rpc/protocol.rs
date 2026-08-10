@@ -83,6 +83,10 @@ pub struct RpcCommand {
     pub run_id: String,
     #[serde(default)]
     pub since_idx: i64,
+    /// Page size for get_events_since; 0 = unlimited (legacy behavior).
+    /// See proto RpcCommand.max_events.
+    #[serde(default)]
+    pub max_events: i64,
     #[serde(default)]
     pub requested_run_id: String,
     #[serde(default)]

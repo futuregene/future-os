@@ -145,6 +145,14 @@ message RpcCommand {
   int64 since_idx = 140;
   string run_id = 141;
 
+  // Page size for get_events_since (0 = unlimited, the legacy behavior).
+  // A run journal can far exceed the gRPC message-size cap, so clients
+  // reading a full run history page through it: re-request with
+  // since_idx = the last event's idx while the response has has_more set.
+  // The server may return fewer events than requested when a serialized-size
+  // budget cuts the page first.
+  int64 max_events = 145;
+
   // Optional run identity proposed by a client that has already created its
   // local run record. The Agent validates/adopts it atomically and returns the
   // canonical id in the prompt acknowledgement.
@@ -1017,6 +1025,9 @@ message EventsSince {
   // True when `projection` carries a snapshot instead of a complete tail.
   bool truncated = 3;
   ProjectionSnapshot projection = 4;
+  // True when this page was cut short (see RpcCommand.max_events) and more
+  // events follow: re-request with since_idx = the last event's idx.
+  bool has_more = 5;
 }
 
 // A compressed projection of a run's events (coalesced deltas).
