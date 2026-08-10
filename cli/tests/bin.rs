@@ -41,12 +41,12 @@ fn embedded_agent_help() {
 }
 
 #[test]
-fn embedded_agent_rejects_unknown_flag() {
-    // clap rejects the flag before the server starts → exit 1 through
-    // run_agent's error arm.
-    let (code, _, stderr) = future(&["agent", "--bogus-flag-xyz"]);
+fn embedded_agent_run_failure_is_exit_1() {
+    // Port 1 fails to serve → run_agent's error arm (agent logs go to
+    // stdout via tracing).
+    let (code, stdout, _) = future(&["agent", "--grpc-addr", "127.0.0.1:1"]);
     assert_eq!(code, Some(1));
-    assert!(stderr.contains("Error"), "stderr: {stderr}");
+    assert!(stdout.contains("exited with error"), "stdout: {stdout}");
 }
 
 #[test]
