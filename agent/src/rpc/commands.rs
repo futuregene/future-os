@@ -2254,7 +2254,19 @@ mod tests {
                 .unwrap_or_else(|poison| poison.into_inner());
             let previous_home = std::env::var_os("HOME");
             let previous_userprofile = std::env::var_os("USERPROFILE");
-            let dir = tempfile::tempdir().expect("tempdir");
+            // NOT under the system temp dir: parallel sandbox tests evaluate
+            // `$HOME/...` paths against rules that allow the temp dir — a
+            // tempdir-based HOME flips their "outside" fixtures to Allow
+            // whenever a TestHome window overlaps. Anchor under the workspace
+            // target/ dir instead (no sandbox rule allows it; CARGO_MANIFEST_DIR
+            // is compile-time so this works for lib tests, unlike
+            // CARGO_TARGET_TMPDIR which is integration-test only).
+            let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("workspace root")
+                .join("target/test-homes");
+            std::fs::create_dir_all(&base).expect("create test-homes dir");
+            let dir = tempfile::tempdir_in(base).expect("tempdir");
             // Use the CANONICAL tempdir as $HOME: on macOS /var -> /private/var
             // is a symlink, and sandbox rules canonicalize their bases — a raw
             // (non-canonical) $HOME would make raw dirs::home_dir() paths never
