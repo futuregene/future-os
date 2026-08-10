@@ -251,3 +251,25 @@ fn grpc_adapter_error_paths() {
         assert_eq!(result.failure_class, "runner_error");
     });
 }
+
+#[test]
+fn grpc_adapter_classify_failed_and_scripted_id() {
+    // ScriptedAdapter::id() accessor.
+    let a = ScriptedAdapter::new(vec![]);
+    assert_eq!(a.id(), "scripted");
+    rt().block_on(async {
+        // A completed turn whose evidence LACKS the expected marker → the
+        // round does not pass, but is not a runner error → "failed".
+        let (addr, _) = spawn_mock(MockState {
+            events: completed_events("mock-run-1"),
+            ..Default::default()
+        })
+        .await;
+        let mut adapter = GrpcLoopxAdapter::connect(&addr, "/tmp").await.unwrap();
+        let mut c = case("gb", "cb", 1);
+        c.expected_evidence = Some("STRING_NOT_IN_OUTPUT".to_string());
+        let result = run_qualification_case(&mut adapter, &c, None).unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.failure_class, "budget_exhausted");
+    });
+}
