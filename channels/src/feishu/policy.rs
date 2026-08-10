@@ -158,14 +158,12 @@ mod tests {
     fn dm_allowlist_allows_member_and_denies_stranger() {
         let engine = PolicyEngine::new(config("allowlist", &["ou_alice"], "open", &[], false));
         assert_eq!(engine.check_dm("ou_alice"), Access::Allowed);
-        match engine.check_dm("ou_mallory") {
-            Access::Denied(reason) => {
-                // The denial message tells the user their open_id so an admin
-                // can add it — keep that contract stable.
-                assert!(reason.contains("ou_mallory"));
-            }
-            Access::Allowed => panic!("stranger should be denied"),
-        }
+        // The denial message tells the user their open_id so an admin can add
+        // it — keep that contract stable.
+        assert!(
+            matches!(engine.check_dm("ou_mallory"), Access::Denied(ref reason) if reason.contains("ou_mallory")),
+            "stranger should be denied with their open_id in the message"
+        );
     }
 
     #[test]
@@ -242,6 +240,33 @@ mod tests {
 
         let wild = PolicyEngine::new(config("open", &[], "allowlist", &["*"], false));
         assert_eq!(wild.check_group("oc_b", false), Access::Allowed);
+    }
+
+    #[test]
+    fn group_allowlist_member_must_mention_when_required() {
+        let engine = PolicyEngine::new(config("open", &[], "allowlist", &["oc_a"], true));
+        assert!(matches!(
+            engine.check_group("oc_a", false),
+            Access::Denied(_)
+        ));
+        assert_eq!(engine.check_group("oc_a", true), Access::Allowed);
+    }
+
+    #[test]
+    fn group_disabled_with_non_enabling_override_stays_denied() {
+        // An override that does not explicitly enable the chat (enabled=None
+        // or Some(false)) must not punch through a disabled group policy.
+        let mut engine = PolicyEngine::new(config("open", &[], "disabled", &[], false));
+        engine.set_override("oc_chat".into(), override_with(None, Some(false)));
+        assert!(matches!(
+            engine.check_group("oc_chat", true),
+            Access::Denied(_)
+        ));
+        engine.set_override("oc_chat".into(), override_with(Some(false), None));
+        assert!(matches!(
+            engine.check_group("oc_chat", true),
+            Access::Denied(_)
+        ));
     }
 
     #[test]

@@ -46,7 +46,7 @@ pub struct Bridge {
 impl Bridge {
     pub async fn new(agent_cfg: Arc<AgentConfig>, feishu_cfg: FeishuConfig) -> Result<Self> {
         let feishu = FeishuRestClient::new(
-            feishu_cfg.api_base(),
+            &feishu_cfg.api_base(),
             &feishu_cfg.app_id,
             &feishu_cfg.app_secret,
         );

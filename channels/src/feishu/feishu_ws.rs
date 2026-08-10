@@ -86,6 +86,7 @@ pub struct FeishuWsClient {
     app_secret: String,
     domain: String,
     ping_interval: Arc<RwLock<u64>>,
+    heartbeat_timeout_secs: u64,
 }
 
 impl FeishuWsClient {
@@ -95,7 +96,17 @@ impl FeishuWsClient {
             app_id: app_id.to_string(),
             app_secret: app_secret.to_string(),
             ping_interval: Arc::new(RwLock::new(DEFAULT_PING_INTERVAL)),
+            heartbeat_timeout_secs: HEARTBEAT_TIMEOUT,
         }
+    }
+
+    /// Test seam: shrink the keepalive/heartbeat timers so timeout paths are
+    /// reachable in real-time tests.
+    #[cfg(test)]
+    pub(crate) fn with_test_timers(mut self, ping_secs: u64, heartbeat_secs: u64) -> Self {
+        self.ping_interval = Arc::new(RwLock::new(ping_secs));
+        self.heartbeat_timeout_secs = heartbeat_secs;
+        self
     }
 
     /// Call POST /callback/ws/endpoint to get the WebSocket URL.
@@ -164,13 +175,14 @@ impl FeishuWsClient {
         let ping_interval_arc = self.ping_interval.clone();
         let interval_secs = *ping_interval_arc.read().await;
         let mut ping_timer = interval(Duration::from_secs(interval_secs));
+        let heartbeat_timeout = self.heartbeat_timeout_secs;
         let mut last_recv = Instant::now();
         let mut seq_id: i64 = 0;
 
         loop {
             tokio::select! {
                 _ = ping_timer.tick() => {
-                    if last_recv.elapsed().as_secs() > HEARTBEAT_TIMEOUT {
+                    if last_recv.elapsed().as_secs() > heartbeat_timeout {
                         return Err(anyhow!("WebSocket heartbeat timeout"));
                     }
                     // Use WebSocket protocol ping (matches lark_oapi SDK which

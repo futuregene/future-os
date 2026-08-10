@@ -129,9 +129,7 @@ impl SessionStore {
     }
 
     fn save_to_disk(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        if let Some(parent) = self.path.parent() { std::fs::create_dir_all(parent)?; }
         let data = self.data.read();
         let store = StoreData {
             sessions: data.values().cloned().collect(),
@@ -228,6 +226,22 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "not json {{{").unwrap();
         let store = SessionStore::new(path);
+        assert_eq!(store.get("oc_1", None), None);
+    }
+
+    #[test]
+    fn save_failure_leaves_in_memory_state_intact() {
+        // Parent dir is impossible to create (a regular file sits in the
+        // path) — save_to_disk errors, but callers swallow it and the
+        // in-memory mapping must still work.
+        let blocker = temp_store_path("save-blocked");
+        std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+        std::fs::write(&blocker, b"I am a file, not a directory").unwrap();
+        let path = blocker.join("child").join("sessions.json");
+        let store = SessionStore::new(path);
+        store.set_session_id("oc_1", None, "sid-1");
+        assert_eq!(store.get("oc_1", None).as_deref(), Some("sid-1"));
+        store.reset("oc_1", None);
         assert_eq!(store.get("oc_1", None), None);
     }
 }

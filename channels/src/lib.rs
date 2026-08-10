@@ -13,6 +13,9 @@ pub mod feishu;
 pub mod grpc_client;
 pub mod tls;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::info;

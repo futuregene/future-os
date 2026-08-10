@@ -256,7 +256,7 @@ pub fn approval_card(
 
 /// Build the card "content" field for sending as interactive message.
 pub fn card_content(card: &Value) -> String {
-    serde_json::to_string(card).unwrap_or_else(|_| "{}".into())
+    serde_json::to_string(card).expect("serializing a serde_json::Value is infallible")
 }
 
 /// Convert a Message API format card to CardKit schema 2.0 format.
@@ -489,5 +489,156 @@ mod tests {
         let out = truncate_markdown(&s, 50);
         assert!(out.starts_with(&"好".repeat(16))); // 48 bytes: last boundary ≤ 50
         assert!(out.contains("truncated"));
+    }
+
+    // ─── strip_markdown broken links ─────────────────────────────────────────
+
+    #[test]
+    fn strips_broken_links_left_as_is() {
+        // No "](" after '[' → loop breaks, text preserved.
+        assert_eq!(strip_markdown("a [broken link"), "a [broken link");
+        // "[text](url" without closing paren → break, preserved.
+        assert_eq!(
+            strip_markdown("a [text](https://x.dev"),
+            "a [text](https://x.dev"
+        );
+    }
+
+    // ─── thinking_card / streaming_card ─────────────────────────────────────
+
+    #[test]
+    fn thinking_card_structure() {
+        let card = thinking_card();
+        assert_eq!(card["config"]["update_multi"], json!(true));
+        assert_eq!(card["header"]["title"]["content"], json!("Thinking..."));
+        assert_eq!(card["elements"][0]["tag"], json!("div"));
+    }
+
+    #[test]
+    fn streaming_card_structure() {
+        let (card, element_id) = streaming_card("Working");
+        assert_eq!(element_id, "stream_out");
+        assert_eq!(card["config"]["streaming_mode"], json!(true));
+        assert_eq!(card["header"]["title"]["content"], json!("Working"));
+        assert_eq!(card["elements"][0]["element_id"], json!("stream_out"));
+    }
+
+    // ─── error_card / tool_card ──────────────────────────────────────────────
+
+    #[test]
+    fn error_card_structure() {
+        let card = error_card("boom happened");
+        assert_eq!(card["header"]["template"], json!("red"));
+        assert_eq!(
+            card["elements"][0]["text"]["content"],
+            json!("boom happened")
+        );
+    }
+
+    #[test]
+    fn tool_card_truncates_long_args() {
+        let short = tool_card("shell", "ls -la");
+        assert_eq!(short["header"]["title"]["content"], json!("Running: shell"));
+        assert_eq!(short["elements"][0]["text"]["content"], json!("ls -la"));
+
+        let long_args = "a".repeat(300);
+        let long = tool_card("shell", &long_args);
+        let content = long["elements"][0]["text"]["content"].as_str().unwrap();
+        assert!(content.ends_with("..."));
+        assert_eq!(content.chars().count(), 203);
+    }
+
+    // ─── status_card ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn status_card_fields() {
+        let card = status_card("future/k3", true, "high", 500, 1000, 10, 20, 3);
+        let text = card["elements"][0]["text"]["content"].as_str().unwrap();
+        assert!(text.contains("future/k3"));
+        assert!(text.contains("🖼️"));
+        let ctx = card["elements"][2]["text"]["content"].as_str().unwrap();
+        assert!(ctx.contains("500 / 1000"));
+        assert!(ctx.contains("50%"));
+    }
+
+    #[test]
+    fn status_card_zero_context_window_omits_percent() {
+        let card = status_card("m", false, "off", 0, 0, 0, 0, 0);
+        let ctx = card["elements"][2]["text"]["content"].as_str().unwrap();
+        assert!(!ctx.contains('%'));
+        let model = card["elements"][0]["text"]["content"].as_str().unwrap();
+        assert!(!model.contains("🖼️"));
+    }
+
+    // ─── help_card ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn help_card_lists_commands() {
+        let card = help_card();
+        let elements = card["elements"].as_array().unwrap();
+        assert!(elements.len() >= 7);
+        let all = elements
+            .iter()
+            .map(|e| e["text"]["content"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for cmd in ["/new", "/status", "/model", "/models", "/effort", "/stop", "/help"] {
+            assert!(all.contains(cmd), "help must list {cmd}");
+        }
+    }
+
+    // ─── approval_card ───────────────────────────────────────────────────────
+
+    #[test]
+    fn approval_card_risk_emoji_mapping() {
+        for (level, emoji) in [("high", "🔴"), ("medium", "🟡"), ("low", "⚪")] {
+            let card = approval_card("req_1", "shell", level, "Title", "Summary", "");
+            let title = card["header"]["title"]["content"].as_str().unwrap();
+            assert!(title.starts_with(emoji), "level {level}");
+        }
+    }
+
+    #[test]
+    fn approval_card_action_buttons_carry_request_id() {
+        let card = approval_card("req_9", "shell", "high", "T", "S", "rm -rf /tmp/x");
+        let actions = card["actions"].as_array().unwrap();
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0]["value"]["action"], json!("approve"));
+        assert_eq!(actions[1]["value"]["action"], json!("reject"));
+        assert_eq!(actions[0]["value"]["approval_request_id"], json!("req_9"));
+        // Non-empty requested_action adds a code-block preview element.
+        let elements = card["elements"].as_array().unwrap();
+        assert_eq!(elements.len(), 2);
+        assert!(elements[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("rm -rf /tmp/x"));
+    }
+
+    #[test]
+    fn approval_card_long_action_truncated() {
+        let action = "x".repeat(600);
+        let card = approval_card("req_2", "tool", "low", "T", "S", &action);
+        let elements = card["elements"].as_array().unwrap();
+        let preview = elements[1]["content"].as_str().unwrap();
+        assert!(preview.contains("truncated"));
+        assert!(preview.len() < 700);
+    }
+
+    #[test]
+    fn approval_card_empty_action_omits_preview() {
+        let card = approval_card("req_3", "tool", "low", "T", "S", "");
+        let elements = card["elements"].as_array().unwrap();
+        assert_eq!(elements.len(), 1);
+    }
+
+    // ─── card_content ────────────────────────────────────────────────────────
+
+    #[test]
+    fn card_content_serializes() {
+        let card = error_card("e");
+        let content = card_content(&card);
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["header"]["template"], json!("red"));
     }
 }

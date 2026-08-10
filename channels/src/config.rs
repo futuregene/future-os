@@ -363,4 +363,76 @@ mod tests {
         assert!(path.to_string_lossy().contains("channels"));
         assert!(path.to_string_lossy().ends_with("config.json"));
     }
+
+    // ─── load ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_writes_defaults_when_missing() {
+        let _guard = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("cfg-missing");
+        let err = ChannelConfig::load().unwrap_err();
+        assert!(
+            err.to_string().contains("Default config written"),
+            "unexpected error: {err}"
+        );
+        // The default file was actually written to the isolated home.
+        let path = home.path.join(".future").join("channels").join("config.json");
+        assert!(path.exists(), "default config must be written");
+        let written = std::fs::read_to_string(path).unwrap();
+        let parsed: ChannelConfig = serde_json::from_str(&written).unwrap();
+        assert!(parsed.feishu.is_none());
+    }
+
+    #[test]
+    fn load_parses_existing_file() {
+        let _guard = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("cfg-valid");
+        let dir = home.path.join(".future").join("channels");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"agent":{"model":"x/y","grpc_addr":"http://test:1"}}"#,
+        )
+        .unwrap();
+        let cfg = ChannelConfig::load().unwrap();
+        assert_eq!(cfg.agent.model, "x/y");
+        assert_eq!(cfg.agent.grpc_addr, "http://test:1");
+    }
+
+    #[test]
+    fn load_rejects_invalid_json() {
+        let _guard = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("cfg-invalid");
+        let dir = home.path.join(".future").join("channels");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), "not json").unwrap();
+        let err = ChannelConfig::load().unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to parse"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_read_error_other_than_not_found() {
+        let _guard = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("cfg-readerr");
+        let dir = home.path.join(".future").join("channels");
+        // A directory at the config path makes read_to_string fail with an
+        // error kind other than NotFound.
+        std::fs::create_dir_all(dir.join("config.json")).unwrap();
+        let err = ChannelConfig::load().unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to read config"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ─── home_dir fallback ───────────────────────────────────────────────────
+
+    #[test]
+    fn home_dir_returns_nonempty() {
+        let p = home_dir();
+        assert!(!p.as_os_str().is_empty());
+    }
 }

@@ -13,6 +13,17 @@ impl DingtalkConfig {
     }
 }
 
+/// Base URL for DingTalk Open API endpoints: `https://{domain}`, or the
+/// domain verbatim when it is already a full URL (self-hosted gateways and
+/// test mocks).
+pub(crate) fn base_url(domain: &str) -> String {
+    if domain.starts_with("http://") || domain.starts_with("https://") {
+        domain.trim_end_matches('/').to_string()
+    } else {
+        format!("https://{}", domain)
+    }
+}
+
 /// Convert from ChannelConfig's dingtalk section.
 impl From<&crate::config::FeishuChannelConfig> for DingtalkConfig {
     fn from(cfg: &crate::config::FeishuChannelConfig) -> Self {

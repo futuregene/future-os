@@ -47,7 +47,7 @@ pub async fn create_ai_card(
             .as_millis(),
         unique_id()
     );
-    let api = format!("https://{}/v1.0/card/instances", domain);
+    let api = format!("{}/v1.0/card/instances", super::config::base_url(domain));
 
     let client = crate::tls::http_client();
 
@@ -116,7 +116,7 @@ pub async fn stream_ai_card(
     content: &str,
     finished: bool,
 ) -> Result<()> {
-    let api = format!("https://{}/v1.0/card", domain);
+    let api = format!("{}/v1.0/card", super::config::base_url(domain));
     let client = crate::tls::http_client();
 
     // Set INPUTING state on first call
@@ -204,7 +204,7 @@ pub async fn stream_ai_card(
 
 /// Close/cleanup a card that failed to create or was interrupted.
 pub async fn close_ai_card(domain: &str, card: &AiCard, error_msg: &str) {
-    let api = format!("https://{}/v1.0/card/instances", domain);
+    let api = format!("{}/v1.0/card/instances", super::config::base_url(domain));
     let client = crate::tls::http_client();
 
     let body = json!({

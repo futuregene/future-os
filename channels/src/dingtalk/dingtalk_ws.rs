@@ -37,6 +37,7 @@ pub struct DingtalkWsClient {
     client_id: String,
     client_secret: String,
     domain: String,
+    ping_interval_secs: u64,
 }
 
 impl DingtalkWsClient {
@@ -45,14 +46,26 @@ impl DingtalkWsClient {
             domain: domain.to_string(),
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
+            ping_interval_secs: PING_INTERVAL_SECS,
         }
+    }
+
+    /// Test seam: shrink the keepalive timer so the ping path is reachable
+    /// in real-time tests.
+    #[cfg(test)]
+    pub(crate) fn with_test_ping_interval(mut self, secs: u64) -> Self {
+        self.ping_interval_secs = secs;
+        self
     }
 
     /// Open a Stream Mode connection by POSTing credentials directly
     /// (no OAuth2 token). Returns the WebSocket endpoint and ticket.
     async fn open_connection(&self) -> Result<(String, String)> {
         let client = crate::tls::http_client();
-        let url = format!("https://{}/v1.0/gateway/connections/open", self.domain);
+        let url = format!(
+            "{}/v1.0/gateway/connections/open",
+            super::config::base_url(&self.domain)
+        );
 
         let body = serde_json::json!({
             "clientId": self.client_id,
@@ -126,9 +139,10 @@ impl DingtalkWsClient {
         // Spawn keepalive — matches SDK's create_task(self.keepalive(websocket))
         // plus Python websockets library built-in ping_interval=20.
         let keepalive_sink = ws_sink.clone();
+        let ping_secs = self.ping_interval_secs;
         let keepalive = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(PING_INTERVAL_SECS)).await;
+                tokio::time::sleep(Duration::from_secs(ping_secs)).await;
                 let mut sink = keepalive_sink.lock().await;
                 if sink.send(WsMessage::Ping(vec![])).await.is_err() {
                     break;

@@ -49,27 +49,40 @@ impl FeishuConfig {
         }
     }
 
-    pub fn api_base(&self) -> &str {
+    pub fn api_base(&self) -> String {
+        // A full URL is used verbatim (self-hosted gateways, test mocks).
+        if self.domain.starts_with("http://") || self.domain.starts_with("https://") {
+            return self.domain.trim_end_matches('/').to_string();
+        }
         if self.domain == "lark" {
-            "https://open.larksuite.com/open-apis"
+            "https://open.larksuite.com/open-apis".into()
         } else {
-            "https://open.feishu.cn/open-apis"
+            "https://open.feishu.cn/open-apis".into()
         }
     }
 
-    pub fn api_domain(&self) -> &str {
+    pub fn api_domain(&self) -> String {
+        if self.domain.starts_with("http://") || self.domain.starts_with("https://") {
+            return self.domain.trim_end_matches('/').to_string();
+        }
         if self.domain == "lark" {
-            "https://open.larksuite.com"
+            "https://open.larksuite.com".into()
         } else {
-            "https://open.feishu.cn"
+            "https://open.feishu.cn".into()
         }
     }
 
-    pub fn ws_base(&self) -> &str {
+    pub fn ws_base(&self) -> String {
+        if let Some(rest) = self.domain.strip_prefix("http://") {
+            return format!("ws://{}", rest.trim_end_matches('/'));
+        }
+        if let Some(rest) = self.domain.strip_prefix("https://") {
+            return format!("wss://{}", rest.trim_end_matches('/'));
+        }
         if self.domain == "lark" {
-            "wss://open.larksuite.com"
+            "wss://open.larksuite.com".into()
         } else {
-            "wss://open.feishu.cn"
+            "wss://open.feishu.cn".into()
         }
     }
 }

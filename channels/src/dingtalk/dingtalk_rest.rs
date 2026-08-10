@@ -41,7 +41,7 @@ impl DingtalkRestClient {
             }
         }
         let client = crate::tls::http_client();
-        let url = format!("https://{}/v1.0/oauth2/accessToken", self.domain);
+        let url = format!("{}/v1.0/oauth2/accessToken", super::config::base_url(&self.domain));
         let resp: Value = client
             .post(&url)
             .json(&json!({
