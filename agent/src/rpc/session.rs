@@ -2134,4 +2134,287 @@ mod tests {
         let result = session.compact("").unwrap();
         assert_eq!(result["messagesRemoved"], 0);
     }
+
+    // ── coverage batch: hydrate/switch/scheduler-worker arms ───────────────
+
+    #[test]
+    fn construction_with_locked_loop_uses_fresh_counters() {
+        let loop_ = Arc::new(tokio::sync::RwLock::new(Loop::new(
+            Arc::new(EmptyProvider),
+            "mock",
+        )));
+        let _guard = loop_.try_write().unwrap();
+        let cwd = test_workspace();
+        let session = ServerSession::new_with_queue_budget(
+            "locked".to_string(),
+            loop_.clone(),
+            Arc::new(Manager::new(test_session_dir())),
+            &cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+            Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+        );
+        // Counters could not be cloned from the locked loop → fresh zeros.
+        assert_eq!(
+            session.tokens_in.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn switch_session_restores_rich_session_info() {
+        let cwd = test_workspace();
+        let session_dir = std::path::Path::new(&cwd).join("sessions");
+        let manager = Arc::new(Manager::new(session_dir));
+        let info = crate::session::SessionEntry::session_info(
+            serde_json::json!({
+                "cwd": cwd,
+                "model": "deepseek/deepseek-chat",
+                "session_name": "restored name",
+                "thinking_level": "low",
+                "auto_compaction": false,
+                "tokens_in": 111,
+                "tokens_out": 222,
+                "tokens_cache_r": 33,
+                "tokens_cache_w": 44,
+                "last_prompt_tokens": 555,
+                "total_cost": 0.75,
+            }),
+            "deepseek/deepseek-chat".to_string(),
+            "low".to_string(),
+        );
+        let snapshot = crate::session::Session::snapshot(
+            "rich".to_string(),
+            cwd.clone(),
+            "deepseek/deepseek-chat".to_string(),
+            "restored name".to_string(),
+            String::new(),
+            vec![
+                info,
+                crate::session::SessionEntry::new_user("user", serde_json::json!("hi")),
+            ],
+        );
+        manager.save(&snapshot).unwrap();
+
+        let mut session = ServerSession::new(
+            "rich".to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(EmptyProvider),
+                "mock",
+            ))),
+            manager.clone(),
+            &cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        );
+        session.switch_session("rich").unwrap();
+        assert_eq!(session.model, "deepseek/deepseek-chat");
+        assert_eq!(session.session_name, "restored name");
+        assert_eq!(session.thinking_level, "low");
+        assert!(!session.auto_compaction);
+        assert_eq!(
+            session.tokens_in.load(std::sync::atomic::Ordering::Relaxed),
+            111
+        );
+        assert!((*session.cumulative_cost.lock() - 0.75).abs() < f64::EPSILON);
+        assert!(!session.messages.read().is_empty());
+    }
+
+    #[test]
+    fn list_sessions_reads_summaries() {
+        let session = make_persistent_test_session("lister");
+        let snapshot = crate::session::Session::snapshot(
+            "lister".to_string(),
+            session.cwd.clone(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": session.cwd, "model": "mock"}),
+                    "mock".to_string(),
+                    "low".to_string(),
+                ),
+                crate::session::SessionEntry::new_user("user", serde_json::json!("hi")),
+            ],
+        );
+        session.session_manager.save(&snapshot).unwrap();
+        let listed = session.list_sessions().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["id"], "lister");
+    }
+
+    #[test]
+    fn recover_persistence_degraded_rejects_healthy_run() {
+        let mut session = make_test_session("healthy");
+        session
+            .runtime
+            .begin(Some("run-ok"), Some("request-ok"))
+            .unwrap();
+        let error = session.recover_persistence_degraded().unwrap_err();
+        assert!(error.to_string().contains("not persistence_degraded"));
+    }
+
+    #[test]
+    fn set_thinking_level_persists_to_disk_session() {
+        let mut session = make_persistent_test_session("think");
+        let snapshot = crate::session::Session::snapshot(
+            "think".to_string(),
+            session.cwd.clone(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": session.cwd, "model": "mock"}),
+                "mock".to_string(),
+                "low".to_string(),
+            )],
+        );
+        session.session_manager.save(&snapshot).unwrap();
+
+        session.set_thinking_level("high");
+        let loaded = session.session_manager.load("think").unwrap();
+        let info = loaded
+            .entries
+            .iter()
+            .rev()
+            .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+            .and_then(|e| e.content.clone())
+            .unwrap();
+        assert_eq!(info["thinking_level"], "high");
+    }
+
+    #[test]
+    fn compact_with_real_history_reports_summary() {
+        let mut session = make_test_session("compact");
+        session.model = "glm-4.5v".to_string(); // 64k catalog window
+        session
+            .last_prompt_tokens
+            .store(50_000, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut messages = session.messages.write();
+            for i in 0..10 {
+                let role = if i % 2 == 0 { "user" } else { "assistant" };
+                messages.push(crate::types::AgentMessage {
+                    role: role.to_string(),
+                    content: vec![crate::types::ContentBlock::text(
+                        format!("message {i} ").repeat(2000),
+                    )],
+                    ..Default::default()
+                });
+            }
+        }
+        let result = session.compact("").unwrap();
+        assert!(result["messagesRemoved"].as_i64().unwrap() > 0);
+        assert!(result["summary"].is_string());
+    }
+
+    #[test]
+    fn execute_shell_captures_stderr() {
+        let session = make_test_session("stderr");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        let result = session.execute_shell("echo out; echo err 1>&2").unwrap();
+        let output = result["output"].as_str().unwrap();
+        assert!(output.contains("out"), "{output}");
+        assert!(output.contains("err"), "{output}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scheduler_worker_starts_queued_run_after_completion() {
+        use crate::types::{LLMProvider, Message, StreamEvent, ToolDef};
+        use tokio_stream::wrappers::ReceiverStream;
+
+        struct GateProvider {
+            gate: Arc<tokio::sync::Notify>,
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl LLMProvider for GateProvider {
+            async fn stream_chat(
+                &self,
+                _model: String,
+                _messages: Vec<Message>,
+                _tools: Vec<ToolDef>,
+                _system_prompt: String,
+            ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if self.calls.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                    self.gate.notified().await;
+                }
+                let (tx, rx) = mpsc::channel(2);
+                let _ = tx.try_send(StreamEvent {
+                    event_type: "text_delta".to_string(),
+                    text: "reply".to_string(),
+                    ..Default::default()
+                });
+                let _ = tx.try_send(StreamEvent {
+                    event_type: "stop".to_string(),
+                    stop_reason: "end_turn".to_string(),
+                    ..Default::default()
+                });
+                drop(tx);
+                Ok(ReceiverStream::new(rx))
+            }
+        }
+
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let provider = Arc::new(GateProvider {
+            gate: gate.clone(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let cwd = test_workspace();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let session = Arc::new(parking_lot::RwLock::new(ServerSession::new(
+            "chain".to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(provider, "mock"))),
+            Arc::new(Manager::new(test_session_dir())),
+            &cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        )));
+        ServerSession::ensure_scheduler_worker(&session);
+        // First prompt starts (gated); second queues behind it.
+        session.write().prompt("first", &[], &[], None, None).unwrap();
+        let ack = session
+            .write()
+            .enqueue_prompt(
+                "second",
+                &[],
+                &[],
+                None,
+                "req-2",
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+            )
+            .unwrap();
+        assert_eq!(
+            ack.accepted_state,
+            crate::runtime::RunAcceptedState::Queued
+        );
+        // Release the first run; the completion wake starts the second.
+        gate.notify_one();
+        for _ in 0..500 {
+            let count = session
+                .read()
+                .messages
+                .read()
+                .iter()
+                .filter(|m| m.role == "assistant")
+                .count();
+            if count >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let assistant_count = session
+            .read()
+            .messages
+            .read()
+            .iter()
+            .filter(|m| m.role == "assistant")
+            .count();
+        assert_eq!(assistant_count, 2, "both runs completed");
+    }
 }
