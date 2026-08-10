@@ -473,4 +473,171 @@ mod tests {
         assert_eq!(absolute_path("/a/./b"), "/a/b");
         assert_eq!(absolute_path("/a//b"), "/a/b");
     }
+
+    #[test]
+    fn parse_value_flags() {
+        let parsed = parse(&[
+            "--grpc-addr", "10.0.0.1:9999",
+            "--fork", "entry-1",
+            "--session", "sess-1",
+            "--system-prompt", "sys",
+            "--cwd", "/work",
+            "-nbt",
+            "--mode", "json",
+            "-c",
+            "hi",
+        ])
+        .unwrap();
+        assert_eq!(parsed.grpc_addr, "10.0.0.1:9999");
+        assert_eq!(parsed.fork.as_deref(), Some("entry-1"));
+        assert_eq!(parsed.session.as_deref(), Some("sess-1"));
+        assert_eq!(parsed.system_prompt.as_deref(), Some("sys"));
+        assert_eq!(parsed.cwd.as_deref(), Some("/work"));
+        assert!(parsed.no_builtin_tools);
+        assert!(parsed.continue_last);
+        assert_eq!(parsed.mode, "json");
+        assert_eq!(parsed.messages, vec!["hi"]);
+    }
+
+    #[test]
+    fn parse_trailing_flags_without_values_are_ignored() {
+        // A flag as the LAST arg has no value → option stays unset (JS: undefined).
+        let parsed = parse(&["--model", "m1", "hi", "--fork"]).unwrap();
+        assert!(parsed.fork.is_none());
+        assert_eq!(parsed.model.as_deref(), Some("m1"));
+        let parsed = parse(&["hi", "--session"]).unwrap();
+        assert!(parsed.session.is_none());
+        let parsed = parse(&["hi", "--system-prompt"]).unwrap();
+        assert!(parsed.system_prompt.is_none());
+        let parsed = parse(&["hi", "--cwd"]).unwrap();
+        assert!(parsed.cwd.is_none());
+        let parsed = parse(&["hi", "--grpc-addr"]).unwrap();
+        assert!(parsed.grpc_addr.ends_with("50051") || parsed.grpc_addr.contains(':'));
+        let parsed = parse(&["hi", "--tools"]).unwrap();
+        assert!(parsed.tools.is_none());
+        let parsed = parse(&["hi", "--mode"]).unwrap();
+        assert_eq!(parsed.mode, "text");
+        // --append-system-prompt with no value: vec created, nothing pushed.
+        let parsed = parse(&["hi", "--append-system-prompt"]).unwrap();
+        assert_eq!(parsed.append_system_prompt, Some(vec![]));
+        // A bare "-" is an unknown OPTION (starts with '-'), not a message.
+        assert!(parse(&["-"]).is_none());
+    }
+
+    #[tokio::test]
+    async fn run_command_help_and_no_prompt() {
+        let (out, cap) = Output::memory();
+        run_command(&["--help".to_string()], &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("future run — send a prompt"), "stdout: {stdout}");
+        assert!(stdout.contains("--fork <entry-id>"), "stdout: {stdout}");
+
+        // No message and no @files → usage error.
+        let (out, cap) = Output::memory();
+        let result = run_command(&[], &out).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("No prompt provided."), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn run_command_file_args_and_read_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("note.txt");
+        tokio::fs::write(&file, "FILE-CONTENTS").await.unwrap();
+
+        // @file content wraps in <file> tags; unreadable file → error.
+        let (out, cap) = Output::memory();
+        let result = run_command(
+            &["@/no/such/file.txt".to_string(), "hi".to_string()],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Failed to read file: /no/such/file.txt"), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn run_command_end_to_end_against_mock() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("note.txt");
+        tokio::fs::write(&file, "FILE-CONTENTS").await.unwrap();
+        let mut agent = crate::test_server::MockAgent::default();
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-run\"}".into());
+        agent.events = vec![
+            crate::test_server::stream_event("text_chunk", "{\"text\":\"hi there\"}"),
+            crate::test_server::stream_event("agent_end", "{}"),
+        ];
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+
+        // Success: json mode + @file prompt assembly + append-system-prompt join.
+        let (out, cap) = Output::memory();
+        run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr.clone(),
+                "--mode".to_string(),
+                "json".to_string(),
+                "--append-system-prompt".to_string(),
+                "line1".to_string(),
+                "--append-system-prompt".to_string(),
+                "line2".to_string(),
+                "--cwd".to_string(),
+                "/tmp".to_string(),
+                format!("@{}", file.display()),
+                "summarize".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("run");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["sessionId"], "s-run");
+        assert_eq!(parsed["text"], "hi there");
+        // The prompt carried the wrapped file + message.
+        let prompts = agent.seen_of("prompt");
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].message.contains("<file name=\""), "msg: {}", prompts[0].message);
+        assert!(prompts[0].message.contains("FILE-CONTENTS"));
+        assert!(prompts[0].message.ends_with("summarize"));
+        // Repeated append-system-prompt joined with newline.
+        let appends = agent.seen_of("append_system_prompt");
+        assert_eq!(appends[0].system_prompt, "line1\nline2");
+    }
+
+    #[tokio::test]
+    async fn run_command_error_output_modes() {
+        let _guard = crate::test_env::lock_env().await;
+        // Dead port → error printed per mode.
+        let (out, cap) = Output::memory();
+        let result = run_command(
+            &["--grpc-addr".to_string(), "127.0.0.1:1".to_string(), "hi".to_string()],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.starts_with("Error: "), "stderr: {stderr}");
+
+        let (out, cap) = Output::memory();
+        let result = run_command(
+            &[
+                "--grpc-addr".to_string(),
+                "127.0.0.1:1".to_string(),
+                "--mode".to_string(),
+                "json".to_string(),
+                "hi".to_string(),
+            ],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.starts_with("{\"error\":\""), "stdout: {stdout}");
+    }
 }

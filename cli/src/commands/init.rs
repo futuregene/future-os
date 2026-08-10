@@ -398,4 +398,89 @@ mod tests {
         assert_eq!(code, 1);
         assert!(stderr.contains("Run the standalone future executable"));
     }
+
+    #[tokio::test]
+    async fn init_command_with_defaults_errors_on_test_binary() {
+        let _guard = crate::test_env::lock_env().await;
+        // Isolated HOME with the platform pointed at a dead port so the
+        // default install hook (install_builtin_skills) fails fast offline.
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let auth = crate::constants::auth_file();
+        tokio::fs::create_dir_all(auth.parent().unwrap()).await.unwrap();
+        tokio::fs::write(&auth, "{\"future\": {\"base_url\": \"http://127.0.0.1:1\"}}")
+            .await
+            .unwrap();
+        let (out, _cap) = Output::memory();
+        // The test binary is not named "future" → the command refuses.
+        let err = init_command(&out).await.unwrap_err();
+        assert!(err.contains("Cannot initialize command links from"), "err: {err}");
+        // The default hook ran and failed (catalog unreachable) → exit code 1.
+        assert_eq!(out.exit_code(), 1);
+    }
+
+    #[tokio::test]
+    async fn existing_symlink_to_other_target_is_repointed() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().unwrap();
+        let (executable_path, home_dir) = create_unix_fixture(root.path()).await;
+        let bin_dir = home_dir.join(".future").join("bin");
+        tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        // Stale symlink: future → some OTHER binary.
+        let other = root.path().join("old-future");
+        tokio::fs::write(&other, "").await.unwrap();
+        #[cfg(unix)]
+        tokio::fs::symlink(&other, bin_dir.join("future")).await.unwrap();
+        let install_count = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (code, _, _) =
+            run_init(&executable_path, &home_dir, install_count, "darwin").await;
+        assert_eq!(code, 0);
+        assert_eq!(
+            tokio::fs::read_link(bin_dir.join("future")).await.unwrap(),
+            tokio::fs::canonicalize(&executable_path).await.unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn existing_relative_symlink_is_resolved_and_recreated() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().unwrap();
+        let (executable_path, home_dir) = create_unix_fixture(root.path()).await;
+        let bin_dir = home_dir.join(".future").join("bin");
+        tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        // A RELATIVE symlink target exercises the readlink-relative resolution
+        // path; it does not match the new source, so it is recreated absolute.
+        tokio::fs::symlink("old-future", bin_dir.join("future"))
+            .await
+            .unwrap();
+        let install_count = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (code, _, stderr) =
+            run_init(&executable_path, &home_dir, install_count, "darwin").await;
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert_eq!(
+            tokio::fs::read_link(bin_dir.join("future")).await.unwrap(),
+            tokio::fs::canonicalize(&executable_path).await.unwrap()
+        );
+    }
+
+    /// Lexical relative path from `from` to `to` (both absolute).
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    fn pathdiff(from: &Path, to: &Path) -> PathBuf {
+        let from: Vec<_> = from.components().collect();
+        let to: Vec<_> = to.components().collect();
+        let common = from
+            .iter()
+            .zip(to.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let mut out = PathBuf::new();
+        for _ in common..from.len() {
+            out.push("..");
+        }
+        for part in &to[common..] {
+            out.push(part.as_os_str());
+        }
+        out
+    }
 }
