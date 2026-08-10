@@ -155,7 +155,7 @@ pub fn stream_event(r#type: &str, data: &str) -> StreamEvent {
 /// tests); the last one repeats once exhausted.
 pub struct HttpRoute {
     pub path: String,
-    pub responses: Vec<(u16, String)>,
+    pub responses: Vec<(u16, Vec<u8>)>,
     pub index: std::sync::atomic::AtomicUsize,
 }
 
@@ -163,7 +163,16 @@ impl HttpRoute {
     pub fn json(path: &str, status: u16, body: &str) -> Self {
         HttpRoute {
             path: path.to_string(),
-            responses: vec![(status, body.to_string())],
+            responses: vec![(status, body.as_bytes().to_vec())],
+            index: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Binary body variant (zip downloads).
+    pub fn binary(path: &str, status: u16, body: Vec<u8>) -> Self {
+        HttpRoute {
+            path: path.to_string(),
+            responses: vec![(status, body)],
             index: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -174,7 +183,7 @@ impl HttpRoute {
             path: path.to_string(),
             responses: responses
                 .into_iter()
-                .map(|(s, b)| (s, b.to_string()))
+                .map(|(s, b)| (s, b.as_bytes().to_vec()))
                 .collect(),
             index: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -234,7 +243,7 @@ pub async fn spawn_http_recording(
                     .unwrap_or("/")
                     .to_string();
                 let route = routes.iter().find(|r| r.path == path);
-                let (status, body) = match route {
+                let (status, body): (u16, Vec<u8>) = match route {
                     Some(r) => {
                         let i = r
                             .index
@@ -242,7 +251,7 @@ pub async fn spawn_http_recording(
                             .min(r.responses.len() - 1);
                         r.responses[i].clone()
                     }
-                    None => (404, "{}".to_string()),
+                    None => (404, b"{}".to_vec()),
                 };
                 let reason = match status {
                     200 => "OK",
@@ -253,11 +262,13 @@ pub async fn spawn_http_recording(
                     500 => "Internal Server Error",
                     _ => "Status",
                 };
-                let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                let head = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
-                let _ = socket.write_all(response.as_bytes()).await;
+                let mut response = head.into_bytes();
+                response.extend_from_slice(&body);
+                let _ = socket.write_all(&response).await;
                 let _ = socket.shutdown().await;
             });
         }

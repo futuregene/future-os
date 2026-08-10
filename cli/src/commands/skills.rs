@@ -95,7 +95,9 @@ pub async fn skills(command: &str, args: &[String], out: &Output) -> Result<(), 
             uninstall_skill(name, out).await?;
             crate::rpc::notify_agent_refresh_skills().await;
         }
-        _ => unreachable!("is_skills_command guards the dispatch"),
+        // The dispatch guards via is_skills_command; a direct caller with an
+        // unknown subcommand gets an error rather than a panic.
+        other => return Err(format!("Unknown skills command: {other}")),
     }
     Ok(())
 }
@@ -808,5 +810,843 @@ mod tests {
         assert_eq!(urlencode("a-b_c.d~e"), "a-b_c.d~e");
         assert_eq!(urlencode("hello world"), "hello%20world");
         assert_eq!(urlencode("v1.0"), "v1.0");
+    }
+
+    // ── ZIP crafting (stored entries, no compression) ───────────────
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut table = [0u32; 256];
+        for (i, slot) in table.iter_mut().enumerate() {
+            let mut c = i as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            }
+            *slot = c;
+        }
+        let mut crc = !0u32;
+        for &b in data {
+            crc = table[((crc ^ b as u32) & 0xFF) as usize] ^ (crc >> 8);
+        }
+        !crc
+    }
+
+    /// Minimal stored ZIP archive understood by the system `unzip`.
+    fn make_zip(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut central: Vec<u8> = Vec::new();
+        for (name, body) in entries {
+            let crc = crc32(body.as_bytes());
+            let offset = out.len() as u32;
+            out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(body.as_bytes());
+
+            central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&crc.to_le_bytes());
+            central.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&offset.to_le_bytes());
+            central.extend_from_slice(name.as_bytes());
+        }
+        let cd_offset = out.len() as u32;
+        out.extend_from_slice(&central);
+        out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn crc32_known_vectors() {
+        assert_eq!(crc32(b""), 0);
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    // ── Shared helpers ──────────────────────────────────────────────
+
+    /// Write auth.json pointing the platform URL at `base`.
+    async fn point_platform_at(base: &str) {
+        let path = crate::constants::auth_file();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, format!("{{\"future\": {{\"base_url\": \"{base}\"}}}}"))
+            .await
+            .unwrap();
+    }
+
+    /// Catalog JSON body for the given (id, latest_version, description).
+    fn catalog(rows: &[(&str, Option<&str>, &str)]) -> String {
+        let skills: Vec<String> = rows
+            .iter()
+            .map(|(id, ver, desc)| match ver {
+                Some(v) => format!(
+                    "{{\"id\":\"{id}\",\"name\":\"{id}\",\"description\":\"{desc}\",\"latest_version\":\"{v}\"}}"
+                ),
+                None => format!(
+                    "{{\"id\":\"{id}\",\"name\":\"{id}\",\"description\":\"{desc}\",\"latest_version\":null}}"
+                ),
+            })
+            .collect();
+        format!("{{\"skills\":[{}]}}", skills.join(","))
+    }
+
+    /// Install a local skill dir with a SKILL.md version under temp HOME.
+    async fn plant_skill(id: &str, version: &str) {
+        let dir = skills_dir().join(id);
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("SKILL.md"), format!("---\nversion: {version}\n---\n"))
+            .await
+            .unwrap();
+    }
+
+    // ── fetch_skills ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_skills_success_and_normalization() {
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            "{\"skills\":[\
+                {\"id\":\"a\",\"description\":\"d\",\"latest_version\":\"\"},\
+                {\"id\":\"b\",\"latest_version\":\"1.0\"},\
+                {\"malformed\": true}\
+            ]}",
+        )])
+        .await;
+        let skills = fetch_skills(&base).await.expect("fetch");
+        // Every row parses (SkillInfo fields are all serde-default); the
+        // empty-latest_version normalization is the observable behavior.
+        assert_eq!(skills.len(), 3);
+        assert_eq!(skills[0].id, "a");
+        assert_eq!(skills[0].latest_version, None);
+        assert_eq!(skills[1].latest_version.as_deref(), Some("1.0"));
+        assert_eq!(skills[2].id, "");
+    }
+
+    #[tokio::test]
+    async fn fetch_skills_error_variants() {
+        // HTTP error status.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            500,
+            "{}",
+        )])
+        .await;
+        let err = fetch_skills(&base).await.unwrap_err();
+        assert!(err.contains("Failed to fetch skills: 500"), "err: {err}");
+        // Non-JSON body.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            "not json",
+        )])
+        .await;
+        assert!(fetch_skills(&base).await.is_err());
+        // Connection refused.
+        let err = fetch_skills("http://127.0.0.1:1").await.unwrap_err();
+        assert!(err.contains("Failed to fetch skills:"), "err: {err}");
+        // Missing skills key → empty.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            "{}",
+        )])
+        .await;
+        assert!(fetch_skills(&base).await.unwrap().is_empty());
+    }
+
+    // ── list ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_renders_catalog_with_installed_markers() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let long_desc = "d".repeat(60);
+        let long_id = "future-skill-with-a-very-long-identifier-exceeding-36-chars";
+        let body = catalog(&[
+            ("future-alpha", Some("1.0"), "Alpha skill"),
+            ("future-beta", None, &long_desc),
+            (long_id, Some("2.0"), "Long id"),
+        ]);
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json("/client/v1/skills", 200, &body)
+        ])
+        .await;
+        point_platform_at(&base).await;
+        plant_skill("future-alpha", "1.0").await;
+        // A dir without SKILL.md is ignored by the installed scan.
+        tokio::fs::create_dir_all(skills_dir().join("stray"))
+            .await
+            .unwrap();
+
+        let (out, cap) = Output::memory();
+        list_skills(&out).await;
+        assert_eq!(out.exit_code(), 0);
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("NAME"), "stdout: {stdout}");
+        assert!(stdout.contains("LATEST"), "stdout: {stdout}");
+        assert!(stdout.contains("INSTALLED"), "stdout: {stdout}");
+        assert!(stdout.contains("DESCRIPTION"), "stdout: {stdout}");
+        // future-alpha: installed v1.0; future-beta: no version → "—".
+        assert!(stdout.contains("future-alpha"), "stdout: {stdout}");
+        assert!(stdout.contains("v1.0"), "stdout: {stdout}");
+        // Long description truncated to 48 chars with an ellipsis.
+        assert!(stdout.contains(&format!("{}…", "d".repeat(47))), "stdout: {stdout}");
+        // Long id rendered untruncated (width clamp caps at 36 but pad never truncates).
+        assert!(stdout.contains(long_id), "stdout: {stdout}");
+        assert!(stdout.contains("3 skills available."), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn list_empty_catalog_and_fetch_failure() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Empty catalog.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            "{\"skills\":[]}",
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        list_skills(&out).await;
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "No skills available.\n");
+
+        // Fetch failure → stderr + exit code 1 (no Err — TS returns normally).
+        point_platform_at("http://127.0.0.1:1").await;
+        let (out, cap) = Output::memory();
+        list_skills(&out).await;
+        assert_eq!(out.exit_code(), 1);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Failed to fetch skills from http://127.0.0.1:1/client/v1/skills"), "stderr: {stderr}");
+    }
+
+    // ── install / download / unzip ──────────────────────────────────
+
+    #[tokio::test]
+    async fn install_skill_explicit_version_happy_path() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let zip = make_zip(&[("future-x/", ""), ("future-x/SKILL.md", "---\nversion: 1.0\n---\n")]);
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::binary(
+            "/client/v1/skills/future-x/versions/1.0/download",
+            200,
+            zip.clone(),
+            )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        install_skill("future-x", Some("1.0"), &out).await.expect("install");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Downloading future-x v1.0..."), "stdout: {stdout}");
+        assert!(stdout.contains("Installed skill \"future-x\" v1.0 →"), "stdout: {stdout}");
+        // Flattened: SKILL.md at the skill root (not nested under future-x/).
+        let installed = skills_dir().join("future-x").join("SKILL.md");
+        assert!(installed.exists());
+        let content = tokio::fs::read_to_string(&installed).await.unwrap();
+        assert!(content.contains("version: 1.0"));
+    }
+
+    #[tokio::test]
+    async fn install_skill_update_replaces_existing() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        plant_skill("future-x", "0.9").await;
+        let zip = make_zip(&[("SKILL.md", "---\nversion: 1.0\n---\n")]);
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::binary(
+            "/client/v1/skills/future-x/versions/1.0/download",
+            200,
+            zip.clone(),
+            )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        install_skill("future-x", Some("1.0"), &out).await.expect("update");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Updated skill \"future-x\" v1.0"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn install_skill_catalog_lookup_paths() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Catalog fetch failure.
+        point_platform_at("http://127.0.0.1:1").await;
+        let (out, cap) = Output::memory();
+        install_skill("future-x", None, &out).await.expect("ok");
+        assert_eq!(out.exit_code(), 1);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Failed to fetch skill metadata."), "stderr: {stderr}");
+
+        // Skill not in catalog.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("future-y", Some("1.0"), "y")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        install_skill("future-x", None, &out).await.expect("ok");
+        assert_eq!(out.exit_code(), 1);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Skill \"future-x\" not found in catalog."), "stderr: {stderr}");
+
+        // In catalog but no versions.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("future-x", None, "x")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        install_skill("future-x", None, &out).await.expect("ok");
+        assert_eq!(out.exit_code(), 1);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Skill \"future-x\" has no versions available."), "stderr: {stderr}");
+
+        // Found → installs the latest version from the catalog.
+        let zip = make_zip(&[("SKILL.md", "---\nversion: 2.0\n---\n")]);
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/skills",
+                200,
+                &catalog(&[("future-x", Some("2.0"), "x")]),
+            ),
+            crate::test_server::HttpRoute::binary(
+                "/client/v1/skills/future-x/versions/2.0/download",
+                200,
+                zip.clone(),
+                ),
+        ])
+        .await;
+        point_platform_at(&base).await;
+        let (out, _) = Output::memory();
+        install_skill("future-x", None, &out).await.expect("ok");
+        assert_eq!(out.exit_code(), 0);
+        assert!(skills_dir().join("future-x").join("SKILL.md").exists());
+    }
+
+    #[tokio::test]
+    async fn download_skill_zip_error_variants() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // 404 → dedicated message.
+        let base = crate::test_server::spawn_http(vec![]).await; // no routes → 404
+        let err = download_skill_zip(&base, "future-x", "1.0")
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Skill version \"future-x@1.0\" not found.");
+        // 500 → status message.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills/future-x/versions/1.0/download",
+            500,
+            "{}",
+        )])
+        .await;
+        let err = download_skill_zip(&base, "future-x", "1.0")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Failed to download skill: 500"), "err: {err}");
+        // Empty body.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills/future-x/versions/1.0/download",
+            200,
+            "",
+        )])
+        .await;
+        let err = download_skill_zip(&base, "future-x", "1.0")
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Empty response body");
+        // Network error.
+        let err = download_skill_zip("http://127.0.0.1:1", "future-x", "1.0")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Network error:"), "err: {err}");
+        // URL-encoding of exotic ids/versions reaches the path.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills/a%20b/versions/v%2F1/download",
+            200,
+            "eA==", // not a zip — just need bytes back
+        )])
+        .await;
+        let bytes = download_skill_zip(&base, "a b", "v/1").await.expect("download");
+        assert_eq!(bytes, b"eA==");
+    }
+
+    #[tokio::test]
+    async fn install_skill_download_failure_sets_exit_code() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![]).await; // 404
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        install_skill("future-x", Some("9.9"), &out).await.expect("ok");
+        assert_eq!(out.exit_code(), 1);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Skill version \"future-x@9.9\" not found."), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn install_skill_bad_zip_propagates_err() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills/future-x/versions/1.0/download",
+            200,
+            "this is definitely not a zip file",
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, _) = Output::memory();
+        let err = install_skill("future-x", Some("1.0"), &out).await.unwrap_err();
+        assert!(err.contains("unzip failed"), "err: {err}");
+    }
+
+    // ── flatten / rename / copy helpers ─────────────────────────────
+
+    #[tokio::test]
+    async fn flatten_single_subdir_moves_contents_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("pkg");
+        tokio::fs::create_dir_all(&nested).await.unwrap();
+        tokio::fs::write(nested.join("SKILL.md"), "x").await.unwrap();
+        flatten_single_subdir(dir.path()).await.unwrap();
+        assert!(dir.path().join("SKILL.md").exists());
+        assert!(!nested.exists());
+
+        // Two entries → untouched.
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("a"), "x").await.unwrap();
+        tokio::fs::write(dir.path().join("b"), "x").await.unwrap();
+        flatten_single_subdir(dir.path()).await.unwrap();
+        assert!(dir.path().join("a").exists());
+
+        // Single FILE (not dir) → untouched.
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("only.txt"), "x").await.unwrap();
+        flatten_single_subdir(dir.path()).await.unwrap();
+        assert!(dir.path().join("only.txt").exists());
+
+        // Missing dir → Ok (no-op).
+        flatten_single_subdir(Path::new("/no/such/dir")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_across_device_fallback_on_missing_src() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("missing");
+        let dest = dir.path().join("dest");
+        // rename fails (no src) → copy fallback also fails → Err.
+        assert!(rename_across_device(&src, &dest).await.is_err());
+        // Happy path.
+        let src = dir.path().join("real");
+        tokio::fs::write(&src, "data").await.unwrap();
+        rename_across_device(&src, &dest).await.unwrap();
+        assert_eq!(tokio::fs::read_to_string(&dest).await.unwrap(), "data");
+    }
+
+    #[tokio::test]
+    async fn copy_recursive_dir_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        tokio::fs::create_dir_all(src.join("sub")).await.unwrap();
+        tokio::fs::write(src.join("top.txt"), "1").await.unwrap();
+        tokio::fs::write(src.join("sub").join("deep.txt"), "2").await.unwrap();
+        let dest = dir.path().join("dest");
+        copy_recursive(&src, &dest).await.unwrap();
+        assert_eq!(tokio::fs::read_to_string(dest.join("top.txt")).await.unwrap(), "1");
+        assert_eq!(
+            tokio::fs::read_to_string(dest.join("sub").join("deep.txt")).await.unwrap(),
+            "2"
+        );
+        // Missing source → Err.
+        assert!(copy_recursive(&dir.path().join("nope"), &dest).await.is_err());
+    }
+
+    // ── uninstall / installed-ids ───────────────────────────────────
+
+    #[tokio::test]
+    async fn uninstall_skill_paths() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let (out, cap) = Output::memory();
+        uninstall_skill("ghost", &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "Skill \"ghost\" is not installed.\n");
+
+        plant_skill("future-x", "1.0").await;
+        let (out, cap) = Output::memory();
+        uninstall_skill("future-x", &out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Uninstalled skill \"future-x\" from"), "stdout: {stdout}");
+        assert!(!skills_dir().join("future-x").exists());
+    }
+
+    #[tokio::test]
+    async fn uninstall_remove_failure_is_err() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // A regular FILE at the skill path: metadata ok, remove_dir_all errs.
+        tokio::fs::create_dir_all(skills_dir()).await.unwrap();
+        tokio::fs::write(skills_dir().join("future-x"), "not a dir")
+            .await
+            .unwrap();
+        let (out, _) = Output::memory();
+        assert!(uninstall_skill("future-x", &out).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_installed_skill_ids_scans_skill_md() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Missing dir → empty.
+        assert!(get_installed_skill_ids().await.is_empty());
+        plant_skill("future-a", "1.0").await;
+        plant_skill("future-b", "2.0").await;
+        tokio::fs::create_dir_all(skills_dir().join("no-skill-md"))
+            .await
+            .unwrap();
+        let ids = get_installed_skill_ids().await;
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("future-a") && ids.contains("future-b"));
+    }
+
+    // ── install-builtin / update / dispatch ─────────────────────────
+
+    #[tokio::test]
+    async fn install_builtin_full_flow() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let zip_a = make_zip(&[("SKILL.md", "---\nversion: 1.0\n---\n")]);
+        let zip_b = make_zip(&[("SKILL.md", "---\nversion: 2.0\n---\n")]);
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/skills",
+                200,
+                &catalog(&[
+                    ("future-a", Some("1.0"), "a"),
+                    ("future-b", Some("2.0"), "b"),
+                    ("future-skip", None, "no version"),
+                    ("other-x", Some("1.0"), "not builtin"),
+                ]),
+            ),
+            crate::test_server::HttpRoute::binary(
+                "/client/v1/skills/future-a/versions/1.0/download",
+                200,
+                zip_a.clone(),
+                ),
+            crate::test_server::HttpRoute::binary(
+                "/client/v1/skills/future-b/versions/2.0/download",
+                200,
+                zip_b.clone(),
+                ),
+        ])
+        .await;
+        point_platform_at(&base).await;
+        plant_skill("future-b", "2.0").await; // already installed → skipped
+
+        let (out, cap) = Output::memory();
+        install_builtin_skills(&out).await;
+        assert_eq!(out.exit_code(), 0);
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Installing 2 builtin skills (1 already installed)..."), "stdout: {stdout}");
+        assert!(stdout.contains("Skipping future-skip — no version available."), "stdout: {stdout}");
+        assert!(stdout.contains("Done. 2 skills installed."), "stdout: {stdout}");
+        assert!(skills_dir().join("future-a").join("SKILL.md").exists());
+        // Non-builtin skill not installed.
+        assert!(!skills_dir().join("other-x").exists());
+
+        // Second run: future-skip still has no version, so it stays pending.
+        let (out, cap) = Output::memory();
+        install_builtin_skills(&out).await;
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Installing 1 builtin skills (2 already installed)..."), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn install_builtin_catalog_failure_and_empty() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        point_platform_at("http://127.0.0.1:1").await;
+        let (out, cap) = Output::memory();
+        install_builtin_skills(&out).await;
+        assert_eq!(out.exit_code(), 1);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Failed to fetch builtin skills."), "stderr: {stderr}");
+
+        // Catalog with no future-* skills.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("other-x", Some("1.0"), "x")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        install_builtin_skills(&out).await;
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "No builtin skills available.\n");
+    }
+
+    #[tokio::test]
+    async fn update_skills_flow() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        plant_skill("future-a", "0.9").await; // outdated
+        plant_skill("future-b", "2.0").await; // up to date
+        let zip = make_zip(&[("SKILL.md", "---\nversion: 1.0\n---\n")]);
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/skills",
+                200,
+                &catalog(&[
+                    ("future-a", Some("1.0"), "a"),
+                    ("future-b", Some("2.0"), "b"),
+                    ("future-c", None, "no version installed? no"),
+                ]),
+            ),
+            crate::test_server::HttpRoute::binary(
+                "/client/v1/skills/future-a/versions/1.0/download",
+                200,
+                zip.clone(),
+                ),
+        ])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        update_skills(&out).await.expect("update");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Fetching skill catalog from"), "stdout: {stdout}");
+        assert!(stdout.contains("  future-a: 0.9 → 1.0"), "stdout: {stdout}");
+        assert!(stdout.contains("Updated 1 skill(s), 1 already up to date."), "stdout: {stdout}");
+        // Actually upgraded on disk.
+        let ver = read_skill_md_version(&skills_dir().join("future-a").join("SKILL.md")).await;
+        assert_eq!(ver.as_deref(), Some("1.0"));
+    }
+
+    #[tokio::test]
+    async fn update_skills_empty_states() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Fetch failure propagates as Err.
+        point_platform_at("http://127.0.0.1:1").await;
+        let (out, _) = Output::memory();
+        assert!(update_skills(&out).await.is_err());
+
+        // Empty catalog.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            "{\"skills\":[]}",
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        update_skills(&out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("No skills available."), "stdout: {stdout}");
+
+        // Catalog non-empty but nothing installed.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("future-a", Some("1.0"), "a")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        update_skills(&out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("No skills installed."), "stdout: {stdout}");
+
+        // Installed but already at latest → "already up to date".
+        plant_skill("future-a", "1.0").await;
+        let (out, cap) = Output::memory();
+        update_skills(&out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("1 skill(s) already up to date."), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn update_skills_install_failure_is_reported() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        plant_skill("future-a", "0.9").await;
+        // Download serves a bad zip → install_skill errors → "Failed:" line.
+        let base = crate::test_server::spawn_http(vec![
+            crate::test_server::HttpRoute::json(
+                "/client/v1/skills",
+                200,
+                &catalog(&[("future-a", Some("1.0"), "a")]),
+            ),
+            crate::test_server::HttpRoute::json(
+                "/client/v1/skills/future-a/versions/1.0/download",
+                200,
+                "not a zip",
+            ),
+        ])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        update_skills(&out).await.unwrap();
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("  Failed: "), "stderr: {stderr}");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        // Nothing updated; up_to_date didn't count it either.
+        assert!(stdout.contains("Updated 0 skill(s)") || stdout.contains("0 skill(s) already up to date"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn update_skills_missing_skill_md_counts_up_to_date() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Installed id (dir with SKILL.md) whose version can't be read:
+        // get_installed_skill_ids requires SKILL.md, so make it unreadable
+        // as version (no frontmatter) → local_ver None → up_to_date.
+        let dir = skills_dir().join("future-a");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("SKILL.md"), "# no frontmatter\n")
+            .await
+            .unwrap();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("future-a", Some("1.0"), "a")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        update_skills(&out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("1 skill(s) already up to date."), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_subcommands() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Agent refresh RPC goes nowhere (dead default addr) — best effort.
+        let _grpc = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
+
+        // uninstall without a name → usage + exit code.
+        let (out, cap) = Output::memory();
+        skills("uninstall", &[], &out).await.unwrap();
+        assert_eq!(out.exit_code(), 1);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr, "Usage: future skills uninstall <skill-name>\n");
+
+        // Unknown subcommand (direct call) → error.
+        let (out, _) = Output::memory();
+        let err = skills("bogus", &[], &out).await.unwrap_err();
+        assert!(err.contains("Unknown skills command"), "err: {err}");
+
+        // install with --version strips a leading "v".
+        let zip = make_zip(&[("SKILL.md", "---\nversion: 1.0\n---\n")]);
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::binary(
+            "/client/v1/skills/future-x/versions/1.0/download",
+            200,
+            zip.clone(),
+            )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, _) = Output::memory();
+        skills(
+            "install",
+            &["future-x".to_string(), "--version".to_string(), "v1.0".to_string()],
+            &out,
+        )
+        .await
+        .unwrap();
+        assert!(skills_dir().join("future-x").exists());
+
+        // install WITHOUT a name → builtin install flow (the mock has no
+        // catalog route → the failure message mentions builtin skills).
+        let (out, cap) = Output::memory();
+        skills("install", &[], &out).await.unwrap();
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("builtin"), "stderr: {stderr}");
+
+        // uninstall happy path through the dispatch.
+        let (out, _) = Output::memory();
+        skills("uninstall", &["future-x".to_string()], &out).await.unwrap();
+        assert!(!skills_dir().join("future-x").exists());
+    }
+
+    // ── read_skill_md_version remaining edges ───────────────────────
+
+    #[tokio::test]
+    async fn read_skill_md_version_more_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SKILL.md");
+        // metadata JSON with a NUMERIC version → stringified.
+        tokio::fs::write(&path, "---\nmetadata: {\"version\": 2.5}\n---\n")
+            .await
+            .unwrap();
+        assert_eq!(read_skill_md_version(&path).await.as_deref(), Some("2.5"));
+        // metadata non-JSON starting with version: → parsed as yaml prefix.
+        tokio::fs::write(&path, "---\nmetadata: version: 4.0 extra\n---\n")
+            .await
+            .unwrap();
+        // not JSON → strip_prefix("version:") on the rest fails (starts with
+        // "version: ..."? it does) → unquote.
+        assert_eq!(read_skill_md_version(&path).await.as_deref(), Some("4.0 extra"));
+        // metadata JSON without version, YAML block scan; comments skipped.
+        tokio::fs::write(
+            &path,
+            "---\nmetadata:\n  # comment\n  version: '5.1'\n---\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_skill_md_version(&path).await.as_deref(), Some("5.1"));
+        // Quoted direct version.
+        tokio::fs::write(&path, "---\nversion: \"6.0\"\n---\n").await.unwrap();
+        assert_eq!(read_skill_md_version(&path).await.as_deref(), Some("6.0"));
+        // Empty quoted version → None.
+        tokio::fs::write(&path, "---\nversion: \"\"\n---\n").await.unwrap();
+        assert_eq!(read_skill_md_version(&path).await, None);
+        // No closing frontmatter delimiter → None.
+        tokio::fs::write(&path, "---\nversion: 1.0\n# no end\n").await.unwrap();
+        assert_eq!(read_skill_md_version(&path).await, None);
+        // metadata JSON with empty-string version → falls through → None.
+        tokio::fs::write(&path, "---\nmetadata: {\"version\": \"\"}\n---\n")
+            .await
+            .unwrap();
+        assert_eq!(read_skill_md_version(&path).await, None);
     }
 }
