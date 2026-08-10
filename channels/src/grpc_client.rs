@@ -974,7 +974,7 @@ mod tests {
         let (mut c, _) = connect_to(MockState::default()).await;
         let models = c.get_available_models("sess").await.unwrap();
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "k3");
+        assert_eq!(models[0].id, "future/k3");
         assert_eq!(models[0].name, "K3");
         assert_eq!(models[0].provider, "future");
         assert!(models[0].image);

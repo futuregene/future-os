@@ -151,7 +151,7 @@ impl FutureAgent for MockAgent {
                 )
             }
             "list_models" => {
-                "{\"models\":[{\"id\":\"k3\",\"provider\":\"future\",\"label\":\"K3\",\
+                "{\"models\":[{\"id\":\"future/k3\",\"provider\":\"future\",\"label\":\"K3\",\
                  \"supportsImages\":true,\"contextWindow\":256000}]}"
                     .to_string()
             }
@@ -226,6 +226,11 @@ pub fn recorded_of(state: &SharedState, r#type: &str) -> Vec<RpcCommand> {
         .filter(|c| c.r#type == r#type)
         .cloned()
         .collect()
+}
+
+/// Mark a command type as failing from now on (mid-scenario failure).
+pub fn fail_command(state: &SharedState, cmd: &str) {
+    lock(state).fail_commands.insert(cmd.to_string());
 }
 
 // ─── Mock HTTP/1.1 server ───────────────────────────────────────────────────
@@ -569,6 +574,19 @@ pub fn home_lock() -> MutexGuard<'static, ()> {
 }
 
 static HOME_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Fresh per-test directory under target/test-data (no env mutation —
+/// safe to use from parallel async tests).
+pub fn temp_dir(label: &str) -> std::path::PathBuf {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("target")
+        .join("test-data");
+    let n = HOME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = base.join(format!("{}-{}-{}", label, std::process::id(), n));
+    std::fs::create_dir_all(&path).expect("create temp dir");
+    path
+}
 
 /// Redirects $HOME to a fresh directory under target/test-homes. Restores the
 /// original value on drop. Hold the [`home_lock`] guard for the whole test.
