@@ -499,6 +499,13 @@ pub type WsReceived = Arc<Mutex<Vec<tokio_tungstenite::tungstenite::Message>>>;
 /// exhausted the connection is dropped (clean TCP FIN, no WS close frame).
 /// Returns the "ws://127.0.0.1:<port>" URL and the received-message log.
 pub async fn spawn_ws(script: Vec<WsAction>) -> (String, WsReceived) {
+    spawn_ws_per_connection(vec![script]).await
+}
+
+/// [`spawn_ws`] with a per-connection script list: connection N runs
+/// `scripts[N]` (the last one repeats). Reconnect tests use this to close
+/// the first connection and hold later ones open.
+pub async fn spawn_ws_per_connection(scripts: Vec<Vec<WsAction>>) -> (String, WsReceived) {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message as WsMsg;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -506,9 +513,11 @@ pub async fn spawn_ws(script: Vec<WsAction>) -> (String, WsReceived) {
     let received: WsReceived = Arc::new(Mutex::new(Vec::new()));
     let received_task = received.clone();
     let handle = tokio::runtime::Handle::current();
+    let conn_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     std::thread::spawn(move || {
         while let Ok((socket, _)) = listener.accept() {
-            let script = script.clone();
+            let idx = conn_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let script = scripts[idx.min(scripts.len() - 1)].clone();
             let received = received_task.clone();
             let raw = match socket.try_clone() {
                 Ok(s) => s,

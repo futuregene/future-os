@@ -73,3 +73,114 @@ impl DingtalkChannel {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{self as ts, HttpRoute, MockState, WsAction};
+    use std::time::Duration;
+
+    fn ch_cfg(domain: &str) -> DingtalkChannelConfig {
+        DingtalkChannelConfig {
+            enabled: true,
+            client_id: "id".into(),
+            client_secret: "secret".into(),
+            domain: domain.into(), // full URL → base_url verbatim
+        }
+    }
+
+    fn agent_cfg(addr: &str) -> Arc<AgentConfig> {
+        Arc::new(AgentConfig {
+            grpc_addr: addr.into(),
+            cwd: "/tmp".into(),
+            model: String::new(),
+            thinking_level: String::new(),
+            permission_level: String::new(),
+        })
+    }
+
+    fn gateway_route(ws_url: &str) -> HttpRoute {
+        HttpRoute::json(
+            "/v1.0/gateway/connections/open",
+            200,
+            &serde_json::json!({"endpoint": ws_url, "ticket": "t"}).to_string(),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_fails_fast_without_agent() {
+        ts::ensure_crypto_provider();
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let err =
+            DingtalkChannel::run(agent_cfg("127.0.0.1:1"), ch_cfg("http://127.0.0.1:1"), shutdown)
+                .await
+                .err()
+                .unwrap();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_connects_then_shuts_down() {
+        ts::ensure_crypto_provider();
+        let (ws_url, _) = ts::spawn_ws(vec![WsAction::Delay(Duration::from_secs(30))]).await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
+        let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let sd = shutdown.clone();
+        let handle = tokio::spawn(DingtalkChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        shutdown.notify_waiters();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("run must return after shutdown")
+            .expect("task join");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_reconnects_after_clean_close() {
+        ts::ensure_crypto_provider();
+        // First connection closes immediately (clean-close arm); later
+        // connections hold open so shutdown lands in the select.
+        let (ws_url, _) = ts::spawn_ws_per_connection(vec![
+            vec![WsAction::SendClose],
+            vec![WsAction::Delay(Duration::from_secs(30))],
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
+        let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let sd = shutdown.clone();
+        let handle = tokio::spawn(DingtalkChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        shutdown.notify_waiters();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("run must return after shutdown")
+            .expect("task join");
+        assert!(result.is_ok(), "run returned: {:?}", result.err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_backoff_interrupted_by_shutdown() {
+        ts::ensure_crypto_provider();
+        // Gateway open fails → warn + 5s backoff; shutdown cancels it.
+        let (base, _) = ts::spawn_http(vec![HttpRoute::json(
+            "/v1.0/gateway/connections/open",
+            500,
+            "{}",
+        )])
+        .await;
+        let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let sd = shutdown.clone();
+        let handle = tokio::spawn(DingtalkChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        shutdown.notify_waiters();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("shutdown cancels the backoff sleep")
+            .expect("task join");
+        assert!(result.is_ok());
+    }
+}

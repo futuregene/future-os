@@ -74,3 +74,128 @@ impl FeishuChannel {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{self as ts, HttpRoute, MockState, WsAction};
+    use std::time::Duration;
+
+    fn ch_cfg(domain: &str) -> crate::config::FeishuChannelConfig {
+        crate::config::FeishuChannelConfig {
+            enabled: true,
+            app_id: "app".into(),
+            app_secret: "secret".into(),
+            domain: domain.into(), // full URL → api_domain() verbatim
+            ..Default::default()
+        }
+    }
+
+    fn agent_cfg(addr: &str) -> Arc<AgentConfig> {
+        Arc::new(AgentConfig {
+            grpc_addr: addr.into(),
+            cwd: "/tmp".into(),
+            model: String::new(),
+            thinking_level: String::new(),
+            permission_level: String::new(),
+        })
+    }
+
+    fn http_routes(ws_url: &str) -> Vec<HttpRoute> {
+        vec![
+            HttpRoute::json(
+                "/auth/v3/tenant_access_token/internal",
+                200,
+                r#"{"code":0,"tenant_access_token":"tok","expire":7200}"#,
+            ),
+            HttpRoute::json(
+                "/bot/v3/info",
+                200,
+                r#"{"code":0,"bot":{"open_id":"ou_bot","app_name":"Bot"}}"#,
+            ),
+            HttpRoute::json(
+                "/callback/ws/endpoint",
+                200,
+                &serde_json::json!({"code": 0, "data": {"URL": ws_url}}).to_string(),
+            ),
+        ]
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_fails_fast_without_agent() {
+        ts::ensure_crypto_provider();
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        // No HTTP server for bot info / no gRPC — Bridge::new errors (gRPC
+        // connect fails first) and run() propagates it.
+        let err = FeishuChannel::run(agent_cfg("127.0.0.1:1"), ch_cfg("http://127.0.0.1:1"), shutdown)
+            .await
+            .err()
+            .unwrap();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_connects_then_shuts_down() {
+        ts::ensure_crypto_provider();
+        // WS holds the connection open until the client goes away.
+        let (ws_url, _) = ts::spawn_ws(vec![WsAction::Delay(Duration::from_secs(30))]).await;
+        let (base, _) = ts::spawn_http(http_routes(&ws_url)).await;
+        let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let sd = shutdown.clone();
+        let handle = tokio::spawn(FeishuChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
+        // Give it a moment to connect, then shut down.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        shutdown.notify_waiters();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("run must return after shutdown")
+            .expect("task join");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_reconnects_after_clean_close() {
+        ts::ensure_crypto_provider();
+        // First connection closes immediately (clean-close arm); later
+        // connections hold open so shutdown lands in the select.
+        let (ws_url, _) = ts::spawn_ws_per_connection(vec![
+            vec![WsAction::SendClose],
+            vec![WsAction::Delay(Duration::from_secs(30))],
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(http_routes(&ws_url)).await;
+        let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let sd = shutdown.clone();
+        let handle = tokio::spawn(FeishuChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        shutdown.notify_waiters();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("run must return after shutdown")
+            .expect("task join");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_reconnect_backoff_interrupted_by_shutdown() {
+        ts::ensure_crypto_provider();
+        // WS bootstrap fails (500) → warn + 5s backoff; shutdown cancels it.
+        let mut routes = http_routes("ws://unused/");
+        routes.retain(|r| r.path != "/callback/ws/endpoint");
+        routes.push(HttpRoute::json("/callback/ws/endpoint", 500, "{}"));
+        let (base, _) = ts::spawn_http(routes).await;
+        let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let sd = shutdown.clone();
+        let handle = tokio::spawn(FeishuChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        shutdown.notify_waiters();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("shutdown cancels the backoff sleep")
+            .expect("task join");
+        assert!(result.is_ok());
+    }
+}
