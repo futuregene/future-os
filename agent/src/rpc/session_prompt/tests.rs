@@ -1067,6 +1067,63 @@ async fn prompt_auto_compaction_with_small_history_completes() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn prompt_with_unreadable_context_file_still_runs() {
+    let provider = ScriptedProvider::new(vec![text_turn("ok")]);
+    let fixture = run_fixture(provider, "ctx-dir");
+    // A CLAUDE.md that is a DIRECTORY exists but cannot be read.
+    std::fs::create_dir_all(fixture.workspace().join("CLAUDE.md")).unwrap();
+    let mut session = fixture.session;
+    session.prompt("hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    assert_eq!(session.messages.read().last().unwrap().text(), "ok");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_journal_loss_marks_run_persistence_degraded() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![Script::Gated(
+        gate.clone(),
+        vec![text_event("doomed reply"), simple_event("stop")],
+    )]);
+    let fixture = run_fixture(provider, "journal-loss");
+    let run_events = fixture
+        .workspace()
+        .parent()
+        .unwrap()
+        .join("run-events")
+        .join("s1");
+    let mut session = fixture.session;
+    session.prompt("hi", &[], &[], None, None).unwrap();
+
+    // Wait for the run's journal to appear, then replace the run-events dir
+    // with a plain file so the next journal append fails.
+    for _ in 0..200 {
+        if run_events.exists() && run_events.read_dir().unwrap().next().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    std::fs::remove_dir_all(&run_events).unwrap();
+    std::fs::write(&run_events, "not a dir").unwrap();
+
+    gate.notify_one();
+    let mut degraded = false;
+    for _ in 0..300 {
+        if session
+            .runtime
+            .snapshot()
+            .is_some_and(|snap| snap.phase == crate::runtime::RunPhase::PersistenceDegraded)
+        {
+            degraded = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(degraded, "journal loss marked the run persistence_degraded");
+    let _ = std::fs::remove_file(&run_events);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn prompt_mid_run_append_failure_heals_via_full_rewrite() {
     let gate = Arc::new(tokio::sync::Notify::new());
     let provider = ScriptedProvider::new(vec![Script::Gated(

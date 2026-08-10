@@ -1127,4 +1127,41 @@ mod tests {
         assert_eq!(s.tier, SandboxTier::Off);
         assert!(!s.enabled());
     }
+
+    // ─── coverage batch: small public-surface arms ─────────────────────────
+
+    #[test]
+    fn add_session_allow_maps_read_op() {
+        let ws = temp_workspace("allow-read");
+        let s = enabled(&ws);
+        let target = dirs::home_dir().unwrap().join("futureos-read-allow.txt");
+        // Write stays gated; a session read-allow opens reads only.
+        s.add_session_allow(&target.to_string_lossy(), Op::Read);
+        assert_eq!(s.evaluate(&target, Op::Read), Decision::Allow);
+        assert_eq!(s.evaluate(&target, Op::Write), Decision::Ask);
+    }
+
+    #[test]
+    fn sandbox_denial_heuristic_variants() {
+        let ws = temp_workspace("denial-heur");
+        let s = enabled(&ws);
+        assert!(!looks_like_sandbox_denial(&s, 0, "Operation not permitted"));
+        assert!(looks_like_sandbox_denial(&s, 1, "touch: /x: Operation not permitted"));
+        assert!(looks_like_sandbox_denial(&s, 1, "sandbox-exec: deny(1) file-write"));
+        assert!(!looks_like_sandbox_denial(&s, 1, "file not found"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_profile_is_generated_for_sandbox_tier() {
+        let ws = temp_workspace("seatbelt-profile");
+        let s = ResolvedSandbox::resolve(
+            &SandboxPolicy {
+                tier: SandboxTier::Sandbox,
+            },
+            &ws,
+        );
+        let profile = seatbelt_profile(&s);
+        assert!(profile.contains("deny default"));
+    }
 }
