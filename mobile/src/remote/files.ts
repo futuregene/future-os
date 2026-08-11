@@ -376,7 +376,7 @@ export async function uploadAttachments(
     } finally {
       handle.close();
     }
-    const complete = await client.request<UploadComplete>(
+    const complete = await client.requestRetry<UploadComplete>(
       { type: "upload_complete", transferId: init.data.uploadId },
       "transfer",
     );

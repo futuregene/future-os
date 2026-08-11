@@ -207,6 +207,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const clientRef = useRef<RemoteClient | null>(null);
   const credentialsRef = useRef<RemoteCredentials | null>(null);
   const selectedRef = useRef("");
+  // Changes whenever the user navigates between conversations. Long uploads
+  // capture the epoch so their eventual ack cannot pull the UI back to a
+  // conversation the user has already left.
+  const conversationEpochRef = useRef(0);
   const recoverRef = useRef<(sessionId?: string) => Promise<void>>(async () => undefined);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
@@ -375,6 +379,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   );
 
   const closeConversation = useCallback(() => {
+    conversationEpochRef.current += 1;
     setSelectedSessionId("");
     selectedRef.current = "";
     setDraft(false);
@@ -846,6 +851,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       if (!client) return;
       setBusy(true);
       syncLockRef.current = true;
+      conversationEpochRef.current += 1;
       setSelectedSessionId(sessionId);
       selectedRef.current = sessionId;
       setDraft(false);
@@ -908,6 +914,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           : null) ??
         (defaultOption ? modelReference(defaultOption) : null) ??
         (models[0] ? modelReference(models[0]) : "");
+      conversationEpochRef.current += 1;
       setSelectedSessionId("");
       selectedRef.current = "";
       setDraft(true);
@@ -931,7 +938,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       if (attachments.length > 0 && !fileTransferSupported) {
         throw new Error("attachment_unsupported_desktop");
       }
-      const currentTimeline = timelinesRef.current[selectedRef.current] ?? emptyTimeline();
+      // Uploading can take long enough for the user to navigate elsewhere.
+      // Freeze every routing value now; never consult selectedRef again for
+      // this send operation.
+      const targetSessionId = selectedRef.current;
+      const targetDraft = draft;
+      const targetDraftMode = draftMode;
+      const targetDraftWorkspaceId = draftWorkspaceId;
+      const conversationEpoch = conversationEpochRef.current;
+      const currentTimeline = timelinesRef.current[targetSessionId] ?? emptyTimeline();
       if (currentTimeline.streaming) return;
       setBusy(true);
       try {
@@ -946,11 +961,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
           })),
         );
-        setTimelines(prev => ({ ...prev, [selectedRef.current]: optimisticTimeline }));
-        const response = await client.request<PromptAck>(
+        setTimelines(prev => ({ ...prev, [targetSessionId]: optimisticTimeline }));
+        const response = await client.requestRetry<PromptAck>(
           {
             type: "prompt",
-            sessionId: selectedRef.current,
+            sessionId: targetSessionId,
             message: text.trim(),
             modelId,
             providerId: modelProviderFromReference(modelId),
@@ -958,24 +973,27 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             ...(uploaded.length
               ? { attachments: uploaded.map(attachment => ({ uploadId: attachment.uploadId! })) }
               : {}),
-            ...(draft && draftMode === "workspace"
-              ? { mode: "workspace", workspaceId: draftWorkspaceId }
+            ...(targetDraft && targetDraftMode === "workspace"
+              ? { mode: "workspace", workspaceId: targetDraftWorkspaceId }
               : {}),
           },
-          selectedRef.current,
+          targetSessionId,
         );
         const nextSessionId = response.data.sessionId;
-        if (nextSessionId && nextSessionId !== selectedRef.current) {
+        if (nextSessionId && nextSessionId !== targetSessionId) {
           // A draft just got bound to a real session. Its live events have been
           // landing in the real session's cache all along (handleEvent consumes
           // every session), so migrate the optimistic user bubble from the ""
           // placeholder cache and finish hydrating the run's tail.
-          const draftTimeline = timelinesRef.current[""];
-          selectedRef.current = nextSessionId;
-          setSelectedSessionId(nextSessionId);
-          setDraft(false);
-          setDraftMode("chat");
-          setDraftWorkspaceId("");
+          const draftTimeline = optimisticTimeline;
+          const stillViewingSentDraft = conversationEpochRef.current === conversationEpoch;
+          if (stillViewingSentDraft) {
+            selectedRef.current = nextSessionId;
+            setSelectedSessionId(nextSessionId);
+            setDraft(false);
+            setDraftMode("chat");
+            setDraftWorkspaceId("");
+          }
           setTimelines(prev => {
             const draftItems = draftTimeline?.items ?? [];
             const current = prev[nextSessionId] ?? emptyTimeline();
@@ -1009,7 +1027,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
                 ...current,
                 items: alreadyLanded ? currentItems : [...draftItems, ...current.items],
               },
-              ...(draftItems.length === 0 || alreadyLanded ? { "": emptyTimeline() } : {}),
+              ...(stillViewingSentDraft && (draftItems.length === 0 || alreadyLanded)
+                ? { "": emptyTimeline() }
+                : {}),
             };
           });
           await refreshSessions();

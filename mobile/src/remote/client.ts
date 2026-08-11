@@ -287,6 +287,30 @@ export class RemoteClient {
     return this.requestWithConnection(connection, command, sessionId);
   }
 
+  /**
+   * Retry a control-plane command without changing its identity. The desktop
+   * deduplicates command ids, so a reply lost after successful execution is
+   * replayed instead of executing the operation twice.
+   */
+  async requestRetry<T>(
+    command: RemoteCommand,
+    sessionId = command.sessionId ?? "list",
+  ): Promise<RpcResponse<T>> {
+    const stableCommand = { ...command, id: command.id ?? randomId("cmd") };
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.request<T>(stableCommand, sessionId);
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) {
+          await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
+        }
+      }
+    }
+    throw lastError;
+  }
+
   async uploadChunk(transferId: string, index: number, bytes: Uint8Array): Promise<void> {
     const connection = this.connection;
     if (!connection) throw new Error("not_connected");

@@ -94,11 +94,20 @@ fn new_transfer_id(prefix: &str) -> String {
     format!("{prefix}_{}", nkeys::KeyPair::new_user().public_key())
 }
 
-fn safe_name(name: &str, fallback: &str) -> String {
-    let base = Path::new(name)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(fallback);
+fn display_name(name: &str, fallback: &str) -> String {
+    // Picker names are user-facing metadata, not paths. Preserve Unicode while
+    // stripping either platform's path prefix and non-printing characters.
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(fallback);
+    let cleaned: String = base.chars().filter(|c| !c.is_control()).collect();
+    if cleaned.trim_matches('.').trim().is_empty() {
+        fallback.to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn safe_disk_name(name: &str, fallback: &str) -> String {
+    let base = display_name(name, fallback);
     let cleaned: String = base
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
@@ -162,8 +171,8 @@ pub fn init_upload(
         upload_id.clone(),
         UploadRecord {
             path,
-            name: safe_name(name, "attachment"),
-            transfer_name: safe_name(
+            name: display_name(name, "attachment"),
+            transfer_name: safe_disk_name(
                 if transfer_name.trim().is_empty() {
                     name
                 } else {
@@ -240,7 +249,6 @@ pub fn claim_uploads(
         total = total.saturating_add(item.original_size);
         if item.kind == "image" {
             images += 1;
-            validate_mobile_image(&item.path)?;
         }
         claimed.push((reference.upload_id.clone(), item.clone()));
     }
@@ -254,6 +262,14 @@ pub fn claim_uploads(
     }
     drop(uploads);
 
+    // Image probing/decoding can involve disk I/O and substantial CPU. Keep it
+    // outside the global upload-map lock so unrelated transfers remain live.
+    for (_, item) in &claimed {
+        if item.kind == "image" {
+            validate_mobile_image(&item.path)?;
+        }
+    }
+
     let destination = crate::store::thread_images_dir(thread_id)?.join("origin");
     std::fs::create_dir_all(&destination)?;
     let mut targets = Vec::with_capacity(claimed.len());
@@ -261,7 +277,7 @@ pub fn claim_uploads(
         let target = destination.join(format!(
             "{}_{}",
             upload_id,
-            safe_name(&item.transfer_name, "attachment")
+            safe_disk_name(&item.transfer_name, "attachment")
         ));
         if let Err(error) = std::fs::copy(&item.path, &target) {
             for copied in &targets {
@@ -306,20 +322,29 @@ pub fn rollback_claimed(attachments: &[AttachmentInput]) {
 }
 
 fn validate_mobile_image(path: &Path) -> Result<(), crate::AppError> {
-    let mut reader = image::ImageReader::open(path)?
+    let dimensions_reader = image::ImageReader::open(path)?
         .with_guessed_format()
         .map_err(|error| format!("Unreadable image: {error}"))?;
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(512 * 1024 * 1024);
-    reader.limits(limits);
-    let image = reader
-        .decode()
-        .map_err(|error| format!("Undecodable image: {error}"))?;
-    if image.width().max(image.height()) > 2000 {
+    let (width, height) = dimensions_reader
+        .into_dimensions()
+        .map_err(|error| format!("Undecodable image header: {error}"))?;
+    if width.max(height) > 2000 {
         return Err("Image longest edge exceeds the 2000 px mobile limit."
             .to_string()
             .into());
     }
+
+    // Still decode once so a valid-looking header cannot smuggle corrupt image
+    // bytes into the agent, but cap allocation for the already-bounded image.
+    let mut reader = image::ImageReader::open(path)?
+        .with_guessed_format()
+        .map_err(|error| format!("Unreadable image: {error}"))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    reader
+        .decode()
+        .map_err(|error| format!("Undecodable image: {error}"))?;
     Ok(())
 }
 
@@ -464,13 +489,16 @@ fn is_animated_image(source: &Path) -> Result<bool, crate::AppError> {
     Ok(false)
 }
 
-fn prepare_preview(source: &Path, display_name: &str) -> Result<PreparedPreview, crate::AppError> {
+fn prepare_preview(
+    source: &Path,
+    requested_display_name: &str,
+) -> Result<PreparedPreview, crate::AppError> {
     let ext = source
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let original_name = safe_name(display_name, "attachment");
+    let original_name = display_name(requested_display_name, "attachment");
     let dir = transfer_root().join("download");
     std::fs::create_dir_all(&dir)?;
     let stamp = new_transfer_id("preview");
@@ -548,7 +576,7 @@ fn prepare_preview(source: &Path, display_name: &str) -> Result<PreparedPreview,
     }
     let path = dir.join(format!(
         "{stamp}_{}",
-        safe_name(&original_name, "attachment")
+        safe_disk_name(&original_name, "attachment")
     ));
     std::fs::copy(source, &path)?;
     let markdown = matches!(ext.as_str(), "md" | "markdown");
@@ -705,14 +733,20 @@ fn publish_download_chunk(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_is_in_session, is_animated_image, safe_name, validate_mobile_image,
-        MAX_FILE_BYTES,
+        attachment_is_in_session, display_name, is_animated_image, safe_disk_name,
+        validate_mobile_image, MAX_FILE_BYTES,
     };
     use serde_json::json;
 
     #[test]
     fn sanitizes_upload_names() {
-        assert_eq!(safe_name("../../hello?.md", "x"), "hello.md");
+        assert_eq!(safe_disk_name("../../hello?.md", "x"), "hello.md");
+    }
+
+    #[test]
+    fn preserves_unicode_display_names_without_path_prefixes() {
+        assert_eq!(display_name("../../报告 终稿.md", "x"), "报告 终稿.md");
+        assert_eq!(display_name(r"C:\\temp\\照片📷.jpg", "x"), "照片📷.jpg");
     }
 
     #[test]
