@@ -36,6 +36,7 @@ pub struct UploadReference {
 struct UploadRecord {
     path: PathBuf,
     name: String,
+    transfer_name: String,
     kind: String,
     original_size: u64,
     transfer_size: u64,
@@ -132,6 +133,7 @@ fn prune_expired() {
 
 pub fn init_upload(
     name: &str,
+    transfer_name: &str,
     _mime_type: &str,
     kind: &str,
     original_size: u64,
@@ -161,6 +163,14 @@ pub fn init_upload(
         UploadRecord {
             path,
             name: safe_name(name, "attachment"),
+            transfer_name: safe_name(
+                if transfer_name.trim().is_empty() {
+                    name
+                } else {
+                    transfer_name
+                },
+                "attachment",
+            ),
             kind: kind.to_string(),
             original_size,
             transfer_size,
@@ -251,7 +261,7 @@ pub fn claim_uploads(
         let target = destination.join(format!(
             "{}_{}",
             upload_id,
-            safe_name(&item.name, "attachment")
+            safe_name(&item.transfer_name, "attachment")
         ));
         if let Err(error) = std::fs::copy(&item.path, &target) {
             for copied in &targets {
@@ -327,7 +337,12 @@ fn sha256_file(path: &Path) -> Result<String, crate::AppError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+#[cfg(test)]
 fn attachment_is_in_session(entries: &Value, requested: &str) -> bool {
+    session_attachment_name(entries, requested).is_some()
+}
+
+fn session_attachment_name(entries: &Value, requested: &str) -> Option<String> {
     entries
         .get("entries")
         .and_then(Value::as_array)
@@ -337,7 +352,20 @@ fn attachment_is_in_session(entries: &Value, requested: &str) -> bool {
         .filter_map(|meta| meta.get("attachments"))
         .filter_map(Value::as_array)
         .flatten()
-        .any(|attachment| attachment.get("path").and_then(Value::as_str) == Some(requested))
+        .find(|attachment| attachment.get("path").and_then(Value::as_str) == Some(requested))
+        .map(|attachment| {
+            attachment
+                .get("name")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| {
+                    Path::new(requested)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("attachment")
+                        .to_string()
+                })
+        })
 }
 
 pub async fn prepare_download(
@@ -346,16 +374,16 @@ pub async fn prepare_download(
 ) -> Result<DownloadInfo, crate::AppError> {
     prune_expired();
     let entries = crate::agent_bridge::get_session_entries(session_id.to_string()).await?;
-    if !attachment_is_in_session(&entries, requested_path) {
-        return Err("The requested file is not an attachment in this session."
-            .to_string()
-            .into());
-    }
+    let display_name = session_attachment_name(&entries, requested_path).ok_or_else(|| {
+        crate::AppError::Message(
+            "The requested file is not an attachment in this session.".to_string(),
+        )
+    })?;
     let source = Path::new(requested_path).canonicalize()?;
     if !source.is_file() {
         return Err("The attachment is no longer available.".to_string().into());
     }
-    let prepared = prepare_preview(&source)?;
+    let prepared = prepare_preview(&source, &display_name)?;
     let size = std::fs::metadata(&prepared.path)?.len();
     if size > MAX_FILE_BYTES {
         let _ = std::fs::remove_file(&prepared.path);
@@ -394,24 +422,62 @@ struct PreparedPreview {
     preview_kind: String,
 }
 
-fn prepare_preview(source: &Path) -> Result<PreparedPreview, crate::AppError> {
+fn is_animated_image(source: &Path) -> Result<bool, crate::AppError> {
+    let mut file = File::open(source)?;
+    let file_size = file.metadata()?.len();
+    let mut header = vec![0_u8; 21.min(file_size as usize)];
+    file.read_exact(&mut header)?;
+    if header.starts_with(b"GIF87a") || header.starts_with(b"GIF89a") {
+        return Ok(true);
+    }
+    if header.len() >= 21
+        && &header[0..4] == b"RIFF"
+        && &header[8..12] == b"WEBP"
+        && &header[12..16] == b"VP8X"
+    {
+        return Ok(header[20] & 0x02 != 0);
+    }
+    if !header.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::Start(8))?;
+    while file.stream_position()?.saturating_add(8) <= file_size {
+        let mut header = [0_u8; 8];
+        file.read_exact(&mut header)?;
+        let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as u64;
+        let kind = &header[4..8];
+        if kind == b"acTL" {
+            return Ok(true);
+        }
+        if kind == b"IDAT" || kind == b"IEND" {
+            return Ok(false);
+        }
+        let next = file
+            .stream_position()?
+            .saturating_add(length)
+            .saturating_add(4);
+        if next > file_size {
+            return Ok(false);
+        }
+        file.seek(SeekFrom::Start(next))?;
+    }
+    Ok(false)
+}
+
+fn prepare_preview(source: &Path, display_name: &str) -> Result<PreparedPreview, crate::AppError> {
     let ext = source
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let original_name = source
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("attachment")
-        .to_string();
+    let original_name = safe_name(display_name, "attachment");
     let dir = transfer_root().join("download");
     std::fs::create_dir_all(&dir)?;
     let stamp = new_transfer_id("preview");
 
-    if ext == "gif" {
+    if is_animated_image(source)? {
         return Err(
-            "GIF preview is not supported on mobile; view it on desktop."
+            "Animated image preview is not supported on mobile; view it on desktop."
                 .to_string()
                 .into(),
         );
@@ -447,7 +513,7 @@ fn prepare_preview(source: &Path) -> Result<PreparedPreview, crate::AppError> {
                 path,
                 name: format!(
                     "{}.jpg",
-                    source
+                    Path::new(&original_name)
                         .file_stem()
                         .and_then(|v| v.to_str())
                         .unwrap_or("image")
@@ -464,7 +530,7 @@ fn prepare_preview(source: &Path) -> Result<PreparedPreview, crate::AppError> {
             path,
             name: format!(
                 "{}.png",
-                source
+                Path::new(&original_name)
                     .file_stem()
                     .and_then(|v| v.to_str())
                     .unwrap_or("image")
@@ -638,7 +704,10 @@ fn publish_download_chunk(
 
 #[cfg(test)]
 mod tests {
-    use super::{attachment_is_in_session, safe_name, validate_mobile_image, MAX_FILE_BYTES};
+    use super::{
+        attachment_is_in_session, is_animated_image, safe_name, validate_mobile_image,
+        MAX_FILE_BYTES,
+    };
     use serde_json::json;
 
     #[test]
@@ -676,6 +745,34 @@ mod tests {
             .save(&rejected)
             .unwrap();
         assert!(validate_mobile_image(&rejected).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn detects_apng_and_animated_webp_headers() {
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-animation-test-{}",
+            nkeys::KeyPair::new_user().public_key()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let apng = dir.join("animated.png");
+        let mut apng_bytes = vec![137, 80, 78, 71, 13, 10, 26, 10];
+        apng_bytes.extend_from_slice(&[0, 0, 0, 0]);
+        apng_bytes.extend_from_slice(b"acTL");
+        apng_bytes.extend_from_slice(&[0, 0, 0, 0]);
+        std::fs::write(&apng, apng_bytes).unwrap();
+        assert!(is_animated_image(&apng).unwrap());
+
+        let webp = dir.join("animated.webp");
+        let mut webp_bytes = [0_u8; 21];
+        webp_bytes[0..4].copy_from_slice(b"RIFF");
+        webp_bytes[8..12].copy_from_slice(b"WEBP");
+        webp_bytes[12..16].copy_from_slice(b"VP8X");
+        webp_bytes[20] = 0x02;
+        std::fs::write(&webp, webp_bytes).unwrap();
+        assert!(is_animated_image(&webp).unwrap());
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

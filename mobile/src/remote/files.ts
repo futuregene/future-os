@@ -13,9 +13,23 @@ export const MAX_IMAGES = 4;
 export const MAX_IMAGE_EDGE = 2000;
 const MAX_PREVIEW_CACHE_BYTES = 100 * 1024 * 1024;
 
-const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp"]);
-const JPEG_EXTENSIONS = new Set(["jpg", "jpeg", "bmp"]);
-const SUPPORTED_IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp"]);
+const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif"]);
+const JPEG_OUTPUT_INPUTS = new Set(["jpg", "jpeg", "bmp", "heic", "heif"]);
+const SUPPORTED_IMAGE_EXTENSIONS = new Set(IMAGE_EXTENSIONS);
+const UNSUPPORTED_IMAGE_EXTENSIONS = new Set([
+  "avif",
+  "tif",
+  "tiff",
+  "jxl",
+  "ico",
+  "dng",
+  "cr2",
+  "cr3",
+  "nef",
+  "arw",
+  "orf",
+  "rw2",
+]);
 
 function extension(name: string): string {
   const dot = name.lastIndexOf(".");
@@ -46,6 +60,10 @@ function mimeFor(name: string, fallback = "application/octet-stream"): string {
       return "image/webp";
     case "bmp":
       return "image/bmp";
+    case "heic":
+      return "image/heic";
+    case "heif":
+      return "image/heif";
     case "md":
     case "markdown":
       return "text/markdown";
@@ -55,7 +73,14 @@ function mimeFor(name: string, fallback = "application/octet-stream"): string {
 }
 
 function isImage(file: File, mimeType?: string | null): boolean {
-  return !!mimeType?.startsWith("image/") || IMAGE_EXTENSIONS.has(extension(file.name));
+  const ext = extension(file.name);
+  const mime = mimeType?.toLowerCase();
+  if (ext === "svg" || mime === "image/svg+xml") return false;
+  return (
+    !!mime?.startsWith("image/") ||
+    IMAGE_EXTENSIONS.has(ext) ||
+    UNSUPPORTED_IMAGE_EXTENSIONS.has(ext)
+  );
 }
 
 function imageFormat(file: File, mimeType?: string | null): string | null {
@@ -72,9 +97,70 @@ function imageFormat(file: File, mimeType?: string | null): string | null {
       return "webp";
     case "image/bmp":
       return "bmp";
+    case "image/heic":
+    case "image/heic-sequence":
+      return "heic";
+    case "image/heif":
+    case "image/heif-sequence":
+      return "heif";
     default:
       return null;
   }
+}
+
+function ascii(bytes: Uint8Array, offset: number, length: number): string {
+  return String.fromCharCode(...bytes.slice(offset, offset + length));
+}
+
+function isAnimatedPng(file: File): boolean {
+  const handle = file.open(FileMode.ReadOnly);
+  try {
+    const signature = handle.readBytes(8);
+    if (
+      signature.byteLength !== 8 ||
+      ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => signature[index] === byte)
+    ) {
+      return false;
+    }
+    while ((handle.offset ?? file.size) + 8 <= file.size) {
+      const header = handle.readBytes(8);
+      if (header.byteLength !== 8) return false;
+      const length =
+        ((header[0]! << 24) | (header[1]! << 16) | (header[2]! << 8) | header[3]!) >>> 0;
+      const kind = ascii(header, 4, 4);
+      if (kind === "acTL") return true;
+      if (kind === "IDAT" || kind === "IEND") return false;
+      const nextOffset = (handle.offset ?? 0) + length + 4;
+      if (nextOffset > file.size) return false;
+      handle.offset = nextOffset;
+    }
+    return false;
+  } finally {
+    handle.close();
+  }
+}
+
+function isAnimatedWebp(file: File): boolean {
+  const handle = file.open(FileMode.ReadOnly);
+  try {
+    const header = handle.readBytes(Math.min(21, file.size));
+    return (
+      header.byteLength >= 21 &&
+      ascii(header, 0, 4) === "RIFF" &&
+      ascii(header, 8, 4) === "WEBP" &&
+      ascii(header, 12, 4) === "VP8X" &&
+      (header[20]! & 0x02) !== 0
+    );
+  } finally {
+    handle.close();
+  }
+}
+
+function mobilePreviewUnsupported(file: File, format: string): boolean {
+  if (format === "gif") return true;
+  if (format === "png") return isAnimatedPng(file);
+  if (format === "webp") return isAnimatedWebp(file);
+  return false;
 }
 
 function validateRawSelection(
@@ -96,7 +182,11 @@ function validateRawSelection(
   if (total > MAX_MESSAGE_BYTES) throw new Error("attachment_total_size");
 }
 
-async function prepareFile(file: File, mimeType?: string | null): Promise<MobileAttachment> {
+async function prepareFile(
+  file: File,
+  mimeType?: string | null,
+  forceJpeg = false,
+): Promise<MobileAttachment> {
   const originalSize = file.size;
   if (originalSize <= 0 || originalSize > MAX_FILE_BYTES) {
     throw new Error("attachment_file_too_large");
@@ -116,11 +206,17 @@ async function prepareFile(file: File, mimeType?: string | null): Promise<Mobile
   const format = imageFormat(file, mimeType);
   if (!format) throw new Error("attachment_image_format");
 
-  const dimensions = await imageSize(file.uri);
+  let dimensions: { width: number; height: number };
+  try {
+    dimensions = await imageSize(file.uri);
+  } catch {
+    throw new Error("attachment_image_decode");
+  }
   if (Math.max(dimensions.width, dimensions.height) > MAX_IMAGE_EDGE) {
     throw new Error("attachment_image_dimensions");
   }
-  if (!JPEG_EXTENSIONS.has(format)) {
+  const previewUnsupported = mobilePreviewUnsupported(file, format);
+  if (!forceJpeg && !JPEG_OUTPUT_INPUTS.has(format)) {
     return {
       localUri: file.uri,
       name: file.name,
@@ -128,20 +224,27 @@ async function prepareFile(file: File, mimeType?: string | null): Promise<Mobile
       kind,
       originalSize,
       transferSize: originalSize,
+      mobilePreviewUnsupported: previewUnsupported,
     };
   }
 
-  const converted = await ImageManipulator.manipulateAsync(file.uri, [], {
-    compress: 0.65,
-    format: ImageManipulator.SaveFormat.JPEG,
-  });
+  let converted: ImageManipulator.ImageResult;
+  try {
+    converted = await ImageManipulator.manipulateAsync(file.uri, [], {
+      compress: 0.65,
+      format: ImageManipulator.SaveFormat.JPEG,
+    });
+  } catch {
+    throw new Error("attachment_image_decode");
+  }
   const transfer = new File(converted.uri);
   if (transfer.size <= 0 || transfer.size > MAX_FILE_BYTES) {
     throw new Error("attachment_compressed_too_large");
   }
   return {
     localUri: transfer.uri,
-    name: `${withoutExtension(file.name) || "image"}.jpg`,
+    name: file.name,
+    transferName: `${withoutExtension(file.name) || "image"}.jpg`,
     mimeType: "image/jpeg",
     kind,
     originalSize,
@@ -191,10 +294,13 @@ export async function takePhoto(existing: MobileAttachment[]): Promise<MobileAtt
   });
   if (result.canceled || !result.assets[0]) return existing;
   const asset = result.assets[0];
-  const selected = { file: new File(asset.uri), mimeType: asset.mimeType };
+  const selected = { file: new File(asset.uri), mimeType: asset.mimeType ?? "image/jpeg" };
   validateRawSelection(existing, [selected]);
-  const prepared = await prepareFile(selected.file, selected.mimeType);
-  const combined = [...existing, prepared];
+  const prepared = await prepareFile(selected.file, selected.mimeType, true);
+  const cameraAttachment = prepared.transferName
+    ? { ...prepared, name: prepared.transferName }
+    : prepared;
+  const combined = [...existing, cameraAttachment];
   validateBatch(combined);
   return combined;
 }
@@ -242,6 +348,7 @@ export async function uploadAttachments(
       {
         type: "upload_init",
         name: attachment.name,
+        transferName: attachment.transferName ?? attachment.name,
         mimeType: attachment.mimeType,
         kind: attachment.kind,
         originalSize: attachment.originalSize,

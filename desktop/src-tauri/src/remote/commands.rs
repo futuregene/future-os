@@ -97,6 +97,7 @@ struct IncomingCmd {
     level: String,
     // set_session_name
     name: String,
+    transfer_name: String,
     // prompt creation mode / existing workspace selection
     workspace_id: String,
     // file transfer control + prompt attachment references
@@ -136,6 +137,7 @@ impl Default for IncomingCmd {
             provider_id: String::new(),
             level: String::new(),
             name: String::new(),
+            transfer_name: String::new(),
             workspace_id: String::new(),
             mime_type: String::new(),
             kind: String::new(),
@@ -442,6 +444,7 @@ async fn handle_command(
         "upload_init" => {
             match super::transfer::init_upload(
                 &cmd.name,
+                &cmd.transfer_name,
                 &cmd.mime_type,
                 &cmd.kind,
                 cmd.original_size,

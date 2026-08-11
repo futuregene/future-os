@@ -244,7 +244,11 @@ export function ChatScreen() {
         if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
           const local = new File(attachment.path);
           const ext = fileExtension(attachment.name);
-          if (attachment.kind === "image" && ext !== "gif") {
+          if (
+            attachment.kind === "image" &&
+            ext !== "gif" &&
+            !attachment.mobilePreviewUnsupported
+          ) {
             setPreview({
               info: {
                 transferId: "local",

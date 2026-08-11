@@ -943,6 +943,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             path: attachment.localUri,
             name: attachment.name,
             kind: attachment.kind,
+            mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
           })),
         );
         setTimelines(prev => ({ ...prev, [selectedRef.current]: optimisticTimeline }));
