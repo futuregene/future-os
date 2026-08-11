@@ -303,7 +303,8 @@ export function ChatScreen() {
           }
           return;
         }
-        const info = await remote.prepareAttachment(attachment);
+        const cachedPreview = remote.cachedAttachment(attachment);
+        const info = cachedPreview?.info ?? (await remote.prepareAttachment(attachment));
         if (
           info.previewKind !== "image" &&
           info.previewKind !== "markdown" &&
@@ -312,7 +313,7 @@ export function ChatScreen() {
           Alert.alert(t("attachment.title"), t("attachment.previewOnDesktop"));
           return;
         }
-        let file = remote.cachedAttachment(info);
+        let file = cachedPreview?.file ?? null;
         if (!file) {
           const network = await Network.getNetworkStateAsync();
           if (
@@ -551,7 +552,7 @@ export function ChatScreen() {
                 )}
                 {!!attachmentError && <Text style={styles.attachmentError}>{attachmentError}</Text>}
                 {transferProgress != null && (
-                  <View style={styles.transferTrack}>
+                  <View pointerEvents="none" style={styles.transferTrack}>
                     <View
                       style={[
                         styles.transferFill,
@@ -908,9 +909,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   transferTrack: {
+    position: "absolute",
+    top: 0,
+    left: spacing.md,
+    right: spacing.md,
     height: 2,
-    marginHorizontal: spacing.md,
-    marginTop: spacing.xs,
     overflow: "hidden",
     borderRadius: radius.pill,
     backgroundColor: colors.lineSoft,

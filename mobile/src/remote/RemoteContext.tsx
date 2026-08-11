@@ -36,7 +36,13 @@ import {
   saveLastThinking,
 } from "./storage";
 import { modelProviderFromReference, modelReference } from "./types";
-import { cachedDownload, downloadPrepared, prepareDownload, uploadAttachments } from "./files";
+import {
+  cachedPreviewForAttachment,
+  downloadPrepared,
+  prepareDownload,
+  rememberPreparedPreview,
+  uploadAttachments,
+} from "./files";
 import type { File } from "expo-file-system";
 import type {
   ConnectionPhase,
@@ -128,7 +134,7 @@ interface RemoteContextValue {
     onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
   ): Promise<void>;
   prepareAttachment(attachment: HistoryAttachment): Promise<DownloadInfo>;
-  cachedAttachment(info: DownloadInfo): File | null;
+  cachedAttachment(attachment: HistoryAttachment): { info: DownloadInfo; file: File } | null;
   downloadAttachment(
     info: DownloadInfo,
     onProgress?: (completedBytes: number, totalBytes: number) => void,
@@ -1080,10 +1086,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const client = clientRef.current;
     const sessionId = selectedRef.current;
     if (!client || !sessionId) throw new Error("attachment_no_session");
-    return prepareDownload(client, sessionId, attachment);
+    const info = await prepareDownload(client, sessionId, attachment);
+    rememberPreparedPreview(attachment, info);
+    return info;
   }, []);
 
-  const cachedAttachment = useCallback((info: DownloadInfo) => cachedDownload(info), []);
+  const cachedAttachment = useCallback(
+    (attachment: HistoryAttachment) => cachedPreviewForAttachment(attachment),
+    [],
+  );
 
   const downloadAttachment = useCallback(
     async (

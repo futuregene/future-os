@@ -12,6 +12,7 @@ export const MAX_ATTACHMENTS = 10;
 export const MAX_IMAGES = 4;
 export const MAX_IMAGE_EDGE = 2000;
 const MAX_PREVIEW_CACHE_BYTES = 100 * 1024 * 1024;
+const preparedPreviewIndex = new Map<string, DownloadInfo>();
 
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif"]);
 const JPEG_OUTPUT_INPUTS = new Set(["jpg", "jpeg", "bmp", "heic", "heif"]);
@@ -405,6 +406,23 @@ export async function prepareDownload(
   return info;
 }
 
+function previewSourceKey(attachment: HistoryAttachment): string {
+  // The same desktop attachment path always produces the same prepared
+  // preview while it remains in the session. Its content hash is only known
+  // after desktop has resized/re-encoded the preview, so retain that resolved
+  // key locally and avoid the prepare RPC on subsequent opens.
+  return `${attachment.path}\u0000${attachment.name}`;
+}
+
+export interface CachedAttachmentPreview {
+  info: DownloadInfo;
+  file: File;
+}
+
+export function rememberPreparedPreview(attachment: HistoryAttachment, info: DownloadInfo): void {
+  preparedPreviewIndex.set(previewSourceKey(attachment), info);
+}
+
 function cacheFile(info: DownloadInfo): File {
   const directory = new Directory(Paths.cache, "futureos-previews");
   if (!directory.exists) directory.create({ intermediates: true, idempotent: true });
@@ -430,6 +448,17 @@ function prunePreviewCache(requiredBytes: number): void {
 export function cachedDownload(info: DownloadInfo): File | null {
   const file = cacheFile(info);
   return file.exists && file.size === info.size ? file : null;
+}
+
+export function cachedPreviewForAttachment(
+  attachment: HistoryAttachment,
+): CachedAttachmentPreview | null {
+  const info = preparedPreviewIndex.get(previewSourceKey(attachment));
+  if (!info) return null;
+  const file = cachedDownload(info);
+  if (file) return { info, file };
+  preparedPreviewIndex.delete(previewSourceKey(attachment));
+  return null;
 }
 
 export async function downloadPrepared(
