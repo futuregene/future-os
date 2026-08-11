@@ -35,7 +35,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应�
 
 一行命令，无需源码构建：
 
-**macOS** — 安装官方签名应用（自动识别 arm64 / Intel），并链接 `/future-loop` 技能（控制面本身通过随应用分发的统一 `future` CLI 运行）：
+**macOS** — 安装官方签名应用（自动识别 arm64 / Intel）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
@@ -47,7 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/i
 iex (irm https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.ps1)
 ```
 
-**Linux** — 暂无预编译产物；脚本自动引导工具链（apt 依赖 + Rust + Node 24 + Bun）并从源码构建终端栈——统一 `future` CLI（agent、TUI、IM 渠道与 loop 均内嵌其中）及技能：
+**Linux** — 同一脚本自动识别发行版并安装预编译包：Debian/Ubuntu 安装 `.deb`（桌面应用 + 统一 `future` CLI），其他 Linux 安装便携版压缩包：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash

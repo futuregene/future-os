@@ -48,22 +48,40 @@ scripts/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动�
 
 ## Linux（Debian/Ubuntu）
 
-安装依赖：
+### 终端用户 —— 预编译包
+
+一行安装器下载预编译版本（无需本地构建）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
+```
+
+脚本自动识别平台并从发布清单安装匹配的包，并校验 SHA-256：
+
+- **Debian/Ubuntu** —— `FutureOS_<version>_amd64.deb`，通过 `apt` 安装（自动解析依赖）。
+- **其他 Linux** —— `FutureOS-portable-linux.tar.gz`（`futureos` 桌面应用 + 统一 `future` CLI），解压到 `/usr/local/bin`（不可写时使用 `~/.local/bin`）。
+
+用 `FUTUREOS_VERSION` 锁定特定版本（如 `FUTUREOS_VERSION=1.2.0`），或用 `FUTUREOS_BASE` 指向镜像。
+
+### 从源码构建（开发者）
+
+安装工具链：
 
 ```bash
 sudo apt update
 sudo apt install -y build-essential mold libssl-dev \
   libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust（rust-toolchain.toml 锁定 1.97.0）
 sudo apt install -y protobuf-compiler                             # 可选 —— 仅用于 make generate-proto
 ```
 
 > x86_64 上必须装 `mold` —— `.cargo/config.toml` 会向链接器传 `-fuse-ld=mold`。ARM Linux 不需要。
 
-构建：
+构建与安装：
 
 ```bash
-make install        # GUI + 统一 `future` CLI + 技能（agent/tui/channel/loop 已内嵌）→ /usr/local/bin（sudo）
+scripts/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
+make install        # 或直接从源码安装：GUI + 统一 `future` CLI + 技能（agent/tui/channel/loop 已内嵌）→ /usr/local/bin（sudo）
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
 make install-skills # 内置技能 + /future-loop 技能
