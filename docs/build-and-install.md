@@ -55,22 +55,42 @@ certificate selection, output-directory and Apple notarization options.
 
 ## Linux (Debian/Ubuntu)
 
-Install dependencies:
+### End users — prebuilt packages
+
+The one-line installer downloads the prebuilt release (no local build):
+
+```bash
+curl -fsSL https://dl.future-os.cn/install.sh | bash
+```
+
+The script auto-detects the platform and installs the matching package from the
+release manifest, verifying its SHA-256:
+
+- **Debian/Ubuntu** — `FutureOS_<version>_amd64.deb`, installed with `apt` (resolves dependencies).
+- **Every other Linux** — `FutureOS-portable-linux.tar.gz` (`futureos` desktop app + unified `future` CLI), extracted to `/usr/local/bin` (or `~/.local/bin` when not writable).
+
+Pin a specific release with `FUTUREOS_VERSION` (e.g. `FUTUREOS_VERSION=1.2.0`),
+or point at a mirror with `FUTUREOS_BASE`.
+
+### Building from source (developers)
+
+Install the toolchain:
 
 ```bash
 sudo apt update
 sudo apt install -y build-essential mold libssl-dev \
   libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust (rust-toolchain.toml pins 1.97.0)
 sudo apt install -y protobuf-compiler                             # optional — only for make generate-proto
 ```
 
 > `mold` is required on x86_64 — `.cargo/config.toml` passes `-fuse-ld=mold` to the linker. ARM Linux doesn't need it.
 
-Build:
+Build and install:
 
 ```bash
-make install        # GUI + unified `future` CLI + skills (agent/tui/channel/loop are embedded) → /usr/local/bin (sudo)
+scripts/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
+make install        # or install straight from source: GUI + unified `future` CLI + skills → /usr/local/bin (sudo)
 make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app only (stages its own agent/CLI sidecars)
 make install-skills # built-in skills + the /future-loop skill
