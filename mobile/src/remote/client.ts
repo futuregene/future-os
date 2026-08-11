@@ -31,6 +31,7 @@ interface HandshakeConfirmation {
   deviceId: string;
   desktopNonce: string;
   presence: Presence;
+  features?: string[];
 }
 
 export interface RemoteClientCallbacks {
@@ -39,6 +40,7 @@ export interface RemoteClientCallbacks {
   onPresence(presence: Presence): void;
   onSessions(sessions: PresenceSession[]): void;
   onWorkspaces(workspaces: RemoteWorkspace[]): void;
+  onFeatures(features: string[]): void;
   onConnectionState(state: "connected" | "reconnecting" | "disconnected"): void;
   onReconnected(): void;
   onError(error: Error): void;
@@ -56,6 +58,22 @@ export class RemoteClient {
   private stopped = false;
   private confirmedBridgeInstanceId = "";
   private handshakePromise: Promise<HandshakeConfirmation> | null = null;
+  private downloadWaiters = new Map<
+    string,
+    {
+      resolve(data: Uint8Array): void;
+      reject(error: Error): void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+
+  private rejectDownloadWaiters(reason: string): void {
+    for (const waiter of this.downloadWaiters.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error(reason));
+    }
+    this.downloadWaiters.clear();
+  }
 
   constructor(
     credentials: RemoteCredentials,
@@ -104,6 +122,7 @@ export class RemoteClient {
       this.connection = connection;
       this.callbacks.onCredentials(this.credentials);
       this.callbacks.onPresence(confirmation.presence);
+      this.callbacks.onFeatures(confirmation.features ?? []);
       this.callbacks.onConnectionState("connected");
     } catch (error) {
       await connection.close();
@@ -112,8 +131,34 @@ export class RemoteClient {
     this.subscribeEvents(connection, generation);
     this.subscribeLiveness(connection, generation);
     this.subscribeState(connection, generation);
+    this.subscribeTransfers(connection, generation);
     this.watchStatus(connection, generation);
     this.scheduleRefresh();
+  }
+
+  private subscribeTransfers(connection: NatsConnection, generation: number): void {
+    const prefix = `p.${this.credentials.pairId}.xfer.down.`;
+    const subscription = connection.subscribe(`${prefix}>`);
+    void (async () => {
+      try {
+        for await (const message of subscription) {
+          if (this.stopped || generation !== this.generation) break;
+          const suffix = message.subject.startsWith(prefix)
+            ? message.subject.slice(prefix.length)
+            : "";
+          const parts = suffix.split(".");
+          if (parts.length !== 3 || parts[1] !== "chunk") continue;
+          const key = `${parts[0]}:${parts[2]}`;
+          const waiter = this.downloadWaiters.get(key);
+          if (!waiter) continue;
+          clearTimeout(waiter.timer);
+          this.downloadWaiters.delete(key);
+          waiter.resolve(message.data);
+        }
+      } catch (error) {
+        if (!this.stopped) this.callbacks.onError(asError(error));
+      }
+    })();
   }
 
   private subscribeEvents(connection: NatsConnection, generation: number): void {
@@ -149,6 +194,7 @@ export class RemoteClient {
             const confirmation = await this.ensureHandshake(connection);
             if (this.stopped || generation !== this.generation) break;
             this.callbacks.onPresence(confirmation.presence);
+            this.callbacks.onFeatures(confirmation.features ?? []);
             this.callbacks.onConnectionState("connected");
             this.callbacks.onReconnected();
           } else {
@@ -193,6 +239,7 @@ export class RemoteClient {
               const confirmation = await this.ensureHandshake(connection);
               if (this.stopped || generation !== this.generation) break;
               this.callbacks.onPresence(confirmation.presence);
+              this.callbacks.onFeatures(confirmation.features ?? []);
               this.callbacks.onConnectionState("connected");
               this.callbacks.onReconnected();
             } catch (error) {
@@ -220,6 +267,7 @@ export class RemoteClient {
       this.callbacks.onConnectionState("reconnecting");
       const previous = this.connection;
       this.connection = null;
+      this.rejectDownloadWaiters("reconnecting");
       this.credentials = await refreshCredentials(this.credentials);
       this.callbacks.onCredentials(this.credentials);
       if (previous) await previous.close();
@@ -237,6 +285,70 @@ export class RemoteClient {
     const connection = this.connection;
     if (!connection) throw new Error("not_connected");
     return this.requestWithConnection(connection, command, sessionId);
+  }
+
+  /**
+   * Retry a control-plane command without changing its identity. The desktop
+   * deduplicates command ids, so a reply lost after successful execution is
+   * replayed instead of executing the operation twice.
+   */
+  async requestRetry<T>(
+    command: RemoteCommand,
+    sessionId = command.sessionId ?? "list",
+  ): Promise<RpcResponse<T>> {
+    const stableCommand = { ...command, id: command.id ?? randomId("cmd") };
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.request<T>(stableCommand, sessionId);
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) {
+          await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
+        }
+      }
+    }
+    throw lastError;
+  }
+
+  async uploadChunk(transferId: string, index: number, bytes: Uint8Array): Promise<void> {
+    const connection = this.connection;
+    if (!connection) throw new Error("not_connected");
+    const message = await connection.request(
+      `p.${this.credentials.pairId}.xfer.up.${transferId}.chunk.${index}`,
+      bytes,
+      { timeout: 15_000 },
+    );
+    const response = decodeJson<RpcResponse>(message.data);
+    if (!response.success) throw new Error(response.error ?? "upload_chunk_failed");
+  }
+
+  async downloadChunk(transferId: string, index: number): Promise<Uint8Array> {
+    const connection = this.connection;
+    if (!connection) throw new Error("not_connected");
+    const key = `${transferId}:${index}`;
+    const pending = new Promise<Uint8Array>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.downloadWaiters.delete(key);
+        reject(new Error("download_chunk_timeout"));
+      }, 15_000);
+      this.downloadWaiters.set(key, { resolve, reject, timer });
+    });
+    try {
+      const message = await connection.request(
+        `p.${this.credentials.pairId}.xfer.up.${transferId}.pull.${index}`,
+        new Uint8Array(),
+        { timeout: 15_000 },
+      );
+      const response = decodeJson<RpcResponse>(message.data);
+      if (!response.success) throw new Error(response.error ?? "download_chunk_failed");
+      return await pending;
+    } catch (error) {
+      const waiter = this.downloadWaiters.get(key);
+      if (waiter) clearTimeout(waiter.timer);
+      this.downloadWaiters.delete(key);
+      throw error;
+    }
   }
 
   private async requestWithConnection<T>(
@@ -332,6 +444,7 @@ export class RemoteClient {
     this.refreshTimer = null;
     const connection = this.connection;
     this.connection = null;
+    this.rejectDownloadWaiters("disconnected");
     if (connection) await connection.close();
     this.callbacks.onConnectionState("disconnected");
   }

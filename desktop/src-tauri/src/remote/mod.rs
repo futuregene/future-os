@@ -10,6 +10,7 @@
 
 mod commands;
 pub(crate) mod pairing;
+mod transfer;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -124,6 +125,7 @@ struct RemoteState {
     event_tx: tokio::sync::mpsc::Sender<EventPublish>,
     event_task: tokio::task::JoinHandle<()>,
     cmd_task: tokio::task::JoinHandle<()>,
+    transfer_task: tokio::task::JoinHandle<()>,
     heartbeat_task: tokio::task::JoinHandle<()>,
     refresh_task: tokio::task::JoinHandle<()>,
     /// `None` when the web server failed to bind (port busy) — the bridge still
@@ -252,6 +254,11 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
         reply_slots.clone(),
         handshake_state.clone(),
     ));
+    let transfer_task = transfer::spawn_transfer_loop(
+        client.clone(),
+        pair_id.clone(),
+        handshake_state.active_flag(),
+    );
     let event_task = spawn_event_publisher(client.clone(), event_rx);
     let heartbeat_task =
         spawn_presence_heartbeat(client.clone(), pair_id.clone(), bridge_instance_id.clone());
@@ -302,6 +309,7 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
         event_tx,
         event_task,
         cmd_task,
+        transfer_task,
         heartbeat_task,
         refresh_task,
         web_task,
@@ -412,11 +420,13 @@ pub fn stop() -> RemoteStatus {
         });
         state.event_task.abort();
         state.cmd_task.abort();
+        state.transfer_task.abort();
         state.heartbeat_task.abort();
         state.refresh_task.abort();
         if let Some(web_task) = state.web_task {
             web_task.abort();
         }
+        transfer::clear_all();
     }
     empty()
 }
@@ -429,7 +439,7 @@ pub fn status() -> RemoteStatus {
             // transitions, and the command loop can die independently (failed
             // subscribe / stream end) — a dead loop processes nothing and must
             // not present as a healthy bridge.
-            let loop_dead = s.cmd_task.is_finished();
+            let loop_dead = s.cmd_task.is_finished() || s.transfer_task.is_finished();
             let connected = !loop_dead
                 && s.client.connection_state() == async_nats::connection::State::Connected;
             // Re-expose the pairing code until it expires so the UI keeps it
@@ -797,6 +807,11 @@ fn spawn_credential_refresh(
                 reply_slots.clone(),
                 handshake_state.clone(),
             ));
+            let new_transfer = transfer::spawn_transfer_loop(
+                client.clone(),
+                pair_id.clone(),
+                handshake_state.active_flag(),
+            );
             let new_heartbeat = spawn_presence_heartbeat(
                 client.clone(),
                 pair_id.clone(),
@@ -809,6 +824,7 @@ fn spawn_credential_refresh(
             let Some(state) = guard.as_mut().filter(|state| state.pair_id == pair_id) else {
                 new_event.abort();
                 new_cmd.abort();
+                new_transfer.abort();
                 new_heartbeat.abort();
                 return;
             };
@@ -816,12 +832,14 @@ fn spawn_credential_refresh(
                 eprintln!("remote: save refreshed credential failed: {error}");
             }
             let old_cmd = std::mem::replace(&mut state.cmd_task, new_cmd);
+            let old_transfer = std::mem::replace(&mut state.transfer_task, new_transfer);
             let old_heartbeat = std::mem::replace(&mut state.heartbeat_task, new_heartbeat);
             let old_event = std::mem::replace(&mut state.event_task, new_event);
             state.event_tx = event_tx;
             state.client = client;
             state.nats_url = refreshed.nats_url;
             old_cmd.abort();
+            old_transfer.abort();
             old_heartbeat.abort();
             // The old event drain is deliberately NOT aborted: dropping the
             // handle detaches it, and it exits on its own after flushing its

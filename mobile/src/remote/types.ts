@@ -96,6 +96,36 @@ export interface HistoryAttachment {
   path: string;
   name: string;
   kind?: "image" | "file" | null;
+  /** Local optimistic hint; durable desktop history enforces this server-side. */
+  mobilePreviewUnsupported?: boolean;
+}
+
+export interface MobileAttachment {
+  localUri: string;
+  /** Original user-facing name; remains unchanged after JPEG conversion. */
+  name: string;
+  /** On-wire/on-disk name when converted bytes need a different extension. */
+  transferName?: string;
+  mimeType: string;
+  kind: "image" | "file";
+  /** Quota accounting always uses the original, pre-compression byte size. */
+  originalSize: number;
+  transferSize: number;
+  /** True when localUri is an app-cache derivative that we own and may delete. */
+  temporary?: boolean;
+  mobilePreviewUnsupported?: boolean;
+  uploadId?: string;
+  contentHash?: string;
+}
+
+export interface DownloadInfo {
+  transferId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  contentHash: string;
+  previewKind: "image" | "markdown" | "text";
+  chunkBytes: number;
 }
 
 /**
@@ -218,6 +248,7 @@ export interface RemoteCommand {
   providerId?: string;
   level?: string;
   name?: string;
+  transferName?: string;
   workspaceId?: string;
   protocolVersion?: number;
   pairId?: string;
@@ -228,4 +259,11 @@ export interface RemoteCommand {
   expectedDesktopId?: string;
   expectedDesktopPublicKey?: string;
   clientSignature?: string;
+  mimeType?: string;
+  kind?: string;
+  originalSize?: number;
+  transferSize?: number;
+  transferId?: string;
+  filePath?: string;
+  attachments?: { uploadId: string }[];
 }

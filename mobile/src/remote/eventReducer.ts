@@ -153,6 +153,36 @@ export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
   return { ...emptyTimeline(), items };
 }
 
+/** Merge durable attachment metadata into text-only live user events. */
+export function mergeHistoryAttachments(
+  live: TimelineState,
+  durable: TimelineState,
+): TimelineState {
+  const attachmentsByText = new Map<string, (HistoryAttachment[] | undefined)[]>();
+  for (const item of durable.items) {
+    if (item.kind !== "message" || item.role !== "user") continue;
+    const matches = attachmentsByText.get(item.text) ?? [];
+    matches.push(item.attachments);
+    attachmentsByText.set(item.text, matches);
+  }
+  const nextIndex = new Map<string, number>();
+  const items = [...live.items];
+  // The live cache can contain only the most recent part of the durable
+  // transcript. Match from the end so repeated prompts attach to their latest
+  // durable counterpart instead of an older bubble with the same text.
+  for (let position = items.length - 1; position >= 0; position -= 1) {
+    const item = items[position];
+    if (!item || item.kind !== "message" || item.role !== "user") continue;
+    const candidates = attachmentsByText.get(item.text);
+    const index = nextIndex.get(item.text) ?? (candidates?.length ?? 0) - 1;
+    nextIndex.set(item.text, index - 1);
+    if (item.attachments?.length) continue;
+    const attachments = candidates?.[index];
+    if (attachments?.length) items[position] = { ...item, attachments };
+  }
+  return { ...live, items };
+}
+
 /**
  * Rebuild a session's timeline from a folded run projection (`projection.events`
  * returned by `get_events_since`). The projection is a coalesced replica of a
@@ -584,7 +614,11 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
   };
 }
 
-export function appendUserMessage(state: TimelineState, text: string): TimelineState {
+export function appendUserMessage(
+  state: TimelineState,
+  text: string,
+  attachments?: HistoryAttachment[],
+): TimelineState {
   return {
     ...state,
     items: [
@@ -594,6 +628,7 @@ export function appendUserMessage(state: TimelineState, text: string): TimelineS
         kind: "message",
         role: "user",
         text,
+        ...(attachments?.length ? { attachments } : {}),
       },
     ],
   };

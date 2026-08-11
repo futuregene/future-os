@@ -1,10 +1,24 @@
-import { ArrowDown, ArrowLeft, Check, ChevronDown, Send, Square } from "lucide-react-native";
+import {
+  ArrowDown,
+  ArrowLeft,
+  Camera,
+  Check,
+  ChevronDown,
+  FileText,
+  Paperclip,
+  Send,
+  Square,
+  X,
+} from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  Alert,
+  ActionSheetIOS,
   BackHandler,
   FlatList,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -17,11 +31,22 @@ import {
   TouchableWithoutFeedback,
   View,
 } from "react-native";
+import * as Network from "expo-network";
+import { File } from "expo-file-system";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard, TimelineCard } from "../components/TimelineCard";
+import { MarkdownText } from "../components/MarkdownText";
 import { useRemote } from "../remote/RemoteContext";
-import { modelReference, type ThinkingLevel, type TimelineItem } from "../remote/types";
+import { deleteTemporaryAttachment, pickAttachments, takePhoto } from "../remote/files";
+import {
+  modelReference,
+  type DownloadInfo,
+  type HistoryAttachment,
+  type MobileAttachment,
+  type ThinkingLevel,
+  type TimelineItem,
+} from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
 
 const thinkingLevels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -35,6 +60,44 @@ const AT_LATEST_THRESHOLD = 32;
 // settled reply's footer ("time · tokens" + copy) rests under the
 // semi-transparent gradient.
 const COMPOSER_FADE_CLEARANCE = 48;
+const MARKDOWN_RENDER_BYTES = 2 * 1024 * 1024;
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
+}
+
+function fileExtension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+function plainText(bytes: Uint8Array): string | null {
+  // Binary formats such as PDF contain NUL or C0 control bytes. The desktop
+  // repeats a stricter UTF-8 check before it transfers a durable attachment.
+  if (bytes.some(byte => byte === 0 || (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13))) {
+    return null;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function confirmDownload(title: string, message: string, cancel: string, download: string) {
+  return new Promise<boolean>(resolve => {
+    Alert.alert(
+      title,
+      message,
+      [
+        { text: cancel, style: "cancel", onPress: () => resolve(false) },
+        { text: download, onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    );
+  });
+}
 
 export function ChatScreen() {
   const { t } = useTranslation();
@@ -43,6 +106,17 @@ export function ChatScreen() {
   const insets = useSafeAreaInsets();
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const [message, setMessage] = useState("");
+  const [attachments, setAttachments] = useState<MobileAttachment[]>([]);
+  const [attachmentMenu, setAttachmentMenu] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [transferProgress, setTransferProgress] = useState<number | null>(null);
+  const [preview, setPreview] = useState<{
+    info: DownloadInfo;
+    uri: string;
+    markdown?: string;
+    text?: string;
+    truncated?: boolean;
+  } | null>(null);
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
   const [showOffline, setShowOffline] = useState(false);
   const [atLatest, setAtLatest] = useState(true);
@@ -133,16 +207,184 @@ export function ChatScreen() {
     return () => clearTimeout(timer);
   }, [remote.desktopOnline]);
 
-  const send = async () => {
-    const value = message.trim();
-    if (!value) return;
-    setMessage("");
+  const chooseFiles = async () => {
+    setAttachmentMenu(false);
+    setAttachmentError(null);
     try {
-      await remote.sendMessage(value);
-    } catch {
-      setMessage(value);
+      // Android's fallback sheet must finish dismissing before UIKit/Android
+      // presents another native controller. Otherwise the picker can be
+      // rejected as a concurrent presentation and looks like a no-op.
+      if (attachmentMenu) await new Promise(resolve => setTimeout(resolve, 200));
+      setAttachments(await pickAttachments(attachments));
+    } catch (error) {
+      const key = error instanceof Error ? error.message : "attachment_failed";
+      setAttachmentError(t(`attachment.errors.${key}`));
     }
   };
+
+  const capturePhoto = async () => {
+    setAttachmentMenu(false);
+    setAttachmentError(null);
+    try {
+      if (attachmentMenu) await new Promise(resolve => setTimeout(resolve, 200));
+      setAttachments(await takePhoto(attachments));
+    } catch (error) {
+      const key = error instanceof Error ? error.message : "attachment_failed";
+      setAttachmentError(t(`attachment.errors.${key}`));
+    }
+  };
+
+  const openAttachmentMenu = () => {
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: [t("attachment.chooseFiles"), t("attachment.takePhoto"), t("chat.cancel")],
+          cancelButtonIndex: 2,
+        },
+        index => {
+          // Schedule after the action sheet's dismissal animation, so the
+          // document/camera controller always gets a presentable view host.
+          if (index === 0) setTimeout(() => void chooseFiles(), 0);
+          if (index === 1) setTimeout(() => void capturePhoto(), 0);
+        },
+      );
+      return;
+    }
+    setAttachmentMenu(true);
+  };
+
+  const send = async () => {
+    const value = message.trim();
+    if (!value && attachments.length === 0) return;
+    const pendingAttachments = attachments;
+    setMessage("");
+    setTransferProgress(pendingAttachments.length ? 0 : null);
+    try {
+      await remote.sendMessage(value, pendingAttachments, (done, total) =>
+        setTransferProgress(total > 0 ? done / total : null),
+      );
+      setAttachments([]);
+    } catch {
+      setMessage(value);
+      setAttachmentError(t("chat.sendFailed"));
+    } finally {
+      setTransferProgress(null);
+    }
+  };
+
+  const openAttachment = useCallback(
+    async (attachment: HistoryAttachment) => {
+      setAttachmentError(null);
+      setTransferProgress(0);
+      try {
+        // The just-sent optimistic bubble still points at this phone's local
+        // picker URI. Open it directly; durable history later replaces this
+        // with the desktop path used by the NATS download flow.
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
+          const local = new File(attachment.path);
+          const ext = fileExtension(attachment.name);
+          if (
+            attachment.kind === "image" &&
+            ext !== "gif" &&
+            !attachment.mobilePreviewUnsupported
+          ) {
+            setPreview({
+              info: {
+                transferId: "local",
+                name: attachment.name,
+                mimeType: "image/*",
+                size: local.size,
+                contentHash: "",
+                previewKind: "image",
+                chunkBytes: 0,
+              },
+              uri: local.uri,
+            });
+          } else {
+            const bytes = await local.bytes();
+            const text = plainText(bytes);
+            if (text === null) {
+              Alert.alert(t("attachment.title"), t("attachment.previewOnDesktop"));
+              return;
+            }
+            const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
+            const previewText =
+              visible.byteLength === bytes.byteLength ? text : new TextDecoder().decode(visible);
+            const markdown = ext === "md" || ext === "markdown";
+            setPreview({
+              info: {
+                transferId: "local",
+                name: attachment.name,
+                mimeType: markdown ? "text/markdown" : "text/plain",
+                size: local.size,
+                contentHash: "",
+                previewKind: markdown ? "markdown" : "text",
+                chunkBytes: 0,
+              },
+              uri: local.uri,
+              ...(markdown ? { markdown: previewText } : { text: previewText }),
+              truncated: bytes.byteLength > visible.byteLength,
+            });
+          }
+          return;
+        }
+        const cachedPreview = remote.cachedAttachment(attachment);
+        const info = cachedPreview?.info ?? (await remote.prepareAttachment(attachment));
+        if (
+          info.previewKind !== "image" &&
+          info.previewKind !== "markdown" &&
+          info.previewKind !== "text"
+        ) {
+          Alert.alert(t("attachment.title"), t("attachment.previewOnDesktop"));
+          return;
+        }
+        let file = cachedPreview?.file ?? null;
+        if (!file) {
+          const network = await Network.getNetworkStateAsync();
+          if (
+            network.type === Network.NetworkStateType.CELLULAR ||
+            network.type === Network.NetworkStateType.UNKNOWN
+          ) {
+            const accepted = await confirmDownload(
+              t("attachment.downloadTitle"),
+              t("attachment.cellularWarning", { size: formatBytes(info.size) }),
+              t("chat.cancel"),
+              t("attachment.download"),
+            );
+            if (!accepted) return;
+          }
+          file = await remote.downloadAttachment(info, (done, total) =>
+            setTransferProgress(total > 0 ? done / total : null),
+          );
+        }
+        if (info.previewKind === "image") {
+          setPreview({ info, uri: file.uri });
+        } else {
+          const bytes = await file.bytes();
+          const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
+          const previewText = new TextDecoder().decode(visible);
+          setPreview({
+            info,
+            uri: file.uri,
+            ...(info.previewKind === "markdown"
+              ? { markdown: previewText }
+              : { text: previewText }),
+            truncated: bytes.byteLength > visible.byteLength,
+          });
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "";
+        const message =
+          detail.includes("view it on desktop") || detail.includes("GIF preview")
+            ? t("attachment.previewOnDesktop")
+            : t("attachment.downloadFailed");
+        Alert.alert(t("attachment.title"), message);
+      } finally {
+        setTransferProgress(null);
+      }
+    },
+    [remote, t],
+  );
 
   // The bottom-most scroll offset: full content height minus the viewport,
   // never negative. Recomputed from measured sizes so it stays correct as the
@@ -235,7 +477,12 @@ export function ChatScreen() {
               );
             }}
             ref={listRef}
-            renderItem={({ item }) => <TimelineCard item={item} />}
+            renderItem={({ item }) => (
+              <TimelineCard
+                item={item}
+                onOpenAttachment={attachment => void openAttachment(attachment)}
+              />
+            )}
             scrollEventThrottle={16}
             scrollIndicatorInsets={{ bottom: 0 }}
             style={styles.timelineList}
@@ -287,6 +534,58 @@ export function ChatScreen() {
             ))}
             <View style={styles.composerArea}>
               <View style={styles.composer}>
+                {attachments.length > 0 && (
+                  <ScrollView
+                    contentContainerStyle={styles.pendingAttachments}
+                    horizontal
+                    keyboardShouldPersistTaps="handled"
+                    showsHorizontalScrollIndicator={false}
+                  >
+                    {attachments.map((attachment, index) => (
+                      <View
+                        key={`${attachment.localUri}:${index}`}
+                        style={styles.pendingAttachment}
+                      >
+                        {attachment.kind === "image" ? (
+                          <Paperclip color={colors.inkSoft} size={13} />
+                        ) : (
+                          <FileText color={colors.inkSoft} size={13} />
+                        )}
+                        <View style={styles.pendingAttachmentCopy}>
+                          <Text numberOfLines={1} style={styles.pendingAttachmentName}>
+                            {attachment.name}
+                          </Text>
+                          <Text style={styles.pendingAttachmentSize}>
+                            {formatBytes(attachment.originalSize)}
+                          </Text>
+                        </View>
+                        <Pressable
+                          accessibilityLabel={t("attachment.remove", { name: attachment.name })}
+                          hitSlop={8}
+                          onPress={() =>
+                            setAttachments(current => {
+                              deleteTemporaryAttachment(current[index]!);
+                              return current.filter((_, itemIndex) => itemIndex !== index);
+                            })
+                          }
+                        >
+                          <X color={colors.inkMuted} size={14} />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </ScrollView>
+                )}
+                {!!attachmentError && <Text style={styles.attachmentError}>{attachmentError}</Text>}
+                {transferProgress != null && (
+                  <View pointerEvents="none" style={styles.transferTrack}>
+                    <View
+                      style={[
+                        styles.transferFill,
+                        { width: `${Math.max(2, transferProgress * 100)}%` },
+                      ]}
+                    />
+                  </View>
+                )}
                 <TextInput
                   accessibilityLabel={t("chat.placeholder")}
                   editable={remote.desktopOnline && !remote.timeline.streaming && !remote.busy}
@@ -299,6 +598,22 @@ export function ChatScreen() {
                   value={message}
                 />
                 <View style={styles.composerToolbar}>
+                  <Pressable
+                    accessibilityLabel={t("attachment.add")}
+                    accessibilityRole="button"
+                    disabled={
+                      remote.timeline.streaming || remote.busy || !remote.fileTransferSupported
+                    }
+                    onPress={openAttachmentMenu}
+                    style={({ pressed }) => [
+                      styles.attachmentButton,
+                      pressed && styles.selectorTriggerPressed,
+                      (remote.timeline.streaming || remote.busy || !remote.fileTransferSupported) &&
+                        styles.controlDisabled,
+                    ]}
+                  >
+                    <Paperclip color={colors.inkSoft} size={17} />
+                  </Pressable>
                   <View style={styles.composerSelectors}>
                     <Pressable
                       accessibilityLabel={t("chat.model")}
@@ -346,11 +661,17 @@ export function ChatScreen() {
                     <Pressable
                       accessibilityLabel={t("chat.send")}
                       accessibilityRole="button"
-                      disabled={!message.trim() || remote.busy || !remote.desktopOnline}
+                      disabled={
+                        (!message.trim() && attachments.length === 0) ||
+                        remote.busy ||
+                        !remote.desktopOnline
+                      }
                       onPress={() => void send()}
                       style={({ pressed }) => [
                         styles.sendButton,
-                        (!message.trim() || remote.busy || !remote.desktopOnline) &&
+                        ((!message.trim() && attachments.length === 0) ||
+                          remote.busy ||
+                          !remote.desktopOnline) &&
                           styles.sendDisabled,
                         pressed && styles.sendPressed,
                       ]}
@@ -363,6 +684,74 @@ export function ChatScreen() {
             </View>
           </View>
         </View>
+
+        <Modal
+          animationType="fade"
+          onRequestClose={() => setAttachmentMenu(false)}
+          transparent
+          visible={attachmentMenu}
+        >
+          <TouchableWithoutFeedback onPress={() => setAttachmentMenu(false)}>
+            <View style={styles.attachmentOverlay}>
+              <TouchableWithoutFeedback>
+                <View style={styles.attachmentMenu}>
+                  <Pressable onPress={() => void chooseFiles()} style={styles.attachmentMenuOption}>
+                    <FileText color={colors.ink} size={20} />
+                    <Text style={styles.attachmentMenuText}>{t("attachment.chooseFiles")}</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void capturePhoto()}
+                    style={styles.attachmentMenuOption}
+                  >
+                    <Camera color={colors.ink} size={20} />
+                    <Text style={styles.attachmentMenuText}>{t("attachment.takePhoto")}</Text>
+                  </Pressable>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
+
+        <Modal
+          animationType="slide"
+          onRequestClose={() => setPreview(null)}
+          presentationStyle="pageSheet"
+          visible={preview !== null}
+        >
+          <SafeAreaView style={styles.previewSafe}>
+            <View style={styles.previewHeader}>
+              <Text numberOfLines={1} style={styles.previewTitle}>
+                {preview?.info.name}
+              </Text>
+              <Pressable accessibilityLabel={t("common.close")} onPress={() => setPreview(null)}>
+                <X color={colors.ink} size={22} />
+              </Pressable>
+            </View>
+            {preview?.info.previewKind === "image" ? (
+              <Image
+                resizeMode="contain"
+                source={{ uri: preview.uri }}
+                style={styles.previewImage}
+              />
+            ) : preview?.info.previewKind === "markdown" ? (
+              <ScrollView contentContainerStyle={styles.previewMarkdown}>
+                {!!preview?.truncated && (
+                  <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
+                )}
+                <MarkdownText text={preview?.markdown ?? ""} />
+              </ScrollView>
+            ) : (
+              <ScrollView contentContainerStyle={styles.previewMarkdown}>
+                {!!preview?.truncated && (
+                  <Text style={styles.previewTruncated}>{t("attachment.textTruncated")}</Text>
+                )}
+                <Text selectable style={styles.previewText}>
+                  {preview?.text ?? ""}
+                </Text>
+              </ScrollView>
+            )}
+          </SafeAreaView>
+        </Modal>
 
         <Modal
           animationType="fade"
@@ -520,6 +909,47 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.md,
     backgroundColor: "transparent",
   },
+  pendingAttachments: { gap: spacing.sm, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
+  pendingAttachment: {
+    maxWidth: 230,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.lineSoft,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceSubtle,
+  },
+  pendingAttachmentCopy: { maxWidth: 155 },
+  pendingAttachmentName: { color: colors.ink, fontSize: 12, fontWeight: "600" },
+  pendingAttachmentSize: { color: colors.inkMuted, fontSize: 10 },
+  attachmentError: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs,
+    color: colors.danger,
+    fontSize: 11,
+  },
+  transferTrack: {
+    position: "absolute",
+    top: 0,
+    left: spacing.md,
+    right: spacing.md,
+    height: 2,
+    overflow: "hidden",
+    borderRadius: radius.pill,
+    backgroundColor: colors.lineSoft,
+  },
+  transferFill: { height: 2, borderRadius: radius.pill, backgroundColor: colors.accent },
+  attachmentButton: {
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.md,
+    marginRight: "auto",
+  },
   dockedApproval: {
     marginHorizontal: spacing.md,
     marginBottom: spacing.sm,
@@ -592,6 +1022,50 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl,
     backgroundColor: colors.overlay,
   },
+  attachmentOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: colors.overlay,
+  },
+  attachmentMenu: {
+    width: "100%",
+    overflow: "hidden",
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    backgroundColor: colors.surface,
+  },
+  attachmentMenuOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.lineSoft,
+  },
+  attachmentMenuText: { color: colors.ink, fontSize: 15, fontWeight: "600" },
+  previewSafe: { flex: 1, backgroundColor: colors.surface },
+  previewHeader: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.lineSoft,
+  },
+  previewTitle: { flex: 1, color: colors.inkStrong, fontSize: 16, fontWeight: "700" },
+  previewImage: { flex: 1, width: "100%", height: "100%", backgroundColor: colors.surfaceSubtle },
+  previewMarkdown: { padding: spacing.lg },
+  previewTruncated: {
+    marginBottom: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    color: colors.warning,
+    backgroundColor: colors.warningSoft,
+    fontSize: 12,
+  },
+  previewText: { color: colors.ink, fontSize: 14, lineHeight: 21 },
   selectorMenu: {
     maxHeight: "60%",
     overflow: "hidden",
