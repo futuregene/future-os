@@ -270,7 +270,10 @@ function validateBatch(items: MobileAttachment[]): void {
 }
 
 export async function pickAttachments(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
-  const result = await File.pickFileAsync({ multipleFiles: true, mimeTypes: "*/*" });
+  // The iOS native module expects an array here. Passing a scalar is accepted
+  // by the TypeScript surface but can be marshalled as an invalid Record on
+  // some Expo native builds, which makes the picker dismiss immediately.
+  const result = await File.pickFileAsync({ multipleFiles: true, mimeTypes: ["*/*"] });
   if (result.canceled) return existing;
   const selected = result.result.map(file => ({ file, mimeType: file.type }));
   // Quotas are intentionally checked against original bytes before any image

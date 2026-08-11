@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Alert,
+  ActionSheetIOS,
   BackHandler,
   FlatList,
   Image,
@@ -210,6 +211,10 @@ export function ChatScreen() {
     setAttachmentMenu(false);
     setAttachmentError(null);
     try {
+      // Android's fallback sheet must finish dismissing before UIKit/Android
+      // presents another native controller. Otherwise the picker can be
+      // rejected as a concurrent presentation and looks like a no-op.
+      if (attachmentMenu) await new Promise(resolve => setTimeout(resolve, 200));
       setAttachments(await pickAttachments(attachments));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
@@ -221,6 +226,7 @@ export function ChatScreen() {
     setAttachmentMenu(false);
     setAttachmentError(null);
     try {
+      if (attachmentMenu) await new Promise(resolve => setTimeout(resolve, 200));
       setAttachments(await takePhoto(attachments));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
@@ -229,9 +235,21 @@ export function ChatScreen() {
   };
 
   const openAttachmentMenu = () => {
-    // Keep the source picker visually predictable across iOS versions: the
-    // custom sheet always rises from the bottom instead of becoming a centered
-    // system popover on newer iOS simulator runtimes.
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: [t("attachment.chooseFiles"), t("attachment.takePhoto"), t("chat.cancel")],
+          cancelButtonIndex: 2,
+        },
+        index => {
+          // Schedule after the action sheet's dismissal animation, so the
+          // document/camera controller always gets a presentable view host.
+          if (index === 0) setTimeout(() => void chooseFiles(), 0);
+          if (index === 1) setTimeout(() => void capturePhoto(), 0);
+        },
+      );
+      return;
+    }
     setAttachmentMenu(true);
   };
 
