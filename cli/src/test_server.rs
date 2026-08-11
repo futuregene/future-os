@@ -125,17 +125,22 @@ impl FutureAgent for MockAgent {
 }
 
 /// Spawn the mock on an ephemeral port; returns "127.0.0.1:<port>".
+///
+/// The socket stays bound and listening across the handover to the tonic
+/// server (`serve_with_incoming`), so there is no drop/re-bind window in
+/// which a parallel test can steal the port, and clients can connect the
+/// moment this returns (the OS backlog holds the handshake until the server
+/// task first polls accept) — no fixed startup sleep to race under load.
 pub async fn spawn_mock(agent: MockAgent) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("local_addr");
-    drop(listener);
+    listener.set_nonblocking(true).expect("nonblocking");
+    let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener from std");
     tokio::spawn(
         Server::builder()
             .add_service(FutureAgentServer::new(agent))
-            .serve(addr),
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
     );
-    // Give the listener a moment to come up before clients dial.
-    tokio::time::sleep(Duration::from_millis(50)).await;
     format!("127.0.0.1:{}", addr.port())
 }
 

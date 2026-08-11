@@ -725,8 +725,11 @@ mod tests {
 
     #[test]
     fn resolve_future_base_url_returns_default() {
-        // When auth.json doesn't have future.base_url or future.platform_base_url,
-        // should return the default. (In test env, may or may not have auth.json.)
+        // Hermetic: an empty isolated $HOME (no auth.json) always resolves the
+        // default. TestHome also holds the process-global HOME lock for the
+        // test's duration, so a parallel fixture's auth.json (e.g. an http://
+        // mock base_url) cannot leak in and flip the scheme assertion.
+        let _home = crate::test_support::TestHome::new();
         let url = resolve_future_base_url();
         assert!(!url.is_empty());
         assert!(url.starts_with("https://"));
