@@ -10,10 +10,14 @@ separately. The backend agent is launched automatically via future
 (`future agent`) on startup.
 
 [Runtime]
-Requires the system WebKitGTK runtime. If you see a missing-library error on
-launch, install it via your package manager:
+The GUI requires the system WebKitGTK runtime. If you see a missing-library
+error on launch, install it via your package manager:
     Debian/Ubuntu:  sudo apt install libwebkit2gtk-4.1-0
     Fedora:         sudo dnf install webkit2gtk4.1
+Note: the GUI requires a recent system (glibc >= 2.39, roughly Ubuntu 24.04+).
+However, the bundled command-line tool future is statically linked and has no
+system library requirements — even if the GUI cannot start on an older system,
+you can still use ./future directly (CLI / `future tui`).
 
 [Notes]
 · An internet connection is required for the first-time login (in the app).
