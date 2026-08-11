@@ -124,13 +124,14 @@ fi
 
 # expo run:ios reuses an existing Pods directory. When a package adds an Expo
 # native module, Metro can load its JS while the installed development client
-# still lacks the corresponding native code. Keep Pods synchronized whenever
-# the JavaScript dependency manifests changed since the last pod install.
+# still lacks the corresponding native code. A regular `pod install` refuses
+# stale local podspec snapshots, so refresh Pods without updating remote specs
+# whenever the JavaScript dependency manifests changed.
 POD_LOCK="$MOBILE_DIR/ios/Podfile.lock"
 if [[ ! -f "$POD_LOCK" ]] || [[ "$MOBILE_DIR/package.json" -nt "$POD_LOCK" ]] || \
   [[ "$MOBILE_DIR/package-lock.json" -nt "$POD_LOCK" ]]; then
-  echo "Installing updated iOS native dependencies..."
-  (cd "$MOBILE_DIR/ios" && pod install)
+  echo "Synchronizing updated iOS native dependencies..."
+  (cd "$MOBILE_DIR/ios" && pod update --no-repo-update)
 fi
 
 # ── gen version ──────────────────────────────────────────────────────────────
