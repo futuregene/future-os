@@ -60,7 +60,7 @@ certificate selection, output-directory and Apple notarization options.
 The one-line installer downloads the prebuilt release (no local build):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
+curl -fsSL https://dl.future-os.cn/install.sh | bash
 ```
 
 The script auto-detects the platform and installs the matching package from the
