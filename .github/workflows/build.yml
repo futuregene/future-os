@@ -54,6 +54,16 @@ jobs:
             os: ubuntu-latest
             artifact_name: futureos-linux
             bundle_path: desktop/src-tauri/target/release/bundle/deb/*.deb
+            cli_arch: x86_64
+          # Native arm64 runner — cross-compiling the WebKit-heavy GUI from
+          # x86_64 would need a full aarch64 sysroot; building natively is far
+          # simpler. Note: arm64 runners are free for public repos, billed for
+          # private ones.
+          - name: Linux ARM
+            os: ubuntu-24.04-arm
+            artifact_name: futureos-linux-arm64
+            bundle_path: desktop/src-tauri/target/release/bundle/deb/*.deb
+            cli_arch: aarch64
 
     steps:
       - name: Checkout
@@ -99,6 +109,7 @@ jobs:
             librsvg2-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
+            musl-tools \
             patchelf \
             wget
 
@@ -141,8 +152,8 @@ jobs:
         run: Set-MpPreference -DisableRealtimeMonitoring $true
 
       # Compile the CLI into a standalone binary (Rust workspace member).
-      - name: Build CLI binary (Unix)
-        if: runner.os != 'Windows'
+      - name: Build CLI binary (macOS)
+        if: runner.os == 'macOS'
         working-directory: cli
         run: |
           cargo build --release
@@ -151,6 +162,36 @@ jobs:
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p ../desktop/src-tauri/binaries
           cp ../target/release/future "../desktop/src-tauri/binaries/future-$triple"
+
+      # Linux: build the CLI as a FULLY STATIC musl binary, not against glibc.
+      # The glibc build would only run on distros with a glibc at least as new
+      # as the runner image; the static binary runs on any Linux of this arch
+      # (old distros, Alpine, bare containers). It is staged as the Tauri
+      # sidecar — so the bundled CLI/TUI stays usable even on systems where the
+      # GUI itself can't start (missing WebKitGTK, old glibc) — and packed as a
+      # standalone CLI-only tarball for servers. musl-tools provides musl-gcc
+      # for the C dependencies (ring).
+      - name: Build CLI binary (Linux, static musl)
+        if: runner.os == 'Linux'
+        working-directory: cli
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: |
+          set -euo pipefail
+          target="$(uname -m)-unknown-linux-musl"
+          rustup target add "$target"
+          cargo build --release --target "$target"
+          # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
+          # inside the installers, not just the portable packages. The sidecar
+          # filename uses the host (glibc) triple; Tauri only copies the file
+          # and doesn't care how the binary is linked.
+          triple=$(rustc -Vv | sed -n 's/^host: //p')
+          mkdir -p ../desktop/src-tauri/binaries
+          cp "../target/$target/release/future" "../desktop/src-tauri/binaries/future-$triple"
+          # Standalone CLI-only distribution (CLI + TUI + agent in one static
+          # binary) for servers and distros the GUI can't run on.
+          tar -czf "future-$target.tar.gz" -C "../target/$target/release" future
 
       - name: Build CLI binary (Windows)
         if: runner.os == 'Windows'
@@ -244,7 +285,8 @@ jobs:
           dir="futureos-portable-linux"
           mkdir -p "$dir"
           cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
-          cp "target/release/future" "$dir/future"
+          # The static musl CLI build — see the CLI build step above.
+          cp "target/$(uname -m)-unknown-linux-musl/release/future" "$dir/future"
           chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
           tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
@@ -253,8 +295,18 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
-          name: futureos-linux-portable
+          name: ${{ matrix.artifact_name }}-portable
           if-no-files-found: error
           overwrite: true
           path: FutureOS-portable-linux.tar.gz
+          retention-days: 3
+
+      - name: Upload Linux CLI (static)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: future-cli-linux-${{ matrix.cli_arch }}
+          if-no-files-found: error
+          overwrite: true
+          path: cli/future-*-unknown-linux-musl.tar.gz
           retention-days: 3
