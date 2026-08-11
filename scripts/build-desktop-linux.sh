@@ -113,11 +113,11 @@ case "$TRIPLE" in
 esac
 
 echo "==> Assembling portable tarball"
-dir="futureos-portable"
+dir="futureos-portable-linux"
 mkdir -p "$dir"
 cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
 cp "target/release/future" "$dir/future"
-chmod +x "$dir/futureos" "$dir/future"
+chmod +x "$dir"/*
 cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
 tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
 

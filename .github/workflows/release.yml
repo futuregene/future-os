@@ -84,20 +84,23 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
 
+      # Same package set as build.yml's tested Linux job.
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
-            binutils \
+            curl \
+            file \
             mold \
-            pkg-config \
+            binutils \
             libayatana-appindicator3-dev \
             libgtk-3-dev \
             librsvg2-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
-            patchelf
+            patchelf \
+            wget
 
       - name: Install npm dependencies (Desktop)
         working-directory: desktop
@@ -120,14 +123,15 @@ jobs:
         working-directory: desktop
         run: npm run tauri:build
 
-      - name: Assemble portable tarball
+      # Same layout as build.yml's tested Linux portable step.
+      - name: Assemble Linux portable
         run: |
           set -euo pipefail
-          dir="futureos-portable"
+          dir="futureos-portable-linux"
           mkdir -p "$dir"
           cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
           cp "target/release/future" "$dir/future"
-          chmod +x "$dir/futureos" "$dir/future"
+          chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
           tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
 
