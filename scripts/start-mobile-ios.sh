@@ -16,6 +16,7 @@ BUNDLE_ID="cn.futureos.mobile"
 MODE="${1:-dev}"
 REBUILD_PREBUILD="${REBUILD_PREBUILD:-0}"
 WARM_START="${WARM_START:-0}"
+CLEAN_NATIVE_BUILD="${CLEAN_NATIVE_BUILD:-0}"
 alias_on_exit=""
 
 cleanup() {
@@ -186,5 +187,10 @@ else
   echo "Building + installing debug app + starting Metro..."
   echo ""
 
-  cd "$MOBILE_DIR" && exec npx expo run:ios
+  run_args=()
+  if [[ "$CLEAN_NATIVE_BUILD" == "1" ]]; then
+    echo "CLEAN_NATIVE_BUILD=1 — clearing Xcode DerivedData before building."
+    run_args+=(--no-build-cache)
+  fi
+  cd "$MOBILE_DIR" && exec npx expo run:ios "${run_args[@]}"
 fi
