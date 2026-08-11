@@ -52,9 +52,109 @@ jobs:
       version: ${{ needs.version.outputs.version }}
     secrets: inherit
 
+  # Linux packages are unsigned (no code-signing equivalent), so the build is
+  # inlined here instead of a reusable workflow: .deb for Debian/Ubuntu plus
+  # the portable tarball for every other distro.
+  linux:
+    name: Build Linux
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      FUTURE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            desktop/src-tauri
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            binutils \
+            mold \
+            pkg-config \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf
+
+      - name: Install npm dependencies (Desktop)
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build CLI binary
+        working-directory: cli
+        run: |
+          cargo build --release
+          # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
+          # inside the .deb, not just the portable tarball.
+          triple=$(rustc -Vv | sed -n 's/^host: //p')
+          mkdir -p ../desktop/src-tauri/binaries
+          cp ../target/release/future "../desktop/src-tauri/binaries/future-$triple"
+
+      - name: Set Tauri bundle version
+        run: node scripts/version.mjs --set-bundle
+
+      - name: Build desktop bundle (.deb)
+        working-directory: desktop
+        run: npm run tauri:build
+
+      - name: Assemble portable tarball
+        run: |
+          set -euo pipefail
+          dir="futureos-portable"
+          mkdir -p "$dir"
+          cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
+          cp "target/release/future" "$dir/future"
+          chmod +x "$dir/futureos" "$dir/future"
+          cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
+          tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          deb="$(find desktop/src-tauri/target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
+          [[ -n "$deb" ]] || {
+            echo "Tauri produced no .deb bundle" >&2
+            exit 1
+          }
+          cp "$deb" "release-assets/FutureOS_${FUTURE_VERSION}_amd64.deb"
+          cp FutureOS-portable-linux.tar.gz "release-assets/"
+
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: futureos-linux-release
+          if-no-files-found: error
+          overwrite: true
+          path: release-assets/
+          retention-days: 7
+
   publish:
     name: Publish complete release
-    needs: [version, macos, windows]
+    needs: [version, macos, windows, linux]
     runs-on: ubuntu-latest
     concurrency:
       group: futureos-release-publish
@@ -89,6 +189,8 @@ jobs:
           mac_intel="FutureOS_${VERSION}_x64-sign.dmg"
           mac_intel_updater="FutureOS_${VERSION}_x64.app.tar.gz"
           windows="FutureOS_${VERSION}_x64-setup-sign.exe"
+          linux_deb="FutureOS_${VERSION}_amd64.deb"
+          linux_portable="FutureOS-portable-linux.tar.gz"
 
           for name in \
             "$mac_arm" \
@@ -98,7 +200,9 @@ jobs:
             "$mac_intel_updater" \
             "$mac_intel_updater.sig" \
             "$windows" \
-            "$windows.sig"
+            "$windows.sig" \
+            "$linux_deb" \
+            "$linux_portable"
           do
             source="$(find release-assets -type f -name "$name" -print -quit)"
             [[ -n "$source" ]] || {
@@ -117,8 +221,8 @@ jobs:
           cp -v "publish/$windows" "publish/FutureOS_${VERSION}_x64-setup.exe"
 
           count="$(find publish -type f | wc -l | tr -d ' ')"
-          [[ "$count" == "11" ]] || {
-            echo "Expected exactly eleven public release assets, found $count." >&2
+          [[ "$count" == "13" ]] || {
+            echo "Expected exactly thirteen public release assets, found $count." >&2
             exit 1
           }
 
@@ -134,6 +238,8 @@ jobs:
           export MAC_INTEL_FILE="FutureOS_${VERSION}_x64-sign.dmg"
           export MAC_INTEL_UPDATER_FILE="FutureOS_${VERSION}_x64.app.tar.gz"
           export WINDOWS_FILE="FutureOS_${VERSION}_x64-setup-sign.exe"
+          export LINUX_DEB_FILE="FutureOS_${VERSION}_amd64.deb"
+          export LINUX_PORTABLE_FILE="FutureOS-portable-linux.tar.gz"
 
           node <<'NODE'
           const fs = require("node:fs");
@@ -158,6 +264,11 @@ jobs:
               "darwin-aarch64": asset(process.env.MAC_ARM_FILE),
               "darwin-x86_64": asset(process.env.MAC_INTEL_FILE),
               "windows-x86_64": asset(process.env.WINDOWS_FILE),
+              // install.sh keys on these: linux-x86_64 (.deb) for Debian systems,
+              // linux-x86_64-portable for every other distro. No `platforms`
+              // entry — Linux has no Tauri updater signing key.
+              "linux-x86_64": asset(process.env.LINUX_DEB_FILE),
+              "linux-x86_64-portable": asset(process.env.LINUX_PORTABLE_FILE),
             },
           };
           fs.writeFileSync("latest.json", `${JSON.stringify(manifest, null, 2)}\n`);
@@ -198,7 +309,9 @@ jobs:
             "FutureOS_${VERSION}_x64.app.tar.gz.sig" \
             "FutureOS_${VERSION}_x64-setup-sign.exe" \
             "FutureOS_${VERSION}_x64-setup.exe" \
-            "FutureOS_${VERSION}_x64-setup-sign.exe.sig"
+            "FutureOS_${VERSION}_x64-setup-sign.exe.sig" \
+            "FutureOS_${VERSION}_amd64.deb" \
+            "FutureOS-portable-linux.tar.gz"
           do
             ossutil stat "$target/$name"
           done
