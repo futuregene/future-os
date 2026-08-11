@@ -38,13 +38,13 @@ FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应�
 **macOS / Linux** — 同一脚本自动识别平台：macOS 安装官方签名应用（自动识别 arm64 / Intel）；Debian/Ubuntu 安装 `.deb`（桌面应用 + 统一 `future` CLI），其他 Linux 安装便携版压缩包：
 
 ```bash
-curl -fsSL https://future-os.cn/install.sh | bash
+curl -fsSL https://dl.future-os.cn/install.sh | bash
 ```
 
 **Windows**（PowerShell）— 静默运行签名安装程序：
 
 ```powershell
-iex (irm https://future-os.cn/install.ps1)
+iex (irm https://dl.future-os.cn/install.ps1)
 ```
 
 各平台（桌面应用、工具链、GUI 打包）的分步安装步骤见

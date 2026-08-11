@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # FutureOS one-line installer
 #
-#   macOS / Linux:  curl -fsSL https://future-os.cn/install.sh | bash
-#   Windows:        iex (irm https://future-os.cn/install.ps1)
+#   macOS / Linux:  curl -fsSL https://dl.future-os.cn/install.sh | bash
+#   Windows:        iex (irm https://dl.future-os.cn/install.ps1)
 #
 # Auto-detects the OS and installs the prebuilt release — no local build:
 #   - macOS            downloads the signed DMG, verifies its SHA-256 against

@@ -1,6 +1,6 @@
 # FutureOS one-line installer for Windows
 #
-#   iex (irm https://future-os.cn/install.ps1)
+#   iex (irm https://dl.future-os.cn/install.ps1)
 #
 # Downloads the signed NSIS installer for the latest release from the release
 # manifest, verifies its SHA-256, and runs it silently.

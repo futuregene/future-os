@@ -1,7 +1,7 @@
 name: publish-installers
 
 # Syncs the one-line installer scripts to the OSS bucket root so they are
-# served from https://future-os.cn/install.sh and /install.ps1. Runs on every
+# served from https://dl.future-os.cn/install.sh and /install.ps1. Runs on every
 # change to the scripts on main (not tied to releases — the installers evolve
 # with main and must stay current between releases).
 

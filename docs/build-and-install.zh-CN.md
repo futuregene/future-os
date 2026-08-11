@@ -53,7 +53,7 @@ scripts/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动�
 一行安装器下载预编译版本（无需本地构建）：
 
 ```bash
-curl -fsSL https://future-os.cn/install.sh | bash
+curl -fsSL https://dl.future-os.cn/install.sh | bash
 ```
 
 脚本自动识别平台并从发布清单安装匹配的包，并校验 SHA-256：
