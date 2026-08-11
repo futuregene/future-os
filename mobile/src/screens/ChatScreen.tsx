@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Alert,
+  ActionSheetIOS,
   BackHandler,
   FlatList,
   Image,
@@ -226,6 +227,26 @@ export function ChatScreen() {
       const key = error instanceof Error ? error.message : "attachment_failed";
       setAttachmentError(t(`attachment.errors.${key}`));
     }
+  };
+
+  const openAttachmentMenu = () => {
+    // iOS's native action sheet is the familiar pattern for a short list of
+    // creation sources. It deliberately owns the lower screen while open,
+    // instead of leaving a small card awkwardly over the composer.
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: [t("attachment.chooseFiles"), t("attachment.takePhoto"), t("chat.cancel")],
+          cancelButtonIndex: 2,
+        },
+        index => {
+          if (index === 0) void chooseFiles();
+          if (index === 1) void capturePhoto();
+        },
+      );
+      return;
+    }
+    setAttachmentMenu(true);
   };
 
   const send = async () => {
@@ -573,25 +594,23 @@ export function ChatScreen() {
                   value={message}
                 />
                 <View style={styles.composerToolbar}>
+                  <Pressable
+                    accessibilityLabel={t("attachment.add")}
+                    accessibilityRole="button"
+                    disabled={
+                      remote.timeline.streaming || remote.busy || !remote.fileTransferSupported
+                    }
+                    onPress={openAttachmentMenu}
+                    style={({ pressed }) => [
+                      styles.attachmentButton,
+                      pressed && styles.selectorTriggerPressed,
+                      (remote.timeline.streaming || remote.busy || !remote.fileTransferSupported) &&
+                        styles.controlDisabled,
+                    ]}
+                  >
+                    <Paperclip color={colors.inkSoft} size={17} />
+                  </Pressable>
                   <View style={styles.composerSelectors}>
-                    <Pressable
-                      accessibilityLabel={t("attachment.add")}
-                      accessibilityRole="button"
-                      disabled={
-                        remote.timeline.streaming || remote.busy || !remote.fileTransferSupported
-                      }
-                      onPress={() => setAttachmentMenu(true)}
-                      style={({ pressed }) => [
-                        styles.attachmentButton,
-                        pressed && styles.selectorTriggerPressed,
-                        (remote.timeline.streaming ||
-                          remote.busy ||
-                          !remote.fileTransferSupported) &&
-                          styles.controlDisabled,
-                      ]}
-                    >
-                      <Paperclip color={colors.inkSoft} size={17} />
-                    </Pressable>
                     <Pressable
                       accessibilityLabel={t("chat.model")}
                       accessibilityRole="button"
@@ -669,7 +688,7 @@ export function ChatScreen() {
           visible={attachmentMenu}
         >
           <TouchableWithoutFeedback onPress={() => setAttachmentMenu(false)}>
-            <View style={styles.selectorOverlay}>
+            <View style={styles.attachmentOverlay}>
               <TouchableWithoutFeedback>
                 <View style={styles.attachmentMenu}>
                   <Pressable onPress={() => void chooseFiles()} style={styles.attachmentMenuOption}>
@@ -956,14 +975,14 @@ const styles = StyleSheet.create({
     minHeight: 46,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-end",
+    justifyContent: "space-between",
     gap: spacing.sm,
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.md,
   },
   composerSelectors: {
     minWidth: 0,
-    flexGrow: 0,
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.xs,
@@ -998,11 +1017,16 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl,
     backgroundColor: colors.overlay,
   },
+  attachmentOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: colors.overlay,
+  },
   attachmentMenu: {
-    width: "82%",
-    maxWidth: 360,
+    width: "100%",
     overflow: "hidden",
-    borderRadius: radius.lg,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
     backgroundColor: colors.surface,
   },
   attachmentMenuOption: {
