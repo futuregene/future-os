@@ -39,3 +39,6 @@ async-trait.workspace = true
 
 [build-dependencies]
 prost-build.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

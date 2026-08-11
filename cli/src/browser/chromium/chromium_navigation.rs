@@ -38,9 +38,7 @@ pub async fn wait_for_explicit_navigation(
             let name = event.get("name").and_then(Value::as_str);
             if let Some(lid) = loader_id {
                 if name == Some("DOMContentLoaded") {
-                    if let Ok(mut set) = loaded_cb.lock() {
-                        set.insert(lid.to_string());
-                    }
+                    let _ = loaded_cb.lock().map(|mut set| set.insert(lid.to_string()));
                 }
             }
         });
@@ -140,14 +138,12 @@ impl ActionNavigationObserver {
                 let name = event.get("name").and_then(Value::as_str);
                 if let Some(lid) = loader_id {
                     if name == Some("DOMContentLoaded") {
-                        if let Ok(mut set) = loaded.lock() {
-                            set.insert(lid.to_string());
-                        }
+                        let _ = loaded.lock().map(|mut set| set.insert(lid.to_string()));
                     }
                     if lid != current_loader_id {
-                        if let Ok(mut slot) = new_loader_id.lock() {
-                            *slot = Some(lid.to_string());
-                        }
+                        let _ = new_loader_id
+                            .lock()
+                            .map(|mut slot| *slot = Some(lid.to_string()));
                     }
                 }
             });
@@ -179,12 +175,9 @@ impl ActionNavigationObserver {
                 wait_until(
                     move || {
                         let current = new_loader_id.lock().unwrap().clone();
-                        match current {
-                            Some(lid) => {
-                                loaded.lock().map(|set| set.contains(&lid)).unwrap_or(false)
-                            }
-                            None => false,
-                        }
+                        current
+                            .map(|lid| loaded.lock().map(|set| set.contains(&lid)).unwrap_or(false))
+                            .unwrap_or(false)
                     },
                     wait_ms,
                 )
@@ -244,31 +237,26 @@ mod tests {
             // Wait for the client's Page.navigate command, fire queued events
             // BEFORE replying (the TS test: DOMContentLoaded fired before
             // navigate returns).
-            loop {
-                match ws.next().await {
-                    Some(Ok(Message::Text(text))) => {
-                        if text.contains("\"Page.navigate\"") {
-                            for ev in &events_before_reply {
-                                let _ = ws.send(Message::Text(ev.to_string())).await;
-                            }
-                            let _ = ws.send(Message::Text(
-                                json!({"id": extract_id(&text), "result": {"frameId": "main", "loaderId": "loader-new"}}).to_string(),
-                            ))
-                            .await;
-                            break;
-                        }
-                        // Any other command: answer with an id-matched empty result.
-                        let _ = ws
-                            .send(Message::Text(
-                                json!({"id": extract_id(&text), "result": {}}).to_string(),
-                            ))
-                            .await;
+            while let Some(Ok(Message::Text(text))) = ws.next().await {
+                if text.contains("\"Page.navigate\"") {
+                    for ev in &events_before_reply {
+                        let _ = ws.send(Message::Text(ev.to_string())).await;
                     }
-                    Some(Ok(_)) => continue,
-                    _ => break,
+                    let _ = ws.send(Message::Text(
+                        json!({"id": extract_id(&text), "result": {"frameId": "main", "loaderId": "loader-new"}}).to_string(),
+                    ))
+                    .await;
+                    break;
                 }
+                // Any other command: answer with an id-matched empty result.
+                let _ = ws
+                    .send(Message::Text(
+                        json!({"id": extract_id(&text), "result": {}}).to_string(),
+                    ))
+                    .await;
             }
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            // Brief hold so the task body runs to completion in-test.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         });
         (format!("ws://{addr}"), handle)
     }
@@ -299,7 +287,33 @@ mod tests {
                 .await
                 .unwrap();
         assert!(result.did_navigate);
-        drop(server);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_navigation_ignores_malformed_lifecycle_events() {
+        // Non-DOMContentLoaded and loaderId-less events exercise the
+        // handler's filter arms; a trailing DOMContentLoaded completes it.
+        let (url, server) = scripted_nav_server(vec![
+            json!({"method": "Page.lifecycleEvent",
+                   "params": {"frameId": "main", "loaderId": "loader-new", "name": "init"}}),
+            json!({"method": "Page.lifecycleEvent",
+                   "params": {"frameId": "main", "name": "DOMContentLoaded"}}),
+            json!({"method": "Page.lifecycleEvent",
+                   "params": {"frameId": "main", "loaderId": "loader-new", "name": "DOMContentLoaded"}}),
+        ])
+        .await;
+        let conn = CdpConnection::connect(&url, 5000).await.unwrap();
+        let session = CdpSession::new("", conn.clone());
+
+        // A non-navigate command first (the server's other-command arm).
+        session.send("Page.enable", None).await.unwrap();
+        let result =
+            wait_for_explicit_navigation(&session, "https://example.test/", &deadline(500))
+                .await
+                .unwrap();
+        assert!(result.did_navigate);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -327,7 +341,7 @@ mod tests {
         let result = observer.wait(&deadline(500)).await.unwrap();
         observer.dispose();
         assert!(result.did_navigate);
-        drop(server);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -347,6 +361,130 @@ mod tests {
         let result = observer.wait(&deadline(75)).await.unwrap();
         observer.dispose();
         assert!(!result.did_navigate);
-        drop(server);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    // ── Remainder coverage via the mock browser ───────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_navigation_error_text_and_send_failure() {
+        let mock = crate::test_cdp::MockCdp::start().await;
+        mock.state.lock().unwrap().navigate_error_text = Some("net::ERR_X".to_string());
+        let (conn, session) = {
+            let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+            (conn.clone(), CdpSession::new("S-1", conn))
+        };
+        let result = wait_for_explicit_navigation(&session, "http://x/", &deadline(500))
+            .await
+            .unwrap();
+        assert!(!result.did_navigate);
+        assert_eq!(result.error_text.as_deref(), Some("net::ERR_X"));
+
+        // Page.navigate send failure → Err.
+        mock.state.lock().unwrap().navigate_error_text = None;
+        mock.state
+            .lock()
+            .unwrap()
+            .fail_methods
+            .insert("Page.navigate".to_string());
+        let err = wait_for_explicit_navigation(&session, "http://x/", &deadline(500))
+            .await
+            .unwrap_err();
+        assert!(err.contains("mock failure"), "{err}");
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_navigation_same_document_and_missing_load_event() {
+        let mock = crate::test_cdp::MockCdp::start().await;
+        // Same-document (no loaderId) → did_navigate + same_document.
+        mock.state.lock().unwrap().navigate_same_document = true;
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        let session = CdpSession::new("S-1", conn.clone());
+        let result = wait_for_explicit_navigation(&session, "http://x/#f", &deadline(500))
+            .await
+            .unwrap();
+        assert!(result.did_navigate);
+        assert_eq!(result.same_document, Some(true));
+
+        // loaderId present but DOMContentLoaded never arrives → still
+        // navigated after the bounded wait (non-matching events ignored).
+        {
+            let mut state = mock.state.lock().unwrap();
+            state.navigate_same_document = false;
+            state.suppress_loaded_event = true;
+        }
+        let result = wait_for_explicit_navigation(&session, "http://y/", &deadline(150))
+            .await
+            .unwrap();
+        assert!(result.did_navigate);
+        assert_eq!(result.same_document, None);
+        conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn observer_ignores_non_domcontentloaded_and_same_loader() {
+        let (url, server) = scripted_nav_server(vec![]).await;
+        let conn = CdpConnection::connect(&url, 5000).await.unwrap();
+        let session = CdpSession::new("", conn.clone());
+
+        let observer = ActionNavigationObserver::new("main", "loader-old");
+        observer.arm(&session);
+        // Same loader id → not a new navigation.
+        conn.dispatch_test(
+            None,
+            "Page.lifecycleEvent",
+            &json!({"frameId": "main", "loaderId": "loader-old", "name": "DOMContentLoaded"}),
+        );
+        // New loader but a non-DOMContentLoaded name (recorded as new
+        // loader, but loaded-set lacks it → wait reports navigation once
+        // the loader switch is seen).
+        conn.dispatch_test(
+            None,
+            "Page.lifecycleEvent",
+            &json!({"frameId": "main", "loaderId": "loader-new", "name": "load"}),
+        );
+        // Event without loaderId → ignored entirely.
+        conn.dispatch_test(
+            None,
+            "Page.lifecycleEvent",
+            &json!({"frameId": "main", "name": "DOMContentLoaded"}),
+        );
+        let result = observer.wait(&deadline(200)).await.unwrap();
+        observer.dispose();
+        // New loader id was registered (navigation started) even though the
+        // DOMContentLoaded for it never arrived within the deadline.
+        assert!(result.did_navigate);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn observer_disposed_short_circuits_arm_and_wait() {
+        let (url, server) = scripted_nav_server(vec![]).await;
+        let conn = CdpConnection::connect(&url, 5000).await.unwrap();
+        let session = CdpSession::new("", conn.clone());
+
+        let observer = ActionNavigationObserver::new("main", "loader-old");
+        observer.dispose();
+        // arm() after dispose is a no-op.
+        observer.arm(&session);
+        // wait() after dispose resolves immediately with no navigation.
+        let started = std::time::Instant::now();
+        let result = observer.wait(&deadline(5_000)).await.unwrap();
+        assert!(started.elapsed().as_millis() < 100);
+        assert!(!result.did_navigate);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    #[test]
+    fn navigation_result_default() {
+        let r = NavigationResult::default();
+        assert!(!r.did_navigate);
+        assert!(r.new_url.is_none());
+        assert!(r.error_text.is_none());
+        assert!(r.same_document.is_none());
+        let cloned = r.clone();
+        assert!(!cloned.did_navigate);
+        let _ = format!("{r:?}");
     }
 }

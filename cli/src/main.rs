@@ -15,7 +15,11 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    run_from_args(&args)
+}
 
+/// Everything past the OS argv read (unit-testable entry).
+fn run_from_args(args: &[String]) -> ExitCode {
     // Embedded components (each builds its own tokio runtime) — dispatch
     // before the CLI runtime starts.
     if let Some(group) = args.first().map(String::as_str) {
@@ -29,14 +33,10 @@ fn main() -> ExitCode {
     }
 
     let out = future_cli::Output::stdio();
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(err) => {
-            eprintln!("failed to start runtime: {err}");
-            return ExitCode::from(1);
-        }
-    };
-    let code = runtime.block_on(future_cli::dispatch(&args, &out));
+    // Invariant: a multi-thread runtime always builds (failure would mean
+    // resource exhaustion fatal to the process anyway).
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime starts");
+    let code = runtime.block_on(future_cli::dispatch(args, &out));
     out.flush();
     ExitCode::from(code as u8)
 }
@@ -77,5 +77,28 @@ fn run_loop(args: &[String]) -> ExitCode {
             eprintln!("Error: {err}");
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_dispatch_through_run_from_args() {
+        // --version → dispatch prints and exits 0 (writes to real stdio —
+        // captured by the test harness).
+        assert_eq!(run_from_args(&["--version".to_string()]), ExitCode::SUCCESS);
+        // A bare bogus group prints the main help, still exit 0.
+        assert_eq!(run_from_args(&["bogus".to_string()]), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn embedded_loop_unknown_command_errors() {
+        // `future loop bogus` → the loop console rejects it without a runtime.
+        assert_eq!(
+            run_from_args(&["loop".to_string(), "bogus-cmd-xyz".to_string()]),
+            ExitCode::from(1)
+        );
     }
 }

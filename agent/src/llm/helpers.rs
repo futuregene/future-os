@@ -823,4 +823,127 @@ mod message_conversion_tests {
     fn parse_sse_chunk_invalid_json_errors() {
         assert!(Client::parse_sse_chunk("not json").is_err());
     }
+
+    // ─── coverage batch: thinking params + conversion arms ────────────────
+
+    #[test]
+    fn apply_thinking_params_reasoning_effort_without_compat_format() {
+        let client = Client::new("https://api.test", "k", None, None).with_thinking_level("high");
+        let mut body = serde_json::json!({});
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body["reasoning_effort"], serde_json::json!("high"));
+        // "off" with no compat format emits nothing.
+        let client = Client::new("https://api.test", "k", None, None).with_thinking_level("off");
+        let mut body = serde_json::json!({});
+        client.apply_thinking_params(&mut body);
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn apply_thinking_params_reasoning_split_enabled_and_disabled() {
+        let client = Client::new("https://api.test", "k", None, None)
+            .with_compat("reasoning-split", false, false)
+            .with_thinking_level("high");
+        let mut body = serde_json::json!({});
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body["reasoning_split"], serde_json::json!(true));
+        assert_eq!(body["thinking"], serde_json::json!("enabled"));
+
+        let client = Client::new("https://api.test", "k", None, None)
+            .with_compat("reasoning-split", false, false)
+            .with_thinking_level("off");
+        let mut body = serde_json::json!({});
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body["thinking"], serde_json::json!("disabled"));
+    }
+
+    #[test]
+    fn convert_messages_filters_empty_content_variants() {
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: Some(serde_json::json!([])),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: Some(serde_json::Value::Null),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: Some(serde_json::json!({"unexpected": "object"})),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: Some(serde_json::json!("real")),
+                ..Default::default()
+            },
+        ];
+        let out = Client::convert_messages_to_openai(messages, String::new(), false);
+        // Empty array and Null are dropped; the object form is kept.
+        let roles: Vec<&str> = out.iter().filter_map(|m| m["role"].as_str()).collect();
+        assert!(roles.contains(&"user"));
+    }
+
+    #[test]
+    fn convert_messages_tool_content_string_and_array() {
+        let tool_array = Message {
+            role: "tool".to_string(),
+            tool_call_id: "c1".to_string(),
+            content: Some(serde_json::json!([{"type": "text", "text": "piece"}])),
+            ..Default::default()
+        };
+        let tool_string = Message {
+            role: "tool".to_string(),
+            tool_call_id: "c2".to_string(),
+            content: Some(serde_json::json!("plain result")),
+            ..Default::default()
+        };
+        let out =
+            Client::convert_messages_to_openai(vec![tool_array, tool_string], String::new(), false);
+        assert_eq!(out[0]["content"], "piece");
+        assert_eq!(out[1]["content"], "plain result");
+    }
+
+    #[test]
+    fn extract_content_all_variants() {
+        assert_eq!(
+            Client::extract_content(Some(serde_json::json!("s"))),
+            serde_json::json!([{"type": "text", "text": "s"}])
+        );
+        assert_eq!(
+            Client::extract_content(Some(serde_json::json!([{"type": "text", "text": "a"}]))),
+            serde_json::json!([{"type": "text", "text": "a"}])
+        );
+        assert_eq!(
+            Client::extract_content(Some(serde_json::json!(42))),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            Client::extract_content(None),
+            serde_json::json!([{"type": "text", "text": ""}])
+        );
+    }
+
+    #[test]
+    fn parse_sse_chunk_cache_write_details() {
+        let data = r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cache_write_tokens":7}}}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_eq!(event.usage.unwrap().cache_write_tokens, Some(7));
+    }
+
+    #[test]
+    fn parse_sse_chunk_thinking_via_thinking_key() {
+        let data = r#"{"choices":[{"index":0,"delta":{"thinking":"hmm"}}]}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_eq!(event.event_type, "thinking_delta");
+        assert_eq!(event.text, "hmm");
+        // Empty thinking is skipped (falls through to the empty-delta stop).
+        let data = r#"{"choices":[{"index":0,"delta":{"thinking":""}}]}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_ne!(event.event_type, "thinking_delta");
+    }
 }

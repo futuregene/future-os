@@ -36,3 +36,46 @@ fn platform_tls_config() -> rustls::ClientConfig {
         .with_platform_verifier()
         .with_no_client_auth()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Install the process-level rustls provider (production does this in
+    /// `run()`); idempotent — a second install returns Err we ignore.
+    fn ensure_provider() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
+
+    #[test]
+    fn http_client_builds() {
+        ensure_provider();
+        let client = http_client();
+        // A built client is usable for requests (no panic, correct type).
+        let req = client.get("http://127.0.0.1/").build();
+        assert!(req.is_ok());
+    }
+
+    #[test]
+    fn http_client_builder_builds() {
+        ensure_provider();
+        let builder = http_client_builder();
+        let client = builder.build().expect("build client");
+        let req = client.post("http://127.0.0.1/").build();
+        assert!(req.is_ok());
+    }
+
+    #[test]
+    fn ws_connector_is_rustls() {
+        ensure_provider();
+        let connector = ws_connector();
+        assert!(matches!(connector, tokio_tungstenite::Connector::Rustls(_)));
+    }
+
+    #[test]
+    fn platform_tls_config_builds() {
+        ensure_provider();
+        // Directly exercises the platform verifier builder path.
+        let _config = platform_tls_config();
+    }
+}

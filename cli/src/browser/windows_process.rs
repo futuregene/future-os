@@ -130,4 +130,89 @@ mod tests {
         assert!(script.contains("-WindowStyle Normal -PassThru"));
         assert!(!script.contains("cmd /c"));
     }
+
+    #[test]
+    fn quotes_empty_and_trailing_backslash_args() {
+        // Empty → explicit empty quotes.
+        assert_eq!(quote_windows_command_line_argument(""), "\"\"");
+        // Trailing backslashes double before the closing quote.
+        assert_eq!(
+            quote_windows_command_line_argument("C:\\dir with space\\"),
+            "\"C:\\dir with space\\\\\""
+        );
+        // Backslash runs before a literal quote: 2n+1 rule.
+        assert_eq!(
+            quote_windows_command_line_argument("a\\\\\"b c"),
+            "\"a\\\\\\\\\\\"b c\""
+        );
+    }
+
+    #[test]
+    fn encodes_utf16le_base64() {
+        // "A" in UTF-16LE is [0x41, 0x00] → base64 "QQA=".
+        assert_eq!(encode_utf16le_base64("A"), "QQA=");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn launch_fails_without_powershell() {
+        let _guard = crate::test_env::lock_env().await;
+        // PATH without any powershell.exe → spawn error surfaces.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env =
+            crate::test_env::EnvGuard::set(&[("PATH", dir.path().as_os_str().to_os_string())]);
+        let err = launch_windows_detached("chrome.exe", &["--flag".to_string()])
+            .await
+            .unwrap_err();
+        assert!(err.contains("Failed to launch browser through PowerShell"));
+    }
+
+    /// Install a fake `powershell.exe` (a POSIX shell script) into a temp dir
+    /// and point PATH at it exclusively. Unix-only: on Windows the real
+    /// PowerShell would actually launch processes.
+    #[cfg(not(windows))]
+    async fn with_fake_powershell(
+        script_body: &str,
+    ) -> (tempfile::TempDir, crate::test_env::EnvGuard) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin = dir.path().join("powershell.exe");
+        std::fs::write(&bin, format!("#!/bin/sh\n{script_body}\n")).expect("write");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let guard =
+            crate::test_env::EnvGuard::set(&[("PATH", dir.path().as_os_str().to_os_string())]);
+        (dir, guard)
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn launch_ok_when_powershell_exits_zero() {
+        let _guard = crate::test_env::lock_env().await;
+        let (_dir, _env) = with_fake_powershell("exit 0").await;
+        launch_windows_detached("chrome.exe", &["--flag".to_string()])
+            .await
+            .expect("launch ok");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn launch_err_on_nonzero_exit() {
+        let _guard = crate::test_env::lock_env().await;
+        let (_dir, _env) = with_fake_powershell("exit 3").await;
+        let err = launch_windows_detached("chrome.exe", &[])
+            .await
+            .unwrap_err();
+        assert!(err.contains("exit code 3"), "unexpected: {err}");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn launch_err_on_signal_termination() {
+        let _guard = crate::test_env::lock_env().await;
+        let (_dir, _env) = with_fake_powershell("kill -TERM $$").await;
+        let err = launch_windows_detached("chrome.exe", &[])
+            .await
+            .unwrap_err();
+        assert!(err.contains("signal terminated"), "unexpected: {err}");
+    }
 }

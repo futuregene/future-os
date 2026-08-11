@@ -11,7 +11,11 @@ pub mod help;
 pub mod output;
 pub mod rpc;
 #[cfg(test)]
+pub mod test_cdp;
+#[cfg(test)]
 pub mod test_env;
+#[cfg(test)]
+pub mod test_server;
 pub mod types;
 pub mod utils;
 pub mod version;
@@ -389,5 +393,127 @@ mod tests {
         assert!(!commands::skills::is_skills_command(Some("bogus")));
         assert!(commands::account::is_account_command(Some("balance")));
         assert!(!commands::account::is_account_command(Some("bogus")));
+    }
+
+    // ── Dispatch routing into each command group ────────────────────
+
+    #[tokio::test]
+    async fn init_dispatch_reaches_command() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // init runs against the test binary (not named "future") → exit 1.
+        let (code, _, stderr) = run(&["init"]).await;
+        assert_eq!(code, 1);
+        assert!(
+            stderr.contains("Cannot initialize command links"),
+            "stderr: {stderr}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_dispatch_and_unknown_subcommand() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
+        // Known subcommand routes into tools() (local tools still render).
+        let (code, stdout, _) = run(&["tools", "list"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("tools available."), "stdout: {stdout}");
+        // Unknown subcommand → stderr note + group help, exit 0.
+        let (code, stdout, stderr) = run(&["tools", "bogus"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stderr, "Unknown command: bogus\n\n");
+        assert_eq!(stdout, format!("{}\n", help::TOOLS_GROUP_HELP));
+    }
+
+    #[tokio::test]
+    async fn skills_dispatch_and_unknown_subcommand() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _grpc = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
+        // skills uninstall without a name: sets exit code 1 via Output while
+        // returning Ok — catch() merges it (process.exitCode semantics).
+        let (code, _, stderr) = run(&["skills", "uninstall"]).await;
+        assert_eq!(code, 1);
+        assert!(
+            stderr.contains("Usage: future skills uninstall"),
+            "stderr: {stderr}"
+        );
+        // Unknown subcommand → group help.
+        let (code, stdout, stderr) = run(&["skills", "bogus"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stderr, "Unknown command: bogus\n\n");
+        assert_eq!(stdout, format!("{}\n", help::SKILLS_GROUP_HELP));
+    }
+
+    #[tokio::test]
+    async fn account_dispatch_and_unknown_subcommand() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Known subcommand routes in; without auth it fails with exit 1.
+        let (code, _, stderr) = run(&["account", "profile"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("No API key found"), "stderr: {stderr}");
+        // Unknown subcommand → group help, exit 0.
+        let (code, stdout, stderr) = run(&["account", "bogus"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stderr, "Unknown command: bogus\n\n");
+        assert_eq!(stdout, format!("{}\n", help::ACCOUNT_GROUP_HELP));
+    }
+
+    #[tokio::test]
+    async fn run_dispatch_no_prompt() {
+        let (code, _, stderr) = run(&["run"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("No prompt provided."), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn models_json_flag_routing_and_rest_help() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
+        // --json immediately after the group is forwarded into models args.
+        let (code, stdout, _) = run(&["models", "--json"]).await;
+        assert_eq!(code, 1);
+        assert!(stdout.starts_with("{\"error\":"), "stdout: {stdout}");
+        // --help in the REST position still prints help.
+        let (code, stdout, _) = run(&["models", "zzz", "--help"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, format!("{}\n", help::MODELS_HELP));
+        // A plain rest arg routes into the text-mode listing (agent down →
+        // error exit).
+        let (code, _, stderr) = run(&["models", "zzz"]).await;
+        assert_eq!(code, 1);
+        assert!(!stderr.is_empty(), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn session_and_doctor_dispatch() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
+        // session unknown subcommand → HANDLED_EXIT → 1.
+        let (code, _, stderr) = run(&["session", "bogus", "id-1"]).await;
+        assert_eq!(code, 1);
+        assert!(
+            stderr.contains("Unknown command: bogus"),
+            "stderr: {stderr}"
+        );
+        // doctor runs to completion (isolated env → warns but exit 0).
+        let dir = tempfile::tempdir().unwrap();
+        let _path =
+            crate::test_env::EnvGuard::set(&[("PATH", dir.path().as_os_str().to_os_string())]);
+        let (code, stdout, _) = run(&["doctor"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("Future Doctor"), "stdout: {stdout}");
     }
 }

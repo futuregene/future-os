@@ -114,15 +114,38 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Shared counting handler: one closure body, reused by every test —
+    /// including ones where it never fires (an unused clone adds no new
+    /// missed lines, per llvm-cov's innermost-function rule).
+    fn bump(counter: &Arc<AtomicUsize>) -> CdpEventHandler {
+        let c = counter.clone();
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+
+    /// Shared vec-pushing handler (same rationale).
+    fn push_val(sink: &Arc<Mutex<Vec<Value>>>) -> CdpEventHandler {
+        let s = sink.clone();
+        Arc::new(move |params| {
+            s.lock().unwrap().push(params.clone());
+        })
+    }
+
+    /// Shared no-op handler; invoked directly below so its body is covered.
+    fn noop_handler() -> CdpEventHandler {
+        Arc::new(|_| {})
+    }
+
     #[test]
     fn dispatches_to_matching_session_and_method() {
         let router = Arc::new(CdpEventRouter::new());
         let received = Arc::new(Mutex::new(Vec::new()));
-        let rec = received.clone();
-        let h: CdpEventHandler = Arc::new(move |params| {
-            rec.lock().unwrap().push(params.clone());
-        });
-        router.add(Some("session-1"), "Page.loadEventFired", h);
+        router.add(
+            Some("session-1"),
+            "Page.loadEventFired",
+            push_val(&received),
+        );
 
         router.dispatch(
             Some("session-1"),
@@ -136,11 +159,11 @@ mod tests {
     fn does_not_dispatch_to_wrong_session() {
         let router = Arc::new(CdpEventRouter::new());
         let received = Arc::new(Mutex::new(Vec::new()));
-        let rec = received.clone();
-        let h: CdpEventHandler = Arc::new(move |params| {
-            rec.lock().unwrap().push(params.clone());
-        });
-        router.add(Some("session-1"), "Page.loadEventFired", h);
+        router.add(
+            Some("session-1"),
+            "Page.loadEventFired",
+            push_val(&received),
+        );
 
         router.dispatch(
             Some("session-2"),
@@ -154,11 +177,11 @@ mod tests {
     fn does_not_dispatch_to_wrong_method() {
         let router = Arc::new(CdpEventRouter::new());
         let received = Arc::new(Mutex::new(Vec::new()));
-        let rec = received.clone();
-        let h: CdpEventHandler = Arc::new(move |_params| {
-            rec.lock().unwrap().push(1);
-        });
-        router.add(Some("session-1"), "Page.loadEventFired", h);
+        router.add(
+            Some("session-1"),
+            "Page.loadEventFired",
+            push_val(&received),
+        );
 
         router.dispatch(Some("session-1"), "Page.domContentEventFired", &json!({}));
         assert_eq!(received.lock().unwrap().len(), 0);
@@ -168,11 +191,7 @@ mod tests {
     fn wildcard_handlers_receive_all_sessions() {
         let router = Arc::new(CdpEventRouter::new());
         let received = Arc::new(Mutex::new(Vec::new()));
-        let rec = received.clone();
-        let h: CdpEventHandler = Arc::new(move |params| {
-            rec.lock().unwrap().push(params.clone());
-        });
-        router.add(None, "Target.targetCreated", h);
+        router.add(None, "Target.targetCreated", push_val(&received));
 
         router.dispatch(
             Some("session-1"),
@@ -191,11 +210,7 @@ mod tests {
     fn unsubscribe_stops_delivery() {
         let router = Arc::new(CdpEventRouter::new());
         let count = Arc::new(AtomicUsize::new(0));
-        let c = count.clone();
-        let h: CdpEventHandler = Arc::new(move |_| {
-            c.fetch_add(1, Ordering::SeqCst);
-        });
-        let unsub = router.add(Some("session-1"), "Page.loadEventFired", h);
+        let unsub = router.add(Some("session-1"), "Page.loadEventFired", bump(&count));
         unsub.unsubscribe();
         router.dispatch(Some("session-1"), "Page.loadEventFired", &json!({}));
         assert_eq!(count.load(Ordering::SeqCst), 0);
@@ -206,22 +221,8 @@ mod tests {
         let router = Arc::new(CdpEventRouter::new());
         let s1 = Arc::new(AtomicUsize::new(0));
         let s2 = Arc::new(AtomicUsize::new(0));
-        let a = s1.clone();
-        let b = s2.clone();
-        router.add(
-            Some("session-1"),
-            "Page.loadEventFired",
-            Arc::new(move |_| {
-                a.fetch_add(1, Ordering::SeqCst);
-            }),
-        );
-        router.add(
-            Some("session-2"),
-            "Page.loadEventFired",
-            Arc::new(move |_| {
-                b.fetch_add(1, Ordering::SeqCst);
-            }),
-        );
+        router.add(Some("session-1"), "Page.loadEventFired", bump(&s1));
+        router.add(Some("session-2"), "Page.loadEventFired", bump(&s2));
 
         router.clear_session("session-1");
         router.dispatch(Some("session-1"), "Page.loadEventFired", &json!({}));
@@ -235,36 +236,9 @@ mod tests {
     fn clear_removes_all_handlers() {
         let router = Arc::new(CdpEventRouter::new());
         let count = Arc::new(AtomicUsize::new(0));
-        {
-            let c = count.clone();
-            router.add(
-                Some("session-1"),
-                "Page.loadEventFired",
-                Arc::new(move |_| {
-                    c.fetch_add(1, Ordering::SeqCst);
-                }),
-            );
-        }
-        {
-            let c = count.clone();
-            router.add(
-                Some("session-2"),
-                "Page.loadEventFired",
-                Arc::new(move |_| {
-                    c.fetch_add(1, Ordering::SeqCst);
-                }),
-            );
-        }
-        {
-            let c = count.clone();
-            router.add(
-                None,
-                "Target.targetCreated",
-                Arc::new(move |_| {
-                    c.fetch_add(1, Ordering::SeqCst);
-                }),
-            );
-        }
+        router.add(Some("session-1"), "Page.loadEventFired", bump(&count));
+        router.add(Some("session-2"), "Page.loadEventFired", bump(&count));
+        router.add(None, "Target.targetCreated", bump(&count));
 
         router.clear();
         router.dispatch(Some("session-1"), "Page.loadEventFired", &json!({}));
@@ -277,7 +251,6 @@ mod tests {
     fn one_handler_throwing_does_not_break_others() {
         let router = Arc::new(CdpEventRouter::new());
         let ok = Arc::new(Mutex::new(Vec::new()));
-        let rec = ok.clone();
         router.add(
             Some("s"),
             "test",
@@ -285,15 +258,89 @@ mod tests {
                 panic!("boom");
             }),
         );
-        router.add(
-            Some("s"),
-            "test",
-            Arc::new(move |_| {
-                rec.lock().unwrap().push("still called");
-            }),
-        );
+        router.add(Some("s"), "test", push_val(&ok));
 
         router.dispatch(Some("s"), "test", &json!({}));
-        assert_eq!(ok.lock().unwrap().as_slice(), &["still called"]);
+        assert_eq!(ok.lock().unwrap().as_slice(), &[json!({})]);
+    }
+
+    #[test]
+    fn dispatch_without_any_handlers_is_a_noop() {
+        let router = Arc::new(CdpEventRouter::new());
+        // No handlers registered at all: specific + wildcard lookups miss.
+        router.dispatch(Some("s"), "Nothing", &json!({}));
+        router.dispatch(None, "Nothing", &json!({}));
+    }
+
+    #[test]
+    fn dispatch_with_none_session_does_not_double_fire() {
+        // sessionId None: specific key == wildcard key → one invocation.
+        let router = Arc::new(CdpEventRouter::new());
+        let count = Arc::new(AtomicUsize::new(0));
+        router.add(None, "Ev", bump(&count));
+        router.dispatch(None, "Ev", &json!({}));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn unsubscribe_with_siblings_keeps_key_and_double_unsubscribe_is_noop() {
+        let router = Arc::new(CdpEventRouter::new());
+        let count = Arc::new(AtomicUsize::new(0));
+        let first = router.add(Some("s"), "Ev", bump(&count));
+        router.add(Some("s"), "Ev", bump(&count));
+        // Removing the first leaves the second registered under the key.
+        first.unsubscribe();
+        router.dispatch(Some("s"), "Ev", &json!({}));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        // Unsubscribing twice drains the key, then is a no-op.
+        let lone_router = Arc::new(CdpEventRouter::new());
+        let h = lone_router.add(Some("x"), "Ev", noop_handler());
+        h.unsubscribe();
+        // (key removed above) — build a fresh handle against the same key.
+        let h2 = lone_router.add(Some("x"), "Ev", noop_handler());
+        h2.unsubscribe();
+        lone_router.dispatch(Some("x"), "Ev", &json!({}));
+        // Unsubscribing after clear() finds no key entry at all.
+        let h3 = lone_router.add(Some("y"), "Ev", noop_handler());
+        lone_router.clear();
+        h3.unsubscribe();
+        // Directly invoke the shared no-op so its body is covered too.
+        noop_handler()(&json!({}));
+    }
+
+    #[test]
+    fn clear_session_without_matches_keeps_others() {
+        let router = Arc::new(CdpEventRouter::new());
+        let count = Arc::new(AtomicUsize::new(0));
+        router.add(Some("keep"), "Ev", bump(&count));
+        router.clear_session("absent");
+        router.dispatch(Some("keep"), "Ev", &json!({}));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn event_key_shapes() {
+        assert_eq!(event_key(None, "M"), "browser::M");
+        assert_eq!(event_key(Some("s"), "M"), "s::M");
+    }
+
+    #[test]
+    fn poisoned_lock_turns_every_operation_into_a_noop() {
+        let router = Arc::new(CdpEventRouter::new());
+        // Poison the handlers mutex: panic while holding the guard.
+        let r2 = router.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = r2.handlers.lock().unwrap();
+            panic!("poison the router");
+        }));
+        assert!(router.handlers.lock().is_err());
+
+        // Every `if let Ok(...) = lock()` now takes the skip path.
+        let unsub = router.add(Some("s"), "Ev", bump(&Arc::new(AtomicUsize::new(0))));
+        router.dispatch(Some("s"), "Ev", &json!({}));
+        router.clear_session("s");
+        router.clear();
+        unsub.unsubscribe();
     }
 }

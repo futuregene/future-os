@@ -42,3 +42,4 @@ indexmap = "2"
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio-stream = { workspace = true, features = ["net"] }

@@ -38,7 +38,7 @@ or from a native desktop window.
 
 One line, no source build required:
 
-**macOS** — installs the official signed app (arm64 / Intel auto-detected), then links the `/future-loop` skill (the control plane itself runs through the unified `future` CLI bundled with the app):
+**macOS** — installs the official signed app (arm64 / Intel auto-detected):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
@@ -50,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/i
 iex (irm https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.ps1)
 ```
 
-**Linux** — no prebuilt binaries yet; the script bootstraps the toolchain (apt deps + Rust + Node 24 + Bun) and builds the terminal stack — the unified `future` CLI (agent, TUI, IM channels, and loop are all embedded in it) plus skills — from source:
+**Linux** — the same script auto-detects the distro and installs the prebuilt package: the `.deb` for Debian/Ubuntu (desktop app + unified `future` CLI), or the portable tarball for every other Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash

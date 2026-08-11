@@ -50,15 +50,14 @@ pub(super) async fn run_prompt_loop(
                 ImageData::Url(_) => prompt_text.push_str("\n[Image URL attached]"),
             }
         }
-        info!(
-            "[SEND] session={} text=\"{}\"",
-            session_id,
-            if prompt_text.len() > 300 {
-                format!("{}...", truncate_at_char(&prompt_text, 300))
-            } else {
-                prompt_text.clone()
-            }
-        );
+        // Hoisted out of the info! args (macro args only evaluate with a
+        // subscriber; this runs regardless).
+        let send_preview = if prompt_text.len() > 300 {
+            format!("{}...", truncate_at_char(&prompt_text, 300))
+        } else {
+            prompt_text.clone()
+        };
+        info!("[SEND] session={} text=\"{}\"", session_id, send_preview);
         let expected_run_id = client
             .prompt_superseding(session_id, &prompt_text, images.to_vec())
             .await?;
@@ -455,6 +454,9 @@ pub(super) fn truncate_at_char(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    // MockState scaffolding mutates Default::default() instances per-test by
+    // design; field-reassign is the readable form for a 15-field mock.
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
 
     // ─── truncate_at_char ────────────────────────────────────────────────────
@@ -507,20 +509,24 @@ mod tests {
     #[test]
     fn stream_text_separator_between_thinking_and_content() {
         // Simulates the pattern used in run_prompt_loop:
-        // thinking → "---" separator → content
-        let mut stream_text = String::new();
-        stream_text.push_str("💭 **Thinking...**\n\nSome thinking here");
-        let last_was_content = false;
-
-        // Simulate TextChunk after thinking
-        if !last_was_content && !stream_text.is_empty() {
-            stream_text.push_str("\n\n---\n\n");
+        // thinking → "---" separator → content. Shared fn so both edges of
+        // the condition execute (false edge: already-content case).
+        fn maybe_separator(s: &mut String, last_was_content: bool) {
+            if !last_was_content && !s.is_empty() {
+                s.push_str("\n\n---\n\n");
+            }
         }
+        let mut stream_text = String::from("💭 **Thinking...**\n\nSome thinking here");
+        maybe_separator(&mut stream_text, false);
         stream_text.push_str("Actual answer");
 
         assert!(stream_text.contains("💭 **Thinking...**"));
         assert!(stream_text.contains("\n\n---\n\n"));
         assert!(stream_text.ends_with("Actual answer"));
+
+        let mut already_content = String::from("some answer");
+        maybe_separator(&mut already_content, true);
+        assert_eq!(already_content, "some answer");
     }
 
     #[test]
@@ -564,5 +570,718 @@ mod tests {
         assert!(!stream_text.contains("<!--tid:"));
         assert!(stream_text.contains("✅ **Tool** `shell` **completed**"));
         assert!(stream_text.contains("file1.txt"));
+    }
+
+    // ─── run_prompt_loop against mock gRPC + mock Feishu REST ────────────────
+
+    use crate::test_support::{self as ts, HttpRoute, MockState};
+    use future_rpc::proto::StreamEvent;
+
+    const TOKEN_ROUTE: &str = "/auth/v3/tenant_access_token/internal";
+
+    fn feishu_routes() -> Vec<HttpRoute> {
+        vec![
+            HttpRoute::json(
+                TOKEN_ROUTE,
+                200,
+                r#"{"code":0,"tenant_access_token":"tok","expire":7200}"#,
+            ),
+            HttpRoute::json(
+                "/cardkit/v1/cards",
+                200,
+                r#"{"code":0,"data":{"card_id":"card_1"}}"#,
+            ),
+            HttpRoute::json(
+                "/im/v1/messages/om_user/reply",
+                200,
+                r#"{"code":0,"data":{"message_id":"om_reply"}}"#,
+            ),
+            HttpRoute::json(
+                "/cardkit/v1/cards/card_1/elements/stream_out/content",
+                200,
+                r#"{"code":0}"#,
+            ),
+            HttpRoute::json("/cardkit/v1/cards/card_1", 200, r#"{"code":0}"#),
+            HttpRoute::json("/cardkit/v1/cards/card_1/settings", 200, ""),
+            HttpRoute::json(
+                "/im/v1/messages/om_user/reactions",
+                200,
+                r#"{"code":0,"data":{"reaction_id":"rid_1"}}"#,
+            ),
+            HttpRoute::json(
+                "/im/v1/messages/om_user/reactions/rid_1",
+                200,
+                r#"{"code":0}"#,
+            ),
+        ]
+    }
+
+    struct LoopEnv {
+        feishu: FeishuRestClient,
+        agent: Arc<RwLock<AgentClient>>,
+        http: ts::RecordedRequests,
+    }
+
+    async fn setup_with(state: MockState, routes: Vec<HttpRoute>) -> (LoopEnv, ts::SharedState) {
+        ts::ensure_crypto_provider();
+        let (addr, grpc) = ts::spawn_mock_grpc(state).await;
+        let agent = AgentClient::connect(&addr).await.expect("connect");
+        let (base, http) = ts::spawn_http(routes).await;
+        let feishu = FeishuRestClient::new(&base, "app", "secret");
+        (
+            LoopEnv {
+                feishu,
+                agent: Arc::new(RwLock::new(agent)),
+                http,
+            },
+            grpc,
+        )
+    }
+
+    async fn setup(events: Vec<StreamEvent>) -> (LoopEnv, ts::SharedState) {
+        let mut state = MockState::default();
+        state.events = events;
+        setup_with(state, feishu_routes()).await
+    }
+
+    /// Run the loop with standard args; returns when the stream closes.
+    async fn drive(env: &LoopEnv, streaming: bool, ack: Option<String>) -> Result<()> {
+        let lock = tokio::sync::Mutex::new(());
+        let gen = AtomicU64::new(0);
+        run_prompt_loop(
+            &env.feishu,
+            &env.agent,
+            "sess",
+            "om_user",
+            "hello",
+            &[],
+            streaming,
+            &lock,
+            &gen,
+            ack,
+        )
+        .await
+    }
+
+    fn bodies(recorded: &ts::RecordedRequests, path: &str) -> Vec<String> {
+        ts::requests_to(recorded, path)
+            .iter()
+            .map(|r| r.body_string())
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn streaming_text_flow_finalizes_card() {
+        let events = vec![
+            ts::ev("", 0, "agent_start", "{}"),
+            ts::ev("", 1, "ping", ""),
+            ts::ev("", 2, "text_chunk", r#"{"text":"hello"}"#),
+            ts::ev("", 3, "text_chunk", r#"{"text":" world"}"#),
+            ts::ev("", 4, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup(events).await;
+        drive(&env, true, Some("rid_1".into())).await.unwrap();
+
+        // Card created + replied; finalized via settings-false then full update.
+        assert_eq!(bodies(&env.http, "/cardkit/v1/cards").len(), 1);
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(replies.iter().any(|b| b.contains("card_1")));
+        let settings = ts::requests_to(&env.http, "/cardkit/v1/cards/card_1/settings");
+        assert_eq!(settings.len(), 1);
+        assert!(settings[0].body_string().contains("streaming_mode"));
+        let finals = bodies(&env.http, "/cardkit/v1/cards/card_1");
+        assert!(finals.iter().any(|b| b.contains("hello world")));
+        // ACK reaction swapped Typing → DONE.
+        let deletes = ts::requests_to(&env.http, "/im/v1/messages/om_user/reactions/rid_1");
+        assert_eq!(deletes.len(), 1);
+        let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
+        assert!(reactions.iter().any(|b| b.contains("DONE")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn non_streaming_replies_with_complete_card() {
+        let events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"full answer"}"#),
+            ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup(events).await;
+        drive(&env, false, None).await.unwrap();
+
+        // No CardKit card created; the reply is an interactive message.
+        assert!(bodies(&env.http, "/cardkit/v1/cards").is_empty());
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(replies.iter().any(|b| b.contains("full answer")));
+        // DONE reaction even without an ACK reaction to remove.
+        let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
+        assert!(reactions.iter().any(|b| b.contains("DONE")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn thinking_then_text_and_tool_markers() {
+        let events = vec![
+            ts::ev("", 0, "thinking_start", "{}"),
+            ts::ev("", 1, "thinking_delta", r#"{"text":"pondering"}"#),
+            ts::ev("", 2, "thinking_end", "{}"),
+            ts::ev(
+                "",
+                3,
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"shell","tool_args":"ls -la"}"#,
+            ),
+            ts::ev("", 4, "tool_delta", r#"{"tool_id":"t1","text":"partial"}"#),
+            ts::ev("", 5, "tool_end", r#"{"tool_id":"t1","text":"file.txt"}"#),
+            // ToolEnd without a matching ToolStart → falls back to tool_id.
+            ts::ev("", 6, "tool_end", r#"{"tool_id":"t-orphan","text":"x"}"#),
+            ts::ev("", 7, "text_chunk", r#"{"text":"final"}"#),
+            // Unmappable event type → parse None arm.
+            ts::ev("", 8, "message_ack", "{}"),
+            ts::ev("", 9, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup(events).await;
+        drive(&env, true, None).await.unwrap();
+
+        let finals = bodies(&env.http, "/cardkit/v1/cards/card_1");
+        let final_card = finals.last().expect("final card update");
+        assert!(final_card.contains("Thinking"), "{final_card}");
+        assert!(final_card.contains("pondering"));
+        // ToolEnd replaced the running marker with the completion entry.
+        assert!(final_card.contains("completed"));
+        assert!(final_card.contains("file.txt"));
+        assert!(final_card.contains("final"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mid_stream_flush_after_throttle_interval() {
+        // Slow card creation (300ms) puts the first chunk past the 250ms
+        // flush interval → the element update fires mid-stream.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/cardkit/v1/cards");
+        routes.push(HttpRoute::slow_json(
+            "/cardkit/v1/cards",
+            r#"{"code":0,"data":{"card_id":"card_1"}}"#,
+            Duration::from_millis(300),
+        ));
+        let events = vec![
+            ts::ev("", 0, "thinking_start", "{}"),
+            ts::ev("", 1, "thinking_delta", r#"{"text":"t"}"#),
+            ts::ev("", 2, "thinking_end", "{}"),
+            ts::ev("", 3, "text_chunk", r#"{"text":"chunk one"}"#),
+            ts::ev("", 4, "text_chunk", r#"{"text":"chunk two"}"#),
+            ts::ev("", 5, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let mut state = MockState::default();
+        state.events = events;
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        let updates = bodies(
+            &env.http,
+            "/cardkit/v1/cards/card_1/elements/stream_out/content",
+        );
+        assert!(
+            updates.len() >= 2,
+            "mid-stream throttled updates + final flush expected: {updates:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn approval_flow_finalizes_stream_and_sends_card() {
+        let events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"working"}"#),
+            ts::ev(
+                "",
+                1,
+                "approval_request",
+                r#"{"approval_request_id":"req_1","tool_name":"shell","risk_level":"high","title":"Run command","summary":"rm -rf","requested_action":"ls"}"#,
+            ),
+            ts::ev("", 2, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup(events).await;
+        drive(&env, true, None).await.unwrap();
+
+        // Streaming card finalized before the approval card; approval card
+        // created + replied; agent_end (card already finalized → card_id
+        // None) replies with the complete card. 2 creates, 3 replies.
+        assert_eq!(bodies(&env.http, "/cardkit/v1/cards").len(), 2);
+        let settings = ts::requests_to(&env.http, "/cardkit/v1/cards/card_1/settings");
+        assert!(!settings.is_empty());
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert_eq!(replies.len(), 3, "stream + approval + complete replies");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn approval_card_failure_falls_back_to_text() {
+        // First card create (streaming) succeeds, second (approval) fails.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/cardkit/v1/cards");
+        routes.push(HttpRoute::sequence(
+            "/cardkit/v1/cards",
+            vec![
+                (200, r#"{"code":0,"data":{"card_id":"card_1"}}"#),
+                (200, r#"{"code":500,"msg":"card quota"}"#),
+            ],
+        ));
+        let events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"working"}"#),
+            ts::ev(
+                "",
+                1,
+                "approval_request",
+                r#"{"approval_request_id":"req_2","tool_name":"shell","risk_level":"low","title":"T","summary":"S","requested_action":{"cmd":"ls"}}"#,
+            ),
+            ts::ev("", 2, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let mut state = MockState::default();
+        state.events = events;
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        // Fallback: a text reply mentioning the approval + TUI commands.
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(
+            replies
+                .iter()
+                .any(|b| b.contains("Approval") && b.contains("req_2")),
+            "fallback text reply expected: {replies:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_end_error_sends_error_card() {
+        let events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"partial"}"#),
+            ts::ev("", 1, "agent_end", r#"{"error":"model exploded"}"#),
+        ];
+        let (env, _) = setup(events).await;
+        drive(&env, true, None).await.unwrap();
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(replies.iter().any(|b| b.contains("model exploded")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_end_cancelled_or_interrupted_stays_silent() {
+        for data in [
+            r#"{"state":"cancelled"}"#,
+            r#"{"error":"run interrupted by user"}"#,
+            r#"{"error":"Interrupted"}"#,
+        ] {
+            let events = vec![
+                ts::ev("", 0, "text_chunk", r#"{"text":"partial"}"#),
+                ts::ev("", 1, "agent_end", data),
+            ];
+            let (env, _) = setup(events).await;
+            drive(&env, true, None).await.unwrap();
+            let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+            assert!(
+                !replies
+                    .iter()
+                    .any(|b| b.contains("error") || b.contains("Error")),
+                "no error card for {data}: {replies:?}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn error_event_sends_error_card() {
+        let events = vec![ts::ev("", 0, "error", r#"{"error":"transport blew up"}"#)];
+        let (env, _) = setup(events).await;
+        drive(&env, true, Some("rid_1".into())).await.unwrap();
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(replies.iter().any(|b| b.contains("transport blew up")));
+        // ACK swapped out even on error.
+        let deletes = ts::requests_to(&env.http, "/im/v1/messages/om_user/reactions/rid_1");
+        assert_eq!(deletes.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn error_event_without_ack_reaction() {
+        // ack_reaction_id None → the removal if-let false path.
+        let events = vec![ts::ev("", 0, "error", r#"{"error":"boom"}"#)];
+        let (env, _) = setup(events).await;
+        drive(&env, true, None).await.unwrap();
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(replies.iter().any(|b| b.contains("boom")));
+        let deletes = ts::requests_to(&env.http, "/im/v1/messages/om_user/reactions/rid_1");
+        assert!(deletes.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn superseded_stream_stops_silently() {
+        // Slow card create leaves a window to bump the generation counter.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/cardkit/v1/cards");
+        routes.push(HttpRoute::slow_json(
+            "/cardkit/v1/cards",
+            r#"{"code":0,"data":{"card_id":"card_1"}}"#,
+            Duration::from_millis(300),
+        ));
+        let events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"one"}"#),
+            ts::ev("", 1, "text_chunk", r#"{"text":"two"}"#),
+            ts::ev("", 2, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let mut state = MockState::default();
+        state.events = events;
+        let (env, _) = setup_with(state, routes).await;
+        let lock = tokio::sync::Mutex::new(());
+        let gen = AtomicU64::new(0);
+        // Bump the generation while the first chunk is stuck in card creation.
+        let gen_ref = &gen;
+        let drive = run_prompt_loop(
+            &env.feishu,
+            &env.agent,
+            "sess",
+            "om_user",
+            "hello",
+            &[],
+            true,
+            &lock,
+            gen_ref,
+            None,
+        );
+        let bump = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            gen_ref.fetch_add(5, Ordering::SeqCst);
+        };
+        let (r, _) = tokio::join!(drive, bump);
+        r.unwrap();
+        // Stopped before AgentEnd → no DONE reaction, no finalize.
+        // (join instead of .any(): the closure would never run when the
+        // request log is empty, leaving an uncovered region.)
+        let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
+        assert!(!reactions.join("\n").contains("DONE"));
+        let settings = ts::requests_to(&env.http, "/cardkit/v1/cards/card_1/settings");
+        assert!(settings.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn foreign_run_events_are_dropped() {
+        let events = vec![
+            ts::ev("other-run", 0, "text_chunk", r#"{"text":"alien"}"#),
+            ts::ev("other-run", 1, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup(events).await;
+        drive(&env, true, None).await.unwrap();
+        // Nothing streamed: no card, no reply, no DONE.
+        assert!(bodies(&env.http, "/cardkit/v1/cards").is_empty());
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(!replies.join("\n").contains("alien"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prompt_failure_propagates() {
+        let mut state = MockState::default();
+        state.fail_commands.insert("prompt".to_string());
+        let (env, _) = setup_with(state, feishu_routes()).await;
+        let err = drive(&env, true, None).await.unwrap_err();
+        assert!(err.to_string().contains("mock failure: prompt"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_active_and_attach_failures_propagate() {
+        // get_state never reports the run → "cancelled before start".
+        let mut state = MockState::default();
+        state
+            .responses
+            .insert("get_state".into(), r#"{"queuedRuns":[]}"#.into());
+        let (env, _) = setup_with(state, feishu_routes()).await;
+        let err = drive(&env, true, None).await.unwrap_err();
+        assert!(err.to_string().contains("cancelled before start"), "{err}");
+
+        // stream_events RPC itself fails.
+        let mut state = MockState::default();
+        state.stream_status_error = true;
+        let (env, _) = setup_with(state, feishu_routes()).await;
+        let err = drive(&env, true, None).await.unwrap_err();
+        assert!(err.to_string().contains("Failed to attach"), "{err}");
+
+        // Mid-stream transport error.
+        let mut state = MockState::default();
+        state.events = vec![ts::ev("", 0, "agent_start", "{}")];
+        state.stream_mid_error_after = Some(1);
+        let (env, _) = setup_with(state, feishu_routes()).await;
+        let err = drive(&env, true, None).await.unwrap_err();
+        assert!(err.to_string().contains("event stream failed"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn image_inputs_extend_prompt_text() {
+        let events = vec![ts::ev("", 0, "agent_end", r#"{"state":"completed"}"#)];
+        let (env, grpc) = setup(events).await;
+        let images = vec![
+            ImageInput {
+                content_type: "image_url".into(),
+                data: ImageData::Base64("data:image/png;base64,AA==".into()),
+                file_path: Some("/tmp/pic.png".into()),
+            },
+            ImageInput {
+                content_type: "image_url".into(),
+                data: ImageData::Base64("data:image/png;base64,BB==".into()),
+                file_path: None,
+            },
+            ImageInput {
+                content_type: "image_url".into(),
+                data: ImageData::Url("https://x/y.png".into()),
+                file_path: None,
+            },
+        ];
+        let lock = tokio::sync::Mutex::new(());
+        let gen = AtomicU64::new(0);
+        run_prompt_loop(
+            &env.feishu,
+            &env.agent,
+            "sess",
+            "om_user",
+            "look at this",
+            &images,
+            false,
+            &lock,
+            &gen,
+            None,
+        )
+        .await
+        .unwrap();
+        let prompts = ts::recorded_of(&grpc, "prompt");
+        let msg = &prompts[0].message;
+        assert!(msg.contains("[File saved: /tmp/pic.png]"), "{msg}");
+        assert!(msg.contains("[Image attached]"), "{msg}");
+        assert!(msg.contains("[Image URL attached]"), "{msg}");
+        assert_eq!(prompts[0].images.len(), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn long_prompt_text_truncated_in_log_only() {
+        // current_thread: info! args only evaluate under the thread-local
+        // subscriber.
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        let events = vec![ts::ev("", 0, "agent_end", r#"{"state":"completed"}"#)];
+        let (env, grpc) = setup(events).await;
+        let long_text = "x".repeat(400);
+        let lock = tokio::sync::Mutex::new(());
+        let gen = AtomicU64::new(0);
+        run_prompt_loop(
+            &env.feishu,
+            &env.agent,
+            "sess",
+            "om_user",
+            &long_text,
+            &[],
+            false,
+            &lock,
+            &gen,
+            None,
+        )
+        .await
+        .unwrap();
+        let prompts = ts::recorded_of(&grpc, "prompt");
+        assert_eq!(prompts[0].message.len(), 400, "full text goes to the agent");
+    }
+
+    // ─── Residual-arm chase ──────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn thinking_after_text_adds_separator() {
+        // ThinkingStart with existing stream_text pushes a blank line first.
+        let events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"answer part"}"#),
+            ts::ev("", 1, "thinking_start", "{}"),
+            ts::ev("", 2, "thinking_delta", r#"{"text":"afterthought"}"#),
+            ts::ev("", 3, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup(events).await;
+        drive(&env, true, None).await.unwrap();
+        let finals = bodies(&env.http, "/cardkit/v1/cards/card_1");
+        let last = finals.last().unwrap();
+        assert!(last.contains("answer part"), "{last}");
+        assert!(last.contains("afterthought"), "{last}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn card_reply_failure_only_warns() {
+        // Card create succeeds but replying with the card reference fails.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/im/v1/messages/om_user/reply");
+        routes.push(HttpRoute::json(
+            "/im/v1/messages/om_user/reply",
+            200,
+            r#"{"code":61,"msg":"reply quota"}"#,
+        ));
+        // Thinking flow first (ThinkingDelta create site)…
+        let events = vec![
+            ts::ev("", 0, "thinking_start", "{}"),
+            ts::ev("", 1, "thinking_delta", r#"{"text":"t"}"#),
+            ts::ev("", 2, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let mut state = MockState::default();
+        state.events = events;
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        // The loop completed despite the reply failure (agent_end reached:
+        // DONE reaction attempted).
+        let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
+        assert!(reactions.iter().any(|b| b.contains("DONE")));
+
+        // …and the TextChunk create site.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/im/v1/messages/om_user/reply");
+        routes.push(HttpRoute::json(
+            "/im/v1/messages/om_user/reply",
+            200,
+            r#"{"code":61,"msg":"reply quota"}"#,
+        ));
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"x"}"#),
+            ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
+        assert!(reactions.iter().any(|b| b.contains("DONE")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn card_create_failure_only_warns() {
+        // Streaming-card create fails at both sites (thinking + text);
+        // tool/approval/finalize proceed with no card id.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/cardkit/v1/cards");
+        routes.push(HttpRoute::json(
+            "/cardkit/v1/cards",
+            200,
+            r#"{"code":42,"msg":"no cards today"}"#,
+        ));
+        let events = vec![
+            ts::ev("", 0, "thinking_start", "{}"),
+            ts::ev("", 1, "thinking_delta", r#"{"text":"t"}"#),
+            ts::ev("", 2, "thinking_end", "{}"),
+            ts::ev(
+                "",
+                3,
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"shell"}"#,
+            ),
+            ts::ev("", 4, "tool_end", r#"{"tool_id":"t1"}"#),
+            ts::ev(
+                "",
+                5,
+                "approval_request",
+                r#"{"approval_request_id":"req_9","tool_name":"shell","risk_level":"low","title":"T","summary":"S","requested_action":""}"#,
+            ),
+            ts::ev("", 6, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let mut state = MockState::default();
+        state.events = events;
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        // Approval fallback replied in text; agent_end replied complete card.
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(
+            replies.iter().any(|b| b.contains("Approval")),
+            "{replies:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn card_create_failure_text_site() {
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/cardkit/v1/cards");
+        routes.push(HttpRoute::json(
+            "/cardkit/v1/cards",
+            200,
+            r#"{"code":42,"msg":"no cards"}"#,
+        ));
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"x"}"#),
+            ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(replies.iter().any(|b| b.contains("x")), "{replies:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_and_approval_flush_arms_with_paced_stream() {
+        // 300ms between events: every flush check sees elapsed ≥ 250ms.
+        let long_args = "a".repeat(300);
+        let long_result = "r".repeat(600);
+        let mut state = MockState::default();
+        state.stream_event_delay = Some(Duration::from_millis(300));
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"start"}"#),
+            // Long args (>200) → truncation arm; mid-stream flush arm.
+            ts::ev(
+                "",
+                1,
+                "tool_start",
+                &serde_json::json!({"tool_id":"t1","tool_name":"shell","tool_args": long_args})
+                    .to_string(),
+            ),
+            // Long result (>500) → truncation arm; flush arm.
+            ts::ev(
+                "",
+                2,
+                "tool_end",
+                &serde_json::json!({"tool_id":"t1","text": long_result}).to_string(),
+            ),
+            // No args / no result → empty-display arms.
+            ts::ev(
+                "",
+                3,
+                "tool_start",
+                r#"{"tool_id":"t2","tool_name":"read"}"#,
+            ),
+            ts::ev("", 4, "tool_end", r#"{"tool_id":"t2"}"#),
+            // needs_flush is false right after a flush → approval flush-skip arm.
+            ts::ev(
+                "",
+                5,
+                "approval_request",
+                r#"{"approval_request_id":"req_1","tool_name":"shell","risk_level":"low","title":"T","summary":"S","requested_action":""}"#,
+            ),
+            ts::ev("", 6, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup_with(state, feishu_routes()).await;
+        drive(&env, true, None).await.unwrap();
+        let updates = bodies(
+            &env.http,
+            "/cardkit/v1/cards/card_1/elements/stream_out/content",
+        );
+        assert!(updates.len() >= 3, "paced flushes: {updates:?}");
+        let all = updates.join("\n");
+        assert!(all.contains("Running tool"), "{all}");
+        // Approval flow ran (2 creates total).
+        assert_eq!(bodies(&env.http, "/cardkit/v1/cards").len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finalize_failures_only_warn() {
+        // set_card_streaming_mode + update_cardkit_card fail at agent_end.
+        let mut routes = feishu_routes();
+        routes.retain(|r| r.path != "/cardkit/v1/cards/card_1/settings");
+        routes.retain(|r| r.path != "/cardkit/v1/cards/card_1");
+        routes.push(HttpRoute::json(
+            "/cardkit/v1/cards/card_1/settings",
+            500,
+            "nope",
+        ));
+        routes.push(HttpRoute::json(
+            "/cardkit/v1/cards/card_1",
+            200,
+            r#"{"code":88,"msg":"bad card"}"#,
+        ));
+        let mut state = MockState::default();
+        state.events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"done text"}"#),
+            ts::ev("", 1, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup_with(state, routes).await;
+        drive(&env, true, None).await.unwrap();
+        let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
+        assert!(reactions.iter().any(|b| b.contains("DONE")));
     }
 }

@@ -884,6 +884,7 @@ dependencies = [
  "future-rpc",
  "futures",
  "futures-util",
+ "libc",
  "parking_lot",
  "prost",
  "prost-build",
@@ -923,6 +924,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tokio-tungstenite",
  "tonic",
 ]

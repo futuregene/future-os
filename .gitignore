@@ -73,3 +73,5 @@ channel/
 .future/loop/
 desktop/node_modules
 FUTURE.md
+coverage-agent-lcov.info
+*.profraw

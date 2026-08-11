@@ -502,15 +502,15 @@ async fn check_providers() -> CheckResult {
     // `id → label`
     let mut all_providers: BTreeMap<String, String> = BTreeMap::new();
 
-    // Collect from auth.json.
-    if let Ok(raw) = tokio::fs::read_to_string(auth_file_path()).await {
-        if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
-            if let Some(obj) = parsed.as_object() {
-                for (id, v) in obj {
-                    if v.is_object() && v.get("key").is_some() {
-                        all_providers.insert(id.clone(), "[key]".to_string());
-                    }
-                }
+    // Collect from auth.json (missing/invalid JSON is treated as empty).
+    let raw = tokio::fs::read_to_string(auth_file_path())
+        .await
+        .unwrap_or_default();
+    let parsed = serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
+    if let Some(obj) = parsed.as_object() {
+        for (id, v) in obj {
+            if v.is_object() && v.get("key").is_some() {
+                all_providers.insert(id.clone(), "[key]".to_string());
             }
         }
     }
@@ -645,13 +645,13 @@ async fn check_skills() -> CheckResult {
                     let local_ver =
                         read_skill_md_version(&skills_dir.join(id).join("SKILL.md")).await;
                     // `if (localVer && skill?.latest_version && localVer !== skill.latest_version)`
-                    if let (Some(local), Some(skill)) = (local_ver.as_deref(), skill) {
-                        if let Some(latest) = skill.latest_version.as_deref() {
-                            if local != latest {
-                                needs_update.push(format!("{id}: {local} {DIM}→{RESET} {latest}"));
-                                continue;
-                            }
+                    let latest = skill.and_then(|s| s.latest_version.clone());
+                    match (local_ver.as_deref(), latest) {
+                        (Some(local), Some(latest)) if local != latest => {
+                            needs_update.push(format!("{id}: {local} {DIM}→{RESET} {latest}"));
+                            continue;
                         }
+                        _ => {}
                     }
                     let ver = local_ver.map(|v| format!(" (v{v})")).unwrap_or_default();
                     up_to_date.push(format!("{id}{ver}"));
@@ -894,5 +894,549 @@ mod tests {
         assert!(!is_version_candidate("INFO: starting"));
         assert!(!is_version_candidate("ERROR boom"));
         assert!(is_version_candidate("future 0.0.1568-479c8fee+local"));
+    }
+
+    // ── Full-house + remaining branches ─────────────────────────────
+
+    /// Write a file under the isolated HOME's agent dir.
+    async fn write_agent_file(rel: &str, body: &str) {
+        let path = agent_dir().join(rel);
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, body).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn doctor_full_house_all_ok() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        // gRPC mock: connected agent with version + two sessions.
+        let mut agent = crate::test_server::MockAgent::default();
+        agent
+            .responses
+            .insert("get_state".into(), "{\"version\":\"1.2.3\"}".into());
+        agent.responses.insert(
+            "list_sessions".into(),
+            "{\"sessions\":[{\"id\":\"s1\"},{\"id\":\"s2\"}]}".into(),
+        );
+        let addr = crate::test_server::spawn_mock(agent).await;
+        // All five binaries resolvable on PATH (fake versions).
+        let bin_dir = dir.path().join("bin");
+        tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        for name in [
+            "future",
+            "future-agent",
+            "future-tui",
+            "future-desktop",
+            "future-channel",
+        ] {
+            let path = bin_dir.join(name);
+            tokio::fs::write(&path, "#!/bin/sh\necho \"future v1.0.0\"\n")
+                .await
+                .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .await
+                    .unwrap();
+            }
+        }
+        // NOTE: prepend (not replace) so the `which` binary itself stays
+        // resolvable — doctor shells out to it for PATH lookups.
+        let mut paths = vec![bin_dir];
+        if let Some(p) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&p));
+        }
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("PATH", std::env::join_paths(paths).unwrap()),
+            ("FUTURE_AGENT_GRPC_ADDR", OsString::from(addr)),
+        ]);
+
+        // auth.json: future key WITHOUT base_url → get_platform_url fallback.
+        write_agent_file(
+            "auth.json",
+            "{\"future\": {\"key\": \"k\"}, \"custom-p\": {\"key\": \"x\"}}",
+        )
+        .await;
+        // models.json: a custom provider, an override-only entry, "future".
+        write_agent_file(
+            "models.json",
+            "{\"providers\": {\
+                \"custom-p\": {\"name\": \"Custom\", \"models\": [{\"id\": \"m\"}]},\
+                \"override-only\": {\"models\": []},\
+                \"future\": {\"name\": \"Future\"}\
+            }}",
+        )
+        .await;
+        write_agent_file("settings.json", "{}").await;
+        // Sessions dir with two JSONL + one non-JSONL file.
+        write_agent_file("sessions/a.jsonl", "{}\n").await;
+        write_agent_file("sessions/b.jsonl", "{}\n").await;
+        write_agent_file("sessions/notes.txt", "x").await;
+        // Skills: one up-to-date, one needing update — catalog via HTTP mock.
+        let skills = skills_dir();
+        tokio::fs::create_dir_all(skills.join("future-a"))
+            .await
+            .unwrap();
+        tokio::fs::write(skills.join("future-a/SKILL.md"), "---\nversion: 1.0\n---\n")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(skills.join("future-b"))
+            .await
+            .unwrap();
+        tokio::fs::write(skills.join("future-b/SKILL.md"), "---\nversion: 0.9\n---\n")
+            .await
+            .unwrap();
+        let catalog = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            "{\"skills\":[\
+                {\"id\":\"future-a\",\"latest_version\":\"1.0\"},\
+                {\"id\":\"future-b\",\"latest_version\":\"2.0\"}\
+            ]}",
+        )])
+        .await;
+        // Point the platform at the catalog mock (base_url in auth.json).
+        write_agent_file(
+            "auth.json",
+            &format!(
+                "{{\"future\": {{\"key\": \"k\", \"base_url\": \"{catalog}/api\"}}, \"custom-p\": {{\"key\": \"x\"}}}}"
+            ),
+        )
+        .await;
+
+        let (code, stdout, stderr) = run_doctor().await;
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        // Agent connected with version.
+        assert!(stdout.contains("Connected to"), "stdout: {stdout}");
+        assert!(stdout.contains("(v1.2.3)"), "stdout: {stdout}");
+        // Login ok with the mock platform (base_url /api stripped).
+        assert!(
+            stdout.contains(&format!("Logged in to {catalog}")),
+            "stdout: {stdout}"
+        );
+        // Auth config: 2 provider keys.
+        assert!(stdout.contains("2 provider key(s)"), "stdout: {stdout}");
+        // Models config: custom provider listed, override-only + future hidden.
+        assert!(
+            stdout.contains("Custom providers: custom-p"),
+            "stdout: {stdout}"
+        );
+        assert!(!stdout.contains("override-only"), "stdout: {stdout}");
+        // Settings exists.
+        assert!(stdout.contains("settings.json exists"), "stdout: {stdout}");
+        // Providers: custom-p merged label, future from key.
+        assert!(
+            stdout.contains("2 provider(s) configured"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("custom-p \u{1b}[2m([key] + custom)\u{1b}[0m"),
+            "stdout: {stdout}"
+        );
+        // Sessions: 2 jsonl + agent-tracked count.
+        assert!(stdout.contains("2 JSONL file(s)"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("2 session(s) tracked by agent"),
+            "stdout: {stdout}"
+        );
+        // Skills: one up-to-date with version, one needs update.
+        assert!(
+            stdout.contains("Up to date: future-a (v1.0)"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("Updates available: future-b: 0.9"),
+            "stdout: {stdout}"
+        );
+        assert!(stdout.contains("future skills update"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn doctor_config_issue_variants() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        // auth.json invalid JSON → Issue; models.json invalid → Issue;
+        // settings.json invalid → Issue.
+        write_agent_file("auth.json", "{bad").await;
+        write_agent_file("models.json", "{bad").await;
+        write_agent_file("settings.json", "{bad").await;
+        let (_, stdout, _) = run_doctor().await;
+        assert_eq!(
+            stdout.matches("exists but is not valid JSON").count(),
+            3,
+            "stdout: {stdout}"
+        );
+
+        // auth.json exists but has no keys → Warn line.
+        write_agent_file("auth.json", "{\"future\": {\"base_url\": \"https://x\"}}").await;
+        write_agent_file("models.json", "{}").await;
+        write_agent_file("settings.json", "{}").await;
+        let (_, stdout, _) = run_doctor().await;
+        assert!(
+            stdout.contains("exists but no keys configured"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("No custom providers defined"),
+            "stdout: {stdout}"
+        );
+    }
+
+    #[tokio::test]
+    async fn doctor_skills_catalog_match_mismatch_and_provider_edge() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        // Platform mock serving the skills catalog.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            r#"{"skills":[{"id":"same","latest_version":"1.0"},{"id":"older","latest_version":"2.0"},{"id":"noversion"}]}"#,
+        )])
+        .await;
+        // auth.json: future key + base_url → platform mock; a non-object
+        // provider entry is skipped by the providers check.
+        let auth = auth_file_path();
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &auth,
+            serde_json::json!({
+                "future": {"key": "k", "base_url": base},
+                "weird-provider": "not-an-object",
+            })
+            .to_string(),
+        )
+        .await
+        .unwrap();
+        // Installed skills: one version-matching, one older.
+        let skills = skills_dir();
+        tokio::fs::create_dir_all(skills.join("same"))
+            .await
+            .unwrap();
+        tokio::fs::write(skills.join("same/SKILL.md"), "---\nversion: 1.0\n---\n")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(skills.join("older"))
+            .await
+            .unwrap();
+        tokio::fs::write(skills.join("older/SKILL.md"), "---\nversion: 1.0\n---\n")
+            .await
+            .unwrap();
+        // Catalog entry without a latest_version → plain up-to-date.
+        tokio::fs::create_dir_all(skills.join("noversion"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            skills.join("noversion/SKILL.md"),
+            "---\nversion: 3.1\n---\n",
+        )
+        .await
+        .unwrap();
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("same (v1.0)"), "stdout: {stdout}");
+        assert!(stdout.contains("noversion (v3.1)"), "stdout: {stdout}");
+        assert!(stdout.contains("older: 1.0"), "stdout: {stdout}");
+        // The non-object provider was skipped; future counts as [key].
+        assert!(stdout.contains("[key]"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn doctor_invalid_auth_json_is_tolerated_by_providers_check() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        let auth = auth_file_path();
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&auth, "{not json").await.unwrap();
+        let (code, _, _) = run_doctor().await;
+        assert_eq!(code, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn doctor_component_without_version_output_falls_back() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        // A stub `future-agent` on PATH that prints nothing parseable → the
+        // version falls back to the bare path.
+        let bin_dir = std::env::var("PATH").unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let stub = std::path::Path::new(&bin_dir).join("future-agent");
+        std::fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("future-agent"), "stdout: {stdout}");
+        assert!(!stdout.contains("(v"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn doctor_empty_key_is_not_logged_in() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        let auth = auth_file_path();
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&auth, r#"{"future":{"key":""}}"#)
+            .await
+            .unwrap();
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("Not logged in"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn doctor_skills_offline_and_unversioned() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        // Point the platform at an unreachable address — deterministic
+        // offline even on a networked machine (auth.json beats the default
+        // URL in get_platform_url).
+        let auth = auth_file_path();
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &auth,
+            r#"{"future":{"key":"k","base_url":"http://127.0.0.1:1"}}"#,
+        )
+        .await
+        .unwrap();
+        // Installed skill, no version in SKILL.md; catalog unreachable.
+        let skills = skills_dir();
+        tokio::fs::create_dir_all(skills.join("future-a"))
+            .await
+            .unwrap();
+        tokio::fs::write(skills.join("future-a/SKILL.md"), "# no frontmatter\n")
+            .await
+            .unwrap();
+        let (_, stdout, _) = run_doctor().await;
+        // Offline: listed up-to-date WITHOUT a version suffix.
+        assert!(
+            stdout.contains("Up to date: future-a\n"),
+            "stdout: {stdout}"
+        );
+        // Skills dir exists → no "(directory not found)" marker even though
+        // installed is non-empty here (marker only in the empty branch).
+        assert!(
+            !stdout.contains("(directory not found)"),
+            "stdout: {stdout}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn doctor_sessions_dir_unreadable() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        let sessions = sessions_dir_path();
+        tokio::fs::create_dir_all(&sessions).await.unwrap();
+        // chmod 000 → read_dir fails → "Cannot read" line.
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o000))
+            .await
+            .unwrap();
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("Cannot read"), "stdout: {stdout}");
+        // Restore so the tempdir can be cleaned up.
+        tokio::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn js_truthy_and_override_only() {
+        assert!(!js_truthy(&Value::Null));
+        assert!(!js_truthy(&serde_json::json!(false)));
+        assert!(js_truthy(&serde_json::json!(true)));
+        assert!(!js_truthy(&serde_json::json!(0)));
+        assert!(js_truthy(&serde_json::json!(1.5)));
+        assert!(js_truthy(&serde_json::json!(-0.5)));
+        assert!(!js_truthy(&serde_json::json!("")));
+        assert!(js_truthy(&serde_json::json!("x")));
+        assert!(!js_truthy(&serde_json::json!([])));
+        assert!(js_truthy(&serde_json::json!([1])));
+        assert!(js_truthy(&serde_json::json!({})));
+        // NaN-free JSON: no NaN case exists for Value::Number.
+
+        // is_override_only: non-object → false.
+        assert!(!is_override_only(&serde_json::json!(5)));
+        // Empty object → override-only.
+        assert!(is_override_only(&serde_json::json!({})));
+        // name/api/models presence flips it.
+        assert!(!is_override_only(&serde_json::json!({"name": "N"})));
+        assert!(!is_override_only(&serde_json::json!({"api": "a"})));
+        assert!(!is_override_only(&serde_json::json!({"models": [{}]})));
+        assert!(is_override_only(&serde_json::json!({"models": []})));
+    }
+
+    // ── Remainder coverage ────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn doctor_all_checks_passed() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        // Connected agent.
+        let mut agent = crate::test_server::MockAgent::default();
+        agent
+            .responses
+            .insert("get_state".into(), "{\"version\":\"1.2.3\"}".into());
+        agent
+            .responses
+            .insert("list_sessions".into(), "{\"sessions\":[]}".into());
+        let addr = crate::test_server::spawn_mock(agent).await;
+        // All five binaries resolvable on PATH (fake versions); prepend so
+        // the `which` binary itself stays resolvable.
+        let bin_dir = dir.path().join("bin");
+        tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        for name in [
+            "future",
+            "future-agent",
+            "future-tui",
+            "future-desktop",
+            "future-channel",
+        ] {
+            let path = bin_dir.join(name);
+            tokio::fs::write(&path, "#!/bin/sh\necho \"future v1.0.0\"\n")
+                .await
+                .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .await
+                    .unwrap();
+            }
+        }
+        let mut paths = vec![bin_dir];
+        if let Some(p) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&p));
+        }
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("PATH", std::env::join_paths(paths).unwrap()),
+            ("FUTURE_AGENT_GRPC_ADDR", OsString::from(addr)),
+        ]);
+
+        // Skills: single installed skill whose version matches the catalog.
+        let skills = skills_dir();
+        tokio::fs::create_dir_all(skills.join("future-a"))
+            .await
+            .unwrap();
+        tokio::fs::write(skills.join("future-a/SKILL.md"), "---\nversion: 1.0\n---\n")
+            .await
+            .unwrap();
+        let catalog = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            "{\"skills\":[{\"id\":\"future-a\",\"latest_version\":\"1.0\"}]}",
+        )])
+        .await;
+        // auth.json: future key with the catalog base_url; a second key-only
+        // provider.
+        write_agent_file(
+            "auth.json",
+            &format!(
+                "{{\"future\": {{\"key\": \"k\", \"base_url\": \"{catalog}/api\"}}, \"custom-p\": {{\"key\": \"x\"}}}}"
+            ),
+        )
+        .await;
+        // models.json: one provider that is NOT in auth.json → "custom".
+        write_agent_file(
+            "models.json",
+            "{\"providers\": {\"models-only\": {\"name\": \"M\", \"models\": [{\"id\": \"m\"}]}}}",
+        )
+        .await;
+        write_agent_file("settings.json", "{}").await;
+        write_agent_file("sessions/a.jsonl", "{}\n").await;
+
+        let (code, stdout, stderr) = run_doctor().await;
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        // The models-only provider gets the bare "custom" label.
+        assert!(
+            stdout.contains("models-only \u{1b}[2m(custom)\u{1b}[0m"),
+            "stdout: {stdout}"
+        );
+        // Everything ok → the all-clear line.
+        assert!(stdout.contains("All checks passed."), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn doctor_login_platform_url_fallback_and_no_entry() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        // future entry WITHOUT base_url → get_platform_url fallback (no
+        // network: the default constant is used).
+        write_agent_file("auth.json", "{\"future\": {\"key\": \"k\"}}").await;
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("Logged in to"), "stdout: {stdout}");
+
+        // Auth file WITHOUT a future entry → not logged in.
+        write_agent_file("auth.json", "{\"other\": {\"key\": \"k\"}}").await;
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("Not logged in"), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn doctor_config_files_with_invalid_json() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        write_agent_file("auth.json", "{invalid").await;
+        write_agent_file("models.json", "{also invalid").await;
+        write_agent_file("settings.json", "{nope").await;
+        let (_, stdout, _) = run_doctor().await;
+        let count = stdout.matches("exists but is not valid JSON").count();
+        assert_eq!(count, 3, "stdout: {stdout}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn doctor_config_files_unreadable() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("PATH", dir.path().join("empty-bin").into_os_string()),
+            ("FUTURE_AGENT_GRPC_ADDR", OsString::from("127.0.0.1:1")),
+        ]);
+        use std::os::unix::fs::PermissionsExt;
+        for rel in ["auth.json", "models.json", "settings.json"] {
+            write_agent_file(rel, "{}").await;
+            let path = dir.path().join(".future").join("agent").join(rel);
+            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+                .await
+                .unwrap();
+        }
+        let (_, stdout, _) = run_doctor().await;
+        let count = stdout.matches("exists but is not valid JSON").count();
+        assert_eq!(count, 3, "stdout: {stdout}");
+        // Restore so the tempdir cleanup succeeds.
+        for rel in ["auth.json", "models.json", "settings.json"] {
+            let path = dir.path().join(".future").join("agent").join(rel);
+            let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn doctor_skills_dir_exists_but_empty() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        // Empty skills dir → "No skills installed." WITHOUT the
+        // "(directory not found)" marker.
+        tokio::fs::create_dir_all(skills_dir()).await.unwrap();
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("No skills installed."), "stdout: {stdout}");
+        assert!(
+            !stdout.contains("(directory not found)"),
+            "stdout: {stdout}"
+        );
     }
 }

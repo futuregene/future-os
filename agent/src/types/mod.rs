@@ -874,38 +874,35 @@ mod tests {
     #[test]
     fn content_block_text() {
         let b = ContentBlock::text("hello");
-        match b {
-            ContentBlock::Text { text } => assert_eq!(text, "hello"),
-            _ => panic!("expected Text"),
-        }
+        let ContentBlock::Text { text } = b else {
+            panic!("expected Text")
+        };
+        assert_eq!(text, "hello");
     }
 
     #[test]
     fn content_block_image() {
         let b = ContentBlock::image("data:image/png;base64,abc");
-        match b {
-            ContentBlock::Image { image_url } => {
-                assert_eq!(image_url.url.as_deref(), Some("data:image/png;base64,abc"))
-            }
-            _ => panic!("expected Image"),
-        }
+        let ContentBlock::Image { image_url } = b else {
+            panic!("expected Image")
+        };
+        assert_eq!(image_url.url.as_deref(), Some("data:image/png;base64,abc"));
     }
 
     #[test]
     fn content_block_tool_result() {
         let b = ContentBlock::tool_result("call_1", "output text", false);
-        match b {
-            ContentBlock::ToolResult {
-                tool_call_id,
-                content,
-                is_error,
-            } => {
-                assert_eq!(tool_call_id, "call_1");
-                assert_eq!(content, "output text");
-                assert!(!is_error);
-            }
-            _ => panic!("expected ToolResult"),
-        }
+        let ContentBlock::ToolResult {
+            tool_call_id,
+            content,
+            is_error,
+        } = b
+        else {
+            panic!("expected ToolResult")
+        };
+        assert_eq!(tool_call_id, "call_1");
+        assert_eq!(content, "output text");
+        assert!(!is_error);
     }
 
     // ─── ContentBlock serde ────────────────────────────────────────────────
@@ -948,50 +945,47 @@ mod tests {
     fn deserialize_text_block() {
         let json = r#"{"type":"text","text":"hello"}"#;
         let b: ContentBlock = serde_json::from_str(json).unwrap();
-        match b {
-            ContentBlock::Text { text } => assert_eq!(text, "hello"),
-            _ => panic!("expected Text"),
-        }
+        let ContentBlock::Text { text } = b else {
+            panic!("expected Text")
+        };
+        assert_eq!(text, "hello");
     }
 
     #[test]
     fn deserialize_image_block() {
         let json = r#"{"type":"image_url","image_url":{"url":"data:..."}}"#;
         let b: ContentBlock = serde_json::from_str(json).unwrap();
-        match b {
-            ContentBlock::Image { image_url } => {
-                assert_eq!(image_url.url.as_deref(), Some("data:..."))
-            }
-            _ => panic!("expected Image"),
-        }
+        let ContentBlock::Image { image_url } = b else {
+            panic!("expected Image")
+        };
+        assert_eq!(image_url.url.as_deref(), Some("data:..."));
     }
 
     #[test]
     fn deserialize_tool_result_block() {
         let json = r#"{"type":"tool_result","tool_call_id":"c1","content":"done","is_error":true}"#;
         let b: ContentBlock = serde_json::from_str(json).unwrap();
-        match b {
-            ContentBlock::ToolResult {
-                tool_call_id,
-                content,
-                is_error,
-            } => {
-                assert_eq!(tool_call_id, "c1");
-                assert_eq!(content, "done");
-                assert!(is_error);
-            }
-            _ => panic!("expected ToolResult"),
-        }
+        let ContentBlock::ToolResult {
+            tool_call_id,
+            content,
+            is_error,
+        } = b
+        else {
+            panic!("expected ToolResult")
+        };
+        assert_eq!(tool_call_id, "c1");
+        assert_eq!(content, "done");
+        assert!(is_error);
     }
 
     #[test]
     fn deserialize_unknown_type_falls_back_to_text() {
         let json = r#"{"type":"unknown_type","text":"fallback"}"#;
         let b: ContentBlock = serde_json::from_str(json).unwrap();
-        match b {
-            ContentBlock::Text { text } => assert_eq!(text, "fallback"),
-            _ => panic!("expected Text fallback"),
-        }
+        let ContentBlock::Text { text } = b else {
+            panic!("expected Text fallback")
+        };
+        assert_eq!(text, "fallback");
     }
 
     #[test]
@@ -999,10 +993,10 @@ mod tests {
         let original = ContentBlock::text("roundtrip");
         let json = serde_json::to_string(&original).unwrap();
         let restored: ContentBlock = serde_json::from_str(&json).unwrap();
-        match restored {
-            ContentBlock::Text { text } => assert_eq!(text, "roundtrip"),
-            _ => panic!("roundtrip failed"),
-        }
+        let ContentBlock::Text { text } = restored else {
+            panic!("roundtrip failed")
+        };
+        assert_eq!(text, "roundtrip");
     }
 
     #[test]
@@ -1010,18 +1004,17 @@ mod tests {
         let original = ContentBlock::tool_result("c2", "result", true);
         let json = serde_json::to_string(&original).unwrap();
         let restored: ContentBlock = serde_json::from_str(&json).unwrap();
-        match restored {
-            ContentBlock::ToolResult {
-                tool_call_id,
-                content,
-                is_error,
-            } => {
-                assert_eq!(tool_call_id, "c2");
-                assert_eq!(content, "result");
-                assert!(is_error);
-            }
-            _ => panic!("roundtrip failed"),
-        }
+        let ContentBlock::ToolResult {
+            tool_call_id,
+            content,
+            is_error,
+        } = restored
+        else {
+            panic!("roundtrip failed")
+        };
+        assert_eq!(tool_call_id, "c2");
+        assert_eq!(content, "result");
+        assert!(is_error);
     }
 
     // ─── ImageUrlData ──────────────────────────────────────────────────────
@@ -1265,16 +1258,14 @@ mod tests {
         let mut msg = AgentMessage::default();
         msg.add_image("image/png".to_string(), "aGVsbG8=".to_string());
         assert_eq!(msg.content.len(), 1);
-        match &msg.content[0] {
-            ContentBlock::Image { image_url } => {
-                assert!(image_url
-                    .url
-                    .as_ref()
-                    .unwrap()
-                    .starts_with("data:image/png;base64,aGVsbG8="));
-            }
-            _ => panic!("expected Image"),
-        }
+        let ContentBlock::Image { image_url } = &msg.content[0] else {
+            panic!("expected Image")
+        };
+        assert!(image_url
+            .url
+            .as_ref()
+            .unwrap()
+            .starts_with("data:image/png;base64,aGVsbG8="));
     }
 
     #[test]
@@ -1599,5 +1590,208 @@ mod tests {
         let json = serde_json::to_value(&tool).unwrap();
         assert_eq!(json["type"], "function");
         assert_eq!(json["function"]["name"], "shell");
+    }
+
+    // ─── coverage batch: deserialization arms ──────────────────────────────
+
+    #[test]
+    fn content_block_ignores_unknown_fields() {
+        // The `_ => next_value` skip arm in the custom ContentBlock visitor.
+        let block: ContentBlock =
+            serde_json::from_str(r#"{"type":"text","text":"ok","unexpected":{"nested":1}}"#)
+                .unwrap();
+        let ContentBlock::Text { text } = block else {
+            panic!("expected Text")
+        };
+        assert_eq!(text, "ok");
+    }
+
+    #[test]
+    fn new_user_parses_content_block_variants() {
+        // image_url object form, with and without a nested url key.
+        let msg = AgentMessage::new_user(
+            "user",
+            serde_json::json!([
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,a"}},
+                {"type": "image_url", "image_url": "data:image/png;base64,b"},
+                {"type": "image_url"},
+                {"type": "custom", "payload": 1},
+                42,
+                "plain-string-entry"
+            ]),
+        );
+        let images: Vec<_> = msg
+            .content
+            .iter()
+            .filter(|b| matches!(b, ContentBlock::Image { .. }))
+            .collect();
+        assert_eq!(images.len(), 3, "all image_url variants become images");
+        let ContentBlock::Image { image_url } = images[0] else {
+            panic!("image")
+        };
+        assert_eq!(image_url.url.as_deref(), Some("data:image/png;base64,a"));
+        // The bare-string form is not unpacked by this conversion path.
+        let ContentBlock::Image { image_url } = images[1] else {
+            panic!("image")
+        };
+        assert_eq!(image_url.url.as_deref(), Some(""));
+        // Unknown object types fall back to their JSON text form.
+        assert!(msg
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("payload"))));
+        // Non-object entries are dropped.
+        assert!(!msg
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text == "42")));
+
+        // Plain string content becomes a single text block.
+        let msg = AgentMessage::new_user("user", serde_json::json!("just text"));
+        assert_eq!(msg.text(), "just text");
+        // Empty string content yields no visible text.
+        let msg = AgentMessage::new_user("user", serde_json::json!(""));
+        assert!(msg.text().is_empty());
+    }
+
+    #[test]
+    fn usage_credit_cost_accepts_string_number_and_absent() {
+        let usage: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"credit_cost":"0.00019"}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.credit_cost, Some(0.00019));
+
+        let usage: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"credit_cost":0.5}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.credit_cost, Some(0.5));
+
+        let usage: Usage =
+            serde_json::from_str(r#"{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}"#)
+                .unwrap();
+        assert_eq!(usage.credit_cost, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn provider_default_key_and_thinking_setters_are_noops() {
+        struct MinimalProvider;
+        #[async_trait::async_trait]
+        impl LLMProvider for MinimalProvider {
+            async fn stream_chat(
+                &self,
+                _model: String,
+                _messages: Vec<Message>,
+                _tools: Vec<ToolDef>,
+                _system_prompt: String,
+            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<StreamEvent>> {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+            }
+        }
+        let provider = MinimalProvider;
+        provider.set_api_key("ignored");
+        provider.update_thinking("high", 1234);
+        // The default stream_chat implementation is callable too.
+        let mut stream = provider
+            .stream_chat("m".to_string(), vec![], vec![], String::new())
+            .await
+            .unwrap();
+        use tokio_stream::StreamExt;
+        assert!(stream.next().await.is_none());
+    }
+
+    #[test]
+    fn usage_credit_cost_integer_and_null_forms() {
+        let usage: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"credit_cost":2}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.credit_cost, Some(2.0));
+        let usage: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"credit_cost":null}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.credit_cost, None);
+    }
+
+    #[test]
+    fn convert_from_llm_content_block_variants() {
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: Some(serde_json::json!([
+                    {"type": "text", "text": "t"},
+                    {"type": "image_url", "image_url": "data:image/png;base64,x"},
+                    {"type": "image_url", "image_url": 42},
+                    {"type": "unknown"},
+                    "plain-entry"
+                ])),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: Some(serde_json::json!("string content")),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: Some(serde_json::json!("")),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: None,
+                ..Default::default()
+            },
+        ];
+        let converted = convert_from_llm(messages);
+        assert_eq!(converted.len(), 4);
+        // The string-form image_url keeps its URL in this direction.
+        let images: Vec<_> = converted[0]
+            .content
+            .iter()
+            .filter(|b| matches!(b, ContentBlock::Image { .. }))
+            .collect();
+        assert_eq!(images.len(), 2);
+        let ContentBlock::Image { image_url } = images[0] else {
+            panic!("image")
+        };
+        assert_eq!(image_url.url.as_deref(), Some("data:image/png;base64,x"));
+        let ContentBlock::Image { image_url } = images[1] else {
+            panic!("image")
+        };
+        assert!(image_url.url.is_none());
+        assert_eq!(converted[1].text(), "string content");
+        assert!(converted[2].content.is_empty());
+        assert!(converted[3].content.is_empty());
+    }
+
+    #[test]
+    fn agent_tool_debug_redacts_handler() {
+        let tool = AgentTool {
+            def: ToolDef {
+                tool_type: "function".to_string(),
+                function: FunctionDef {
+                    name: "t".to_string(),
+                    description: "d".to_string(),
+                    parameters: serde_json::json!({}),
+                },
+            },
+            handler: |_: serde_json::Value| Box::pin(async { Ok("ok".to_string()) }),
+            guidelines: vec![],
+        };
+        let debug = format!("{tool:?}");
+        assert!(debug.contains("<fn>"));
+        assert!(debug.contains("\"t\""));
+        // The handler itself is callable.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on((tool.handler)(serde_json::json!({})));
+        assert_eq!(result.unwrap(), "ok");
     }
 }

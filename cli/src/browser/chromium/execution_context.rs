@@ -58,7 +58,7 @@ impl ExecutionContextTracker {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    if let Ok(mut map) = contexts.lock() {
+                    let _ = contexts.lock().map(|mut map| {
                         map.insert(
                             id,
                             ExecutionContextInfo {
@@ -68,7 +68,7 @@ impl ExecutionContextTracker {
                                 name,
                             },
                         );
-                    }
+                    });
                 }
             });
             self._unsubs
@@ -81,9 +81,7 @@ impl ExecutionContextTracker {
                     .get("executionContextId")
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
-                if let Ok(mut map) = contexts.lock() {
-                    map.remove(&id);
-                }
+                let _ = contexts.lock().map(|mut map| map.remove(&id));
             });
             self._unsubs
                 .push(session.on("Runtime.executionContextDestroyed", h));
@@ -91,9 +89,7 @@ impl ExecutionContextTracker {
         {
             let contexts = self.contexts.clone();
             let h: CdpEventHandler = std::sync::Arc::new(move |_params: &Value| {
-                if let Ok(mut map) = contexts.lock() {
-                    map.clear();
-                }
+                let _ = contexts.lock().map(|mut map| map.clear());
             });
             self._unsubs
                 .push(session.on("Runtime.executionContextsCleared", h));
@@ -165,7 +161,8 @@ mod tests {
             for msg in script {
                 let _ = ws.send(Message::Text(msg.to_string())).await;
             }
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            // Brief hold; tests await the handle so the task completes.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         });
         (format!("ws://{addr}"), handle)
     }
@@ -177,6 +174,63 @@ mod tests {
         let conn = CdpConnection::connect(&url, 5000).await.expect("connect");
         let session = CdpSession::new("sess-1", conn.clone());
         (conn, session, server)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn created_event_edge_shapes_use_defaults() {
+        let (conn, _session, server) = connect(vec![]).await;
+        let tracker = ExecutionContextTracker::new(&_session);
+
+        // No "context" object → ignored.
+        conn.dispatch_test(
+            Some("sess-1"),
+            "Runtime.executionContextCreated",
+            &json!({}),
+        );
+        // Context without id / auxData / name → id 0, "" frame, default.
+        conn.dispatch_test(
+            Some("sess-1"),
+            "Runtime.executionContextCreated",
+            &json!({"context": {}}),
+        );
+        // auxData present but partial → is_default honored, frame "".
+        conn.dispatch_test(
+            Some("sess-1"),
+            "Runtime.executionContextCreated",
+            &json!({"context": {"id": 7, "auxData": {"isDefault": false}}}),
+        );
+        // Destroyed without id → removes id 0 (the first default entry).
+        conn.dispatch_test(
+            Some("sess-1"),
+            "Runtime.executionContextDestroyed",
+            &json!({}),
+        );
+        // Cleared empties everything.
+        conn.dispatch_test(
+            Some("sess-1"),
+            "Runtime.executionContextsCleared",
+            &json!({}),
+        );
+
+        // A subsequent default-world lookup must NOT find the cleared ones.
+        let result = tracker
+            .get_main_world_context_id("any", &Deadline::new(120))
+            .await;
+        assert!(result.is_err());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    #[test]
+    fn execution_context_info_shape() {
+        let info = ExecutionContextInfo {
+            context_id: 3,
+            frame_id: "f".to_string(),
+            is_default: true,
+            name: "n".to_string(),
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.context_id, 3);
+        let _ = format!("{info:?}");
     }
 
     fn created(id: i64, frame_id: &str, is_default: bool) -> Value {

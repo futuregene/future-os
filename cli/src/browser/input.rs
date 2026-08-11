@@ -315,4 +315,57 @@ mod tests {
             (10, 10)
         );
     }
+
+    #[test]
+    fn remaining_key_table_entries() {
+        assert_eq!(parse_key("Delete").unwrap()[0].windows_virtual_key_code, 46);
+        assert_eq!(parse_key("Shift").unwrap()[0].key, "Shift");
+        assert_eq!(parse_key("Control").unwrap()[0].key, "Control");
+        assert_eq!(parse_key("Alt").unwrap()[0].key, "Alt");
+        assert_eq!(parse_key("Meta").unwrap()[0].key, "Meta");
+        assert_eq!(parse_key("v").unwrap()[0].code, "KeyV");
+        assert_eq!(parse_key("x").unwrap()[0].code, "KeyX");
+    }
+
+    #[test]
+    fn single_char_key_carries_text() {
+        let keys = parse_key("a").unwrap();
+        assert_eq!(keys[0].text, "a");
+        assert_eq!(keys[1].text, "a");
+        // Multi-char key names carry no text.
+        assert_eq!(parse_key("Enter").unwrap()[0].text, "");
+    }
+
+    #[test]
+    fn modifier_aliases() {
+        assert_eq!(parse_key("Ctrl+A").unwrap()[0].modifiers, MOD_CONTROL);
+        assert_eq!(parse_key("Option+A").unwrap()[0].modifiers, MOD_ALT);
+        assert_eq!(parse_key("Command+A").unwrap()[0].modifiers, MOD_META);
+        assert_eq!(parse_key("Cmd+A").unwrap()[0].modifiers, MOD_META);
+        // Unknown modifier names are ignored (JS permissiveness).
+        assert_eq!(parse_key("Hyper+A").unwrap()[0].modifiers, MOD_NONE);
+    }
+
+    #[test]
+    fn combo_with_unknown_final_key_errors() {
+        let err = parse_key("Control+F23").unwrap_err();
+        assert_eq!(err, "Unknown key in combo: \"F23\"");
+        let err = parse_key("F23").unwrap_err();
+        assert_eq!(err, "Unknown key: \"F23\"");
+    }
+
+    #[test]
+    fn char_key_down_up_emits_char_codes() {
+        let keys = char_key_down_up("Q");
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].r#type, "keyDown");
+        assert_eq!(keys[1].r#type, "keyUp");
+        assert_eq!(keys[0].key, "Q");
+        assert_eq!(keys[0].text, "Q");
+        assert_eq!(keys[0].windows_virtual_key_code, 'Q' as i64);
+        assert_eq!(keys[0].native_virtual_key_code, 0);
+        // Empty string → code 0 (defensive; JS would produce NaN semantics).
+        let empty = char_key_down_up("");
+        assert_eq!(empty[0].windows_virtual_key_code, 0);
+    }
 }

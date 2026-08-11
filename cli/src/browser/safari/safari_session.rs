@@ -26,13 +26,10 @@ pub struct SafariSession {
 
 impl SafariSession {
     pub fn new(params: BrowserSessionParams) -> Result<Self, String> {
-        if params.protocol() != "webdriver" {
+        let BrowserSessionParams::Webdriver { session_id, .. } = &params else {
             return Err("SafariSession requires webdriver protocol".to_string());
-        }
-        let session_id = match &params {
-            BrowserSessionParams::Webdriver { session_id, .. } => session_id.clone(),
-            _ => unreachable!("protocol checked above"),
         };
+        let session_id = session_id.clone();
         Ok(SafariSession {
             client: WebDriverClient::new(params.endpoint()),
             session_id,
@@ -60,11 +57,11 @@ impl SafariSession {
         {
             Ok(id) => Ok(id),
             Err(e) => {
-                // WebDriver "no such element" → ElementNotFoundError.
-                if let Some(wd) = parse_webdriver_error(&e) {
-                    if wd.error == "no such element" {
-                        return Err(element_not_found_error(selector).to_string());
-                    }
+                // WebDriver "no such element" → ElementNotFoundError. The
+                // re-parse only matches when the marker is present, so no
+                // second comparison is needed here.
+                if parse_webdriver_error(&e) {
+                    return Err(element_not_found_error(selector).to_string());
                 }
                 Err(e)
             }
@@ -87,18 +84,11 @@ impl SafariSession {
     }
 }
 
-/// Extract a WebDriver error payload from a formatted error string. The
-/// client formats `WebDriver [status] code: message`, so we re-parse the
-/// "no such element" marker here (the TS checks `e.wd.error` directly).
-fn parse_webdriver_error(e: &str) -> Option<WebDriverErrMarker> {
-    let marker = e.find("no such element")?;
-    Some(WebDriverErrMarker {
-        error: e[marker..marker + "no such element".len()].to_string(),
-    })
-}
-
-struct WebDriverErrMarker {
-    error: String,
+/// Whether a formatted WebDriver error carries the "no such element"
+/// marker. The client formats `WebDriver [status] code: message`, so we
+/// re-parse the marker here (the TS checks `e.wd.error` directly).
+fn parse_webdriver_error(e: &str) -> bool {
+    e.contains("no such element")
 }
 
 #[async_trait]
@@ -444,5 +434,535 @@ impl BrowserSession for SafariSession {
     async fn disconnect(&mut self) -> Result<(), String> {
         // Don't delete the session — it persists across CLI commands.
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browser::types::DEFAULT_TIMEOUTS;
+    use crate::test_server::{spawn_http, HttpRoute};
+    use serde_json::json;
+
+    /// TabsResult extractors (panic arms covered by a dedicated test).
+    #[track_caller]
+    fn expect_list(r: InternalTabsResult) -> Vec<InternalTabInfo> {
+        match r {
+            InternalTabsResult::List { tabs } => tabs,
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn expect_new(r: InternalTabsResult) -> (InternalPageInfo, usize) {
+        match r {
+            InternalTabsResult::New { page, index } => (page, index),
+            other => panic!("expected new, got {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn expect_select(r: InternalTabsResult) -> InternalPageInfo {
+        match r {
+            InternalTabsResult::Select { page } => page,
+            other => panic!("expected select, got {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn expect_close(r: InternalTabsResult) -> (String, usize) {
+        match r {
+            InternalTabsResult::Close { url, index } => (url, index),
+            other => panic!("expected close, got {other:?}"),
+        }
+    }
+
+    fn page_info(id: &str) -> InternalPageInfo {
+        InternalPageInfo {
+            page_id: id.to_string(),
+            title: String::new(),
+            url: String::new(),
+        }
+    }
+
+    #[test]
+    fn tabs_result_extractors_panic_on_wrong_variant() {
+        assert!(std::panic::catch_unwind(|| {
+            expect_new(InternalTabsResult::List { tabs: vec![] })
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            expect_select(InternalTabsResult::List { tabs: vec![] })
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            expect_close(InternalTabsResult::List { tabs: vec![] })
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            expect_list(InternalTabsResult::New {
+                page: page_info("p"),
+                index: 0,
+            })
+        })
+        .is_err());
+    }
+
+    fn session(endpoint: &str) -> SafariSession {
+        SafariSession::new(BrowserSessionParams::Webdriver {
+            endpoint: endpoint.to_string(),
+            session_id: "s1".to_string(),
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: None,
+        })
+        .expect("session")
+    }
+
+    fn target(selector: &str) -> ResolvedTarget {
+        crate::browser::selector::resolve_target(
+            Some(selector),
+            &crate::browser::types::BrowserConfig::default(),
+        )
+        .expect("resolve")
+    }
+
+    async fn mock(routes: Vec<HttpRoute>) -> String {
+        spawn_http(routes).await
+    }
+
+    #[tokio::test]
+    async fn new_rejects_cdp_params() {
+        let err = SafariSession::new(BrowserSessionParams::Cdp {
+            browser_kind: "chrome".to_string(),
+            endpoint: "http://x".to_string(),
+            timeouts: DEFAULT_TIMEOUTS,
+            active_page_id: None,
+            init_tab_order: None,
+        })
+        .err()
+        .expect("cdp params must fail");
+        assert_eq!(err, "SafariSession requires webdriver protocol");
+    }
+
+    #[tokio::test]
+    async fn kind_and_protocol() {
+        let s = session("http://127.0.0.1:1");
+        assert_eq!(s.kind(), "safari");
+        assert_eq!(s.protocol(), "webdriver");
+    }
+
+    #[tokio::test]
+    async fn open_navigates_and_reports_title_url() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"http://page/"}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"Page T"}"#),
+            HttpRoute::json("/session/s1/execute/sync", 200, r#"{"value":null}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let info = s
+            .open("http://page/", OpenPageOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(info.page_id, "h1");
+        assert_eq!(info.title, "Page T");
+        assert_eq!(info.url, "http://page/");
+    }
+
+    #[tokio::test]
+    async fn click_detects_navigation_via_url_change() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/element", 200, r#"{"value":"e1"}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            HttpRoute::sequence(
+                "/session/s1/url",
+                vec![
+                    (200, r#"{"value":"http://old/"}"#),
+                    (200, r#"{"value":"http://new/"}"#),
+                ],
+            ),
+            HttpRoute::json("/session/s1/element/e1/click", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"New T"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s
+            .click(&target("#go"), ClickOptions::default())
+            .await
+            .unwrap();
+        assert!(result.did_navigate);
+        assert_eq!(result.url, "http://new/");
+        assert_eq!(result.title, "New T");
+        assert_eq!(result.page_id, "h1");
+    }
+
+    #[tokio::test]
+    async fn click_without_navigation() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/element", 200, r#"{"value":"e1"}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"http://same/"}"#),
+            HttpRoute::json("/session/s1/element/e1/click", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"Same"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s
+            .click(&target("#stay"), ClickOptions::default())
+            .await
+            .unwrap();
+        assert!(!result.did_navigate);
+        assert_eq!(result.url, "http://same/");
+    }
+
+    #[tokio::test]
+    async fn click_missing_element_maps_to_not_found() {
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/element",
+            404,
+            r#"{"value":{"error":"no such element","message":"nope"}}"#,
+        )])
+        .await;
+        let mut s = session(&base);
+        let err = s
+            .click(&target("#ghost"), ClickOptions::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Element not found: \"#ghost\"");
+    }
+
+    #[tokio::test]
+    async fn click_other_webdriver_errors_pass_through() {
+        // A WebDriver error WITHOUT the "no such element" marker is
+        // returned unchanged (not translated to ElementNotFoundError).
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/element",
+            500,
+            r#"{"value":{"error":"stale element reference","message":"went stale"}}"#,
+        )])
+        .await;
+        let mut s = session(&base);
+        let err = s
+            .click(&target("#stale"), ClickOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("stale element reference"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn type_fails_when_window_handle_unreadable() {
+        // find + clear succeed, but reading the current window handle for
+        // the page_id fails → the error propagates out of `type`.
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/element", 200, r#"{"value":"e1"}"#),
+            HttpRoute::json("/session/s1/element/e1/clear", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/element/e1/value", 200, r#"{"value":null}"#),
+            HttpRoute::json(
+                "/session/s1/window",
+                500,
+                r#"{"value":{"error":"no such window","message":"gone"}}"#,
+            ),
+        ])
+        .await;
+        let mut s = session(&base);
+        let err = s
+            .r#type(&target("#in"), "x", TypeOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("no such window"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn find_one_translates_xpath_and_text_prefixes() {
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/element",
+            200,
+            r#"{"value":"e9"}"#,
+        )])
+        .await;
+        let s = session(&base);
+        assert_eq!(s.find_one("xpath=//div").await.unwrap(), "e9");
+        assert_eq!(s.find_one("text=Hello").await.unwrap(), "e9");
+        assert_eq!(s.find_one("#css").await.unwrap(), "e9");
+    }
+
+    #[tokio::test]
+    async fn find_one_non_element_error_passthrough() {
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/element",
+            500,
+            r#"{"value":{"error":"unknown error","message":"driver exploded"}}"#,
+        )])
+        .await;
+        let s = session(&base);
+        let err = s.find_one("#x").await.unwrap_err();
+        assert!(err.contains("driver exploded"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn type_clear_and_submit_sequences() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/element", 200, r#"{"value":"e1"}"#),
+            HttpRoute::json("/session/s1/element/e1/clear", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/element/e1/value", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        // clear (default) + submit.
+        let r = s
+            .r#type(
+                &target("#in"),
+                "hello",
+                TypeOptions {
+                    clear: None,
+                    submit: Some(true),
+                    timeout_ms: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.typed, "#in");
+        assert!(r.submitted);
+        assert_eq!(r.page_id, "h1");
+
+        // clear: false, submit: false.
+        let r = s
+            .r#type(
+                &target("#in"),
+                "x",
+                TypeOptions {
+                    clear: Some(false),
+                    submit: None,
+                    timeout_ms: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!r.submitted);
+    }
+
+    #[tokio::test]
+    async fn press_maps_keys_and_sends_to_body_without_target() {
+        let base = mock(vec![
+            HttpRoute::json("/session/s1/element", 200, r#"{"value":"e-body"}"#),
+            HttpRoute::json("/session/s1/element/e-body/value", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":"h1"}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"T"}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"http://u/"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        // Mapped key without a target → sent to body element.
+        let r = s
+            .press("Enter", None, PressOptions::default())
+            .await
+            .unwrap();
+        assert!(!r.did_navigate);
+        assert_eq!(r.page_id, "h1");
+        // Unmapped key passes through verbatim; with target.
+        let r = s
+            .press("F5", Some(&target("#btn")), PressOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(r.url, "http://u/");
+    }
+
+    #[tokio::test]
+    async fn tabs_list_switches_through_handles() {
+        let base = mock(vec![
+            HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1","h2"]}"#,
+            ),
+            HttpRoute::sequence(
+                "/session/s1/window",
+                vec![
+                    (200, r#"{"value":"h1"}"#), // current handle
+                    (200, r#"{"value":null}"#), // switch h1
+                    (200, r#"{"value":null}"#), // switch h2
+                    (200, r#"{"value":null}"#), // switch back
+                ],
+            ),
+            HttpRoute::sequence(
+                "/session/s1/title",
+                vec![(200, r#"{"value":"T1"}"#), (200, r#"{"value":"T2"}"#)],
+            ),
+            HttpRoute::sequence(
+                "/session/s1/url",
+                vec![(200, r#"{"value":"u1"}"#), (200, r#"{"value":"u2"}"#)],
+            ),
+        ])
+        .await;
+        let mut s = session(&base);
+        let tabs = expect_list(s.tabs(&TabsAction::List).await.unwrap());
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[0].title, "T1");
+        assert!(tabs[0].active);
+        assert_eq!(tabs[1].title, "T2");
+        assert!(!tabs[1].active);
+    }
+
+    #[tokio::test]
+    async fn tabs_new_with_and_without_url() {
+        let base = mock(vec![
+            HttpRoute::json(
+                "/session/s1/window/new",
+                200,
+                r#"{"value":{"handle":"h2"}}"#,
+            ),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"http://new/"}"#),
+            HttpRoute::json("/session/s1/execute/sync", 200, r#"{"value":null}"#),
+            HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1","h2"]}"#,
+            ),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"NT"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s
+            .tabs(&TabsAction::New {
+                url: Some("http://new/".to_string()),
+            })
+            .await
+            .unwrap();
+        let (page, index) = expect_new(result);
+        assert_eq!(page.page_id, "h2");
+        assert_eq!(index, 1);
+        assert_eq!(page.url, "http://new/");
+        // No url → skip navigate.
+        let result = s.tabs(&TabsAction::New { url: None }).await.unwrap();
+        assert!(matches!(result, InternalTabsResult::New { .. }));
+    }
+
+    #[tokio::test]
+    async fn tabs_select_and_invalid_index() {
+        let base = mock(vec![
+            HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1","h2"]}"#,
+            ),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/execute/sync", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/title", 200, r#"{"value":"T2"}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"u2"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s.tabs(&TabsAction::Select { index: 1 }).await.unwrap();
+        let page = expect_select(result);
+        assert_eq!(page.page_id, "h2");
+        assert_eq!(page.title, "T2");
+        let err = s.tabs(&TabsAction::Select { index: 9 }).await.unwrap_err();
+        assert_eq!(err, "Invalid tab index: 9");
+    }
+
+    #[tokio::test]
+    async fn tabs_close_switches_back_to_last_remaining() {
+        let base = mock(vec![
+            HttpRoute::json(
+                "/session/s1/window/handles",
+                200,
+                r#"{"value":["h1","h2"]}"#,
+            ),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"u1"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s.tabs(&TabsAction::Close { index: 0 }).await.unwrap();
+        let (url, index) = expect_close(result);
+        assert_eq!(url, "u1");
+        assert_eq!(index, 0);
+        // Close with an empty remaining list.
+        let base = mock(vec![
+            HttpRoute::sequence(
+                "/session/s1/window/handles",
+                vec![(200, r#"{"value":["h1"]}"#), (200, r#"{"value":[]}"#)],
+            ),
+            HttpRoute::json("/session/s1/window", 200, r#"{"value":null}"#),
+            HttpRoute::json("/session/s1/url", 200, r#"{"value":"u1"}"#),
+        ])
+        .await;
+        let mut s = session(&base);
+        let result = s.tabs(&TabsAction::Close { index: 0 }).await.unwrap();
+        assert!(matches!(result, InternalTabsResult::Close { .. }));
+    }
+
+    #[tokio::test]
+    async fn evaluate_expression_and_function() {
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/execute/sync",
+            200,
+            r#"{"value":{"k":2}}"#,
+        )])
+        .await;
+        let mut s = session(&base);
+        let v = s
+            .evaluate(&EvaluateRequest::Expression {
+                expression: "1+1".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(v, json!({"k": 2}));
+        let v = s
+            .evaluate(&EvaluateRequest::Function {
+                function_declaration: "function(a){return a;}".to_string(),
+                arguments: vec![json!(1)],
+            })
+            .await
+            .unwrap();
+        assert_eq!(v, json!({"k": 2}));
+    }
+
+    #[tokio::test]
+    async fn capture_screenshot_full_page_unsupported_and_viewport_ok() {
+        use base64::Engine;
+        let mut s = session("http://127.0.0.1:1");
+        let err = s
+            .capture_screenshot(&CaptureScreenshotOptions {
+                full_page: true,
+                format: "png",
+                quality: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("Full-page screenshot is not supported on safari"),
+            "{err}"
+        );
+        assert!(
+            err.contains("Use viewport screenshot or a Chrome/Edge browser."),
+            "{err}"
+        );
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"img");
+        let base = mock(vec![HttpRoute::json(
+            "/session/s1/screenshot",
+            200,
+            &format!(r#"{{"value":"{b64}"}}"#),
+        )])
+        .await;
+        let mut s = session(&base);
+        let bytes = s
+            .capture_screenshot(&CaptureScreenshotOptions {
+                full_page: false,
+                format: "png",
+                quality: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"img".to_vec());
+    }
+
+    #[tokio::test]
+    async fn disconnect_is_ok() {
+        let mut s = session("http://127.0.0.1:1");
+        s.disconnect().await.unwrap();
     }
 }
