@@ -15,7 +15,6 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Alert,
-  ActionSheetIOS,
   BackHandler,
   FlatList,
   Image,
@@ -230,22 +229,9 @@ export function ChatScreen() {
   };
 
   const openAttachmentMenu = () => {
-    // iOS's native action sheet is the familiar pattern for a short list of
-    // creation sources. It deliberately owns the lower screen while open,
-    // instead of leaving a small card awkwardly over the composer.
-    if (Platform.OS === "ios") {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options: [t("attachment.chooseFiles"), t("attachment.takePhoto"), t("chat.cancel")],
-          cancelButtonIndex: 2,
-        },
-        index => {
-          if (index === 0) void chooseFiles();
-          if (index === 1) void capturePhoto();
-        },
-      );
-      return;
-    }
+    // Keep the source picker visually predictable across iOS versions: the
+    // custom sheet always rises from the bottom instead of becoming a centered
+    // system popover on newer iOS simulator runtimes.
     setAttachmentMenu(true);
   };
 
@@ -944,6 +930,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.md,
+    marginRight: "auto",
   },
   dockedApproval: {
     marginHorizontal: spacing.md,
@@ -975,14 +962,14 @@ const styles = StyleSheet.create({
     minHeight: 46,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     gap: spacing.sm,
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.md,
   },
   composerSelectors: {
     minWidth: 0,
-    flex: 1,
+    flexGrow: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.xs,
