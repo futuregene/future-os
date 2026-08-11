@@ -38,7 +38,7 @@ jobs:
             # no-cache so CDN edge nodes revalidate and updates go live
             # immediately (installers must never serve stale content).
             ossutil cp -f "scripts/$f" "oss://$OSS_BUCKET/$f" \
-              --meta "Content-Type:text/plain; charset=utf-8" \
-              --meta "Cache-Control:no-cache"
+              --content-type "text/plain; charset=utf-8" \
+              --cache-control "no-cache"
             ossutil stat "oss://$OSS_BUCKET/$f"
           done
