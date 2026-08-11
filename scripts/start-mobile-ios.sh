@@ -122,6 +122,17 @@ if [[ "$REBUILD_PREBUILD" == "1" ]] || [[ ! -d "$MOBILE_DIR/ios" ]]; then
   (cd "$MOBILE_DIR" && npx expo prebuild --platform ios)
 fi
 
+# expo run:ios reuses an existing Pods directory. When a package adds an Expo
+# native module, Metro can load its JS while the installed development client
+# still lacks the corresponding native code. Keep Pods synchronized whenever
+# the JavaScript dependency manifests changed since the last pod install.
+POD_LOCK="$MOBILE_DIR/ios/Podfile.lock"
+if [[ ! -f "$POD_LOCK" ]] || [[ "$MOBILE_DIR/package.json" -nt "$POD_LOCK" ]] || \
+  [[ "$MOBILE_DIR/package-lock.json" -nt "$POD_LOCK" ]]; then
+  echo "Installing updated iOS native dependencies..."
+  (cd "$MOBILE_DIR/ios" && pod install)
+fi
+
 # ── gen version ──────────────────────────────────────────────────────────────
 
 (cd "$MOBILE_DIR" && npm run gen-version)
