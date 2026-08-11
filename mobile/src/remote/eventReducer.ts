@@ -584,7 +584,11 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
   };
 }
 
-export function appendUserMessage(state: TimelineState, text: string): TimelineState {
+export function appendUserMessage(
+  state: TimelineState,
+  text: string,
+  attachments?: HistoryAttachment[],
+): TimelineState {
   return {
     ...state,
     items: [
@@ -594,6 +598,7 @@ export function appendUserMessage(state: TimelineState, text: string): TimelineS
         kind: "message",
         role: "user",
         text,
+        ...(attachments?.length ? { attachments } : {}),
       },
     ],
   };

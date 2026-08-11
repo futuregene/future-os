@@ -1,5 +1,6 @@
 import {
   applyStreamEvent,
+  appendUserMessage,
   emptyTimeline,
   normalizeReplayEvents,
   stripRunItems,
@@ -9,6 +10,18 @@ import {
 } from "../eventReducer";
 
 describe("history reducer", () => {
+  test("keeps optimistic attachment chips for an attachment-only prompt", () => {
+    const timeline = appendUserMessage(emptyTimeline(), "", [
+      { path: "file:///photo.jpg", name: "photo.jpg", kind: "image" },
+    ]);
+    expect(timeline.items[0]).toMatchObject({
+      kind: "message",
+      role: "user",
+      text: "",
+      attachments: [{ name: "photo.jpg", kind: "image" }],
+    });
+  });
+
   test("skips tool-call-only messages whose content is omitted on the wire", () => {
     const timeline = timelineFromHistory([
       { role: "user", content: "hi" },

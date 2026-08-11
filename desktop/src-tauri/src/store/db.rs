@@ -49,16 +49,16 @@ pub(super) fn review_repos_root() -> Result<PathBuf, crate::AppError> {
     Ok(app_dir()?.join("review"))
 }
 
-/// Root of the per-thread image tree (`~/.future/app/images`). Holds attachment
-/// thumbnails (both modes) and workspace-mode image originals — a persistent
-/// location, unlike the OS app cache dir which macOS may purge. Reclaimed by
-/// `reconcile_orphan_images` and by `clear_all_data`.
+/// Root of the per-thread attachment tree (`~/.future/app/images`). Holds image
+/// thumbnails plus originals that have no stable desktop path (pastes and
+/// mobile uploads) — a persistent location, unlike the OS app cache dir which
+/// macOS may purge. Reclaimed by `reconcile_orphan_images` and `clear_all_data`.
 pub fn app_images_root() -> Result<PathBuf, crate::AppError> {
     Ok(app_dir()?.join("images"))
 }
 
-/// Per-thread image directory: `~/.future/app/images/<thread_id>` (with
-/// `thumb/` and, for workspace conversations, `origin/` subdirs).
+/// Per-thread attachment directory: `~/.future/app/images/<thread_id>` (with
+/// `thumb/` and `origin/` subdirs).
 pub fn thread_images_dir(thread_id: &str) -> Result<PathBuf, crate::AppError> {
     Ok(app_images_root()?.join(thread_id))
 }

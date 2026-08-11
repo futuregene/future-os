@@ -35,10 +35,15 @@ import {
   saveLastThinking,
 } from "./storage";
 import { modelProviderFromReference, modelReference } from "./types";
+import { cachedDownload, downloadPrepared, prepareDownload, uploadAttachments } from "./files";
+import type { File } from "expo-file-system";
 import type {
   ConnectionPhase,
   HistoryEntry,
   HistoryMessage,
+  HistoryAttachment,
+  DownloadInfo,
+  MobileAttachment,
   Presence,
   RemoteCredentials,
   RemoteModel,
@@ -107,6 +112,7 @@ interface RemoteContextValue {
   modelId: string;
   thinkingLevel: ThinkingLevel;
   busy: boolean;
+  fileTransferSupported: boolean;
   pair(code: string): Promise<void>;
   reconnect(): Promise<void>;
   unpair(): Promise<void>;
@@ -115,7 +121,17 @@ interface RemoteContextValue {
   selectSession(sessionId: string): Promise<void>;
   newConversation(mode?: "chat" | "workspace", workspaceId?: string): Promise<void>;
   closeConversation(): void;
-  sendMessage(text: string): Promise<void>;
+  sendMessage(
+    text: string,
+    attachments?: MobileAttachment[],
+    onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
+  ): Promise<void>;
+  prepareAttachment(attachment: HistoryAttachment): Promise<DownloadInfo>;
+  cachedAttachment(info: DownloadInfo): File | null;
+  downloadAttachment(
+    info: DownloadInfo,
+    onProgress?: (completedBytes: number, totalBytes: number) => void,
+  ): Promise<File>;
   abort(): Promise<void>;
   setModel(modelId: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<void>;
@@ -171,6 +187,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
   const [busy, setBusy] = useState(false);
+  const [fileTransferSupported, setFileTransferSupported] = useState(false);
   const [clock, setClock] = useState(Date.now());
   // Per-session timelines: events for EVERY session are consumed (the desktop
   // observer mirrors all of them), so a background run keeps advancing and
@@ -377,6 +394,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setCredentials(fresh);
       setError(null);
       setPhase("connecting");
+      setFileTransferSupported(false);
       const client = new RemoteClient(fresh, {
         onCredentials: next => {
           setCredentials(next);
@@ -423,6 +441,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         },
         onWorkspaces: workspaceList => {
           setWorkspaces(workspaceList);
+        },
+        onFeatures: features => {
+          setFileTransferSupported(features.includes("file_transfer_v1"));
         },
         onConnectionState: state => {
           if (state === "connected") {
@@ -900,15 +921,31 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   );
 
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (
+      text: string,
+      attachments: MobileAttachment[] = [],
+      onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
+    ) => {
       const client = clientRef.current;
-      if (!client || busy || !text.trim()) return;
+      if (!client || busy || (!text.trim() && attachments.length === 0)) return;
+      if (attachments.length > 0 && !fileTransferSupported) {
+        throw new Error("attachment_unsupported_desktop");
+      }
       const currentTimeline = timelinesRef.current[selectedRef.current] ?? emptyTimeline();
       if (currentTimeline.streaming) return;
-      const optimisticTimeline = appendUserMessage(currentTimeline, text.trim());
       setBusy(true);
-      setTimelines(prev => ({ ...prev, [selectedRef.current]: optimisticTimeline }));
       try {
+        const uploaded = await uploadAttachments(client, attachments, onUploadProgress);
+        const optimisticTimeline = appendUserMessage(
+          currentTimeline,
+          text.trim(),
+          attachments.map(attachment => ({
+            path: attachment.localUri,
+            name: attachment.name,
+            kind: attachment.kind,
+          })),
+        );
+        setTimelines(prev => ({ ...prev, [selectedRef.current]: optimisticTimeline }));
         const response = await client.request<PromptAck>(
           {
             type: "prompt",
@@ -917,6 +954,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             modelId,
             providerId: modelProviderFromReference(modelId),
             level: thinkingLevel,
+            ...(uploaded.length
+              ? { attachments: uploaded.map(attachment => ({ uploadId: attachment.uploadId! })) }
+              : {}),
             ...(draft && draftMode === "workspace"
               ? { mode: "workspace", workspaceId: draftWorkspaceId }
               : {}),
@@ -952,11 +992,21 @@ export function RemoteProvider({ children }: PropsWithChildren) {
                   item.role === "user" &&
                   item.text.trim() === draftUser.text.trim(),
               );
+            const currentItems =
+              alreadyLanded && draftUser?.kind === "message" && draftUser.attachments?.length
+                ? current.items.map(item =>
+                    item.kind === "message" &&
+                    item.role === "user" &&
+                    item.text.trim() === draftUser.text.trim()
+                      ? { ...draftUser, runId: item.runId }
+                      : item,
+                  )
+                : current.items;
             return {
               ...prev,
               [nextSessionId]: {
                 ...current,
-                items: alreadyLanded ? current.items : [...draftItems, ...current.items],
+                items: alreadyLanded ? currentItems : [...draftItems, ...current.items],
               },
               ...(draftItems.length === 0 || alreadyLanded ? { "": emptyTimeline() } : {}),
             };
@@ -967,7 +1017,37 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         setBusy(false);
       }
     },
-    [busy, draft, draftMode, draftWorkspaceId, modelId, refreshSessions, thinkingLevel],
+    [
+      busy,
+      draft,
+      draftMode,
+      draftWorkspaceId,
+      fileTransferSupported,
+      modelId,
+      refreshSessions,
+      thinkingLevel,
+    ],
+  );
+
+  const prepareAttachment = useCallback(async (attachment: HistoryAttachment) => {
+    const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    if (!client || !sessionId) throw new Error("attachment_no_session");
+    return prepareDownload(client, sessionId, attachment);
+  }, []);
+
+  const cachedAttachment = useCallback((info: DownloadInfo) => cachedDownload(info), []);
+
+  const downloadAttachment = useCallback(
+    async (
+      info: DownloadInfo,
+      onProgress?: (completedBytes: number, totalBytes: number) => void,
+    ) => {
+      const client = clientRef.current;
+      if (!client) throw new Error("attachment_not_connected");
+      return downloadPrepared(client, info, onProgress);
+    },
+    [],
   );
 
   const abort = useCallback(async () => {
@@ -1068,6 +1148,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       modelId,
       thinkingLevel,
       busy,
+      fileTransferSupported,
       pair,
       reconnect,
       unpair,
@@ -1077,6 +1158,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       newConversation,
       closeConversation,
       sendMessage,
+      prepareAttachment,
+      cachedAttachment,
+      downloadAttachment,
       abort,
       setModel,
       setThinkingLevel,
@@ -1086,6 +1170,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     [
       abort,
       busy,
+      fileTransferSupported,
       credentials,
       closeConversation,
       decideApproval,
@@ -1106,6 +1191,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedSessionId,
       selectedTitle,
       sendMessage,
+      prepareAttachment,
+      cachedAttachment,
+      downloadAttachment,
       sessions,
       timeline,
       unreadSessions,

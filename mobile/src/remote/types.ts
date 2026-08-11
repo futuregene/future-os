@@ -98,6 +98,30 @@ export interface HistoryAttachment {
   kind?: "image" | "file" | null;
 }
 
+export interface MobileAttachment {
+  localUri: string;
+  name: string;
+  mimeType: string;
+  kind: "image" | "file";
+  /** Quota accounting always uses the original, pre-compression byte size. */
+  originalSize: number;
+  transferSize: number;
+  /** True when localUri is an app-cache derivative that we own and may delete. */
+  temporary?: boolean;
+  uploadId?: string;
+  contentHash?: string;
+}
+
+export interface DownloadInfo {
+  transferId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  contentHash: string;
+  previewKind: "image" | "markdown" | "file";
+  chunkBytes: number;
+}
+
 /**
  * Display-shaped session entry from `get_session_entries` (the agent's JSONL,
  * same source the desktop app renders). Content is plain text; user entries
@@ -228,4 +252,11 @@ export interface RemoteCommand {
   expectedDesktopId?: string;
   expectedDesktopPublicKey?: string;
   clientSignature?: string;
+  mimeType?: string;
+  kind?: string;
+  originalSize?: number;
+  transferSize?: number;
+  transferId?: string;
+  filePath?: string;
+  attachments?: { uploadId: string }[];
 }

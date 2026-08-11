@@ -14,7 +14,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { MarkdownText } from "./MarkdownText";
 import type { ApprovalPayload, HistoryAttachment, TimelineItem } from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
@@ -22,6 +22,7 @@ import { Button } from "./Button";
 
 interface TimelineCardProps {
   item: TimelineItem;
+  onOpenAttachment?(attachment: HistoryAttachment): void;
 }
 
 // Same shape as the desktop footer (desktop/src/lib/date.ts formatDuration): "5s"
@@ -232,18 +233,19 @@ export function PendingApprovalCard({
   );
 }
 
-// Desktop AttachmentChip parity: a small pill (icon + name) under the message.
-// The files live on the desktop, so tapping only tells the user where to look —
-// there is nothing to open on the phone.
-function AttachmentChip({ attachment }: { attachment: HistoryAttachment }) {
-  const { t } = useTranslation();
-  const open = () =>
-    Alert.alert(t("attachment.title"), t("attachment.viewOnDesktop", { name: attachment.name }));
+function AttachmentChip({
+  attachment,
+  onOpen,
+}: {
+  attachment: HistoryAttachment;
+  onOpen?(): void;
+}) {
   return (
     <Pressable
       accessibilityLabel={attachment.name}
       accessibilityRole="button"
-      onPress={open}
+      disabled={!onOpen}
+      onPress={onOpen}
       style={({ pressed }) => [styles.attachmentChip, pressed && styles.attachmentChipPressed]}
     >
       {attachment.kind === "file" ? (
@@ -279,7 +281,7 @@ function useCopyState(resetMs = 1400) {
   return { copied, copy };
 }
 
-export function TimelineCard({ item }: TimelineCardProps) {
+export function TimelineCard({ item, onOpenAttachment }: TimelineCardProps) {
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const { copied, copy } = useCopyState();
@@ -343,7 +345,11 @@ export function TimelineCard({ item }: TimelineCardProps) {
         {item.attachments && item.attachments.length > 0 && (
           <View style={styles.attachmentRow}>
             {item.attachments.map(attachment => (
-              <AttachmentChip attachment={attachment} key={`${item.id}:${attachment.path}`} />
+              <AttachmentChip
+                attachment={attachment}
+                key={`${item.id}:${attachment.path}`}
+                onOpen={onOpenAttachment ? () => onOpenAttachment(attachment) : undefined}
+              />
             ))}
           </View>
         )}
