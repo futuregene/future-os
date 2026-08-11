@@ -574,22 +574,40 @@ fn prepare_preview(
             .to_string()
             .into());
     }
+    let markdown = matches!(ext.as_str(), "md" | "markdown");
+    if !is_plain_utf8_text(source)? {
+        return Err(
+            "This file type cannot be previewed on mobile; view it on desktop."
+                .to_string()
+                .into(),
+        );
+    }
     let path = dir.join(format!(
         "{stamp}_{}",
         safe_disk_name(&original_name, "attachment")
     ));
     std::fs::copy(source, &path)?;
-    let markdown = matches!(ext.as_str(), "md" | "markdown");
     Ok(PreparedPreview {
         path,
         name: original_name,
         mime_type: if markdown {
-            "text/markdown".to_string()
+            "text/markdown"
         } else {
-            "application/octet-stream".to_string()
-        },
-        preview_kind: if markdown { "markdown" } else { "file" }.to_string(),
+            "text/plain"
+        }
+        .to_string(),
+        preview_kind: if markdown { "markdown" } else { "text" }.to_string(),
     })
+}
+
+fn is_plain_utf8_text(path: &Path) -> Result<bool, crate::AppError> {
+    let bytes = std::fs::read(path)?;
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return Ok(false);
+    };
+    Ok(text
+        .chars()
+        .all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t')))
 }
 
 pub fn cancel_download(transfer_id: &str) {
@@ -733,7 +751,7 @@ fn publish_download_chunk(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_is_in_session, display_name, is_animated_image, safe_disk_name,
+        attachment_is_in_session, display_name, is_animated_image, prepare_preview, safe_disk_name,
         validate_mobile_image, MAX_FILE_BYTES,
     };
     use serde_json::json;
@@ -807,6 +825,38 @@ mod tests {
         std::fs::write(&webp, webp_bytes).unwrap();
         assert!(is_animated_image(&webp).unwrap());
 
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prepares_only_plain_text_and_markdown_as_non_image_previews() {
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-preview-test-{}",
+            nkeys::KeyPair::new_user().public_key()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, "hello\nworld").unwrap();
+        let text_preview = prepare_preview(&text, "notes.txt").unwrap();
+        assert_eq!(text_preview.preview_kind, "text");
+        assert_eq!(text_preview.mime_type, "text/plain");
+        std::fs::remove_file(text_preview.path).unwrap();
+
+        let markdown = dir.join("notes.md");
+        std::fs::write(&markdown, "# Hello").unwrap();
+        let markdown_preview = prepare_preview(&markdown, "notes.md").unwrap();
+        assert_eq!(markdown_preview.preview_kind, "markdown");
+        assert_eq!(markdown_preview.mime_type, "text/markdown");
+        std::fs::remove_file(markdown_preview.path).unwrap();
+
+        let pdf = dir.join("document.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7\0binary").unwrap();
+        let error = match prepare_preview(&pdf, "document.pdf") {
+            Ok(_) => panic!("PDF should not get a mobile preview"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("view it on desktop"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -2,6 +2,7 @@ import {
   applyStreamEvent,
   appendUserMessage,
   emptyTimeline,
+  mergeHistoryAttachments,
   normalizeReplayEvents,
   stripRunItems,
   timelineFromEntries,
@@ -38,6 +39,44 @@ describe("history reducer", () => {
 });
 
 describe("entry reducer", () => {
+  test("enriches text-only live user messages from durable attachments", () => {
+    const live = appendUserMessage(emptyTimeline(), "check this");
+    const durable = timelineFromEntries([
+      {
+        id: "e1",
+        role: "user",
+        content: "check this",
+        meta: { attachments: [{ path: "/tmp/a.png", name: "a.png", kind: "image" }] },
+      },
+    ]);
+
+    expect(mergeHistoryAttachments(live, durable).items[0]).toMatchObject({
+      attachments: [{ path: "/tmp/a.png", name: "a.png", kind: "image" }],
+    });
+  });
+
+  test("matches repeated live prompts to the latest durable attachment", () => {
+    const live = appendUserMessage(emptyTimeline(), "same prompt");
+    const durable = timelineFromEntries([
+      {
+        id: "old",
+        role: "user",
+        content: "same prompt",
+        meta: { attachments: [{ path: "/tmp/old.png", name: "old.png", kind: "image" }] },
+      },
+      {
+        id: "new",
+        role: "user",
+        content: "same prompt",
+        meta: { attachments: [{ path: "/tmp/new.png", name: "new.png", kind: "image" }] },
+      },
+    ]);
+
+    expect(mergeHistoryAttachments(live, durable).items[0]).toMatchObject({
+      attachments: [{ path: "/tmp/new.png", name: "new.png", kind: "image" }],
+    });
+  });
+
   test("projects user/assistant entries and carries attachments", () => {
     const timeline = timelineFromEntries([
       {

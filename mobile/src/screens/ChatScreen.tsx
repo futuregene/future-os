@@ -71,6 +71,19 @@ function fileExtension(name: string): string {
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
+function plainText(bytes: Uint8Array): string | null {
+  // Binary formats such as PDF contain NUL or C0 control bytes. The desktop
+  // repeats a stricter UTF-8 check before it transfers a durable attachment.
+  if (bytes.some(byte => byte === 0 || (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13))) {
+    return null;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
 function confirmDownload(title: string, message: string, cancel: string, download: string) {
   return new Promise<boolean>(resolve => {
     Alert.alert(
@@ -100,6 +113,7 @@ export function ChatScreen() {
     info: DownloadInfo;
     uri: string;
     markdown?: string;
+    text?: string;
     truncated?: boolean;
   } | null>(null);
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
@@ -261,29 +275,43 @@ export function ChatScreen() {
               },
               uri: local.uri,
             });
-          } else if (ext === "md" || ext === "markdown") {
+          } else {
             const bytes = await local.bytes();
+            const text = plainText(bytes);
+            if (text === null) {
+              Alert.alert(t("attachment.title"), t("attachment.previewOnDesktop"));
+              return;
+            }
             const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
+            const previewText =
+              visible.byteLength === bytes.byteLength ? text : new TextDecoder().decode(visible);
+            const markdown = ext === "md" || ext === "markdown";
             setPreview({
               info: {
                 transferId: "local",
                 name: attachment.name,
-                mimeType: "text/markdown",
+                mimeType: markdown ? "text/markdown" : "text/plain",
                 size: local.size,
                 contentHash: "",
-                previewKind: "markdown",
+                previewKind: markdown ? "markdown" : "text",
                 chunkBytes: 0,
               },
               uri: local.uri,
-              markdown: new TextDecoder().decode(visible),
+              ...(markdown ? { markdown: previewText } : { text: previewText }),
               truncated: bytes.byteLength > visible.byteLength,
             });
-          } else {
-            Alert.alert(t("attachment.title"), t("attachment.previewOnDesktop"));
           }
           return;
         }
         const info = await remote.prepareAttachment(attachment);
+        if (
+          info.previewKind !== "image" &&
+          info.previewKind !== "markdown" &&
+          info.previewKind !== "text"
+        ) {
+          Alert.alert(t("attachment.title"), t("attachment.previewOnDesktop"));
+          return;
+        }
         let file = remote.cachedAttachment(info);
         if (!file) {
           const network = await Network.getNetworkStateAsync();
@@ -305,17 +333,18 @@ export function ChatScreen() {
         }
         if (info.previewKind === "image") {
           setPreview({ info, uri: file.uri });
-        } else if (info.previewKind === "markdown") {
+        } else {
           const bytes = await file.bytes();
           const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
+          const previewText = new TextDecoder().decode(visible);
           setPreview({
             info,
             uri: file.uri,
-            markdown: new TextDecoder().decode(visible),
+            ...(info.previewKind === "markdown"
+              ? { markdown: previewText }
+              : { text: previewText }),
             truncated: bytes.byteLength > visible.byteLength,
           });
-        } else {
-          Alert.alert(t("attachment.title"), t("attachment.downloaded", { name: info.name }));
         }
       } catch (error) {
         const detail = error instanceof Error ? error.message : "";
@@ -680,12 +709,21 @@ export function ChatScreen() {
                 source={{ uri: preview.uri }}
                 style={styles.previewImage}
               />
-            ) : (
+            ) : preview?.info.previewKind === "markdown" ? (
               <ScrollView contentContainerStyle={styles.previewMarkdown}>
                 {!!preview?.truncated && (
                   <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
                 )}
                 <MarkdownText text={preview?.markdown ?? ""} />
+              </ScrollView>
+            ) : (
+              <ScrollView contentContainerStyle={styles.previewMarkdown}>
+                {!!preview?.truncated && (
+                  <Text style={styles.previewTruncated}>{t("attachment.textTruncated")}</Text>
+                )}
+                <Text selectable style={styles.previewText}>
+                  {preview?.text ?? ""}
+                </Text>
               </ScrollView>
             )}
           </SafeAreaView>
@@ -995,6 +1033,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.warningSoft,
     fontSize: 12,
   },
+  previewText: { color: colors.ink, fontSize: 14, lineHeight: 21 },
   selectorMenu: {
     maxHeight: "60%",
     overflow: "hidden",

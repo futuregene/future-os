@@ -124,7 +124,7 @@ export interface DownloadInfo {
   mimeType: string;
   size: number;
   contentHash: string;
-  previewKind: "image" | "markdown" | "file";
+  previewKind: "image" | "markdown" | "text";
   chunkBytes: number;
 }
 

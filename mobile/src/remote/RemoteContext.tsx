@@ -13,6 +13,7 @@ import {
   applyStreamEvent,
   emptyTimeline,
   markApprovalDecision,
+  mergeHistoryAttachments,
   normalizeReplayEvents,
   timelineFromEntries,
   timelineFromHistory,
@@ -212,6 +213,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // conversation the user has already left.
   const conversationEpochRef = useRef(0);
   const recoverRef = useRef<(sessionId?: string) => Promise<void>>(async () => undefined);
+  const hydrateAttachmentsRef = useRef<(sessionId: string) => Promise<void>>(async () => undefined);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const scheduleReconnectRef = useRef<() => void>(() => undefined);
@@ -316,6 +318,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         } catch {
           // Ignore a malformed rename payload.
         }
+      }
+      if (event.type === "user_message") {
+        // Live events intentionally contain only the text. Enrich this bubble
+        // from the durable entry without replacing streamed assistant content.
+        void hydrateAttachmentsRef.current(sid);
       }
       if (event.type === "approval_decision") {
         // A decision made on another device (desktop/TUI) resolves the pending
@@ -638,6 +645,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     return timelineFromHistory(history);
   }, []);
 
+  useEffect(() => {
+    hydrateAttachmentsRef.current = async sessionId => {
+      try {
+        const durable = await loadHistory(sessionId);
+        setTimelines(prev => {
+          const live = prev[sessionId];
+          if (!live) return prev;
+          return { ...prev, [sessionId]: mergeHistoryAttachments(live, durable) };
+        });
+      } catch {
+        // The entry can briefly lag the live event. A reconnect/session open
+        // repeats the merge from durable history.
+      }
+    };
+  }, [loadHistory]);
+
   // ── Gap-fill and full-resync (integrity layer) ──
 
   /**
@@ -886,6 +909,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
               ? { ...prev, [sessionId]: hydrated }
               : prev,
           );
+          // A cached timeline may have been assembled from real-time events,
+          // whose user_message payload deliberately omits attachments.
+          void hydrateAttachmentsRef.current(sessionId);
         } else {
           // No cache yet: load history, then overlay the active run's tail.
           const history = await loadHistory(sessionId);

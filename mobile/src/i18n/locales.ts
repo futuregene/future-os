@@ -117,6 +117,7 @@ export const resources = {
         previewOnDesktop: "This file type can only be viewed in the desktop app.",
         markdownTruncated:
           "Only the first 2 MB is rendered. Open the desktop app to view the rest.",
+        textTruncated: "Only the first 2 MB is shown. Open the desktop app to view the rest.",
         errors: {
           attachment_file_too_large: "A file exceeds the 10 MB original-size limit.",
           attachment_compressed_too_large: "The compressed image still exceeds 10 MB.",
@@ -259,6 +260,7 @@ export const resources = {
         downloadFailed: "无法下载预览。",
         previewOnDesktop: "这种文件类型请在桌面端查看。",
         markdownTruncated: "仅渲染前 2 MB 内容，完整文件请在桌面端查看。",
+        textTruncated: "仅显示前 2 MB 内容，完整文件请在桌面端查看。",
         errors: {
           attachment_file_too_large: "文件原始大小超过 10 MB。",
           attachment_compressed_too_large: "图片压缩后仍超过 10 MB。",
