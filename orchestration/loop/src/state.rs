@@ -752,6 +752,30 @@ pub struct Goal {
     /// ledgered for audit but never folded in. Bounded by
     /// [`CAPABILITY_INVOCATION_PROJECTION_CAP`] (oldest dropped).
     pub capability_invocations: Vec<(u64, String)>,
+    /// P1-2②: replay-time freshness stamp of the event ledger this state
+    /// was rebuilt from (in-memory only — never persisted; `None` for
+    /// hand-built goals). The decision kernel copies it onto every
+    /// `ShouldRunPacket` as `decision_freshness`.
+    #[serde(skip)]
+    pub decision_freshness: Option<DecisionFreshness>,
+}
+
+/// P1-2②: freshness stamp of the event ledger a decision was compiled
+/// against (LoopX `runtime/decision_freshness.py` — decisions annotate the
+/// max seq / timestamp of the state they read, so a consumer can tell a
+/// stale decision from a fresh one without re-running the kernel).
+/// Stamped by `Store::replay`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DecisionFreshness {
+    /// Ledger length at read time = the 1-based sequence number of the
+    /// newest event the decision state was rebuilt from.
+    pub events_max_seq: u64,
+    /// Newest event timestamp (epoch secs) among the events read (`None`
+    /// when the ledger was empty).
+    #[serde(default)]
+    pub events_max_ts: Option<u64>,
+    /// When the state was replayed (epoch secs).
+    pub read_at: u64,
 }
 
 /// Safety bound on the per-tool invocation projection folded into
@@ -788,6 +812,7 @@ impl Goal {
             quota_spent_slots: 0,
             delivery_states: vec![],
             capability_invocations: vec![],
+            decision_freshness: None,
         }
     }
 

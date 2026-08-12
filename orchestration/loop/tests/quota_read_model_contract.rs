@@ -381,3 +381,119 @@ fn quota_decisions_and_scheduler_ack_cli() {
 fn _summary_shape_anchor(s: &DecisionSummary) {
     let _ = &s.schema_version;
 }
+
+// ── P1-2② decision_freshness: replayed decisions carry the ledger stamp. ──
+
+#[test]
+fn replayed_decisions_carry_decision_freshness() {
+    let root = tmp_root("freshness");
+    let mut store = Store::open(&root).unwrap();
+    open_goal(&mut store, "g1");
+    let goal = store.replay("g1").unwrap().unwrap();
+
+    // The replay stamps the read position of the ledger.
+    let freshness = goal
+        .decision_freshness
+        .clone()
+        .expect("replay stamps freshness");
+    assert_eq!(freshness.events_max_seq, 1, "one ledger event read");
+    assert_eq!(
+        freshness.events_max_ts,
+        Some(goal.created_at),
+        "newest event ts"
+    );
+    assert!(freshness.read_at >= goal.created_at);
+
+    // The kernel copies the stamp onto every packet; the JSON wire shape
+    // carries it for host consumers.
+    let packet = decide(&goal, std::time::SystemTime::now());
+    assert_eq!(packet.decision_freshness, goal.decision_freshness);
+    let json = serde_json::to_value(&packet).unwrap();
+    assert_eq!(json["decision_freshness"]["events_max_seq"], 1);
+
+    // Hand-built goals (no replay) have no stamp → the field stays absent
+    // from the wire (skip_serializing_if).
+    let hand = Goal::new("g2", "objective", "/tmp");
+    let packet = decide(&hand, std::time::SystemTime::now());
+    assert!(packet.decision_freshness.is_none());
+    let json = serde_json::to_value(&packet).unwrap();
+    assert!(json.get("decision_freshness").is_none());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// ── P1-2①③ store verify: drift visibility + --repair self-healing. ───────
+
+#[test]
+fn store_verify_repairs_drifted_run_index() {
+    with_root("verify-repair", |root| {
+        cli(&[
+            "goal",
+            "init",
+            "--goal-id",
+            "g1",
+            "--objective",
+            "o",
+            "--cwd",
+            "/tmp",
+        ])
+        .unwrap();
+        // Drift: a run file on disk with no index row.
+        let runs = std::path::Path::new(root)
+            .join("goals")
+            .join("g1")
+            .join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(
+            runs.join("a.json"),
+            "{\"goal_id\":\"g1\",\"timestamp\":\"2026-08-05T00:00:00+00:00\",\"turn\":1,\"terminal_state\":\"completed\"}",
+        )
+        .unwrap();
+
+        // Plain verify: drift is visible, index untouched.
+        cli(&["store", "verify", "--goal", "g1"]).unwrap();
+        assert!(!runs.join("index.jsonl").exists(), "verify is read-only");
+
+        // --repair rebuilds the index and records the audit event.
+        cli(&["store", "verify", "--goal", "g1", "--repair"]).unwrap();
+        let rows =
+            future_loop::runtime::run_history::read_index_rows(&runs.join("index.jsonl")).unwrap();
+        assert_eq!(rows.len(), 1, "index rebuilt from the run file");
+
+        let store = Store::open(root).unwrap();
+        let events = store.events("g1").unwrap();
+        let repairs = events
+            .iter()
+            .filter(|stored| matches!(stored.event, Event::ProjectionRepaired { .. }))
+            .count();
+        assert_eq!(repairs, 1, "ProjectionRepaired audit event recorded");
+        assert!(store.verify("g1").unwrap().ok, "ledger stays consistent");
+
+        // JSON mode reports ledger + drift + repair outcome.
+        cli(&["store", "verify", "--goal", "g1", "--format", "json"]).unwrap();
+
+        // Strict flags (P0-3): unknown flags are rejected.
+        assert!(cli(&["store", "verify", "--goal", "g1", "--bogus", "x"]).is_err());
+    });
+}
+
+#[test]
+fn projection_repaired_event_kind_roundtrip() {
+    // The new event serializes with the flattened `kind` tag and parses back
+    // (legacy readers ignore unknown kinds).
+    let event = Event::ProjectionRepaired {
+        goal_id: "g1".into(),
+        projection: "run_index".into(),
+        drift_count: 2,
+        missing_rows: 1,
+        stale_rows: 1,
+        duplicate_rows: 0,
+        rows_written: 3,
+        backup_path: "/tmp/backup.jsonl".into(),
+        ts: 1000,
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains("\"kind\":\"projection_repaired\""));
+    let back: Event = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back, Event::ProjectionRepaired { .. }));
+}

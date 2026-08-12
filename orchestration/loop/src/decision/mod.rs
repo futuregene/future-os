@@ -607,6 +607,7 @@ fn packet(
         frontier_projection: frontier_projection(goal, replan_required),
         scheduler_arbitration: None,
         terminal_closure: None,
+        decision_freshness: goal.decision_freshness.clone(),
     };
     // G-2/G-11: record the scheduler arbitration (observe-only by default).
     apply_arbitration(&mut p, ARBITRATION_ENFORCEMENT);
