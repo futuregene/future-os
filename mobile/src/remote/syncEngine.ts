@@ -397,6 +397,10 @@ export class SyncEngine {
 
   private isFullReplay(lane: SessionLane, runId: string, request: ReconcileRequest): boolean {
     if (request.reason === "prefix" || request.reason === "resend") return true;
+    // A lane with no committed timeline has no live baseline to top up — the
+    // only way to build it is from durable history (idle sessions have no
+    // active run for a tail reconcile to target).
+    if (lane.timeline === null) return true;
     return !isPrefixComplete(lane.cursor, runId);
   }
 
