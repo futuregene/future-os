@@ -577,4 +577,245 @@ mod tests {
         let runs = list_unmaterialized_runs_in(&conn).unwrap();
         assert!(!runs.iter().any(|(run_id, ..)| run_id == "run_done"));
     }
+
+    // ── connect()-backed API surface (fake HOME) ────────────────────────────
+
+    use crate::store::db::test_support::guarded_conn;
+
+    /// Fake-HOME database with the schema applied; the guard keeps HOME pinned
+    /// for the rest of the test (later `connect()` calls reuse it).
+    fn fresh_db(label: &str) -> crate::auth_store::test_support::HomeGuard {
+        let home = crate::auth_store::test_support::HomeGuard::new(label);
+        let conn = connect().expect("connect");
+        apply_schema(&conn).expect("apply schema");
+        drop(conn);
+        home
+    }
+
+    /// ws1/t1 plus one completed run per id (`ended_at` increasing).
+    fn seed_graph(conn: &Connection, runs: &[&str]) {
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T', 1, 1);",
+        )
+        .expect("seed workspace/thread");
+        for (index, run_id) in runs.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO runs (
+                     id, thread_id, status, ended_at, created_at, updated_at
+                 ) VALUES (?1, 't1', 'completed', ?2, ?2, ?2)",
+                params![run_id, (index as i64 + 1) * 100],
+            )
+            .expect("seed run");
+        }
+    }
+
+    fn snapshot_input(run_id: &str, phase: &str, commit: Option<&str>) -> CreateReviewSnapshotInput {
+        CreateReviewSnapshotInput {
+            workspace_id: "ws1".to_string(),
+            thread_id: "t1".to_string(),
+            run_id: run_id.to_string(),
+            phase: phase.to_string(),
+            commit_id: commit.map(str::to_string),
+            tree_id: Some("tree".to_string()),
+            status: "complete".to_string(),
+            file_count: 3,
+            total_bytes: 100,
+            ignored_count: 1,
+            omitted_count: 0,
+            error_message: None,
+        }
+    }
+
+    fn changeset_input(run_id: &str, with_file: bool) -> UpsertRunChangesetInput {
+        UpsertRunChangesetInput {
+            run_id: run_id.to_string(),
+            thread_id: "t1".to_string(),
+            workspace_id: Some("ws1".to_string()),
+            title: format!("Changes {run_id}"),
+            summary: None,
+            before_snapshot_id: None,
+            after_snapshot_id: None,
+            files_changed: 1,
+            additions: 5,
+            deletions: 2,
+            binary_files: 0,
+            omitted_files: 0,
+            completeness: "complete".to_string(),
+            confidence: "normal".to_string(),
+            error_message: None,
+            files: if with_file {
+                vec![InsertReviewFileChangeInput {
+                    path: Some("src/main.rs".to_string()),
+                    change_type: "edit".to_string(),
+                    diff: Some("@@".to_string()),
+                    additions: 5,
+                    deletions: 2,
+                    ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    #[test]
+    fn snapshot_create_upserts_on_conflict_and_reads_back() {
+        let (_home, conn) = guarded_conn("rsnap_create");
+        seed_graph(&conn, &["r1"]);
+        drop(conn);
+
+        let created =
+            create_review_snapshot(snapshot_input("r1", "before", Some("c1"))).expect("create");
+        assert_eq!(created.commit_id.as_deref(), Some("c1"));
+        assert_eq!(created.phase, "before");
+
+        // Same (run, phase) with a new commit replaces the row, not duplicates.
+        let replaced =
+            create_review_snapshot(snapshot_input("r1", "before", Some("c2"))).expect("replace");
+        assert_eq!(replaced.commit_id.as_deref(), Some("c2"));
+
+        let loaded = get_review_snapshot("r1", "before").expect("get").expect("some");
+        assert_eq!(loaded.commit_id.as_deref(), Some("c2"));
+        assert!(get_review_snapshot("r1", "after").expect("get").is_none());
+    }
+
+    #[test]
+    fn upsert_run_changeset_replaces_prior_rows_and_files() {
+        let _home = fresh_db("rsnap_upsert");
+        seed_graph(&connect().expect("connect"), &["r1"]);
+
+        let first = upsert_run_changeset(changeset_input("r1", true)).expect("first upsert");
+        assert_eq!(first.status, RUN_SNAPSHOT_STATUS);
+        assert_eq!(first.files_changed, 1);
+
+        // A retry replaces the changeset and drops the old file rows.
+        let second = upsert_run_changeset(changeset_input("r1", false)).expect("replace");
+        assert_eq!(second.title, "Changes r1");
+        assert!(get_run_changeset("r1").expect("get").is_some());
+
+        let conn = connect().expect("reconnect");
+        let changeset_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM review_changesets WHERE run_id = 'r1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count changesets");
+        let file_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM review_file_changes", [], |row| row.get(0))
+            .expect("count files");
+        assert_eq!(changeset_count, 1);
+        assert_eq!(file_count, 0, "stale file rows were deleted");
+    }
+
+    #[test]
+    fn last_run_changeset_is_the_latest_ended_run() {
+        let (_home, conn) = guarded_conn("rsnap_last");
+        seed_graph(&conn, &["r1", "r2"]);
+        drop(conn);
+        upsert_run_changeset(changeset_input("r1", false)).expect("upsert r1");
+        upsert_run_changeset(changeset_input("r2", false)).expect("upsert r2");
+
+        let latest = get_last_run_changeset("t1").expect("last").expect("some");
+        assert_eq!(latest.run_id.as_deref(), Some("r2"));
+        assert!(get_last_run_changeset("t_ghost").expect("last").is_none());
+    }
+
+    #[test]
+    fn mark_run_overlapped_covers_windows_and_peers() {
+        let _home = fresh_db("rsnap_overlap");
+        seed_graph(&connect().expect("connect"), &["r1", "r2"]);
+
+        // No `before` snapshot → nothing to do.
+        mark_run_overlapped("ws1", "r1").expect("no snapshots is a no-op");
+
+        // r1's window [100, 200]; r2 starts inside it and never ends (its
+        // missing `after` defaults to now) → mutual overlap.
+        create_review_snapshot(snapshot_input("r1", "before", None)).expect("before1");
+        create_review_snapshot(snapshot_input("r1", "after", None)).expect("after1");
+        create_review_snapshot(snapshot_input("r2", "before", None)).expect("before2");
+        connect()
+            .expect("reconnect")
+            .execute_batch(
+                "UPDATE review_snapshots SET created_at = 100 WHERE run_id = 'r1' AND phase = 'before';
+                 UPDATE review_snapshots SET created_at = 200 WHERE run_id = 'r1' AND phase = 'after';
+                 UPDATE review_snapshots SET created_at = 150 WHERE run_id = 'r2' AND phase = 'before';",
+            )
+            .expect("pin snapshot timestamps");
+        upsert_run_changeset(changeset_input("r1", false)).expect("changeset r1");
+        upsert_run_changeset(changeset_input("r2", false)).expect("changeset r2");
+
+        mark_run_overlapped("ws1", "r1").expect("mark");
+
+        let r1 = get_run_changeset("r1").expect("get").expect("some");
+        let r2 = get_run_changeset("r2").expect("get").expect("some");
+        assert!(r1.overlapped, "the target run is marked");
+        assert!(r2.overlapped, "the overlapping peer is marked");
+
+        // No peers in a fresh workspace → early return on the empty scan.
+        mark_run_overlapped("ws_empty", "r1").expect("no peers");
+    }
+
+    #[test]
+    fn prune_keeps_the_newest_and_reports_shadow_refs() {
+        let _home = fresh_db("rsnap_prune");
+        seed_graph(&connect().expect("connect"), &["r1", "r2", "r3"]);
+        for run in ["r1", "r2", "r3"] {
+            upsert_run_changeset(changeset_input(run, true)).expect("upsert");
+            create_review_snapshot(snapshot_input(run, "before", None)).expect("snapshot");
+        }
+        // A workspace-less changeset is pruned without a shadow-ref report.
+        connect()
+            .expect("reconnect")
+            .execute(
+                "UPDATE review_changesets SET workspace_id = NULL WHERE run_id = 'r2'",
+                [],
+            )
+            .expect("null workspace");
+
+        let pruned = prune_thread_changesets("t1", 1).expect("prune");
+        assert_eq!(pruned, vec![("ws1".to_string(), "r1".to_string())]);
+
+        assert!(get_run_changeset("r3").expect("get").is_some(), "newest kept");
+        assert!(get_run_changeset("r1").expect("get").is_none());
+        assert!(get_run_changeset("r2").expect("get").is_none());
+        // Snapshots of pruned runs are gone too (delete_run_review_in cascade).
+        assert!(get_review_snapshot("r1", "before").expect("get").is_none());
+    }
+
+    #[test]
+    fn unmaterialized_and_commit_pinning_queries() {
+        let (_home, conn) = guarded_conn("rsnap_queries");
+        seed_graph(&conn, &["r1", "r2"]);
+        drop(conn);
+
+        create_review_snapshot(snapshot_input("r1", "before", Some("c1"))).expect("snap r1");
+        create_review_snapshot(snapshot_input("r2", "before", None)).expect("snap r2");
+        upsert_run_changeset(changeset_input("r1", false)).expect("changeset r1");
+
+        // r1 has a changeset; only r2 is unmaterialized.
+        let unmaterialized = list_unmaterialized_runs().expect("unmaterialized");
+        assert_eq!(
+            unmaterialized,
+            vec![("r2".to_string(), "t1".to_string(), "ws1".to_string())]
+        );
+
+        // Only r1 pins a commit.
+        let pinned = list_snapshots_with_commits().expect("pinned");
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].1, "ws1");
+        assert_eq!(pinned[0].2, "c1");
+
+        // Failing the snapshot removes it from both queries.
+        let snapshot_id = pinned[0].0.clone();
+        mark_snapshot_failed(&snapshot_id, "commit gone").expect("mark failed");
+        assert!(list_snapshots_with_commits().expect("pinned").is_empty());
+        let unmaterialized = list_unmaterialized_runs().expect("unmaterialized");
+        assert_eq!(unmaterialized.len(), 1, "failed snapshots drop out too");
+    }
 }

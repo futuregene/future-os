@@ -432,4 +432,228 @@ mod tests {
             0
         );
     }
+
+    /// A session still owned by a thread in another workspace must NOT be
+    /// tombstoned when one of its workspaces is deleted.
+    #[test]
+    fn delete_workspace_in_tombstones_only_orphaned_sessions() {
+        let conn = test_conn();
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws_a', 'A', 'user', '/tmp/a', 1, 1),
+                        ('ws_b', 'B', 'user', '/tmp/b', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, agent_session_id,
+                 created_at, updated_at)
+                 VALUES ('t_shared_a', 'ws_a', 'chat', 'T', 'sess_shared', 1, 1),
+                        ('t_shared_b', 'ws_b', 'chat', 'T', 'sess_shared', 1, 1),
+                        ('t_solo', 'ws_a', 'chat', 'T', 'sess_solo', 1, 1);",
+        )
+        .expect("seed threads");
+
+        delete_workspace_in(&conn, "ws_a").expect("delete");
+
+        let tombstoned = |id: &str| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM agent_delete_outbox WHERE session_id = ?1",
+                [id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(tombstoned("sess_solo"), 1, "sole-owned session tombstoned");
+        assert_eq!(
+            tombstoned("sess_shared"),
+            0,
+            "session still owned by ws_b's thread is not tombstoned"
+        );
+    }
+
+    // ── connect()-backed API surface (fake HOME) ────────────────────────────
+
+    use crate::store::db::test_support::guarded_conn;
+
+    #[test]
+    fn list_and_get_workspaces() {
+        let (_home, conn) = guarded_conn("ws_list");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, last_opened_at,
+                 created_at, updated_at)
+                 VALUES ('ws_old', 'Old', 'user', '/tmp/old', 100, 1, 1),
+                        ('ws_new', 'New', 'user', '/tmp/new', 200, 1, 1),
+                        ('ws_gone', 'Gone', 'user', '/tmp/gone', 300, 1, 1);
+             UPDATE workspaces SET deleted_at = 1 WHERE id = 'ws_gone';",
+        )
+        .expect("seed");
+        drop(conn);
+
+        let list = list_workspaces().expect("list");
+        assert_eq!(list.len(), 2, "soft-deleted rows are hidden");
+        assert_eq!(list[0].id, "ws_new", "most recently opened first");
+
+        let one = get_workspace("ws_old").expect("get").expect("some");
+        assert_eq!(one.name, "Old");
+        assert!(get_workspace("ws_ghost").expect("get").is_none());
+    }
+
+    #[test]
+    fn create_workspace_validates_and_creates_the_directory() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("ws_create");
+        let conn = connect().expect("connect");
+        apply_schema(&conn).expect("apply schema");
+        drop(conn);
+
+        let base = std::env::temp_dir().join(format!("futureos-wsc-{}", std::process::id()));
+        let target = base.join("nested/proj");
+
+        // Missing directory without create_directory → error.
+        let missing = create_workspace(CreateWorkspaceInput {
+            name: None,
+            description: None,
+            path: target.display().to_string(),
+            create_directory: None,
+        });
+        assert!(missing.is_err(), "missing dir rejected");
+
+        // With create_directory the dir is made and the name defaults to the
+        // last path component.
+        let created = create_workspace(CreateWorkspaceInput {
+            name: None,
+            description: Some("d".to_string()),
+            path: target.display().to_string(),
+            create_directory: Some(true),
+        })
+        .expect("create");
+        assert!(target.is_dir());
+        assert_eq!(created.name, "proj");
+        assert_eq!(created.kind, "user");
+
+        // Same path again → the existing record is returned (no duplicate).
+        let again = create_workspace(CreateWorkspaceInput {
+            name: Some("Ignored".to_string()),
+            description: None,
+            path: target.display().to_string(),
+            create_directory: Some(true),
+        })
+        .expect("idempotent");
+        assert_eq!(again.id, created.id);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn create_workspace_expands_a_tilde_path() {
+        let home = crate::auth_store::test_support::HomeGuard::new("ws_tilde");
+        let conn = connect().expect("connect");
+        apply_schema(&conn).expect("apply schema");
+        drop(conn);
+
+        let dir = std::env::var("HOME").unwrap();
+        let dir = std::path::Path::new(&dir).join("tilde-ws");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let created = create_workspace(CreateWorkspaceInput {
+            name: Some("Tilde".to_string()),
+            description: None,
+            path: "~/tilde-ws".to_string(),
+            create_directory: None,
+        })
+        .expect("create");
+        assert_eq!(created.path, dir.display().to_string());
+        drop(home);
+    }
+
+    #[test]
+    fn chat_workspace_lifecycle() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("ws_chat");
+        let conn = connect().expect("connect");
+        apply_schema(&conn).expect("apply schema");
+        drop(conn);
+
+        let created = get_or_create_chat_workspace("thread_x", None).expect("create chat ws");
+        assert_eq!(created.kind, "temporary");
+        assert_eq!(created.name, "New Chat Workspace");
+
+        // Idempotent on the same thread id…
+        let again = get_or_create_chat_workspace("thread_x", Some("Titled".to_string()))
+            .expect("idempotent");
+        assert_eq!(again.id, created.id);
+
+        // …and a titled creation uses the title.
+        let titled =
+            get_or_create_chat_workspace("thread_y", Some("Poem".to_string())).expect("titled");
+        assert_eq!(titled.name, "Poem Workspace");
+
+        // Path update: same path is a no-op; a new path rewrites the row.
+        let current = created.path.clone();
+        update_chat_workspace_path("thread_x", &current).expect("no-op update");
+        update_chat_workspace_path("thread_x", "/tmp/renamed-chat").expect("update");
+        let moved = get_workspace(&created.id).expect("get").expect("some");
+        assert_eq!(moved.path, "/tmp/renamed-chat");
+    }
+
+    #[test]
+    fn rename_workspace_validates_and_persists() {
+        let (_home, conn) = guarded_conn("ws_rename");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws1', 'Before', 'user', '/tmp/ws1', 1, 1);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        let empty = rename_workspace(RenameWorkspaceInput {
+            workspace_id: "ws1".to_string(),
+            name: "  ".to_string(),
+        });
+        assert!(empty.is_err(), "blank name rejected");
+
+        let renamed = rename_workspace(RenameWorkspaceInput {
+            workspace_id: "ws1".to_string(),
+            name: "After".to_string(),
+        })
+        .expect("rename");
+        assert_eq!(renamed.name, "After");
+
+        let missing = rename_workspace(RenameWorkspaceInput {
+            workspace_id: "ws_ghost".to_string(),
+            name: "X".to_string(),
+        });
+        assert!(missing.is_err(), "unknown workspace errors");
+    }
+
+    #[test]
+    fn delete_workspace_public_wrapper_and_missing_error() {
+        let (_home, conn) = guarded_conn("ws_delete");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws1', 'W', 'user', '/tmp/ws1', 1, 1);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        let deleted = delete_workspace("ws1").expect("delete");
+        assert_eq!(deleted.id, "ws1");
+        assert!(get_workspace("ws1").expect("get").is_none());
+        assert!(delete_workspace("ws1").is_err(), "second delete errors");
+    }
+
+    #[test]
+    fn purge_soft_deleted_workspaces_cascades() {
+        let (_home, conn) = guarded_conn("ws_purge");
+        drop(conn);
+
+        assert_eq!(purge_soft_deleted_workspaces().expect("purge"), 0);
+
+        let conn = connect().expect("reconnect");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws_dead', 'W', 'user', '/tmp/dead', 1, 1);
+             UPDATE workspaces SET deleted_at = 5 WHERE id = 'ws_dead';",
+        )
+        .expect("seed");
+        drop(conn);
+
+        assert_eq!(purge_soft_deleted_workspaces().expect("purge"), 1);
+        assert!(get_workspace("ws_dead").expect("get").is_none());
+    }
 }

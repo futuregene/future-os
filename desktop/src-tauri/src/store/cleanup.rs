@@ -334,9 +334,9 @@ fn orphan_subdirs(root: &Path, live: &HashSet<String>) -> Result<Vec<PathBuf>, c
         if !entry.file_type()?.is_dir() {
             continue;
         }
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
+        // Lossy: a non-UTF8 name can never match a live id (SQLite TEXT is
+        // UTF-8), so the worst case is reclaiming a dir no row could own.
+        let name = entry.file_name().to_string_lossy().into_owned();
         if !live.contains(&name) {
             orphans.push(entry.path());
         }
@@ -833,5 +833,285 @@ mod tests {
             .expect("row");
         assert_eq!(final_row.status, "cancelled");
         assert_eq!(final_row.error_type.as_deref(), Some("abort_requested"));
+    }
+
+    // ── remaining API surface ───────────────────────────────────────────────
+
+    use crate::store::db::test_support::guarded_conn;
+
+    /// Full-graph fixture: ws1 (temporary, files on disk) with threads and
+    /// runs in assorted states. `sessions`: (thread, agent_session_id).
+    fn seed_full(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, agent_session_id, created_at, updated_at
+             ) VALUES
+                 ('t_sess', 'ws1', 'chat', 'T', 'sess_live', 1, 1),
+                 ('t_blank', 'ws1', 'chat', 'T', '  ', 1, 1),
+                 ('t_none', 'ws1', 'chat', 'T', NULL, 1, 1);
+             INSERT INTO runs (
+                 id, thread_id, status, error_type, created_at, updated_at
+             ) VALUES
+                 ('r_int', 't_sess', 'cancelled', 'interrupted', 1, 1),
+                 ('r_run', 't_blank', 'running', NULL, 2, 2),
+                 ('r_wait', 't_none', 'waiting_approval', NULL, 3, 3),
+                 ('r_done', 't_none', 'completed', NULL, 4, 4);",
+        )
+        .expect("seed full graph");
+    }
+
+    #[test]
+    fn interrupted_and_active_run_listings_resolve_session_ids() {
+        let (_home, conn) = guarded_conn("cleanup_lists");
+        seed_full(&conn);
+        drop(conn);
+
+        let interrupted = list_interrupted_runs().expect("interrupted");
+        assert_eq!(interrupted.len(), 1);
+        assert_eq!(interrupted[0].run_id, "r_int");
+        assert_eq!(interrupted[0].session_id, "sess_live");
+
+        let active = list_active_runs().expect("active");
+        let ids: Vec<&str> = active.iter().map(|run| run.run_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["r_run", "r_wait"],
+            "non-terminal only (cancelled r_int is terminal), oldest first"
+        );
+        // Blank session id falls back to the thread id.
+        assert_eq!(active[0].session_id, "t_blank");
+        assert_eq!(active[1].session_id, "t_none");
+    }
+
+    #[test]
+    fn settle_interrupted_run_applies_agent_terminal_state() {
+        let (_home, conn) = guarded_conn("cleanup_settle");
+        seed_full(&conn);
+        drop(conn);
+
+        // Unknown agent states are a no-op.
+        settle_interrupted_run_from_agent("r_int", "still_running", None).expect("no-op");
+        let row = crate::store::get_run("r_int").expect("get").expect("some");
+        assert_eq!(row.status, "cancelled");
+
+        // A known terminal state settles the interrupted row, preserving a
+        // caller-supplied error message over the default.
+        settle_interrupted_run_from_agent("r_int", "error", Some("agent said no"))
+            .expect("settle");
+        let row = crate::store::get_run("r_int").expect("get").expect("some");
+        assert_eq!(row.status, "failed");
+        assert_eq!(row.error_type.as_deref(), Some("agent_error"));
+        assert_eq!(row.error_message.as_deref(), Some("agent said no"));
+        assert!(row.ended_at.is_some());
+
+        // A row without the interrupted marker is left alone.
+        settle_interrupted_run_from_agent("r_done", "cancelled", None).expect("settle");
+        let row = crate::store::get_run("r_done").expect("get").expect("some");
+        assert_eq!(row.status, "completed");
+    }
+
+    #[test]
+    fn reconcile_orphan_images_removes_dead_thread_dirs() {
+        let (_home, conn) = guarded_conn("cleanup_images");
+        seed_full(&conn);
+        drop(conn);
+
+        let root = crate::store::app_images_root().expect("images root");
+        // Missing root → 0.
+        assert_eq!(reconcile_orphan_images().expect("reconcile"), 0);
+
+        std::fs::create_dir_all(root.join("t_sess")).expect("live dir");
+        std::fs::create_dir_all(root.join("ghost")).expect("orphan dir");
+        let removed = reconcile_orphan_images().expect("reconcile");
+        assert_eq!(removed, 1);
+        assert!(root.join("t_sess").is_dir(), "live thread's dir kept");
+        assert!(!root.join("ghost").exists(), "orphan dir reclaimed");
+    }
+
+    #[test]
+    fn reconcile_orphan_chat_workspaces_and_review_repos() {
+        let (_home, conn) = guarded_conn("cleanup_dirs");
+        seed_full(&conn);
+        drop(conn);
+
+        // Chat workspaces: live names are thread ids AND session ids.
+        let chat_root = std::path::PathBuf::from(std::env::var("HOME").expect("home"))
+            .join(".future/workspaces/chat");
+        std::fs::create_dir_all(chat_root.join("t_sess")).expect("thread dir");
+        std::fs::create_dir_all(chat_root.join("sess_live")).expect("session dir");
+        std::fs::create_dir_all(chat_root.join("gone")).expect("orphan dir");
+        assert_eq!(reconcile_orphan_chat_workspaces().expect("reconcile"), 1);
+        assert!(chat_root.join("t_sess").is_dir());
+        assert!(chat_root.join("sess_live").is_dir());
+        assert!(!chat_root.join("gone").exists());
+
+        // Review repos: keyed by workspace id.
+        let review_root = std::path::PathBuf::from(std::env::var("HOME").expect("home"))
+            .join(".future/app/review");
+        std::fs::create_dir_all(review_root.join("ws1")).expect("live repo");
+        std::fs::create_dir_all(review_root.join("ws_ghost")).expect("orphan repo");
+        assert_eq!(reconcile_orphan_review_repos().expect("reconcile"), 1);
+        assert!(review_root.join("ws1").is_dir());
+        assert!(!review_root.join("ws_ghost").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn orphan_subdirs_sweep_non_utf8_names_as_orphans() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = temp_sessions_dir();
+        let non_utf8 = std::ffi::OsStr::from_bytes(b"bad-\xff-name");
+        // Branch-free: APFS rejects non-UTF8 names (EILSEQ), Linux allows them.
+        let created = std::fs::create_dir_all(root.join(non_utf8)).is_ok();
+        let orphans = orphan_subdirs(&root, &HashSet::new()).expect("scan");
+        // A non-UTF8 name never matches a live (UTF-8) id, so when the
+        // platform allowed creating it, it is reclaimed.
+        assert_eq!(orphans.len(), usize::from(created));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn thread_cleanup_summary_counts_artifacts_and_files() {
+        // A temporary workspace whose path holds two real files.
+        let files_dir = std::env::temp_dir().join(format!(
+            "futureos-cleanup-summary-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&files_dir);
+        std::fs::create_dir_all(&files_dir).expect("create files dir");
+        std::fs::write(files_dir.join("a.txt"), b"a").expect("write");
+        std::fs::write(files_dir.join("b.txt"), b"b").expect("write");
+
+        let (_home, conn) = guarded_conn("cleanup_summary");
+        conn.execute_batch(&format!(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '{}', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T', 1, 1),
+                      ('t_other', 'ws1', 'chat', 'T2', 1, 1);
+             INSERT INTO artifacts (
+                 id, workspace_id, thread_id, title, artifact_type, created_at, updated_at
+             ) VALUES
+                 ('a1', 'ws1', 't1', 'A', 'document', 1, 1),
+                 ('a2', 'ws1', 't_other', 'B', 'document', 1, 1);",
+            files_dir.display()
+        ))
+        .expect("seed");
+        drop(conn);
+
+        let summary = get_thread_cleanup_summary("t1").expect("summary");
+        assert_eq!(summary.workspace_kind, "temporary");
+        // Chat mode: only the thread's own artifact counts.
+        assert_eq!(summary.artifact_count, 1);
+        assert_eq!(summary.workspace_file_count, 2);
+        let _ = std::fs::remove_dir_all(&files_dir);
+
+        assert!(get_thread_cleanup_summary("ghost").is_err());
+    }
+
+    #[test]
+    fn thread_cleanup_summary_user_workspace_counts_all_artifacts_no_files() {
+        let (_home, conn) = guarded_conn("cleanup_summary_user");
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'user', '/tmp/userws', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'workspace', 'T', 1, 1),
+                      ('t_other', 'ws1', 'workspace', 'T2', 1, 1);
+             INSERT INTO artifacts (
+                 id, workspace_id, thread_id, title, artifact_type, created_at, updated_at
+             ) VALUES
+                 ('a1', 'ws1', 't1', 'A', 'document', 1, 1),
+                 ('a2', 'ws1', 't_other', 'B', 'document', 1, 1);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        let summary = get_thread_cleanup_summary("t1").expect("summary");
+        // Workspace mode: every artifact of the workspace counts…
+        assert_eq!(summary.artifact_count, 2);
+        // …but a user workspace's files are never walked.
+        assert_eq!(summary.workspace_file_count, 0);
+    }
+
+    // ── reconcile_orphan_sessions against the shared mock agent ─────────────
+
+    use crate::commands::agent_mock::{
+        ensure_mock_agent, mock_agent_lock, script_mock_agent, MockScript,
+    };
+
+    #[tokio::test]
+    async fn reconcile_deletes_orphans_reported_gone_by_the_agent() {
+        let _lock = mock_agent_lock();
+        ensure_mock_agent();
+        script_mock_agent(MockScript {
+            down: false,
+            fail_list_session_ids: false,
+            session_ids: vec!["sess_live".to_string()],
+        });
+
+        let (_home, conn) = guarded_conn("reconcile_ok");
+        seed_full(&conn);
+        drop(conn);
+
+        // t_none completed a run and its session (its own thread id) is not
+        // live → hard-deleted. t_sess/t_blank have no completed run → kept.
+        let deleted = reconcile_orphan_sessions().await.expect("reconcile");
+        assert_eq!(deleted, 1);
+        assert!(crate::store::get_thread("t_none").expect("get").is_none());
+        assert!(crate::store::get_thread("t_sess").expect("get").is_some());
+
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn reconcile_skips_when_enumeration_fails() {
+        let _lock = mock_agent_lock();
+        ensure_mock_agent();
+        script_mock_agent(MockScript {
+            down: false,
+            fail_list_session_ids: true,
+            session_ids: vec![],
+        });
+
+        let (_home, conn) = guarded_conn("reconcile_fail");
+        seed_full(&conn);
+        drop(conn);
+
+        let deleted = reconcile_orphan_sessions().await.expect("reconcile");
+        assert_eq!(deleted, 0, "a failed enumeration deletes nothing");
+        assert!(crate::store::get_thread("t_none").expect("get").is_some());
+
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconcile_skips_when_the_agent_is_unreachable() {
+        let _lock = mock_agent_lock();
+        ensure_mock_agent();
+        // Down mode: every RPC answers Unavailable, so connect (or the first
+        // command on the latched channel) surfaces AgentUnavailable and the
+        // pass retries, then skips.
+        script_mock_agent(MockScript {
+            down: true,
+            ..Default::default()
+        });
+
+        let (_home, conn) = guarded_conn("reconcile_down");
+        seed_full(&conn);
+        drop(conn);
+
+        let deleted = reconcile_orphan_sessions().await.expect("reconcile");
+        assert_eq!(deleted, 0, "an unreachable agent deletes nothing");
+        assert!(crate::store::get_thread("t_none").expect("get").is_some());
+
+        script_mock_agent(MockScript::default());
     }
 }
