@@ -480,6 +480,24 @@ pub enum Event {
         rollback_ref: Option<String>,
         ts: u64,
     },
+    /// P1-2③: projection self-healing audit — a read model drifted past
+    /// the repair threshold and was rebuilt from its source of truth
+    /// (`projection` = `run_index`: rescan of the run files on disk,
+    /// non-destructive with a backup). Recorded by both the automatic
+    /// run-path hook and `store verify --repair`. Projection-only: replay
+    /// ignores it; the drift/rebuild counters make the repair auditable
+    /// from the ledger (history / todo-event / status).
+    ProjectionRepaired {
+        goal_id: String,
+        projection: String,
+        drift_count: usize,
+        missing_rows: usize,
+        stale_rows: usize,
+        duplicate_rows: usize,
+        rows_written: usize,
+        backup_path: String,
+        ts: u64,
+    },
 }
 
 impl Event {
@@ -516,9 +534,21 @@ impl Event {
             | Event::HeartbeatReceiptRecorded { goal_id, .. }
             | Event::SchedulerAcked { goal_id, .. }
             | Event::SupervisorProposed { goal_id, .. }
-            | Event::SupervisorReceiptRecorded { goal_id, .. } => goal_id,
+            | Event::SupervisorReceiptRecorded { goal_id, .. }
+            | Event::ProjectionRepaired { goal_id, .. } => goal_id,
         }
     }
+}
+
+/// Event timestamp (every variant carries `ts`). Used by the P1-2②
+/// decision-freshness stamp; 0 when the field is absent (defensive — the
+/// schema guarantees it). Derived via serde so new variants never strand
+/// this accessor.
+pub fn event_ts(event: &Event) -> u64 {
+    serde_json::to_value(event)
+        .ok()
+        .and_then(|v| v.get("ts").and_then(|t| t.as_u64()))
+        .unwrap_or(0)
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -806,6 +836,18 @@ impl Store {
             .goal_schema_version(goal_id)
             .unwrap_or_else(|| LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string());
         let ledger = read_ledger(&self.goal_dir(goal_id), &from).context("read ledger")?;
+        // P1-2②: stamp the decision-freshness read model — arbitration
+        // decisions compiled from this state carry the max ledger seq /
+        // newest event ts they were rebuilt against.
+        goal.decision_freshness = Some(crate::state::DecisionFreshness {
+            events_max_seq: ledger.len() as u64,
+            events_max_ts: ledger
+                .iter()
+                .map(|stored| event_ts(&stored.event))
+                .filter(|ts| *ts > 0)
+                .max(),
+            read_at: crate::state::now_epoch(),
+        });
         for stored in ledger {
             apply(&mut goal, stored.event);
         }
@@ -1475,7 +1517,8 @@ fn apply(goal: &mut Goal, event: Event) {
         | Event::HeartbeatReceiptRecorded { .. }
         | Event::SchedulerAcked { .. }
         | Event::SupervisorProposed { .. }
-        | Event::SupervisorReceiptRecorded { .. } => {}
+        | Event::SupervisorReceiptRecorded { .. }
+        | Event::ProjectionRepaired { .. } => {}
     }
 }
 
