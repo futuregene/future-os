@@ -12,6 +12,8 @@ mod run_control;
 mod session;
 mod skills;
 mod stream;
+#[cfg(test)]
+mod test_support;
 
 pub use self::approval::{decide_approval, inject_session_rule, reconcile_pending_approvals};
 pub(crate) use self::client::raw_agent_addr;

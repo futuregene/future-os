@@ -99,3 +99,119 @@ pub async fn list_builtin_providers(
     .map_err(|error| format!("Future Agent returned invalid provider catalog data: {error}"))?;
     Ok(parsed.builtin_providers)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{mock_agent, Reply};
+    use super::*;
+
+    fn models_payload() -> serde_json::Value {
+        serde_json::json!({
+            "models": [{
+                "id": "future/k3",
+                "label": "K3",
+                "provider": "future",
+                "supportsImages": true,
+                "thinkingLevel": "high",
+                "contextWindow": 256000,
+                "isDefault": true,
+                "description": "经济实用版",
+                "descriptionEn": "Budget-friendly",
+                "recommended": true
+            }],
+            "defaultModel": "future/k3"
+        })
+    }
+
+    #[tokio::test]
+    async fn list_agent_models_parses_the_catalog() {
+        let mock = mock_agent();
+        mock.push_data("list_models", models_payload());
+        let models = list_agent_models().await.expect("models");
+        assert_eq!(models.len(), 1);
+        let model = &models[0];
+        assert_eq!(model.id, "future/k3");
+        assert!(model.supports_images);
+        assert_eq!(model.thinking_level.as_deref(), Some("high"));
+        assert_eq!(model.context_window, Some(256000));
+        assert!(model.is_default);
+        assert_eq!(model.description_en.as_deref(), Some("Budget-friendly"));
+        assert!(model.recommended);
+        assert!(
+            !mock.requests_of("list_models")[0].include_builtin_providers,
+            "plain model list must not request the provider catalog"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_agent_models_surfaces_rejection_transport_and_parse_errors() {
+        let mock = mock_agent();
+
+        mock.push(Some("list_models"), Reply::Reject("nope".to_string()));
+        let error = list_agent_models().await.expect_err("rejected");
+        assert_eq!(error.to_string(), "nope");
+
+        mock.push(
+            Some("list_models"),
+            Reply::Status(tonic::Code::Unavailable, "down"),
+        );
+        let error = list_agent_models().await.expect_err("transport");
+        assert!(
+            matches!(error, crate::AppError::AgentUnavailable(_)),
+            "transport maps through map_rpc_error: {error}"
+        );
+
+        mock.push_data("list_models", serde_json::json!({"models": "not-an-array"}));
+        let error = list_agent_models().await.expect_err("invalid data");
+        assert!(
+            error
+                .to_string()
+                .contains("Future Agent returned invalid model data"),
+            "error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_builtin_providers_parses_and_defaults_name() {
+        let mock = mock_agent();
+        mock.push_data(
+            "list_models",
+            serde_json::json!({
+                "builtinProviders": {
+                    "future": {"name": "Future", "modelCount": 3, "baseUrl": "https://api.example"},
+                    "legacy": {"modelCount": 1, "baseUrl": "https://old.example"}
+                }
+            }),
+        );
+        let providers = list_builtin_providers().await.expect("providers");
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers["future"].name, "Future");
+        assert_eq!(providers["future"].model_count, 3);
+        assert_eq!(
+            providers["legacy"].name, "",
+            "a pre-name agent leaves the display name empty"
+        );
+        assert!(
+            mock.requests_of("list_models")[0].include_builtin_providers,
+            "catalog fetch sets include_builtin_providers"
+        );
+
+        mock.push(Some("list_models"), Reply::Reject("denied".to_string()));
+        let error = list_builtin_providers().await.expect_err("rejected");
+        assert_eq!(error.to_string(), "denied");
+
+        mock.push(
+            Some("list_models"),
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
+        let error = list_builtin_providers().await.expect_err("transport");
+        assert!(matches!(error, crate::AppError::Message(_)), "{error}");
+
+        mock.push_data(
+            "list_models",
+            serde_json::json!({"builtinProviders": [1, 2, 3]}),
+        );
+        let error = list_builtin_providers().await.expect_err("invalid");
+        assert!(error.to_string().contains("invalid provider catalog"), "{error}");
+    }
+}
