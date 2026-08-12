@@ -506,9 +506,9 @@ pub fn write_scheduler_state(goal_dir: &Path, state: &SchedulerState) -> Result<
     )
     .ok_or_else(|| anyhow::anyhow!("scheduler state does not match target scope or schema"))?;
     let path = scheduler_state_path(goal_dir, &state.agent_id, &state.surface, &state.state_key);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create scheduler-state dir")?;
-    }
+    path.parent()
+        .map(|parent| std::fs::create_dir_all(parent).context("create scheduler-state dir"))
+        .transpose()?;
     let tmp = path.with_extension("json.tmp");
     let payload = serde_json::to_string_pretty(&normalized)?;
     std::fs::write(&tmp, format!("{payload}\n")).context("write scheduler state tmp")?;
@@ -539,6 +539,27 @@ mod tests {
             vec![],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn rrule_unknown_keys_are_ignored() {
+        assert_eq!(
+            scheduler_rrule_interval_minutes("FREQ=MINUTELY;INTERVAL=9;BYDAY=MO"),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn host_update_failures_skip_unparseable_entries() {
+        let bad = serde_json::json!({"schema_version": "wrong"});
+        let normalized = normalize_host_update_failures(&[bad]);
+        assert!(normalized.is_empty());
+    }
+
+    #[test]
+    fn safe_segment_defaults_when_nothing_remains() {
+        assert_eq!(safe_segment("---..."), "default");
+        assert_eq!(safe_segment("agent.a-1"), "agent.a-1");
     }
 
     #[test]

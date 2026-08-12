@@ -188,3 +188,15 @@ pub fn monitor_todo(prefix: &str, text: &str, due_secs: u64) -> Todo {
         std::time::Duration::from_secs(due_secs),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_registry_is_empty() {
+        let r = CapabilityRegistry::default();
+        assert!(r.all().is_empty());
+        assert!(r.get("anything").is_none());
+    }
+}

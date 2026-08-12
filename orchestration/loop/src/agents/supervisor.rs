@@ -228,54 +228,49 @@ pub fn build_supervisor_event_projection(
     goal_id: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let events = store.events(goal_id)?;
-    let mut proposals: Vec<&crate::store::StoredEvent> = vec![];
-    let mut receipts: Vec<&crate::store::StoredEvent> = vec![];
+    // Extract at collection time so the projection loop needs no re-match
+    // (the event kind is fixed by the arm that pushed it).
+    let mut proposals: Vec<(String, String, String, String, u64)> = vec![];
+    let mut receipts: Vec<(&str, &str)> = vec![];
     for stored in &events {
         match &stored.event {
-            Event::SupervisorProposed { goal_id: g, .. } if g == goal_id => proposals.push(stored),
-            Event::SupervisorReceiptRecorded { goal_id: g, .. } if g == goal_id => {
-                receipts.push(stored)
-            }
-            _ => {}
-        }
-    }
-    let mut rows: Vec<SupervisorProjectionRow> = vec![];
-    let mut receipt_count = 0u32;
-    for proposal in &proposals {
-        let (decision_id, kind, target_agent_id, supervisor_agent_id, ts) = match &proposal.event {
             Event::SupervisorProposed {
-                goal_id: _,
-                supervisor_agent_id,
+                goal_id: g,
                 decision_id,
                 decision_kind,
                 target_agent_id,
+                supervisor_agent_id,
                 ts,
                 ..
-            } => (
+            } if g == goal_id => proposals.push((
                 decision_id.clone(),
                 decision_kind.clone(),
                 target_agent_id.clone(),
                 supervisor_agent_id.clone(),
                 *ts,
-            ),
-            _ => unreachable!(),
-        };
-        let decision_receipts: Vec<&&crate::store::StoredEvent> = receipts
+            )),
+            Event::SupervisorReceiptRecorded {
+                goal_id: g,
+                decision_id,
+                outcome,
+                ..
+            } if g == goal_id => receipts.push((decision_id.as_str(), outcome.as_str())),
+            _ => {}
+        }
+    }
+    let mut rows: Vec<SupervisorProjectionRow> = vec![];
+    let mut receipt_count = 0u32;
+    for (decision_id, kind, target_agent_id, supervisor_agent_id, ts) in proposals {
+        let decision_receipts: Vec<&&str> = receipts
             .iter()
-            .filter(|r| match &r.event {
-                Event::SupervisorReceiptRecorded { decision_id: d, .. } => d == &decision_id,
-                _ => false,
-            })
+            .filter(|(d, _)| *d == decision_id.as_str())
+            .map(|(_, outcome)| outcome)
             .collect();
         receipt_count += decision_receipts.len() as u32;
-        let latest = decision_receipts.last();
-        let execution_status = match latest {
-            None => "proposal_only".to_string(),
-            Some(r) => match &r.event {
-                Event::SupervisorReceiptRecorded { outcome, .. } => outcome.clone(),
-                _ => unreachable!(),
-            },
-        };
+        let execution_status = decision_receipts
+            .last()
+            .map(|outcome| outcome.to_string())
+            .unwrap_or_else(|| "proposal_only".to_string());
         rows.push(SupervisorProjectionRow {
             decision_id,
             kind,

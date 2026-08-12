@@ -91,6 +91,81 @@ fn append_requires_registration_and_dedupes() {
 // ── try_claim_todo ─────────────────────────────────────────────────────────
 
 #[test]
+fn double_register_is_a_noop() {
+    let (_d, root) = fresh_store("s-dup-reg");
+    let mut store = Store::open(&root).unwrap();
+    let goal = Goal::new("g1", "store drive", "/tmp");
+    store.register(&goal).unwrap();
+    // Re-registering an already-registered goal keeps the registry as-is.
+    store.register(&goal).unwrap();
+    assert_eq!(store.registry().len(), 1);
+}
+
+#[test]
+fn try_claim_ignores_non_lease_events_and_p9_normalizes_to_p1() {
+    let (_d, root) = fresh_store("s-claim-misc");
+    let mut store = Store::open(&root).unwrap();
+    registered_goal(&mut store, "g1");
+    add(&mut store, "g1", "t1");
+    // A todo_updated line for the same todo hits the non-lease match arm
+    // during lease reconstruction; priority "P9" normalizes to P1 on apply.
+    store
+        .append(Event::TodoUpdated {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            text: None,
+            status: None,
+            evidence: None,
+            note: Some("n".into()),
+            priority: Some("P9".into()),
+            resume_when: None,
+            blocks: None,
+            ts: now_epoch(),
+        })
+        .unwrap();
+    assert!(store.try_claim_todo("g1", "t1", "alice", 3600).unwrap());
+    let g = store.replay("g1").unwrap().unwrap();
+    assert_eq!(
+        g.todo("t1").unwrap().priority,
+        future_loop::state::Priority::P1
+    );
+}
+
+#[test]
+fn renew_and_release_on_unknown_todo_are_noops() {
+    let (_d, root) = fresh_store("s-lease-ghost");
+    let mut store = Store::open(&root).unwrap();
+    registered_goal(&mut store, "g1");
+    store
+        .append(Event::TodoRenewed {
+            goal_id: "g1".into(),
+            todo_id: "ghost".into(),
+            agent_id: "a".into(),
+            lease_expires_at: 42,
+            ts: now_epoch(),
+        })
+        .unwrap();
+    store
+        .append(Event::TodoReleased {
+            goal_id: "g1".into(),
+            todo_id: "ghost".into(),
+            agent_id: "a".into(),
+            ts: now_epoch(),
+        })
+        .unwrap();
+    let g = store.replay("g1").unwrap().unwrap();
+    assert!(g.todo("ghost").is_none());
+}
+
+#[test]
+fn fingerprint_of_non_object_value_is_the_empty_object() {
+    assert_eq!(
+        future_loop::store::event_fingerprint(&serde_json::json!("x")),
+        "{}"
+    );
+}
+
+#[test]
 fn try_claim_todo_lease_reconstruction() {
     let (_d, root) = fresh_store("s2");
     let mut store = Store::open(&root).unwrap();

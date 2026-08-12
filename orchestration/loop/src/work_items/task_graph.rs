@@ -161,12 +161,15 @@ pub fn topological_sort(todos: &[Todo], edges: &[(String, String)]) -> (Vec<Stri
         order.push(id.clone());
         if let Some(next) = adj.get(&id) {
             for n in next {
-                if let Some(d) = indegree.get_mut(n) {
-                    *d -= 1;
-                    if *d == 0 {
-                        queue.push(n.clone());
-                        queue.sort();
-                    }
+                // adj only holds ids that passed the ids.contains filter
+                // above, so every successor has an indegree entry.
+                let d = indegree
+                    .get_mut(n)
+                    .expect("adjacency ids all have indegree entries");
+                *d -= 1;
+                if *d == 0 {
+                    queue.push(n.clone());
+                    queue.sort();
                 }
             }
         }
@@ -241,6 +244,52 @@ mod tests {
         let mut goal = Goal::new("g1", "objective", "/tmp");
         goal.todos = todos;
         goal
+    }
+
+    #[test]
+    fn cycle_walk_revisiting_a_non_start_node_breaks() {
+        // a → b → c → b (b revisited before the walk returns to a).
+        let todos = vec!["a", "b", "c"]
+            .into_iter()
+            .map(|id| Todo::advancement(id, "w"))
+            .collect::<Vec<_>>();
+        let edges = [
+            ("a".to_string(), "b".to_string()),
+            ("b".to_string(), "c".to_string()),
+            ("c".to_string(), "b".to_string()),
+            ("c".to_string(), "a".to_string()),
+        ];
+        let (order, path) = topological_sort(&todos, &edges);
+        assert!(order.is_empty());
+        assert_eq!(path.first().map(String::as_str), Some("a"));
+        assert!(path.len() >= 3);
+    }
+
+    #[test]
+    fn cycle_walk_ending_at_a_dead_end_breaks() {
+        // The walk leaves the cycle into d, which has no outgoing edge back
+        // into the leftover set.
+        let todos = vec!["a", "b", "c", "d"]
+            .into_iter()
+            .map(|id| Todo::advancement(id, "w"))
+            .collect::<Vec<_>>();
+        let edges = [
+            ("a".to_string(), "b".to_string()),
+            ("b".to_string(), "c".to_string()),
+            ("c".to_string(), "d".to_string()),
+            ("c".to_string(), "a".to_string()),
+        ];
+        let (order, path) = topological_sort(&todos, &edges);
+        assert!(order.is_empty());
+        assert_eq!(
+            path,
+            vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string()
+            ]
+        );
     }
 
     #[test]

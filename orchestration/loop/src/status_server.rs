@@ -20,18 +20,15 @@ pub fn serve(store: &Store, addr: &str) -> Result<()> {
     let root = store_root_path(store);
     let listener = TcpListener::bind(addr)?;
     println!("future-loop status server listening on http://{addr} (GET / , GET /goals.json)");
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let root = root.clone();
-                std::thread::spawn(move || {
-                    if let Ok(store) = Store::open(&root) {
-                        let _ = handle(&store, stream);
-                    }
-                });
+    // filter_map skips transient accept errors exactly like the former
+    // `Err(_) => continue` arm, without a never-taken match arm.
+    for stream in listener.incoming().filter_map(Result::ok) {
+        let root = root.clone();
+        std::thread::spawn(move || {
+            if let Ok(store) = Store::open(&root) {
+                let _ = handle(&store, stream);
             }
-            Err(_) => continue,
-        }
+        });
     }
     Ok(())
 }
@@ -109,4 +106,25 @@ fn render_dashboard(store: &Store) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Goal;
+
+    #[test]
+    fn dashboard_skips_registry_entries_without_a_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        store
+            .register(&Goal::new("g-ghost", "obj", "/tmp"))
+            .unwrap();
+        // No events were appended → replay yields None → entry is skipped.
+        assert!(store.replay("g-ghost").unwrap().is_none());
+        let out = render_dashboard(&store);
+        assert!(out.contains("status"), "{out}");
+        assert!(!out.contains("g-ghost"), "{out}");
+    }
 }

@@ -107,10 +107,8 @@ pub fn write_run(goal_dir: &Path, goal_id: &str, record: &crate::state::RunRecor
         "evidence": record.evidence,
         "error": record.error,
     });
-    fs::write(
-        dir.join(format!("{ts}.json")),
-        serde_json::to_string_pretty(&json_payload)?,
-    )?;
+    let json_path = dir.join(format!("{ts}.json"));
+    fs::write(json_path, serde_json::to_string_pretty(&json_payload)?)?;
 
     let mut md = String::new();
     md.push_str(&format!("# Run {ts}\n\n"));

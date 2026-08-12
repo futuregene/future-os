@@ -46,10 +46,7 @@ mod tests {
 
     #[test]
     fn absolute_home_path_is_a_leak() {
-        let home = std::env::var("HOME").unwrap_or_default();
-        if home.is_empty() {
-            return;
-        }
+        let home = std::env::var("HOME").expect("HOME is set in every test environment");
         let g = Goal::new("g", &format!("read {home}/secrets.txt"), "/tmp");
         assert!(!boundary_snapshot(&g).public_safe);
     }
