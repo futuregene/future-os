@@ -1167,16 +1167,29 @@ mod tests {
         let _ = partial.read_to_string(&mut resp);
         assert!(resp.contains("ok"), "{resp}");
 
-        // 3b. Body arriving in a second read: the body loop's Ok(n) arm.
+        // 3b. A body larger than the 8 KiB read chunk: the first read fills
+        // the chunk mid-body, so the body loop's Ok(n) arm reads the rest.
+        let big = "x".repeat(10_000);
         let mut split = std::net::TcpStream::connect(addr).unwrap();
         split
-            .write_all(b"POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\na")
+            .write_all(
+                format!(
+                    "POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+                    big.len(),
+                    big
+                )
+                .as_bytes(),
+            )
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        split.write_all(b"bc").unwrap();
         let mut resp = String::new();
         split.read_to_string(&mut resp).unwrap();
         assert!(resp.contains("ok"), "{resp}");
+        assert!(server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|body| body.len() == 10_000));
 
         // 4. Silent mid-body: body read times out (Err) → break.
         let mut stalled = std::net::TcpStream::connect(addr).unwrap();

@@ -1874,4 +1874,44 @@ mod tests {
         let reg = Registry::default();
         assert!(!reg.all_models().is_empty());
     }
+
+    #[test]
+    fn registry_injects_future_models_from_disk_cache() {
+        // Serialize against future.rs tests and start from cold caches so the
+        // disk seed below is the only catalog source.
+        let _cache_guard = super::future::future_models_test_lock();
+        super::future::reset_future_caches_for_tests();
+        let home = crate::test_support::TestHome::new();
+        // Auth present (dead base URL — no network) + a disk-cached catalog
+        // entry whose ID matches no builtin → pushed into the registry.
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            r#"{"future": {"type": "api_key", "key": "k", "base_url": "http://127.0.0.1:1/api"}}"#,
+        )
+        .unwrap();
+        let future_model = Model {
+            id: "future-cov-model".to_string(),
+            provider: "future".to_string(),
+            ..Default::default()
+        };
+        let cache = serde_json::json!({
+            "fetched_at": 1,
+            "models": [serde_json::to_value(&future_model).unwrap()],
+        });
+        std::fs::write(
+            home.path().join(".future/agent/.future-models-cache.json"),
+            serde_json::to_string(&cache).unwrap(),
+        )
+        .unwrap();
+
+        let reg = Registry::new();
+        assert!(
+            reg.all_models()
+                .iter()
+                .any(|m| m.id == "future-cov-model" && m.provider == "future"),
+            "cached future model must be injected into the registry"
+        );
+    }
 }

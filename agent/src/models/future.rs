@@ -543,6 +543,33 @@ pub(super) fn sync_future_models_cache() -> bool {
     true
 }
 
+/// Process-global future-models caches are shared across test modules
+/// (models::mod tests build a Registry that reads them) — serialize every
+/// accessor through one lock.
+#[cfg(test)]
+pub(crate) static FUTURE_MODELS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn future_models_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    FUTURE_MODELS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// Reset every future-models cache static, waiting out any in-flight
+/// background refresh first.
+#[cfg(test)]
+pub(crate) fn reset_future_caches_for_tests() {
+    FUTURE_MODELS_LAST_ATTEMPT.store(0, Ordering::Relaxed);
+    for _ in 0..200 {
+        if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    *FUTURE_MODELS_MEMORY_CACHE.write() = None;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,22 +932,11 @@ mod tests {
     static FUTURE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn future_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        FUTURE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+        super::future_models_test_lock()
     }
 
     fn reset_future_cache_state() {
-        FUTURE_MODELS_LAST_ATTEMPT.store(0, Ordering::Relaxed);
-        // A refresh thread from an earlier test may still hold the flag under
-        // heavy load; wait briefly rather than inherit a stuck in-flight.
-        for _ in 0..200 {
-            if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        *FUTURE_MODELS_MEMORY_CACHE.write() = None;
+        super::reset_future_caches_for_tests();
     }
 
     #[test]
