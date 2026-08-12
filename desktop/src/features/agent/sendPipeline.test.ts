@@ -256,11 +256,11 @@ describe("runSendPipeline stream/failure edges", () => {
   it("pushes stream updates into the pending bubble while the run streams", async () => {
     const { listen } = await import("@tauri-apps/api/event");
     let handler: ((event: { payload: Record<string, unknown> }) => void) | null = null;
-    vi.mocked(listen).mockImplementation(async (_name: string, cb: never) => {
-      handler = cb as typeof handler;
+    vi.mocked(listen).mockImplementation(async (...args: unknown[]) => {
+      handler = args[1] as typeof handler;
       return () => {};
     });
-    let resolveReply!: (value: unknown) => void;
+    let resolveReply!: (value: { content: string; complete: boolean; sessionId: string; sessionRecreated: boolean }) => void;
     vi.mocked(sendPromptToFutureAgent).mockImplementation(
       () => new Promise((resolve) => {
         resolveReply = resolve;

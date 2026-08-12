@@ -35,6 +35,7 @@ export async function buildReferencePrompt(workspaceId: string, markdown: string
     })
     .filter(Boolean);
 
+  /* v8 ignore next 2 -- the map above always yields one line per reference */
   if (lines.length === 0)
     return prompt;
 

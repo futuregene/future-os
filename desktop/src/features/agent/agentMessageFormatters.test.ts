@@ -86,8 +86,10 @@ describe("previousUserMessageBefore", () => {
 
 describe("agentErrorDetail malformed embedded JSON", () => {
   it("falls back to the raw capture when the embedded message is invalid JSON", () => {
-    // A message capture with a lone backslash makes JSON.parse fail.
-    const raw = "HTTP 500. {\"message\": \"oops\\\"} tail";
-    expect(classifyAgentError(raw)).toBeDefined();
+    // `\q` is not a valid JSON string escape, so JSON.parse throws and the
+    // raw capture is used instead.
+    const raw = String.raw`HTTP 500. {"message":"bad\q escape"} Request: 1 messages, 1 KB.`;
+    const result = classifyAgentError(raw);
+    expect(result).toBeDefined();
   });
 });

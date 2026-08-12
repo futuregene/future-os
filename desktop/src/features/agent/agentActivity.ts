@@ -197,6 +197,8 @@ export function createRunProjector(): RunProjector {
         return;
 
       const existing = toolActivities.get(activeToolCallId);
+      /* v8 ignore next 2 -- activeToolCallId is only ever set to an id that was
+         just inserted into toolActivities, so this guard never fires */
       if (!existing)
         return;
 
@@ -337,6 +339,7 @@ function buildSegments(
 
   while (index < slots.length) {
     const slot = slots[index];
+    /* v8 ignore next 2 -- index < slots.length, so the slot always exists */
     if (!slot)
       break;
 
@@ -371,6 +374,7 @@ function buildSegments(
     let cursor = index;
     while (cursor < slots.length) {
       const current = slots[cursor];
+      /* v8 ignore next 2 -- cursor < slots.length, so the slot always exists */
       if (!current)
         break;
       if (current.type === "tool") {
@@ -513,6 +517,7 @@ function matchJsonStringField(text: string, key: string) {
 }
 
 function explicitToolId(payload: unknown) {
+  /* v8 ignore next 2 -- both call sites check isRecord first */
   if (!isRecord(payload))
     return undefined;
 
@@ -550,6 +555,7 @@ function textFromPayload(payload: unknown) {
 const SOFT_FAIL_COMMANDS = new Set(["grep", "egrep", "fgrep", "rg", "findstr", "diff", "cmp", "test", "["]);
 
 function hasToolError(payload: unknown, command: string | undefined) {
+  /* v8 ignore next 2 -- the only caller checked the payload is a record already */
   if (!isRecord(payload))
     return false;
   const error = stringValue(payload.error) ?? stringValue(payload.errorText);
