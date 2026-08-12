@@ -758,6 +758,27 @@ pub struct Goal {
     /// `ShouldRunPacket` as `decision_freshness`.
     #[serde(skip)]
     pub decision_freshness: Option<DecisionFreshness>,
+    /// P1-3①: latest scheduler heartbeat per agent (epoch secs), folded
+    /// from `SchedulerTicked`. The liveness check compares now against this.
+    #[serde(default)]
+    pub scheduler_heartbeats: std::collections::BTreeMap<String, u64>,
+    /// P1-3①: automation liveness breach alerts, folded from
+    /// `AutomationLivenessAlert` (append-only; recovery is derived by
+    /// comparing against `scheduler_heartbeats`).
+    #[serde(default)]
+    pub liveness_alerts: Vec<LivenessAlert>,
+}
+
+/// P1-3①: one automation-liveness breach alert (LoopX automation_liveness):
+/// the scheduler heartbeat for `agent_id` went silent past the threshold.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LivenessAlert {
+    pub agent_id: String,
+    pub elapsed_secs: u64,
+    pub threshold_secs: u64,
+    /// 1-based alert ordinal for this (goal, agent) scope.
+    pub consecutive: u32,
+    pub ts: u64,
 }
 
 /// P1-2②: freshness stamp of the event ledger a decision was compiled
@@ -813,6 +834,8 @@ impl Goal {
             delivery_states: vec![],
             capability_invocations: vec![],
             decision_freshness: None,
+            scheduler_heartbeats: std::collections::BTreeMap::new(),
+            liveness_alerts: vec![],
         }
     }
 

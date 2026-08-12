@@ -77,10 +77,27 @@ pub fn build_attention_queue(items: Vec<AttentionItem>) -> AttentionQueue {
     }
 }
 
+/// The latest liveness alert not yet recovered by a fresh heartbeat
+/// (P1-3①): an alert is recovered once a `SchedulerTicked` heartbeat at or
+/// after the alert's second lands for the same agent (second-granularity
+/// ties favor recovery — the tick proves the automation is back). Returns
+/// the newest unrecovered alert across agents.
+pub fn latest_unrecovered_liveness_alert(goal: &Goal) -> Option<&crate::state::LivenessAlert> {
+    goal.liveness_alerts
+        .iter()
+        .filter(|a| {
+            goal.scheduler_heartbeats
+                .get(&a.agent_id)
+                .is_none_or(|hb| *hb < a.ts)
+        })
+        .max_by_key(|a| a.ts)
+}
+
 /// Project one goal's attention item (None when the goal needs nothing).
 /// Routing (LoopX goal_attention):
 /// - open user gate → waiting on user_or_controller;
 /// - replan obligation / projection gap → waiting on codex;
+/// - automation liveness breach → waiting on user_or_controller (P1-3①);
 /// - open monitor due → watching monitor;
 /// - terminal closure → no item.
 pub fn goal_attention_item(goal: &Goal) -> Option<AttentionItem> {
@@ -110,6 +127,21 @@ pub fn goal_attention_item(goal: &Goal) -> Option<AttentionItem> {
             severity: "action".to_string(),
             recommended_action: format!("self-repair projection gap: {gap}"),
             source: "goal_attention".to_string(),
+        });
+    }
+    // P1-3①: a dead/stuck host automation escalates to the operator — the
+    // goal's cadence is silently starving until the scheduler ticks again.
+    if let Some(alert) = latest_unrecovered_liveness_alert(goal) {
+        return Some(AttentionItem {
+            goal_id: goal.goal_id.clone(),
+            status: "automation_liveness_breach".to_string(),
+            waiting_on: AttentionWaitingOn::UserOrController.label().to_string(),
+            severity: "high".to_string(),
+            recommended_action: format!(
+                "scheduler heartbeat silent {}s (> {}s threshold) for agent {} — check/restart the host automation",
+                alert.elapsed_secs, alert.threshold_secs, alert.agent_id
+            ),
+            source: "automation_liveness".to_string(),
         });
     }
     let open_advancement = goal.open_of(crate::state::TaskClass::Advancement).count();
