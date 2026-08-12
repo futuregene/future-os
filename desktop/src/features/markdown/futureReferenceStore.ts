@@ -143,6 +143,7 @@ async function flushPendingReferenceLoads() {
 }
 
 async function resolveAndStoreReferences(workspaceId: string, references: ReferenceIdentity[]) {
+  /* v8 ignore next 2 -- invariant: flush only ever queues non-empty batches */
   if (references.length === 0)
     return;
 

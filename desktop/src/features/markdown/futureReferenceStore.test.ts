@@ -68,6 +68,18 @@ async function flush() {
 }
 
 describe("futureReferenceStore", () => {
+  it("batches multiple queued loads into one pending flush", async () => {
+    resolveMock.mockResolvedValue([resolvedRecord("run-batch")]);
+    queueFutureReferenceLoad("w-batch", [
+      { targetType: "run", targetId: "run-batch" },
+      { targetType: "run", targetId: "run-batch-2" },
+    ]);
+    // A second synchronous queue hits the already-pending flush guard.
+    queueFutureReferenceLoad("w-batch", [{ targetType: "run", targetId: "run-batch" }]);
+    await flush();
+    expect(resolveMock).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores empty load requests", () => {
     queueFutureReferenceLoad("w1", []);
     expect(resolveMock).not.toHaveBeenCalled();

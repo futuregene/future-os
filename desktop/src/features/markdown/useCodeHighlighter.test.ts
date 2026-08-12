@@ -151,6 +151,15 @@ describe("useCodeHighlighter", () => {
     h.unmount();
   });
 
+  it("reuses the cached highlighter on later mounts", async () => {
+    // cachedHighlighter is module-level and warm by now (earlier tests), so the
+    // mount effect takes the cached fast path.
+    const h = renderHook(() => useCodeHighlighter());
+    await flushAsync();
+    expect(h.current.isLoaded).toBe(true);
+    h.unmount();
+  });
+
   it("renders without a subscriber under SSR (getServerSnapshot path)", () => {
     function Probe() {
       const { isLoaded } = useCodeHighlighter();
