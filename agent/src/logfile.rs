@@ -360,6 +360,41 @@ mod tests {
     }
 
     #[test]
+    fn open_with_bare_filename_skips_parent_creation() {
+        // A parentless relative path: the parent filter rejects the empty
+        // parent, so no create_dir_all runs and the file lands in the cwd.
+        let name = format!("future-logfile-bare-{}.log", std::process::id());
+        let path = Path::new(&name);
+        let log = LogFile::open(path, 10).unwrap();
+        drop(log);
+        assert!(path.exists());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn trim_resyncs_when_file_shrunk_externally() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.log");
+        let max = 10;
+        let mut log = LogFile::open(&path, max).unwrap();
+
+        // Fill to exactly the trim threshold (no trim yet: not > max+SLACK).
+        for i in 0..(max + TRIM_SLACK) {
+            log.write(format!("line {i}\n").as_bytes()).unwrap();
+        }
+        // External actor truncates the file IN PLACE (same inode, so our
+        // append handle still lands in it): the incremental line counter is
+        // now far above the real content.
+        std::fs::write(&path, "kept 1\nkept 2\nkept 3\n").unwrap();
+        // The next write pushes the stale counter over the threshold; trim
+        // reads the real file (4 lines <= max) and takes the resync early
+        // return instead of rewriting.
+        log.write(b"line n\n").unwrap();
+        assert_eq!(log.lines, 4);
+        assert_eq!(lines_in(&path).len(), 4);
+    }
+
+    #[test]
     fn mirror_writer_flush_succeeds() {
         use tracing_subscriber::fmt::MakeWriter;
         let dir = tempfile::tempdir().unwrap();

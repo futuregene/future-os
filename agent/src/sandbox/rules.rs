@@ -159,17 +159,14 @@ fn compile_matcher(abs_pattern: &str) -> Matcher {
         canon_prefix.to_string_lossy().trim_end_matches('/'),
         rest
     );
-    match build_glob_regex(&full) {
-        Some(re) => Matcher::Glob(re),
-        // A pattern that fails to compile matches nothing (fail-safe: it won't
-        // silently widen access).
-        None => Matcher::Glob(Regex::new("$^").unwrap()),
-    }
+    Matcher::Glob(build_glob_regex(&full))
 }
 
 /// Convert a glob to an anchored regex. `**` matches across `/`, `*` within a
 /// segment, `?` one non-`/` char. Case-insensitive on macOS (APFS default).
-fn build_glob_regex(glob: &str) -> Option<Regex> {
+/// Infallible: every regex metacharacter is escaped or rewritten below, so
+/// the builder can only fail on a regex-crate regression.
+fn build_glob_regex(glob: &str) -> Regex {
     let mut re = String::from("^");
     let bytes = glob.as_bytes();
     let mut i = 0;
@@ -201,7 +198,7 @@ fn build_glob_regex(glob: &str) -> Option<Regex> {
     RegexBuilder::new(&re)
         .case_insensitive(cfg!(target_os = "macos"))
         .build()
-        .ok()
+        .expect("glob regex is built from escaped literals only")
 }
 
 // ─── Rule file parsing ──────────────────────────────────────────────────────
@@ -841,5 +838,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rules.len(), 2); // only "a" and "c" are valid
+    }
+
+    #[test]
+    fn question_mark_glob_matches_one_non_slash_char() {
+        let workspace = ws();
+        let rules = parse_rule_file(
+            r#"{"rules":[{"path":"config?.json","action":"deny"}]}"#,
+            &workspace,
+        )
+        .unwrap();
+        let set = RuleSet {
+            temp_roots: temp_roots(),
+            overrides: vec![],
+            guards: vec![],
+            session: Arc::new(Mutex::new(vec![])),
+            workspace_rules: rules,
+            user_rules: vec![],
+            workspace: workspace.clone(),
+        };
+        assert_eq!(
+            set.evaluate(&workspace.join("config1.json"), Op::Read),
+            Decision::Deny
+        );
+        // `?` does not cross a path separator.
+        assert_eq!(
+            set.evaluate(&workspace.join("config/x.json"), Op::Read),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn resolve_without_home_or_user_rule_file() {
+        let workspace = ws();
+        // home = None → the home-derived override/guard blocks are skipped;
+        // user_rule_file = None → the user layer is empty.
+        let set = RuleSet::resolve_impl(&workspace, None, None, Arc::new(Mutex::new(vec![])));
+        // Workspace fallback still applies.
+        assert_eq!(
+            set.evaluate(&workspace.join("src/main.rs"), Op::Write),
+            Decision::Allow
+        );
+        assert!(set.user_rules.is_empty());
+    }
+
+    #[test]
+    fn resolve_with_unreadable_user_rule_file_skips_layer() {
+        let workspace = ws();
+        // A directory at the rule-file path: read fails with a non-NotFound
+        // error → load_rule_file surfaces Err and the layer is skipped.
+        let broken = workspace.join("broken-rules.json");
+        std::fs::create_dir(&broken).unwrap();
+        let err = load_rule_file(&broken, &workspace).unwrap_err();
+        assert!(err.contains("unreadable rule file"), "{err}");
+
+        let set =
+            RuleSet::resolve_impl(&workspace, None, Some(&broken), Arc::new(Mutex::new(vec![])));
+        assert!(set.user_rules.is_empty());
+        assert_eq!(
+            set.evaluate(&workspace.join("src/main.rs"), Op::Write),
+            Decision::Allow
+        );
     }
 }

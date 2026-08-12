@@ -582,4 +582,101 @@ This is a test skill body.
         let discovered = discover_skills(&["/no/such/dir/skills".to_string()]).unwrap();
         assert!(discovered.is_empty());
     }
+
+    #[test]
+    fn discover_skills_skips_duplicate_names() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_skills_dup_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Two skills with the SAME name in one directory: the first wins,
+        // the duplicate is skipped (seen.insert returns false).
+        for sub in ["skill-a", "skill-b"] {
+            let subdir = dir.join(sub);
+            std::fs::create_dir_all(&subdir).unwrap();
+            std::fs::write(
+                subdir.join("SKILL.md"),
+                "---\nname: dup-skill\ndescription: duplicate\n---\n# Body\n",
+            )
+            .unwrap();
+        }
+
+        let discovered = discover_skills(&[dir.to_string_lossy().to_string()]).unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].name, "dup-skill");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Serialises the two global-cache tests below against each other (other
+    /// suites that touch the skills cache re-invalidate after themselves).
+    static SKILLS_CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn skills_cache_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        SKILLS_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    #[test]
+    fn cached_discovery_refreshes_stale_cache() {
+        let _guard = skills_cache_test_lock();
+        // Seed a STALE entry: the fast path must skip it (TTL exceeded) and
+        // fall through to a real refresh.
+        let stale_ts = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(SKILLS_CACHE_TTL_SECS + 1))
+            .expect("uptime exceeds skills cache TTL");
+        *SKILLS_CACHE.write().unwrap() = Some((
+            stale_ts,
+            vec![Skill {
+                name: "stale-marker".to_string(),
+                description: String::new(),
+                name_zh: None,
+                description_zh: None,
+                version: None,
+                location: String::new(),
+                disable_model_invocation: false,
+            }],
+        ));
+
+        // Empty dir list: a refresh returns no skills, proving the stale
+        // marker was NOT served from the fast path.
+        let skills = discover_skills_cached(&[]);
+        assert!(skills.is_empty());
+        invalidate_skills_cache();
+    }
+
+    #[test]
+    fn cached_discovery_double_check_serves_fresh_cache() {
+        let _guard = skills_cache_test_lock();
+        invalidate_skills_cache();
+        // Hold the refresh lock so the worker thread blocks AFTER its
+        // fast-path miss; then warm the cache — the worker's post-lock
+        // double-check must serve the fresh entry instead of doing I/O.
+        let refresh_guard = REFRESH_LOCK.lock().unwrap();
+        let worker = std::thread::spawn(|| discover_skills_cached(&[]));
+        // Give the worker a moment to reach the refresh-lock wait.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        *SKILLS_CACHE.write().unwrap() = Some((
+            std::time::Instant::now(),
+            vec![Skill {
+                name: "double-check-marker".to_string(),
+                description: String::new(),
+                name_zh: None,
+                description_zh: None,
+                version: None,
+                location: String::new(),
+                disable_model_invocation: false,
+            }],
+        ));
+        drop(refresh_guard);
+
+        let skills = worker.join().unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "double-check-marker");
+        invalidate_skills_cache();
+    }
 }

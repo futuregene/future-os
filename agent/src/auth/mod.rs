@@ -320,4 +320,26 @@ mod tests {
         let store = make_store(r#"{}"#);
         assert_eq!(store.default_key(), None);
     }
+
+    #[test]
+    fn base_url_matching_entry_without_url_returns_none() {
+        // Name matches but the entry carries no baseUrl → falls through to None.
+        let store = make_store(
+            r#"{
+                "openai": {"type": "api_key", "key": "sk-123"}
+            }"#,
+        );
+        assert_eq!(store.base_url("openai"), None);
+    }
+
+    #[test]
+    fn load_unreadable_auth_file_falls_through_to_empty() {
+        let home = crate::test_support::TestHome::new();
+        // A directory at the auth.json path: exists() is true but
+        // read_to_string fails → load() skips it and returns an empty store.
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(&auth_path).unwrap();
+        let store = AuthStore::load();
+        assert!(store.default_key().is_none());
+    }
 }

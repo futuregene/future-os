@@ -110,14 +110,34 @@ pub(crate) mod test_support {
 
     impl Drop for TestHome {
         fn drop(&mut self) {
-            match &self.previous_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match &self.previous_userprofile {
-                Some(value) => std::env::set_var("USERPROFILE", value),
-                None => std::env::remove_var("USERPROFILE"),
-            }
+            restore_env("HOME", &self.previous_home);
+            restore_env("USERPROFILE", &self.previous_userprofile);
+        }
+    }
+
+    /// Put an env var back to its pre-test state: restore the saved value, or
+    /// remove the var when it was absent before the test redirected it.
+    fn restore_env(key: &str, previous: &Option<std::ffi::OsString>) {
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[cfg(test)]
+    mod env_restore_tests {
+        /// Both restore arms, exercised directly (the Some/None mix a real
+        /// TestHome sees depends on the host env, which unit tests can't
+        /// control — HOME is always set under cargo test, USERPROFILE never).
+        #[test]
+        fn restore_env_handles_present_and_absent_values() {
+            let _guard = super::home_env_lock();
+            let key = "FUTURE_TEST_RESTORE_ENV";
+            std::env::set_var(key, "original");
+            super::restore_env(key, &Some(std::ffi::OsString::from("saved")));
+            assert_eq!(std::env::var(key).as_deref(), Ok("saved"));
+            super::restore_env(key, &None);
+            assert!(std::env::var_os(key).is_none());
         }
     }
 }

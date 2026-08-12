@@ -203,4 +203,32 @@ mod tests {
         // Built-in workspace `.env` ask → deny (glob or subpath).
         assert!(p.contains("file-write*") && p.contains(".env"));
     }
+
+    #[test]
+    fn session_allow_rules_emit_allow_verbs() {
+        use crate::sandbox::rules::{Access, Decision};
+        let s = enabled_sandbox();
+        let allow_base = s.workspace.join("vendor/allowed");
+        s.rules
+            .add_session_rule(&allow_base.to_string_lossy(), Access::Both, Decision::Allow);
+        // Read-only allow: the write branch is skipped entirely.
+        let ro_base = s.workspace.join("vendor/read-only");
+        s.rules
+            .add_session_rule(&ro_base.to_string_lossy(), Access::Read, Decision::Allow);
+        let p = build_profile(&s);
+        assert!(
+            p.contains(&format!("(allow file-read* (subpath \"{}\"", allow_base.display())),
+            "{p}"
+        );
+        assert!(
+            p.contains(&format!("(allow file-write* (subpath \"{}\"", allow_base.display())),
+            "{p}"
+        );
+        assert!(
+            p.contains(&format!("(allow file-read* (subpath \"{}\"", ro_base.display())),
+            "{p}"
+        );
+        let ro_write = format!("file-write* (subpath \"{}\"", ro_base.display());
+        assert!(!p.contains(&ro_write), "{p}");
+    }
 }

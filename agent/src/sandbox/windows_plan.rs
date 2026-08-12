@@ -190,6 +190,45 @@ mod tests {
     }
 
     #[test]
+    fn allow_write_rule_lands_in_writable_allow_read_does_not() {
+        use crate::sandbox::rules::{Access, Decision};
+        let ws = temp_workspace();
+        let workspace = crate::sandbox::paths::canonicalize_lenient(std::path::Path::new(&ws));
+        let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(
+            std::path::Path::new(&ws),
+            std::path::Path::new("/nonexistent-home-for-plan-test"),
+        );
+        let allow_write = workspace.join("vendor/granted");
+        rules.add_session_rule(
+            &allow_write.to_string_lossy(),
+            Access::Both,
+            Decision::Allow,
+        );
+        // Read-only allow: broadly open already, so it must NOT add an ACE.
+        let allow_read = workspace.join("vendor/readable");
+        rules.add_session_rule(
+            &allow_read.to_string_lossy(),
+            Access::Read,
+            Decision::Allow,
+        );
+        let sandbox = ResolvedSandbox {
+            tier: SandboxTier::Manual,
+            available: crate::sandbox::platform_sandbox_available(),
+            workspace: rules.workspace.clone(),
+            rules,
+        };
+        let plan = build_plan(&sandbox);
+        assert!(
+            plan.writable.contains(&allow_write),
+            "allow-write subtree must get a write ACE: {plan:?}"
+        );
+        assert!(
+            !plan.writable.contains(&allow_read),
+            "allow-read needs no ACE (reads are broadly open): {plan:?}"
+        );
+    }
+
+    #[test]
     fn literal_env_is_enforced_but_glob_secrets_are_skipped() {
         let ws = temp_workspace();
         let plan = plan_for(&ws);
