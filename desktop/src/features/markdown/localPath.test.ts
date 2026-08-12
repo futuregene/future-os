@@ -56,3 +56,9 @@ describe("localFilePath", () => {
     expect(localFilePath("")).toBeNull();
   });
 });
+
+describe("localFilePath malformed file URIs", () => {
+  it("returns null when the file:// URI cannot be decoded", () => {
+    expect(localFilePath("file:///%E0%A4%A")).toBeNull();
+  });
+});

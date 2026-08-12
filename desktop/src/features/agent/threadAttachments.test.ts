@@ -64,3 +64,16 @@ describe("persistImageAttachments", () => {
     ]);
   });
 });
+
+describe("persistImageAttachments non-image passthrough", () => {
+  beforeEach(() => {
+    validateImageAttachment.mockReset();
+  });
+
+  it("passes non-image attachments through both phases untouched", async () => {
+    const file = { kind: "file" as const, path: "/a/b.pdf", name: "b.pdf" };
+    const result = await persistImageAttachments([file], "t1");
+    expect(result).toEqual([file]);
+    expect(validateImageAttachment).not.toHaveBeenCalled();
+  });
+});
