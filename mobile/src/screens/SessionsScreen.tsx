@@ -202,6 +202,11 @@ export function SessionsScreen() {
       <Text numberOfLines={1} style={styles.sessionTitle}>
         {item.title || t("sessions.unnamed")}
       </Text>
+      <SessionStatusIndicator
+        status={item.status}
+        streaming={item.streaming}
+        unread={remote.unreadSessions.has(item.sessionId)}
+      />
       {item.pinned && (
         <Pin
           accessibilityLabel={t("sessions.pin")}
@@ -209,11 +214,6 @@ export function SessionsScreen() {
           size={14}
         />
       )}
-      <SessionStatusIndicator
-        status={item.status}
-        streaming={item.streaming}
-        unread={remote.unreadSessions.has(item.sessionId)}
-      />
     </Pressable>
   );
 

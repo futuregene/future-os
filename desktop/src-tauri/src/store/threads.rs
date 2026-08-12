@@ -42,7 +42,7 @@ pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
         "SELECT {THREAD_COLUMNS}
              FROM threads
              WHERE status != 'deleted'
-             ORDER BY pinned DESC, COALESCE(last_message_at, updated_at) DESC"
+             ORDER BY pinned DESC, COALESCE(last_message_at, last_opened_at, updated_at) DESC"
     ))?;
     let rows = stmt.query_map([], thread_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
