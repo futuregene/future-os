@@ -1202,4 +1202,85 @@ mod tests {
         assert_eq!(ack.accepted_state, RunAcceptedState::Existing);
         assert!(ack.queue_position.is_some());
     }
+
+    #[test]
+    fn replace_queued_respects_global_count_and_byte_limits() {
+        // Count limit: base_count (after subtracting the releases) is full.
+        let budget = GlobalQueueBudget::new(1, 1_000);
+        budget.reserve(10).unwrap();
+        let err = budget.replace_queued(0, 0, 10).unwrap_err();
+        assert_eq!(err, RunQueueError::GlobalQueueFull { limit: 1 });
+
+        // Byte limit: count headroom remains but the projection overflows.
+        let budget = GlobalQueueBudget::new(10, 100);
+        budget.reserve(60).unwrap();
+        let err = budget.replace_queued(0, 0, 50).unwrap_err();
+        assert_eq!(
+            err,
+            RunQueueError::GlobalQueueBytesExceeded {
+                actual: 110,
+                limit: 100
+            }
+        );
+
+        // Releases are subtracted before the comparison.
+        let budget = GlobalQueueBudget::new(2, 100);
+        budget.reserve(60).unwrap();
+        budget.reserve(30).unwrap();
+        budget.replace_queued(1, 30, 40).unwrap();
+    }
+
+    #[test]
+    fn accept_reports_sequence_exhausted() {
+        let queue = queue();
+        queue.state.lock().next_sequence = u64::MAX;
+        let err = queue
+            .accept(
+                "request-1",
+                Some("run-1"),
+                BusyPolicy::EnqueueIfBusy,
+                Value::Null,
+            )
+            .unwrap_err();
+        assert_eq!(err, RunQueueError::SequenceExhausted);
+    }
+
+    #[test]
+    fn supersede_reports_sequence_exhausted() {
+        let queue = queue();
+        queue.state.lock().next_sequence = u64::MAX;
+        let err = queue
+            .supersede("request-1", Some("run-1"), Value::Null)
+            .unwrap_err();
+        assert_eq!(err, RunQueueError::SequenceExhausted);
+    }
+
+    #[test]
+    fn retry_of_terminal_run_returns_plain_existing_ack() {
+        // After the run goes terminal, the request identity is remembered but
+        // the run is neither active nor queued — the fallback existing-ack.
+        let queue = queue();
+        queue
+            .accept(
+                "request-1",
+                Some("run-1"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"text": "a"}),
+            )
+            .unwrap();
+        queue.start_next(7).unwrap();
+        queue.finish_active("run-1").unwrap();
+
+        let ack = queue
+            .accept(
+                "request-1",
+                Some("run-1"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"text": "a"}),
+            )
+            .unwrap();
+        assert_eq!(ack.accepted_state, RunAcceptedState::Existing);
+        assert_eq!(ack.run_sequence, Some(1));
+        assert!(ack.queue_position.is_none());
+    }
 }

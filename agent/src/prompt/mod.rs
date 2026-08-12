@@ -211,12 +211,11 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     // To restore, uncomment the two guidelines below.
     // guidelines.push("Only use an id-based reference — [label](futureos://artifact/<id>), [label](futureos://run/<id>), [label](futureos://tool/<id>), [label](futureos://approval/<id>), or [label](futureos://review/<id>) — when you actually have that object's id from earlier in the conversation or tool results. NEVER invent or guess an id; if you don't have one (e.g. a file you just wrote), use a plain [name](<path>) file link instead. Prefer a reference over pasting long stdout, full diffs, or large file contents inline.".to_string());
     // guidelines.push("For block-level FutureOS objects, use fenced directives with language names such as `futureos-artifact`, `futureos-run`, `futureos-tool`, `futureos-approval`, or `futureos-review`, and include id and view fields. Do not embed long stdout, full diffs, or large file contents directly in the assistant message when an object reference is available.".to_string());
+    // The default guidelines above guarantee the list is non-empty.
     let deduped = dedup(guidelines);
-    if !deduped.is_empty() {
-        let lines: Vec<String> = deduped.iter().map(|g| format!("- {}", g)).collect();
-        parts.push("Guidelines:".to_string());
-        parts.push(lines.join("\n"));
-    }
+    let lines: Vec<String> = deduped.iter().map(|g| format!("- {}", g)).collect();
+    parts.push("Guidelines:".to_string());
+    parts.push(lines.join("\n"));
 
     parts.join("\n\n")
 }
@@ -313,18 +312,29 @@ fn dedup(items: Vec<String>) -> Vec<String> {
 /// Returns an OS platform hint so the model generates platform-appropriate
 /// shell commands (e.g. `dir` vs `ls`, path separators, package managers).
 fn os_hint() -> String {
+    os_hint_for(
+        std::env::consts::OS,
+        crate::sandbox::shell_display_name(),
+        crate::sandbox::shell_is_legacy_bash(),
+        crate::sandbox::shell_supports_chain_operators(),
+    )
+}
+
+/// `os_hint` with platform and shell facts injected, so every platform arm is
+/// testable from any host (`std::env::consts::OS` is a compile-time constant —
+/// without injection the other arms are dead code on the test host).
+fn os_hint_for(os: &str, shell: &str, legacy_bash: bool, supports_chaining: bool) -> String {
     let skills_hint = "Skill files are located under the user's home directory \
         at .agents/skills/<name>/SKILL.md. When creating a new skill, \
         construct the path by joining the home directory with this relative path \
         using the correct path separator for this platform.";
 
-    match std::env::consts::OS {
+    match os {
         "macos" => {
             // Name the shell actually resolved at runtime ($SHELL — often zsh on
             // macOS). bash and zsh share command-line syntax, so no separate
             // syntax rules are needed — only the accurate name.
-            let shell = crate::sandbox::shell_display_name();
-            let legacy_note = if crate::sandbox::shell_is_legacy_bash() {
+            let legacy_note = if legacy_bash {
                 " IMPORTANT: This is bash 3.2 — do NOT use bash 4+ features: \
                  no associative arrays (declare -A), no globstar \
                  (**), no ${var,,}/${var^^}, no mapfile/readarray. Use \
@@ -343,8 +353,7 @@ fn os_hint() -> String {
             // The interpreter is resolved at runtime (pwsh 7 when present, else
             // Windows PowerShell 5.1); only pwsh 7 supports `&&`/`||`, so the
             // chaining guidance tracks the actual shell rather than guessing.
-            let shell = crate::sandbox::shell_display_name();
-            let chaining = if crate::sandbox::shell_supports_chain_operators() {
+            let chaining = if supports_chaining {
                 "chain commands with `;`, `&&`, or `||`"
             } else {
                 // PowerShell 5.1 rejects `&&`/`||` at parse time. `;` runs the
@@ -363,8 +372,7 @@ fn os_hint() -> String {
             )
         }
         "linux" => {
-            let shell = crate::sandbox::shell_display_name();
-            let legacy_note = if crate::sandbox::shell_is_legacy_bash() {
+            let legacy_note = if legacy_bash {
                 " IMPORTANT: This is bash 3.x — do NOT use bash 4+ features: \
                  no associative arrays (declare -A), no globstar \
                  (**), no ${var,,}/${var^^}, no mapfile/readarray. Use \
@@ -514,6 +522,35 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], "First");
         assert_eq!(result[1], "second");
+    }
+
+    #[test]
+    fn os_hint_covers_every_platform_arm() {
+        // macOS: legacy-bash note present/absent.
+        let mac_legacy = os_hint_for("macos", "bash", true, true);
+        assert!(mac_legacy.contains("Host platform: macOS"));
+        assert!(mac_legacy.contains("bash 3.2"));
+        let mac_modern = os_hint_for("macos", "zsh", false, true);
+        assert!(mac_modern.contains("Host platform: macOS"));
+        assert!(!mac_modern.contains("bash 3.2"));
+        // Windows: chaining guidance tracks pwsh vs Windows PowerShell 5.1.
+        let win_pwsh = os_hint_for("windows", "PowerShell 7 (pwsh)", false, true);
+        assert!(win_pwsh.contains("Host platform: Windows"));
+        assert!(win_pwsh.contains("&&"));
+        let win_legacy = os_hint_for("windows", "Windows PowerShell 5.1", false, false);
+        assert!(win_legacy.contains("Host platform: Windows"));
+        assert!(win_legacy.contains("if ($?)"));
+        assert!(win_legacy.contains("never use `&&`"));
+        // Linux: legacy-bash note present/absent.
+        let linux_legacy = os_hint_for("linux", "bash", true, true);
+        assert!(linux_legacy.contains("Host platform: Linux"));
+        assert!(linux_legacy.contains("bash 3.x"));
+        let linux_modern = os_hint_for("linux", "bash", false, true);
+        assert!(linux_modern.contains("Host platform: Linux"));
+        assert!(!linux_modern.contains("bash 3.x"));
+        // Unknown OS: bare fallback.
+        let other = os_hint_for("freebsd", "sh", false, true);
+        assert!(other.starts_with("Host platform: freebsd."));
     }
 
     #[test]
