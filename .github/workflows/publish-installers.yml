@@ -1,0 +1,38 @@
+name: publish-installers
+
+# Syncs the one-line installer scripts to the OSS bucket root so they are
+# served from https://dl.future-os.cn/install.sh and /install.ps1. Manual
+# dispatch only — run it after changing scripts/install.sh or install.ps1.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup ossutil
+        run: bash scripts/setup-ossutil.sh
+
+      - name: Upload installers to the bucket root
+        run: |
+          set -euo pipefail
+          for f in install.sh install.ps1; do
+            # text/plain so browsers and curl treat the file as a script;
+            # no-cache so CDN edge nodes revalidate and updates go live
+            # immediately (installers must never serve stale content).
+            ossutil cp -f "scripts/$f" "oss://$OSS_BUCKET/$f" \
+              --content-type "text/plain; charset=utf-8" \
+              --cache-control "no-cache"
+            ossutil stat "oss://$OSS_BUCKET/$f"
+          done

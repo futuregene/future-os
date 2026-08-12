@@ -33,6 +33,14 @@ const config: ExpoConfig = {
       },
     ],
     [
+      "expo-image-picker",
+      {
+        cameraPermission: "Allow FutureOS to take photos for conversation attachments.",
+        photosPermission: "Allow FutureOS to select photos for conversation attachments.",
+        microphonePermission: false,
+      },
+    ],
+    [
       "expo-secure-store",
       {
         configureAndroidBackup: true,
