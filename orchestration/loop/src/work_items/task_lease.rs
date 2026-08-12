@@ -62,11 +62,17 @@ pub fn normalize_ttl(ttl_seconds: u64) -> Result<u64> {
     Ok(ttl)
 }
 
+/// The outcome of a successful claim (`steal` is true when the previous
+/// lease had expired).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimOutcome {
+    pub idempotent: bool,
+    pub steal: bool,
+}
+
 /// The outcome of a lease operation (what the caller should persist).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeaseOp {
-    /// Claim succeeded. `steal` is true when the previous lease had expired.
-    Acquired { idempotent: bool, steal: bool },
     /// Renew succeeded.
     Renewed,
     /// Release succeeded (`missing` = there was nothing to release).
@@ -79,13 +85,13 @@ pub enum LeaseOp {
 /// open; a live lease held by ANOTHER agent conflicts; the same owner
 /// re-claiming is idempotent; a free or expired lease is acquired (steal
 /// after expiry).
-pub fn claim(todo: &mut Todo, agent: &str, lease_secs: u64, now: u64) -> Result<LeaseOp> {
+pub fn claim(todo: &mut Todo, agent: &str, lease_secs: u64, now: u64) -> Result<ClaimOutcome> {
     if todo.status != TodoStatus::Open {
         bail!("task lease requires an open todo");
     }
     let ttl = normalize_ttl(lease_secs)?;
     match lease_status(todo, now) {
-        LeaseStatus::Active { owner, .. } if owner == agent => Ok(LeaseOp::Acquired {
+        LeaseStatus::Active { owner, .. } if owner == agent => Ok(ClaimOutcome {
             idempotent: true,
             steal: false,
         }),
@@ -96,7 +102,7 @@ pub fn claim(todo: &mut Todo, agent: &str, lease_secs: u64, now: u64) -> Result<
             todo.claimed_by = Some(agent.to_string());
             todo.lease_expires_at = Some(now + ttl);
             todo.updated_at = now;
-            Ok(LeaseOp::Acquired {
+            Ok(ClaimOutcome {
                 idempotent: false,
                 steal: false,
             })
@@ -106,7 +112,7 @@ pub fn claim(todo: &mut Todo, agent: &str, lease_secs: u64, now: u64) -> Result<
             todo.claimed_by = Some(agent.to_string());
             todo.lease_expires_at = Some(now + ttl);
             todo.updated_at = now;
-            Ok(LeaseOp::Acquired {
+            Ok(ClaimOutcome {
                 idempotent: false,
                 steal: true,
             })
@@ -176,7 +182,7 @@ mod tests {
         let op = claim(&mut todo, "alice", 60, 1_000).unwrap();
         assert_eq!(
             op,
-            LeaseOp::Acquired {
+            ClaimOutcome {
                 idempotent: false,
                 steal: false
             }
@@ -186,13 +192,23 @@ mod tests {
     }
 
     #[test]
+    fn release_by_non_owner_is_rejected() {
+        let mut todo = todo_open();
+        claim(&mut todo, "alice", 60, 1_000).unwrap();
+        let err = release(&mut todo, "bob", 1_010).unwrap_err();
+        assert!(format!("{err:#}").contains("owner mismatch"), "{err:#}");
+        // The lease is untouched.
+        assert_eq!(todo.claimed_by.as_deref(), Some("alice"));
+    }
+
+    #[test]
     fn same_owner_reclaim_is_idempotent() {
         let mut todo = todo_open();
         claim(&mut todo, "alice", 60, 1_000).unwrap();
         let op = claim(&mut todo, "alice", 60, 1_010).unwrap();
         assert_eq!(
             op,
-            LeaseOp::Acquired {
+            ClaimOutcome {
                 idempotent: true,
                 steal: false
             }
@@ -213,7 +229,7 @@ mod tests {
         let op = claim(&mut todo, "bob", 60, 2_000).unwrap(); // after expiry
         assert_eq!(
             op,
-            LeaseOp::Acquired {
+            ClaimOutcome {
                 idempotent: false,
                 steal: true
             }

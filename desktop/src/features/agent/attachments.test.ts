@@ -47,3 +47,29 @@ describe("classifyAttachment", () => {
     });
   });
 });
+
+describe("attachment helpers", () => {
+  it("maps image MIME types to extensions, case-insensitively", async () => {
+    const { imageExtensionFromMime } = await import("./attachments");
+    expect(imageExtensionFromMime("image/PNG")).toBe("png");
+    expect(imageExtensionFromMime("image/gif")).toBe("gif");
+    expect(imageExtensionFromMime("text/plain")).toBeNull();
+  });
+
+  it("splits filenames into stem and extension", async () => {
+    const { splitFileName } = await import("./attachments");
+    expect(splitFileName("photo.png")).toEqual({ stem: "photo", ext: ".png" });
+    expect(splitFileName(".gitignore")).toEqual({ stem: ".gitignore", ext: "" });
+    expect(splitFileName("README")).toEqual({ stem: "README", ext: "" });
+  });
+
+  it("fileNameFromPath falls back to the whole path", async () => {
+    const { fileNameFromPath } = await import("./attachments");
+    expect(fileNameFromPath("/a/b/c.txt")).toBe("c.txt");
+  });
+
+  it("reports a read failure when inspection throws", async () => {
+    inspectAttachment.mockRejectedValue(new Error("perm"));
+    await expect(classifyAttachment("/tmp/x.png")).resolves.toMatchObject({ kind: null });
+  });
+});

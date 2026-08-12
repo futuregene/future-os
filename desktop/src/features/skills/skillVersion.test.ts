@@ -41,3 +41,9 @@ describe("isUpgradeAvailable", () => {
     expect(isUpgradeAvailable(undefined, undefined)).toBe(false);
   });
 });
+
+describe("compareVersions numeric-equal segments", () => {
+  it("continues past numerically equal but textually different segments", () => {
+    expect(compareVersions("1.02.0", "1.2.0")).toBe(0);
+  });
+});

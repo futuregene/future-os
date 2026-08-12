@@ -29,15 +29,14 @@ pub fn stale_latest_run(goal: &Goal, goal_dir: &Path) -> Option<StaleRunWarning>
     let mut state_updated_at = goal.todos.iter().map(|t| t.updated_at).max();
     // The next_action projection file is part of active state.
     let na_path = goal_dir.join("next_action.txt");
-    if let Ok(meta) = std::fs::metadata(&na_path) {
-        if let Ok(mtime) = meta.modified() {
-            if let Ok(secs) = mtime.duration_since(std::time::SystemTime::UNIX_EPOCH) {
-                let mtime_epoch = secs.as_secs();
-                state_updated_at =
-                    Some(state_updated_at.map_or(mtime_epoch, |v| v.max(mtime_epoch)));
-            }
-        }
-    }
+    let na_mtime = std::fs::metadata(&na_path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|mtime| mtime.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+        .map(|secs| secs.as_secs());
+    state_updated_at = na_mtime.map_or(state_updated_at, |e| {
+        Some(state_updated_at.map_or(e, |v| v.max(e)))
+    });
     let (Some(state_at), Some(run_at)) = (state_updated_at, latest_run) else {
         return None;
     };

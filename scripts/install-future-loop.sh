@@ -21,9 +21,9 @@ mkdir -p "$BIN_DIR"
 cp "$REPO_ROOT/target/$MODE/future-loop" "$BIN_DIR/future-loop"
 chmod +x "$BIN_DIR/future-loop"
 
-echo "== linking skill (symlink to repo SKILL.md, single source of truth) =="
+echo "== linking skill (symlink to skills submodule SKILL.md, single source of truth) =="
 mkdir -p "$SKILL_DIR"
-ln -sf "$REPO_ROOT/orchestration/loop/skill/future-loop/SKILL.md" "$SKILL_DIR/SKILL.md"
+ln -sf "$REPO_ROOT/skills/builtin/future-loop/SKILL.md" "$SKILL_DIR/SKILL.md"
 
 echo "== verifying =="
 "$BIN_DIR/future-loop" status

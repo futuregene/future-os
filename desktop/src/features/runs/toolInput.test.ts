@@ -55,3 +55,47 @@ describe("toolInput", () => {
     expect(stringField(null, "command")).toBeNull();
   });
 });
+
+describe("parseJsonish edge cases", () => {
+  it("gives up after three parse layers and returns the innermost string", () => {
+    const triple = JSON.stringify(JSON.stringify(JSON.stringify("42")));
+    expect(parseJsonish(triple)).toBe("42");
+  });
+});
+
+describe("numberOrStringField", () => {
+  it("returns null for a null record", () => {
+    expect(numberOrStringField(null, "exit_code")).toBeNull();
+  });
+
+  it("returns string fields and falls through missing keys to null", () => {
+    expect(numberOrStringField({ a: "x" }, ["missing", "a"])).toBe("x");
+    expect(numberOrStringField({ a: 1 }, ["missing"])).toBeNull();
+  });
+});
+
+describe("stringField", () => {
+  it("returns null for a null record", () => {
+    expect(stringField(null, "command")).toBeNull();
+  });
+});
+
+describe("normalizeArgs / dedupe model helpers", () => {
+  it("normalizeArgs rejects non-string non-record values", async () => {
+    const { normalizeArgs } = await import("../agent/toolActivityModel");
+    expect(normalizeArgs(42)).toBeNull();
+    expect(normalizeArgs({ a: 1 })).toEqual({ a: 1 });
+    expect(normalizeArgs("{\"a\":1}")).toEqual({ a: 1 });
+    expect(normalizeArgs("nope")).toBeNull();
+  });
+
+  it("dedupeByTarget skips repeats", async () => {
+    const { dedupeByTarget } = await import("../agent/toolActivityModel");
+    const out = dedupeByTarget([
+      { id: "1", target: "a" },
+      { id: "2", target: "a" },
+      { id: "3" },
+    ] as never[]);
+    expect(out).toHaveLength(2);
+  });
+});

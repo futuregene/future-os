@@ -6,7 +6,7 @@
 mod common;
 
 use common::mock_agent::{completed_events, spawn_mock, MockState};
-use common::{cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record};
+use common::{cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record};
 use future_loop::state::{now_epoch, Todo, TodoStatus};
 
 fn rt() -> tokio::runtime::Runtime {
@@ -23,15 +23,23 @@ fn mock_env(state: MockState) -> (tokio::runtime::Runtime, common::mock_agent::S
     (rt, shared)
 }
 
-// ── unknown-flag parse arms (`_ => {}` in each parse_pairs closure) ────────
+// ── unknown-flag parse arms (P0-3: strict rejection in every command) ──────
 
 #[test]
-fn unknown_flags_are_swallowed_everywhere() {
+fn unknown_flags_hard_error_everywhere() {
     let cr = cli_root();
     let gid = init_goal(&cr, "flag sweep");
     let first = first_todo_id(&cr.root, &gid);
     cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w1"]);
-    // (args that must succeed with an extra --zz 1 flag attached)
+    // P0-3 strictness: an extra --zz 1 flag must hard-error on every command
+    // (pre-P0-3 these were silently swallowed).
+    let assert_unknown_flag = |args: &[&str]| {
+        let err = cli_err(args);
+        assert!(
+            err.contains("unknown flag `--zz`"),
+            "cli {args:?} should reject --zz, got: {err}"
+        );
+    };
     let cases: Vec<Vec<&str>> = vec![
         vec!["status", "--goal", &gid, "--zz", "1"],
         vec!["status", "--format", "json", "--zz", "1"],
@@ -95,11 +103,11 @@ fn unknown_flags_are_swallowed_everywhere() {
         vec!["extension", "capabilities", "--zz", "1"],
         vec!["replan", "obligations", "--goal", &gid, "--zz", "1"],
     ];
-    for args in cases {
-        cli_ok(&args);
+    for args in &cases {
+        assert_unknown_flag(args);
     }
-    // Mutating commands with an unknown flag.
-    cli_ok(&[
+    // Mutating commands with an unknown flag must also fail BEFORE mutating.
+    assert_unknown_flag(&[
         "goal",
         "init",
         "--objective",
@@ -111,59 +119,64 @@ fn unknown_flags_are_swallowed_everywhere() {
         "--zz",
         "1",
     ]);
-    cli_ok(&["goal", "cancel", "--goal", "goal_zz", "--zz", "1"]);
-    cli_ok(&[
+    // Parse rejection precedes execution: goal_zz was never created, so a
+    // well-formed cancel now fails with a goal lookup error instead.
+    let err = cli_err(&["goal", "cancel", "--goal", "goal_zz"]);
+    assert!(
+        !err.contains("unknown flag"),
+        "goal_zz should not exist after the rejected init, got: {err}"
+    );
+    assert_unknown_flag(&["goal", "cancel", "--goal", "goal_zz", "--zz", "1"]);
+    assert_unknown_flag(&[
         "goal", "delete", "--goal", "goal_zz", "--force", "--zz", "1",
     ]);
-    cli_ok(&[
+    assert_unknown_flag(&[
         "todo", "add", "--goal", &gid, "--text", "zz flag", "--zz", "1",
     ]);
-    let zz = common::todo_id_by_text(&cr.root, &gid, "zz flag");
-    cli_ok(&[
+    assert_unknown_flag(&[
         "todo",
         "claim",
         "--goal",
         &gid,
         "--todo-id",
-        &zz,
+        &first,
         "--agent-id",
         "w1",
         "--zz",
         "1",
     ]);
-    cli_ok(&[
+    assert_unknown_flag(&[
         "todo",
         "complete",
         "--goal",
         &gid,
         "--todo-id",
-        &zz,
+        &first,
         "--no-follow-up",
         "--zz",
         "1",
     ]);
-    cli_ok(&[
+    assert_unknown_flag(&[
         "todo",
         "archive",
         "--goal",
         &gid,
         "--todo-id",
-        &zz,
+        &first,
         "--zz",
         "1",
     ]);
-    let sup = common::add_todo(&cr, &gid, "zz supersede");
-    cli_ok(&[
+    assert_unknown_flag(&[
         "todo",
         "supersede",
         "--goal",
         &gid,
         "--todo-id",
-        &sup,
+        &first,
         "--zz",
         "1",
     ]);
-    cli_ok(&[
+    assert_unknown_flag(&[
         "gate",
         "resolve",
         "--goal",
@@ -175,8 +188,8 @@ fn unknown_flags_are_swallowed_everywhere() {
         "--zz",
         "1",
     ]);
-    cli_ok(&["backup", "--goal", &gid, "--zz", "1"]);
-    cli_ok(&[
+    assert_unknown_flag(&["backup", "--goal", &gid, "--zz", "1"]);
+    assert_unknown_flag(&[
         "authority",
         "--goal",
         &gid,
@@ -185,7 +198,7 @@ fn unknown_flags_are_swallowed_everywhere() {
         "--zz",
         "1",
     ]);
-    cli_ok(&[
+    assert_unknown_flag(&[
         "profile",
         "set",
         "--goal",
@@ -195,7 +208,7 @@ fn unknown_flags_are_swallowed_everywhere() {
         "--zz",
         "1",
     ]);
-    cli_ok(&[
+    assert_unknown_flag(&[
         "replan",
         "ack",
         "--goal",
@@ -205,7 +218,7 @@ fn unknown_flags_are_swallowed_everywhere() {
         "--zz",
         "1",
     ]);
-    cli_ok(&[
+    assert_unknown_flag(&[
         "agent",
         "onboard",
         "--goal",
@@ -215,7 +228,7 @@ fn unknown_flags_are_swallowed_everywhere() {
         "--zz",
         "1",
     ]);
-    cli_ok(&[
+    assert_unknown_flag(&[
         "lease",
         "expire",
         "--goal",
@@ -225,7 +238,7 @@ fn unknown_flags_are_swallowed_everywhere() {
         "--zz",
         "1",
     ]);
-    cli_ok(&[
+    assert_unknown_flag(&[
         "supervisor",
         "propose",
         "--goal",
@@ -243,7 +256,7 @@ fn unknown_flags_are_swallowed_everywhere() {
         "--zz",
         "1",
     ]);
-    cli_ok(&[
+    assert_unknown_flag(&[
         "supervisor",
         "receipt",
         "--goal",
@@ -265,7 +278,7 @@ fn unknown_flags_are_swallowed_everywhere() {
     ]);
     let md = std::path::Path::new(&cr.cwd).join("bf.md");
     std::fs::write(&md, "## Agent Todo\n\n- [ ] Task one\n").unwrap();
-    cli_ok(&[
+    assert_unknown_flag(&[
         "backfill",
         "--goal",
         &gid,
@@ -275,8 +288,8 @@ fn unknown_flags_are_swallowed_everywhere() {
         "--zz",
         "1",
     ]);
-    cli_ok(&["replay", "record", "--goal", &gid, "--zz", "1"]);
-    cli_ok(&[
+    assert_unknown_flag(&["replay", "record", "--goal", &gid, "--zz", "1"]);
+    assert_unknown_flag(&[
         "replay", "corpus", "build", "--goal", &gid, "--patch", "{}", "--zz", "1",
     ]);
 }
