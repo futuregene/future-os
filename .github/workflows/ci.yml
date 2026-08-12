@@ -33,6 +33,7 @@ jobs:
     outputs:
       rust_workspace: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_workspace == 'true' || steps.filter.outputs.ci == 'true' }}
       loop_canary: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.loop_canary == 'true' || steps.filter.outputs.ci == 'true' }}
+      coverage_scripts: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.coverage_scripts == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
@@ -75,6 +76,12 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
+            # P1-7: the ratchet machinery itself must revalidate the gate (a
+            # baseline-only edit is the ratchet-down approval path).
+            coverage_scripts:
+              - 'scripts/coverage.sh'
+              - 'scripts/coverage_ratchet.py'
+              - 'scripts/coverage-baseline.json'
             desktop_tauri:
               - 'desktop/src-tauri/**'
               - '.cargo/**'
@@ -281,6 +288,54 @@ jobs:
 
       - name: Canary premerge gate
         run: ./target/debug/future-loop canary premerge --json
+
+  # ─── Coverage ratchet gate (P1-7) ────────────────────────────────────────
+  # Only-up coverage gate: measures workspace line coverage via
+  # scripts/coverage.sh (cargo llvm-cov) and fails if any crate drops below
+  # its floor in scripts/coverage-baseline.json. Rises are always allowed;
+  # an intentional drop is approved by lowering the floor file in the same
+  # PR (that diff is the explicit ratchet-down approval). This deliberately
+  # re-runs the test suite instrumented rather than sharing rust-tests'
+  # run — llvm-cov needs its own build profile.
+  coverage-ratchet:
+    name: Coverage ratchet (workspace lines)
+    needs: changes
+    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.coverage_scripts == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Install llvm-tools-preview
+        run: rustup component add llvm-tools-preview
+
+      # Prebuilt binary install (cargo install would compile for minutes).
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+          cache-on-failure: true
+          cache-all-crates: true
+
+      # mold: .cargo/config.toml pins -fuse-ld=mold for Linux targets. No
+      # WebKit/GTK needed — the desktop Tauri backend is not part of the
+      # workspace coverage measurement. libssl for the agent's TLS deps.
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential mold pkg-config libssl-dev
+
+      - name: Coverage ratchet gate
+        run: scripts/coverage.sh --check
 
   # ─── Rust 3-platform compile check ───────────────────────────────────────
   # The quality gate above only runs on Linux, so platform-conditional code was
