@@ -294,6 +294,27 @@ mod tests {
     }
 
     #[test]
+    fn quota_projection_shows_terminal_closure() {
+        // Validated closure: the only todo completed with no-follow-up.
+        let mut g = Goal::new("g", "o", "/tmp");
+        let mut t = Todo::advancement("T1", "done");
+        t.status = crate::state::TodoStatus::Done;
+        t.no_follow_up = true;
+        g.add(t);
+        let packet = decide(&g, std::time::SystemTime::now());
+        assert!(packet.terminal_closure.is_some());
+        let proj = render_quota_projection(&packet, None, None);
+        assert!(proj.contains("terminal closure: kind="), "{proj}");
+    }
+
+    #[test]
+    fn cadence_plan_without_progression_omits_the_line() {
+        let plan = render_cadence_plan("custom", &[15], 0);
+        assert!(plan.contains("interval"), "{plan}");
+        assert!(!plan.contains("progression"), "{plan}");
+    }
+
+    #[test]
     fn usage_summary_renders_totals() {
         let summary = crate::quota::usage_summary::build_usage_summary("g", &[], 1_700_000_000);
         let text = render_usage_summary(&summary);

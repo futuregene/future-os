@@ -152,6 +152,19 @@ mod tests {
     }
 
     #[test]
+    fn unknown_keys_fall_back_to_free_text() {
+        let p = parse_report_profile("theme: reliability\nscope: ops");
+        assert_eq!(p.scope, "ops");
+        // Unknown `key: value` lines join the free-text cadence fallback.
+        assert_eq!(p.cadence, "theme: reliability");
+    }
+
+    #[test]
+    fn zero_day_cadence_is_rejected() {
+        assert_eq!(cadence_due_secs("every-0d"), None);
+    }
+
+    #[test]
     fn every_n_cadence_parses() {
         assert_eq!(
             cadence_due_secs("every-2h"),

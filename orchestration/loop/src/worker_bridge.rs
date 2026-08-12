@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::contract::TurnMode;
 use crate::decision::decide_for;
 use crate::executor::writeback;
-use crate::state::{now_epoch, RunRecord, TodoStatus};
+use crate::state::{now_epoch, RunRecord};
 use crate::store::{Event, Store};
 
 /// One line the worker writes back after executing a bounded turn.
@@ -171,13 +171,4 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
         let _ = turn;
     }
     bail!("max-turns reached");
-}
-
-#[allow(dead_code)]
-fn _status_label(t: &crate::state::Todo) -> &'static str {
-    if t.status == TodoStatus::Done {
-        "done"
-    } else {
-        "open"
-    }
 }

@@ -6,7 +6,7 @@
 use future_loop::state::{Goal, Todo};
 use future_loop::store::{Event, Store};
 use future_loop::work_items::replan_obligation;
-use future_loop::work_items::task_lease::{self, LeaseOp, LeaseStatus};
+use future_loop::work_items::task_lease::{self, ClaimOutcome, LeaseOp, LeaseStatus};
 
 fn tmp_root(tag: &str) -> String {
     let dir = std::env::temp_dir().join(format!(
@@ -53,7 +53,7 @@ fn lease_lifecycle_claim_renew_steal_release_replays() {
     let op = task_lease::claim(goal.todo_mut("t1").unwrap(), "alice", 100, now).unwrap();
     assert_eq!(
         op,
-        LeaseOp::Acquired {
+        ClaimOutcome {
             idempotent: false,
             steal: false
         }
@@ -91,7 +91,7 @@ fn lease_lifecycle_claim_renew_steal_release_replays() {
     let op = task_lease::claim(goal.todo_mut("t1").unwrap(), "bob", 100, now + 500).unwrap();
     assert_eq!(
         op,
-        LeaseOp::Acquired {
+        ClaimOutcome {
             idempotent: false,
             steal: true
         }
