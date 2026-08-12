@@ -221,14 +221,19 @@ fn worker_bridge_successor_chain_on_non_final_todo() {
 }
 
 #[test]
-fn worker_bridge_ignores_unknown_flags() {
+fn worker_bridge_rejects_unknown_flags() {
     let root = tmp_root("bridge-bogus");
     let gid = init_goal(&root, "bridge bogus flag");
-    let (out, _, code) = run_stdin(
+    // P0-3①: unknown flags are a hard error (never silently ignored).
+    let (out, err, code) = run_stdin(
         &root,
         &["worker-bridge", "--goal", &gid, "--bogus", "x"],
         "",
     );
+    assert_ne!(code, 0, "{out} {err}");
+    assert!(err.contains("unknown flag `--bogus`"), "{err}");
+    // Without the bogus flag the bridge emits its packet.
+    let (out, _, code) = run_stdin(&root, &["worker-bridge", "--goal", &gid], "");
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("BRIDGE packet:"), "{out}");
 }

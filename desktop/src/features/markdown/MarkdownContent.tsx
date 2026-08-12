@@ -248,6 +248,8 @@ function WorkspaceFutureReference({
   const fileLink = renderFileReference(reference, resolved);
   if (fileLink)
     return fileLink;
+  /* v8 ignore next -- minimal link mode: inline references are always files,
+     which renderFileReference handles, so this fallback never renders */
   return <ReferenceChip reference={reference} resolved={resolved} />;
 }
 

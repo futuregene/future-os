@@ -265,6 +265,9 @@ function flushAcc(messages: AgentMessage[], acc: ExchangeAcc) {
       id: acc.assistantEntryId ? `m_${acc.assistantEntryId}` : segId(),
       role: "assistant",
       authorKey: "author.researchCopilot",
+      // Invariant: a non-empty textSegments implies finalText was set (every
+      // text segment assigns it), so the fallback only ever joins zero segments.
+      /* v8 ignore next -- the join closure never runs (see invariant above) */
       content: acc.finalText || textSegments.map(s => s.text).join("\n"),
       segments: segments.length > 0 ? segments : undefined,
       status: "complete",
