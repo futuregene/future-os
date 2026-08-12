@@ -63,6 +63,22 @@ pub fn smoke_suite_profiles() -> Vec<SmokeProfile> {
             ],
             description: "Release-flow gate: the full deterministic surface must pass.".to_string(),
         },
+        SmokeProfile {
+            id: "premerge".to_string(),
+            suite: "premerge".to_string(),
+            modules: vec![
+                "state".to_string(),
+                "quota".to_string(),
+                "scheduler".to_string(),
+                "todo".to_string(),
+                "status".to_string(),
+                "capability-extension".to_string(),
+            ],
+            description: "P1-6 premerge gate (CI): the fast deterministic core surface — \
+                          skips backup/extension/canary-self so the PR check stays hermetic \
+                          and quick."
+                .to_string(),
+        },
     ]
 }
 
@@ -96,6 +112,123 @@ pub struct SmokeRunResult {
 /// when every check passes.
 pub fn run_release_gate(store: &Store) -> Result<SmokeRunResult> {
     run_smoke(store, "release-gate")
+}
+
+// ── P1-6: premerge gate (CI merge gate) ─────────────────────────────────────
+
+pub const PREMERGE_GATE_REPORT_SCHEMA_VERSION: &str = "canary_premerge_gate_v0";
+
+/// The fixture goal seeded into the isolated premerge root so the gate run
+/// is never vacuous (a gate that checked zero goals proves nothing).
+pub const PREMERGE_FIXTURE_GOAL_ID: &str = "canary-premerge-fixture";
+
+/// A gate verdict over a smoke run. The pass rule reuses the release gate's
+/// rule — every check must pass — plus a non-vacuity guard for CI: the run
+/// must have seen at least one registered goal.
+#[derive(Debug, Clone, Serialize)]
+pub struct GateDecision {
+    pub gate: String,
+    pub passed: bool,
+    pub goals_checked: usize,
+    pub failed_checks: Vec<String>,
+    pub reason: String,
+}
+
+/// Evaluate a smoke run as a gate (`gate` = "premerge" / "release").
+pub fn evaluate_gate(run: &SmokeRunResult, gate: &str, goals_checked: usize) -> GateDecision {
+    let failed_checks: Vec<String> = run
+        .checks
+        .iter()
+        .filter(|c| !c.passed)
+        .map(|c| c.id.clone())
+        .collect();
+    let (passed, reason) = if !failed_checks.is_empty() {
+        (
+            false,
+            format!(
+                "{} check(s) failed: {}",
+                failed_checks.len(),
+                failed_checks.join(", ")
+            ),
+        )
+    } else if goals_checked == 0 {
+        (
+            false,
+            "vacuous run: no goals checked — the gate cannot prove health".to_string(),
+        )
+    } else {
+        (
+            true,
+            format!(
+                "all {} check(s) passed over {goals_checked} goal(s)",
+                run.checks.len()
+            ),
+        )
+    };
+    GateDecision {
+        gate: gate.to_string(),
+        passed,
+        goals_checked,
+        failed_checks,
+        reason,
+    }
+}
+
+/// The full premerge report: the gate decision plus the underlying smoke run.
+#[derive(Debug, Clone, Serialize)]
+pub struct PremergeGateReport {
+    pub schema_version: String,
+    pub gate: GateDecision,
+    pub run: SmokeRunResult,
+}
+
+/// Seed a minimal but real fixture goal so the premerge gate is non-vacuous:
+/// one registered goal with a started ledger and one open advancement todo.
+pub fn seed_premerge_fixture(store: &mut Store) -> Result<String> {
+    let goal_id = PREMERGE_FIXTURE_GOAL_ID.to_string();
+    let goal = crate::state::Goal::new(&goal_id, "canary premerge fixture", "/tmp");
+    store.register(&goal)?;
+    store.append(crate::store::Event::GoalStarted {
+        goal_id: goal_id.clone(),
+        ts: crate::state::now_epoch(),
+    })?;
+    store.append(crate::store::Event::TodoAdded {
+        goal_id: goal_id.clone(),
+        todo: crate::state::Todo::advancement("T1", "fixture work item"),
+        ts: crate::state::now_epoch(),
+    })?;
+    Ok(goal_id)
+}
+
+/// Run the premerge gate against an existing state root (the fixture is
+/// seeded in place). Split from [`run_premerge_gate_isolated`] so tests can
+/// point it at their own roots.
+pub fn run_premerge_gate_in(root: &str) -> Result<PremergeGateReport> {
+    let mut store = Store::open(root)?;
+    seed_premerge_fixture(&mut store)?;
+    let run = run_smoke(&store, "premerge")?;
+    let gate = evaluate_gate(&run, "premerge", store.registry().len());
+    Ok(PremergeGateReport {
+        schema_version: PREMERGE_GATE_REPORT_SCHEMA_VERSION.to_string(),
+        gate,
+        run,
+    })
+}
+
+/// Run the premerge gate the way CI does (P1-6): an isolated temporary state
+/// root (never the operator's live root), a seeded fixture goal, the fast
+/// `premerge` profile, and the release-gate pass rule via [`evaluate_gate`].
+/// The temp root is always removed afterwards.
+pub fn run_premerge_gate_isolated() -> Result<PremergeGateReport> {
+    let root = std::env::temp_dir().join(format!(
+        "future-loop-premerge-{}-{}",
+        std::process::id(),
+        crate::state::now_epoch()
+    ));
+    std::fs::create_dir_all(&root)?;
+    let result = run_premerge_gate_in(&root.to_string_lossy());
+    let _ = std::fs::remove_dir_all(&root);
+    result
 }
 
 /// Run the smoke checks of one profile against a live store.
@@ -485,14 +618,68 @@ mod tests {
     #[test]
     fn profile_manifest_is_stable() {
         let profiles = smoke_suite_profiles();
-        assert_eq!(profiles.len(), 3);
+        assert_eq!(profiles.len(), 4);
         let ids: Vec<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec!["core-control-plane", "extension-runtime", "release-gate"]
+            vec![
+                "core-control-plane",
+                "extension-runtime",
+                "release-gate",
+                "premerge"
+            ]
         );
         assert!(resolve_smoke_profile("release-gate").is_ok());
+        assert!(resolve_smoke_profile("premerge").is_ok());
         assert!(resolve_smoke_profile("nope").is_err());
+    }
+
+    #[test]
+    fn premerge_gate_isolated_passes_non_vacuous() {
+        let report = run_premerge_gate_isolated().unwrap();
+        assert_eq!(report.schema_version, PREMERGE_GATE_REPORT_SCHEMA_VERSION);
+        assert_eq!(report.run.profile_id, "premerge");
+        assert_eq!(report.run.suite, "premerge");
+        assert!(report.gate.passed, "{}", report.gate.reason);
+        assert_eq!(report.gate.goals_checked, 1);
+        assert!(report.gate.failed_checks.is_empty());
+    }
+
+    #[test]
+    fn premerge_gate_detects_corrupt_fixture_ledger() {
+        let mut store = tmp_store("premerge-corrupt");
+        let goal_id = seed_premerge_fixture(&mut store).unwrap();
+        let ledger = store.goal_dir(&goal_id).join("events.jsonl");
+        std::fs::write(&ledger, "not-json\n").unwrap();
+        let run = run_smoke(&store, "premerge").unwrap();
+        let gate = evaluate_gate(&run, "premerge", store.registry().len());
+        assert!(!gate.passed);
+        assert!(gate.failed_checks.contains(&"ledger_integrity".to_string()));
+        assert!(gate.reason.contains("ledger_integrity"));
+        let _ = std::fs::remove_dir_all(store.root_path());
+    }
+
+    #[test]
+    fn evaluate_gate_rejects_vacuous_run() {
+        let run = SmokeRunResult {
+            schema_version: CANARY_SMOKE_RUN_SCHEMA_VERSION.to_string(),
+            profile_id: "premerge".to_string(),
+            suite: "premerge".to_string(),
+            all_passed: true,
+            checks: vec![SmokeCheckOutcome {
+                id: "root_writable".to_string(),
+                module: "state".to_string(),
+                passed: true,
+                detail: "ok".to_string(),
+            }],
+        };
+        let gate = evaluate_gate(&run, "premerge", 0);
+        assert!(!gate.passed);
+        assert!(gate.reason.contains("vacuous"));
+        // Same run with goals checked passes.
+        let gate = evaluate_gate(&run, "premerge", 2);
+        assert!(gate.passed, "{}", gate.reason);
+        assert_eq!(gate.goals_checked, 2);
     }
 
     #[test]

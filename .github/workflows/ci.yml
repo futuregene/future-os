@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust_workspace: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_workspace == 'true' || steps.filter.outputs.ci == 'true' }}
+      loop_canary: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.loop_canary == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
@@ -63,7 +64,17 @@ jobs:
               - 'channels/**'
               - 'tui/**'
               - 'cli/**'
+              # The loop control plane is a workspace member — its changes must
+              # run the same fmt/clippy/test gates (previously missing here).
               - 'orchestration/**'
+            # P1-6: what triggers the canary premerge gate — the loop crate
+            # plus its in-repo dependency surface (future-rpc, workspace root).
+            loop_canary:
+              - 'orchestration/**'
+              - 'rpc/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
             desktop_tauri:
               - 'desktop/src-tauri/**'
               - '.cargo/**'
@@ -228,6 +239,48 @@ jobs:
       - name: cargo test (desktop backend)
         if: needs.changes.outputs.desktop_tauri == 'true'
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
+
+  # ─── Loop canary premerge gate (P1-6) ────────────────────────────────────
+  # Behavioral merge gate for the loop control plane: runs
+  # `future-loop canary premerge` — an isolated temporary state root, a seeded
+  # fixture goal (non-vacuity guard), the fast `premerge` smoke profile, and
+  # the same all-checks-passed rule as the release gate. A non-zero exit fails
+  # the PR before merge; unit-level Rust regressions are still covered by the
+  # rust-tests job above.
+  loop-canary:
+    name: Loop canary premerge gate
+    needs: changes
+    if: needs.changes.outputs.loop_canary == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Pinned to match rust-toolchain.toml (same as the other Rust jobs).
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+          cache-on-failure: true
+          cache-all-crates: true
+
+      # mold: .cargo/config.toml pins -fuse-ld=mold for Linux targets. No
+      # protoc / WebKit / GTK needed — future-loop + future-rpc build pure-Rust
+      # (proto codegen is checked in, gated on REGENERATE_PROTO).
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential mold pkg-config
+
+      - name: Build loop CLI
+        run: cargo build -p future-loop
+
+      - name: Canary premerge gate
+        run: ./target/debug/future-loop canary premerge --json
 
   # ─── Rust 3-platform compile check ───────────────────────────────────────
   # The quality gate above only runs on Linux, so platform-conditional code was
