@@ -40,6 +40,8 @@ class Harness {
   journal = new Journal();
   activeRunId = "";
   history: ReturnType<typeof emptyTimeline> = emptyTimeline();
+  /** Optional folded projection; when set, fetchReplay returns it instead. */
+  projection: StreamEvent[] | null = null;
   timeline: Record<string, ReturnType<typeof emptyTimeline>> = {};
   engine: SyncEngine;
 
@@ -58,6 +60,16 @@ class Harness {
         const events = this.journal
           .since(run, since)
           .map(e => ({ type: e.type, data: e.data, run_id: e.runId, idx: e.idx }));
+        if (this.projection) {
+          // Folded projections carry NO run_id per event (whole-run coalesced
+          // deltas) — exactly the wire shape that reproduced the ghost item.
+          const wire = this.projection.map(e => ({ type: e.type, data: e.data, idx: e.idx }));
+          const result: ReplayResult = {
+            events: [],
+            projection: { run_id: run, cursor: wire.length - 1, events: wire },
+          };
+          return result;
+        }
         const result: ReplayResult = { events };
         return result;
       },
@@ -230,6 +242,26 @@ describe("SyncEngine", () => {
     expect(h.timelineOf("s1").items.some(item => item.kind === "notice" && item.text === "sent")).toBe(
       true,
     );
+  });
+
+  test("projection replay without run_id does not leave a streaming ghost (regression)", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    // Desktop folds the settled run into a projection whose events omit run_id.
+    h.projection = [
+      agentStart(run, 0),
+      textChunk(run, 1, "folded reply"),
+      agentEnd(run, 2),
+    ];
+    h.engine.reconcile("s1", "resend", run);
+    await h.settle();
+    expect(h.textOf("s1")).toBe("folded reply");
+    expect(h.timelineOf("s1").streaming).toBe(false);
+    const assistantItems = h.timelineOf("s1").items.filter(
+      item => item.kind === "message" && item.role === "assistant",
+    );
+    expect(assistantItems).toHaveLength(1);
+    expect(assistantItems[0]).toMatchObject({ runId: run, streaming: false });
   });
 
   test("open reconcile on an idle session loads durable history (no active run)", async () => {

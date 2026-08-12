@@ -234,15 +234,6 @@ export class SyncEngine {
       const targetRunId = request.runId || activeRunId;
 
       const full = this.isFullReplay(lane, targetRunId, request);
-      // TEMP-DEBUG: reconcile shape trace.
-      console.log(
-        "[sync] reconcile",
-        lane.sessionId,
-        request.reason,
-        "target:",
-        targetRunId || "(none)",
-        full ? "FULL" : "TAIL",
-      );
       if (full) {
         await this.fullReconcile(lane, activeRunId, targetRunId);
       } else {
@@ -302,7 +293,14 @@ export class SyncEngine {
   ): Promise<TimelineState> {
     const result = await this.deps.fetchReplay(lane.sessionId, runId, since);
     if (result.projection?.events?.length) {
-      const events = normalizeReplayEvents(result.projection.events);
+      let events = normalizeReplayEvents(result.projection.events);
+      // Folded projection events carry no run_id on the wire (they're whole-run
+      // coalesced deltas). Stamp the replayed run's id onto them so the
+      // projection's agent_start/agent_end match the same `assistant:{runId}`
+      // item as the live stream — without this, agent_start builds an
+      // `assistant:` ghost that no later agent_end can clear, leaving a
+      // permanent run indicator.
+      events = events.map(ev => (ev.runId ? ev : { ...ev, runId }));
       const cursorIdx =
         result.projection.cursor ??
         events.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
