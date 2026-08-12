@@ -180,7 +180,9 @@ fn is_agent_unavailable_error(error: &crate::AppError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::super::replica::AGENT_REPLICAS;
-    use super::super::test_support::{mock_agent, seed_run, seed_thread, seed_workspace, Reply, TestHome};
+    use super::super::test_support::{
+        mock_agent, seed_run, seed_thread, seed_workspace, Reply, TestHome,
+    };
     use super::*;
 
     #[tokio::test]
@@ -221,23 +223,23 @@ mod tests {
         assert_eq!(error.to_string(), "no session");
 
         // get_state transport failure.
-        mock.push("get_state",
-            Reply::Status(tonic::Code::Unavailable, "gone"),
-        );
+        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "gone"));
         let error = abort_session("sess-1").await.expect_err("state transport");
         assert!(
-            error.to_string().contains("Unable to read Future Agent run state"),
+            error
+                .to_string()
+                .contains("Unable to read Future Agent run state"),
             "{error}"
         );
 
         // abort transport failure.
         mock.push_data("get_state", serde_json::json!({}));
-        mock.push("abort",
-            Reply::Status(tonic::Code::Internal, "boom"),
-        );
+        mock.push("abort", Reply::Status(tonic::Code::Internal, "boom"));
         let error = abort_session("sess-1").await.expect_err("abort transport");
         assert!(
-            error.to_string().contains("Unable to abort Future Agent session"),
+            error
+                .to_string()
+                .contains("Unable to abort Future Agent session"),
             "{error}"
         );
 
@@ -281,14 +283,18 @@ mod tests {
             serde_json::json!({"activeRun": {"runId": "run-probed"}}),
         );
         mock.push("abort", Reply::Data("{}".to_string()));
-        abort_agent_thread(&thread.id, Some("")).await.expect("abort");
+        abort_agent_thread(&thread.id, Some(""))
+            .await
+            .expect("abort");
         assert_eq!(mock.requests_of("abort")[2].run_id, "run-probed");
 
         // Thread without a session id: the thread id doubles as the session.
         let no_session = seed_thread(&workspace.id, None);
         mock.push_data("get_state", serde_json::json!({}));
         mock.push("abort", Reply::Data("{}".to_string()));
-        abort_agent_thread(&no_session.id, None).await.expect("abort");
+        abort_agent_thread(&no_session.id, None)
+            .await
+            .expect("abort");
         assert_eq!(mock.requests_of("abort")[3].session_id, no_session.id);
 
         // Unknown thread.
@@ -323,7 +329,8 @@ mod tests {
 
         // Agent down (Unavailable transport): still cancelled locally.
         let run2 = seed_run(&thread.id);
-        mock.push("abort",
+        mock.push(
+            "abort",
             Reply::Status(tonic::Code::Unavailable, "agent dead"),
         );
         let record = abort_run(thread.id.clone(), run2.id.clone())
@@ -333,13 +340,13 @@ mod tests {
 
         // A non-Unavailable failure propagates and the run stays untouched.
         let run3 = seed_run(&thread.id);
-        mock.push("abort",
-            Reply::Status(tonic::Code::Internal, "boom"),
-        );
+        mock.push("abort", Reply::Status(tonic::Code::Internal, "boom"));
         let error = abort_run(thread.id.clone(), run3.id.clone())
             .await
             .expect_err("internal error propagates");
-        assert!(error.to_string().contains("Unable to abort Future Agent run"));
+        assert!(error
+            .to_string()
+            .contains("Unable to abort Future Agent run"));
         assert_eq!(
             store::get_run(&run3.id).expect("run").expect("some").status,
             "running",
@@ -421,9 +428,7 @@ mod tests {
         assert_eq!(mock.requests_of("get_state").len(), 4);
 
         // Transport failure mid-poll → treated as idle.
-        mock.push("get_state",
-            Reply::Status(tonic::Code::Unavailable, "gone"),
-        );
+        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "gone"));
         wait_for_agent_idle("sess-1").await;
         assert_eq!(mock.requests_of("get_state").len(), 5);
 

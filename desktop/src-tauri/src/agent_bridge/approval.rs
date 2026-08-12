@@ -344,16 +344,23 @@ mod tests {
         inject_session_rule(&no_session.id, "/tmp/**", "allow")
             .await
             .expect("inject");
-        assert_eq!(mock.requests_of("add_session_rule")[1].session_id, no_session.id);
+        assert_eq!(
+            mock.requests_of("add_session_rule")[1].session_id,
+            no_session.id
+        );
 
         // Transport + app-level failures surface.
-        mock.push("add_session_rule",
+        mock.push(
+            "add_session_rule",
             Reply::Status(tonic::Code::Internal, "boom"),
         );
         let error = inject_session_rule(&thread.id, "/tmp/**", "allow")
             .await
             .expect_err("transport");
-        assert!(error.to_string().contains("Unable to inject session rule"), "{error}");
+        assert!(
+            error.to_string().contains("Unable to inject session rule"),
+            "{error}"
+        );
 
         mock.push("add_session_rule", Reply::Reject("bad rule".to_string()));
         let error = inject_session_rule(&thread.id, "/tmp/**", "allow")
@@ -422,7 +429,8 @@ mod tests {
         let run = seed_run(&thread.id);
         seed_approval("appr-3", &run.id);
 
-        mock.push("approval_decision",
+        mock.push(
+            "approval_decision",
             Reply::Reject("Approval request appr-3 is not pending".to_string()),
         );
         let updated = decide_approval(decide_input("appr-3", "approved"))
@@ -463,7 +471,8 @@ mod tests {
         assert_eq!(error.to_string(), "denied");
 
         // Transport failure propagates.
-        mock.push("approval_decision",
+        mock.push(
+            "approval_decision",
             Reply::Status(tonic::Code::Internal, "boom"),
         );
         let error = decide_approval(decide_input("appr-4", "approved"))
@@ -535,16 +544,25 @@ mod tests {
         let kept = store::get_approval_request("appr-kept")
             .expect("query")
             .expect("exists");
-        assert_eq!(kept.status, "pending", "still pending agent-side keeps the card");
         assert_eq!(
-            store::get_run(&run_kept.id).expect("run").expect("some").status,
+            kept.status, "pending",
+            "still pending agent-side keeps the card"
+        );
+        assert_eq!(
+            store::get_run(&run_kept.id)
+                .expect("run")
+                .expect("some")
+                .status,
             "waiting_approval"
         );
 
         let dropped = store::get_approval_request("appr-dropped")
             .expect("query")
             .expect("exists");
-        assert_eq!(dropped.status, "cancelled", "gone agent-side cancels the local row");
+        assert_eq!(
+            dropped.status, "cancelled",
+            "gone agent-side cancels the local row"
+        );
         assert!(
             dropped
                 .decision_note
@@ -565,13 +583,20 @@ mod tests {
         assert_eq!(healed.risk_level.as_deref(), Some("high"));
         assert_eq!(healed.action_category.as_deref(), Some("fs"));
         assert!(
-            healed.action_payload.as_deref().unwrap_or_default().contains("fs"),
+            healed
+                .action_payload
+                .as_deref()
+                .unwrap_or_default()
+                .contains("fs"),
             "payload: {:?}",
             healed.action_payload
         );
         assert_eq!(healed.reviewer, "user");
         assert_eq!(
-            store::get_run(&run_heal.id).expect("run").expect("some").status,
+            store::get_run(&run_heal.id)
+                .expect("run")
+                .expect("some")
+                .status,
             "waiting_approval"
         );
     }
@@ -629,9 +654,7 @@ mod tests {
         );
 
         // Transport failure → rows left pending.
-        mock.push("get_state",
-            Reply::Status(tonic::Code::Unavailable, "down"),
-        );
+        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "down"));
         reconcile_pending_approvals().await;
         assert_eq!(
             store::get_approval_request("appr-rejected")
@@ -649,11 +672,16 @@ mod tests {
         if let Some(prev) = prev {
             std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
         }
-        assert_eq!(mock.requests().len(), before, "no traffic on connect failure");
+        assert_eq!(
+            mock.requests().len(),
+            before,
+            "no traffic on connect failure"
+        );
     }
 
     #[tokio::test]
-    async fn reconcile_heal_requires_an_active_run_with_a_local_row() {        let home = TestHome::new("ap-reconcile-heal-guards");
+    async fn reconcile_heal_requires_an_active_run_with_a_local_row() {
+        let home = TestHome::new("ap-reconcile-heal-guards");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
@@ -726,8 +754,8 @@ mod tests {
         // Delete ONLY the thread row (raw connection, FK off) so the pending
         // approval outlives its thread — the crash-window state the continue
         // arm guards.
-        let conn = rusqlite::Connection::open(home.path().join(".future/app/app.db"))
-            .expect("open db");
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
         conn.execute_batch("PRAGMA foreign_keys = OFF;")
             .expect("fk off");
         conn.execute("DELETE FROM threads WHERE id = ?1", [&thread.id])
@@ -771,8 +799,8 @@ mod tests {
 
         // Hold the write lock from a second connection: reads still work
         // (WAL), but the heal's INSERT times out and is only logged.
-        let mut conn = rusqlite::Connection::open(home.path().join(".future/app/app.db"))
-            .expect("open db");
+        let mut conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
         conn.execute_batch("PRAGMA busy_timeout = 100;")
             .expect("busy timeout");
         let tx = conn

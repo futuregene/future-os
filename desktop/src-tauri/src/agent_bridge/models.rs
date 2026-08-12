@@ -151,7 +151,8 @@ mod tests {
         let error = list_agent_models().await.expect_err("rejected");
         assert_eq!(error.to_string(), "nope");
 
-        mock.push("list_models",
+        mock.push(
+            "list_models",
             Reply::Status(tonic::Code::Unavailable, "down"),
         );
         let error = list_agent_models().await.expect_err("transport");
@@ -199,9 +200,7 @@ mod tests {
         let error = list_builtin_providers().await.expect_err("rejected");
         assert_eq!(error.to_string(), "denied");
 
-        mock.push("list_models",
-            Reply::Status(tonic::Code::Internal, "boom"),
-        );
+        mock.push("list_models", Reply::Status(tonic::Code::Internal, "boom"));
         let error = list_builtin_providers().await.expect_err("transport");
         assert!(matches!(error, crate::AppError::Message(_)), "{error}");
 
@@ -210,6 +209,9 @@ mod tests {
             serde_json::json!({"builtinProviders": [1, 2, 3]}),
         );
         let error = list_builtin_providers().await.expect_err("invalid");
-        assert!(error.to_string().contains("invalid provider catalog"), "{error}");
+        assert!(
+            error.to_string().contains("invalid provider catalog"),
+            "{error}"
+        );
     }
 }

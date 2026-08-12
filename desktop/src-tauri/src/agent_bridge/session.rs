@@ -535,7 +535,10 @@ mod tests {
 
         // get_state rejected (session gone) → recreate too.
         mock.push("get_state", Reply::Reject("no such session".to_string()));
-        mock.push_data("new_session", serde_json::json!({"sessionId": "sess-newer"}));
+        mock.push_data(
+            "new_session",
+            serde_json::json!({"sessionId": "sess-newer"}),
+        );
         let ensured = ensure_agent_session(&mut client, "sess-1", "/tmp/ws", None, None)
             .await
             .expect("ensured");
@@ -546,7 +549,10 @@ mod tests {
     #[tokio::test]
     async fn ensure_creates_for_an_empty_stored_id() {
         let (mock, mut client) = mock_client().await;
-        mock.push_data("new_session", serde_json::json!({"sessionId": "sess-fresh"}));
+        mock.push_data(
+            "new_session",
+            serde_json::json!({"sessionId": "sess-fresh"}),
+        );
         let ensured = ensure_agent_session(&mut client, "", "/tmp/ws", None, None)
             .await
             .expect("ensured");
@@ -563,10 +569,7 @@ mod tests {
         let (mock, mut client) = mock_client().await;
 
         // get_state transport failure.
-        mock.push(
-            "get_state",
-            Reply::Status(tonic::Code::Unavailable, "down"),
-        );
+        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "down"));
         let error = ensure_agent_session(&mut client, "sess-1", "/tmp/ws", None, None)
             .await
             .expect_err("transport");
@@ -578,10 +581,7 @@ mod tests {
         );
 
         // new_session transport failure.
-        mock.push(
-            "new_session",
-            Reply::Status(tonic::Code::Internal, "boom"),
-        );
+        mock.push("new_session", Reply::Status(tonic::Code::Internal, "boom"));
         let error = ensure_agent_session(&mut client, "", "/tmp/ws", None, None)
             .await
             .expect_err("transport");
@@ -677,7 +677,10 @@ mod tests {
             .await
             .expect_err("transport");
         assert!(error.to_string().contains("permission level"), "{error}");
-        mock.push("set_permission_level", Reply::Reject("bad level".to_string()));
+        mock.push(
+            "set_permission_level",
+            Reply::Reject("bad level".to_string()),
+        );
         let error = set_agent_permission_level(&mut client, "sess-1", "workspace")
             .await
             .expect_err("reject");
@@ -713,8 +716,8 @@ mod tests {
         assert_eq!(error.to_string(), "Thread could not be loaded.");
 
         // Workspace row gone (raw delete, FK off) → error.
-        let conn = rusqlite::Connection::open(home.path().join(".future/app/app.db"))
-            .expect("open db");
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
         conn.execute_batch("PRAGMA foreign_keys = OFF;")
             .expect("fk off");
         conn.execute("DELETE FROM workspaces WHERE id = ?1", [&workspace.id])
@@ -758,7 +761,10 @@ mod tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
 
-        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork"}));
         mock.push_data("get_session_entries", entries_payload(forked_entries()));
         mock.push("set_cwd", Reply::Data("{}".to_string()));
@@ -794,10 +800,7 @@ mod tests {
 
         // The forked session's cwd was aligned with the new thread workspace.
         assert_eq!(mock.requests_of("set_cwd").len(), 1);
-        assert_eq!(
-            mock.requests_of("set_cwd")[0].session_id,
-            "sess-fork"
-        );
+        assert_eq!(mock.requests_of("set_cwd")[0].session_id, "sess-fork");
     }
 
     #[tokio::test]
@@ -808,7 +811,10 @@ mod tests {
         let thread = seed_thread(&workspace.id, Some("sess-1"));
 
         // Unknown ordinal (-1) → content match on "second question".
-        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-2"}));
         // No session_info entry → title defaults to "<parent> (fork)", no model.
         mock.push_data(
@@ -839,9 +845,15 @@ mod tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
 
-        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-3"}));
-        mock.push_data("get_session_entries", entries_payload(serde_json::json!([])));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(serde_json::json!([])),
+        );
         mock.push("set_cwd", Reply::Data("{}".to_string()));
 
         fork_agent_session(&thread.id, "ignored", 2)
@@ -879,7 +891,10 @@ mod tests {
         let error = fork_agent_session(&thread.id, "x", 0)
             .await
             .expect_err("entries transport");
-        assert!(error.to_string().contains("Unable to list session entries"), "{error}");
+        assert!(
+            error.to_string().contains("Unable to list session entries"),
+            "{error}"
+        );
         mock.push("get_session_entries", Reply::Reject("bad".to_string()));
         let error = fork_agent_session(&thread.id, "x", 0)
             .await
@@ -887,7 +902,10 @@ mod tests {
         assert_eq!(error.to_string(), "bad");
 
         // No matching user message.
-        mock.push_data("get_session_entries", entries_payload(serde_json::json!([])));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(serde_json::json!([])),
+        );
         let error = fork_agent_session(&thread.id, "x", 0)
             .await
             .expect_err("no match");
@@ -897,24 +915,33 @@ mod tests {
         );
 
         // Fork transport failure / rejection / missing sessionId.
-        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
-        mock.push(
-            "fork",
-            Reply::Status(tonic::Code::Internal, "boom"),
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
         );
+        mock.push("fork", Reply::Status(tonic::Code::Internal, "boom"));
         let error = fork_agent_session(&thread.id, "x", 0)
             .await
             .expect_err("fork transport");
-        assert!(error.to_string().contains("Unable to fork session"), "{error}");
+        assert!(
+            error.to_string().contains("Unable to fork session"),
+            "{error}"
+        );
 
-        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
         mock.push("fork", Reply::Reject("cannot fork".to_string()));
         let error = fork_agent_session(&thread.id, "x", 0)
             .await
             .expect_err("fork reject");
         assert_eq!(error.to_string(), "cannot fork");
 
-        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
         mock.push_data("fork", serde_json::json!({"ok": true}));
         let error = fork_agent_session(&thread.id, "x", 0)
             .await
@@ -922,7 +949,10 @@ mod tests {
         assert_eq!(error.to_string(), "Fork did not return a session.");
 
         // Forked-entries transport failure / rejection.
-        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-e"}));
         mock.push(
             "get_session_entries",
@@ -932,11 +962,16 @@ mod tests {
             .await
             .expect_err("fork entries transport");
         assert!(
-            error.to_string().contains("Unable to list fork session entries"),
+            error
+                .to_string()
+                .contains("Unable to list fork session entries"),
             "{error}"
         );
 
-        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-e"}));
         mock.push("get_session_entries", Reply::Reject("bad".to_string()));
         let error = fork_agent_session(&thread.id, "x", 0)
@@ -952,7 +987,10 @@ mod tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
 
-        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-4"}));
         // session_name "(fork)" is a placeholder → default title.
         mock.push_data(
@@ -961,10 +999,11 @@ mod tests {
                 {"id": "f0", "role": "system", "content": {"session_name": "(fork)"}}
             ])),
         );
-        mock.push("set_cwd", Reply::Status(tonic::Code::Internal, "best effort"));
-        let new_thread_id = fork_agent_session(&thread.id, "x", 0)
-            .await
-            .expect("fork");
+        mock.push(
+            "set_cwd",
+            Reply::Status(tonic::Code::Internal, "best effort"),
+        );
+        let new_thread_id = fork_agent_session(&thread.id, "x", 0).await.expect("fork");
         let new_thread = crate::store::get_thread(&new_thread_id)
             .expect("thread")
             .expect("exists");

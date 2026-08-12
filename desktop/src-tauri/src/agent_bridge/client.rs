@@ -526,7 +526,8 @@ mod tests {
         // Connect first (the OnceCell init health check consumes the default
         // reply), then script the failure for the explicit health_check call.
         let mut client = connect_agent().await.expect("connect to mock");
-        mock.push("list_streaming_sessions",
+        mock.push(
+            "list_streaming_sessions",
             Reply::Status(tonic::Code::Unavailable, "mock agent down"),
         );
         let error = health_check(&mut client, "http://mock")
@@ -586,12 +587,19 @@ mod tests {
         assert_eq!(get_available_models_command().r#type, "list_models");
         assert_eq!(get_available_models_command().session_id, "");
 
-        let cmd = fork_command("sess".to_string(), "entry-1".to_string(), "parent".to_string());
+        let cmd = fork_command(
+            "sess".to_string(),
+            "entry-1".to_string(),
+            "parent".to_string(),
+        );
         assert_eq!(cmd.r#type, "fork");
         assert_eq!(cmd.entry_id, "entry-1");
         assert_eq!(cmd.parent_session, "parent");
 
-        assert_eq!(delete_session_command("sess".to_string()).r#type, "delete_session");
+        assert_eq!(
+            delete_session_command("sess".to_string()).r#type,
+            "delete_session"
+        );
 
         let cmd = prune_run_events_command("sess".to_string(), "run-1".to_string());
         assert_eq!(cmd.r#type, "prune_run_events");
@@ -641,11 +649,18 @@ mod tests {
     #[test]
     fn setter_commands_carry_their_payloads() {
         let cmd = set_model_command("m".to_string(), "sess".to_string());
-        assert_eq!((cmd.r#type.as_str(), cmd.model_id.as_str()), ("set_model", "m"));
+        assert_eq!(
+            (cmd.r#type.as_str(), cmd.model_id.as_str()),
+            ("set_model", "m")
+        );
 
         let cmd = set_default_model_command("m".to_string());
         assert_eq!(
-            (cmd.r#type.as_str(), cmd.model_id.as_str(), cmd.session_id.as_str()),
+            (
+                cmd.r#type.as_str(),
+                cmd.model_id.as_str(),
+                cmd.session_id.as_str()
+            ),
             ("set_default_model", "m", "")
         );
 
@@ -677,7 +692,11 @@ mod tests {
         assert_eq!(cmd.r#type, "set_sandbox_policy");
         assert_eq!(cmd.sandbox_policy.expect("policy").tier, "sandbox");
 
-        let cmd = add_session_rule_command("/tmp/**".to_string(), "allow".to_string(), "sess".to_string());
+        let cmd = add_session_rule_command(
+            "/tmp/**".to_string(),
+            "allow".to_string(),
+            "sess".to_string(),
+        );
         assert_eq!(
             (cmd.r#type.as_str(), cmd.message.as_str(), cmd.mode.as_str()),
             ("add_session_rule", "/tmp/**", "allow")
@@ -728,10 +747,13 @@ mod tests {
         assert!(cmd.client_request_id.starts_with("desktop_"));
         assert_eq!(cmd.attachments.len(), 2);
         assert_eq!(cmd.attachments[0].thumbnail, "/tmp/thumb.png");
-        assert_eq!(cmd.attachments[1].thumbnail, "", "absent thumbnail defaults");
+        assert_eq!(
+            cmd.attachments[1].thumbnail, "",
+            "absent thumbnail defaults"
+        );
 
-        let bare = prompt_command("m".to_string(), "s".to_string(), vec![], None)
-            .expect("bare prompt");
+        let bare =
+            prompt_command("m".to_string(), "s".to_string(), vec![], None).expect("bare prompt");
         assert_eq!(bare.requested_run_id, "");
     }
 
@@ -745,7 +767,10 @@ mod tests {
     #[test]
     fn run_control_command_carries_optional_run_id() {
         let cmd = run_control_command("abort", "sess".to_string(), Some("run-1".to_string()));
-        assert_eq!((cmd.r#type.as_str(), cmd.run_id.as_str()), ("abort", "run-1"));
+        assert_eq!(
+            (cmd.r#type.as_str(), cmd.run_id.as_str()),
+            ("abort", "run-1")
+        );
         let bare = run_control_command("abort", "sess".to_string(), None);
         assert_eq!(bare.run_id, "");
     }

@@ -203,8 +203,7 @@ pub(super) async fn collect_agent_response(
             let next_event = if waiting_for_approval {
                 stream.message().await
             } else {
-                match timeout(agent_event_stream_timeout(), stream.message()).await
-                {
+                match timeout(agent_event_stream_timeout(), stream.message()).await {
                     Ok(result) => result,
                     Err(_) => {
                         break "Future Agent response timed out.".to_string();
@@ -606,7 +605,12 @@ mod tests {
     async fn collect_error_event_aborts_with_its_message() {
         let mock = mock_agent();
         mock.push_stream(StreamScript::Events(
-            vec![stream_event("run-1", 0, "error", r#"{"error":"model exploded"}"#)],
+            vec![stream_event(
+                "run-1",
+                0,
+                "error",
+                r#"{"error":"model exploded"}"#,
+            )],
             None,
         ));
         let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
@@ -633,7 +637,12 @@ mod tests {
     async fn collect_rejects_events_for_a_different_run() {
         let mock = mock_agent();
         mock.push_stream(StreamScript::Events(
-            vec![stream_event("run-other", 0, "text_chunk", r#"{"text":"x"}"#)],
+            vec![stream_event(
+                "run-other",
+                0,
+                "text_chunk",
+                r#"{"text":"x"}"#,
+            )],
             None,
         ));
         let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
@@ -696,7 +705,12 @@ mod tests {
             Some((tonic::Code::DataLoss, "frame exploded")),
         ));
         mock.push_stream(StreamScript::Events(
-            vec![stream_event("run-1", 1, "agent_end", r#"{"reason":"complete"}"#)],
+            vec![stream_event(
+                "run-1",
+                1,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
             None,
         ));
         let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
@@ -787,7 +801,12 @@ mod tests {
         mock.push_stream(StreamScript::Hang);
         // ...the reattach finishes the run.
         mock.push_stream(StreamScript::Events(
-            vec![stream_event("run-1", 0, "agent_end", r#"{"reason":"complete"}"#)],
+            vec![stream_event(
+                "run-1",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
             None,
         ));
         let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
@@ -803,8 +822,18 @@ mod tests {
         let mock = mock_agent();
         mock.push_stream(StreamScript::Events(
             vec![
-                stream_event("run-1", 0, "approval_request", r#"{"approval_request_id":"a1"}"#),
-                stream_event("run-1", 1, "approval_decision", r#"{"approval_request_id":"a1","status":"approved"}"#),
+                stream_event(
+                    "run-1",
+                    0,
+                    "approval_request",
+                    r#"{"approval_request_id":"a1"}"#,
+                ),
+                stream_event(
+                    "run-1",
+                    1,
+                    "approval_decision",
+                    r#"{"approval_request_id":"a1","status":"approved"}"#,
+                ),
                 stream_event("run-1", 2, "text_chunk", r#"{"text":"done"}"#),
                 stream_event("run-1", 3, "agent_end", r#"{"reason":"complete"}"#),
             ],
@@ -867,7 +896,12 @@ mod tests {
                     ],
                 ),
                 // The stream continues after the snapshot cursor.
-                stream_event("run-1", 4, "approval_decision", r#"{"approval_request_id":"a1"}"#),
+                stream_event(
+                    "run-1",
+                    4,
+                    "approval_decision",
+                    r#"{"approval_request_id":"a1"}"#,
+                ),
                 stream_event("run-1", 5, "agent_end", r#"{"reason":"complete"}"#),
             ],
             None,
@@ -875,7 +909,10 @@ mod tests {
         let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
             .await
             .expect("collect");
-        assert_eq!(response.content, "snap", "snapshot replaced the live prefix");
+        assert_eq!(
+            response.content, "snap",
+            "snapshot replaced the live prefix"
+        );
         assert!(response.complete);
     }
 
@@ -889,7 +926,12 @@ mod tests {
 
         mock.push_stream(StreamScript::Events(
             vec![
-                stream_event(&run.id, 0, "tool_start", r#"{"tool_id":"tc1","tool_name":"shell","tool_args":"{}"}"#),
+                stream_event(
+                    &run.id,
+                    0,
+                    "tool_start",
+                    r#"{"tool_id":"tc1","tool_name":"shell","tool_args":"{}"}"#,
+                ),
                 stream_event(&run.id, 1, "tool_end", r#"{"tool_id":"tc1","text":"ok"}"#),
                 stream_event(&run.id, 2, "agent_end", r#"{"reason":"complete"}"#),
             ],

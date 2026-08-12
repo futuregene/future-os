@@ -208,23 +208,32 @@ mod tests {
         assert!(!update.clear_key);
 
         // Agent knows the command but rejects it (validation failure).
-        mock.push("set_auth", Reply::Reject("duplicate provider id".to_string()));
-        let error = set_provider_key("future", "sk-1").await.expect_err("rejected");
+        mock.push(
+            "set_auth",
+            Reply::Reject("duplicate provider id".to_string()),
+        );
+        let error = set_provider_key("future", "sk-1")
+            .await
+            .expect_err("rejected");
         assert_eq!(error.to_string(), "duplicate provider id");
 
         // Rejection without a message gets a synthesized one.
         mock.push("set_auth", Reply::Reject(String::new()));
-        let error = set_provider_key("future", "sk-1").await.expect_err("rejected");
+        let error = set_provider_key("future", "sk-1")
+            .await
+            .expect_err("rejected");
         assert_eq!(error.to_string(), "Future Agent rejected set_auth.");
 
         // Legacy agent: "unknown command" → caller falls back (Ok(false)).
-        mock.push("set_auth",
+        mock.push(
+            "set_auth",
             Reply::Reject("unknown command: set_auth".to_string()),
         );
         assert!(!set_provider_key("future", "sk-1").await.expect("fallback"));
 
         // Transport-level failure → fall back too.
-        mock.push("set_auth",
+        mock.push(
+            "set_auth",
             Reply::Status(tonic::Code::Unavailable, "connection reset"),
         );
         assert!(!set_provider_key("future", "sk-1").await.expect("fallback"));
@@ -250,7 +259,9 @@ mod tests {
         assert_eq!(update.key, "");
 
         mock.push("set_auth", Reply::Data("{}".to_string()));
-        assert!(future_login("fg-key", "https://api.example").await.expect("ok"));
+        assert!(future_login("fg-key", "https://api.example")
+            .await
+            .expect("ok"));
         let update = mock.requests_of("set_auth")[1]
             .auth_update
             .clone()
@@ -290,11 +301,9 @@ mod tests {
 
         // Empty base URL clears the override.
         mock.push("upsert_provider", Reply::Data("{}".to_string()));
-        assert!(
-            set_builtin_provider_base_url("future", "")
-                .await
-                .expect("ok")
-        );
+        assert!(set_builtin_provider_base_url("future", "")
+            .await
+            .expect("ok"));
         let config = mock.requests_of("upsert_provider")[1]
             .provider_config
             .clone()

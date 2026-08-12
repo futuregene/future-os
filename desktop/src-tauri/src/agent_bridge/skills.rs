@@ -117,7 +117,10 @@ mod tests {
         mock.push_data("get_commands", commands_payload());
         let skills = list_installed_skills().await.expect("skills");
         assert_eq!(skills.len(), 2, "non-skill commands filtered out");
-        let mine = skills.iter().find(|s| s.id == "my-skill").expect("my-skill");
+        let mine = skills
+            .iter()
+            .find(|s| s.id == "my-skill")
+            .expect("my-skill");
         assert_eq!(mine.name_zh.as_deref(), Some("我的技能"));
         assert_eq!(mine.description_zh.as_deref(), Some("做事"));
         assert_eq!(mine.version.as_deref(), Some("1.2.3"), "version enriched");
@@ -134,12 +137,12 @@ mod tests {
         let _home = TestHome::new("skills-errors");
         let mock = mock_agent();
 
-        mock.push("get_commands",
-            Reply::Status(tonic::Code::Internal, "boom"),
-        );
+        mock.push("get_commands", Reply::Status(tonic::Code::Internal, "boom"));
         let error = list_installed_skills().await.expect_err("transport");
         assert!(
-            error.to_string().contains("Unable to load installed skills"),
+            error
+                .to_string()
+                .contains("Unable to load installed skills"),
             "{error}"
         );
 
@@ -152,10 +155,7 @@ mod tests {
 
         mock.push_data("get_commands", serde_json::json!({"commands": "nope"}));
         let error = list_installed_skills().await.expect_err("invalid");
-        assert!(
-            error.to_string().contains("invalid skills data"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("invalid skills data"), "{error}");
     }
 
     #[tokio::test]
@@ -174,7 +174,8 @@ mod tests {
         }
 
         // Command fails at transport level: still returns ().
-        mock.push("refresh_skills",
+        mock.push(
+            "refresh_skills",
             Reply::Status(tonic::Code::Unavailable, "down"),
         );
         refresh_skills().await;

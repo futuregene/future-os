@@ -618,7 +618,11 @@ mod tests {
         let value = json!({"a": "text", "b": {"k": 1}, "c": null, "d": 7});
         assert_eq!(value_string(&value, &["a"]), Some("text".to_string()));
         assert_eq!(value_string(&value, &["b"]), Some(r#"{"k":1}"#.to_string()));
-        assert_eq!(value_string(&value, &["c"]), None, "explicit null is absent");
+        assert_eq!(
+            value_string(&value, &["c"]),
+            None,
+            "explicit null is absent"
+        );
         assert_eq!(value_string(&value, &["d"]), Some("7".to_string()));
         assert_eq!(value_string(&value, &["missing"]), None);
         assert_eq!(
@@ -645,7 +649,12 @@ mod tests {
             "saveSuggestion": {"scope": "always"},
             "reviewer": "user"
         });
-        persist_run_event(Some(&fixture.run.id), "approval_request", &payload.to_string(), 0);
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_request",
+            &payload.to_string(),
+            0,
+        );
 
         let record = crate::store::get_approval_request("appr-1")
             .expect("query")
@@ -690,14 +699,22 @@ mod tests {
             "tool_id": "",
             "save_suggestion": null
         });
-        persist_run_event(Some(&fixture.run.id), "approval_request", &payload.to_string(), 0);
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_request",
+            &payload.to_string(),
+            0,
+        );
         let record = crate::store::get_approval_request("appr-2")
             .expect("query")
             .expect("approval row");
         assert_eq!(record.tool_call_id, None, "empty tool id stores NULL");
         assert_eq!(record.title, "Approve `tool`", "default tool name in title");
         assert_eq!(record.kind, "tool");
-        assert_eq!(record.save_suggestion, None, "JSON null is not a suggestion");
+        assert_eq!(
+            record.save_suggestion, None,
+            "JSON null is not a suggestion"
+        );
 
         // Missing approval_request_id: dropped.
         persist_run_event(
@@ -719,7 +736,12 @@ mod tests {
         })
         .expect("complete run");
         let payload = json!({"approval_request_id": "appr-3"});
-        persist_run_event(Some(&fixture.run.id), "approval_request", &payload.to_string(), 0);
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_request",
+            &payload.to_string(),
+            0,
+        );
         let record = crate::store::get_approval_request("appr-3")
             .expect("query")
             .expect("approval row");
@@ -858,8 +880,7 @@ mod tests {
         persist_run_event(
             Some(&fixture.run.id),
             "tool_end",
-            &json!({"tool_name": "write", "tool_id": "tc-e", "error": "disk full"})
-                .to_string(),
+            &json!({"tool_name": "write", "tool_id": "tc-e", "error": "disk full"}).to_string(),
             0,
         );
         // Structured non-zero exit code.
@@ -1189,11 +1210,9 @@ mod tests {
             &json!({"approval_request_id": "appr-fk"}).to_string(),
             0,
         );
-        assert!(
-            crate::store::get_approval_request("appr-fk")
-                .expect("query")
-                .is_none()
-        );
+        assert!(crate::store::get_approval_request("appr-fk")
+            .expect("query")
+            .is_none());
 
         // A decision for a never-persisted approval fails to record; the
         // default "cancelled" status then fails its run-status CAS as well.
@@ -1248,10 +1267,8 @@ mod tests {
         // Hold the write lock from a second connection: reads (the workspace
         // allow check) still work under WAL, but the INSERT times out and is
         // only logged.
-        let mut conn = rusqlite::Connection::open(
-            fixture._home.path().join(".future/app/app.db"),
-        )
-        .expect("open db");
+        let mut conn = rusqlite::Connection::open(fixture._home.path().join(".future/app/app.db"))
+            .expect("open db");
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)
             .expect("exclusive lock");
