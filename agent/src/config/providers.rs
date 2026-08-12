@@ -832,4 +832,228 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&models).unwrap(), original_models);
         assert_eq!(std::fs::read_to_string(&auth).unwrap(), "{}\n");
     }
+
+    #[test]
+    fn read_json_object_rejects_non_object_document() {
+        let (_dir, auth, _models) = temp_paths("nonobject");
+        std::fs::write(&auth, "[1, 2, 3]\n").unwrap();
+        let error = read_json_object(&auth).unwrap_err();
+        assert!(error.contains("does not contain a JSON object"), "{error}");
+    }
+
+    #[test]
+    fn write_atomic_fails_when_parent_is_a_file() {
+        let (_dir, auth, _models) = temp_paths("parent-file");
+        std::fs::write(&auth, "{}\n").unwrap(); // parent-to-be is a FILE
+        let blocked = auth.join("config.json");
+        let error = write_bytes_atomic(&blocked, b"{}", false).unwrap_err();
+        assert!(error.contains("failed to create"), "{error}");
+    }
+
+    #[test]
+    fn write_atomic_cleans_up_tmp_when_rename_fails() {
+        let (_dir, _auth, _models) = temp_paths("rename-fails");
+        // Renaming the temp file onto an existing DIRECTORY fails (EISDIR),
+        // even for root — no permission bits involved.
+        let target = _dir.path().join("as-directory");
+        std::fs::create_dir(&target).unwrap();
+        let error = write_bytes_atomic(&target, b"{}", false).unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        // The temp file was cleaned up.
+        let leftovers = std::fs::read_dir(_dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[test]
+    fn snapshot_file_reports_non_notfound_read_errors() {
+        let (_dir, _auth, _models) = temp_paths("snapshot-dir");
+        let error = snapshot_file(_dir.path()).unwrap_err();
+        assert!(error.contains("failed to read"), "{error}");
+    }
+
+    #[test]
+    fn restore_file_logs_when_rollback_remove_fails() {
+        let (_dir, auth, _models) = temp_paths("restore-missing");
+        // snapshot None → rollback removes the file; it never existed, so the
+        // removal fails and the warning path runs (stderr, non-fatal).
+        restore_file(&auth, None, false);
+    }
+
+    #[test]
+    fn apply_auth_mutation_clears_urls_on_existing_entry() {
+        let mut auth: Map<String, Value> = serde_json::from_str(
+            r#"{"future":{"type":"api_key","base_url":"https://x/api","platform_base_url":"https://p/api"}}"#,
+        )
+        .unwrap();
+        apply_auth_mutation(
+            &mut auth,
+            &AuthMutation {
+                clear_base_url: true,
+                remove_platform_base_url: true,
+                ..mutation("future")
+            },
+        );
+        assert!(auth["future"].get("base_url").is_none());
+        assert!(auth["future"].get("platform_base_url").is_none());
+    }
+
+    #[test]
+    fn apply_auth_mutation_upsert_clears_url_fields() {
+        let mut auth: Map<String, Value> = serde_json::from_str(
+            r#"{"future":{"type":"api_key","base_url":"https://x/api","platform_base_url":"https://p/api"}}"#,
+        )
+        .unwrap();
+        apply_auth_mutation(
+            &mut auth,
+            &AuthMutation {
+                key: Some("k".to_string()),
+                clear_base_url: true,
+                remove_platform_base_url: true,
+                ..mutation("future")
+            },
+        );
+        assert_eq!(auth["future"]["key"], json!("k"));
+        assert!(auth["future"].get("base_url").is_none());
+        assert!(auth["future"].get("platform_base_url").is_none());
+    }
+
+    #[test]
+    fn upsert_auth_entry_normalizes_non_object_entry() {
+        let mut auth: Map<String, Value> =
+            serde_json::from_str(r#"{"openai":"not-an-object"}"#).unwrap();
+        apply_auth_mutation(
+            &mut auth,
+            &AuthMutation {
+                key: Some("k".to_string()),
+                ..mutation("openai")
+            },
+        );
+        assert_eq!(auth["openai"]["key"], json!("k"));
+        assert_eq!(auth["openai"]["type"], json!("api_key"));
+    }
+
+    #[cfg(unix)]
+    fn skip_if_root() -> bool {
+        // Permission-bit failure injection does not work for root.
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[cfg(unix)]
+    fn make_readonly(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upsert_restores_models_when_models_write_fails() {
+        if skip_if_root() {
+            return;
+        }
+        let (_dir, auth, _models) = temp_paths("upsert-models-fail");
+        let readonly = _dir.path().join("readonly");
+        std::fs::create_dir(&readonly).unwrap();
+        let models = readonly.join("models.json");
+        std::fs::write(&models, "{}\n").unwrap();
+        make_readonly(&readonly);
+        let spec = ProviderUpsertSpec {
+            id: "newprov".to_string(),
+            name: Some("New".to_string()),
+            ..Default::default()
+        };
+        let error = upsert_provider_files(&auth, &models, &spec).unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        // Rollback could not restore into the read-only dir either (logged).
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), "{}\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upsert_restores_models_when_auth_write_fails() {
+        if skip_if_root() {
+            return;
+        }
+        let (_dir, _auth, _models) = temp_paths("upsert-auth-fail");
+        let readonly = _dir.path().join("readonly");
+        std::fs::create_dir(&readonly).unwrap();
+        let auth = readonly.join("auth.json");
+        std::fs::write(&auth, "{}\n").unwrap();
+        let models = _dir.path().join("models.json");
+        std::fs::write(&models, "{}\n").unwrap();
+        make_readonly(&readonly);
+        let spec = ProviderUpsertSpec {
+            id: "newprov".to_string(),
+            name: Some("New".to_string()),
+            api_key: Some("sk-x".to_string()),
+            ..Default::default()
+        };
+        let error = upsert_provider_files(&auth, &models, &spec).unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        // models.json was rolled back to its original content.
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), "{}\n");
+    }
+
+    #[test]
+    fn delete_touches_only_the_file_that_changed() {
+        // Provider only in models.json → auth write skipped entirely.
+        let (_dir, auth, models) = temp_paths("delete-models-only");
+        std::fs::write(
+            &models,
+            r#"{"providers":{"gone":{"name":"Gone"}}}"#.to_string() + "\n",
+        )
+        .unwrap();
+        std::fs::write(&auth, "{}\n").unwrap();
+        delete_provider_files(&auth, &models, "gone").unwrap();
+        assert!(!std::fs::read_to_string(&models).unwrap().contains("gone"));
+        assert_eq!(std::fs::read_to_string(&auth).unwrap(), "{}\n");
+
+        // Provider only in auth.json → models write skipped entirely.
+        let (_dir2, auth2, models2) = temp_paths("delete-auth-only");
+        std::fs::write(&models2, "{}\n").unwrap();
+        std::fs::write(&auth2, r#"{"gone":{"type":"api_key","key":"k"}}"#).unwrap();
+        delete_provider_files(&auth2, &models2, "gone").unwrap();
+        assert_eq!(std::fs::read_to_string(&models2).unwrap(), "{}\n");
+        assert!(!std::fs::read_to_string(&auth2).unwrap().contains("gone"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_restores_models_when_models_write_fails() {
+        if skip_if_root() {
+            return;
+        }
+        let (_dir, auth, _m) = temp_paths("delete-models-fail");
+        let readonly = _dir.path().join("readonly");
+        std::fs::create_dir(&readonly).unwrap();
+        let models = readonly.join("models.json");
+        std::fs::write(&models, "{\"providers\":{\"gone\":{\"name\":\"G\"}}}\n").unwrap();
+        std::fs::write(&auth, "{}\n").unwrap();
+        make_readonly(&readonly);
+        let error = delete_provider_files(&auth, &models, "gone").unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_restores_models_when_auth_write_fails() {
+        if skip_if_root() {
+            return;
+        }
+        let (_dir, _a, _m) = temp_paths("delete-auth-fail");
+        let readonly = _dir.path().join("readonly");
+        std::fs::create_dir(&readonly).unwrap();
+        let auth = readonly.join("auth.json");
+        std::fs::write(&auth, "{\"gone\":{\"type\":\"api_key\"}}\n").unwrap();
+        let models = _dir.path().join("models.json");
+        std::fs::write(&models, "{\"providers\":{\"gone\":{\"name\":\"G\"}}}\n").unwrap();
+        make_readonly(&readonly);
+        let error = delete_provider_files(&auth, &models, "gone").unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        // models.json rolled back: the provider entry is present again.
+        assert!(std::fs::read_to_string(&models).unwrap().contains("gone"));
+    }
 }
