@@ -196,7 +196,7 @@ export function ChatScreen() {
     if (!name) return;
     setRenameOpen(false);
     try {
-      await remote.rename(name);
+      await remote.rename(remote.selectedSessionId, name);
     } catch {
       Alert.alert(t("common.error"));
     }

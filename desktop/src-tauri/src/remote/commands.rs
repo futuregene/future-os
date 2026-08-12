@@ -98,6 +98,9 @@ struct IncomingCmd {
     // set_session_name
     name: String,
     transfer_name: String,
+    // delete_session / set_session_pinned (thread-scoped, see ThreadRecord)
+    thread_id: String,
+    pinned: bool,
     // prompt creation mode / existing workspace selection
     workspace_id: String,
     // file transfer control + prompt attachment references
@@ -138,6 +141,8 @@ impl Default for IncomingCmd {
             level: String::new(),
             name: String::new(),
             transfer_name: String::new(),
+            thread_id: String::new(),
+            pinned: false,
             workspace_id: String::new(),
             mime_type: String::new(),
             kind: String::new(),
@@ -345,10 +350,11 @@ async fn handle_command(
                             let status = run_status_by_thread.get(t.id.as_str()).copied();
                             json!({
                                 "sessionId": sid,
-                                "title": t.title,
                                 "threadId": t.id,
+                                "title": t.title,
                                 "mode": t.mode,
                                 "workspaceId": t.workspace_id,
+                                "pinned": t.pinned,
                                 "streaming": streaming,
                                 "status": status,
                             })
@@ -643,8 +649,45 @@ async fn handle_command(
             match crate::agent_bridge::rename_session(cmd.session_id.clone(), cmd.name.clone())
                 .await
             {
-                Ok(()) => reply(client, &msg, true, json!({}), None).await,
+                Ok(()) => {
+                    if let Ok(Some(thread)) =
+                        crate::store::find_thread_by_agent_session(&cmd.session_id)
+                    {
+                        crate::emit_remote_activity(&thread.id);
+                    }
+                    reply(client, &msg, true, json!({}), None).await
+                }
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "set_session_pinned" => {
+            match crate::store::pin_thread(crate::store::PinThreadInput {
+                thread_id: cmd.thread_id.clone(),
+                pinned: cmd.pinned,
+            }) {
+                Ok(_) => {
+                    crate::emit_remote_activity(&cmd.thread_id);
+                    reply(client, &msg, true, json!({}), None).await
+                }
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "delete_session" => {
+            // Matches the desktop single-thread delete: the session record is
+            // removed (and, when it is the only owner, the agent session too),
+            // but the temporary chat workspace files are kept (delete_files =
+            // false). Only reachable with a non-empty thread id from the remote
+            // client; a missing id is a malformed request, not a deletion.
+            if cmd.thread_id.is_empty() {
+                reply(client, &msg, false, Value::Null, Some("missing thread_id")).await;
+            } else {
+                match crate::store::delete_thread_with_files(&cmd.thread_id, false) {
+                    Ok(_) => {
+                        crate::emit_remote_activity(&cmd.thread_id);
+                        reply(client, &msg, true, json!({}), None).await
+                    }
+                    Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+                }
             }
         }
         other => {

@@ -48,6 +48,10 @@ export const resources = {
         unpair: "Unpair device",
         unpairConfirm: "Unpair this phone? A new desktop QR code will be required.",
         unnamed: "Untitled",
+        pin: "Pin",
+        unpin: "Unpin",
+        delete: "Delete",
+        deleteConfirm: 'Delete "{{title}}"? This conversation can\'t be restored.',
       },
       chat: {
         new: "New conversation",
@@ -203,6 +207,10 @@ export const resources = {
         unpair: "解除设备配对",
         unpairConfirm: "确定解除这台手机的配对吗？之后需要重新扫描桌面二维码。",
         unnamed: "未命名",
+        pin: "置顶",
+        unpin: "取消置顶",
+        delete: "删除",
+        deleteConfirm: "删除「{{title}}」？此对话无法恢复。",
       },
       chat: {
         new: "新对话",

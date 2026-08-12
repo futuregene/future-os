@@ -595,7 +595,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
-    marginTop: -spacing.xs,
+    marginTop: spacing.sm,
   },
   stoppedMarker: { color: colors.inkMuted, fontSize: 12, fontStyle: "italic" },
   truncatedMarker: { color: colors.warning, fontSize: 12 },
