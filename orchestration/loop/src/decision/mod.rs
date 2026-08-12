@@ -54,6 +54,7 @@ use self::monitor::{monitor_outcome, MonitorOutcome};
 use self::oscillation::oscillation_replan_reason;
 use self::primary_action::agent_channel;
 use self::stall::{is_monitor_stalled, outcome_floor_breach, repair_exhausted};
+use crate::quota::error_codes::DecisionReasonCode;
 
 pub use self::arbitration::{
     build_scheduler_arbitration, SchedulerArbitration, SchedulerDisposition,
@@ -78,6 +79,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     if goal.status == "cancelled" {
         let mut p = packet(
             goal,
+            DecisionReasonCode::GoalCancelled,
             "skip",
             false,
             "cancelled",
@@ -129,6 +131,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         let has_fallback = fallback.is_some();
         return packet(
             goal,
+            DecisionReasonCode::OpenUserGate,
             "run",
             true,
             "ask_user",
@@ -166,20 +169,26 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     // ── 2b. Outcome floor (LoopX: surface-only progress loop). ──────────
     if let Some(todo) = retryable.first() {
         if let Some(reason) = outcome_floor_breach(goal) {
-            return replan_packet(goal, &reason);
+            return replan_packet(goal, DecisionReasonCode::OutcomeFloorBreach, &reason);
         }
         // Oscillation guard (LoopX 对比改进项 ③): the goal's recent delivery
         // outcomes strictly alternate accept/reject (A→V→A→V) — the
         // action/verify flip-flop that burns spend without converging.
         // Force a frontier-changing replan instead of the next delivery.
         if let Some(reason) = oscillation_replan_reason(goal) {
-            return replan_packet(goal, &reason);
+            return replan_packet(goal, DecisionReasonCode::OscillationDetected, &reason);
         }
         let attempt = todo.failed_attempts + 1;
-        let reason = if attempt > 1 {
-            format!("repair attempt {attempt} for todo {}", todo.id)
+        let (reason, code) = if attempt > 1 {
+            (
+                format!("repair attempt {attempt} for todo {}", todo.id),
+                DecisionReasonCode::RepairAttempt,
+            )
         } else {
-            format!("runnable todo {}", todo.id)
+            (
+                format!("runnable todo {}", todo.id),
+                DecisionReasonCode::RunnableTodo,
+            )
         };
         // Non-blocking user actions surface in the user channel alongside
         // delivery (LoopX: user_action never freezes the agent).
@@ -201,6 +210,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         };
         return packet(
             goal,
+            code,
             "run",
             true,
             "normal_run",
@@ -218,7 +228,11 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         );
     }
     if repair_exhausted(goal) {
-        return replan_packet(goal, "advancement todo(s) exhausted repair budget");
+        return replan_packet(
+            goal,
+            DecisionReasonCode::RepairBudgetExhausted,
+            "advancement todo(s) exhausted repair budget",
+        );
     }
 
     // ── 2c. Blocked by an external blocker with no fallback: quiet wait. ──
@@ -226,6 +240,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     if !blockers.is_empty() {
         return packet(
             goal,
+            DecisionReasonCode::BlockedNoFallback,
             "wait",
             false,
             "quiet_wait",
@@ -249,6 +264,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     if !unclosed.is_empty() {
         return replan_packet(
             goal,
+            DecisionReasonCode::SuccessionClosureMissing,
             &format!(
                 "completed advancement without closure intent: {} — complete must declare successor or --no-follow-up",
                 unclosed.iter().map(|t| t.id.as_str()).collect::<Vec<_>>().join(", ")
@@ -261,6 +277,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         MonitorOutcome::Stalled(stalled) => {
             return replan_packet(
                 goal,
+                DecisionReasonCode::MonitorStalled,
                 &format!(
                     "monitor {} stalled ({} consecutive no-change polls)",
                     stalled.id, stalled.consecutive_no_change
@@ -270,6 +287,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         MonitorOutcome::Due(due) => {
             return packet(
                 goal,
+                DecisionReasonCode::MonitorDue,
                 "run",
                 true,
                 "monitor_poll",
@@ -292,6 +310,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         MonitorOutcome::Waiting(next_due_ms) => {
             return packet(
                 goal,
+                DecisionReasonCode::MonitorBackoff,
                 "wait",
                 false,
                 "quiet_wait",
@@ -310,6 +329,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     if !gaps.is_empty() {
         return replan_packet(
             goal,
+            DecisionReasonCode::AcceptanceGapOpen,
             &format!(
                 "acceptance gap(s) open with no runnable work: {}",
                 gaps.iter()
@@ -329,6 +349,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     {
         return packet(
             goal,
+            DecisionReasonCode::DeferredNotDue,
             "wait",
             false,
             "quiet_wait",
@@ -342,6 +363,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     // ── 6. Validated closure. ───────────────────────────────────────────
     let mut p = packet(
         goal,
+        DecisionReasonCode::ValidatedClosure,
         "skip",
         false,
         "terminal_no_followup",
@@ -358,9 +380,10 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     p
 }
 
-fn replan_packet(goal: &Goal, reason: &str) -> ShouldRunPacket {
+fn replan_packet(goal: &Goal, code: DecisionReasonCode, reason: &str) -> ShouldRunPacket {
     packet(
         goal,
+        code,
         "replan",
         true,
         "replan",
@@ -374,6 +397,7 @@ fn replan_packet(goal: &Goal, reason: &str) -> ShouldRunPacket {
 #[allow(clippy::too_many_arguments)]
 fn packet(
     goal: &Goal,
+    reason_code: DecisionReasonCode,
     decision: &str,
     should_run: bool,
     effective_action: &str,
@@ -401,6 +425,7 @@ fn packet(
         should_run,
         effective_action: effective_action.to_string(),
         reason: reason.to_string(),
+        reason_code: reason_code.as_str().to_string(),
         state: if should_run { "eligible".to_string() } else { "waiting".to_string() },
         waiting_on: "codex".to_string(),
         status: match mode {

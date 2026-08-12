@@ -351,6 +351,109 @@ pub enum Event {
         todo_id: String,
         ts: u64,
     },
+    /// P0-2①: post-delivery outcome signal — `delivered` (pending
+    /// verification) → `verified` / `failed` / `rework` (the three terminal
+    /// resolutions). Recorded automatically when an advancement todo
+    /// completes, and manually via `delivery record`. `delivered_turn` is the
+    /// run-turn counter at delivery time (0 = recorded without run context).
+    DeliveryOutcomeRecorded {
+        goal_id: String,
+        todo_id: String,
+        outcome: String,
+        note: Option<String>,
+        delivered_turn: u32,
+        /// Per-todo outcome sequence number (1-based, from the read model at
+        /// append time). Distinguishes cycles: a re-delivery after
+        /// failed/rework would otherwise content-collide with the earlier
+        /// `delivered` event (same todo/turn/note within one second) and be
+        /// swallowed by the G-3 idempotent-append dedupe.
+        #[serde(default)]
+        seq: u32,
+        ts: u64,
+    },
+    /// P0-2②: outcome_followthrough fired — a delivered-but-unverified work
+    /// item aged past the turn threshold, so a follow-up todo was
+    /// auto-created (the followup itself is the TodoAdded event; this event
+    /// stamps the source delivery so the follow-through fires exactly once).
+    FollowthroughCreated {
+        goal_id: String,
+        source_todo_id: String,
+        followup_todo_id: String,
+        turns_overdue: u32,
+        ts: u64,
+    },
+    /// P1-5: reward_memory ingestion (phase 1) — one scoped reward signal
+    /// in the ledger (LoopX `capabilities/reward_memory/ingestion.py`,
+    /// compact set). Sources: `validator` (auto-recorded by the run path
+    /// when a turn carries an independent task-validation receipt),
+    /// `delivery_outcome` (auto-recorded when a P0-2 delivery is resolved
+    /// verified/failed/rework), `evidence` (manual score via
+    /// `reward-memory record`). Projection-only: goal state is unchanged;
+    /// the scoped-feedback query (`reward-memory query`) reads the ledger.
+    RewardSignalRecorded {
+        goal_id: String,
+        todo_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        run_id: Option<String>,
+        source: String,
+        signal: String,
+        #[serde(default)]
+        score: Option<f64>,
+        #[serde(default)]
+        note: Option<String>,
+        /// Per-todo ingestion sequence (1-based, from the ledger at append
+        /// time). Distinguishes otherwise-identical signals appended within
+        /// the same second (G-3 content-id dedupe anchor, mirroring
+        /// DeliveryOutcomeRecorded.seq). Old events without the field
+        /// deserialize as 0.
+        #[serde(default)]
+        seq: u32,
+        ts: u64,
+    },
+    /// P1-1②: decision_summary projection — one compact quota decision
+    /// persisted per executed turn (LoopX `decision_summary.py` /
+    /// `compact_quota_decision`). Projection-only: replay ignores it; the
+    /// read model (`quota::decision_summary`) serves status/TUI/desktop and
+    /// `quota decisions` without re-running the kernel.
+    DecisionSummaryRecorded {
+        goal_id: String,
+        summary: crate::quota::decision_summary::DecisionSummary,
+        ts: u64,
+    },
+    /// P1-1③: heartbeat receipt — the per-turn heartbeat packet was issued
+    /// to a host executor with this decision (LoopX `heartbeat_receipt.py`).
+    /// `turn_instance_id` anchors the receipt the way LoopX keys on
+    /// (goal, agent, run/turn instance); `todo_id` is the selected todo when
+    /// the turn had one. Projection-only (audit trail).
+    HeartbeatReceiptRecorded {
+        goal_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        turn_instance_id: String,
+        #[serde(default)]
+        todo_id: Option<String>,
+        decision: String,
+        #[serde(default)]
+        reason_code: String,
+        ts: u64,
+    },
+    /// P1-1③: scheduler ack — the host scheduler acknowledged the cadence
+    /// hint it applied (LoopX `scheduler_ack.py`). Recorded via
+    /// `scheduler ack`; `source` identifies the acking surface
+    /// (`scheduler_cli`, `codex_app`, …). Projection-only (audit trail).
+    SchedulerAcked {
+        goal_id: String,
+        agent_id: String,
+        action: String,
+        #[serde(default)]
+        cadence_class: String,
+        #[serde(default)]
+        rrule: Option<String>,
+        source: String,
+        ts: u64,
+    },
     /// G-16: a supervisor proposed a decision for a target agent (LoopX
     /// SUPERVISOR_PROPOSED). Projection-only — supervisor state is read from
     /// the event log, not folded into goal state.
@@ -406,6 +509,12 @@ impl Event {
             | Event::TodoRenewed { goal_id, .. }
             | Event::TodoReleased { goal_id, .. }
             | Event::TodoExpired { goal_id, .. }
+            | Event::DeliveryOutcomeRecorded { goal_id, .. }
+            | Event::FollowthroughCreated { goal_id, .. }
+            | Event::RewardSignalRecorded { goal_id, .. }
+            | Event::DecisionSummaryRecorded { goal_id, .. }
+            | Event::HeartbeatReceiptRecorded { goal_id, .. }
+            | Event::SchedulerAcked { goal_id, .. }
             | Event::SupervisorProposed { goal_id, .. }
             | Event::SupervisorReceiptRecorded { goal_id, .. } => goal_id,
         }
@@ -1338,9 +1447,35 @@ fn apply(goal: &mut Goal, event: Event) {
                 }
             }
         }
-        // G-16: supervisor events are projection-only (read from the event
-        // log by the supervisor domain; goal state is unchanged).
-        Event::SupervisorProposed { .. } | Event::SupervisorReceiptRecorded { .. } => {}
+        // P0-2: delivery outcomes fold into the per-work-item delivery read
+        // model (latest wins; transitions are validated at the command layer
+        // before the event is appended).
+        Event::DeliveryOutcomeRecorded {
+            todo_id,
+            outcome,
+            note,
+            delivered_turn,
+            seq,
+            ts,
+            ..
+        } => goal.apply_delivery_outcome(&todo_id, &outcome, note, delivered_turn, seq, ts),
+        Event::FollowthroughCreated {
+            source_todo_id,
+            followup_todo_id,
+            ts,
+            ..
+        } => goal.apply_followthrough(&source_todo_id, &followup_todo_id, ts),
+        // P1-5: reward signals are projection-only (read from the event log
+        // by the scoped-feedback query; goal state is unchanged) — same
+        // treatment as the G-16 supervisor events and the P1-1 quota decision
+        // read model (decision summaries / heartbeat receipts / scheduler
+        // acks are served from the event log by `quota::decision_summary`).
+        Event::RewardSignalRecorded { .. }
+        | Event::DecisionSummaryRecorded { .. }
+        | Event::HeartbeatReceiptRecorded { .. }
+        | Event::SchedulerAcked { .. }
+        | Event::SupervisorProposed { .. }
+        | Event::SupervisorReceiptRecorded { .. } => {}
     }
 }
 

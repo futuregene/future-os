@@ -77,9 +77,9 @@ fn assert_packet_parity(goal: &Goal, now: SystemTime, agent_id: Option<&str>) ->
     mask_volatile(&mut legacy_json);
     mask_volatile(&mut current_json);
 
-    // G-2/G-11: the arbitration record is the ONLY struct field added since
-    // the pre-split baseline — assert it is present (observe-only), then
-    // exclude it so the comparison covers every pre-split field.
+    // G-2/G-11: the arbitration record was added after the pre-split
+    // baseline — assert it is present (observe-only), then exclude it so
+    // the comparison covers every pre-split field.
     let arbitration = current_json
         .get("scheduler_arbitration")
         .cloned()
@@ -108,6 +108,27 @@ fn assert_packet_parity(goal: &Goal, now: SystemTime, agent_id: Option<&str>) ->
     }
     if let serde_json::Value::Object(map) = &mut legacy_json {
         map.remove("capability_repair_allowed");
+    }
+
+    // P1-1①: the kernel now stamps a machine-readable reason code on every
+    // packet — assert it is present + parseable, then exclude it from the
+    // pre-split parity diff.
+    let reason_code = current_json
+        .get("reason_code")
+        .and_then(|c| c.as_str())
+        .expect("P1-1 must stamp reason_code")
+        .to_string();
+    assert!(
+        future_loop::quota::error_codes::DecisionReasonCode::parse(&reason_code).is_some(),
+        "reason_code `{reason_code}` must be a known DecisionReasonCode"
+    );
+    // The legacy baseline serializes the field as "" (it predates the
+    // codes) — exclude it from BOTH sides of the parity diff.
+    if let serde_json::Value::Object(map) = &mut current_json {
+        map.remove("reason_code");
+    }
+    if let serde_json::Value::Object(map) = &mut legacy_json {
+        map.remove("reason_code");
     }
 
     assert_eq!(
