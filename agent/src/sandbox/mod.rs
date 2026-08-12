@@ -1295,6 +1295,8 @@ mod tests {
                 .with_writer(std::io::sink)
                 .finish(),
         );
+        // No pre-existing SHELL → the guard's remove-on-drop arm runs.
+        std::env::remove_var("SHELL");
         let _guard = ShellEnvGuard::set(std::path::Path::new("/future-no-such-shell-xyz"));
         hydrate_from_login_shell(); // must return, not panic
     }
@@ -1304,10 +1306,18 @@ mod tests {
     fn hydrate_ignores_dump_without_marker() {
         let _lock = hydrate_test_lock();
         // Pre-set SHELL so the guard's restore arm with a previous value runs.
+        let original = std::env::var_os("SHELL");
         std::env::set_var("SHELL", "/bin/sh");
         let (_dir, shell) = fake_shell("printf 'no markers in this output'");
-        let _guard = ShellEnvGuard::set(&shell);
-        hydrate_from_login_shell(); // dump lacks the marker → nothing applied
+        {
+            let _guard = ShellEnvGuard::set(&shell);
+            hydrate_from_login_shell(); // dump lacks the marker → nothing applied
+        }
+        // Leave the process env as we found it (parallel suites read $SHELL).
+        match original {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
     }
 
     #[cfg(not(target_os = "windows"))]

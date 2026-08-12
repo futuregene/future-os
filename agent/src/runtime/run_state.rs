@@ -664,6 +664,7 @@ mod tests {
     fn tracing_sink() -> impl tracing::Subscriber {
         tracing_subscriber::fmt()
             .with_writer(std::io::sink)
+            .with_max_level(tracing::Level::TRACE)
             .finish()
     }
 

@@ -465,7 +465,16 @@ mod tests {
             })
             .unwrap();
         assert!(runtime.begin(Some("run-b"), None).is_err());
+        assert!(runtime.begin_scheduled("run-c", "request-c", 2).is_err());
         hold.notify_one();
+        // Let the task body actually run before the runtime shuts down.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.owns_task(&lease) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -487,6 +496,13 @@ mod tests {
         let err = runtime.spawn(second, async {}).unwrap_err();
         assert!(err.to_string().contains("already owns task"), "{err}");
         hold.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.owns_task(&lease) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[test]
@@ -500,6 +516,8 @@ mod tests {
             runtime.request_lease("request-a").map(|l| l.run_id),
             Some("run-a".to_string())
         );
+        // No task slot, and the finished run is not degraded → no recovery.
+        assert!(!runtime.recover_persistence_degraded(&lease));
     }
 
     #[tokio::test]
@@ -522,6 +540,13 @@ mod tests {
         assert!(runtime.mark_persistence_degraded(&lease, "disk full"));
         assert!(!runtime.recover_persistence_degraded(&lease));
         hold.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.owns_task(&lease) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

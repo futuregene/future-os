@@ -979,17 +979,27 @@ mod message_conversion_tests {
             content: Some(json!(null)),
             ..Default::default()
         };
+        // Scalar (non-string/array) content counts as content.
+        let with_scalar = Message {
+            role: "assistant".to_string(),
+            content: Some(json!(42)),
+            ..Default::default()
+        };
         // Unknown roles are dropped from the wire format.
         let unknown_role = Message {
             role: "developer".to_string(),
             content: Some(json!("ignored")),
             ..Default::default()
         };
-        let converted =
-            Client::convert_messages_to_openai(vec![with_array, with_null, unknown_role], String::new(), false);
-        assert_eq!(converted.len(), 2, "unknown role must be dropped");
+        let converted = Client::convert_messages_to_openai(
+            vec![with_array, with_null, with_scalar, unknown_role],
+            String::new(),
+            false,
+        );
+        assert_eq!(converted.len(), 3, "unknown role must be dropped");
         assert!(converted[0].get("content").is_some());
         assert!(converted[1].get("content").is_none());
+        assert_eq!(converted[2]["content"], json!(42));
     }
 
     #[test]

@@ -495,10 +495,15 @@ pub(super) fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec
                 *mem = Some(cache);
             }
         }
-        // Re-read to return (avoids clone before moving into mem).
-        if let Some(ref cache) = *FUTURE_MODELS_MEMORY_CACHE.read() {
-            return cache.models.clone();
-        }
+        // Re-read to return (avoids clone before moving into mem). The seed
+        // above (or a concurrently completed refresh) guarantees the memory
+        // cache is populated here.
+        return FUTURE_MODELS_MEMORY_CACHE
+            .read()
+            .as_ref()
+            .expect("memory cache seeded above")
+            .models
+            .clone();
     }
 
     // First login on this machine: no cache at all.  The background refresh
