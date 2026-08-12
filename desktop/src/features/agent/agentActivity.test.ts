@@ -276,6 +276,41 @@ describe("buildAssistantRunProjection output tokens", () => {
   });
 });
 
+// The agent marks a stream that ended before the model finished by setting
+// `agent_end` reason "incomplete" (agent/src/rpc/session_prompt.rs). Both ends
+// must treat the resulting prefix as failed, never as a clean completion.
+describe("buildAssistantRunProjection truncated", () => {
+  it("flags a run whose agent_end carried reason incomplete", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "partial answer" }],
+        ["agent_end", { type: "agent_end", reason: "incomplete" }],
+      ]),
+    );
+
+    expect(projection.truncated).toBe(true);
+  });
+
+  it("stays untruncated for a clean agent_end", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "full answer" }],
+        ["agent_end", { type: "agent_end" }],
+      ]),
+    );
+
+    expect(projection.truncated).toBe(false);
+  });
+
+  it("stays untruncated when no agent_end was seen (in-flight)", () => {
+    const projection = buildAssistantRunProjection(
+      events([["text_chunk", { text: "still streaming" }]]),
+    );
+
+    expect(projection.truncated).toBe(false);
+  });
+});
+
 // The agent appends the exit code as a "[exit: N]" footer on the LAST line, not
 // a "[exit code: N]" prefix. Parsing the wrong shape silently dropped every
 // failure to exit 0 → a failed shell command rendered as "completed".

@@ -32,6 +32,13 @@ export interface AssistantRunProjection {
    * setting is off; not rendered as a top-of-message line.
    */
   thinkingActive: boolean;
+  /**
+   * The stream ended before the model finished: the agent's `agent_end` carried
+   * reason "incomplete", so `content` is a truncated prefix. Mirrors desktop's
+   * stream `complete` flag (responseInterrupted) — both ends must treat a
+   * cut-off reply as failed, never as a clean completion.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -91,6 +98,10 @@ export function createRunProjector(): RunProjector {
   let usageOutputSum = 0;
   let sawUsageEvent = false;
   let agentEndOutput = 0;
+  // Set when the agent's `agent_end` carries reason "incomplete" — the stream
+  // was truncated before a genuine finish (mirrors the Rust bridge's
+  // `agent_end_incomplete`).
+  let truncated = false;
   let lastSequence = -1;
 
   function processEvent(event: RunEvent) {
@@ -104,6 +115,8 @@ export function createRunProjector(): RunProjector {
 
     if (event.eventType === "agent_end") {
       agentEndOutput = usageOutputTokens(payload);
+      if (isRecord(payload) && payload.reason === "incomplete")
+        truncated = true;
       return;
     }
 
@@ -268,6 +281,7 @@ export function createRunProjector(): RunProjector {
       outputTokens: sawUsageEvent ? usageOutputSum : agentEndOutput,
       thinking: thinkingText,
       thinkingActive,
+      truncated,
     };
   }
 

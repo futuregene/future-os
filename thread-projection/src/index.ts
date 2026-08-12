@@ -12,6 +12,7 @@ export type {
   RunProjector,
 } from "./liveApply";
 export type { CollapseRun, ToolKind } from "./group";
+export type { ApprovalAction, ApprovalSaveSuggestion } from "./approval";
 export type { FriendlyAgentError, RunStatus } from "./format";
 
 export {
@@ -31,4 +32,13 @@ export {
   targetFromArgs,
 } from "./group";
 export { classifyAgentError, matchesSettledRun, previousUserMessageBefore } from "./format";
+export {
+  approvalCommand,
+  approvalDeletes,
+  approvalPaths,
+  formatRequestedAction,
+  parseAction,
+  parseSaveSuggestion,
+  unwrapNestedJson,
+} from "./approval";
 export { isRecord, pathBasename, pathExtension, singleLine, truncate } from "./utils";

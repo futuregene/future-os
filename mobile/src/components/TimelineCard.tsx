@@ -15,6 +15,11 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  approvalCommand,
+  approvalDeletes,
+  approvalPaths,
+} from "@future-os/thread-projection";
 import { MarkdownText } from "./MarkdownText";
 import type { ApprovalPayload, HistoryAttachment, TimelineItem } from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
@@ -96,50 +101,6 @@ const APPROVAL_KIND_I18N: Record<string, { title: string; summary?: string }> = 
   shell_command: { title: "approval.shellTitle", summary: "approval.shellSummary" },
   sandbox_escalation: { title: "approval.escalationTitle" },
 };
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value === "string") {
-    try {
-      value = JSON.parse(value);
-    } catch {
-      return null;
-    }
-  }
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-}
-
-// The file path(s) an approval would touch — surfaced so the user can judge the
-// request. Read from the wire `action` (writes[].path / deletes[].path, then
-// paths[]); content previews are intentionally omitted on the phone.
-function pathEntries(action: Record<string, unknown>, key: string): string[] {
-  const entries = Array.isArray(action[key]) ? action[key] : [];
-  return entries
-    .map(entry => asRecord(entry)?.path as unknown as string)
-    .filter((path): path is string => typeof path === "string" && path.length > 0);
-}
-
-function approvalPaths(payload: ApprovalPayload): string[] {
-  const action = asRecord(payload.action);
-  if (!action) return [];
-  const fromWrites = pathEntries(action, "writes");
-  if (fromWrites.length > 0) return fromWrites;
-  const paths = Array.isArray(action.paths) ? action.paths : [];
-  return paths.filter((path): path is string => typeof path === "string" && path.length > 0);
-}
-
-// Paths an approval would delete (action.deletes) — a delete request is judged
-// by what it removes, so deletes render independently from writes/paths.
-function approvalDeletes(payload: ApprovalPayload): string[] {
-  const action = asRecord(payload.action);
-  if (!action) return [];
-  return pathEntries(action, "deletes");
-}
-
-function approvalCommand(payload: ApprovalPayload): string | null {
-  const action = asRecord(payload.action);
-  const command = action && typeof action.command === "string" ? action.command : null;
-  return command && command.length > 0 ? command : null;
-}
 
 interface PendingApprovalCardProps {
   payload: ApprovalPayload;

@@ -111,32 +111,9 @@ export interface StoredApprovalRequest {
   decisionSource: string;
 }
 
-// v2: parsed save_suggestion — the file rule to persist on "allow in this
-// workspace". `path` is a glob (workspace-relative, or ~/absolute).
-export interface ApprovalSaveSuggestion {
-  path: string;
-  access: string; // "read" | "write"
-}
-
-// P2: structured action payload (parsed from actionPayload JSON)
-export interface ApprovalAction {
-  tool: string;
-  category: string;
-  summary?: string;
-  command?: string;
-  paths?: string[];
-  writes?: Array<{ path: string; preview?: string }>;
-  deletes?: Array<{ path: string }>;
-  // sandbox_escalation: model-provided reason and the file paths the sandbox
-  // blocked (extracted from the failed run — no raw stderr dump).
-  justification?: string;
-  blockedPaths?: string[];
-  scope?: {
-    cwd: string;
-    insideWorkspace: boolean;
-    estimatedBlastRadius: "low" | "medium" | "high";
-  };
-}
+// v2: parsed save_suggestion / P2 structured action payload — moved to the
+// shared `@future-os/thread-projection` package (`src/approval.ts`) so the
+// approval semantic model is single-sourced across desktop and mobile.
 
 export interface StoredReviewChangeset {
   id: string;
