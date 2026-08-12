@@ -79,3 +79,23 @@ describe("stringField", () => {
     expect(stringField(null, "command")).toBeNull();
   });
 });
+
+describe("normalizeArgs / dedupe model helpers", () => {
+  it("normalizeArgs rejects non-string non-record values", async () => {
+    const { normalizeArgs } = await import("../agent/toolActivityModel");
+    expect(normalizeArgs(42)).toBeNull();
+    expect(normalizeArgs({ a: 1 })).toEqual({ a: 1 });
+    expect(normalizeArgs("{\"a\":1}")).toEqual({ a: 1 });
+    expect(normalizeArgs("nope")).toBeNull();
+  });
+
+  it("dedupeByTarget skips repeats", async () => {
+    const { dedupeByTarget } = await import("../agent/toolActivityModel");
+    const out = dedupeByTarget([
+      { id: "1", target: "a" },
+      { id: "2", target: "a" },
+      { id: "3" },
+    ] as never[]);
+    expect(out).toHaveLength(2);
+  });
+});

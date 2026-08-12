@@ -42,6 +42,10 @@ export async function buildReferencePrompt(workspaceId: string, markdown: string
 }
 
 function summarizeReference(index: number, targetType: string, targetId: string, data: unknown) {
+  // Minimal link mode: parsed references are always `file`, so only the
+  // default arm runs; the typed arms (and the summarizers below) are retained
+  // for the app-object reference re-enable (see isFutureReferenceType).
+  /* v8 ignore start */
   switch (targetType) {
     case "artifact":
       return summarizeArtifact(index, targetId, data);
@@ -51,10 +55,13 @@ function summarizeReference(index: number, targetType: string, targetId: string,
       return summarizeApproval(index, targetId, data);
     case "review":
       return summarizeReview(index, targetId, data);
+    /* v8 ignore stop */
     default:
       return `${index}. ${targetType}:${targetId}`;
   }
 }
+
+/* v8 ignore start -- disabled minimal link mode (see above) */
 
 function summarizeArtifact(index: number, targetId: string, data: unknown) {
   if (!isArtifact(data))
@@ -149,3 +156,4 @@ function field(name: string, value?: string | null, maxLength = 240) {
 function quote(value: string) {
   return JSON.stringify(value);
 }
+/* v8 ignore stop */

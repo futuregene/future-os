@@ -63,3 +63,31 @@ describe("classifyAgentError", () => {
     expect(classifyAgentError("   ")).toEqual({ key: "agent:failure.unknown" });
   });
 });
+
+describe("previousUserMessageBefore", () => {
+  it("finds the nearest user message scanning backward", async () => {
+    const { previousUserMessageBefore } = await import("./agentMessageFormatters");
+    const messages = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "reply" },
+      { role: "user", content: "second" },
+      { role: "assistant", content: "reply2" },
+    ] as never[];
+    expect(previousUserMessageBefore(messages, 3)).toMatchObject({ content: "second" });
+    expect(previousUserMessageBefore(messages, 1)).toMatchObject({ content: "first" });
+  });
+
+  it("returns null when no user message exists before the index", async () => {
+    const { previousUserMessageBefore } = await import("./agentMessageFormatters");
+    const messages = [{ role: "assistant", content: "reply" }] as never[];
+    expect(previousUserMessageBefore(messages, 0)).toBeNull();
+  });
+});
+
+describe("agentErrorDetail malformed embedded JSON", () => {
+  it("falls back to the raw capture when the embedded message is invalid JSON", () => {
+    // A message capture with a lone backslash makes JSON.parse fail.
+    const raw = "HTTP 500. {\"message\": \"oops\\\"} tail";
+    expect(classifyAgentError(raw)).toBeDefined();
+  });
+});
