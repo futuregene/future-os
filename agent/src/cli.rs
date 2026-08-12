@@ -82,6 +82,15 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
     run(cli)
 }
 
+/// Test-only failure injection for the profiler error arms. The spawned
+/// binary has no cfg(test), so integration tests steer via this env var.
+/// Values: "build" (guard construction), "report" (report build), "write"
+/// (flamegraph write).
+#[cfg(not(windows))]
+fn profiler_fail_at(stage: &str) -> bool {
+    std::env::var("FUTURE_TEST_PROFILER_FAIL_AT").is_ok_and(|v| v == stage)
+}
+
 /// The full agent entry point — the former `main()` body.
 pub(crate) fn run(cli: Cli) -> Result<()> {
     // Resolve profile path early (before the runtime starts).
@@ -111,17 +120,18 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                 "CPU profiling enabled → will write flamegraph to {}",
                 _path.display()
             );
-            match pprof::ProfilerGuardBuilder::default()
-                .frequency(997) // prime to avoid lock-step with timers
-                .blocklist(&["libc", "libgcc", "pthread", "vdso"])
-                .build()
-            {
+            let build_result = if profiler_fail_at("build") {
+                Err(pprof::Error::CreatingError)
+            } else {
+                pprof::ProfilerGuardBuilder::default()
+                    .frequency(997) // prime to avoid lock-step with timers
+                    .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+                    .build()
+            };
+            match build_result {
                 Ok(g) => Some(g),
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to start profiler: {} — continuing without profiling",
-                        e
-                    );
+                    tracing::warn!("Failed to start profiler: {e} — continuing without profiling");
                     None
                 }
             }
@@ -237,7 +247,12 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
     #[cfg(not(windows))]
     if let (Some(guard), Some(path)) = (profiler_guard, profile_path) {
         tracing::info!("Writing CPU profile flamegraph to {}", path.display());
-        match guard.report().build() {
+        let report_result = if profiler_fail_at("report") {
+            Err(pprof::Error::NotRunning)
+        } else {
+            guard.report().build()
+        };
+        match report_result {
             Ok(report) => {
                 let file = std::fs::File::create(&path)
                     .map_err(|e| {
@@ -246,8 +261,17 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                     })
                     .ok();
                 if let Some(f) = file {
-                    if let Err(e) = report.flamegraph(f) {
-                        tracing::error!("Failed to write flamegraph: {}", e);
+                    let write_result = if profiler_fail_at("write") {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "injected flamegraph write failure",
+                        )
+                        .into())
+                    } else {
+                        report.flamegraph(f)
+                    };
+                    if let Err(e) = write_result {
+                        tracing::error!("Failed to write flamegraph: {e}");
                     } else {
                         let sz = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                         tracing::info!(
@@ -259,7 +283,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to build profiling report: {}", e);
+                tracing::error!("Failed to build profiling report: {e}");
             }
         }
     }
