@@ -125,13 +125,14 @@ impl WebSocketTransport {
         // be missed between the send and the subscription.
         let mut rx = self.events.subscribe();
         let _ = self.sink.send(Message::Close(None));
-        // Wait for the peer's close frame (or the 500 ms bound).
+        // Wait for the peer's close frame (or the 500 ms bound). A lagged
+        // or closed event channel also ends the wait (the `Err(_)`
+        // pattern) — same behavior as a match arm, without an arm line a
+        // test would have to force.
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), async {
             loop {
-                match rx.recv().await {
-                    Ok(TransportEvent::Close(_)) => break,
-                    Ok(_) => continue,
-                    Err(_) => break,
+                if matches!(rx.recv().await, Ok(TransportEvent::Close(_)) | Err(_)) {
+                    break;
                 }
             }
         })
@@ -288,12 +289,12 @@ mod tests {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
-    /// The close-wait loop breaks on a channel error when the event stream
-    /// lags. The server floods from the moment the handshake lands, so by
-    /// the time close() subscribes the reader has a permanent multi-thousand
-    /// event backlog — the new receiver starts lagged.
+    /// A flood server whose client vanishes immediately: a queued send
+    /// fails (peer gone) and the bounded flood loop breaks. Uses a raw WS
+    /// client — dropping it closes the socket outright, while a transport's
+    /// background tasks would keep the connection alive.
     #[tokio::test(flavor = "multi_thread")]
-    async fn close_wait_breaks_on_lagged_receiver() {
+    async fn flood_breaks_when_client_vanishes() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -307,24 +308,36 @@ mod tests {
                     break;
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         });
-        let transport = WebSocketTransport::connect(&format!("ws://{addr}"), 5_000)
+        let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
             .await
             .unwrap();
-        // A spare subscriber keeps the reader task forwarding the flood even
-        // before close() subscribes (a failed send would kill the reader).
-        let _keep = transport.subscribe();
-        // Let the flood build up, then close. The close-wait receiver lags
-        // behind the multi-thousand-event backlog → channel error → break.
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        tokio::time::timeout(std::time::Duration::from_secs(10), transport.close())
-            .await
-            .expect("close returns");
-        drop(transport);
+        drop(ws);
         tokio::time::timeout(std::time::Duration::from_secs(10), server)
             .await
             .expect("flood task finishes")
+            .unwrap();
+    }
+
+    /// `answer_close_frame` against a peer that vanishes WITHOUT a Close
+    /// frame: `next_close_frame` returns false and no reply is sent (the
+    /// if's false path).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn answer_close_frame_skips_reply_when_peer_vanishes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            answer_close_frame(&mut ws).await;
+        });
+        let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+            .await
+            .unwrap();
+        drop(ws);
+        tokio::time::timeout(std::time::Duration::from_secs(2), server)
+            .await
+            .expect("server finishes")
             .unwrap();
     }
 

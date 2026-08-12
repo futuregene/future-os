@@ -2138,6 +2138,40 @@ mod tests {
         assert_eq!(saved.connection.browser_kind(), "chrome");
     }
 
+    /// The refinement update is skipped when the saved config is no longer
+    /// the generic "chromium" CDP form (the `refinable` filter's false
+    /// path): a webdriver config on disk must be left untouched.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_session_refinement_skips_non_chromium_saved_config() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mock = crate::test_cdp::MockCdp::start().await;
+        save_browser_config(&BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Webdriver {
+                browser_kind: "safari".to_string(),
+                endpoint: "http://127.0.0.1:1".to_string(),
+                session_id: "s1".to_string(),
+                driver_pid: None,
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let config = BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: mock.http_url.clone(),
+            },
+            ..Default::default()
+        };
+        let session = create_session(&config, &mock.http_url).await.unwrap();
+        drop(session);
+        // The saved webdriver config was NOT overwritten by the refinement.
+        let saved = load_browser_config().await.unwrap();
+        assert_eq!(saved.connection.protocol(), "webdriver");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn with_session_webdriver_config_creates_safari_session() {
         let (_g, _e, _d) = isolated_home().await;

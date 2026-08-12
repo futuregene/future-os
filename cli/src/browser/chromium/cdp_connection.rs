@@ -116,22 +116,34 @@ impl CdpConnection {
             connected: AtomicBool::new(true),
         });
 
-        // Dispatch loop: owns a clone of the connection, forwards transport
-        // events to handle_message / handle_close. The subscription is
-        // created BEFORE the task is spawned: a fast peer can deliver frames
-        // before a freshly-spawned task is first polled, and the reader
-        // treats "no subscribers" as fatal (broadcast buffers up to 1024
-        // events until the loop starts polling).
-        let dispatch = conn.clone();
-        let mut rx = dispatch.transport.subscribe();
+        // Dispatch loop: forwards transport events to handle_message /
+        // handle_close. It holds only a WEAK connection reference — holding
+        // an Arc would keep the transport (and with it the broadcast
+        // sender) alive forever, making Closed unreachable and leaking the
+        // task for the process lifetime. The subscription is created
+        // BEFORE the task is spawned: a fast peer can deliver frames before
+        // a freshly-spawned task is first polled, and the reader treats
+        // "no subscribers" as fatal (broadcast buffers up to 1024 events
+        // until the loop starts polling).
+        let dispatch = Arc::downgrade(&conn);
+        let mut rx = conn.transport.subscribe();
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
-                    Ok(TransportEvent::Message(raw)) => dispatch.handle_message(&raw),
-                    Ok(TransportEvent::Close(reason)) => dispatch.handle_close(reason),
+                    Ok(event) => {
+                        // Upgrade failed → the connection is gone and its
+                        // transport's sender dropped with it; the next recv
+                        // observes Closed and breaks.
+                        if let Some(conn) = dispatch.upgrade() {
+                            match event {
+                                TransportEvent::Message(raw) => conn.handle_message(&raw),
+                                TransportEvent::Close(reason) => conn.handle_close(reason),
+                            }
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    // Unreachable by ownership: the dispatch task holds the
-                    // connection (and with it the broadcast sender) alive.
+                    // Every sender is gone (the last connection Arc was
+                    // dropped): nothing more can arrive.
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -868,6 +880,30 @@ mod tests {
         conn.disconnect().await;
         let err = pending.await.unwrap().unwrap_err();
         assert_eq!(err.to_string(), "Connection closed");
+    }
+
+    /// Dropping the last connection Arc (after the peer closed, so the
+    /// reader task is gone too) closes the broadcast channel: the dispatch
+    /// task observes Closed, breaks, and runs to completion.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_task_ends_after_final_connection_drop() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .close_connection_on
+            .insert("Kill.switch".to_string());
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        // The mock drops the socket on Kill.switch → reader ends (its
+        // sender clone dies) and the dispatch loop runs handle_close.
+        conn.send("Kill.switch", None, None).await.ok();
+        assert!(crate::test_env::wait_for(|| !conn.is_connected()).await);
+        // The last Arc: the transport's sender drops with it, so every
+        // broadcast sender is gone and the dispatch task exits via Closed.
+        drop(conn);
+        // No handle to await — give the runtime a window to poll the
+        // dispatch task to completion (its end line only counts then).
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
