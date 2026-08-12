@@ -167,22 +167,38 @@ pub(super) async fn command_loop(
 ) {
     let subject = format!("p.{pair_id}.cmd.>");
     let queue = format!("bridge.{pair_id}");
-    let mut sub = match client.queue_subscribe(subject.clone(), queue).await {
-        Ok(sub) => sub,
-        Err(e) => {
-            eprintln!("remote: failed to subscribe to commands {subject}: {e}");
-            return;
+    // Self-heal: a failed subscribe or an ended subscription stream (server-side
+    // close, permission error) must not kill the loop — a dead loop leaves the
+    // queue group without a live member and every command then times out until
+    // the next credential-refresh swap. Retry with backoff; the task is only
+    // terminated by the caller (generation swap / stop), which aborts it.
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        let mut sub = match client.queue_subscribe(subject.clone(), queue.clone()).await {
+            Ok(sub) => sub,
+            Err(e) => {
+                eprintln!(
+                    "remote: failed to subscribe to commands {subject}: {e}; retrying in {backoff:?}"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+                continue;
+            }
+        };
+        backoff = Duration::from_secs(1);
+        eprintln!("remote: subscribed to commands {subject}");
+        while let Some(msg) = sub.next().await {
+            let client = client.clone();
+            let reply_slots = reply_slots.clone();
+            let handshake = handshake.clone();
+            // Spawn per command: prevent a slow command from blocking others.
+            tokio::spawn(async move {
+                handle_command_singleflight(&client, msg, reply_slots, handshake).await;
+            });
         }
-    };
-    eprintln!("remote: subscribed to commands {subject}");
-    while let Some(msg) = sub.next().await {
-        let client = client.clone();
-        let reply_slots = reply_slots.clone();
-        let handshake = handshake.clone();
-        // Spawn per command: prevent a slow command from blocking others.
-        tokio::spawn(async move {
-            handle_command_singleflight(&client, msg, reply_slots, handshake).await;
-        });
+        eprintln!("remote: command subscription ended unexpectedly; resubscribing in {backoff:?}");
+        tokio::time::sleep(backoff).await;
+        backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
     }
 }
 
