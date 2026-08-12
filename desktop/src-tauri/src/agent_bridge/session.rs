@@ -13,6 +13,7 @@ use super::client::{
 use crate::{agent_proto::FutureAgentClient, store};
 
 /// Outcome of `ensure_agent_session`.
+#[derive(Debug)]
 pub(super) struct EnsuredSession {
     pub session_id: String,
     /// True when the thread ALREADY had a session id but it was unusable
@@ -457,5 +458,568 @@ pub(super) fn split_model(model: &str) -> (Option<String>, Option<String>) {
         (Some(provider.to_string()), Some(id.to_string()))
     } else {
         (None, Some(model.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{
+        break_home, mock_agent, restore_home, seed_run, seed_thread, seed_workspace, Reply,
+        TestHome,
+    };
+    use super::*;
+
+    async fn mock_client() -> (
+        super::super::test_support::MockAgentGuard,
+        FutureAgentClient<Channel>,
+    ) {
+        let mock = mock_agent();
+        let client = super::super::client::connect_agent()
+            .await
+            .expect("connect to mock");
+        (mock, client)
+    }
+
+    #[test]
+    fn split_model_variants() {
+        assert_eq!(split_model(""), (None, None));
+        assert_eq!(
+            split_model("future/k3"),
+            (Some("future".to_string()), Some("k3".to_string()))
+        );
+        assert_eq!(split_model("k3"), (None, Some("k3".to_string())));
+    }
+
+    #[tokio::test]
+    async fn ensure_reuses_a_matching_session() {
+        let (mock, mut client) = mock_client().await;
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"sessionId": "sess-1", "cwd": "/tmp/ws"}),
+        );
+        let ensured = ensure_agent_session(&mut client, "sess-1", "/tmp/ws", None, None)
+            .await
+            .expect("ensured");
+        assert_eq!(ensured.session_id, "sess-1");
+        assert!(!ensured.recreated);
+        assert!(mock.requests_of("new_session").is_empty());
+    }
+
+    #[tokio::test]
+    async fn ensure_recreates_when_the_agent_lost_or_moved_the_session() {
+        let (mock, mut client) = mock_client().await;
+
+        // cwd drift → recreate.
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"sessionId": "sess-1", "cwd": "/elsewhere"}),
+        );
+        mock.push_data("new_session", serde_json::json!({"sessionId": "sess-new"}));
+        let ensured = ensure_agent_session(
+            &mut client,
+            "sess-1",
+            "/tmp/ws",
+            Some("future/k3"),
+            Some("high"),
+        )
+        .await
+        .expect("ensured");
+        assert_eq!(ensured.session_id, "sess-new");
+        assert!(ensured.recreated, "a replaced session reports context loss");
+        let created = &mock.requests_of("new_session")[0];
+        assert_eq!(created.session_id, "", "the agent generates the id");
+        assert_eq!(created.cwd, "/tmp/ws");
+        assert_eq!(created.created_by, "desktop");
+        assert_eq!(created.model_id, "future/k3");
+        assert_eq!(created.level, "high");
+
+        // get_state rejected (session gone) → recreate too.
+        mock.push("get_state", Reply::Reject("no such session".to_string()));
+        mock.push_data("new_session", serde_json::json!({"sessionId": "sess-newer"}));
+        let ensured = ensure_agent_session(&mut client, "sess-1", "/tmp/ws", None, None)
+            .await
+            .expect("ensured");
+        assert_eq!(ensured.session_id, "sess-newer");
+        assert!(ensured.recreated);
+    }
+
+    #[tokio::test]
+    async fn ensure_creates_for_an_empty_stored_id() {
+        let (mock, mut client) = mock_client().await;
+        mock.push_data("new_session", serde_json::json!({"sessionId": "sess-fresh"}));
+        let ensured = ensure_agent_session(&mut client, "", "/tmp/ws", None, None)
+            .await
+            .expect("ensured");
+        assert_eq!(ensured.session_id, "sess-fresh");
+        assert!(!ensured.recreated, "nothing was replaced");
+        assert!(
+            mock.requests_of("get_state").is_empty(),
+            "no probe for an empty stored id"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_error_paths() {
+        let (mock, mut client) = mock_client().await;
+
+        // get_state transport failure.
+        mock.push(
+            "get_state",
+            Reply::Status(tonic::Code::Unavailable, "down"),
+        );
+        let error = ensure_agent_session(&mut client, "sess-1", "/tmp/ws", None, None)
+            .await
+            .expect_err("transport");
+        assert!(
+            error
+                .to_string()
+                .contains("Unable to inspect Future Agent session"),
+            "{error}"
+        );
+
+        // new_session transport failure.
+        mock.push(
+            "new_session",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
+        let error = ensure_agent_session(&mut client, "", "/tmp/ws", None, None)
+            .await
+            .expect_err("transport");
+        assert!(
+            error
+                .to_string()
+                .contains("Unable to create Future Agent session"),
+            "{error}"
+        );
+
+        // new_session rejected at app level.
+        mock.push("new_session", Reply::Reject("quota".to_string()));
+        let error = ensure_agent_session(&mut client, "", "/tmp/ws", None, None)
+            .await
+            .expect_err("reject");
+        assert_eq!(error.to_string(), "quota");
+
+        // new_session success without a sessionId → empty id.
+        mock.push_data("new_session", serde_json::json!({"ok": true}));
+        let ensured = ensure_agent_session(&mut client, "", "/tmp/ws", None, None)
+            .await
+            .expect("ensured");
+        assert_eq!(ensured.session_id, "");
+    }
+
+    #[tokio::test]
+    async fn permission_level_and_sandbox_policy_round_trip() {
+        let home = TestHome::new("session-setup");
+        let (mock, mut client) = mock_client().await;
+
+        mock.push("set_permission_level", Reply::Data("{}".to_string()));
+        set_agent_permission_level(&mut client, "sess-1", "workspace")
+            .await
+            .expect("permission level");
+        let request = &mock.requests_of("set_permission_level")[0];
+        assert_eq!(request.level, "workspace");
+
+        // Default tier on a fresh store is "off".
+        mock.push("set_sandbox_policy", Reply::Data("{}".to_string()));
+        set_agent_sandbox_policy(&mut client, "sess-1", "thread-1")
+            .await
+            .expect("sandbox policy");
+        let policy = mock.requests_of("set_sandbox_policy")[0]
+            .sandbox_policy
+            .clone()
+            .expect("policy");
+        assert_eq!(policy.tier, "off");
+
+        // A configured tier is pushed verbatim.
+        crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+            approval_tier: Some("sandbox".to_string()),
+            hidden_models: None,
+            show_thinking: None,
+            auto_upgrade_skills: None,
+            auto_connect_remote: None,
+        })
+        .expect("update settings");
+        mock.push("set_sandbox_policy", Reply::Data("{}".to_string()));
+        set_agent_sandbox_policy(&mut client, "sess-1", "thread-1")
+            .await
+            .expect("sandbox policy");
+        assert_eq!(
+            mock.requests_of("set_sandbox_policy")[1]
+                .sandbox_policy
+                .clone()
+                .expect("policy")
+                .tier,
+            "sandbox"
+        );
+
+        // Store unreadable → falls back to "off".
+        let prev = break_home();
+        mock.push("set_sandbox_policy", Reply::Data("{}".to_string()));
+        set_agent_sandbox_policy(&mut client, "sess-1", "thread-1")
+            .await
+            .expect("sandbox policy");
+        restore_home(prev);
+        assert_eq!(
+            mock.requests_of("set_sandbox_policy")[2]
+                .sandbox_policy
+                .clone()
+                .expect("policy")
+                .tier,
+            "off"
+        );
+
+        // Error paths.
+        mock.push(
+            "set_permission_level",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
+        let error = set_agent_permission_level(&mut client, "sess-1", "workspace")
+            .await
+            .expect_err("transport");
+        assert!(error.to_string().contains("permission level"), "{error}");
+        mock.push("set_permission_level", Reply::Reject("bad level".to_string()));
+        let error = set_agent_permission_level(&mut client, "sess-1", "workspace")
+            .await
+            .expect_err("reject");
+        assert_eq!(error.to_string(), "bad level");
+
+        mock.push(
+            "set_sandbox_policy",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
+        let error = set_agent_sandbox_policy(&mut client, "sess-1", "thread-1")
+            .await
+            .expect_err("transport");
+        assert!(error.to_string().contains("sandbox policy"), "{error}");
+        mock.push("set_sandbox_policy", Reply::Reject("bad tier".to_string()));
+        let error = set_agent_sandbox_policy(&mut client, "sess-1", "thread-1")
+            .await
+            .expect_err("reject");
+        assert_eq!(error.to_string(), "bad tier");
+        drop(home);
+    }
+
+    #[tokio::test]
+    async fn workspace_path_for_thread_resolves_and_errors() {
+        let home = TestHome::new("session-ws-path");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        assert_eq!(
+            workspace_path_for_thread(&thread.id).expect("path"),
+            workspace.path
+        );
+
+        let error = workspace_path_for_thread("no-such-thread").expect_err("missing thread");
+        assert_eq!(error.to_string(), "Thread could not be loaded.");
+
+        // Workspace row gone (raw delete, FK off) → error.
+        let conn = rusqlite::Connection::open(home.path().join(".future/app/app.db"))
+            .expect("open db");
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("fk off");
+        conn.execute("DELETE FROM workspaces WHERE id = ?1", [&workspace.id])
+            .expect("delete workspace row");
+        drop(conn);
+        let error = workspace_path_for_thread(&thread.id).expect_err("missing workspace");
+        assert_eq!(error.to_string(), "Thread workspace could not be loaded.");
+    }
+
+    // ── fork_agent_session ──────────────────────────────────────────────
+
+    fn entries_payload(entries: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"entries": entries})
+    }
+
+    fn conversation_entries() -> serde_json::Value {
+        serde_json::json!([
+            {"id": "e1", "role": "user", "content": "first question"},
+            {"id": "e2", "role": "assistant", "content": "first answer"},
+            {"id": "e3", "role": "user", "content": "second question"},
+            {"id": "e4", "role": "assistant", "content": "second answer"},
+            {"id": "e5", "role": "user", "content": "third question"}
+        ])
+    }
+
+    fn forked_entries() -> serde_json::Value {
+        serde_json::json!([
+            {"id": "f0", "role": "system", "content": {"session_name": "Forked Chat"}, "model": "future/k3"},
+            {"id": "f1", "role": "user", "content": "first question"},
+            {"id": "f2", "role": "assistant", "content": "first answer", "tool_calls": [
+                {"id": "tc-1", "function": {"name": "shell", "arguments": "{\"command\":\"ls\"}"}}
+            ]},
+            {"id": "f3", "role": "tool", "tool_call_id": "tc-1", "content": "file.txt"}
+        ])
+    }
+
+    #[tokio::test]
+    async fn fork_by_ordinal_creates_thread_runs_and_events() {
+        let home = TestHome::new("session-fork");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork"}));
+        mock.push_data("get_session_entries", entries_payload(forked_entries()));
+        mock.push("set_cwd", Reply::Data("{}".to_string()));
+
+        let new_thread_id = fork_agent_session(&thread.id, "ignored", 1)
+            .await
+            .expect("fork");
+
+        // Fork point: the second user message (ordinal 1) → entry e3; the
+        // following user message e5 bounds the fork at e4.
+        let fork_request = &mock.requests_of("fork")[0];
+        assert_eq!(fork_request.entry_id, "e4");
+        assert_eq!(fork_request.session_id, "sess-1");
+        assert_eq!(fork_request.parent_session, "sess-1");
+
+        let new_thread = crate::store::get_thread(&new_thread_id)
+            .expect("thread")
+            .expect("exists");
+        assert_eq!(new_thread.title, "Forked Chat");
+        assert_eq!(new_thread.agent_session_id.as_deref(), Some("sess-fork"));
+
+        // One assistant reply in the forked history → one completed run with
+        // the session model split into provider/id.
+        let runs = crate::store::list_runs(&new_thread_id).expect("runs");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "completed");
+        assert_eq!(runs[0].model_provider.as_deref(), Some("future"));
+        assert_eq!(runs[0].model_id.as_deref(), Some("k3"));
+
+        // Synthetic tool events were projected for the run panel.
+        let input = crate::store::get_tool_call_input(&runs[0].id, "tc-1").expect("input");
+        assert_eq!(input.as_deref(), Some(r#"{"command":"ls"}"#));
+
+        // The forked session's cwd was aligned with the new thread workspace.
+        assert_eq!(mock.requests_of("set_cwd").len(), 1);
+        assert_eq!(
+            mock.requests_of("set_cwd")[0].session_id,
+            "sess-fork"
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_falls_back_to_content_matching_and_title_defaults() {
+        let home = TestHome::new("session-fork-content");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        // Unknown ordinal (-1) → content match on "second question".
+        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-2"}));
+        // No session_info entry → title defaults to "<parent> (fork)", no model.
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(serde_json::json!([
+                {"id": "f1", "role": "user", "content": "first question"}
+            ])),
+        );
+        mock.push("set_cwd", Reply::Data("{}".to_string()));
+
+        let new_thread_id = fork_agent_session(&thread.id, " second question ", -1)
+            .await
+            .expect("fork");
+        assert_eq!(mock.requests_of("fork")[0].entry_id, "e4");
+        let new_thread = crate::store::get_thread(&new_thread_id)
+            .expect("thread")
+            .expect("exists");
+        assert_eq!(new_thread.title, "test thread (fork)");
+        let runs = crate::store::list_runs(&new_thread_id).expect("runs");
+        assert_eq!(runs.len(), 1, "no assistant replies → one placeholder run");
+        assert_eq!(runs[0].model_provider, None);
+    }
+
+    #[tokio::test]
+    async fn fork_last_user_message_ends_at_the_tail() {
+        let home = TestHome::new("session-fork-tail");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-3"}));
+        mock.push_data("get_session_entries", entries_payload(serde_json::json!([])));
+        mock.push("set_cwd", Reply::Data("{}".to_string()));
+
+        fork_agent_session(&thread.id, "ignored", 2)
+            .await
+            .expect("fork");
+        // The last user message is the tail entry itself.
+        assert_eq!(mock.requests_of("fork")[0].entry_id, "e5");
+    }
+
+    #[tokio::test]
+    async fn fork_error_paths() {
+        let home = TestHome::new("session-fork-errors");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        // Unknown thread.
+        let error = fork_agent_session("no-such-thread", "x", 0)
+            .await
+            .expect_err("missing thread");
+        assert_eq!(error.to_string(), "Thread could not be loaded.");
+
+        // Thread without an agent session.
+        let no_session = seed_thread(&workspace.id, None);
+        let error = fork_agent_session(&no_session.id, "x", 0)
+            .await
+            .expect_err("no session");
+        assert_eq!(error.to_string(), "No agent session for this thread.");
+
+        // Entries transport failure / rejection.
+        mock.push(
+            "get_session_entries",
+            Reply::Status(tonic::Code::Unavailable, "down"),
+        );
+        let error = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect_err("entries transport");
+        assert!(error.to_string().contains("Unable to list session entries"), "{error}");
+        mock.push("get_session_entries", Reply::Reject("bad".to_string()));
+        let error = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect_err("entries reject");
+        assert_eq!(error.to_string(), "bad");
+
+        // No matching user message.
+        mock.push_data("get_session_entries", entries_payload(serde_json::json!([])));
+        let error = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect_err("no match");
+        assert_eq!(
+            error.to_string(),
+            "No matching user message found in agent session."
+        );
+
+        // Fork transport failure / rejection / missing sessionId.
+        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push(
+            "fork",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
+        let error = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect_err("fork transport");
+        assert!(error.to_string().contains("Unable to fork session"), "{error}");
+
+        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push("fork", Reply::Reject("cannot fork".to_string()));
+        let error = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect_err("fork reject");
+        assert_eq!(error.to_string(), "cannot fork");
+
+        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data("fork", serde_json::json!({"ok": true}));
+        let error = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect_err("no session id");
+        assert_eq!(error.to_string(), "Fork did not return a session.");
+
+        // Forked-entries transport failure / rejection.
+        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-e"}));
+        mock.push(
+            "get_session_entries",
+            Reply::Status(tonic::Code::Unavailable, "down"),
+        );
+        let error = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect_err("fork entries transport");
+        assert!(
+            error.to_string().contains("Unable to list fork session entries"),
+            "{error}"
+        );
+
+        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-e"}));
+        mock.push("get_session_entries", Reply::Reject("bad".to_string()));
+        let error = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect_err("fork entries reject");
+        assert_eq!(error.to_string(), "bad");
+    }
+
+    #[tokio::test]
+    async fn fork_uses_agent_session_name_unless_placeholder() {
+        let home = TestHome::new("session-fork-name");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        mock.push_data("get_session_entries", entries_payload(conversation_entries()));
+        mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-4"}));
+        // session_name "(fork)" is a placeholder → default title.
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(serde_json::json!([
+                {"id": "f0", "role": "system", "content": {"session_name": "(fork)"}}
+            ])),
+        );
+        mock.push("set_cwd", Reply::Status(tonic::Code::Internal, "best effort"));
+        let new_thread_id = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect("fork");
+        let new_thread = crate::store::get_thread(&new_thread_id)
+            .expect("thread")
+            .expect("exists");
+        assert_eq!(new_thread.title, "test thread (fork)");
+    }
+
+    // ── synthesize_run_events_from_entries ──────────────────────────────
+
+    #[test]
+    fn synthesize_run_events_maps_assistants_to_runs() {
+        let home = TestHome::new("session-synthesize");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run_a = seed_run(&thread.id);
+        let run_b = seed_run(&thread.id);
+
+        let entries = serde_json::json!([
+            {"role": "assistant", "tool_calls": [
+                {"id": "tc-1", "function": {"name": "shell", "arguments": "{\"command\":\"ls\"}"}},
+                {"id": "", "function": {"name": "write", "arguments": "{}"}},
+                {"id": "tc-2"},
+                {"id": "tc-err", "function": {"name": "read", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "tc-1", "content": "ok"},
+            {"role": "tool", "tool_call_id": "tc-err", "content": "Error: missing file"},
+            {"role": "tool", "tool_call_id": "", "content": "no id"},
+            {"role": "assistant", "content": "no tool calls"},
+            {"role": "assistant", "tool_calls": []},
+            {"role": "user", "content": "not an assistant"}
+        ]);
+        synthesize_run_events_from_entries(
+            &entries
+                .as_array()
+                .expect("array")
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            &[run_a.id.clone(), run_b.id.clone()],
+        )
+        .expect("synthesize");
+
+        // tool_start args are queryable through the projection.
+        assert_eq!(
+            crate::store::get_tool_call_input(&run_a.id, "tc-1")
+                .expect("input")
+                .as_deref(),
+            Some(r#"{"command":"ls"}"#)
+        );
+        // The second assistant maps to the second run; further assistants
+        // (third) are dropped once run_ids are exhausted.
+        assert!(
+            crate::store::get_tool_call_input(&run_b.id, "tc-1")
+                .expect("input")
+                .is_none(),
+            "each assistant binds its own run"
+        );
     }
 }
