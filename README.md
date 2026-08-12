@@ -38,22 +38,16 @@ or from a native desktop window.
 
 One line, no source build required:
 
-**macOS** — installs the official signed app (arm64 / Intel auto-detected), then links the `/future-loop` skill (the control plane itself runs through the unified `future` CLI bundled with the app):
+**macOS / Linux** — one script, auto-detects the platform: macOS gets the official signed app (arm64 / Intel); Linux gets the `.deb` on Debian/Ubuntu (desktop app + unified `future` CLI) or the portable tarball everywhere else:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
+curl -fsSL https://dl.future-os.cn/install.sh | bash
 ```
 
 **Windows** (PowerShell) — runs the signed installer silently:
 
 ```powershell
-iex (irm https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.ps1)
-```
-
-**Linux** — no prebuilt binaries yet; the script bootstraps the toolchain (apt deps + Rust + Node 24 + Bun) and builds the terminal stack — the unified `future` CLI (agent, TUI, IM channels, and loop are all embedded in it) plus skills — from source:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/futuregene/future-os/main/scripts/install.sh | bash
+iex (irm https://dl.future-os.cn/install.ps1)
 ```
 
 Step-by-step installation for every platform (desktop app, toolchains, GUI

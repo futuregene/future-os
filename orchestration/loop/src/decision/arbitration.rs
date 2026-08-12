@@ -7,11 +7,11 @@
 //! branch selection (reference rule): only the final interaction contract's
 //! schema / mode / channels decide.
 //!
-//! Rollout (refactor plan §5.1 trade-off): **observe-only first** — every
-//! packet carries its [`SchedulerArbitration`] record but behavior is
-//! unchanged; flip [`ARBITRATION_ENFORCEMENT`] to `true` to fail closed on
-//! `CONSISTENCY_REPAIR` (`repair_action`: rebuild the contract, then rerun
-//! quota before applying scheduler cadence).
+//! Rollout (refactor plan §5.1 trade-off): observe-only shipped first — every
+//! packet carried its [`SchedulerArbitration`] record with behavior
+//! unchanged. [`ARBITRATION_ENFORCEMENT`] is now `true`: `CONSISTENCY_REPAIR`
+//! fails closed (`repair_action`: rebuild the contract, then rerun quota
+//! before applying scheduler cadence).
 //!
 //! Mode vocabulary: our typed [`TurnMode`] is mapped onto the LoopX
 //! interaction-contract mode strings the classifier branches on, so
@@ -33,9 +33,10 @@ pub const CONSISTENCY_REPAIR_ACTION: &str =
     "rebuild interaction_contract from the current quota decision, then rerun \
      quota before applying scheduler cadence";
 
-/// Rollout switch: observe-only (default) records dispositions on every
-/// packet without blocking; `true` makes `CONSISTENCY_REPAIR` fail closed.
-pub const ARBITRATION_ENFORCEMENT: bool = false;
+/// Rollout switch: `true` (enforced) makes `CONSISTENCY_REPAIR` fail closed —
+/// an inconsistent final interaction contract rewrites the packet to the
+/// `consistency_repair` decision with the `control_plane_repair` cadence.
+pub const ARBITRATION_ENFORCEMENT: bool = true;
 
 /// The 9 scheduler dispositions, aligned value-for-value with LoopX
 /// `SchedulerDisposition`.

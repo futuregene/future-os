@@ -59,6 +59,10 @@ impl HandshakeState {
     pub(super) fn bridge_instance_id(&self) -> &str {
         &self.bridge_instance_id
     }
+
+    pub(super) fn active_flag(&self) -> Arc<AtomicBool> {
+        self.active.clone()
+    }
 }
 
 pub(super) fn new_reply_slots() -> ReplySlots {
@@ -93,8 +97,17 @@ struct IncomingCmd {
     level: String,
     // set_session_name
     name: String,
+    transfer_name: String,
     // prompt creation mode / existing workspace selection
     workspace_id: String,
+    // file transfer control + prompt attachment references
+    mime_type: String,
+    kind: String,
+    original_size: u64,
+    transfer_size: u64,
+    transfer_id: String,
+    file_path: String,
+    attachments: Vec<super::transfer::UploadReference>,
     // signed application-level pairing handshake
     protocol_version: u32,
     pair_id: String,
@@ -124,7 +137,15 @@ impl Default for IncomingCmd {
             provider_id: String::new(),
             level: String::new(),
             name: String::new(),
+            transfer_name: String::new(),
             workspace_id: String::new(),
+            mime_type: String::new(),
+            kind: String::new(),
+            original_size: 0,
+            transfer_size: 0,
+            transfer_id: String::new(),
+            file_path: String::new(),
+            attachments: Vec::new(),
             protocol_version: 0,
             pair_id: String::new(),
             device_id: String::new(),
@@ -420,6 +441,68 @@ async fn handle_command(
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
+        "upload_init" => {
+            match super::transfer::init_upload(
+                &cmd.name,
+                &cmd.transfer_name,
+                &cmd.mime_type,
+                &cmd.kind,
+                cmd.original_size,
+                cmd.transfer_size,
+            ) {
+                Ok(data) => {
+                    reply(
+                        client,
+                        &msg,
+                        true,
+                        serde_json::to_value(data).unwrap_or(Value::Null),
+                        None,
+                    )
+                    .await
+                }
+                Err(error) => {
+                    reply(client, &msg, false, Value::Null, Some(&error.to_string())).await
+                }
+            }
+        }
+        "upload_complete" => match super::transfer::complete_upload(&cmd.transfer_id) {
+            Ok(data) => {
+                reply(
+                    client,
+                    &msg,
+                    true,
+                    serde_json::to_value(data).unwrap_or(Value::Null),
+                    None,
+                )
+                .await
+            }
+            Err(error) => reply(client, &msg, false, Value::Null, Some(&error.to_string())).await,
+        },
+        "upload_cancel" => match super::transfer::cancel_upload(&cmd.transfer_id) {
+            Ok(()) => reply(client, &msg, true, json!({}), None).await,
+            Err(error) => reply(client, &msg, false, Value::Null, Some(&error.to_string())).await,
+        },
+        "download_prepare" => {
+            match super::transfer::prepare_download(&cmd.session_id, &cmd.file_path).await {
+                Ok(data) => {
+                    reply(
+                        client,
+                        &msg,
+                        true,
+                        serde_json::to_value(data).unwrap_or(Value::Null),
+                        None,
+                    )
+                    .await
+                }
+                Err(error) => {
+                    reply(client, &msg, false, Value::Null, Some(&error.to_string())).await
+                }
+            }
+        }
+        "download_cancel" => {
+            super::transfer::cancel_download(&cmd.transfer_id);
+            reply(client, &msg, true, json!({}), None).await;
+        }
         "prompt" => {
             // Lazy creation (matches the GUI new-chat flow): the web client's
             // "new" button only stages a local draft and sends the first message
@@ -438,6 +521,7 @@ async fn handle_command(
                 thinking_level,
                 cmd.mode.clone(),
                 cmd.workspace_id.clone(),
+                cmd.attachments.clone(),
             )
             .await
             {
@@ -734,6 +818,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
+            "features": ["file_transfer_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -780,6 +865,7 @@ async fn prepare_remote_prompt(
     thinking_level: Option<String>,
     mode: String,
     workspace_id: String,
+    upload_references: Vec<super::transfer::UploadReference>,
 ) -> Result<crate::agent_bridge::PreparedPrompt, crate::AppError> {
     let thread = match crate::store::find_thread_by_agent_session(session_id)? {
         Some(thread) => thread,
@@ -844,8 +930,21 @@ async fn prepare_remote_prompt(
             "This session is still running; wait for it to finish or abort it first.".to_string(),
         ));
     }
-    let prepared =
-        crate::agent_bridge::prepare_prompt_persisted(&thread, message, model_id, thinking_level)?;
+    let attachments = super::transfer::claim_uploads(&upload_references, &thread.id)?;
+    let prepared = crate::agent_bridge::prepare_prompt_persisted(
+        &thread,
+        message,
+        model_id,
+        thinking_level,
+        attachments.clone(),
+    );
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            super::transfer::rollback_claimed(&attachments);
+            return Err(error);
+        }
+    };
     // Notify frontend: new thread/run appeared (trigger list refresh).
     crate::emit_remote_activity(&thread.id);
     Ok(prepared)

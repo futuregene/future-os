@@ -6,6 +6,7 @@
 //! `agent_bridge` means the finalization contract lives in one backend place —
 //! remote (phone) prompts and any future headless path must not re-implement it.
 
+use super::AttachmentInput;
 use crate::store;
 
 /// A prompt whose user message + run row are already persisted. Created by
@@ -20,6 +21,7 @@ pub struct PreparedPrompt {
     message: String,
     model_id: Option<String>,
     thinking_level: Option<String>,
+    attachments: Vec<AttachmentInput>,
 }
 
 /// Create the run for `thread`, returning the
@@ -29,6 +31,7 @@ pub fn prepare_prompt_persisted(
     message: String,
     model_id: Option<String>,
     thinking_level: Option<String>,
+    attachments: Vec<AttachmentInput>,
 ) -> Result<PreparedPrompt, crate::AppError> {
     let session_id = thread
         .agent_session_id
@@ -50,6 +53,7 @@ pub fn prepare_prompt_persisted(
         message,
         model_id,
         thinking_level,
+        attachments,
     })
 }
 
@@ -63,11 +67,12 @@ pub async fn run_prepared_prompt(prepared: PreparedPrompt) -> Result<(), crate::
         message,
         model_id,
         thinking_level,
+        attachments,
     } = prepared;
 
     let result = super::agent_prompt(
         message,
-        None,
+        Some(attachments),
         thread_id.clone(),
         Some(session_id),
         Some(run_id.clone()),

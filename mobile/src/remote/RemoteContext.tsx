@@ -13,6 +13,7 @@ import {
   applyStreamEvent,
   emptyTimeline,
   markApprovalDecision,
+  mergeHistoryAttachments,
   normalizeReplayEvents,
   timelineFromEntries,
   timelineFromHistory,
@@ -35,10 +36,21 @@ import {
   saveLastThinking,
 } from "./storage";
 import { modelProviderFromReference, modelReference } from "./types";
+import {
+  cachedPreviewForAttachment,
+  downloadPrepared,
+  prepareDownload,
+  rememberPreparedPreview,
+  uploadAttachments,
+} from "./files";
+import type { File } from "expo-file-system";
 import type {
   ConnectionPhase,
   HistoryEntry,
   HistoryMessage,
+  HistoryAttachment,
+  DownloadInfo,
+  MobileAttachment,
   Presence,
   RemoteCredentials,
   RemoteModel,
@@ -107,6 +119,7 @@ interface RemoteContextValue {
   modelId: string;
   thinkingLevel: ThinkingLevel;
   busy: boolean;
+  fileTransferSupported: boolean;
   pair(code: string): Promise<void>;
   reconnect(): Promise<void>;
   unpair(): Promise<void>;
@@ -115,7 +128,17 @@ interface RemoteContextValue {
   selectSession(sessionId: string): Promise<void>;
   newConversation(mode?: "chat" | "workspace", workspaceId?: string): Promise<void>;
   closeConversation(): void;
-  sendMessage(text: string): Promise<void>;
+  sendMessage(
+    text: string,
+    attachments?: MobileAttachment[],
+    onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
+  ): Promise<void>;
+  prepareAttachment(attachment: HistoryAttachment): Promise<DownloadInfo>;
+  cachedAttachment(attachment: HistoryAttachment): { info: DownloadInfo; file: File } | null;
+  downloadAttachment(
+    info: DownloadInfo,
+    onProgress?: (completedBytes: number, totalBytes: number) => void,
+  ): Promise<File>;
   abort(): Promise<void>;
   setModel(modelId: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<void>;
@@ -171,6 +194,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
   const [busy, setBusy] = useState(false);
+  const [fileTransferSupported, setFileTransferSupported] = useState(false);
   const [clock, setClock] = useState(Date.now());
   // Per-session timelines: events for EVERY session are consumed (the desktop
   // observer mirrors all of them), so a background run keeps advancing and
@@ -190,7 +214,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const clientRef = useRef<RemoteClient | null>(null);
   const credentialsRef = useRef<RemoteCredentials | null>(null);
   const selectedRef = useRef("");
+  // Changes whenever the user navigates between conversations. Long uploads
+  // capture the epoch so their eventual ack cannot pull the UI back to a
+  // conversation the user has already left.
+  const conversationEpochRef = useRef(0);
   const recoverRef = useRef<(sessionId?: string) => Promise<void>>(async () => undefined);
+  const hydrateAttachmentsRef = useRef<(sessionId: string) => Promise<void>>(async () => undefined);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const scheduleReconnectRef = useRef<() => void>(() => undefined);
@@ -296,6 +325,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           // Ignore a malformed rename payload.
         }
       }
+      if (event.type === "user_message") {
+        // Live events intentionally contain only the text. Enrich this bubble
+        // from the durable entry without replacing streamed assistant content.
+        void hydrateAttachmentsRef.current(sid);
+      }
       if (event.type === "approval_decision") {
         // A decision made on another device (desktop/TUI) resolves the pending
         // card here — otherwise it would linger until the session was reopened.
@@ -358,6 +392,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   );
 
   const closeConversation = useCallback(() => {
+    conversationEpochRef.current += 1;
     setSelectedSessionId("");
     selectedRef.current = "";
     setDraft(false);
@@ -377,6 +412,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setCredentials(fresh);
       setError(null);
       setPhase("connecting");
+      setFileTransferSupported(false);
       const client = new RemoteClient(fresh, {
         onCredentials: next => {
           setCredentials(next);
@@ -423,6 +459,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         },
         onWorkspaces: workspaceList => {
           setWorkspaces(workspaceList);
+        },
+        onFeatures: features => {
+          setFileTransferSupported(features.includes("file_transfer_v1"));
         },
         onConnectionState: state => {
           if (state === "connected") {
@@ -611,6 +650,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     }
     return timelineFromHistory(history);
   }, []);
+
+  useEffect(() => {
+    hydrateAttachmentsRef.current = async sessionId => {
+      try {
+        const durable = await loadHistory(sessionId);
+        setTimelines(prev => {
+          const live = prev[sessionId];
+          if (!live) return prev;
+          return { ...prev, [sessionId]: mergeHistoryAttachments(live, durable) };
+        });
+      } catch {
+        // The entry can briefly lag the live event. A reconnect/session open
+        // repeats the merge from durable history.
+      }
+    };
+  }, [loadHistory]);
 
   // ── Gap-fill and full-resync (integrity layer) ──
 
@@ -825,6 +880,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       if (!client) return;
       setBusy(true);
       syncLockRef.current = true;
+      conversationEpochRef.current += 1;
       setSelectedSessionId(sessionId);
       selectedRef.current = sessionId;
       setDraft(false);
@@ -859,6 +915,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
               ? { ...prev, [sessionId]: hydrated }
               : prev,
           );
+          // A cached timeline may have been assembled from real-time events,
+          // whose user_message payload deliberately omits attachments.
+          void hydrateAttachmentsRef.current(sessionId);
         } else {
           // No cache yet: load history, then overlay the active run's tail.
           const history = await loadHistory(sessionId);
@@ -887,6 +946,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           : null) ??
         (defaultOption ? modelReference(defaultOption) : null) ??
         (models[0] ? modelReference(models[0]) : "");
+      conversationEpochRef.current += 1;
       setSelectedSessionId("");
       selectedRef.current = "";
       setDraft(true);
@@ -900,41 +960,72 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   );
 
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (
+      text: string,
+      attachments: MobileAttachment[] = [],
+      onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
+    ) => {
       const client = clientRef.current;
-      if (!client || busy || !text.trim()) return;
-      const currentTimeline = timelinesRef.current[selectedRef.current] ?? emptyTimeline();
+      if (!client || busy || (!text.trim() && attachments.length === 0)) return;
+      if (attachments.length > 0 && !fileTransferSupported) {
+        throw new Error("attachment_unsupported_desktop");
+      }
+      // Uploading can take long enough for the user to navigate elsewhere.
+      // Freeze every routing value now; never consult selectedRef again for
+      // this send operation.
+      const targetSessionId = selectedRef.current;
+      const targetDraft = draft;
+      const targetDraftMode = draftMode;
+      const targetDraftWorkspaceId = draftWorkspaceId;
+      const conversationEpoch = conversationEpochRef.current;
+      const currentTimeline = timelinesRef.current[targetSessionId] ?? emptyTimeline();
       if (currentTimeline.streaming) return;
-      const optimisticTimeline = appendUserMessage(currentTimeline, text.trim());
       setBusy(true);
-      setTimelines(prev => ({ ...prev, [selectedRef.current]: optimisticTimeline }));
       try {
-        const response = await client.request<PromptAck>(
+        const uploaded = await uploadAttachments(client, attachments, onUploadProgress);
+        const optimisticTimeline = appendUserMessage(
+          currentTimeline,
+          text.trim(),
+          attachments.map(attachment => ({
+            path: attachment.localUri,
+            name: attachment.name,
+            kind: attachment.kind,
+            mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
+          })),
+        );
+        setTimelines(prev => ({ ...prev, [targetSessionId]: optimisticTimeline }));
+        const response = await client.requestRetry<PromptAck>(
           {
             type: "prompt",
-            sessionId: selectedRef.current,
+            sessionId: targetSessionId,
             message: text.trim(),
             modelId,
             providerId: modelProviderFromReference(modelId),
             level: thinkingLevel,
-            ...(draft && draftMode === "workspace"
-              ? { mode: "workspace", workspaceId: draftWorkspaceId }
+            ...(uploaded.length
+              ? { attachments: uploaded.map(attachment => ({ uploadId: attachment.uploadId! })) }
+              : {}),
+            ...(targetDraft && targetDraftMode === "workspace"
+              ? { mode: "workspace", workspaceId: targetDraftWorkspaceId }
               : {}),
           },
-          selectedRef.current,
+          targetSessionId,
         );
         const nextSessionId = response.data.sessionId;
-        if (nextSessionId && nextSessionId !== selectedRef.current) {
+        if (nextSessionId && nextSessionId !== targetSessionId) {
           // A draft just got bound to a real session. Its live events have been
           // landing in the real session's cache all along (handleEvent consumes
           // every session), so migrate the optimistic user bubble from the ""
           // placeholder cache and finish hydrating the run's tail.
-          const draftTimeline = timelinesRef.current[""];
-          selectedRef.current = nextSessionId;
-          setSelectedSessionId(nextSessionId);
-          setDraft(false);
-          setDraftMode("chat");
-          setDraftWorkspaceId("");
+          const draftTimeline = optimisticTimeline;
+          const stillViewingSentDraft = conversationEpochRef.current === conversationEpoch;
+          if (stillViewingSentDraft) {
+            selectedRef.current = nextSessionId;
+            setSelectedSessionId(nextSessionId);
+            setDraft(false);
+            setDraftMode("chat");
+            setDraftWorkspaceId("");
+          }
           setTimelines(prev => {
             const draftItems = draftTimeline?.items ?? [];
             const current = prev[nextSessionId] ?? emptyTimeline();
@@ -952,13 +1043,25 @@ export function RemoteProvider({ children }: PropsWithChildren) {
                   item.role === "user" &&
                   item.text.trim() === draftUser.text.trim(),
               );
+            const currentItems =
+              alreadyLanded && draftUser?.kind === "message" && draftUser.attachments?.length
+                ? current.items.map(item =>
+                    item.kind === "message" &&
+                    item.role === "user" &&
+                    item.text.trim() === draftUser.text.trim()
+                      ? { ...draftUser, runId: item.runId }
+                      : item,
+                  )
+                : current.items;
             return {
               ...prev,
               [nextSessionId]: {
                 ...current,
-                items: alreadyLanded ? current.items : [...draftItems, ...current.items],
+                items: alreadyLanded ? currentItems : [...draftItems, ...current.items],
               },
-              ...(draftItems.length === 0 || alreadyLanded ? { "": emptyTimeline() } : {}),
+              ...(stillViewingSentDraft && (draftItems.length === 0 || alreadyLanded)
+                ? { "": emptyTimeline() }
+                : {}),
             };
           });
           await refreshSessions();
@@ -967,7 +1070,42 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         setBusy(false);
       }
     },
-    [busy, draft, draftMode, draftWorkspaceId, modelId, refreshSessions, thinkingLevel],
+    [
+      busy,
+      draft,
+      draftMode,
+      draftWorkspaceId,
+      fileTransferSupported,
+      modelId,
+      refreshSessions,
+      thinkingLevel,
+    ],
+  );
+
+  const prepareAttachment = useCallback(async (attachment: HistoryAttachment) => {
+    const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    if (!client || !sessionId) throw new Error("attachment_no_session");
+    const info = await prepareDownload(client, sessionId, attachment);
+    rememberPreparedPreview(attachment, info);
+    return info;
+  }, []);
+
+  const cachedAttachment = useCallback(
+    (attachment: HistoryAttachment) => cachedPreviewForAttachment(attachment),
+    [],
+  );
+
+  const downloadAttachment = useCallback(
+    async (
+      info: DownloadInfo,
+      onProgress?: (completedBytes: number, totalBytes: number) => void,
+    ) => {
+      const client = clientRef.current;
+      if (!client) throw new Error("attachment_not_connected");
+      return downloadPrepared(client, info, onProgress);
+    },
+    [],
   );
 
   const abort = useCallback(async () => {
@@ -1068,6 +1206,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       modelId,
       thinkingLevel,
       busy,
+      fileTransferSupported,
       pair,
       reconnect,
       unpair,
@@ -1077,6 +1216,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       newConversation,
       closeConversation,
       sendMessage,
+      prepareAttachment,
+      cachedAttachment,
+      downloadAttachment,
       abort,
       setModel,
       setThinkingLevel,
@@ -1086,6 +1228,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     [
       abort,
       busy,
+      fileTransferSupported,
       credentials,
       closeConversation,
       decideApproval,
@@ -1106,6 +1249,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedSessionId,
       selectedTitle,
       sendMessage,
+      prepareAttachment,
+      cachedAttachment,
+      downloadAttachment,
       sessions,
       timeline,
       unreadSessions,

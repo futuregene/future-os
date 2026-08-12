@@ -483,7 +483,7 @@ Artifact 表示工作过程中产生的可复用产物。
 - 普通 Chat 产生的 Artifact 存在临时 Workspace 下。
 - 清理普通 Chat 时，用户可以下载 Artifact。
 - 对话输入框附件不自动登记为 Artifact，也不复制到普通 Chat / Workspace 的工作目录。Artifacts 面板的主动上传是独立流程。
-- **图片持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/` 保存所有图片附件的缩略图，`origin/` 仅保存粘贴图片等没有稳定用户原始路径的图片。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent session JSONL 的 `SessionEntry.meta.attachments` 中，GUI SQLite `messages` 已不作为消息来源，**无独立附件表**。
+- **附件持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/` 保存所有图片附件的缩略图，`origin/` 保存粘贴图片及手机上传等没有稳定桌面原始路径的附件。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent session JSONL 的 `SessionEntry.meta.attachments` 中，GUI SQLite `messages` 已不作为消息来源，**无独立附件表**。
 - **回收**：`images/<tid>` 无逐删执行器,靠启动时 `reconcile_orphan_images` 孤儿清扫——`threads` 表中 `status='deleted'` 或无行的 tid 其目录被删（无软删撤销）；整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
 
 ### 4.12–4.13 Research Collection / Research Resource（已延后，未建表）

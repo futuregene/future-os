@@ -257,9 +257,9 @@ pub struct ShouldRunPacket {
     pub promotion_readiness_warning: Option<String>,
     pub autonomous_backlog_candidates: Option<serde_json::Value>,
     pub protocol_action_packet: Option<serde_json::Value>,
-    /// G-2/G-11 scheduler arbitration record — observe-only by default
-    /// (records the 9-disposition classification without blocking); flip
-    /// `ARBITRATION_ENFORCEMENT` to fail closed on CONSISTENCY_REPAIR.
+    /// G-2/G-11 scheduler arbitration record — recorded on every packet;
+    /// with `ARBITRATION_ENFORCEMENT` on, a `CONSISTENCY_REPAIR` verdict
+    /// fails closed (rewrites the packet to the repair cadence).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scheduler_arbitration: Option<SchedulerArbitration>,
     #[serde(skip_serializing_if = "Option::is_none")]

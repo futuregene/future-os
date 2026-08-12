@@ -104,7 +104,7 @@ jobs:
           "$env:USERPROFILE\.cargo\bin" | Add-Content -Path $env:GITHUB_PATH
 
       # Single source of truth: scripts/version.mjs. A `vX.Y.Z` tag → release
-      # ("X.Y.Z"); anything else → dev ("0.0.0-<hash>").
+      # ("X.Y.Z"); anything else → dev ("0.0.2-<hash>").
       - name: Resolve version
         id: v
         env:
