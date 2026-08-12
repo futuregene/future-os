@@ -192,7 +192,7 @@ mod tests {
             "get_state",
             serde_json::json!({"activeRun": {"runId": "run-canonical"}}),
         );
-        mock.push(Some("abort"), Reply::Data("{}".to_string()));
+        mock.push("abort", Reply::Data("{}".to_string()));
         abort_session("sess-1").await.expect("abort");
         let abort = &mock.requests_of("abort")[0];
         assert_eq!(abort.run_id, "run-canonical");
@@ -205,7 +205,7 @@ mod tests {
         let mock = mock_agent();
 
         mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
-        mock.push(Some("abort"), Reply::Data("{}".to_string()));
+        mock.push("abort", Reply::Data("{}".to_string()));
         abort_session("sess-1").await.expect("abort");
         assert_eq!(mock.requests_of("abort")[0].run_id, "");
     }
@@ -216,13 +216,12 @@ mod tests {
         let mock = mock_agent();
 
         // get_state rejected at app level.
-        mock.push(Some("get_state"), Reply::Reject("no session".to_string()));
+        mock.push("get_state", Reply::Reject("no session".to_string()));
         let error = abort_session("sess-1").await.expect_err("state reject");
         assert_eq!(error.to_string(), "no session");
 
         // get_state transport failure.
-        mock.push(
-            Some("get_state"),
+        mock.push("get_state",
             Reply::Status(tonic::Code::Unavailable, "gone"),
         );
         let error = abort_session("sess-1").await.expect_err("state transport");
@@ -233,8 +232,7 @@ mod tests {
 
         // abort transport failure.
         mock.push_data("get_state", serde_json::json!({}));
-        mock.push(
-            Some("abort"),
+        mock.push("abort",
             Reply::Status(tonic::Code::Internal, "boom"),
         );
         let error = abort_session("sess-1").await.expect_err("abort transport");
@@ -245,7 +243,7 @@ mod tests {
 
         // abort rejected at app level.
         mock.push_data("get_state", serde_json::json!({}));
-        mock.push(Some("abort"), Reply::Reject("not running".to_string()));
+        mock.push("abort", Reply::Reject("not running".to_string()));
         let error = abort_session("sess-1").await.expect_err("abort reject");
         assert_eq!(error.to_string(), "not running");
     }
@@ -258,7 +256,7 @@ mod tests {
         let thread = seed_thread(&workspace.id, Some("sess-1"));
 
         // No replica mapping: the local run id doubles as the canonical id.
-        mock.push(Some("abort"), Reply::Data("{}".to_string()));
+        mock.push("abort", Reply::Data("{}".to_string()));
         abort_agent_thread(&thread.id, Some("run-local"))
             .await
             .expect("abort");
@@ -270,7 +268,7 @@ mod tests {
             .expect("lease")
             .bind_local(Some("run-local-2"))
             .expect("bind");
-        mock.push(Some("abort"), Reply::Data("{}".to_string()));
+        mock.push("abort", Reply::Data("{}".to_string()));
         abort_agent_thread(&thread.id, Some("run-local-2"))
             .await
             .expect("abort");
@@ -282,14 +280,14 @@ mod tests {
             "get_state",
             serde_json::json!({"activeRun": {"runId": "run-probed"}}),
         );
-        mock.push(Some("abort"), Reply::Data("{}".to_string()));
+        mock.push("abort", Reply::Data("{}".to_string()));
         abort_agent_thread(&thread.id, Some("")).await.expect("abort");
         assert_eq!(mock.requests_of("abort")[2].run_id, "run-probed");
 
         // Thread without a session id: the thread id doubles as the session.
         let no_session = seed_thread(&workspace.id, None);
         mock.push_data("get_state", serde_json::json!({}));
-        mock.push(Some("abort"), Reply::Data("{}".to_string()));
+        mock.push("abort", Reply::Data("{}".to_string()));
         abort_agent_thread(&no_session.id, None).await.expect("abort");
         assert_eq!(mock.requests_of("abort")[3].session_id, no_session.id);
 
@@ -300,7 +298,7 @@ mod tests {
         assert_eq!(error.to_string(), "Thread could not be loaded.");
 
         // Abort rejection propagates.
-        mock.push(Some("abort"), Reply::Reject("nope".to_string()));
+        mock.push("abort", Reply::Reject("nope".to_string()));
         let error = abort_agent_thread(&thread.id, Some("run-local"))
             .await
             .expect_err("abort reject");
@@ -316,7 +314,7 @@ mod tests {
         let run = seed_run(&thread.id);
 
         // Healthy abort: the run is cancelled and returned.
-        mock.push(Some("abort"), Reply::Data("{}".to_string()));
+        mock.push("abort", Reply::Data("{}".to_string()));
         let record = abort_run(thread.id.clone(), run.id.clone())
             .await
             .expect("abort run");
@@ -325,8 +323,7 @@ mod tests {
 
         // Agent down (Unavailable transport): still cancelled locally.
         let run2 = seed_run(&thread.id);
-        mock.push(
-            Some("abort"),
+        mock.push("abort",
             Reply::Status(tonic::Code::Unavailable, "agent dead"),
         );
         let record = abort_run(thread.id.clone(), run2.id.clone())
@@ -336,8 +333,7 @@ mod tests {
 
         // A non-Unavailable failure propagates and the run stays untouched.
         let run3 = seed_run(&thread.id);
-        mock.push(
-            Some("abort"),
+        mock.push("abort",
             Reply::Status(tonic::Code::Internal, "boom"),
         );
         let error = abort_run(thread.id.clone(), run3.id.clone())
@@ -366,7 +362,7 @@ mod tests {
         })
         .expect("complete");
 
-        mock.push(Some("abort"), Reply::Data("{}".to_string()));
+        mock.push("abort", Reply::Data("{}".to_string()));
         let record = abort_run(thread.id.clone(), run.id.clone())
             .await
             .expect("abort returns current state");
@@ -414,15 +410,14 @@ mod tests {
         assert_eq!(mock.requests_of("get_state").len(), 4);
 
         // Transport failure mid-poll → treated as idle.
-        mock.push(
-            Some("get_state"),
+        mock.push("get_state",
             Reply::Status(tonic::Code::Unavailable, "gone"),
         );
         wait_for_agent_idle("sess-1").await;
         assert_eq!(mock.requests_of("get_state").len(), 5);
 
         // Unparseable state payload → treated as not streaming.
-        mock.push(Some("get_state"), Reply::Data("not json".to_string()));
+        mock.push("get_state", Reply::Data("not json".to_string()));
         wait_for_agent_idle("sess-1").await;
         assert_eq!(mock.requests_of("get_state").len(), 6);
     }

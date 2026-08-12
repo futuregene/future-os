@@ -199,7 +199,7 @@ mod tests {
         let mock = mock_agent();
 
         // Agent applies the change.
-        mock.push(Some("set_auth"), Reply::Data("{}".to_string()));
+        mock.push("set_auth", Reply::Data("{}".to_string()));
         assert!(set_provider_key("future", "sk-1").await.expect("ok"));
         let request = &mock.requests_of("set_auth")[0];
         let update = request.auth_update.as_ref().expect("auth update");
@@ -208,25 +208,23 @@ mod tests {
         assert!(!update.clear_key);
 
         // Agent knows the command but rejects it (validation failure).
-        mock.push(Some("set_auth"), Reply::Reject("duplicate provider id".to_string()));
+        mock.push("set_auth", Reply::Reject("duplicate provider id".to_string()));
         let error = set_provider_key("future", "sk-1").await.expect_err("rejected");
         assert_eq!(error.to_string(), "duplicate provider id");
 
         // Rejection without a message gets a synthesized one.
-        mock.push(Some("set_auth"), Reply::Reject(String::new()));
+        mock.push("set_auth", Reply::Reject(String::new()));
         let error = set_provider_key("future", "sk-1").await.expect_err("rejected");
         assert_eq!(error.to_string(), "Future Agent rejected set_auth.");
 
         // Legacy agent: "unknown command" → caller falls back (Ok(false)).
-        mock.push(
-            Some("set_auth"),
+        mock.push("set_auth",
             Reply::Reject("unknown command: set_auth".to_string()),
         );
         assert!(!set_provider_key("future", "sk-1").await.expect("fallback"));
 
         // Transport-level failure → fall back too.
-        mock.push(
-            Some("set_auth"),
+        mock.push("set_auth",
             Reply::Status(tonic::Code::Unavailable, "connection reset"),
         );
         assert!(!set_provider_key("future", "sk-1").await.expect("fallback"));
@@ -242,7 +240,7 @@ mod tests {
     async fn auth_update_variants() {
         let mock = mock_agent();
 
-        mock.push(Some("set_auth"), Reply::Data("{}".to_string()));
+        mock.push("set_auth", Reply::Data("{}".to_string()));
         assert!(clear_provider_key("future").await.expect("ok"));
         let update = mock.requests_of("set_auth")[0]
             .auth_update
@@ -251,7 +249,7 @@ mod tests {
         assert!(update.clear_key);
         assert_eq!(update.key, "");
 
-        mock.push(Some("set_auth"), Reply::Data("{}".to_string()));
+        mock.push("set_auth", Reply::Data("{}".to_string()));
         assert!(future_login("fg-key", "https://api.example").await.expect("ok"));
         let update = mock.requests_of("set_auth")[1]
             .auth_update
@@ -261,7 +259,7 @@ mod tests {
         assert_eq!(update.key, "fg-key");
         assert_eq!(update.base_url, "https://api.example");
 
-        mock.push(Some("set_auth"), Reply::Data("{}".to_string()));
+        mock.push("set_auth", Reply::Data("{}".to_string()));
         assert!(future_logout().await.expect("ok"));
         let update = mock.requests_of("set_auth")[2]
             .auth_update
@@ -276,7 +274,7 @@ mod tests {
         let mock = mock_agent();
 
         // Base URL override set.
-        mock.push(Some("upsert_provider"), Reply::Data("{}".to_string()));
+        mock.push("upsert_provider", Reply::Data("{}".to_string()));
         assert!(
             set_builtin_provider_base_url("future", "https://alt.example")
                 .await
@@ -291,7 +289,7 @@ mod tests {
         assert!(!config.clear_base_url);
 
         // Empty base URL clears the override.
-        mock.push(Some("upsert_provider"), Reply::Data("{}".to_string()));
+        mock.push("upsert_provider", Reply::Data("{}".to_string()));
         assert!(
             set_builtin_provider_base_url("future", "")
                 .await
@@ -304,7 +302,7 @@ mod tests {
         assert!(config.clear_base_url);
 
         // Full upsert.
-        mock.push(Some("upsert_provider"), Reply::Data("{}".to_string()));
+        mock.push("upsert_provider", Reply::Data("{}".to_string()));
         let upsert = crate::agent_proto::ProviderUpsert {
             id: "custom".to_string(),
             name: "Custom".to_string(),
@@ -318,7 +316,7 @@ mod tests {
         assert_eq!(config.name, "Custom");
 
         // Delete.
-        mock.push(Some("delete_provider"), Reply::Data("{}".to_string()));
+        mock.push("delete_provider", Reply::Data("{}".to_string()));
         assert!(delete_provider("custom").await.expect("ok"));
         let config = mock.requests_of("delete_provider")[0]
             .provider_config

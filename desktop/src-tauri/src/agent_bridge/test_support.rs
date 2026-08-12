@@ -7,22 +7,26 @@
 //! hold [`mock_agent`]'s guard for their whole duration — it serializes them
 //! and resets the script, so per-test expectations stay deterministic.
 //!
+//! Replies are scripted PER COMMAND TYPE (a FIFO queue each), not globally:
+//! `agent_prompt` spawns a session observer whose replay/probe RPCs interleave
+//! with the pipeline's own calls, and only per-type queues keep that
+//! deterministic. Streams split the same way on `atomic_attach` (collectors
+//! and active-run probes attach atomically; idle observers plain-subscribe).
+//!
 //! Tests that touch the SQLite store additionally hold [`TestHome`], which
 //! redirects `HOME` (the store resolves its db path per call and the
 //! connection pool re-keys on path change). Acquire `TestHome` FIRST and the
 //! mock guard second everywhere to keep lock ordering consistent.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use futures::StreamExt;
-
 use crate::agent_proto::future_agent_server::{FutureAgent, FutureAgentServer};
 use crate::agent_proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
 
-/// One scripted `execute_command` reply, consumed FIFO.
+/// One scripted `execute_command` reply, consumed FIFO per command type.
 pub(crate) enum Reply {
     /// `success = true` with the given JSON `data` string.
     Data(String),
@@ -32,7 +36,7 @@ pub(crate) enum Reply {
     Status(tonic::Code, &'static str),
 }
 
-/// One scripted `stream_events` outcome, consumed FIFO.
+/// One scripted `stream_events` outcome.
 pub(crate) enum StreamScript {
     /// The attach itself fails with this status.
     AttachError(tonic::Code, &'static str),
@@ -45,18 +49,15 @@ pub(crate) enum StreamScript {
 
 #[derive(Default)]
 struct MockState {
-    replies: VecDeque<(Option<String>, Reply)>,
-    streams: VecDeque<StreamScript>,
+    replies: HashMap<String, VecDeque<Reply>>,
+    atomic_streams: VecDeque<StreamScript>,
+    plain_streams: VecDeque<StreamScript>,
     requests: Vec<RpcCommand>,
     stream_requests: Vec<StreamRequest>,
 }
 
-static STATE: Mutex<MockState> = Mutex::new(MockState {
-    replies: VecDeque::new(),
-    streams: VecDeque::new(),
-    requests: Vec::new(),
-    stream_requests: Vec::new(),
-});
+static STATE: std::sync::LazyLock<Mutex<MockState>> =
+    std::sync::LazyLock::new(|| Mutex::new(MockState::default()));
 
 fn rpc_response(cmd: &RpcCommand, success: bool, data: String, error: String) -> RpcResponse {
     RpcResponse {
@@ -82,22 +83,13 @@ impl FutureAgent for MockAgent {
         let reply = {
             let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.requests.push(cmd.clone());
-            match state.replies.pop_front() {
-                Some((expect, reply)) => {
-                    if let Some(expect) = expect {
-                        if cmd.r#type != expect {
-                            return Err(tonic::Status::internal(format!(
-                                "mock script mismatch: expected {expect}, got {}",
-                                cmd.r#type
-                            )));
-                        }
-                    }
-                    reply
-                }
-                // Unscripted commands (e.g. the connect health check) get a
-                // generic success so first-touch channel init always works.
-                None => Reply::Data("{}".to_string()),
-            }
+            state
+                .replies
+                .get_mut(&cmd.r#type)
+                .and_then(VecDeque::pop_front)
+                // Unscripted commands get a generic success so incidental
+                // calls (observer replays, health checks) always work.
+                .unwrap_or_else(|| Reply::Data("{}".to_string()))
         };
         match reply {
             Reply::Data(data) => Ok(tonic::Response::new(rpc_response(&cmd, true, data, String::new()))),
@@ -119,13 +111,21 @@ impl FutureAgent for MockAgent {
         let req = request.into_inner();
         let script = {
             let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let atomic = req.atomic_attach;
             state.stream_requests.push(req);
-            state.streams.pop_front()
+            let queue = if atomic {
+                &mut state.atomic_streams
+            } else {
+                &mut state.plain_streams
+            };
+            queue.pop_front()
         };
         match script {
             Some(StreamScript::AttachError(code, message)) => {
                 Err(tonic::Status::new(code, message))
             }
+            // An unscripted stream parks forever: idle observers subscribe
+            // this way, and a parked stream must not produce spurious events.
             Some(StreamScript::Hang) | None => {
                 Ok(tonic::Response::new(Box::pin(futures::stream::pending())))
             }
@@ -173,6 +173,24 @@ fn ensure_mock_server() {
             .expect("spawn mock agent thread");
         let addr = addr_rx.recv().expect("mock agent address");
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", addr.to_string());
+        // Warm the shared-channel OnceCell NOW, while the script is empty and
+        // its init health check consumes the default reply. Without this the
+        // first test to call connect_agent would lose its first scripted
+        // reply to the health check, making outcomes depend on test order.
+        std::thread::Builder::new()
+            .name("mock-agent-warmup".to_string())
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("warmup runtime");
+                runtime
+                    .block_on(super::client::connect_agent())
+                    .expect("warmup connect to mock agent");
+            })
+            .expect("spawn warmup thread")
+            .join()
+            .expect("warmup thread");
     });
 }
 
@@ -191,7 +209,8 @@ pub(crate) fn mock_agent() -> MockAgentGuard {
     {
         let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.replies.clear();
-        state.streams.clear();
+        state.atomic_streams.clear();
+        state.plain_streams.clear();
         state.requests.clear();
         state.stream_requests.clear();
     }
@@ -199,26 +218,39 @@ pub(crate) fn mock_agent() -> MockAgentGuard {
 }
 
 impl MockAgentGuard {
-    /// Queue a reply, asserting the command type when `expect_type` is set.
-    pub(crate) fn push(&self, expect_type: Option<&str>, reply: Reply) {
+    /// Queue a reply for one command type (FIFO within the type).
+    pub(crate) fn push(&self, command_type: &str, reply: Reply) {
         STATE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .replies
-            .push_back((expect_type.map(str::to_string), reply));
+            .entry(command_type.to_string())
+            .or_default()
+            .push_back(reply);
     }
 
     /// Queue a successful reply whose `data` is the JSON rendering of `value`.
-    pub(crate) fn push_data(&self, expect_type: &str, value: serde_json::Value) {
-        self.push(Some(expect_type), Reply::Data(value.to_string()));
+    pub(crate) fn push_data(&self, command_type: &str, value: serde_json::Value) {
+        self.push(command_type, Reply::Data(value.to_string()));
     }
 
-    /// Queue one `stream_events` outcome.
+    /// Queue one atomic-attach (`atomic_attach: true`) stream outcome — the
+    /// kind prompt collectors and active-run probes open.
     pub(crate) fn push_stream(&self, script: StreamScript) {
         STATE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .streams
+            .atomic_streams
+            .push_back(script);
+    }
+
+    /// Queue one plain-subscription stream outcome — the kind idle session
+    /// observers open.
+    pub(crate) fn push_plain_stream(&self, script: StreamScript) {
+        STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .plain_streams
             .push_back(script);
     }
 
@@ -345,4 +377,30 @@ pub(crate) fn seed_run(thread_id: &str) -> crate::store::RunRecord {
         model_id: None,
     })
     .expect("create run")
+}
+
+/// Create a pending approval row for the run.
+pub(crate) fn seed_approval(
+    approval_request_id: &str,
+    run_id: &str,
+) -> crate::store::ApprovalRequestRecord {
+    crate::store::ensure_approval_request(crate::store::EnsureApprovalRequestInput {
+        approval_request_id: Some(approval_request_id.to_string()),
+        run_id: run_id.to_string(),
+        tool_call_id: None,
+        kind: "tool".to_string(),
+        title: "Approve `tool`".to_string(),
+        summary: None,
+        risk_level: None,
+        requested_action: None,
+        action_category: None,
+        action_payload: None,
+        sandbox_boundary: None,
+        save_suggestion: None,
+        reviewer: None,
+    })
+    .expect("ensure approval");
+    crate::store::get_approval_request(approval_request_id)
+        .expect("approval query")
+        .expect("approval exists")
 }

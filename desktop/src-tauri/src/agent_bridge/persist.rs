@@ -453,7 +453,8 @@ fn value_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
 }
 
 fn compact_json(value: &serde_json::Value) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+    // serde_json::Value serialization is infallible (no custom Serialize impls).
+    serde_json::to_string(value).expect("Value serialization is infallible")
 }
 
 #[cfg(test)]
@@ -561,5 +562,575 @@ mod tests {
         // No structured fields, no prose -> not a failure.
         let value = json!({"text": "hello"});
         assert!(!output_is_failure(&value, Some("hello"), "r", "t"));
+    }
+
+    // ── store-backed persistence paths ────────────────────────────────
+
+    use super::super::test_support::{seed_run, seed_thread, seed_workspace, TestHome};
+    use super::{event_value, persist_run_event, value_string};
+    use serde_json::json;
+
+    struct Fixture {
+        _home: TestHome,
+        workspace: crate::store::WorkspaceRecord,
+        thread: crate::store::ThreadRecord,
+        run: crate::store::RunRecord,
+    }
+
+    fn fixture(tag: &str) -> Fixture {
+        let home = TestHome::new(tag);
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run = seed_run(&thread.id);
+        Fixture {
+            _home: home,
+            workspace,
+            thread,
+            run,
+        }
+    }
+
+    fn artifacts(fixture: &Fixture) -> Vec<crate::store::ArtifactRecord> {
+        crate::store::list_artifacts(&fixture.thread.id).expect("artifacts")
+    }
+
+    /// Create `path` on disk and return its string form. Artifact paths must
+    /// exist for `canonical_or_raw` to resolve them (macOS symlinks /var).
+    fn touch(path: &std::path::Path) -> String {
+        std::fs::write(path, "content").expect("touch artifact file");
+        path.display().to_string()
+    }
+
+    #[test]
+    fn none_run_id_and_invalid_payloads_are_dropped() {
+        let fixture = fixture("persist-none");
+        // No run id: nothing is projected at all.
+        persist_run_event(None, "tool_start", "{}", 0);
+        // Invalid JSON payload: parsed to None and dropped.
+        persist_run_event(Some(&fixture.run.id), "tool_end", "not json", 1);
+        assert!(event_value("not json").is_none());
+        assert!(event_value("{}").is_some());
+        assert!(artifacts(&fixture).is_empty());
+    }
+
+    #[test]
+    fn value_string_picks_strings_objects_and_skips_nulls() {
+        let value = json!({"a": "text", "b": {"k": 1}, "c": null, "d": 7});
+        assert_eq!(value_string(&value, &["a"]), Some("text".to_string()));
+        assert_eq!(value_string(&value, &["b"]), Some(r#"{"k":1}"#.to_string()));
+        assert_eq!(value_string(&value, &["c"]), None, "explicit null is absent");
+        assert_eq!(value_string(&value, &["d"]), Some("7".to_string()));
+        assert_eq!(value_string(&value, &["missing"]), None);
+        assert_eq!(
+            value_string(&value, &["missing", "a"]),
+            Some("text".to_string()),
+            "first matching key wins"
+        );
+    }
+
+    #[test]
+    fn approval_request_event_is_projected_with_full_field_mapping() {
+        let fixture = fixture("persist-appr");
+        let payload = json!({
+            "approvalRequestId": "appr-1",
+            "tool_id": "tc-1",
+            "toolName": "shell",
+            "kind": "tool",
+            "title": "Approve shell",
+            "summary": "run ls",
+            "riskLevel": "high",
+            "requestedAction": {"command": "ls"},
+            "actionPayload": {"category": "process"},
+            "sandboxBoundary": {"scope": "workspace"},
+            "saveSuggestion": {"scope": "always"},
+            "reviewer": "user"
+        });
+        persist_run_event(Some(&fixture.run.id), "approval_request", &payload.to_string(), 0);
+
+        let record = crate::store::get_approval_request("appr-1")
+            .expect("query")
+            .expect("approval row");
+        assert_eq!(record.tool_call_id.as_deref(), Some("tc-1"));
+        assert_eq!(record.title, "Approve shell");
+        assert_eq!(record.summary.as_deref(), Some("run ls"));
+        assert_eq!(record.risk_level.as_deref(), Some("high"));
+        assert_eq!(
+            record.requested_action.as_deref(),
+            Some(r#"{"command":"ls"}"#)
+        );
+        assert_eq!(record.action_category.as_deref(), Some("process"));
+        assert_eq!(
+            record.action_payload.as_deref(),
+            Some(r#"{"category":"process"}"#)
+        );
+        assert_eq!(
+            record.sandbox_boundary.as_deref(),
+            Some(r#"{"scope":"workspace"}"#)
+        );
+        assert_eq!(
+            record.save_suggestion.as_deref(),
+            Some(r#"{"scope":"always"}"#)
+        );
+        assert_eq!(record.reviewer, "user");
+        assert_eq!(
+            crate::store::get_run(&fixture.run.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "waiting_approval",
+            "the run parks on the approval"
+        );
+    }
+
+    #[test]
+    fn approval_request_defaults_and_null_suggestion() {
+        let fixture = fixture("persist-appr-defaults");
+        let payload = json!({
+            "approval_request_id": "appr-2",
+            "tool_id": "",
+            "save_suggestion": null
+        });
+        persist_run_event(Some(&fixture.run.id), "approval_request", &payload.to_string(), 0);
+        let record = crate::store::get_approval_request("appr-2")
+            .expect("query")
+            .expect("approval row");
+        assert_eq!(record.tool_call_id, None, "empty tool id stores NULL");
+        assert_eq!(record.title, "Approve `tool`", "default tool name in title");
+        assert_eq!(record.kind, "tool");
+        assert_eq!(record.save_suggestion, None, "JSON null is not a suggestion");
+
+        // Missing approval_request_id: dropped.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_request",
+            &json!({"tool_name": "shell"}).to_string(),
+            1,
+        );
+    }
+
+    #[test]
+    fn approval_request_for_a_terminal_run_is_cancelled_immediately() {
+        let fixture = fixture("persist-appr-terminal");
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: fixture.run.id.clone(),
+            status: "completed".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("complete run");
+        let payload = json!({"approval_request_id": "appr-3"});
+        persist_run_event(Some(&fixture.run.id), "approval_request", &payload.to_string(), 0);
+        let record = crate::store::get_approval_request("appr-3")
+            .expect("query")
+            .expect("approval row");
+        assert_eq!(
+            record.status, "cancelled",
+            "a late approval for a terminal run is cancelled, not left pending"
+        );
+        assert!(
+            record
+                .decision_note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("already ended"),
+            "note: {:?}",
+            record.decision_note
+        );
+    }
+
+    #[test]
+    fn approval_decision_variants() {
+        let fixture = fixture("persist-appr-decision");
+
+        // Missing id: dropped.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_decision",
+            &json!({"status": "approved"}).to_string(),
+            0,
+        );
+
+        crate::store::ensure_approval_request(crate::store::EnsureApprovalRequestInput {
+            approval_request_id: Some("appr-4".to_string()),
+            run_id: fixture.run.id.clone(),
+            tool_call_id: None,
+            kind: "tool".to_string(),
+            title: "t".to_string(),
+            summary: None,
+            risk_level: None,
+            requested_action: None,
+            action_category: None,
+            action_payload: None,
+            sandbox_boundary: None,
+            save_suggestion: None,
+            reviewer: None,
+        })
+        .expect("seed approval");
+
+        // Approved decision: run resumes.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_decision",
+            &json!({"approval_request_id": "appr-4", "status": "approved", "note": "ok"})
+                .to_string(),
+            1,
+        );
+        let record = crate::store::get_approval_request("appr-4")
+            .expect("query")
+            .expect("approval row");
+        assert_eq!(record.status, "approved");
+        assert_eq!(record.decision_note.as_deref(), Some("ok"));
+        assert_eq!(
+            crate::store::get_run(&fixture.run.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "running"
+        );
+
+        // Cancelled decision: run is cancelled too.
+        crate::store::ensure_approval_request(crate::store::EnsureApprovalRequestInput {
+            approval_request_id: Some("appr-5".to_string()),
+            run_id: fixture.run.id.clone(),
+            tool_call_id: None,
+            kind: "tool".to_string(),
+            title: "t".to_string(),
+            summary: None,
+            risk_level: None,
+            requested_action: None,
+            action_category: None,
+            action_payload: None,
+            sandbox_boundary: None,
+            save_suggestion: None,
+            reviewer: None,
+        })
+        .expect("seed approval");
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_decision",
+            &json!({"approval_request_id": "appr-5", "status": "cancelled"}).to_string(),
+            2,
+        );
+        assert_eq!(
+            crate::store::get_run(&fixture.run.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "cancelled"
+        );
+
+        // Default status is "cancelled" (no status field).
+        crate::store::ensure_approval_request(crate::store::EnsureApprovalRequestInput {
+            approval_request_id: Some("appr-6".to_string()),
+            run_id: fixture.run.id.clone(),
+            tool_call_id: None,
+            kind: "tool".to_string(),
+            title: "t".to_string(),
+            summary: None,
+            risk_level: None,
+            requested_action: None,
+            action_category: None,
+            action_payload: None,
+            sandbox_boundary: None,
+            save_suggestion: None,
+            reviewer: None,
+        })
+        .expect("seed approval");
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_decision",
+            &json!({"approval_request_id": "appr-6"}).to_string(),
+            3,
+        );
+        assert_eq!(
+            crate::store::get_approval_request("appr-6")
+                .expect("query")
+                .expect("approval row")
+                .status,
+            "cancelled"
+        );
+    }
+
+    #[test]
+    fn failed_tool_end_records_no_artifact() {
+        let fixture = fixture("persist-tool-fail");
+        // Structured error field.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "tool_id": "tc-e", "error": "disk full"})
+                .to_string(),
+            0,
+        );
+        // Structured non-zero exit code.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "shell", "exit_code": 2, "text": "oops"}).to_string(),
+            1,
+        );
+        assert!(artifacts(&fixture).is_empty());
+    }
+
+    #[test]
+    fn write_and_edit_tool_ends_record_file_artifacts() {
+        let fixture = fixture("persist-tool-artifacts");
+        let inside = touch(&std::path::Path::new(&fixture.workspace.path).join("report.md"));
+
+        // Path from the tool_start tool_args (structured, preferred).
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_start",
+            &json!({"tool_id": "tc-w", "tool_name": "write", "tool_args": json!({"path": inside}).to_string()})
+                .to_string(),
+            0,
+        );
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "tool_id": "tc-w", "text": "Written to placeholder"})
+                .to_string(),
+            1,
+        );
+
+        // Path from the structured target_path on tool_end.
+        let edit_path = touch(&std::path::Path::new(&fixture.workspace.path).join("notes.txt"));
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"toolName": "edit", "targetPath": edit_path, "text": "Edited notes.txt"})
+                .to_string(),
+            2,
+        );
+
+        // Path from the success prose (last-resort fallback), tool_call_id
+        // synthesized from run + sequence.
+        let prose_path = touch(&std::path::Path::new(&fixture.workspace.path).join("prose.md"));
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_result",
+            &json!({"tool_name": "write", "text": format!("Written to {prose_path}")}).to_string(),
+            3,
+        );
+
+        let rows = artifacts(&fixture);
+        let paths: Vec<_> = rows.iter().filter_map(|a| a.path.clone()).collect();
+        assert!(paths.contains(&inside), "paths: {paths:?}");
+        assert!(paths.contains(&edit_path), "paths: {paths:?}");
+        assert!(paths.contains(&prose_path), "paths: {paths:?}");
+        let written = rows
+            .iter()
+            .find(|a| a.path.as_deref() == Some(inside.as_str()))
+            .expect("write artifact");
+        assert_eq!(written.summary.as_deref(), Some("Written by Agent."));
+        assert_eq!(written.title, "report.md");
+        let edited = rows
+            .iter()
+            .find(|a| a.path.as_deref() == Some(edit_path.as_str()))
+            .expect("edit artifact");
+        assert_eq!(edited.summary.as_deref(), Some("Edited by Agent."));
+    }
+
+    #[test]
+    fn tool_end_guards_drop_unrecordable_artifacts() {
+        let fixture = fixture("persist-tool-guards");
+
+        // Non write/edit tools never record file artifacts.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "shell", "text": "done"}).to_string(),
+            0,
+        );
+
+        // No path recoverable from input, target, or prose.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "tool_id": "tc-none", "text": "wrote something"})
+                .to_string(),
+            1,
+        );
+
+        // A path outside the workspace is refused.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "target_path": "/etc/passwd"}).to_string(),
+            2,
+        );
+
+        assert!(artifacts(&fixture).is_empty());
+    }
+
+    #[test]
+    fn git_workspaces_opt_out_of_artifacts() {
+        let home = TestHome::new("persist-git-ws");
+        let workspace = seed_workspace(home.path(), "gitws");
+        // A real git repo (is_git_workspace shells out to git rev-parse).
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&workspace.path)
+            .status()
+            .expect("git init");
+        assert!(status.success());
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run = seed_run(&thread.id);
+
+        persist_run_event(
+            Some(&run.id),
+            "artifact_created",
+            &json!({"title": "Doc", "path": format!("{}/a.md", workspace.path)}).to_string(),
+            0,
+        );
+        persist_run_event(
+            Some(&run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "target_path": format!("{}/b.md", workspace.path)})
+                .to_string(),
+            1,
+        );
+        assert!(
+            crate::store::list_artifacts(&thread.id)
+                .expect("artifacts")
+                .is_empty(),
+            "git workspaces route changes through review, not artifacts"
+        );
+    }
+
+    #[test]
+    fn artifact_created_event_field_mapping() {
+        let fixture = fixture("persist-artifact");
+
+        // Full mapping with an inline artifact (no path → always allowed).
+        persist_run_event(
+            Some(&fixture.run.id),
+            "artifact_created",
+            &json!({
+                "name": "Report",
+                "artifactType": "markdown",
+                "content": "body",
+                "description": "a report"
+            })
+            .to_string(),
+            0,
+        );
+        // Defaults + file artifact inside the workspace.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "artifact.created",
+            &json!({"filePath": touch(&std::path::Path::new(&fixture.workspace.path).join("x.bin"))}).to_string(),
+            1,
+        );
+
+        let rows = artifacts(&fixture);
+        assert_eq!(rows.len(), 2, "rows: {rows:?}");
+        let inline = rows.iter().find(|a| a.title == "Report").expect("inline");
+        assert_eq!(inline.artifact_type, "markdown");
+        assert_eq!(inline.content_storage.as_deref(), Some("inline"));
+        assert_eq!(inline.summary.as_deref(), Some("a report"));
+        let file = rows
+            .iter()
+            .find(|a| a.title == "Artifact")
+            .expect("default title");
+        assert_eq!(file.artifact_type, "document");
+        assert_eq!(file.content_storage.as_deref(), Some("file"));
+
+        // Unknown run: the workspace check fails and the artifact is dropped.
+        persist_run_event(
+            Some("run-missing"),
+            "artifact_created",
+            &json!({"title": "Orphan"}).to_string(),
+            2,
+        );
+        assert_eq!(artifacts(&fixture).len(), 2);
+    }
+
+    #[test]
+    fn soft_fail_exit_one_from_grep_is_not_a_failure() {
+        let fixture = fixture("persist-soft-fail");
+        let inside = touch(&std::path::Path::new(&fixture.workspace.path).join("out.txt"));
+        // grep exits 1 on "no match": not a failure → write artifact recorded.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_start",
+            &json!({"tool_id": "tc-g", "tool_name": "write", "tool_args": json!({"path": inside, "command": "grep needle file"}).to_string()})
+                .to_string(),
+            0,
+        );
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "tool_id": "tc-g", "text": "nothing\n[exit: 1]"})
+                .to_string(),
+            1,
+        );
+        let paths: Vec<_> = artifacts(&fixture)
+            .iter()
+            .filter_map(|a| a.path.clone())
+            .collect();
+        assert!(paths.contains(&inside), "paths: {paths:?}");
+
+        // Same exit-1 footer from a non-exempt command IS a failure.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_start",
+            &json!({"tool_id": "tc-m", "tool_name": "write", "tool_args": json!({"path": inside, "command": "make build"}).to_string()})
+                .to_string(),
+            2,
+        );
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "tool_id": "tc-m", "text": "failed\n[exit: 1]"})
+                .to_string(),
+            3,
+        );
+        let count = artifacts(&fixture)
+            .iter()
+            .filter(|a| a.path.as_deref() == Some(inside.as_str()))
+            .count();
+        assert_eq!(count, 1, "the failing tool_end added no second artifact");
+    }
+
+    #[test]
+    fn tool_input_unwraps_double_encoded_json() {
+        let fixture = fixture("persist-double-encoded");
+        let inside = touch(&std::path::Path::new(&fixture.workspace.path).join("deep.md"));
+        // tool_args stored as a string whose value is itself a JSON string.
+        let inner = json!({"path": inside}).to_string();
+        let double = serde_json::Value::String(inner).to_string();
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_start",
+            &json!({"tool_id": "tc-d", "tool_name": "write", "tool_args": double}).to_string(),
+            0,
+        );
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "tool_id": "tc-d", "text": "Written"}).to_string(),
+            1,
+        );
+        let paths: Vec<_> = artifacts(&fixture)
+            .iter()
+            .filter_map(|a| a.path.clone())
+            .collect();
+        assert!(paths.contains(&inside), "paths: {paths:?}");
+
+        // Garbage stored input: parse fails, no artifact, no panic.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_start",
+            &json!({"tool_id": "tc-bad", "tool_name": "write", "tool_args": "{not json"})
+                .to_string(),
+            2,
+        );
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "tool_id": "tc-bad", "text": "Written"}).to_string(),
+            3,
+        );
     }
 }

@@ -147,12 +147,11 @@ mod tests {
     async fn list_agent_models_surfaces_rejection_transport_and_parse_errors() {
         let mock = mock_agent();
 
-        mock.push(Some("list_models"), Reply::Reject("nope".to_string()));
+        mock.push("list_models", Reply::Reject("nope".to_string()));
         let error = list_agent_models().await.expect_err("rejected");
         assert_eq!(error.to_string(), "nope");
 
-        mock.push(
-            Some("list_models"),
+        mock.push("list_models",
             Reply::Status(tonic::Code::Unavailable, "down"),
         );
         let error = list_agent_models().await.expect_err("transport");
@@ -196,12 +195,11 @@ mod tests {
             "catalog fetch sets include_builtin_providers"
         );
 
-        mock.push(Some("list_models"), Reply::Reject("denied".to_string()));
+        mock.push("list_models", Reply::Reject("denied".to_string()));
         let error = list_builtin_providers().await.expect_err("rejected");
         assert_eq!(error.to_string(), "denied");
 
-        mock.push(
-            Some("list_models"),
+        mock.push("list_models",
             Reply::Status(tonic::Code::Internal, "boom"),
         );
         let error = list_builtin_providers().await.expect_err("transport");

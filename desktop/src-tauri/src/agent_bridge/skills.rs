@@ -134,8 +134,7 @@ mod tests {
         let _home = TestHome::new("skills-errors");
         let mock = mock_agent();
 
-        mock.push(
-            Some("get_commands"),
+        mock.push("get_commands",
             Reply::Status(tonic::Code::Internal, "boom"),
         );
         let error = list_installed_skills().await.expect_err("transport");
@@ -144,7 +143,7 @@ mod tests {
             "{error}"
         );
 
-        mock.push(Some("get_commands"), Reply::Reject(String::new()));
+        mock.push("get_commands", Reply::Reject(String::new()));
         let error = list_installed_skills().await.expect_err("rejected");
         assert_eq!(
             error.to_string(),
@@ -175,8 +174,7 @@ mod tests {
         }
 
         // Command fails at transport level: still returns ().
-        mock.push(
-            Some("refresh_skills"),
+        mock.push("refresh_skills",
             Reply::Status(tonic::Code::Unavailable, "down"),
         );
         refresh_skills().await;

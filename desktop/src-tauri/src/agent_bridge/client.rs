@@ -532,8 +532,7 @@ mod tests {
         // Connect first (the OnceCell init health check consumes the default
         // reply), then script the failure for the explicit health_check call.
         let mut client = connect_agent().await.expect("connect to mock");
-        mock.push(
-            Some("list_streaming_sessions"),
+        mock.push("list_streaming_sessions",
             Reply::Status(tonic::Code::Unavailable, "mock agent down"),
         );
         let error = health_check(&mut client, "http://mock")
