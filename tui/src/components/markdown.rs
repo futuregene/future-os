@@ -388,6 +388,22 @@ impl<'a> MdParser<'a> {
                     }
                     self.pos += 1;
                 }
+                Event::Start(
+                    Tag::Emphasis
+                    | Tag::Strong
+                    | Tag::Strikethrough
+                    | Tag::Link { .. }
+                    | Tag::Image { .. },
+                ) => {
+                    // Bare inline run STARTING with an inline tag (tight
+                    // list items carry no Paragraph wrapper) — collect into
+                    // a block Text token. parse_block_start would treat the
+                    // inline tag as an unknown block tag and skip the whole
+                    // segment through its End event.
+                    let (b, s) = self.parse_bare_text_block(range.clone());
+                    blocks.push(b);
+                    spans.push(s);
+                }
                 Event::Start(_) => {
                     if let Some((block, span)) = self.parse_block_start() {
                         blocks.push(block);
@@ -2037,6 +2053,40 @@ mod tests {
     fn ordered_list_numbers() {
         let lines = plain("1. first\n2. second", 40);
         assert_eq!(lines, vec!["1. first", "2. second"]);
+    }
+
+    #[test]
+    fn tight_list_item_leading_strong_renders() {
+        // Regression: a tight list item whose content STARTS with an inline
+        // tag (no Paragraph wrapper) must not lose the leading segment.
+        let lines = plain("3. **bold** text", 40);
+        assert_eq!(lines, vec!["3. bold text"]);
+        // Mid-item inline styles were never affected (control).
+        let lines = plain("3. x **bold** y", 40);
+        assert_eq!(lines, vec!["3. x bold y"]);
+    }
+
+    #[test]
+    fn tight_list_item_leading_inline_variants() {
+        let lines = plain("- *em* x\n- ~~del~~ y\n- [lnk](http://x) z\n- `code` w", 40);
+        assert_eq!(lines, vec!["- em x", "- del y", "- lnk z", "- code w"]);
+    }
+
+    #[test]
+    fn tight_list_item_leading_strong_cjk() {
+        // Original report: bold CJK+ASCII mix at an ordered item's start.
+        let lines = plain("3. **用清单里的 SHA-256 校验安装包**，不匹配则中止", 80);
+        assert_eq!(
+            lines,
+            vec!["3. 用清单里的 SHA-256 校验安装包，不匹配则中止"]
+        );
+    }
+
+    #[test]
+    fn tight_list_item_leading_nested_inline() {
+        // Strong wrapping a link at item start (nested inline tags).
+        let lines = plain("- **[lnk](http://x)** tail", 40);
+        assert_eq!(lines, vec!["- lnk tail"]);
     }
 
     #[test]
