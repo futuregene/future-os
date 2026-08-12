@@ -839,17 +839,10 @@ async fn spawn_shell(
     let merged_cmd = command.to_string();
     let mut child = sandbox.build_shell_command(&merged_cmd, escalated);
     child.current_dir(&cwd).env("PWD", &cwd);
-    // Prepend the agent binary's directory to PATH so bundled tools in the same
-    // directory are discoverable by shell commands. (Flat single if-let: nested
-    // if-let closing braces collected phantom zero-count coverage regions.)
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()));
-    if let Some(dir) = exe_dir {
-        let existing = std::env::var("PATH").unwrap_or_default();
-        let sep = if cfg!(windows) { ";" } else { ":" };
-        child.env("PATH", format!("{}{}{}", dir.display(), sep, existing));
-    }
+    // Prepend the agent binary's directory to PATH so bundled tools in the
+    // same directory are discoverable by shell commands. (map + discard: a
+    // lone if-let closing brace here collected a phantom zero-count region.)
+    let _ = path_with_own_dir(std::env::current_exe()).map(|path| child.env("PATH", path));
     child.stdout(std::process::Stdio::piped());
     // Unix: the subshell already merged stderr into stdout, so the outer pipe
     // carries nothing. Windows: PowerShell's own failures (a parse error in the
@@ -1016,6 +1009,17 @@ async fn spawn_shell(
         let exit_code = status.code().unwrap_or(-1);
         Ok(format_shell_output(&combined, combined.len(), exit_code))
     }
+}
+
+/// Prepend the agent binary's own directory to the inherited PATH, so tools
+/// bundled next to the binary are discoverable by shell commands. Returns
+/// None when the binary's location can't be determined (no PATH prepend).
+fn path_with_own_dir(exe: std::io::Result<std::path::PathBuf>) -> Option<String> {
+    let exe = exe.ok()?;
+    let dir = exe.parent()?;
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    Some(format!("{}{}{}", dir.display(), sep, existing))
 }
 
 /// Read the child's stdout into `buf` until EOF; a read error aborts the run.
@@ -2515,5 +2519,114 @@ mod tests {
         let mut chunk = [0u8; 8192];
         drain_shell_output(&mut rx, &mut buf, &mut chunk).await;
         assert_eq!(buf, b"leftover");
+    }
+
+    /// Shared denying escalation requester as a fn item: an inline closure
+    /// that a test never triggers would itself be an uncovered line.
+    #[cfg(test)]
+    fn deny_escalation_fn(
+        _request: &crate::sandbox::EscalationRequest,
+    ) -> crate::sandbox::EscalationDecision {
+        crate::sandbox::EscalationDecision::Denied("no".to_string())
+    }
+
+    #[test]
+    fn deny_escalation_fn_denies() {
+        let request = crate::sandbox::EscalationRequest {
+            command: "x".to_string(),
+            justification: String::new(),
+            failure_summary: String::new(),
+        };
+        assert!(matches!(
+            deny_escalation_fn(&request),
+            crate::sandbox::EscalationDecision::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn path_with_own_dir_prepends_binary_dir() {
+        // Happy path: the binary's parent dir is prepended to PATH.
+        let exe = std::env::current_exe().unwrap();
+        let with = path_with_own_dir(Ok(exe.clone())).unwrap();
+        let parent = exe.parent().unwrap();
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        assert!(
+            with.starts_with(&format!("{}{}", parent.display(), sep)),
+            "{with}"
+        );
+        // An unreadable exe location → None (no prepend).
+        assert!(path_with_own_dir(Err(std::io::Error::other("gone"))).is_none());
+        // A parentless exe path (filesystem root) → None.
+        let root = if cfg!(windows) { "C:\\" } else { "/" };
+        assert!(path_with_own_dir(Ok(std::path::PathBuf::from(root))).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_escalated_without_channel_falls_through_to_sandboxed_run() {
+        let ws =
+            std::env::temp_dir().join(format!("futureos-esc4-{}", crate::utils::generate_id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let sandbox = crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            ws.to_string_lossy().as_ref(),
+        );
+        // cfg(macos): Seatbelt always exists; force the flag (see siblings).
+        let mut sandbox = sandbox;
+        sandbox.available = true;
+        // escalated=true but NO escalation channel registered: the request
+        // can't be approved, so the command runs normally (sandboxed).
+        let result = with_tool_scope(
+            ScopeOptions {
+                workspace: ws.to_string_lossy().to_string(),
+                permission_level: "all".to_string(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox: Arc::new(sandbox),
+                escalation: None,
+                on_sandboxed: None,
+            },
+            run_shell("echo plain-fallthrough", 10, true, "no channel"),
+        )
+        .await;
+        let output = result.unwrap();
+        assert!(output.contains("plain-fallthrough"), "{output}");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_non_denial_failure_does_not_escalate() {
+        let ws =
+            std::env::temp_dir().join(format!("futureos-esc5-{}", crate::utils::generate_id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let sandbox = crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            ws.to_string_lossy().as_ref(),
+        );
+        let mut sandbox = sandbox;
+        sandbox.available = true;
+        // A sandboxed command that fails for an ORDINARY reason (not a
+        // sandbox denial) must not even consult the escalation channel.
+        let deny: crate::sandbox::EscalationRequester = Arc::new(deny_escalation_fn);
+        let result = with_tool_scope(
+            ScopeOptions {
+                workspace: ws.to_string_lossy().to_string(),
+                permission_level: "all".to_string(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox: Arc::new(sandbox),
+                escalation: Some(deny),
+                on_sandboxed: None,
+            },
+            run_shell("exit 3", 10, false, ""),
+        )
+        .await;
+        let output = result.unwrap();
+        assert!(output.contains("[exit: 3]"), "{output}");
+        assert!(!output.contains("not approved"), "{output}");
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

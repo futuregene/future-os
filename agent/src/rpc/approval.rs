@@ -1555,18 +1555,25 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     ) -> std::thread::JoinHandle<bool> {
         let gate = gate.clone();
         let session_id = session_id.to_string();
-        std::thread::spawn(move || {
-            for _ in 0..2000 {
-                let pending = gate.pending_for_session(&session_id);
-                if let Some(first) = pending.first() {
-                    let request_id = first["approval_request_id"].as_str().unwrap().to_string();
-                    let _ = gate.decide(&request_id, &session_id, decision);
-                    return true;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::spawn(move || poll_and_decide(&gate, &session_id, decision, 2000))
+    }
+
+    fn poll_and_decide(
+        gate: &ApprovalGate,
+        session_id: &str,
+        decision: ApprovalDecision,
+        max_polls: u32,
+    ) -> bool {
+        for _ in 0..max_polls {
+            let pending = gate.pending_for_session(session_id);
+            if let Some(first) = pending.first() {
+                let request_id = first["approval_request_id"].as_str().unwrap().to_string();
+                let _ = gate.decide(&request_id, session_id, decision);
+                return true;
             }
-            false
-        })
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
     }
 
     fn approved() -> ApprovalDecision {
@@ -1886,6 +1893,13 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         assert!(cancellation.is_error);
         assert!(cancellation.result.contains("cancelled"));
         assert!(gate.pending_for_session("s1").is_empty());
+    }
+
+    #[test]
+    fn poll_and_decide_times_out_when_no_request_appears() {
+        // The give-up path: no request ever lands for the session.
+        let gate = ApprovalGate::default();
+        assert!(!poll_and_decide(&gate, "nobody", approved(), 2));
     }
 
     #[test]

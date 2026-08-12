@@ -10,6 +10,65 @@ use chrono::Local;
 use clap::Parser;
 use std::sync::Arc;
 
+/// Map of live server sessions shared with the shutdown paths.
+type SessionsMap = Arc<
+    parking_lot::RwLock<
+        std::collections::HashMap<String, Arc<parking_lot::RwLock<crate::rpc::ServerSession>>>,
+    >,
+>;
+
+/// Load the first readable project-context file (CLAUDE.md / AGENTS.md /
+/// GEMINI.md) in `cwd`. A file that exists but cannot be read (e.g. it is a
+/// directory) is skipped, falling through to the next candidate name.
+fn load_project_context(cwd: &str) -> String {
+    for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
+        let p = std::path::Path::new(cwd).join(fname);
+        if p.exists() {
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                return content;
+            }
+        }
+    }
+    String::new()
+}
+
+/// Abort every live session (SIGINT / profile-timer shutdown path).
+fn abort_all_sessions(sessions: &SessionsMap) {
+    for s in sessions.read().values() {
+        s.read().abort();
+    }
+}
+
+/// Wait until no session reports an active stream, or `timeout` elapses.
+async fn wait_for_streams_to_settle(sessions: &SessionsMap, timeout: std::time::Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let any_streaming = sessions.read().values().any(|s| {
+            s.read()
+                .is_streaming
+                .load(std::sync::atomic::Ordering::Relaxed)
+        });
+        if !any_streaming {
+            tracing::info!("All streams finished — exiting");
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let active = sessions
+                .read()
+                .values()
+                .filter(|s| {
+                    s.read()
+                        .is_streaming
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                })
+                .count();
+            tracing::warn!("Shutdown timeout — forcing exit with {active} active stream(s)");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "future-agent")]
 #[command(version = crate::utils::VERSION)]
@@ -499,16 +558,7 @@ async fn async_main(
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
     // Load project context
-    let mut agent_content = String::new();
-    for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
-        let p = std::path::Path::new(&cwd).join(fname);
-        if p.exists() {
-            if let Ok(content) = std::fs::read_to_string(&p) {
-                agent_content = content;
-                break;
-            }
-        }
-    }
+    let agent_content = load_project_context(&cwd);
     let context_lines: Vec<String> = if agent_content.is_empty() {
         vec![]
     } else {
@@ -597,9 +647,7 @@ async fn async_main(
                 tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                 tracing::info!("Profile timer expired — shutting down for flamegraph capture");
                 shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
-                for s in sessions.read().values() {
-                    s.read().abort();
-                }
+                abort_all_sessions(&sessions);
                 let _ = tx.send(());
             });
             Box::pin(async move {
@@ -619,36 +667,107 @@ async fn async_main(
             // Actively interrupt in-flight runs. Without this, a long LLM
             // stream keeps running and the wait loop below only exits via the
             // 30 s timeout — making Ctrl-C look like a hang.
-            for s in sessions.read().values() {
-                s.read().abort();
-            }
+            abort_all_sessions(&sessions);
 
             // Wait for active streams to settle
-            let deadline = tokio::time::Instant::now() + shutdown_timeout;
-            loop {
-                let any_streaming = sessions
-                    .read()
-                    .values()
-                    .any(|s| s.read()
-                        .is_streaming
-                        .load(std::sync::atomic::Ordering::Relaxed));
-                if !any_streaming {
-                    tracing::info!("All streams finished — exiting");
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    tracing::warn!("Shutdown timeout (30s) — forcing exit with {} active stream(s)",
-                        sessions.read().values()
-                            .filter(|s| s.read().is_streaming.load(std::sync::atomic::Ordering::Relaxed))
-                            .count());
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
+            wait_for_streams_to_settle(&sessions, shutdown_timeout).await;
         }
         _ = profile_rx => {
             // profile timer handled inside the future
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_project_context_skips_unreadable_candidates() {
+        // CLAUDE.md exists but is a DIRECTORY (read fails) → the scan falls
+        // through to AGENTS.md.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("CLAUDE.md")).unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "agent notes").unwrap();
+        let content = load_project_context(&dir.path().to_string_lossy());
+        assert_eq!(content, "agent notes");
+    }
+
+    #[test]
+    fn load_project_context_empty_when_nothing_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_project_context(&dir.path().to_string_lossy()).is_empty());
+    }
+
+    fn sessions_with(streaming: bool) -> SessionsMap {
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let session = crate::rpc::ServerSession::new(
+            "s1".to_string(),
+            Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                Arc::new(crate::test_support::EmptyProvider),
+                "mock",
+            ))),
+            Arc::new(Manager::new(std::env::temp_dir().join(format!(
+                "futureos-cli-test-{}",
+                crate::utils::generate_id()
+            )))),
+            &cwd,
+            Arc::new(crate::rpc::SseBroadcaster::new()),
+            crate::rpc::ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        );
+        session
+            .is_streaming
+            .store(streaming, std::sync::atomic::Ordering::Relaxed);
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "s1".to_string(),
+            Arc::new(parking_lot::RwLock::new(session)),
+        );
+        Arc::new(parking_lot::RwLock::new(map))
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn drain_waits_until_streams_finish_then_aborts() {
+        let sessions = sessions_with(true);
+        let flag = sessions
+            .read()
+            .values()
+            .next()
+            .unwrap()
+            .read()
+            .is_streaming
+            .clone();
+        // The stream finishes after one poll interval.
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        });
+        wait_for_streams_to_settle(&sessions, std::time::Duration::from_secs(30)).await;
+        abort_all_sessions(&sessions);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn drain_times_out_with_active_streams() {
+        // The warn! arguments evaluate only when a subscriber enables the
+        // callsite.
+        let _sink = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        );
+        let sessions = sessions_with(true);
+        wait_for_streams_to_settle(&sessions, std::time::Duration::from_millis(700)).await;
+        // Still streaming — the deadline forced the exit.
+        assert!(sessions
+            .read()
+            .values()
+            .next()
+            .unwrap()
+            .read()
+            .is_streaming
+            .load(std::sync::atomic::Ordering::Relaxed));
+    }
 }

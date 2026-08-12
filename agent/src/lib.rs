@@ -124,6 +124,41 @@ pub(crate) mod test_support {
         }
     }
 
+    /// A provider whose stream never yields events. Shared by every test
+    /// that needs a provider the run never actually queries for content —
+    /// per-line coverage counts each uncalled mock's body, so there is
+    /// exactly one implementation and one test that drives it.
+    pub(crate) struct EmptyProvider;
+
+    #[async_trait::async_trait]
+    impl crate::types::LLMProvider for EmptyProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<crate::types::Message>,
+            _tools: Vec<crate::types::ToolDef>,
+            _system_prompt: String,
+        ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
+        {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+        }
+    }
+
+    mod provider_tests {
+        #[tokio::test(flavor = "current_thread")]
+        async fn empty_provider_streams_nothing() {
+            use crate::types::LLMProvider;
+            use tokio_stream::StreamExt;
+            let provider = super::EmptyProvider;
+            let mut stream = provider
+                .stream_chat("mock".to_string(), vec![], vec![], String::new())
+                .await
+                .unwrap();
+            assert!(stream.next().await.is_none());
+        }
+    }
+
     #[cfg(test)]
     mod env_restore_tests {
         /// Both restore arms, exercised directly (the Some/None mix a real

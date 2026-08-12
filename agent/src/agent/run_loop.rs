@@ -382,51 +382,14 @@ impl Loop {
                         }
                     }
                     "toolcall_start" => {
-                        // Some providers (e.g. GLM/Z.AI without tool_stream) send
-                        // id+name in every argument chunk instead of just the first.
-                        // When the tool ID matches an existing tool call at this
-                        // index, treat it as a delta (append args) rather than
-                        // starting a new call.
-                        //
-                        // Always prefer the longer string — it's more complete.
-                        // Some gateways (e.g. Aliyun MaaS) may send chunks out of
-                        // prefix order, or send a trailing fragment that is shorter
-                        // than the accumulated args. Overwriting longer data with
-                        // shorter data is the primary cause of argument loss.
-                        let idx = event.tc_index;
-                        if idx < current_tool_calls.len() {
-                            if let Some(ref mut existing) = current_tool_calls[idx] {
-                                if existing.id == event.tool_id {
-                                    // Same tool call at same index — append args
-                                    if let Some(ref tc) = event.tool_call {
-                                        if let serde_json::Value::String(ref new_args) =
-                                            tc.function.arguments
-                                        {
-                                            let mut updated = false;
-                                            if let serde_json::Value::String(ref mut s) =
-                                                existing.args
-                                            {
-                                                if new_args.len() > s.len() {
-                                                    if new_args.starts_with(s.as_str()) {
-                                                        s.push_str(&new_args[s.len()..]);
-                                                    } else {
-                                                        *s = new_args.clone();
-                                                    }
-                                                }
-                                                updated = true;
-                                            }
-                                            if !updated {
-                                                existing.args =
-                                                    serde_json::Value::String(new_args.clone());
-                                            }
-                                        }
-                                    }
-                                    continue;
-                                }
-                            }
+                        // Some providers (e.g. GLM/Z.AI without tool_stream)
+                        // send id+name in every argument chunk instead of just
+                        // the first — a repeat is merged into the pending call
+                        // rather than starting a new one.
+                        if merge_repeated_toolcall_start(&mut current_tool_calls, &event) {
+                            continue;
                         }
-
-                        // Expand vec to accommodate this index if needed
+                        let idx = event.tc_index;
                         if idx >= current_tool_calls.len() {
                             current_tool_calls.resize(idx + 1, None);
                         }
@@ -495,14 +458,17 @@ impl Loop {
                         }
                     }
                     "tool_start" => {
-                        if self.verbose {
-                            tracing::info!("[tool] {} → starting", event.tool_name);
-                        }
+                        // `.then` keeps the verbose edge branchless: a lone
+                        // if-block closing brace here collected a phantom
+                        // zero-count coverage region.
+                        let _ = self
+                            .verbose
+                            .then(|| tracing::info!("[tool] {} → starting", event.tool_name));
                     }
                     "tool_end" => {
-                        if self.verbose {
-                            tracing::info!("[tool] {} ← done", event.tool_name);
-                        }
+                        let _ = self
+                            .verbose
+                            .then(|| tracing::info!("[tool] {} ← done", event.tool_name));
                     }
                     "usage" => {
                         if let Some(ref u) = event.usage {
@@ -699,12 +665,15 @@ impl Loop {
                 return Ok((assistant_text, messages));
             }
 
-            // Check stop condition
-            if let Some(ref stop_fn) = self.config.stop_condition {
+            // Check stop condition. The is_some_and closure keeps the None
+            // edge branchless (a nested if's closing brace here collected a
+            // phantom zero-count coverage region).
+            let stop_hit = self.config.stop_condition.as_ref().is_some_and(|stop_fn| {
                 let llm_msgs: Vec<Message> = ConvertToLLM(&messages);
-                if stop_fn(llm_msgs, &assistant_text) {
-                    return Ok((assistant_text, messages));
-                }
+                stop_fn(llm_msgs, &assistant_text)
+            });
+            if stop_hit {
+                return Ok((assistant_text, messages));
             }
 
             // No tool calls means this run is complete. Follow-up submissions
@@ -883,6 +852,43 @@ fn tool_call_args_complete(tool_call: &AgentToolCall) -> bool {
         serde_json::Value::Object(_) => true,
         _ => false,
     }
+}
+
+/// Merge a repeated `toolcall_start` (same tool id at the same stream index)
+/// into the pending call's args, returning true when the event was consumed
+/// as a repeat. Always prefers the longer args string — it's more complete:
+/// some gateways (e.g. Aliyun MaaS) send chunks out of prefix order, or a
+/// trailing fragment shorter than the accumulated args, and overwriting
+/// longer data with shorter data is the primary cause of argument loss.
+fn merge_repeated_toolcall_start(
+    current_tool_calls: &mut [Option<AgentToolCall>],
+    event: &StreamEvent,
+) -> bool {
+    let Some(Some(existing)) = current_tool_calls.get_mut(event.tc_index) else {
+        return false;
+    };
+    if existing.id != event.tool_id {
+        return false;
+    }
+    if let Some(ref tc) = event.tool_call {
+        if let serde_json::Value::String(ref new_args) = tc.function.arguments {
+            let mut updated = false;
+            if let serde_json::Value::String(ref mut s) = existing.args {
+                if new_args.len() > s.len() {
+                    if new_args.starts_with(s.as_str()) {
+                        s.push_str(&new_args[s.len()..]);
+                    } else {
+                        *s = new_args.clone();
+                    }
+                }
+                updated = true;
+            }
+            if !updated {
+                existing.args = serde_json::Value::String(new_args.clone());
+            }
+        }
+    }
+    true
 }
 
 fn finalize_agent_tool_call(mut tool_call: AgentToolCall) -> ToolCall {

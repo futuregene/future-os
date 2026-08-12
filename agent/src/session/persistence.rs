@@ -71,6 +71,11 @@ struct PersistenceInner {
     close_on_retry: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     drain_on_timeout: std::sync::atomic::AtomicBool,
+    /// Test-only observability: number of idle-timeout cycles the worker has
+    /// completed, so tests can await the timeout path deterministically
+    /// instead of racing a wall-clock sleep against a starved worker thread.
+    #[cfg(test)]
+    timeout_cycles: std::sync::atomic::AtomicUsize,
 }
 
 /// Ordered, lazily-started persistence queue for one session.
@@ -111,6 +116,8 @@ impl SessionPersistence {
                 close_on_retry: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 drain_on_timeout: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                timeout_cycles: std::sync::atomic::AtomicUsize::new(0),
             }),
         }
     }
@@ -279,6 +286,12 @@ impl SessionPersistence {
         self.inner.drain_on_timeout.store(true, Ordering::Release);
     }
 
+    /// Test-only: idle-timeout cycles completed by the worker so far.
+    #[cfg(test)]
+    pub(crate) fn timeout_cycles_for_test(&self) -> usize {
+        self.inner.timeout_cycles.load(Ordering::Acquire)
+    }
+
     /// Test-only: replace the worker slot with a foreign generation so a
     /// timing-out worker observes the "slot stolen" guard's negative path.
     #[cfg(test)]
@@ -287,10 +300,17 @@ impl SessionPersistence {
         // Leak the receiver so the dummy channel stays connected for the
         // remainder of the test process.
         std::mem::forget(receiver);
-        *self.inner.worker.lock() = Some(WorkerSlot {
+        let old = self.inner.worker.lock().replace(WorkerSlot {
             generation: u64::MAX,
             sender,
         });
+        // Keep the evicted worker's sender alive: a dropped sender would end
+        // its recv_timeout as Disconnected, exiting the worker BEFORE the
+        // foreign-generation guard is evaluated. The only caller steals right
+        // after a barrier, so a worker always exists (expect, not if-let: a
+        // lone if-let closing brace collects a phantom zero-count region).
+        let old = old.expect("steal_worker_slot_for_test requires a live worker");
+        std::mem::forget(old.sender);
     }
 
     fn try_send(&self, mut command: PersistenceCommand) -> Result<()> {
@@ -445,6 +465,8 @@ fn run_worker(
                         }
                     }
                     let mut worker = state.worker.lock();
+                    #[cfg(test)]
+                    state.timeout_cycles.fetch_add(1, Ordering::AcqRel);
                     // A sender may have cloned this generation's sender and
                     // queued a command after recv_timeout fired but before we
                     // acquired the worker lock. Drain that handoff while the
@@ -1313,8 +1335,19 @@ mod tests {
         persistence.barrier().unwrap();
         persistence.steal_worker_slot_for_test();
         // The timing-out worker sees a foreign generation in the slot and
-        // leaves it alone (negative guard path), then exits.
-        std::thread::sleep(Duration::from_millis(900));
+        // leaves it alone (negative guard path), then exits. Await the actual
+        // timeout cycle: under instrumented full-suite load the worker thread
+        // can be starved past any fixed wall-clock margin.
+        for _ in 0..1000 {
+            if persistence.timeout_cycles_for_test() >= 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            persistence.timeout_cycles_for_test() >= 1,
+            "worker never cycled"
+        );
         let slot = persistence.inner.worker.lock();
         assert_eq!(slot.as_ref().map(|s| s.generation), Some(u64::MAX));
         drop(slot);

@@ -3971,6 +3971,12 @@ mod tests {
             "m".to_string(),
             String::new(),
         );
+        // A session_info entry WITHOUT a session_name key is skipped over.
+        let nameless = SessionEntry::session_info(
+            serde_json::json!({"tokens_in": 5}),
+            "m".to_string(),
+            String::new(),
+        );
         let sess = Session::snapshot(
             "s".to_string(),
             "/x".to_string(),
@@ -3980,6 +3986,7 @@ mod tests {
             vec![
                 older,
                 SessionEntry::new_user("user", serde_json::json!("hi")),
+                nameless,
                 info,
             ],
         );

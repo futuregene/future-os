@@ -675,22 +675,6 @@ mod tests {
 
     #[test]
     fn app_state_get_session_empty_id_returns_none() {
-        // Use EmptyProvider from session tests (defined in the same crate)
-        struct EmptyP;
-        #[async_trait::async_trait]
-        impl crate::types::LLMProvider for EmptyP {
-            async fn stream_chat(
-                &self,
-                _model: String,
-                _messages: Vec<crate::types::Message>,
-                _tools: Vec<crate::types::ToolDef>,
-                _system_prompt: String,
-            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
-            {
-                let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
-            }
-        }
         let state = AppState {
             agent_instance_id: "agent-test-instance".to_string(),
             sessions: std::sync::Arc::new(parking_lot::RwLock::new(
@@ -713,7 +697,7 @@ mod tests {
                 crate::models::Registry::new(),
             )),
             loop_template: std::sync::Arc::new(crate::agent::Loop::new(
-                std::sync::Arc::new(EmptyP),
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
                 "test-model",
             )),
         };
@@ -723,21 +707,6 @@ mod tests {
     // ─── coverage batch: hydrate + get_state arms ──────────────────────────
 
     fn bare_app_state() -> (tempfile::TempDir, AppState) {
-        struct EmptyP;
-        #[async_trait::async_trait]
-        impl crate::types::LLMProvider for EmptyP {
-            async fn stream_chat(
-                &self,
-                _model: String,
-                _messages: Vec<crate::types::Message>,
-                _tools: Vec<crate::types::ToolDef>,
-                _system_prompt: String,
-            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
-            {
-                let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
-            }
-        }
         let dir = tempfile::tempdir().expect("tempdir");
         let session_dir = dir.path().join("sessions");
         let state = AppState {
@@ -760,7 +729,7 @@ mod tests {
                 crate::models::Registry::new(),
             )),
             loop_template: std::sync::Arc::new(crate::agent::Loop::new(
-                std::sync::Arc::new(EmptyP),
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
                 "test-model",
             )),
         };
@@ -909,25 +878,7 @@ mod tests {
         let session = crate::rpc::ServerSession::new_with_queue_budget(
             "bare".to_string(),
             std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
-                std::sync::Arc::new({
-                    struct EmptyP;
-                    #[async_trait::async_trait]
-                    impl crate::types::LLMProvider for EmptyP {
-                        async fn stream_chat(
-                            &self,
-                            _model: String,
-                            _messages: Vec<crate::types::Message>,
-                            _tools: Vec<crate::types::ToolDef>,
-                            _system_prompt: String,
-                        ) -> anyhow::Result<
-                            tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>,
-                        > {
-                            let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                            Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
-                        }
-                    }
-                    EmptyP
-                }),
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
                 "test-model",
             ))),
             state.session_manager.clone(),
