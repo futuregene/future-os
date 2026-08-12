@@ -610,11 +610,7 @@ mod tests {
     use super::*;
 
     fn ws() -> PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("futureos-rules-{stamp}"));
+        let dir = crate::test_support::unique_temp_path("rules");
         std::fs::create_dir_all(&dir).unwrap();
         paths::canonicalize_lenient(&dir)
     }
