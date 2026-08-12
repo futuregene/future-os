@@ -6,6 +6,7 @@
 
 pub mod attention;
 pub mod delivery;
+pub mod delivery_outcome;
 pub mod operator_inbox;
 pub mod replan_obligation;
 pub mod task_graph;
