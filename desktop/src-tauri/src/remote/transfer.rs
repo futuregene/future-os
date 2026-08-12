@@ -633,53 +633,66 @@ pub fn spawn_transfer_loop(
     tokio::spawn(async move {
         let subject = format!("p.{pair_id}.xfer.up.>");
         let queue = format!("bridge-transfer.{pair_id}");
-        let mut sub = match client.queue_subscribe(subject.clone(), queue).await {
-            Ok(sub) => sub,
-            Err(error) => {
-                eprintln!("remote: failed to subscribe to transfers {subject}: {error}");
-                return;
-            }
-        };
-        let mut cleanup = tokio::time::interval(Duration::from_secs(60));
+        // Self-heal like command_loop: a dead transfer loop times out every
+        // chunk pull until the next generation swap.
+        let mut backoff = Duration::from_secs(1);
         loop {
-            tokio::select! {
-                _ = cleanup.tick() => prune_expired(),
-                next = sub.next() => {
-                    let Some(message) = next else { break };
-                    if !active.load(std::sync::atomic::Ordering::Acquire) {
-                        continue;
-                    }
-                    let suffix = message
-                        .subject
-                        .strip_prefix(&format!("p.{pair_id}.xfer.up."))
-                        .unwrap_or_default();
-                    let parts: Vec<&str> = suffix.split('.').collect();
-                    let response = match parts.as_slice() {
-                        [transfer_id, "chunk", index] => index
-                            .parse::<u64>()
-                            .map_err(|_| "Invalid chunk index.".to_string())
-                            .and_then(|index| write_upload_chunk(transfer_id, index, &message.payload)),
-                        [transfer_id, "pull", index] => index
-                            .parse::<u64>()
-                            .map_err(|_| "Invalid chunk index.".to_string())
-                            .and_then(|index| {
-                                publish_download_chunk(&client, &pair_id, transfer_id, index)
-                                    .map(|_| json!({ "published": true, "index": index }))
-                                    .map_err(|error| error.to_string())
-                            }),
-                        _ => Err("Unsupported transfer operation.".to_string()),
-                    };
-                    if let Some(reply) = message.reply {
-                        let body = match response {
-                            Ok(data) => json!({ "success": true, "data": data }),
-                            Err(error) => json!({ "success": false, "error": error }),
+            let mut sub = match client.queue_subscribe(subject.clone(), queue.clone()).await {
+                Ok(sub) => sub,
+                Err(error) => {
+                    eprintln!("remote: failed to subscribe to transfers {subject}: {error}; retrying in {backoff:?}");
+                    tokio::time::sleep(backoff).await;
+                    backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+                    continue;
+                }
+            };
+            backoff = Duration::from_secs(1);
+            let mut cleanup = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = cleanup.tick() => prune_expired(),
+                    next = sub.next() => {
+                        let Some(message) = next else { break };
+                        if !active.load(std::sync::atomic::Ordering::Acquire) {
+                            continue;
+                        }
+                        let suffix = message
+                            .subject
+                            .strip_prefix(&format!("p.{pair_id}.xfer.up."))
+                            .unwrap_or_default();
+                        let parts: Vec<&str> = suffix.split('.').collect();
+                        let response = match parts.as_slice() {
+                            [transfer_id, "chunk", index] => index
+                                .parse::<u64>()
+                                .map_err(|_| "Invalid chunk index.".to_string())
+                                .and_then(|index| write_upload_chunk(transfer_id, index, &message.payload)),
+                            [transfer_id, "pull", index] => index
+                                .parse::<u64>()
+                                .map_err(|_| "Invalid chunk index.".to_string())
+                                .and_then(|index| {
+                                    publish_download_chunk(&client, &pair_id, transfer_id, index)
+                                        .map(|_| json!({ "published": true, "index": index }))
+                                        .map_err(|error| error.to_string())
+                                }),
+                            _ => Err("Unsupported transfer operation.".to_string()),
                         };
-                        if let Ok(bytes) = serde_json::to_vec(&body) {
-                            let _ = client.publish(reply, bytes.into()).await;
+                        if let Some(reply) = message.reply {
+                            let body = match response {
+                                Ok(data) => json!({ "success": true, "data": data }),
+                                Err(error) => json!({ "success": false, "error": error }),
+                            };
+                            if let Ok(bytes) = serde_json::to_vec(&body) {
+                                let _ = client.publish(reply, bytes.into()).await;
+                            }
                         }
                     }
                 }
             }
+            eprintln!(
+                "remote: transfer subscription ended unexpectedly; resubscribing in {backoff:?}"
+            );
+            tokio::time::sleep(backoff).await;
+            backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
         }
     })
 }
