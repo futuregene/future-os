@@ -3383,6 +3383,7 @@ fn cmd_serve_status(store: &Store, args: &[String]) -> Result<()> {
 fn cmd_capability(store: &mut Store, args: &[String]) -> Result<()> {
     let registry = crate::capabilities::CapabilityRegistry::with_builtin();
     if args.first().map(|s| s.as_str()) == Some("list") {
+        reject_unknown_flags(&args[1..], &[])?;
         println!("capabilities:");
         for cap in registry.all() {
             let n = cap.name();
@@ -3583,6 +3584,7 @@ fn cmd_extension(store: &Store, args: &[String]) -> Result<()> {
             }
         }
         "capabilities" => {
+            reject_unknown_flags(&args[1..], &[])?;
             let entries = crate::extensions::runtime::extension_catalog_entries(&state_file)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             if entries.is_empty() {
@@ -4683,6 +4685,7 @@ fn cmd_canary(store: &Store, args: &[String]) -> Result<()> {
 
 /// `loopx version` — version + schema surface.
 fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &[])?;
     println!("future-loop {}", env!("CARGO_PKG_VERSION"));
     println!("crate  : future-loop");
     println!("schemas:");
@@ -4693,7 +4696,6 @@ fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
     println!("  future_loop_turn_envelope_v0 (G-9)");
     println!("  scheduler_arbitration_v0 (G-2/G-11)");
     let _ = store;
-    let _ = args;
     Ok(())
 }
 
@@ -5523,12 +5525,14 @@ mod coverage_tests {
             Event::AgentRegistered {
                 goal_id: "g".into(),
                 agent_id: "a".into(),
+                workspaces: vec![],
                 ts: 1,
             },
             Event::AgentOnboarded {
                 goal_id: "g".into(),
                 agent_id: "a".into(),
                 capabilities: vec!["shell".into()],
+                workspaces: vec![],
                 ts: 1,
             },
             Event::ReplanAcked {
