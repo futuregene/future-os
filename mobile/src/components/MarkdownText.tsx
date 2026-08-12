@@ -1,5 +1,4 @@
 import { Linking, StyleSheet, Text, View } from "react-native";
-import type { StyleProp, TextStyle, ViewStyle } from "react-native";
 import { colors, radius, spacing } from "../theme/tokens";
 
 interface MarkdownTextProps {
@@ -191,7 +190,7 @@ function InlineMarkdown({ text }: { text: string }) {
         if (/^`[^`]+`$/.test(part)) {
           return (
             <Text key={index} style={styles.inlineCode}>
-              {"\u00A0" + part.slice(1, -1) + "\u00A0"}
+              {part.slice(1, -1)}
             </Text>
           );
         }
@@ -217,62 +216,6 @@ function InlineMarkdown({ text }: { text: string }) {
         return part;
       })}
     </>
-  );
-}
-
-// iOS renders nested <Text> as an attributed string whose runs can't carry
-// padding/borderRadius (TextAttributes has no such fields), and the run
-// background fills the whole line fragment — a decorated chip is impossible
-// inside one <Text>. Compromise that keeps the inline flow: SHORT code spans
-// become real chip views (they fit on a line, so the flow is undisturbed and
-// they get genuine padding/rounding/gaps); LONG code spans stay inline in the
-// prose run (wrapping mid-code, sharing lines with text) with nbsp padding —
-// the two properties iOS can't do inline (rounding, wrapped-line gap) are the
-// accepted platform cost.
-const CHIP_MAX = 24;
-
-function CodeFlow({
-  text,
-  containerStyle,
-  proseStyle,
-}: {
-  text: string;
-  containerStyle: StyleProp<ViewStyle>;
-  proseStyle: TextStyle;
-}) {
-  const parts = text.split(/(`[^`]+`)/g);
-  const items: { kind: "prose" | "chip"; text: string }[] = [];
-  let buffer = "";
-  const flush = () => {
-    if (buffer) {
-      items.push({ kind: "prose", text: buffer });
-      buffer = "";
-    }
-  };
-  for (const part of parts) {
-    const code = part.match(/^`([^`]+)`$/)?.[1];
-    if (code && code.length <= CHIP_MAX) {
-      flush();
-      items.push({ kind: "chip", text: code });
-    } else {
-      buffer += part;
-    }
-  }
-  flush();
-  return (
-    <View style={containerStyle}>
-      {items.map((item, index) =>
-        item.kind === "chip" ? (
-          <Text key={index} selectable style={styles.codeChip}>
-            {item.text}
-          </Text>
-        ) : (
-          <Text key={index} selectable style={proseStyle}>
-            <InlineMarkdown text={item.text} />
-          </Text>
-        ),
-      )}
-    </View>
   );
 }
 
@@ -367,23 +310,18 @@ function renderBlock(block: Block, index: number, isLast = false) {
                 {item.checked ? <Text style={styles.checkMark}>✓</Text> : null}
               </View>
             )}
-            <CodeFlow
-              containerStyle={styles.listItemFlow}
-              proseStyle={styles.listItemProse}
-              text={item.text}
-            />
+            <Text selectable style={styles.listItemText}>
+              <InlineMarkdown text={item.text} />
+            </Text>
           </View>
         ))}
       </View>
     );
   }
   return (
-    <CodeFlow
-      key={index}
-      containerStyle={[styles.flowParagraph, isLast && styles.noBottom]}
-      proseStyle={styles.flowProse}
-      text={block.text}
-    />
+    <Text key={index} selectable style={[styles.paragraph, isLast && styles.noBottom]}>
+      <InlineMarkdown text={block.text} />
+    </Text>
   );
 }
 
@@ -402,30 +340,7 @@ const styles = StyleSheet.create({
   // bubble/segment layout owns outer spacing (otherwise every bubble ends
   // with a stray gap after its final row).
   noBottom: { marginBottom: 0 },
-  // Wrapping flex-row layout for code-bearing text (see CodeFlow): prose
-  // chunks wrap inside their Text item, code spans are chip views, and
-  // rowGap is the wrapped-line breathing room iOS can't do inline.
-  flowParagraph: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    rowGap: 3,
-    marginBottom: spacing.md,
-  },
-  flowProse: { color: colors.ink, fontSize: 17, lineHeight: 26 },
-  codeChip: {
-    alignSelf: "flex-start",
-    maxWidth: "100%",
-    marginVertical: 1,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: radius.sm,
-    backgroundColor: colors.surfaceSubtle,
-    color: colors.ink,
-    fontFamily: "monospace",
-    fontSize: 13,
-    lineHeight: 20,
-  },
+  paragraph: { color: colors.ink, fontSize: 17, lineHeight: 26, marginBottom: spacing.md },
   heading: {
     color: colors.inkStrong,
     fontSize: 19,
@@ -438,15 +353,15 @@ const styles = StyleSheet.create({
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
   inlineCode: {
-    // Inline rendering for long code spans (and code inside headings): subtle
-    // bg, ~0.92em. Horizontal padding is an nbsp inside the run (InlineMarkdown)
-    // because iOS drops per-run padding; short code spans get the fully
-    // decorated chip view instead (see CodeFlow).
+    // Parity with the desktop inline <code>: rounded, subtle bg, ~0.92em, text-ink.
     color: colors.ink,
     backgroundColor: colors.surfaceSubtle,
     fontFamily: "monospace",
     fontSize: 13,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
     borderRadius: radius.sm,
+    overflow: "hidden",
   },
   link: { color: colors.accent, textDecorationLine: "underline" },
   rule: { height: 1, marginVertical: spacing.md, backgroundColor: colors.line },
@@ -475,14 +390,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
     lineHeight: 26,
   },
-  listItemFlow: {
-    flex: 1,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    rowGap: 2,
-  },
-  listItemProse: { color: colors.ink, fontSize: 17, lineHeight: 26 },
+  listItemText: { flex: 1, color: colors.ink, fontSize: 17, lineHeight: 26 },
   checkbox: {
     width: 18,
     height: 18,
