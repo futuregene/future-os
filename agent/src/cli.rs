@@ -260,11 +260,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                     .ok();
                 if let Some(f) = file {
                     let write_result = if profiler_fail_at("write") {
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "injected flamegraph write failure",
-                        )
-                        .into())
+                        Err(std::io::Error::other("injected flamegraph write failure").into())
                     } else {
                         report.flamegraph(f)
                     };

@@ -1471,6 +1471,9 @@ mod tests {
         assert!(messages[0]["content"].to_string().contains("sys"));
     }
 
+    // The env lock is intentionally held for the whole test; current_thread
+    // flavor makes the guard-across-await pattern deadlock-free.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_idle_timeout_marks_stream_truncated() {
         let _env = idle_env_lock();
@@ -1727,6 +1730,7 @@ mod tests {
         assert_eq!(last.stop_reason, "truncated");
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_tool_call_idle_forces_tool_end() {
         let _env = idle_env_lock();
@@ -1917,6 +1921,7 @@ mod tests {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_tool_call_idle_with_keepalive_chunks() {
         let _env = idle_env_lock();
