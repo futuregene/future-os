@@ -106,6 +106,15 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      # The desktop frontend imports the shared thread-projection package via a
+      # `file:` dep whose entry points at dist/ (gitignored) — compile it before
+      # `npm run tauri:build` (vite build) resolves the import.
+      - name: Build thread-projection
+        working-directory: thread-projection
+        run: |
+          npm ci
+          npm run build
+
       - name: Build CLI binary
         working-directory: cli
         run: |
