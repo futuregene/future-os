@@ -70,6 +70,9 @@ agent-profile.svg
 
 # Coverage reports (scripts/coverage.sh)
 /coverage/
+# Frontend coverage output (vitest --coverage / jest --coverage)
+desktop/coverage/
+mobile/coverage/
 
 # loop control plane runtime state (never commit)
 .codex/
