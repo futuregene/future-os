@@ -222,11 +222,17 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
     // keep propagating as `Err`.
     let (creds, pairing_code, pairing_code_expires_at) = match establish().await {
         Ok(value) => value,
-        Err(error) => return start_failure(error),
+        Err(error) => {
+            eprintln!("remote: start failed at establish: {error}");
+            return start_failure(error);
+        }
     };
     let client = match connect_nats(&creds).await {
         Ok(client) => client,
-        Err(error) => return start_failure(error),
+        Err(error) => {
+            eprintln!("remote: start failed at connect_nats: {error}");
+            return start_failure(error);
+        }
     };
     let pairing_confirmed = Arc::new(AtomicBool::new(pairing_code.is_none()));
     if pairing_confirmed.load(Ordering::Acquire) {

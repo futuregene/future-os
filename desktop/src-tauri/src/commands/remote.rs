@@ -7,7 +7,20 @@ use serde::Serialize;
 pub async fn remote_start(
     input: remote::RemoteStartInput,
 ) -> Result<remote::RemoteStatus, crate::AppError> {
-    remote::start(input).await
+    match remote::start(input).await {
+        Ok(status) => {
+            if let Some(code) = &status.error_code {
+                eprintln!("remote: start completed with degraded status [{code}]");
+            }
+            Ok(status)
+        }
+        Err(error) => {
+            // The GUI collapses this into a generic banner; keep the real cause
+            // in the app's stderr so a failed start is debuggable.
+            eprintln!("remote: start failed (local fault): {error}");
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]

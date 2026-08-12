@@ -47,6 +47,13 @@ function formatPairId(pairId: string | null | undefined): string {
   return (pairId.startsWith("pair_") ? pairId.slice(5) : pairId).toUpperCase();
 }
 
+/** Tauri rejects arrive as strings or Errors; keep the raw detail for the banner. */
+function errorDetail(err: unknown): string {
+  if (err instanceof Error)
+    return err.message;
+  return typeof err === "string" ? err : String(err);
+}
+
 export function RemoteView({
   leftPanelExpanded,
   onToggleLeftPanel,
@@ -96,8 +103,11 @@ export function RemoteView({
     try {
       await startRemote({});
     }
-    catch {
-      setErrorCode("generic");
+    catch (err) {
+      // The backend string is the only clue on a failed start — log it and
+      // surface it verbatim instead of collapsing to the generic banner.
+      console.error("remote start failed:", err);
+      setError(errorDetail(err));
     }
     finally {
       setBusy(false);
@@ -112,8 +122,9 @@ export function RemoteView({
     try {
       await stopRemote();
     }
-    catch {
-      setErrorCode("generic");
+    catch (err) {
+      console.error("remote stop failed:", err);
+      setError(errorDetail(err));
     }
     finally {
       setBusy(false);
@@ -128,8 +139,9 @@ export function RemoteView({
     try {
       await unpairRemote();
     }
-    catch {
-      setErrorCode("generic");
+    catch (err) {
+      console.error("remote unpair failed:", err);
+      setError(errorDetail(err));
     }
     finally {
       setBusy(false);
