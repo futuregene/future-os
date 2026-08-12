@@ -129,6 +129,26 @@ future loop todo add --goal G --text "Copy deliverables to project root" --prior
 6. **CLI strictness**: unknown flags and unknown todo-ids are rejected; most
    subcommands ignore `--help` (`todo update --help` prints usage). Exact flags:
    `orchestration/loop/src/console.rs` `parse_pairs` call sites.
+7. **`todo archive` does NOT leave the frontier** — it only flips
+   `archive_state`, which nothing in the decision/frontier code reads: an
+   archived todo stays `open` in `status` and remains runnable by `run`. To
+   take a todo out of rotation ("暂缓"/"先不做"), use `todo supersede`
+   (Superseded unblocks dependents and exits the frontier).
+8. **Successor duplicates.** Completing a todo with a successor can create a
+   NEW todo that overlaps an existing open one (e.g. the agent rewrites a
+   follow-up with better detail). You then hold two todos for the same work —
+   supersede the stale one AND repair any `--blocks` that pointed at it:
+   `todo update --todo-id <acceptance> --blocks <new-list>` (blocks are
+   replaced wholesale).
+9. **A turn is not one todo.** A single `run` turn may complete several todos
+   in sequence (observed: one turn delivered 24 loop batches + 8 agent batches
+   + a cli residual). `status`'s `spent` counter increments only when the run
+   process EXITS — a mid-turn `status` still shows the old count and the old
+   `next` line.
+10. **The run agent can merge PRs itself.** In-turn tooling includes a shell;
+    agents have run `gh pr merge` autonomously. When tracking PRs, check
+    `gh pr list --state merged`, not just open PRs — and review what landed on
+    main at wrap-up time.
 
 **User gates.** When the user asks for approval before a specific action, create
 a real gate — describing it in the objective is NOT enough:
@@ -246,6 +266,24 @@ Run mechanics:
 nohup future loop run --goal G --agent-id <me> --max-turns 1 > logs/worker-<me>.log 2>&1 &
 tail -f .future/loop/runs/<run_id>.live.jsonl
 ```
+
+**Monitoring a long turn** (multi-hour turns are normal for big tasks):
+poll the pid (`kill -0 <pid>`), tail the live jsonl for `tool_start`/
+`tool_end` liveness, and watch the worktree's `git log` for commit progress —
+`status` alone lags (see pitfall 9). If the turn must be stopped, `kill <pid>`
+is safe: the session writes back and the next `run` replays from the ledger.
+
+**PR merge troubleshooting** (when turns produce PRs you must merge):
+- `BEHIND` — branch protection requires up-to-date: `git merge origin/main`
+  on the PR branch + push, wait for CI, merge.
+- A required check stuck at **skipping** — the CI paths-filter probably misses
+  the changed directory (e.g. `orchestration/**` was absent from
+  `rust_workspace` once, so loop-only PRs could never merge). Fix the filter
+  in `.github/workflows/ci.yml` on the same branch; editing the workflow
+  re-triggers every suite.
+- The `CodeQL` rollup check shows **skipping** while `Analyze (*)` jobs are
+  still pending — that is an intermediate state, not a failure; wait.
+- GitHub API flakes (SSL/EOF): wait and retry; don't re-push to "fix" it.
 
 **Session lifecycle:** each `run` creates a fresh scratch session and deletes it
 on every exit path — nothing durable lives in `~/.future/agent/sessions/`. A
