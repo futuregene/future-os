@@ -196,7 +196,11 @@ export function SessionsScreen() {
         // down every action would just fail, so don't offer the menu.
         if (remote.desktopOnline) setMenuSession(item);
       }}
-      onPress={() => void remote.selectSession(item.sessionId)}
+      onPress={() => {
+        // Opening a conversation needs the desktop for state/history — a tap
+        // while offline would just land on an error, so keep the list inert.
+        if (remote.desktopOnline) void remote.selectSession(item.sessionId);
+      }}
       style={({ pressed }) => [
         styles.session,
         inWorkspace && styles.workspaceSession,
