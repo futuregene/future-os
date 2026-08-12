@@ -194,6 +194,41 @@ mod tests {
     }
 
     #[test]
+    fn archive_keeps_unparseable_rows_and_existing_destinations() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("goals").join("g1").join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        let index = runs.join("index.jsonl");
+        // A row whose timestamp does not parse is kept verbatim...
+        std::fs::write(
+            &index,
+            "{\"goal_id\":\"g1\",\"timestamp\":\"not-a-date\",\"path\":\"goals/g1/runs/x.json\",\"turn\":0,\"classification\":\"run_recorded\"}\n\
+             {\"goal_id\":\"g1\",\"timestamp\":\"2026-07-01T00:00:00+00:00\",\"path\":\"goals/g1/runs/2026-07-01T00-00-00-00-00.json\",\"turn\":1,\"classification\":\"run_recorded\"}\n",
+        )
+        .unwrap();
+        std::fs::write(runs.join("2026-07-01T00-00-00-00-00.json"), "{}").unwrap();
+        // ...and a pre-existing archive destination is left in place (no rename).
+        let archive = runs.join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(
+            archive.join("2026-07-01T00-00-00-00-00.json"),
+            "{\"old\":true}",
+        )
+        .unwrap();
+        let cutoff = crate::scheduler::state::parse_epoch("2026-08-05T00:00:00+00:00").unwrap();
+        let report = archive_runs_before(dir.path().to_str().unwrap(), "g1", cutoff).unwrap();
+        assert_eq!(report.archived.len(), 1);
+        let rows = read_index_rows(&index).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].path, "goals/g1/runs/x.json", "unparseable row kept");
+        assert!(rows[1].path.contains("archive/"));
+        // The old run file stays put because the destination already existed.
+        assert!(runs.join("2026-07-01T00-00-00-00-00.json").exists());
+        let kept = std::fs::read_to_string(archive.join("2026-07-01T00-00-00-00-00.json")).unwrap();
+        assert_eq!(kept, "{\"old\":true}");
+    }
+
+    #[test]
     fn archive_moves_old_runs_and_repoints_index() {
         let dir = tempfile::tempdir().unwrap();
         let runs = dir.path().join("goals").join("g1").join("runs");

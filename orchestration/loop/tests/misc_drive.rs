@@ -310,6 +310,25 @@ fn heartbeat_render_arms() {
     assert!(out.contains("goal validated closed"), "{out}");
 }
 
+#[test]
+fn heartbeat_repair_attempt_and_ghost_todo_arms() {
+    use future_loop::heartbeat::render_heartbeat_prompt;
+    // Selected todo with prior failures → "repair attempt N+1" line.
+    let mut goal = Goal::new("g", "hb", "/tmp");
+    let mut t = Todo::advancement("t1", "repair me");
+    t.failed_attempts = 2;
+    goal.todos.push(t);
+    let mut packet = future_loop::decision::decide_for(&goal, std::time::SystemTime::now(), None);
+    packet.interaction_contract.agent_channel.selected_todo = Some("t1".to_string());
+    let out = render_heartbeat_prompt(&goal, &packet);
+    assert!(out.contains("repair attempt 3"), "{out}");
+    // Selected todo absent from the goal (stale packet) → id line only.
+    packet.interaction_contract.agent_channel.selected_todo = Some("ghost".to_string());
+    let out = render_heartbeat_prompt(&goal, &packet);
+    assert!(out.contains("NEXT TODO: ghost"), "{out}");
+    assert!(!out.contains("- text:"), "{out}");
+}
+
 // ── migration ──────────────────────────────────────────────────────────────
 
 #[test]
@@ -626,6 +645,12 @@ fn store_projection_gap_and_guard_arms() {
         future_loop::store::projection_gap(&goal).is_some(),
         "decide without gate"
     );
+    // With an open agent todo the agent-side check passes and the
+    // user-side "waits on a decision" gap fires instead.
+    goal.todos.push(Todo::advancement("t-open", "pending work"));
+    let gap = future_loop::store::projection_gap(&goal).expect("user-side gap");
+    assert!(gap.contains("no open user gate"), "{gap}");
+    goal.todos.clear();
     goal.next_action = Some(String::new());
     assert!(
         future_loop::store::projection_gap(&goal).is_none(),

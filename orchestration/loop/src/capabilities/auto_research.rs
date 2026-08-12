@@ -100,10 +100,10 @@ impl Capability for AutoResearchCapability {
         if text.is_empty() {
             return vec![TypedProposal::no_followup("empty input for auto_research")];
         }
+        // The question is never empty here: parse_research_input fills it
+        // from input.trim() when no `question:` line parsed, and the empty
+        // input case returned above.
         let question = r.question.trim();
-        if question.is_empty() {
-            return vec![TypedProposal::no_followup("empty research question")];
-        }
         if !is_research_question(question) {
             return vec![TypedProposal::successor(
                 successor_todo(
@@ -180,6 +180,13 @@ mod tests {
         );
         assert!(proposals[0].reason.contains("falsifiable"));
         assert!(proposals[1].todo.as_ref().unwrap().text.contains("Monitor"));
+    }
+
+    #[test]
+    fn unknown_keys_are_ignored_by_the_parser() {
+        let r = parse_research_input("question: Q?\nunknown-key: ignored\nmethod: m");
+        assert_eq!(r.question, "Q?");
+        assert_eq!(r.method, "m");
     }
 
     #[test]

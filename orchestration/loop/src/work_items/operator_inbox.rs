@@ -321,4 +321,45 @@ mod tests {
     fn inbox_path_cannot_escape_project() {
         assert!(load_pending_inbox_events("/tmp", "../../etc").is_err());
     }
+
+    #[test]
+    fn inbox_rel_must_stay_under_the_canonical_inbox_dir() {
+        // A clean relative path that is not `inbox[..]` is still rejected.
+        let err = load_pending_inbox_events("/tmp", "elsewhere").unwrap_err();
+        assert!(err.contains("must stay under"), "{err}");
+    }
+
+    #[test]
+    fn load_skips_unreadable_and_non_object_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join(".future/loop/inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        // Invalid JSON → skipped by the parse guard.
+        std::fs::write(inbox.join("bad.json"), "not json").unwrap();
+        // A directory named *.json → read_to_string fails → skipped.
+        std::fs::create_dir(inbox.join("adir.json")).unwrap();
+        let events = load_pending_inbox_events(&dir.path().to_string_lossy(), "inbox").unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn verified_reply_flags_reply_to_operator() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join(".future/loop/inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        std::fs::write(
+            inbox.join("m1.json"),
+            r#"{"message_id":"m1","content":"done","parent_id":"p1","reply_context_verified":true,"is_reply":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            inbox.join("m2.json"),
+            r#"{"message_id":"m2","content":"fyi","parent_id":"p1","reply_context_verified":true,"is_reply":false}"#,
+        )
+        .unwrap();
+        let events = load_pending_inbox_events(&dir.path().to_string_lossy(), "inbox").unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[0].reply_to_operator);
+        assert!(!events[1].reply_to_operator);
+    }
 }

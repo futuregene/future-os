@@ -221,6 +221,60 @@ fn worker_bridge_successor_chain_on_non_final_todo() {
 }
 
 #[test]
+fn worker_bridge_ignores_unknown_flags() {
+    let root = tmp_root("bridge-bogus");
+    let gid = init_goal(&root, "bridge bogus flag");
+    let (out, _, code) = run_stdin(
+        &root,
+        &["worker-bridge", "--goal", &gid, "--bogus", "x"],
+        "",
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("BRIDGE packet:"), "{out}");
+}
+
+#[test]
+fn worker_bridge_empty_terminal_state_defaults_to_completed() {
+    let root = tmp_root("bridge-empty-state");
+    let gid = init_goal(&root, "bridge empty terminal state");
+    let mut child = Command::new(bin())
+        .env("FUTURE_LOOP_ROOT", &root)
+        .args(["worker-bridge", "--goal", &gid])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::{BufRead, BufReader, Read};
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let json_start = line.find('{').unwrap();
+    let packet: serde_json::Value = serde_json::from_str(&line[json_start..]).unwrap();
+    let todo_id = packet["todo_id"].as_str().unwrap().to_string();
+    // Empty terminal_state falls back to "completed" in the run record.
+    let answer = format!(
+        "{{\"todo_id\":\"{todo_id}\",\"terminal_state\":\"\",\"evidence\":\"done\",\"tools\":[\"shell\"]}}\n"
+    );
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(answer.as_bytes())
+        .unwrap();
+    drop(child.stdin.take());
+    let mut rest = String::new();
+    Read::read_to_string(&mut reader, &mut rest).unwrap();
+    assert!(rest.contains("BRIDGE writeback"), "{rest}");
+    let status = child.wait().unwrap();
+    assert!(status.success());
+    let store = future_loop::store::Store::open(&root).unwrap();
+    let g = store.replay(&gid).unwrap().unwrap();
+    let rec = g.history.last().expect("run recorded");
+    assert_eq!(rec.terminal_state, "completed");
+}
+
+#[test]
 fn worker_bridge_stops_when_should_run_false() {
     let root = tmp_root("bridge-stop");
     let gid = init_goal(&root, "bridge stopped goal");

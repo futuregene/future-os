@@ -170,14 +170,16 @@ pub fn run_qualification_case(
     let (failure_class, failure_scope) = super::ledger::classify_failure(&synthetic);
     // A stopped-on-pass loop that exhausted every round with no pass is a
     // budget exhaustion only when the loop actually ran to the budget.
+    // A non-pass run either broke early on runner_error (handled above) or
+    // ran every round — records == max_rounds — so the remaining outcome is
+    // always budget exhaustion.
     let failure_class = if passed {
         "success".to_string()
     } else if failure_class == "runner_error" {
         failure_class
-    } else if trace.records.len() as u32 >= case.max_rounds {
-        "budget_exhausted".to_string()
     } else {
-        failure_class
+        debug_assert!(trace.records.len() as u32 >= case.max_rounds);
+        "budget_exhausted".to_string()
     };
 
     Ok(QualificationResult {

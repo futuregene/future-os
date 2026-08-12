@@ -119,6 +119,28 @@ fn write_path_migration_is_reversible_and_replay_is_stable() {
     assert_eq!(goal.todos.len(), 1);
 }
 
+/// ── An unreadable ACTIVE_GOAL_STATE.md skips the dual-read parity check ───
+#[test]
+fn migration_bridge_tolerates_unreadable_active_state() {
+    let root = tmp_root("bridge-unreadable");
+    let mut store = Store::open(&root).unwrap();
+    let goal = Goal::new("g1", "objective", "/tmp");
+    store.register(&goal).unwrap();
+    let ts = goal.created_at;
+    store
+        .append(Event::GoalStarted {
+            goal_id: "g1".into(),
+            ts,
+        })
+        .unwrap();
+    // The state file path exists but is a DIRECTORY → read_to_string fails.
+    let goal_dir = store.goal_dir("g1");
+    std::fs::create_dir_all(&goal_dir).unwrap();
+    std::fs::create_dir_all(goal_dir.join("ACTIVE_GOAL_STATE.md")).unwrap();
+    let bridge = future_loop::migration::migration_bridge_status(&store, "g1", &goal_dir);
+    assert!(!bridge.checks.dual_read_parity_clean);
+}
+
 /// ── Bridge is fail-closed with no prerequisites and never auto-promotes ───
 #[test]
 fn migration_bridge_is_fail_closed() {
