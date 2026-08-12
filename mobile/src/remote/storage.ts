@@ -15,6 +15,7 @@ const CREDENTIAL_KEYS: { [Key in keyof RemoteCredentials]: string } = {
 const DEVICE_ID_KEY = "futureos.remote.device-id.v1";
 const LAST_MODEL_KEY = "futureos.remote.last-model.v1";
 const LAST_THINKING_KEY = "futureos.remote.last-thinking.v1";
+const PENDING_REVOKE_KEY = "futureos.remote.pending-revoke.v1";
 
 const secureOptions: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
@@ -71,4 +72,37 @@ export async function loadLastThinking(): Promise<string | null> {
 
 export async function saveLastThinking(level: string): Promise<void> {
   await SecureStore.setItemAsync(LAST_THINKING_KEY, level, secureOptions);
+}
+
+/** Minimal payload needed to retry a server-side pair revocation later. */
+export interface PendingRevoke {
+  pairId: string;
+  deviceId: string;
+  seed: string;
+  refreshToken: string;
+  tokenUrl: string;
+}
+
+/**
+ * The unpair retry queue (M7): an offline unpair must succeed locally, and the
+ * server-side revoke is queued here to fire on a later launch. Store only the
+ * revoke-relevant fields — never the full credential set.
+ */
+export async function savePendingRevoke(revoke: PendingRevoke): Promise<void> {
+  await SecureStore.setItemAsync(PENDING_REVOKE_KEY, JSON.stringify(revoke), secureOptions);
+}
+
+export async function loadPendingRevoke(): Promise<PendingRevoke | null> {
+  const raw = await SecureStore.getItemAsync(PENDING_REVOKE_KEY, secureOptions);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PendingRevoke;
+  } catch {
+    await clearPendingRevoke();
+    return null;
+  }
+}
+
+export async function clearPendingRevoke(): Promise<void> {
+  await SecureStore.deleteItemAsync(PENDING_REVOKE_KEY, secureOptions);
 }

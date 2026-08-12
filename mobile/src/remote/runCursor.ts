@@ -1,10 +1,19 @@
 /**
- * Per-run high-watermark cursor for gap detection.
+ * Per-run integrity cursor for gap detection and prefix completeness.
  *
  * The mobile client receives streaming events over core NATS (at-most-once).
- * Under jitter, events may arrive out of order or be silently dropped.
- * This module tracks the highest idx applied per run so the context layer
- * can detect gaps and trigger incremental backfill before applying.
+ * Under jitter, events may arrive out of order or be silently dropped — and a
+ * client that joins a run mid-flight sees its tail only, with no guarantee the
+ * prefix will ever arrive.
+ *
+ * Each cursor entry tracks two facts the timeline cache needs:
+ *   highWater       — highest idx applied in order for this run
+ *   prefixComplete  — whether the cache provably contains [0, highWater]
+ *
+ * prefixComplete is the anti-H3/H5 invariant: a run whose first seen event is
+ * idx 0, or that was established by a full replay (history + reconcile from
+ * -1), is prefix-complete; a run whose first seen event has idx > 0 is not,
+ * and the context layer must reconcile it from -1 before it can be trusted.
  *
  * Pure functions — no side effects, fully unit-testable.
  */
@@ -15,8 +24,13 @@ export type CursorEvent =
   | { kind: "gap"; fromIdx: number }
   | { kind: "untracked" };
 
-/** Map of runId → highest idx applied in order. Capped to MAX_RUNS entries. */
-export type RunCursor = Map<string, number>;
+/** Map of runId → per-run cursor. Capped to MAX_RUNS entries. */
+export type RunCursor = Map<string, RunCursorEntry>;
+
+export interface RunCursorEntry {
+  highWater: number;
+  prefixComplete: boolean;
+}
 
 const MAX_RUNS = 8;
 
@@ -30,7 +44,9 @@ export function newCursor(): RunCursor {
  * Rules:
  * - No runId or idx → "untracked" (apply as-is, no tracking).
  * - idx ≤ high-water → "dup" (already applied).
- * - idx = high-water + 1, or first event for this run → "apply" (advance cursor).
+ * - idx = high-water + 1, or first event for this run → "apply".
+ *   A first event with idx > 0 is accepted for live rendering but recorded
+ *   prefix-incomplete; the caller must reconcile the prefix.
  * - idx > high-water + 1 → "gap" (fromIdx = current high-water).
  */
 export function nextEvent(
@@ -40,41 +56,59 @@ export function nextEvent(
 ): CursorEvent {
   if (!runId || idx == null) return { kind: "untracked" };
 
-  const high = cursor.get(runId);
-  if (high === undefined) {
-    // First event for this run — accept and start tracking.
-    advanceCursor(cursor, runId, idx);
+  const entry = cursor.get(runId);
+  if (entry === undefined) {
+    // First event for this run — accept and start tracking. A run that begins
+    // above idx 0 has an unknown prefix (H3): the caller reconciles from -1.
+    advanceCursor(cursor, runId, idx, idx === 0);
     return { kind: "apply", idx };
   }
-  if (idx <= high) return { kind: "dup" };
-  if (idx === high + 1) {
-    advanceCursor(cursor, runId, idx);
+  if (idx <= entry.highWater) return { kind: "dup" };
+  if (idx === entry.highWater + 1) {
+    cursor.set(runId, { ...entry, highWater: idx });
     return { kind: "apply", idx };
   }
-  // idx > high + 1 → gap
-  return { kind: "gap", fromIdx: high };
+  // idx > high-water + 1 → gap
+  return { kind: "gap", fromIdx: entry.highWater };
 }
 
 /**
- * Advance the cursor after successfully applying an event (or a batch).
- * Call this after applying events out-of-band (e.g. backfill results).
+ * Advance the cursor after successfully applying events out-of-band (e.g.
+ * backfill/reconcile results). `completePrefix` marks the run's prefix
+ * [0, highWater] as fully present — true for a full replay, false for a
+ * tail-only top-up (which never establishes prefix completeness).
  */
-export function advanceCursor(cursor: RunCursor, runId: string, idx: number): void {
-  const current = cursor.get(runId);
-  if (current === undefined || idx > current) {
-    cursor.set(runId, idx);
-    // Evict oldest entries when over capacity (Map preserves insertion order).
-    while (cursor.size > MAX_RUNS) {
-      const oldest = cursor.keys().next().value;
-      if (oldest !== undefined) cursor.delete(oldest);
-    }
+export function advanceCursor(
+  cursor: RunCursor,
+  runId: string,
+  idx: number,
+  completePrefix = false,
+): void {
+  const entry = cursor.get(runId);
+  if (entry === undefined) {
+    cursor.set(runId, { highWater: idx, prefixComplete: completePrefix });
+  } else if (idx > entry.highWater) {
+    cursor.set(runId, {
+      ...entry,
+      highWater: idx,
+      prefixComplete: entry.prefixComplete || completePrefix,
+    });
+  } else if (completePrefix && !entry.prefixComplete) {
+    // Same high-water, but the run's prefix is now provably complete (a
+    // whole-run replay landed exactly where the cursor sat).
+    cursor.set(runId, { ...entry, prefixComplete: true });
+  }
+  // Evict oldest entries when over capacity (Map preserves insertion order).
+  while (cursor.size > MAX_RUNS) {
+    const oldest = cursor.keys().next().value;
+    if (oldest !== undefined) cursor.delete(oldest);
   }
 }
 
 /**
- * Rebuild cursor state from a set of already-applied events (e.g. after
- * a full resync or backfill). Pass the run's events; the cursor is set to
- * the max idx seen.
+ * Rebuild cursor state from a set of already-applied events (e.g. after a full
+ * reconcile). The run is prefix-complete because the events were fetched from
+ * -1 (or from 0 — both render the whole known run).
  */
 export function rebuildCursorFromEvents(
   cursor: RunCursor,
@@ -82,7 +116,20 @@ export function rebuildCursorFromEvents(
 ): void {
   for (const event of events) {
     if (event.runId && event.idx != null) {
-      advanceCursor(cursor, event.runId, event.idx);
+      advanceCursor(cursor, event.runId, event.idx, true);
     }
   }
+}
+
+export function cursorHighWater(cursor: RunCursor, runId: string | undefined | null): number {
+  if (!runId) return -1;
+  return cursor.get(runId)?.highWater ?? -1;
+}
+
+export function isPrefixComplete(
+  cursor: RunCursor,
+  runId: string | undefined | null,
+): boolean {
+  if (!runId) return true;
+  return cursor.get(runId)?.prefixComplete ?? false;
 }

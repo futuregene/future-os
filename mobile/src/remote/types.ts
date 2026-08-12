@@ -1,5 +1,13 @@
 export type ConnectionPhase =
-  "booting" | "unpaired" | "claiming" | "connecting" | "connected" | "reconnecting" | "error";
+  | "booting"
+  | "unpaired"
+  | "claiming"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "refreshing"
+  | "revoked"
+  | "error";
 
 export interface PairingCode {
   v: 2;

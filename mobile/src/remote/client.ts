@@ -4,6 +4,12 @@ import { fromSeed } from "nkeys.js";
 import { ensureFreshCredentials, refreshCredentials } from "./pairing";
 import { jwtExpiry, randomId } from "./codec";
 import {
+  backoffDelayMs,
+  classifyError,
+  transition,
+  type ConnectionState,
+} from "./connectionState";
+import {
   encodeBase64Url,
   handshakeTranscript,
   type HandshakeChallenge,
@@ -41,7 +47,7 @@ export interface RemoteClientCallbacks {
   onSessions(sessions: PresenceSession[]): void;
   onWorkspaces(workspaces: RemoteWorkspace[]): void;
   onFeatures(features: string[]): void;
-  onConnectionState(state: "connected" | "reconnecting" | "disconnected"): void;
+  onConnectionState(state: ConnectionState): void;
   onReconnected(): void;
   onError(error: Error): void;
 }
@@ -54,8 +60,11 @@ export class RemoteClient {
   private connection: NatsConnection | null = null;
   private credentials: RemoteCredentials;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempt = 0;
   private generation = 0;
   private stopped = false;
+  private state: ConnectionState = "unpaired";
   private confirmedBridgeInstanceId = "";
   private handshakePromise: Promise<HandshakeConfirmation> | null = null;
   private downloadWaiters = new Map<
@@ -82,14 +91,68 @@ export class RemoteClient {
     this.credentials = credentials;
   }
 
+  /**
+   * Establish (or re-establish) the live connection. The attempt runs in the
+   * background: on a transport failure this arms the backoff timer and returns,
+   * so a slow attempt never blocks its caller (H4's "close() then reconnect
+   * 1s later" storm is structurally impossible — close never arms a timer, and
+   * the retry timer is owned by exactly one place, here).
+   */
   async open(): Promise<void> {
-    this.stopped = false;
-    this.credentials = await ensureFreshCredentials(this.credentials);
-    await this.openSocket();
+    if (this.stopped) return;
+    this.signal({ type: "open_started" });
+    const generation = ++this.generation;
+    try {
+      const fresh = await ensureFreshCredentials(this.credentials);
+      if (this.stopped || generation !== this.generation) return;
+      this.credentials = fresh;
+      this.callbacks.onCredentials(fresh);
+      await this.connectSocket(generation);
+      this.scheduleRefresh();
+    } catch (error) {
+      if (this.stopped || generation !== this.generation) return;
+      this.handleFailure(error);
+    }
   }
 
-  private async openSocket(): Promise<void> {
-    const generation = ++this.generation;
+  /** Full teardown — never arms a retry, never broadcasts a phase. Idempotent. */
+  async close(reason: "UserInitiated" | "Unpair" = "UserInitiated"): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.clearTimers();
+    this.disposeConnection(reason === "UserInitiated" ? "close" : "unpair");
+    this.rejectDownloadWaiters("closed");
+  }
+
+  /** Rotate the JWT in place and resume the connection (M1's refreshable class). */
+  private async refreshToken(): Promise<void> {
+    this.signal({ type: "auth_failed" }); // moves to refreshing
+    try {
+      const fresh = await refreshCredentials(this.credentials);
+      if (this.stopped) return;
+      this.credentials = fresh;
+      this.callbacks.onCredentials(fresh);
+      this.disposeConnection("refresh");
+      // Re-open with the fresh token; the FSM is already in refreshing.
+      await this.open();
+    } catch (error) {
+      if (this.stopped) return;
+      // Refresh is attempted ONCE. A repeat failure must not loop straight
+      // back into another refresh (M1's infinite retry): a revoked refresh
+      // token is terminal, anything else backs off and re-opens, where
+      // ensureFreshCredentials will try the refresh again with backoff.
+      if (classifyError(error) === "authTerminal") {
+        this.clearTimers();
+        this.signal({ type: "revoked" });
+        this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+      this.scheduleRetry();
+    }
+  }
+
+  private async connectSocket(generation: number): Promise<void> {
     const seed = encoder.encode(this.credentials.seed);
     let connection: NatsConnection;
     try {
@@ -119,21 +182,108 @@ export class RemoteClient {
         await connection.close();
         return;
       }
+      // Dispose any prior connection ONLY after the new one is proven — M10's
+      // ghost connection: the old path nulled `this.connection` before the
+      // refresh, leaking it on failure.
+      const previous = this.connection;
+      if (previous && previous !== connection) {
+        await previous.close().catch(() => undefined);
+      }
       this.connection = connection;
-      this.callbacks.onCredentials(this.credentials);
+      this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
+      this.retryAttempt = 0;
       this.callbacks.onPresence(confirmation.presence);
       this.callbacks.onFeatures(confirmation.features ?? []);
-      this.callbacks.onConnectionState("connected");
+      this.subscribeEvents(connection, generation);
+      this.subscribeLiveness(connection, generation);
+      this.subscribeState(connection, generation);
+      this.subscribeTransfers(connection, generation);
+      this.watchStatus(connection, generation);
+      this.signal({ type: "ready" });
+      this.callbacks.onReconnected();
     } catch (error) {
-      await connection.close();
+      await connection.close().catch(() => undefined);
       throw error;
     }
-    this.subscribeEvents(connection, generation);
-    this.subscribeLiveness(connection, generation);
-    this.subscribeState(connection, generation);
-    this.subscribeTransfers(connection, generation);
-    this.watchStatus(connection, generation);
-    this.scheduleRefresh();
+  }
+
+  private handleFailure(error: unknown): void {
+    const kind = classifyError(error);
+    if (kind === "authTerminal") {
+      // The device was revoked (M1) — stop every network action and tell the
+      // UI to guide the user to re-pair.
+      this.clearTimers();
+      this.signal({ type: "revoked" });
+      this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    if (kind === "auth") {
+      // Refreshable — rotate once, then backoff on repeat failure.
+      void this.refreshToken();
+      return;
+    }
+    this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+    this.scheduleRetry();
+  }
+
+  private scheduleRetry(): void {
+    this.signal({ type: "open_failed", error: new Error("transport_failed") });
+    if (this.stopped) return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    const delay = backoffDelayMs(this.retryAttempt);
+    this.retryAttempt += 1;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.stopped) return;
+      void this.open();
+    }, delay);
+  }
+
+  private clearTimers(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
+
+  /** Feed the FSM with a lifecycle fact and execute its effects. */
+  private signal(
+    event:
+      | { type: "open_started" }
+      | { type: "open_failed"; error: Error }
+      | { type: "ready" }
+      | { type: "transport_disconnect" }
+      | { type: "auth_failed" }
+      | { type: "revoked" }
+      | { type: "unpair" },
+  ): void {
+    const action = transition(this.state, event);
+    if (action.next !== this.state) {
+      this.state = action.next;
+      this.callbacks.onConnectionState(action.next);
+    }
+    for (const effect of action.effects) {
+      if (effect.type === "dispose_connection") {
+        this.disposeConnection(effect.reason);
+      } else if (effect.type === "schedule_reconnect") {
+        // Already handled by scheduleRetry (the only timer owner).
+      } else if (effect.type === "begin_token_refresh") {
+        // The refresh already started; the timer logic lives in refreshToken.
+      }
+    }
+  }
+
+  /**
+   * Close and drop the current connection if any — the single disposal path.
+   * Every transition that leaves the connected states funnels through here, so
+   * a leaked NATS connection (M10) is structurally impossible.
+   */
+  private disposeConnection(reason: string): void {
+    const connection = this.connection;
+    this.connection = null;
+    this.confirmedBridgeInstanceId = "";
+    this.rejectDownloadWaiters(reason);
+    if (connection) void connection.close().catch(() => undefined);
   }
 
   private subscribeTransfers(connection: NatsConnection, generation: number): void {
@@ -164,17 +314,22 @@ export class RemoteClient {
   private subscribeEvents(connection: NatsConnection, generation: number): void {
     const subscription = connection.subscribe(`p.${this.credentials.pairId}.evt.>`);
     void (async () => {
-      try {
-        for await (const message of subscription) {
-          if (this.stopped || generation !== this.generation) break;
-          const prefix = `p.${this.credentials.pairId}.evt.`;
-          const sessionId = message.subject.startsWith(prefix)
-            ? message.subject.slice(prefix.length)
-            : "";
-          this.callbacks.onEvent(decodeJson<StreamEvent>(message.data), sessionId);
+      for await (const message of subscription) {
+        if (this.stopped || generation !== this.generation) break;
+        const prefix = `p.${this.credentials.pairId}.evt.`;
+        const sessionId = message.subject.startsWith(prefix)
+          ? message.subject.slice(prefix.length)
+          : "";
+        let event: StreamEvent;
+        try {
+          event = decodeJson<StreamEvent>(message.data);
+        } catch {
+          // A single malformed event must not kill the whole subscription
+          // (L6) — drop it; the session's next reconcile re-fetches truth.
+          this.callbacks.onError(new Error("remote_event_decode_failed"));
+          continue;
         }
-      } catch (error) {
-        if (!this.stopped) this.callbacks.onError(asError(error));
+        this.callbacks.onEvent(event, sessionId);
       }
     })();
   }
@@ -185,18 +340,28 @@ export class RemoteClient {
       try {
         for await (const message of subscription) {
           if (this.stopped || generation !== this.generation) break;
-          const presence = decodeJson<Presence>(message.data);
+          let presence: Presence;
+          try {
+            presence = decodeJson<Presence>(message.data);
+          } catch {
+            continue;
+          }
           if (
             !presence.bridgeInstanceId ||
             presence.bridgeInstanceId !== this.confirmedBridgeInstanceId
           ) {
-            this.callbacks.onConnectionState("reconnecting");
-            const confirmation = await this.ensureHandshake(connection);
-            if (this.stopped || generation !== this.generation) break;
-            this.callbacks.onPresence(confirmation.presence);
-            this.callbacks.onFeatures(confirmation.features ?? []);
-            this.callbacks.onConnectionState("connected");
-            this.callbacks.onReconnected();
+            // The bridge restarted — the confirmed handshake is stale. Rotate
+            // back through the handshake to re-bind, then resync.
+            try {
+              const confirmation = await this.ensureHandshake(connection);
+              if (this.stopped || generation !== this.generation) break;
+              this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
+              this.callbacks.onPresence(confirmation.presence);
+              this.callbacks.onFeatures(confirmation.features ?? []);
+              this.callbacks.onReconnected();
+            } catch (error) {
+              this.callbacks.onError(asError(error));
+            }
           } else {
             this.callbacks.onPresence(presence);
           }
@@ -228,22 +393,32 @@ export class RemoteClient {
     })();
   }
 
+  /**
+   * The NATS status loop is the transport-truth feeder. A disconnect while
+   * ready enters reconnecting WITHOUT arming our own timer — NATS reconnects
+   * this same connection and emits a `reconnect` status, which we treat as the
+   * re-bound handshake. Only a genuinely-dead connect attempt (open_failed)
+   * arms the backoff timer.
+   */
   private watchStatus(connection: NatsConnection, generation: number): void {
     void (async () => {
       try {
         for await (const status of connection.status()) {
           if (this.stopped || generation !== this.generation) break;
-          if (status.type === "disconnect") this.callbacks.onConnectionState("reconnecting");
-          if (status.type === "reconnect") {
+          if (status.type === "disconnect") {
+            this.signal({ type: "transport_disconnect" });
+          } else if (status.type === "reconnect") {
+            if (this.connection !== connection) continue;
             try {
               const confirmation = await this.ensureHandshake(connection);
               if (this.stopped || generation !== this.generation) break;
+              this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
               this.callbacks.onPresence(confirmation.presence);
               this.callbacks.onFeatures(confirmation.features ?? []);
-              this.callbacks.onConnectionState("connected");
+              this.signal({ type: "ready" });
               this.callbacks.onReconnected();
             } catch (error) {
-              this.callbacks.onError(asError(error));
+              this.handleFailure(error);
             }
           }
         }
@@ -255,27 +430,19 @@ export class RemoteClient {
 
   private scheduleRefresh(): void {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
-    const delay = Math.max(5_000, jwtExpiry(this.credentials.userJwt) * 1000 - Date.now() - 60_000);
-    this.refreshTimer = setTimeout(() => {
-      void this.refreshAndReconnect();
-    }, delay);
-  }
-
-  private async refreshAndReconnect(): Promise<void> {
-    if (this.stopped) return;
-    try {
-      this.callbacks.onConnectionState("reconnecting");
-      const previous = this.connection;
-      this.connection = null;
-      this.rejectDownloadWaiters("reconnecting");
-      this.credentials = await refreshCredentials(this.credentials);
-      this.callbacks.onCredentials(this.credentials);
-      if (previous) await previous.close();
-      await this.openSocket();
-      this.callbacks.onReconnected();
-    } catch (error) {
-      this.callbacks.onError(asError(error));
+    const expiry = jwtExpiry(this.credentials.userJwt);
+    if (expiry === null) {
+      // Malformed JWT — mirror the desktop's hard reject: surface the error
+      // and drop the connection instead of entering a 5s refresh loop.
+      this.callbacks.onError(new Error("invalid_jwt"));
+      void this.close();
+      return;
     }
+    const delay = Math.max(5_000, expiry * 1000 - Date.now() - 60_000);
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      void this.refreshToken();
+    }, delay);
   }
 
   async request<T>(
@@ -363,7 +530,11 @@ export class RemoteClient {
       { timeout: 10_000 },
     );
     const response = decodeJson<RpcResponse<T>>(message.data);
-    if (!response.success) throw new Error(response.error ?? "command_failed");
+    if (!response.success) {
+      const error = new Error(response.error ?? "command_failed");
+      if (classifyError(error) === "authTerminal") this.signal({ type: "revoked" });
+      throw error;
+    }
     return response;
   }
 
@@ -435,18 +606,6 @@ export class RemoteClient {
     };
     void pending.then(clear, clear);
     return pending;
-  }
-
-  async close(): Promise<void> {
-    this.stopped = true;
-    this.generation += 1;
-    if (this.refreshTimer) clearTimeout(this.refreshTimer);
-    this.refreshTimer = null;
-    const connection = this.connection;
-    this.connection = null;
-    this.rejectDownloadWaiters("disconnected");
-    if (connection) await connection.close();
-    this.callbacks.onConnectionState("disconnected");
   }
 }
 
