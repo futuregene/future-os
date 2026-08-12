@@ -332,8 +332,8 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
       </Pressable>
       {expanded && children ? (
         <View style={styles.inlineToolChildren}>
-          {children.map(child => (
-            <Text key={`${child.name}:${child.detail ?? ""}`} style={styles.inlineToolChild}>
+          {children.map((child, index) => (
+            <Text key={`${child.name}:${child.detail ?? ""}:${index}`} style={styles.inlineToolChild}>
               {child.detail ?? toolLabel(t, toolKind(child.name), child.complete)}
             </Text>
           ))}
@@ -348,9 +348,10 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
  * (audit D4) is that reasoning always renders collapsed — a muted one-line
  * label, expandable on tap — so long reasoning never floods the bubble or the
  * FlatList. The shared projection captures the full text; the collapse is a
- * render concern only.
+ * render concern only. The label reads "thinking" while the run is streaming
+ * (the block is still mid-reasoning) and "thought completed" once settled.
  */
-function ThinkingRow({ text }: { text: string }) {
+function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   return (
@@ -360,7 +361,9 @@ function ThinkingRow({ text }: { text: string }) {
         onPress={() => setExpanded(value => !value)}
         style={styles.inlineThinkingHeader}
       >
-        <Text style={styles.inlineThinkingLabel}>{t("chat.thoughtCompleted")}</Text>
+        <Text style={styles.inlineThinkingLabel}>
+          {t(streaming ? "chat.thinking" : "chat.thoughtCompleted")}
+        </Text>
         {expanded ? (
           <ChevronUp color={colors.inkMuted} size={14} />
         ) : (
@@ -373,12 +376,12 @@ function ThinkingRow({ text }: { text: string }) {
 }
 
 /** One inline slice of an assistant reply, in stream order (desktop parity). */
-function SegmentBlock({ segment }: { segment: TimelineSegment }) {
+function SegmentBlock({ segment, streaming }: { segment: TimelineSegment; streaming?: boolean }) {
   if (segment.kind === "text") {
     return <MarkdownText text={segment.text} />;
   }
   if (segment.kind === "thinking") {
-    return <ThinkingRow text={segment.text} />;
+    return <ThinkingRow streaming={streaming} text={segment.text} />;
   }
   if (segment.kind === "tool") {
     return <ToolRow tool={segment.tool} />;
@@ -418,7 +421,7 @@ export function TimelineCard({ item, onOpenAttachment }: TimelineCardProps) {
           {item.segments && item.segments.length > 0 ? (
             <View style={styles.segmentList}>
               {item.segments.map(segment => (
-                <SegmentBlock key={segment.id} segment={segment} />
+                <SegmentBlock key={segment.id} segment={segment} streaming={item.streaming} />
               ))}
             </View>
           ) : item.text.trim().length > 0 ? (
