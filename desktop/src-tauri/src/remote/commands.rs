@@ -446,6 +446,12 @@ async fn handle_command(
         }
         "get_events_since" => {
             // P1c: replay buffered events for the current in-progress run, so late-joining clients can catch up on missed prefix events.
+            let offset = cmd.offset.max(0) as usize;
+            let limit = if cmd.limit > 0 {
+                cmd.limit as usize
+            } else {
+                DEFAULT_MESSAGE_PAGE_LIMIT
+            };
             match crate::agent_bridge::get_events_since(
                 cmd.session_id.clone(),
                 cmd.run_id.clone(),
@@ -453,7 +459,16 @@ async fn handle_command(
             )
             .await
             {
-                Ok(data) => reply(client, &msg, true, data, None).await,
+                Ok(data) => {
+                    reply(
+                        client,
+                        &msg,
+                        true,
+                        paginate_events(data, offset, limit),
+                        None,
+                    )
+                    .await
+                }
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
@@ -682,7 +697,6 @@ async fn handle_pair_handshake(
     cmd: &IncomingCmd,
     state: &HandshakeState,
 ) {
-    state.active.store(false, Ordering::Release);
     let desktop_public_key = match crate::remote::pairing::public_key(&state.creds) {
         Ok(key) => key,
         Err(error) => {
@@ -690,6 +704,10 @@ async fn handle_pair_handshake(
             return;
         }
     };
+    // Validate BEFORE deactivating commands: a garbage handshake must not lock
+    // the bridge (active=false gates every command) — only a well-formed
+    // handshake from a party that holds the pair's identity may suspend the
+    // current session while it re-authenticates.
     let valid = cmd.protocol_version == HANDSHAKE_PROTOCOL_VERSION
         && cmd.pair_id == state.creds.pair_id
         && cmd.expected_desktop_id == state.creds.desktop_id
@@ -708,6 +726,10 @@ async fn handle_pair_handshake(
         .await;
         return;
     }
+
+    // Identity validated — the handshake may now suspend command processing
+    // until the confirm round completes (see handle_pair_handshake_confirm).
+    state.active.store(false, Ordering::Release);
 
     let desktop_nonce = nkeys::KeyPair::new_user().public_key();
     let transcript = handshake_transcript(&HandshakeTranscript {
@@ -1048,6 +1070,34 @@ fn paginate_items(mut items: Vec<Value>, offset: usize, limit: usize, key: &str)
     value
 }
 
+/// Page a session's replay event tail into a reply that fits the NATS payload
+/// cap, mirroring `paginate_items` (each event's `data` is capped, then events
+/// accumulate until the page would exceed [`MESSAGES_PAGE_BYTES`]). The reply
+/// keeps the envelope's non-event fields (`runId`, `projection`, `truncated`)
+/// on every page so the client can distinguish a ring-overflow projection from
+/// a plain tail replay regardless of which page it lands on.
+fn paginate_events(mut data: Value, offset: usize, limit: usize) -> Value {
+    let run_id = data.get("runId").cloned().unwrap_or(Value::Null);
+    let projection = data.get("projection").cloned().unwrap_or(Value::Null);
+    let truncated = data.get("truncated").cloned().unwrap_or(Value::Null);
+    let events = data
+        .get_mut("events")
+        .and_then(Value::as_array_mut)
+        .map(std::mem::take)
+        .unwrap_or_default();
+    let mut page = paginate_items(events, offset, limit, "events");
+    if !run_id.is_null() {
+        page["runId"] = run_id;
+    }
+    if !projection.is_null() {
+        page["projection"] = projection;
+    }
+    if !truncated.is_null() {
+        page["truncated"] = truncated;
+    }
+    page
+}
+
 /// Cap the serialized size of a single message by truncating its `content`
 /// (a string or an array of `{type:"text", text}` blocks). Non-text blocks
 /// (tool_use etc.) are left intact so the shape stays renderable.
@@ -1309,5 +1359,40 @@ mod tests {
         let (end, truncated) = byte_cut(s, 1024);
         assert_eq!(end, s.len());
         assert!(!truncated);
+    }
+
+    #[test]
+    fn paginate_events_pages_a_large_tail() {
+        // A multi-MB replay tail must page instead of shipping as one reply.
+        let big = "y".repeat(100 * 1024);
+        let events: Vec<Value> = (0..6)
+            .map(|i| json!({ "type": "text_chunk", "run_id": "run-1", "idx": i, "data": big }))
+            .collect();
+        let data = json!({ "runId": "run-1", "events": events });
+        let first = paginate_events(data, 0, 100);
+        let arr = first["events"].as_array().unwrap();
+        assert!(
+            arr.len() < 6,
+            "byte budget should split the tail, got {}",
+            arr.len()
+        );
+        assert_eq!(first["runId"], "run-1");
+        assert_eq!(first["hasMore"], true);
+        let size = serde_json::to_vec(&first).map(|b| b.len()).unwrap();
+        assert!(size < 1024 * 1024, "page too large: {size}");
+    }
+
+    #[test]
+    fn paginate_events_carries_projection_on_first_page() {
+        let events = vec![json!({ "type": "text_chunk", "run_id": "run-1", "idx": 0 })];
+        let data = json!({
+            "runId": "run-1",
+            "events": events,
+            "projection": { "run_id": "run-1", "cursor": 42, "events": [] },
+        });
+        let page = paginate_events(data, 0, 100);
+        assert_eq!(page["projection"]["cursor"], 42);
+        assert_eq!(page["events"].as_array().unwrap().len(), 1);
+        assert_eq!(page["hasMore"], false);
     }
 }
