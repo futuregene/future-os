@@ -341,12 +341,21 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const refreshModels = useCallback(async () => {
     const client = clientRef.current;
     if (!client) return;
-    try {
-      const response = await client.request<ModelsData>({ type: "list_models" }, "list");
-      setModels(response.data.models ?? []);
-    } catch {
-      setModels([]);
+    // The desktop's model catalogue can lag the handshake on a fresh connect (or
+    // the agent may still be warming up and error out), so an empty or failed
+    // first answer is re-asked once before we accept it — otherwise the selector
+    // and the "no models" banner stay stale until a manual refresh.
+    let models: RemoteModel[] = [];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        models = (await client.request<ModelsData>({ type: "list_models" }, "list")).data.models ?? [];
+        if (models.length > 0) break;
+      } catch {
+        models = [];
+      }
+      if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 1200));
     }
+    setModels(models);
   }, []);
 
   const refreshWorkspaces = useCallback(async () => {
@@ -627,8 +636,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           // A reconnect can drop events for any cached conversation (NATS is
           // at-most-once) — reconcile every established session. Also re-fetch
           // the control-plane lists: a first connect that recovered from a
-          // failure never populated them.
+          // failure never populated them (models included — the catalogue can
+          // have been empty while the desktop was warming up).
           reconcileSession(undefined, "reconnect");
+          void refreshModels();
           void refreshSessions();
           void refreshWorkspaces();
           // Re-baseline presence drift — a clock that jumped while the link was

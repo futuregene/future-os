@@ -325,23 +325,22 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
             <ChevronDown color={colors.inkMuted} size={14} />
           )
         ) : null}
+        {/* Desktop parity: a single call's target unfolds inline to the right of
+            the label on tap, monospace + truncated, rather than as a block below. */}
+        {expanded && detail && !children ? (
+          <Text numberOfLines={1} selectable style={styles.inlineToolTarget}>
+            {detail}
+          </Text>
+        ) : null}
       </Pressable>
-      {expanded ? (
-        children ? (
-          <View style={styles.inlineToolChildren}>
-            {children.map((child, index) => (
-              <Text key={`${child.name}:${child.detail ?? ""}:${index}`} style={styles.inlineToolChild}>
-                {child.detail ?? toolLabel(t, toolKind(child.name), child.complete)}
-              </Text>
-            ))}
-          </View>
-        ) : detail ? (
-          <View style={styles.inlineToolChildren}>
-            <Text selectable style={styles.inlineToolChild}>
-              {detail}
+      {expanded && children ? (
+        <View style={styles.inlineToolChildren}>
+          {children.map((child, index) => (
+            <Text key={`${child.name}:${child.detail ?? ""}:${index}`} style={styles.inlineToolChild}>
+              {child.detail ?? toolLabel(t, toolKind(child.name), child.complete)}
             </Text>
-          </View>
-        ) : null
+          ))}
+        </View>
       ) : null}
     </View>
   );
@@ -600,7 +599,7 @@ const styles = StyleSheet.create({
   },
   stoppedMarker: { color: colors.inkMuted, fontSize: 12, fontStyle: "italic" },
   truncatedMarker: { color: colors.warning, fontSize: 12 },
-  segmentList: { gap: spacing.md, marginTop: spacing.xs },
+  segmentList: { gap: spacing.sm, marginTop: spacing.xs },
   inlineThinking: {
     borderLeftWidth: 2,
     borderLeftColor: colors.line,
@@ -616,7 +615,7 @@ const styles = StyleSheet.create({
   inlineThinkingLabel: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
   inlineThinkingText: { color: colors.inkSoft, fontSize: 13, lineHeight: 19, marginTop: 2 },
   inlineTool: {
-    paddingVertical: spacing.xs,
+    paddingVertical: 2,
     gap: 2,
   },
   inlineToolFailed: {
@@ -626,6 +625,13 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   toolTextFailed: { color: colors.danger },
+  inlineToolTarget: {
+    marginLeft: spacing.sm,
+    flexShrink: 1,
+    color: colors.inkSoft,
+    fontFamily: "monospace",
+    fontSize: 12,
+  },
   inlineToolChildren: { gap: 2, marginTop: 2, paddingLeft: spacing.md + spacing.sm },
   inlineToolChild: {
     color: colors.inkSoft,
