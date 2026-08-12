@@ -42,6 +42,8 @@ class Harness {
   history: ReturnType<typeof emptyTimeline> = emptyTimeline();
   /** Optional folded projection; when set, fetchReplay returns it instead. */
   projection: StreamEvent[] | null = null;
+  /** Emit replay events with snake_case run_id (legacy desktop wire). */
+  snakeCaseReplay = false;
   timeline: Record<string, ReturnType<typeof emptyTimeline>> = {};
   engine: SyncEngine;
 
@@ -55,11 +57,12 @@ class Harness {
       },
       requestHistory: async () => this.history,
       fetchReplay: async (_sessionId, run, since) => {
-        // The replay path delivers the agent's snake_case wire shape; the
-        // engine normalizes it back to StreamEvent.
+        // The desktop RPC serializes replay events with camelCase runId — the
+        // real wire shape that reproduced the missing-runId ghost.
+        const runKey = this.snakeCaseReplay ? "run_id" : "runId";
         const events = this.journal
           .since(run, since)
-          .map(e => ({ type: e.type, data: e.data, run_id: e.runId, idx: e.idx }));
+          .map(e => ({ type: e.type, data: e.data, [runKey]: e.runId, idx: e.idx }));
         if (this.projection) {
           // Folded projections carry NO run_id per event (whole-run coalesced
           // deltas) — exactly the wire shape that reproduced the ghost item.
@@ -262,6 +265,21 @@ describe("SyncEngine", () => {
     );
     expect(assistantItems).toHaveLength(1);
     expect(assistantItems[0]).toMatchObject({ runId: run, streaming: false });
+  });
+
+  test("snake_case run_id replay still normalizes (older desktops)", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.snakeCaseReplay = true;
+    // Legacy replay events carry snake_case run_id; normalizeReplayEvents must
+    // keep accepting them.
+    h.journal.add(agentStart(run, 0));
+    h.journal.add(textChunk(run, 1, "legacy"));
+    h.journal.add(agentEnd(run, 2));
+    h.engine.event("s1", textChunk(run, 1, "legacy")); // first contact, mid-run
+    await h.settle();
+    expect(h.textOf("s1")).toBe("legacy");
+    expect(h.timelineOf("s1").streaming).toBe(false);
   });
 
   test("open reconcile on an idle session loads durable history (no active run)", async () => {

@@ -214,14 +214,18 @@ export function stripRunItems(timeline: TimelineState, runId: string): TimelineS
 export interface ReplayEventWire {
   type?: string;
   data?: string;
+  /** snake_case (proto/RPC JSON) — the desktop RPC serializes camelCase, so
+   *  accept both spellings. */
   run_id?: string;
+  runId?: string;
   idx?: number;
   [key: string]: unknown;
 }
 
 /**
  * Normalize `get_events_since` replay events (which the RPC serializes with
- * snake_case `run_id`) into the mobile `StreamEvent` shape (`runId`). The NATS
+ * camelCase `runId`; older paths used snake_case `run_id`) into the mobile
+ * `StreamEvent` shape (`runId`). The NATS
  * live mirror uses camelCase, so events arriving over the socket need no
  * normalization — only this backfill path does.
  */
@@ -231,7 +235,7 @@ export function normalizeReplayEvents(events: ReplayEventWire[] | undefined | nu
     .map(event => ({
       type: typeof event.type === "string" ? event.type : "",
       data: typeof event.data === "string" ? event.data : "",
-      runId: typeof event.run_id === "string" ? event.run_id : "",
+      runId: typeof event.runId === "string" ? event.runId : typeof event.run_id === "string" ? event.run_id : "",
       idx: typeof event.idx === "number" ? event.idx : undefined,
     }));
 }
