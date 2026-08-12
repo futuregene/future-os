@@ -219,6 +219,43 @@ function InlineMarkdown({ text }: { text: string }) {
   );
 }
 
+// A wrapped inline-code run can't get padding/rounding/line spacing on iOS
+// (attributed-string limitation), so long codes are lifted into a real chip
+// view: one rounded background, real horizontal padding, and outer margins —
+// the desktop code-chip look. Short codes stay inline in the text flow.
+const LONG_CODE_RE = /^`([^`]{32,})`$/;
+
+function CodeParagraph({ text, last }: { text: string; last: boolean }) {
+  const chunks = text.split(/(`[^`]+`)/g);
+  if (!chunks.some(chunk => LONG_CODE_RE.test(chunk))) {
+    return (
+      <Text selectable style={[styles.paragraph, last && styles.noBottom]}>
+        <InlineMarkdown text={text} />
+      </Text>
+    );
+  }
+  return (
+    <View style={[styles.paragraphColumn, last && styles.noBottom]}>
+      {chunks.map((chunk, index) => {
+        const long = chunk.match(LONG_CODE_RE);
+        if (long) {
+          return (
+            <Text key={index} selectable style={styles.codeChip}>
+              {long[1]}
+            </Text>
+          );
+        }
+        if (!chunk) return null;
+        return (
+          <Text key={index} selectable style={styles.paragraphPart}>
+            <InlineMarkdown text={chunk} />
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
+
 function renderBlock(block: Block, index: number, isLast = false) {
   if (block.kind === "rule")
     return <View key={index} style={[styles.rule, isLast && styles.noBottom]} />;
@@ -318,11 +355,7 @@ function renderBlock(block: Block, index: number, isLast = false) {
       </View>
     );
   }
-  return (
-    <Text key={index} selectable style={[styles.paragraph, isLast && styles.noBottom]}>
-      <InlineMarkdown text={block.text} />
-    </Text>
-  );
+  return <CodeParagraph key={index} text={block.text} last={isLast} />;
 }
 
 export function MarkdownText({ text }: MarkdownTextProps) {
@@ -341,6 +374,22 @@ const styles = StyleSheet.create({
   // with a stray gap after its final row).
   noBottom: { marginBottom: 0 },
   paragraph: { color: colors.ink, fontSize: 17, lineHeight: 26, marginBottom: spacing.md },
+  // Column form of a paragraph that contains a long code span: the container
+  // owns the bottom margin, text parts keep the paragraph typography.
+  paragraphColumn: { marginBottom: spacing.md },
+  paragraphPart: { color: colors.ink, fontSize: 17, lineHeight: 26 },
+  codeChip: {
+    alignSelf: "flex-start",
+    marginVertical: 2,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceSubtle,
+    color: colors.ink,
+    fontFamily: "monospace",
+    fontSize: 13,
+    lineHeight: 19,
+  },
   heading: {
     color: colors.inkStrong,
     fontSize: 19,
@@ -353,16 +402,15 @@ const styles = StyleSheet.create({
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
   inlineCode: {
-    // Parity with the desktop inline <code>: rounded, subtle bg, ~0.92em.
-    // iOS renders nested <Text> as an attributed string and ignores its
-    // padding/borderRadius, so horizontal padding is an nbsp inside the run
-    // (InlineMarkdown) and a lineHeight shorter than the paragraph's leaves
-    // breathing room between wrapped chip lines.
+    // Parity with the desktop inline <code>: subtle bg, ~0.92em. iOS renders
+    // nested <Text> as an attributed string and ignores its padding/borderRadius,
+    // so horizontal padding is an nbsp inside the run (InlineMarkdown). Long
+    // codes are promoted to a real chip view (see CodeParagraph) where padding,
+    // rounding and line spacing can actually render on iOS.
     color: colors.ink,
     backgroundColor: colors.surfaceSubtle,
     fontFamily: "monospace",
     fontSize: 13,
-    lineHeight: 20,
     borderRadius: radius.sm,
   },
   link: { color: colors.accent, textDecorationLine: "underline" },

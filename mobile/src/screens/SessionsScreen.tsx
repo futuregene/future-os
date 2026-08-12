@@ -788,7 +788,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     paddingHorizontal: spacing.md,
-    paddingBottom: spacing.xs,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.sm,
   },
   menuOption: {
     flexDirection: "row",
