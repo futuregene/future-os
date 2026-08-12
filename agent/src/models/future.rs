@@ -62,6 +62,8 @@ fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
     let base_url = base_url.to_string();
     std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(test)]
+            inject_test_panic();
             if let Some(models) = fetch_future_models(&api_key, &base_url) {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -89,13 +91,35 @@ fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
     });
 }
 
+/// Test seam: force the background-refresh closure down its panic-recovery
+/// path. 0 = off, 1 = &str payload, 2 = String payload, 3 = other payload.
+#[cfg(test)]
+static REFRESH_TEST_PANIC: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn inject_test_panic() {
+    match REFRESH_TEST_PANIC.swap(0, Ordering::Relaxed) {
+        1 => panic!("injected refresh panic"),
+        2 => std::panic::panic_any(String::from("injected owned panic")),
+        3 => std::panic::panic_any(42i32),
+        _ => {}
+    }
+}
+
 fn future_models_cache_path() -> String {
-    let home = dirs::home_dir()
-        .map(|h| h.join(".future/agent/.future-models-cache.json"))
+    future_models_cache_path_in(dirs::home_dir())
+}
+
+/// `future_models_cache_path` with the home dir injected, so the no-home
+/// fallback arm is testable (a real host always resolves one).
+fn future_models_cache_path_in(home: Option<std::path::PathBuf>) -> String {
+    home.map(|h| h.join(".future/agent/.future-models-cache.json"))
         .unwrap_or_else(|| {
             std::path::PathBuf::from("/tmp/.future/agent/.future-models-cache.json")
-        });
-    home.to_string_lossy().to_string()
+        })
+        .to_string_lossy()
+        .to_string()
 }
 
 /// Future models cache format
@@ -854,9 +878,9 @@ mod tests {
         std::thread::spawn(move || {
             use std::io::{Read, Write};
             for _ in 0..8 {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    return;
-                };
+                // Blocking accept on a live listener does not error; a parked
+                // surplus iteration is harmless (test process exit reaps it).
+                let (mut stream, _) = listener.accept().expect("mock server accept");
                 let mut sink = [0u8; 8192];
                 let _ = stream.read(&mut sink);
                 let response = format!(
@@ -999,12 +1023,96 @@ mod tests {
         spawn_future_models_refresh("k", "http://127.0.0.1:1");
         assert!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed) > 0);
         // Wait for the refresh thread to release the single-flight flag.
+        let mut released = false;
         for _ in 0..100 {
             if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
-                return;
+                released = true;
+                break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        panic!("refresh thread never released the in-flight flag");
+        assert!(released, "refresh thread never released the in-flight flag");
+    }
+
+    #[test]
+    fn refresh_bails_when_already_in_flight() {
+        let _guard = future_test_lock();
+        reset_future_cache_state();
+        FUTURE_MODELS_REFRESH_IN_FLIGHT.store(true, Ordering::Relaxed);
+        spawn_future_models_refresh("k", "http://127.0.0.1:1");
+        // Bailed at the single-flight gate: no new attempt was stamped.
+        assert_eq!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed), 0);
+        FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn refresh_recovers_from_closure_panics() {
+        let _guard = future_test_lock();
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        for payload_kind in [1usize, 2, 3] {
+            reset_future_cache_state();
+            REFRESH_TEST_PANIC.store(payload_kind, Ordering::Relaxed);
+            spawn_future_models_refresh("k", "http://127.0.0.1:1");
+            // The panic is caught and the single-flight flag released.
+            let mut released = false;
+            for _ in 0..200 {
+                if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
+                    released = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(released, "panic must not wedge the in-flight flag");
+        }
+    }
+
+    #[test]
+    fn cache_path_falls_back_to_tmp_without_home() {
+        assert_eq!(
+            future_models_cache_path_in(None),
+            "/tmp/.future/agent/.future-models-cache.json"
+        );
+        assert_eq!(
+            future_models_cache_path_in(Some(std::path::PathBuf::from("/home/x"))),
+            "/home/x/.future/agent/.future-models-cache.json"
+        );
+    }
+
+    #[test]
+    fn fetch_returns_none_for_unexpected_json_shape() {
+        let _guard = future_test_lock();
+        // Valid JSON, but neither the {data:[...]} form nor the array form.
+        let base = mock_json_server(200, "42".to_string());
+        assert!(fetch_future_models("k", &base).is_none());
+    }
+
+    #[test]
+    fn get_models_with_cache_cold_start_returns_empty() {
+        let _guard = future_test_lock();
+        let _home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        // No memory cache, no disk cache, refresh target unreachable → the
+        // first-login path returns an empty catalog immediately.
+        let models = get_future_models_with_cache("k", "http://127.0.0.1:1");
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn sync_cache_returns_false_when_fetch_fails() {
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            r#"{"future": {"type": "api_key", "key": "k", "base_url": "http://127.0.0.1:1/api"}}"#,
+        )
+        .unwrap();
+        assert!(!sync_future_models_cache());
     }
 }

@@ -43,10 +43,9 @@ pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
             if entry_path.is_dir() {
                 let skill_md = entry_path.join("SKILL.md");
                 if skill_md.exists() {
-                    if let Some(skill) = parse_skill(&skill_md)? {
-                        if seen.insert(skill.name.clone()) {
-                            skills.push(skill);
-                        }
+                    let skill = parse_skill(&skill_md)?;
+                    if seen.insert(skill.name.clone()) {
+                        skills.push(skill);
                     }
                 }
             }
@@ -115,7 +114,7 @@ pub fn invalidate_skills_cache() {
     *SKILLS_CACHE.write().unwrap() = None;
 }
 
-fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
+fn parse_skill(skill_md: &Path) -> Result<Skill> {
     let content = std::fs::read_to_string(skill_md)?;
     let name = extract_name(&content, skill_md)?;
     let description = extract_description(&content);
@@ -134,7 +133,7 @@ fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
     let disable =
         content.contains("disableModelInvocation") || content.contains("disable_model_invocation");
 
-    Ok(Some(Skill {
+    Ok(Skill {
         name,
         description,
         name_zh,
@@ -142,7 +141,7 @@ fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
         version,
         location,
         disable_model_invocation: disable,
-    }))
+    })
 }
 
 fn extract_name(content: &str, path: &Path) -> Result<String> {
@@ -543,7 +542,7 @@ This is a test skill body.
 "#;
         std::fs::write(&skill_md, content).unwrap();
 
-        let skill = parse_skill(&skill_md).unwrap().unwrap();
+        let skill = parse_skill(&skill_md).unwrap();
         assert_eq!(skill.name, "test-skill");
         assert_eq!(skill.description, "A test skill for unit tests");
         assert_eq!(skill.version.as_deref(), Some("1.0.0"));

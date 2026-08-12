@@ -314,6 +314,15 @@ mod tests {
         .expect("canonical tool start");
         assert_eq!(start.tool_id, "preset-id");
         assert_eq!(start.tool_name, "preset-name");
+
+        // No tool_call payload at all → the fallback block is skipped.
+        let bare = canonical_stream_event(StreamEvent {
+            event_type: "toolcall_start".to_string(),
+            ..Default::default()
+        })
+        .expect("canonical tool start without payload");
+        assert_eq!(bare.event_type, "tool_start");
+        assert!(bare.tool_id.is_empty());
     }
 
     #[test]

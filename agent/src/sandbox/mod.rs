@@ -1301,6 +1301,17 @@ mod tests {
 
     #[cfg(not(target_os = "windows"))]
     #[test]
+    fn hydrate_ignores_dump_without_marker() {
+        let _lock = hydrate_test_lock();
+        // Pre-set SHELL so the guard's restore arm with a previous value runs.
+        std::env::set_var("SHELL", "/bin/sh");
+        let (_dir, shell) = fake_shell("printf 'no markers in this output'");
+        let _guard = ShellEnvGuard::set(&shell);
+        hydrate_from_login_shell(); // dump lacks the marker → nothing applied
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
     fn hydrate_times_out_and_kills_hung_shell() {
         let _lock = hydrate_test_lock();
         let _subscriber = tracing::subscriber::set_default(

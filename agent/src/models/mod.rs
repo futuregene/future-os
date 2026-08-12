@@ -131,10 +131,9 @@ pub fn provider_display_name(id: &str) -> String {
             .filter(|part| !part.is_empty())
             .map(|part| {
                 let mut chars = part.chars();
-                match chars.next() {
-                    Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
-                    None => String::new(),
-                }
+                // The filter above guarantees at least one char.
+                let first = chars.next().expect("non-empty part");
+                format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
             })
             .collect::<Vec<_>>()
             .join(" "),
@@ -927,7 +926,7 @@ mod tests {
     use super::{
         derive_thinking_compat, enrich_user_models, find_best_builtin_match, provider_similarity,
     };
-    use super::{Cost, Model};
+    use super::{Cost, Model, ProviderOverride, Registry};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -1442,11 +1441,10 @@ mod tests {
     fn registry_resolve_existing_model() {
         let reg = super::Registry::new();
         let models = reg.all_models();
-        if let Some(first) = models.first() {
-            let resolved = reg.resolve(&first.id);
-            assert!(resolved.is_some());
-            assert_eq!(resolved.unwrap().id, first.id);
-        }
+        let first = models.first().expect("builtin catalog is non-empty");
+        let resolved = reg.resolve(&first.id);
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().id, first.id);
     }
 
     #[test]
@@ -1459,21 +1457,19 @@ mod tests {
     fn registry_resolve_provider_slash_format() {
         let reg = super::Registry::new();
         let models = reg.all_models();
-        if let Some(first) = models.first() {
-            let full_id = format!("{}/{}", first.provider, first.id);
-            let resolved = reg.resolve(&full_id);
-            assert!(resolved.is_some());
-        }
+        let first = models.first().expect("builtin catalog is non-empty");
+        let full_id = format!("{}/{}", first.provider, first.id);
+        let resolved = reg.resolve(&full_id);
+        assert!(resolved.is_some());
     }
 
     #[test]
     fn registry_default_for_provider() {
         let reg = super::Registry::new();
         let models = reg.all_models();
-        if let Some(first) = models.first() {
-            let resolved = reg.default_for_provider(&first.provider);
-            assert!(resolved.is_some());
-        }
+        let first = models.first().expect("builtin catalog is non-empty");
+        let resolved = reg.default_for_provider(&first.provider);
+        assert!(resolved.is_some());
     }
 
     #[test]
@@ -1783,5 +1779,99 @@ mod tests {
             user[0].thinking_level_map.get("high"),
             Some(&json!({"budget": 5}))
         );
+    }
+
+    #[test]
+    fn enrich_merges_thinking_level_map_key_by_key() {
+        let builtins = vec![make_builtin_deepseek_v4()];
+        // User already carries one thinking_level_map entry → merge (not
+        // takeover): builtin keys are added, user keys preserved.
+        let mut models = vec![Model {
+            id: "deepseek-v4-pro".to_string(),
+            provider: "custom-provider".to_string(),
+            thinking_level_map: {
+                let mut m = HashMap::new();
+                m.insert("high".to_string(), json!("user-high"));
+                m
+            },
+            ..Default::default()
+        }];
+
+        enrich_user_models(&mut models, &builtins);
+
+        let user = &models[0];
+        assert_eq!(
+            user.thinking_level_map.get("high").and_then(|v| v.as_str()),
+            Some("user-high"),
+            "user entry wins over builtin"
+        );
+        assert_eq!(
+            user.thinking_level_map.get("xhigh").and_then(|v| v.as_str()),
+            Some("max"),
+            "builtin-only key is merged in"
+        );
+    }
+
+    #[test]
+    fn apply_override_with_only_api_key_leaves_base_url() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "testprov".to_string(),
+            ProviderOverride {
+                base_url: None,
+                api_key: Some("override-key".to_string()),
+            },
+        );
+        let reg = Registry {
+            builtin: std::sync::Arc::new(vec![]),
+            user: vec![],
+            provider_overrides: overrides,
+        };
+        let mut model = Model {
+            provider: "testprov".to_string(),
+            base_url: "https://original.example".to_string(),
+            api_key: "original-key".to_string(),
+            ..Default::default()
+        };
+        reg.apply_override(&mut model);
+        assert_eq!(model.base_url, "https://original.example");
+        assert_eq!(model.api_key, "override-key");
+    }
+
+    #[test]
+    fn all_models_user_model_replaces_builtin_with_same_id() {
+        let builtin = make_model("shared-id", "testprov");
+        let mut user = make_model("shared-id", "testprov");
+        user.name = "User Override".to_string();
+        let reg = Registry {
+            builtin: std::sync::Arc::new(vec![builtin]),
+            user: vec![user],
+            provider_overrides: HashMap::new(),
+        };
+        let models = reg.all_models();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].name, "User Override");
+    }
+
+    #[test]
+    fn builtin_provider_summaries_skips_hidden_future_and_providerless() {
+        let mut hidden = make_model("hidden-model", "testprov");
+        hidden.hide = true;
+        let future = make_model("future-model", "future");
+        let no_provider = make_model("orphan-model", "");
+        let reg = Registry {
+            builtin: std::sync::Arc::new(vec![hidden, future, no_provider, make_model("visible", "testprov")]),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+        };
+        let summaries = reg.builtin_provider_summaries();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries.contains_key("testprov"));
+    }
+
+    #[test]
+    fn registry_default_matches_new() {
+        let reg = Registry::default();
+        assert!(!reg.all_models().is_empty());
     }
 }
