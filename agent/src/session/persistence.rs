@@ -34,6 +34,16 @@ enum PersistenceCommand {
         ack: mpsc::SyncSender<std::result::Result<(), String>>,
     },
     Barrier(mpsc::SyncSender<std::result::Result<(), String>>),
+    /// Test-only crash injection: the worker drops its receiver (marking the
+    /// slotted sender disconnected), releases the barrier, and returns — a
+    /// deterministic thread crash observable by senders.
+    #[cfg(test)]
+    Die(std::sync::Arc<std::sync::Barrier>),
+    /// Test-only gate: the worker blocks inside `execute` until the test
+    /// releases the barrier, making queue-fill and drop-during-execute races
+    /// deterministic.
+    #[cfg(test)]
+    Hold(std::sync::Arc<std::sync::Barrier>),
 }
 
 struct WorkerSlot {
@@ -49,10 +59,16 @@ struct PersistenceInner {
     closed: std::sync::atomic::AtomicBool,
     last_error: Mutex<Option<String>>,
     idle_timeout: Duration,
-    #[cfg(test)]
+    // Failure-injection flags are compiled into every build (always false in
+    // production: their setters are `cfg(test)`-only) so the injection checks
+    // below stay single-line instead of splitting into `cfg(test)` /
+    // `cfg(not(test))` pairs whose production half is uncoverable.
     fail_next_rewrite: std::sync::atomic::AtomicBool,
-    #[cfg(test)]
     fail_next_commit: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    dead_spawns: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    close_on_retry: std::sync::atomic::AtomicBool,
 }
 
 /// Ordered, lazily-started persistence queue for one session.
@@ -85,10 +101,12 @@ impl SessionPersistence {
                 closed: std::sync::atomic::AtomicBool::new(false),
                 last_error: Mutex::new(None),
                 idle_timeout,
-                #[cfg(test)]
                 fail_next_rewrite: std::sync::atomic::AtomicBool::new(false),
-                #[cfg(test)]
                 fail_next_commit: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                dead_spawns: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(test)]
+                close_on_retry: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -212,11 +230,68 @@ impl SessionPersistence {
         self.inner.fail_next_commit.store(true, Ordering::Release);
     }
 
+    /// Test-only crash injection: ensure a worker exists, then order it to
+    /// drop its receiver (disconnecting the slotted sender) and exit. The
+    /// barrier releases only after the channel is disconnected, so callers
+    /// observe a deterministic crashed-worker state.
+    #[cfg(test)]
+    pub(crate) fn kill_worker_for_test(&self) {
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        self.try_send(PersistenceCommand::Die(gate.clone()))
+            .expect("die command is accepted while open");
+        gate.wait(); // worker is inside execute
+        gate.wait(); // worker has dropped its receiver: channel is dead
+    }
+
+    /// Test-only: the next `n` worker spawns produce a sender whose receiver
+    /// is already dropped, so sends fail with `Disconnected` immediately.
+    #[cfg(test)]
+    pub(crate) fn fail_spawns_for_test(&self, n: usize) {
+        self.inner.dead_spawns.store(n, Ordering::Release);
+    }
+
+    /// Test-only: simulate `close()` racing a `try_send` retry — the closed
+    /// flag flips after the first send attempt fails.
+    #[cfg(test)]
+    pub(crate) fn close_on_retry_for_test(&self) {
+        self.inner.close_on_retry.store(true, Ordering::Release);
+    }
+
+    /// Test-only gate command: blocks the worker inside `execute` until the
+    /// caller releases it (the barrier is waited on twice — "arrived" and
+    /// "release"), making queue-fill and drop-during-execute deterministic.
+    #[cfg(test)]
+    pub(crate) fn hold_worker_for_test(&self) -> std::sync::Arc<std::sync::Barrier> {
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        self.try_send(PersistenceCommand::Hold(gate.clone()))
+            .expect("hold command is accepted while open");
+        gate
+    }
+
+    /// Test-only: replace the worker slot with a foreign generation so a
+    /// timing-out worker observes the "slot stolen" guard's negative path.
+    #[cfg(test)]
+    pub(crate) fn steal_worker_slot_for_test(&self) {
+        let (sender, receiver) = mpsc::sync_channel::<PersistenceCommand>(1);
+        // Leak the receiver so the dummy channel stays connected for the
+        // remainder of the test process.
+        std::mem::forget(receiver);
+        *self.inner.worker.lock() = Some(WorkerSlot {
+            generation: u64::MAX,
+            sender,
+        });
+    }
+
     fn try_send(&self, mut command: PersistenceCommand) -> Result<()> {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(anyhow!("session persistence is closed"));
         }
-        for _ in 0..2 {
+        for _attempt in 0..2 {
+            #[cfg(test)]
+            if _attempt > 0 && self.inner.close_on_retry.swap(false, Ordering::AcqRel) {
+                // Test-only race simulation: close() lands between retries.
+                self.inner.closed.store(true, Ordering::Release);
+            }
             let mut worker = self.inner.worker.lock();
             if self.inner.closed.load(Ordering::Acquire) {
                 return Err(anyhow!("session persistence is closed"));
@@ -249,7 +324,12 @@ impl SessionPersistence {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(anyhow!("session persistence is closed"));
         }
-        for _ in 0..2 {
+        for _attempt in 0..2 {
+            #[cfg(test)]
+            if _attempt > 0 && self.inner.close_on_retry.swap(false, Ordering::AcqRel) {
+                // Test-only race simulation: close() lands between retries.
+                self.inner.closed.store(true, Ordering::Release);
+            }
             let mut worker = self.inner.worker.lock();
             if self.inner.closed.load(Ordering::Acquire) {
                 return Err(anyhow!("session persistence is closed"));
@@ -272,6 +352,24 @@ impl SessionPersistence {
     ) -> Result<(u64, mpsc::SyncSender<PersistenceCommand>)> {
         if let Some(slot) = worker.as_ref() {
             return Ok((slot.generation, slot.sender.clone()));
+        }
+        #[cfg(test)]
+        if self.inner.dead_spawns.load(Ordering::Acquire) > 0 {
+            // Test-only spawn failure: hand back a sender whose receiver is
+            // already gone, so the send path observes `Disconnected`.
+            self.inner.dead_spawns.fetch_sub(1, Ordering::AcqRel);
+            let generation = self
+                .inner
+                .next_generation
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1);
+            let (sender, receiver) = mpsc::sync_channel::<PersistenceCommand>(1);
+            drop(receiver);
+            *worker = Some(WorkerSlot {
+                generation,
+                sender: sender.clone(),
+            });
+            return Ok((generation, sender));
         }
         let generation = self
             .inner
@@ -333,23 +431,35 @@ fn run_worker(
                     // acquired the worker lock. Drain that handoff while the
                     // lock excludes new senders; otherwise clearing the slot
                     // and dropping the receiver would lose an acknowledged
-                    // append at the retirement boundary.
+                    // append at the retirement boundary. The slot we just
+                    // matched still holds this generation's sender, so the
+                    // channel cannot be disconnected — only Empty is possible.
                     match receiver.try_recv() {
                         Ok(command) => {
                             drop(worker);
                             execute(&state, command);
                             continue;
                         }
-                        Err(mpsc::TryRecvError::Empty) => {
-                            *worker = None;
-                        }
-                        Err(mpsc::TryRecvError::Disconnected) => {}
+                        Err(_) => *worker = None,
                     }
                 }
                 return;
             }
         };
+        #[cfg(test)]
+        let die_gate = match &command {
+            PersistenceCommand::Die(gate) => Some(gate.clone()),
+            _ => None,
+        };
         execute(&state, command);
+        #[cfg(test)]
+        if let Some(gate) = die_gate {
+            // Crash injection: disconnect the channel before releasing the
+            // test so senders deterministically observe a dead worker.
+            drop(receiver);
+            gate.wait();
+            return;
+        }
     }
 }
 
@@ -371,10 +481,11 @@ fn execute(state: &PersistenceInner, command: PersistenceCommand) {
         }
         PersistenceCommand::RewriteRun { mut session, ack } => {
             merge_latest_session_info(state, &mut session);
-            #[cfg(test)]
-            let injected_failure = state.fail_next_rewrite.swap(false, Ordering::AcqRel);
-            #[cfg(not(test))]
-            let injected_failure = false;
+            // Single-line injection check: cfg!(test) short-circuits before
+            // the swap in production, where the flag is always false (its
+            // setter is cfg(test)-only) — no cfg(not(test)) half to cover.
+            let injected_failure =
+                cfg!(test) && state.fail_next_rewrite.swap(false, Ordering::AcqRel);
             let result = if injected_failure {
                 Err("injected session rewrite failure".to_string())
             } else {
@@ -416,10 +527,9 @@ fn execute(state: &PersistenceInner, command: PersistenceCommand) {
                             merge_session_info_keys(target_info, &latest_info);
                         }
                     }
-                    #[cfg(test)]
-                    let injected_failure = state.fail_next_commit.swap(false, Ordering::AcqRel);
-                    #[cfg(not(test))]
-                    let injected_failure = false;
+                    // See RewriteRun above: cfg!(test) keeps this one line.
+                    let injected_failure =
+                        cfg!(test) && state.fail_next_commit.swap(false, Ordering::AcqRel);
                     let appended = if injected_failure {
                         Err("injected run commit failure".to_string())
                     } else {
@@ -433,6 +543,17 @@ fn execute(state: &PersistenceInner, command: PersistenceCommand) {
                 }
             };
             let _ = ack.send(result);
+        }
+        #[cfg(test)]
+        PersistenceCommand::Die(gate) => {
+            // First rendezvous only; run_worker performs the actual teardown
+            // (receiver drop + second rendezvous) after execute returns.
+            gate.wait();
+        }
+        #[cfg(test)]
+        PersistenceCommand::Hold(gate) => {
+            gate.wait(); // arrived inside execute
+            gate.wait(); // released by the test
         }
         PersistenceCommand::Barrier(ack) => {
             let result = match state.last_error.lock().clone() {
@@ -543,6 +664,13 @@ fn merge_latest_session_info(state: &PersistenceInner, target: &mut Session) {
         .to_string();
 }
 
+/// Base for the save retry backoff (shifted by attempt). Constants carry
+/// no executable regions, so the cfg split is coverage-neutral.
+#[cfg(not(test))]
+const RETRY_BASE_MS: u64 = 200;
+#[cfg(test)]
+const RETRY_BASE_MS: u64 = 1;
+
 fn save_with_retry(manager: &Manager, session: &Session) -> Result<()> {
     let mut last_error = match manager.save(session) {
         Ok(()) => return Ok(()),
@@ -550,7 +678,7 @@ fn save_with_retry(manager: &Manager, session: &Session) -> Result<()> {
     };
     tracing::error!("Failed to save session (will retry): {last_error:#}");
     for attempt in 1..=5 {
-        let wait_ms = 200_u64 << attempt;
+        let wait_ms = RETRY_BASE_MS << attempt;
         std::thread::sleep(Duration::from_millis(wait_ms));
         match manager.save(session) {
             Ok(()) => {
@@ -960,6 +1088,228 @@ mod tests {
             SessionEntry::run_terminal("run-x", super::super::RUN_STATE_COMPLETED, 0, 0, None);
         assert!(persistence.commit_run(vec![terminal]).is_err());
         persistence.close().unwrap();
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    fn test_persistence(manager: Arc<Manager>) -> SessionPersistence {
+        SessionPersistence::with_idle_timeout(
+            manager,
+            "session-1".to_string(),
+            Duration::from_secs(60),
+        )
+    }
+
+    #[test]
+    fn boundary_after_close_is_rejected() {
+        let (_dir, manager, _session) = fixture();
+        let persistence = test_persistence(manager);
+        persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("hi"),
+            )])
+            .unwrap();
+        persistence.close().unwrap();
+        let error = persistence.barrier().unwrap_err();
+        assert!(error.to_string().contains("closed"));
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn killed_worker_send_retries_and_recovers() {
+        let (_dir, manager, _session) = fixture();
+        let persistence = test_persistence(manager);
+        persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("warmup"),
+            )])
+            .unwrap();
+        persistence.barrier().unwrap();
+        persistence.kill_worker_for_test();
+        // try_send: first attempt hits Disconnected, retry spawns a worker.
+        persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("after crash"),
+            )])
+            .unwrap();
+        persistence.kill_worker_for_test();
+        // send_boundary: same Disconnected → clear → respawn path.
+        persistence.barrier().unwrap();
+        let loaded = persistence.inner.manager.load("session-1").unwrap();
+        assert!(loaded
+            .entries
+            .iter()
+            .any(|entry| entry.content.as_ref() == Some(&serde_json::json!("after crash"))));
+        persistence.close().unwrap();
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn close_with_dead_worker_clears_slot_and_succeeds() {
+        let (_dir, manager, _session) = fixture();
+        let persistence = test_persistence(manager);
+        persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("warmup"),
+            )])
+            .unwrap();
+        persistence.kill_worker_for_test();
+        // The barrier send to the dead worker fails; close still succeeds.
+        persistence.close().unwrap();
+        assert!(persistence.inner.worker.lock().is_none());
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn dead_spawns_exhaust_send_retries() {
+        let (_dir, manager, _session) = fixture();
+        let persistence = test_persistence(manager);
+        persistence.fail_spawns_for_test(2);
+        let error = persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("hi"),
+            )])
+            .unwrap_err();
+        assert!(error.to_string().contains("worker is unavailable"));
+        persistence.fail_spawns_for_test(2);
+        let error = persistence.barrier().unwrap_err();
+        assert!(error.to_string().contains("worker is unavailable"));
+        // The writer recovers once spawns are healthy again.
+        persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("later"),
+            )])
+            .unwrap();
+        persistence.close().unwrap();
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn close_racing_send_retry_rejects_with_closed() {
+        let (_dir, manager, _session) = fixture();
+        let persistence = test_persistence(manager.clone());
+        persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("warmup"),
+            )])
+            .unwrap();
+        persistence.kill_worker_for_test();
+        persistence.close_on_retry_for_test();
+        let error = persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("hi"),
+            )])
+            .unwrap_err();
+        assert!(error.to_string().contains("closed"));
+        // Same race through the boundary path (fresh writer: the first race
+        // simulation closed the previous one).
+        let persistence = test_persistence(manager.clone());
+        persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("warmup"),
+            )])
+            .unwrap();
+        persistence.kill_worker_for_test();
+        persistence.close_on_retry_for_test();
+        let error = persistence.barrier().unwrap_err();
+        assert!(error.to_string().contains("closed"));
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn queue_overload_is_reported_and_recovers() {
+        let (_dir, manager, _session) = fixture();
+        let persistence = test_persistence(manager);
+        let gate = persistence.hold_worker_for_test();
+        gate.wait(); // worker is blocked inside execute
+        for _ in 0..COMMAND_QUEUE_CAPACITY {
+            persistence
+                .append(vec![SessionEntry::new_user(
+                    "user",
+                    serde_json::json!("filler"),
+                )])
+                .unwrap();
+        }
+        let error = persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("overflow"),
+            )])
+            .unwrap_err();
+        assert!(error.to_string().contains("overloaded"));
+        assert!(persistence
+            .last_error()
+            .is_some_and(|e| e.contains("overloaded")));
+        gate.wait(); // release the worker to drain the queue
+        persistence.reset_error();
+        persistence.barrier().unwrap();
+        persistence.close().unwrap();
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn writer_drop_during_execute_stops_worker() {
+        let (_dir, manager, _session) = fixture();
+        let persistence = test_persistence(manager);
+        let gate = persistence.hold_worker_for_test();
+        gate.wait(); // worker is blocked inside execute
+        drop(persistence); // last strong ref while the worker is mid-command
+        gate.wait(); // release: the loop-top upgrade now fails and the worker exits
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn stolen_worker_slot_is_not_retired_by_foreign_worker() {
+        let (_dir, manager, _session) = fixture();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager,
+            "session-1".to_string(),
+            Duration::from_millis(20),
+        );
+        persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("hi"),
+            )])
+            .unwrap();
+        persistence.barrier().unwrap();
+        persistence.steal_worker_slot_for_test();
+        // The timing-out worker sees a foreign generation in the slot and
+        // leaves it alone (negative guard path), then exits.
+        std::thread::sleep(Duration::from_millis(100));
+        let slot = persistence.inner.worker.lock();
+        assert_eq!(slot.as_ref().map(|s| s.generation), Some(u64::MAX));
+        drop(slot);
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn save_retry_succeeds_after_transient_failures() {
+        let (_dir, manager, session) = fixture();
+        manager
+            .fail_saves_remaining
+            .store(2, std::sync::atomic::Ordering::Release);
+        save_with_retry(&manager, &session).unwrap();
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn save_retry_exhausts_attempts() {
+        let (_dir, manager, session) = fixture();
+        manager
+            .fail_saves_remaining
+            .store(10, std::sync::atomic::Ordering::Release);
+        let error = save_with_retry(&manager, &session).unwrap_err();
+        assert!(error.to_string().contains("injected session save failure"));
         let _ = std::fs::remove_dir_all(_dir);
     }
 }

@@ -469,17 +469,22 @@ impl Session {
 
 pub struct Manager {
     pub dir: PathBuf,
+    /// Test-only save-failure injection (number of saves left to fail).
+    #[cfg(test)]
+    pub(crate) fail_saves_remaining: std::sync::atomic::AtomicU64,
 }
 
 impl Manager {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            #[cfg(test)]
+            fail_saves_remaining: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 
     pub fn default_for(cwd: &str) -> Self {
-        Self {
-            dir: default_session_dir(cwd),
-        }
+        Self::new(default_session_dir(cwd))
     }
 
     fn session_path(&self, id: &str) -> PathBuf {
@@ -758,6 +763,16 @@ impl Manager {
     }
 
     pub fn save(&self, session: &Session) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_saves_remaining
+            .load(std::sync::atomic::Ordering::Acquire)
+            > 0
+        {
+            self.fail_saves_remaining
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            return Err(anyhow!("injected session save failure"));
+        }
         let path = self.session_path(&session.id);
         fs::create_dir_all(&self.dir).context("create session dir")?;
 
