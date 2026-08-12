@@ -1,4 +1,5 @@
 import { Linking, StyleSheet, Text, View } from "react-native";
+import type { StyleProp, TextStyle, ViewStyle } from "react-native";
 import { colors, radius, spacing } from "../theme/tokens";
 
 interface MarkdownTextProps {
@@ -219,6 +220,45 @@ function InlineMarkdown({ text }: { text: string }) {
   );
 }
 
+// iOS renders nested <Text> as an attributed string whose runs can't carry
+// padding/borderRadius (TextAttributes has no such fields), and the run
+// background fills the whole line fragment — so an inline code chip with
+// desktop parity is impossible inside one <Text>. Instead, code-bearing text
+// lays out as a wrapping flex row: prose chunks are Text items (wrapping
+// internally, CJK-safe at chunk level) and every code span is a real chip
+// view with genuine padding, rounding and line gaps.
+function CodeFlow({
+  text,
+  containerStyle,
+  proseStyle,
+}: {
+  text: string;
+  containerStyle: StyleProp<ViewStyle>;
+  proseStyle: TextStyle;
+}) {
+  const chunks = text.split(/(`[^`]+`)/g);
+  return (
+    <View style={containerStyle}>
+      {chunks.map((chunk, index) => {
+        const code = chunk.match(/^`([^`]+)`$/);
+        if (code) {
+          return (
+            <Text key={index} selectable style={styles.codeChip}>
+              {code[1]}
+            </Text>
+          );
+        }
+        if (!chunk) return null;
+        return (
+          <Text key={index} selectable style={proseStyle}>
+            <InlineMarkdown text={chunk} />
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
+
 function renderBlock(block: Block, index: number, isLast = false) {
   if (block.kind === "rule")
     return <View key={index} style={[styles.rule, isLast && styles.noBottom]} />;
@@ -310,18 +350,23 @@ function renderBlock(block: Block, index: number, isLast = false) {
                 {item.checked ? <Text style={styles.checkMark}>✓</Text> : null}
               </View>
             )}
-            <Text selectable style={styles.listItemText}>
-              <InlineMarkdown text={item.text} />
-            </Text>
+            <CodeFlow
+              containerStyle={styles.listItemFlow}
+              proseStyle={styles.listItemProse}
+              text={item.text}
+            />
           </View>
         ))}
       </View>
     );
   }
   return (
-    <Text key={index} selectable style={[styles.paragraph, isLast && styles.noBottom]}>
-      <InlineMarkdown text={block.text} />
-    </Text>
+    <CodeFlow
+      key={index}
+      containerStyle={[styles.flowParagraph, isLast && styles.noBottom]}
+      proseStyle={styles.flowProse}
+      text={block.text}
+    />
   );
 }
 
@@ -340,7 +385,30 @@ const styles = StyleSheet.create({
   // bubble/segment layout owns outer spacing (otherwise every bubble ends
   // with a stray gap after its final row).
   noBottom: { marginBottom: 0 },
-  paragraph: { color: colors.ink, fontSize: 17, lineHeight: 26, marginBottom: spacing.md },
+  // Wrapping flex-row layout for code-bearing text (see CodeFlow): prose
+  // chunks wrap inside their Text item, code spans are chip views, and
+  // rowGap is the wrapped-line breathing room iOS can't do inline.
+  flowParagraph: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    rowGap: 3,
+    marginBottom: spacing.md,
+  },
+  flowProse: { color: colors.ink, fontSize: 17, lineHeight: 26 },
+  codeChip: {
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+    marginVertical: 1,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceSubtle,
+    color: colors.ink,
+    fontFamily: "monospace",
+    fontSize: 13,
+    lineHeight: 20,
+  },
   heading: {
     color: colors.inkStrong,
     fontSize: 19,
@@ -353,21 +421,13 @@ const styles = StyleSheet.create({
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
   inlineCode: {
-    // Desktop-parity inline <code>: subtle bg, ~0.92em, rounded, padded, with a
-    // gap between wrapped lines. iOS renders nested <Text> as an attributed
-    // string and drops per-run padding/borderRadius, and the run background
-    // fills the whole line fragment (wrapped lines stick together). A
-    // same-color text shadow (NSShadow per run, honored on both platforms)
-    // fakes the rest: the blur extends the fill ~3px on every side — padding
-    // and soft rounding — and stays shorter than the paragraph line height,
-    // leaving breathing room between wrapped chip lines.
+    // Fallback for code spans inside headings (paragraphs/list items use the
+    // CodeFlow chip instead): subtle bg, ~0.92em. iOS ignores per-run
+    // padding/borderRadius on nested Text, so chips live outside <Text>.
     color: colors.ink,
     backgroundColor: colors.surfaceSubtle,
     fontFamily: "monospace",
     fontSize: 13,
-    textShadowColor: colors.surfaceSubtle,
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 3,
   },
   link: { color: colors.accent, textDecorationLine: "underline" },
   rule: { height: 1, marginVertical: spacing.md, backgroundColor: colors.line },
@@ -396,7 +456,14 @@ const styles = StyleSheet.create({
     fontSize: 17,
     lineHeight: 26,
   },
-  listItemText: { flex: 1, color: colors.ink, fontSize: 17, lineHeight: 26 },
+  listItemFlow: {
+    flex: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    rowGap: 2,
+  },
+  listItemProse: { color: colors.ink, fontSize: 17, lineHeight: 26 },
   checkbox: {
     width: 18,
     height: 18,
