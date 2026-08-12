@@ -29,8 +29,8 @@ fn emit_build_version() {
 /// Port of scripts/version.mjs `resolveVersion()`:
 ///   - FUTURE_VERSION env override wins (trimmed, empty treated as unset)
 ///   - release tag `refs/tags/vX.Y.Z` → `X.Y.Z`
-///   - dev build `0.0.<commit-count>-<hash>`; `+local` (and `.dirty`) appended
-///     for local builds (no GITHUB_ACTIONS/CI), matching the TS CLI exactly.
+///   - dev build `0.0.2-<hash>`; `+local` (and `.dirty`) appended for local
+///     builds (no GITHUB_ACTIONS/CI), matching the TS CLI exactly.
 fn resolve_version() -> String {
     if let Ok(v) = std::env::var("FUTURE_VERSION") {
         let v = v.trim();
@@ -46,21 +46,18 @@ fn resolve_version() -> String {
             }
         }
     }
-    let count = git(&["rev-list", "--count", "HEAD"])
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "0".to_string());
+    // Dev minor is pinned at 0.0.2 (mirroring DEV_VERSION in version.mjs). A
+    // commit-count scheme is useless in CI (shallow checkout → always 1), so
+    // the version never derives from the git history length.
     let hash = git(&["rev-parse", "--short", "HEAD"])
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
     let ci = std::env::var("GITHUB_ACTIONS").is_ok() || std::env::var("CI").is_ok();
     if ci {
-        return format!("0.0.{count}-{hash}");
+        return format!("0.0.2-{hash}");
     }
     let dirty = git_status_porcelain_nonempty();
-    format!(
-        "0.0.{count}-{hash}+local{}",
-        if dirty { ".dirty" } else { "" }
-    )
+    format!("0.0.2-{hash}+local{}", if dirty { ".dirty" } else { "" })
 }
 
 fn is_semver_core(s: &str) -> bool {

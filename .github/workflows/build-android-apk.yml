@@ -25,8 +25,12 @@ jobs:
         run: |
           node scripts/version.mjs --github-output
           # versionCode must be a monotonic integer if this ever goes to Play
-          # Store; the repo-wide run counter never resets on workflow renames.
-          echo "build_number=${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+          # Store. github.run_id is a GitHub-wide counter that has already
+          # exceeded Android's int32 limit, so use github.run_number — this
+          # workflow's own per-repo counter, starting at 1. It resets if the
+          # workflow is renamed, but that only matters for Play (not currently
+          # used); versionCode monotonicity within a single workflow is enough.
+          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
   build-apk:
     name: Build APK

@@ -7,11 +7,17 @@ permissions: read-all
 # Expo prebuild + xcodebuild, uploads it to TestFlight via altool, and mirrors
 # the .ipa to OSS.
 #
-# TestFlight requires a plain numeric marketing version, so this workflow pins it
-# at `0.0.1` (constant across builds; bumped only for real releases). The store
-# build number (CFBundleVersion / Android versionCode) comes from `github.run_id`
-# via FUTURE_BUILD_NUMBER — a monotonic per-repo counter that never resets on
-# workflow renames and is immune to shallow-checkout commit counts.
+# TestFlight requires a plain numeric marketing version. It was pinned at `0.0.1`
+# until 0.0.1's build number hit 31479016198 (the old github.run_id counter).
+# TestFlight enforces a monotonically increasing build number per marketing
+# version, so switching back to small run_number build numbers under 0.0.1 would
+# be rejected. Bumping the marketing version to `0.0.2` resets the build-number
+# sequence, letting it restart at 1. The store build number (CFBundleVersion /
+# Android versionCode) comes from `github.run_number` via FUTURE_BUILD_NUMBER —
+# this workflow's per-repo counter starting at 1. It must stay small: Android
+# versionCode is an int32, and `github.run_id` (a GitHub-wide counter) already
+# exceeds its limit. Bump the marketing version here only when cutting a real
+# release or resetting the TestFlight build-number sequence again.
 #
 # Keep this workflow restricted to trusted triggers: it imports signing
 # credentials and submits software to Apple's TestFlight service. Do not add
@@ -34,12 +40,14 @@ jobs:
       - name: Resolve build number
         id: v
         run: |
-          # Marketing version stays pinned at 0.0.1 for dev/TestFlight; bump it
-          # here only when cutting a real release. The store build number is the
-          # repo-wide run counter (monotonic, never resets, not git-dependent).
-          echo "version=0.0.1" >> "$GITHUB_OUTPUT"
-          echo "build_number=${{ github.run_id }}" >> "$GITHUB_OUTPUT"
-          echo "TestFlight version: 0.0.1 (build ${{ github.run_id }})"
+          # Marketing version bumped to 0.0.2: TestFlight already accepted
+          # 0.0.1 with build number 31479016198, so 0.0.1's sequence can only
+          # increase; small run_number values must start fresh under 0.0.2.
+          # The store build number is this workflow's per-repo run counter
+          # (starts at 1; stays within int32).
+          echo "version=0.0.2" >> "$GITHUB_OUTPUT"
+          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "TestFlight version: 0.0.2 (build ${{ github.run_number }})"
 
   build:
     name: Build and upload TestFlight
