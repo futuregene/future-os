@@ -649,7 +649,14 @@ async fn handle_command(
             match crate::agent_bridge::rename_session(cmd.session_id.clone(), cmd.name.clone())
                 .await
             {
-                Ok(()) => reply(client, &msg, true, json!({}), None).await,
+                Ok(()) => {
+                    if let Ok(Some(thread)) =
+                        crate::store::find_thread_by_agent_session(&cmd.session_id)
+                    {
+                        crate::emit_remote_activity(&thread.id);
+                    }
+                    reply(client, &msg, true, json!({}), None).await
+                }
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
@@ -658,7 +665,10 @@ async fn handle_command(
                 thread_id: cmd.thread_id.clone(),
                 pinned: cmd.pinned,
             }) {
-                Ok(_) => reply(client, &msg, true, json!({}), None).await,
+                Ok(_) => {
+                    crate::emit_remote_activity(&cmd.thread_id);
+                    reply(client, &msg, true, json!({}), None).await
+                }
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
@@ -672,7 +682,10 @@ async fn handle_command(
                 reply(client, &msg, false, Value::Null, Some("missing thread_id")).await;
             } else {
                 match crate::store::delete_thread_with_files(&cmd.thread_id, false) {
-                    Ok(_) => reply(client, &msg, true, json!({}), None).await,
+                    Ok(_) => {
+                        crate::emit_remote_activity(&cmd.thread_id);
+                        reply(client, &msg, true, json!({}), None).await
+                    }
                     Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
                 }
             }
