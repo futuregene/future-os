@@ -564,7 +564,8 @@ mod tests {
         // watchdog marks the run CancellationStuck.
         tokio::time::advance(std::time::Duration::from_secs(31)).await;
         for _ in 0..10 {
-            if runtime.snapshot().map(|a| a.phase) == Some(super::super::RunPhase::CancellationStuck)
+            if runtime.snapshot().map(|a| a.phase)
+                == Some(super::super::RunPhase::CancellationStuck)
             {
                 break;
             }
@@ -586,7 +587,9 @@ mod tests {
             })
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while runtime.snapshot().map(|a| a.phase) != Some(super::super::RunPhase::CancellationStuck) {
+            while runtime.snapshot().map(|a| a.phase)
+                != Some(super::super::RunPhase::CancellationStuck)
+            {
                 tokio::task::yield_now().await;
             }
         })

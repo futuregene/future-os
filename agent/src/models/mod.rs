@@ -1806,7 +1806,9 @@ mod tests {
             "user entry wins over builtin"
         );
         assert_eq!(
-            user.thinking_level_map.get("xhigh").and_then(|v| v.as_str()),
+            user.thinking_level_map
+                .get("xhigh")
+                .and_then(|v| v.as_str()),
             Some("max"),
             "builtin-only key is merged in"
         );
@@ -1860,7 +1862,12 @@ mod tests {
         let future = make_model("future-model", "future");
         let no_provider = make_model("orphan-model", "");
         let reg = Registry {
-            builtin: std::sync::Arc::new(vec![hidden, future, no_provider, make_model("visible", "testprov")]),
+            builtin: std::sync::Arc::new(vec![
+                hidden,
+                future,
+                no_provider,
+                make_model("visible", "testprov"),
+            ]),
             user: vec![],
             provider_overrides: HashMap::new(),
         };

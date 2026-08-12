@@ -153,7 +153,10 @@ mod tests {
     fn tilde_without_home_returns_input_verbatim() {
         // No home available (injected None): both tilde forms pass through.
         assert_eq!(expand_tilde_with_home("~", None), PathBuf::from("~"));
-        assert_eq!(expand_tilde_with_home("~/x.txt", None), PathBuf::from("~/x.txt"));
+        assert_eq!(
+            expand_tilde_with_home("~/x.txt", None),
+            PathBuf::from("~/x.txt")
+        );
         // And with a home the injected value is used.
         let home = Path::new("/home/tester");
         assert_eq!(expand_tilde_with_home("~", Some(home)), home);

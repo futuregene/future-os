@@ -94,8 +94,7 @@ fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
 /// Test seam: force the background-refresh closure down its panic-recovery
 /// path. 0 = off, 1 = &str payload, 2 = String payload, 3 = other payload.
 #[cfg(test)]
-static REFRESH_TEST_PANIC: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static REFRESH_TEST_PANIC: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
 fn inject_test_panic() {
@@ -115,9 +114,7 @@ fn future_models_cache_path() -> String {
 /// fallback arm is testable (a real host always resolves one).
 fn future_models_cache_path_in(home: Option<std::path::PathBuf>) -> String {
     home.map(|h| h.join(".future/agent/.future-models-cache.json"))
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from("/tmp/.future/agent/.future-models-cache.json")
-        })
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/.future-models-cache.json"))
         .to_string_lossy()
         .to_string()
 }

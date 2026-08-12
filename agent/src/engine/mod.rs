@@ -210,8 +210,15 @@ mod tests {
         config
             .thinking_level_map
             .insert("test-model".to_string(), "max".to_string());
-        let engine = Engine::new("https://api.test.com", "key", "test-model", config, None, None)
-            .unwrap();
+        let engine = Engine::new(
+            "https://api.test.com",
+            "key",
+            "test-model",
+            config,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             engine.config.thinking_level_map.get("test-model"),
             Some(&"max".to_string())

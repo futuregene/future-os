@@ -319,10 +319,8 @@ mod image_prep_tests {
     #[test]
     fn over_25mb_source_returns_none() {
         // Sparse file past MAX_SOURCE_BYTES: rejected before any decode work.
-        let path = std::env::temp_dir().join(format!(
-            "futureos-imgtest-{}-huge.bin",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("futureos-imgtest-{}-huge.bin", std::process::id()));
         let f = std::fs::File::create(&path).unwrap();
         f.set_len(26 * 1024 * 1024).unwrap();
         drop(f);
@@ -340,21 +338,18 @@ mod image_prep_tests {
             state ^= state << 13;
             state ^= state >> 17;
             state ^= state << 5;
-            image::Rgb([
-                state as u8,
-                (state >> 8) as u8,
-                (state >> 16) as u8,
-            ])
+            image::Rgb([state as u8, (state >> 8) as u8, (state >> 16) as u8])
         });
-        let path = std::env::temp_dir().join(format!(
-            "futureos-imgtest-{}-noise.png",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("futureos-imgtest-{}-noise.png", std::process::id()));
         img.save(&path).unwrap();
         // Sanity: the fixture really is over the base64 budget, or the test
         // stops exercising the re-encode path.
         let raw_len = std::fs::metadata(&path).unwrap().len() as usize;
-        assert!(raw_len.div_ceil(3) * 4 > 5 * 1024 * 1024, "fixture too small");
+        assert!(
+            raw_len.div_ceil(3) * 4 > 5 * 1024 * 1024,
+            "fixture too small"
+        );
 
         let url = image_data_url_for_model(path.to_str().unwrap());
         std::fs::remove_file(&path).ok();

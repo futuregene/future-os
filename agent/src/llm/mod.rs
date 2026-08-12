@@ -1037,7 +1037,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1058,7 +1063,12 @@ mod tests {
         let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
         let client = Client::new(&server.base_url, "sk-test", None, None);
         let rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let events: Vec<StreamEvent> = rx.collect().await;
@@ -1110,7 +1120,12 @@ mod tests {
         });
         let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
         let mut rx = client
-            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .stream_chat(
+                "mock".to_string(),
+                one_user_message(),
+                vec![],
+                String::new(),
+            )
             .await
             .unwrap();
         let first = tokio_stream::StreamExt::next(&mut rx)
@@ -1118,14 +1133,20 @@ mod tests {
             .expect("one event arrives");
         assert_eq!(first.event_type, "text_delta");
         drop(rx); // consumer abort: the producer's next send fails
-        // Let the producer observe the drop and wind down.
+                  // Let the producer observe the drop and wind down.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
 
     #[test]
     fn stream_exit_reason_labels() {
-        assert_eq!(stream_exit_reason(StreamExitCause::IdleTimeout), "idle_timeout");
-        assert_eq!(stream_exit_reason(StreamExitCause::UpstreamEof), "upstream_eof");
+        assert_eq!(
+            stream_exit_reason(StreamExitCause::IdleTimeout),
+            "idle_timeout"
+        );
+        assert_eq!(
+            stream_exit_reason(StreamExitCause::UpstreamEof),
+            "upstream_eof"
+        );
         assert_eq!(
             stream_exit_reason(StreamExitCause::ConsumerDropped),
             "consumer_dropped"

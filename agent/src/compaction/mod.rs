@@ -391,23 +391,32 @@ mod tests {
         };
         let messages = vec![
             // Unparseable JSON string args → no path.
-            msg(vec![tool_call("read", serde_json::Value::String("not json".into()))]),
+            msg(vec![tool_call(
+                "read",
+                serde_json::Value::String("not json".into()),
+            )]),
             // Non-string args → no path.
             msg(vec![tool_call("read", serde_json::json!({"path": "x.rs"}))]),
             // Parseable args without a path key → skipped via continue.
             msg(vec![tool_call(
                 "read",
-                serde_json::Value::String("{\"cmd\": \"ls\"}".into())
+                serde_json::Value::String("{\"cmd\": \"ls\"}".into()),
             )]),
             // A tool that is neither a read nor a write → ignored.
             msg(vec![tool_call(
                 "shell",
-                serde_json::Value::String("{\"path\": \"ignored.rs\"}".into())
+                serde_json::Value::String("{\"path\": \"ignored.rs\"}".into()),
             )]),
             // One real read + one real write so the sets are non-empty.
             msg(vec![
-                tool_call("read", serde_json::Value::String("{\"path\": \"a.rs\"}".into())),
-                tool_call("edit", serde_json::Value::String("{\"file_path\": \"b.rs\"}".into())),
+                tool_call(
+                    "read",
+                    serde_json::Value::String("{\"path\": \"a.rs\"}".into()),
+                ),
+                tool_call(
+                    "edit",
+                    serde_json::Value::String("{\"file_path\": \"b.rs\"}".into()),
+                ),
             ]),
         ];
         let (reads, writes) = extract_file_operations(&messages);

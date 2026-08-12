@@ -892,8 +892,12 @@ mod tests {
         let err = load_rule_file(&broken, &workspace).unwrap_err();
         assert!(err.contains("unreadable rule file"), "{err}");
 
-        let set =
-            RuleSet::resolve_impl(&workspace, None, Some(&broken), Arc::new(Mutex::new(vec![])));
+        let set = RuleSet::resolve_impl(
+            &workspace,
+            None,
+            Some(&broken),
+            Arc::new(Mutex::new(vec![])),
+        );
         assert!(set.user_rules.is_empty());
         assert_eq!(
             set.evaluate(&workspace.join("src/main.rs"), Op::Write),

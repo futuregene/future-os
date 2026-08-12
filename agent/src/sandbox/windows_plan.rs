@@ -206,11 +206,7 @@ mod tests {
         );
         // Read-only allow: broadly open already, so it must NOT add an ACE.
         let allow_read = workspace.join("vendor/readable");
-        rules.add_session_rule(
-            &allow_read.to_string_lossy(),
-            Access::Read,
-            Decision::Allow,
-        );
+        rules.add_session_rule(&allow_read.to_string_lossy(), Access::Read, Decision::Allow);
         let sandbox = ResolvedSandbox {
             tier: SandboxTier::Manual,
             available: crate::sandbox::platform_sandbox_available(),

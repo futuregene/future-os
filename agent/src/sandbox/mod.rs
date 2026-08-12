@@ -636,9 +636,7 @@ pub fn hydrate_from_login_shell() {
     }
     if let Some(value) = path {
         std::env::set_var("PATH", value);
-        tracing::info!(
-            "hydrated PATH from login shell ({shell}); merged {merged_count} env vars"
-        );
+        tracing::info!("hydrated PATH from login shell ({shell}); merged {merged_count} env vars");
     }
 }
 
@@ -1226,7 +1224,10 @@ mod tests {
     fn on_path_without_path_env_is_false() {
         assert!(!on_path_in(None, "bash"));
         assert!(on_path_in(Some(std::ffi::OsString::from("/bin")), "sh"));
-        assert!(!on_path_in(Some(std::ffi::OsString::from("/bin")), "future-nope"));
+        assert!(!on_path_in(
+            Some(std::ffi::OsString::from("/bin")),
+            "future-nope"
+        ));
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1240,7 +1241,10 @@ mod tests {
         assert_eq!(path, Some("/a:/b"));
         assert_eq!(merged, vec![("NEW_VAR", "1")]);
         // No marker at all → nothing to apply.
-        assert_eq!(plan_env_merge("no markers here", marker, &|_| false), (None, vec![]));
+        assert_eq!(
+            plan_env_merge("no markers here", marker, &|_| false),
+            (None, vec![])
+        );
     }
 
     /// Serialises the hydrate tests: they mutate the process-wide $SHELL.

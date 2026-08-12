@@ -1066,7 +1066,8 @@ mod tests {
     #[test]
     fn usage_credit_cost_wrong_type_reports_expecting_message() {
         // An array payload hits no visitor arm → serde renders `expecting`.
-        let json = r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":[1]}"#;
+        let json =
+            r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":[1]}"#;
         let err = serde_json::from_str::<Usage>(json).unwrap_err();
         assert!(
             err.to_string().contains("representing credit cost"),

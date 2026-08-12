@@ -217,15 +217,24 @@ mod tests {
             .add_session_rule(&ro_base.to_string_lossy(), Access::Read, Decision::Allow);
         let p = build_profile(&s);
         assert!(
-            p.contains(&format!("(allow file-read* (subpath \"{}\"", allow_base.display())),
+            p.contains(&format!(
+                "(allow file-read* (subpath \"{}\"",
+                allow_base.display()
+            )),
             "{p}"
         );
         assert!(
-            p.contains(&format!("(allow file-write* (subpath \"{}\"", allow_base.display())),
+            p.contains(&format!(
+                "(allow file-write* (subpath \"{}\"",
+                allow_base.display()
+            )),
             "{p}"
         );
         assert!(
-            p.contains(&format!("(allow file-read* (subpath \"{}\"", ro_base.display())),
+            p.contains(&format!(
+                "(allow file-read* (subpath \"{}\"",
+                ro_base.display()
+            )),
             "{p}"
         );
         let ro_write = format!("file-write* (subpath \"{}\"", ro_base.display());
