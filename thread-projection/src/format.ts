@@ -40,7 +40,16 @@ function agentErrorDetail(raw: string): string {
       detail = embedded[1]!;
     }
   }
-  detail = detail.replace(/\s*Request:\s*\d+\s*messages?,\s*[\d.]+\s*[KM]B\.?\s*$/i, "").trim();
+  // Strip the diagnostic tail ("Request: 2 messages, 16 KB."). The regex avoids
+  // `\s*…$`-style backtracking (CodeQL flags it as a potential ReDoS on long
+  // input) — match the fixed prefix, then require only trailing whitespace
+  // after it before trimming.
+  const tail = /Request:\s*\d+\s+messages?,\s*[\d.]+\s*[KM]B\.?/i.exec(detail);
+  if (tail) {
+    const afterTail = detail.slice((tail.index ?? 0) + tail[0].length);
+    if (!/\S/.test(afterTail)) detail = detail.slice(0, tail.index).trimEnd();
+  }
+  detail = detail.trim();
   const MAX_DETAIL = 300;
   return detail.length > MAX_DETAIL ? `${detail.slice(0, MAX_DETAIL)}…` : detail;
 }
