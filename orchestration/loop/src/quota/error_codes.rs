@@ -108,6 +108,9 @@ pub enum DecisionReasonCode {
     DeferredNotDue,
     /// Validated closure — todos done, gaps closed, closure intent declared.
     ValidatedClosure,
+    /// A↔V oscillation signature detected (main #163) — force a
+    /// frontier-changing replan instead of the next flip-flop delivery.
+    OscillationDetected,
 }
 
 impl DecisionReasonCode {
@@ -129,6 +132,7 @@ impl DecisionReasonCode {
             Self::AcceptanceGapOpen => "acceptance_gap_open",
             Self::DeferredNotDue => "deferred_not_due",
             Self::ValidatedClosure => "validated_closure",
+            Self::OscillationDetected => "oscillation_detected",
         }
     }
 

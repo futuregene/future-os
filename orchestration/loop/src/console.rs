@@ -1929,7 +1929,9 @@ fn cmd_quota(store: &Store, args: &[String]) -> Result<()> {
         Some("spend") => quota_spend(store, &args[1..]),
         Some("tools") => quota_tools(store, &args[1..]),
         Some("decisions") => quota_decisions(store, &args[1..]),
-        _ => bail!("quota subcommand must be `should-run`, `usage`, `spend`, `tools`, or `decisions`"),
+        _ => bail!(
+            "quota subcommand must be `should-run`, `usage`, `spend`, `tools`, or `decisions`"
+        ),
     }
 }
 
