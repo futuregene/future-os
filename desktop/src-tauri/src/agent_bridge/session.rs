@@ -1035,12 +1035,7 @@ mod tests {
             {"role": "user", "content": "not an assistant"}
         ]);
         synthesize_run_events_from_entries(
-            &entries
-                .as_array()
-                .expect("array")
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>(),
+            &entries.as_array().expect("array").to_vec(),
             &[run_a.id.clone(), run_b.id.clone()],
         )
         .expect("synthesize");

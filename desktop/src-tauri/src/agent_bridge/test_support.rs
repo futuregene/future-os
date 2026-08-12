@@ -165,15 +165,13 @@ impl FutureAgent for MockAgent {
                 // canonical run id is only chosen once the pipeline runs
                 // (e.g. prompt-generated ids): bind it to the attach's
                 // requested run id.
-                let mut items: Vec<Result<StreamEvent, tonic::Status>> = events
-                    .into_iter()
-                    .map(|mut event| {
-                        if event.run_id == "@attach" {
-                            event.run_id.clone_from(&attach_run_id);
-                        }
-                        Ok(event)
-                    })
-                    .collect();
+                let mut items: Vec<Result<StreamEvent, tonic::Status>> = Vec::new();
+                for mut event in events {
+                    if event.run_id == "@attach" {
+                        event.run_id.clone_from(&attach_run_id);
+                    }
+                    items.push(Ok(event));
+                }
                 if let Some((code, message)) = terminal {
                     items.push(Err(tonic::Status::new(code, message)));
                 }
@@ -291,16 +289,6 @@ impl MockAgentGuard {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .atomic_streams
-            .push_back(script);
-    }
-
-    /// Queue one plain-subscription stream outcome — the kind idle session
-    /// observers open.
-    pub(crate) fn push_plain_stream(&self, script: StreamScript) {
-        STATE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .plain_streams
             .push_back(script);
     }
 
