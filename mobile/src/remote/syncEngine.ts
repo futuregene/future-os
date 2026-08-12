@@ -294,8 +294,8 @@ export class SyncEngine {
     const result = await this.deps.fetchReplay(lane.sessionId, runId, since);
     if (result.projection?.events?.length) {
       let events = normalizeReplayEvents(result.projection.events);
-      // Folded projection events carry no run_id on the wire (they're whole-run
-      // coalesced deltas). Stamp the replayed run's id onto them so the
+      // A folded projection's run id rides on the envelope, not necessarily on
+      // each event. Stamp the replayed run's id onto the events so the
       // projection's agent_start/agent_end match the same `assistant:{runId}`
       // item as the live stream — without this, agent_start builds an
       // `assistant:` ghost that no later agent_end can clear, leaving a
