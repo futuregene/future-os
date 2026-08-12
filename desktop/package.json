@@ -17,6 +17,7 @@
     "desktop:package": "tauri build"
   },
   "dependencies": {
+    "@future-os/thread-projection": "file:../thread-projection",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "i18next": "^26.3.4",

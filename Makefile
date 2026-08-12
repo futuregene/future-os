@@ -1,5 +1,5 @@
 .PHONY: help version \
-	build build-cli build-desktop build-desktop-dist build-mobile-android build-mobile-ios desktop-sidecars \
+	build build-cli build-desktop build-desktop-dist build-mobile-android build-mobile-ios desktop-sidecars build-thread-projection \
 	test test-agent test-channels test-cli test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt fmt-mobile \
@@ -155,8 +155,18 @@ else
 	@[ -f "desktop/src-tauri/binaries/future-$(TARGET)" ] || : > "desktop/src-tauri/binaries/future-$(TARGET)"
 endif
 
+# Shared thread projection package: desktop/mobile both depend on its compiled
+# dist/ via a `file:` dep, so any TS change here must rebuild before either app
+# typechecks. Depends on nothing else; run once per source change.
+build-thread-projection:
+	$(call npm-install-if-needed,thread-projection)
+	@if [ ! -f thread-projection/dist/index.js ] || find thread-projection/src -newer thread-projection/dist/index.js -print -quit | grep -q .; then \
+		echo "  build thread-projection/"; \
+		cd thread-projection && npm run build; \
+	fi
+
 # React frontend only (dep of build-desktop / check-desktop).
-build-desktop-dist:
+build-desktop-dist: build-thread-projection
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run build
 
@@ -201,14 +211,14 @@ test-tui-diff:
 test-tui-tmux:
 	./tui/tests/tmux-diff.sh
 
-test-desktop:
+test-desktop: build-thread-projection
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm test
 
 test-desktop-rust: desktop-sidecar-placeholder
 	cd desktop/src-tauri && cargo test
 
-test-mobile:
+test-mobile: build-thread-projection
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm test
 
@@ -223,13 +233,13 @@ lint-rust: desktop-sidecar-placeholder
 	$(CARGO_PINNED) fmt --check --manifest-path desktop/src-tauri/Cargo.toml
 	$(CARGO_PINNED) clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
-lint-desktop:
+lint-desktop: build-thread-projection
 	cd desktop && npm run lint
 
 stylelint-desktop:
 	cd desktop && npm run stylelint
 
-lint-mobile:
+lint-mobile: build-thread-projection
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run typecheck && npm run lint
 
