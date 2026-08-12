@@ -345,13 +345,9 @@ pub fn mark_run_overlapped(workspace_id: &str, run_id: &str) -> Result<(), crate
                AND b.created_at <= ?3
                AND COALESCE(a.created_at, ?4) >= ?5",
         )?;
-        let rows = stmt
-            .query_map(
-                params![workspace_id, run_id, after_ts, now, before_ts],
-                |row| row.get(0),
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
+        let args = params![workspace_id, run_id, after_ts, now, before_ts];
+        let rows = stmt.query_map(args, |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
 
     if peers.is_empty() {
@@ -367,12 +363,10 @@ pub fn mark_run_overlapped(workspace_id: &str, run_id: &str) -> Result<(), crate
 }
 
 fn set_overlapped(conn: &rusqlite::Connection, run_id: &str, now: i64) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE review_changesets
+    const SQL: &str = "UPDATE review_changesets
          SET overlapped = 1, updated_at = ?2
-         WHERE run_id = ?1 AND source_kind = 'run_snapshot'",
-        params![run_id, now],
-    )?;
+         WHERE run_id = ?1 AND source_kind = 'run_snapshot'";
+    conn.execute(SQL, params![run_id, now])?;
     Ok(())
 }
 
@@ -388,20 +382,15 @@ pub(super) fn delete_run_review_in(
     conn: &rusqlite::Connection,
     run_id: &str,
 ) -> rusqlite::Result<()> {
-    conn.execute(
-        "DELETE FROM review_file_changes WHERE changeset_id IN (
+    const DELETE_FILES_SQL: &str = "DELETE FROM review_file_changes WHERE changeset_id IN (
              SELECT id FROM review_changesets WHERE run_id = ?1 AND source_kind = 'run_snapshot'
-         )",
-        params![run_id],
-    )?;
-    conn.execute(
-        "DELETE FROM review_changesets WHERE run_id = ?1 AND source_kind = 'run_snapshot'",
-        params![run_id],
-    )?;
-    conn.execute(
-        "DELETE FROM review_snapshots WHERE run_id = ?1",
-        params![run_id],
-    )?;
+         )";
+    conn.execute(DELETE_FILES_SQL, params![run_id])?;
+    const DELETE_CHANGESET_SQL: &str =
+        "DELETE FROM review_changesets WHERE run_id = ?1 AND source_kind = 'run_snapshot'";
+    conn.execute(DELETE_CHANGESET_SQL, params![run_id])?;
+    const DELETE_SNAPSHOTS_SQL: &str = "DELETE FROM review_snapshots WHERE run_id = ?1";
+    conn.execute(DELETE_SNAPSHOTS_SQL, params![run_id])?;
     Ok(())
 }
 
@@ -460,15 +449,14 @@ pub fn list_unmaterialized_runs() -> Result<Vec<(String, String, String)>, crate
 fn list_unmaterialized_runs_in(
     conn: &rusqlite::Connection,
 ) -> Result<Vec<(String, String, String)>, crate::AppError> {
-    let mut stmt = conn.prepare(
-        "SELECT s.run_id, s.thread_id, s.workspace_id
+    const SQL: &str = "SELECT s.run_id, s.thread_id, s.workspace_id
          FROM review_snapshots s
          WHERE s.phase = 'before' AND s.status != 'failed'
            AND NOT EXISTS (
              SELECT 1 FROM review_changesets c
              WHERE c.run_id = s.run_id AND c.source_kind = 'run_snapshot'
-           )",
-    )?;
+           )";
+    let mut stmt = conn.prepare(SQL)?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,

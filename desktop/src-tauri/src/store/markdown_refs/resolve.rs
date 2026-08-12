@@ -52,12 +52,7 @@ pub(super) fn resolve_markdown_reference(
             Err(error) => failed_reference(target_type, target_id, error),
         },
         "file" => match resolve_file_reference(conn, workspace_id, &target_id) {
-            Ok(Some(file)) => resolved_reference(target_type, target_id, file),
-            Ok(None) => missing_reference(
-                target_type,
-                target_id,
-                "file was not found in the workspace",
-            ),
+            Ok(file) => resolved_reference(target_type, target_id, file),
             Err(error) => failed_reference(target_type, target_id, error),
         },
         "run" => match get_run_in_workspace(conn, workspace_id, &target_id) {
@@ -164,15 +159,14 @@ struct ResolvedFile {
 /// Turn a file reference into its display model. The path may be absolute (the
 /// model writes it verbatim, so the leading slash is intact) or workspace-
 /// relative; anything not absolute is resolved against the workspace root.
+/// Never returns None: the caller already rejected an empty (trimmed) id, and
+/// resolution is pure path arithmetic — any non-empty path becomes a link.
 fn resolve_file_reference(
     conn: &Connection,
     workspace_id: &str,
     raw_path: &str,
-) -> Result<Option<ResolvedFile>, crate::AppError> {
+) -> Result<ResolvedFile, crate::AppError> {
     let raw = raw_path.trim();
-    if raw.is_empty() {
-        return Ok(None);
-    }
 
     let workspace_path: Option<String> = conn
         .query_row(
@@ -208,12 +202,12 @@ fn resolve_file_reference(
         None => (false, None),
     };
 
-    Ok(Some(ResolvedFile {
+    Ok(ResolvedFile {
         path: absolute.to_string_lossy().into_owned(),
         name,
         relative_path,
         inside_workspace,
-    }))
+    })
 }
 
 fn get_run_in_workspace(
@@ -409,22 +403,10 @@ mod tests {
     }
 
     #[test]
-    fn file_reference_empty_raw_path_resolves_to_none() {
-        let conn = test_conn();
-        assert!(
-            resolve_file_reference(&conn, "ws1", "   ")
-                .expect("resolve")
-                .is_none()
-        );
-    }
-
-    #[test]
     fn file_reference_relative_path_without_workspace_root_is_anchored_absolute() {
         let conn = test_conn();
         // No `ws_ghost` row: a relative path is surfaced as `/<raw>`.
-        let file = resolve_file_reference(&conn, "ws_ghost", "notes/a.md")
-            .expect("resolve")
-            .expect("file");
+        let file = resolve_file_reference(&conn, "ws_ghost", "notes/a.md").expect("resolve");
         assert_eq!(file.path, "/notes/a.md");
         assert!(!file.inside_workspace);
         assert_eq!(file.relative_path, None);
@@ -434,9 +416,7 @@ mod tests {
     fn file_reference_root_path_has_no_name() {
         let conn = test_conn();
         seed_objects(&conn);
-        let file = resolve_file_reference(&conn, "ws1", "/")
-            .expect("resolve")
-            .expect("file");
+        let file = resolve_file_reference(&conn, "ws1", "/").expect("resolve");
         assert_eq!(file.name, "");
         assert!(!file.inside_workspace);
     }

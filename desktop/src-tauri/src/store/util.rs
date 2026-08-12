@@ -72,6 +72,16 @@ pub fn now_millis() -> i64 {
         .unwrap_or_default()
 }
 
+/// Recover a poisoned mutex guard. The store's in-memory caches/buffers are
+/// derived state (the Agent journal / SQLite are authoritative), so a panic
+/// while a guard was held must not permanently degrade later reads — the
+/// contents are still structurally valid. Shared so each call site stays a
+/// single `unwrap_or_else(unpoison)` line (a per-site closure's zero-count
+/// region would strand the line).
+pub(super) fn unpoison<T>(error: std::sync::PoisonError<T>) -> T {
+    error.into_inner()
+}
+
 /// Set by store write paths that change the remote directory snapshot (the
 /// thread/workspace lists, or a run's streaming state). The remote presence
 /// heartbeat drains this flag to publish an immediate full snapshot. Correctness
@@ -200,6 +210,17 @@ mod tests {
         mark_catalog_dirty();
         assert!(take_catalog_dirty(), "first take observes the mark");
         assert!(!take_catalog_dirty(), "second take sees the drained flag");
+    }
+
+    #[test]
+    fn unpoison_recovers_a_poisoned_guard() {
+        let mutex = std::sync::Mutex::new(7_i32);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = mutex.lock().expect("lock");
+            panic!("intentional: poison the mutex for the recovery test");
+        }));
+        let guard = mutex.lock().unwrap_or_else(unpoison);
+        assert_eq!(*guard, 7, "contents survive the poison");
     }
 
     #[test]

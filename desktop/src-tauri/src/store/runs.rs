@@ -345,7 +345,8 @@ pub fn list_run_events_since(
         return Ok(read_run_events(run_id));
     }
     #[cfg(test)]
-    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
+    {
+        let buf = RUN_EVENT_BUFFER.lock().unwrap_or_else(unpoison);
         if let Some(events) = buf.get(run_id) {
             return Ok(events
                 .iter()
@@ -536,7 +537,8 @@ fn read_events_from_disk(run_id: &str) -> Vec<RunEventRecord> {
 /// active, else the persisted log (survives restart / post-settle eviction).
 fn read_run_events(run_id: &str) -> Vec<RunEventRecord> {
     #[cfg(test)]
-    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
+    {
+        let buf = RUN_EVENT_BUFFER.lock().unwrap_or_else(unpoison);
         if let Some(events) = buf.get(run_id) {
             return events.clone();
         }
@@ -601,9 +603,8 @@ pub fn delete_run_events_file(run_id: &str) {
     if let Some(path) = run_events_path(run_id) {
         let _ = std::fs::remove_file(path);
     }
-    if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
-        cache.remove(run_id);
-    }
+    let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+    cache.remove(run_id);
 }
 
 /// Remove the whole run-events directory (called by `clear_all_data`).
@@ -611,9 +612,8 @@ pub fn clear_all_run_events_files() {
     if let Ok(dir) = app_dir() {
         let _ = std::fs::remove_dir_all(dir.join("run_events"));
     }
-    if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
-        cache.clear();
-    }
+    let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+    cache.clear();
 }
 
 /// Per-run incremental tool-call projection. The context panel polls tool
@@ -673,10 +673,8 @@ fn has_open_tool_call(state: &ToolProjectionState) -> bool {
 /// tool activity doesn't churn the cache. Holding the cache mutex across the
 /// fold prevents two concurrent pollers from double-applying the same tail.
 pub fn advance_tool_projection(run_id: &str, events: &[RunEventRecord]) -> Vec<ToolCallRecord> {
-    let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() else {
-        // Poisoned lock: fall back to a one-shot full rebuild.
-        return project_tool_calls(events);
-    };
+    // Poison recovery keeps the derived cache usable (see util::unpoison).
+    let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
     if events.is_empty() {
         // Read-only advance: refresh recency and return what's folded.
         if let Some(state) = cache.get_mut(run_id) {
@@ -692,15 +690,16 @@ pub fn advance_tool_projection(run_id: &str, events: &[RunEventRecord]) -> Vec<T
     // and evict it — dropping the tool_start input its tool_end persistence
     // still needs. A bulk `clear()` (the historical behavior) was worse.
     while cache.len() >= TOOL_PROJECTION_CACHE_MAX && !cache.contains_key(run_id) {
+        // The cache is provably non-empty here (the loop condition), and the
+        // or_else arm yields the oldest entry when every entry has an open
+        // tool call.
         let victim = cache
             .iter()
             .filter(|(_, state)| !has_open_tool_call(state))
             .min_by_key(|(_, state)| state.last_used)
             .or_else(|| cache.iter().min_by_key(|(_, state)| state.last_used))
-            .map(|(id, _)| id.clone());
-        let Some(victim) = victim else {
-            break;
-        };
+            .map(|(id, _)| id.clone())
+            .expect("cache is non-empty while evicting");
         cache.remove(&victim);
     }
     let mut state = cache.remove(run_id).unwrap_or_else(|| ToolProjectionState {
@@ -952,7 +951,8 @@ pub fn get_tool_call_input(
     run_id: &str,
     tool_call_id: &str,
 ) -> Result<Option<String>, crate::AppError> {
-    if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
+    {
+        let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
         if let Some(mut state) = cache.remove(run_id) {
             let input = state
                 .index_by_id
@@ -971,19 +971,20 @@ pub fn get_tool_call_input(
     // legacy GUI JSONL log. Scan it for the matching tool_start.
     let events = read_run_events(run_id);
     for event in events.iter().rev() {
-        if event.event_type == "tool_start" && event_tool_id(event).as_deref() == Some(tool_call_id)
+        if event.event_type != "tool_start" || event_tool_id(event).as_deref() != Some(tool_call_id)
         {
-            if let Some(ref payload) = event.payload {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
-                    return Ok(v
-                        .get("tool_args")
-                        .or(v.get("input"))
-                        .and_then(|s| s.as_str())
-                        .map(|s| s.to_string()));
-                }
-            }
-            return Ok(None);
+            continue;
         }
+        // event_tool_id just parsed this payload successfully (and found the
+        // id), so both unwraps are invariant-backed.
+        let payload = event.payload.as_deref().expect("tool_id implies payload");
+        let v: serde_json::Value =
+            serde_json::from_str(payload).expect("payload parsed by event_tool_id");
+        return Ok(v
+            .get("tool_args")
+            .or(v.get("input"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string()));
     }
     Ok(None)
 }
@@ -1228,9 +1229,8 @@ mod tests {
         assert_eq!(third[1].name, "edit");
         assert_eq!(third[1].status, "running");
 
-        if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
-            cache.remove(&run_id);
-        }
+        let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+        cache.remove(&run_id);
     }
 
     #[test]
@@ -1302,11 +1302,10 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].status, "completed");
 
-        if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
-            cache.remove(&live);
-            for other in &others {
-                cache.remove(other);
-            }
+        let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+        cache.remove(&live);
+        for other in &others {
+            cache.remove(other);
         }
     }
 
@@ -1374,9 +1373,8 @@ mod tests {
             Some(r#"{"path":"/a.ts"}"#.to_string())
         );
 
-        if let Ok(mut cache) = TOOL_PROJECTION_CACHE.lock() {
-            cache.remove(&run_id);
-        }
+        let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+        cache.remove(&run_id);
     }
 
     fn insert_thread(conn: &Connection, id: &str, agent_session_id: Option<&str>) {
@@ -1555,5 +1553,343 @@ mod tests {
         assert_eq!(events[0].sequence, 0);
         assert_eq!(events[1].sequence, 1);
         clear_run_event_buffer(&run_id);
+    }
+
+    // ── connect()-backed read wrappers ─────────────────────────────────────
+
+    use crate::store::db::test_support::guarded_conn;
+
+    #[test]
+    fn run_read_wrappers_query_per_thread() {
+        let (_home, conn) = guarded_conn("runs_wrappers");
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, agent_session_id, created_at, updated_at
+             ) VALUES
+                 ('t1', 'ws1', 'chat', 'T1', 'sess1', 1, 1),
+                 ('t2', 'ws1', 'chat', 'T2', NULL, 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES
+                 ('r1_old', 't1', 'completed', 1, 1),
+                 ('r1_new', 't1', 'running', 2, 2),
+                 ('r2', 't2', 'failed', 3, 3);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        // active_run_sessions: only the non-terminal run's session resolves.
+        assert_eq!(
+            active_run_sessions().expect("active sessions"),
+            vec!["sess1".to_string()]
+        );
+
+        let runs = list_runs("t1").expect("list runs");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].id, "r1_new", "newest first");
+
+        let latest = latest_run("t1").expect("latest").expect("some");
+        assert_eq!(latest.id, "r1_new");
+        assert!(latest_run("t_ghost").expect("latest").is_none());
+
+        assert!(latest_run_infos(&[]).expect("empty").is_empty());
+        let infos = latest_run_infos(&["t1".to_string(), "t2".to_string(), "ghost".to_string()])
+            .expect("infos");
+        assert_eq!(infos.len(), 2, "threads without runs are omitted");
+        assert_eq!(infos[0].run_id, "r1_new");
+        assert_eq!(infos[1].run_id, "r2");
+        assert_eq!(infos[1].status, "failed");
+    }
+
+    #[test]
+    fn fail_run_if_active_cas_guards_terminal_rows() {
+        let (_home, conn) = guarded_conn("runs_fail_cas");
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T', 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('r1', 't1', 'running', 1, 1);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        assert!(fail_run_if_active("r1", "boom", "model_failed").expect("fail"));
+        let row = get_run("r1").expect("get").expect("some");
+        assert_eq!(row.status, "failed");
+        assert_eq!(row.error_message.as_deref(), Some("boom"));
+        assert_eq!(row.error_type.as_deref(), Some("model_failed"));
+        assert!(row.ended_at.is_some());
+
+        // Terminal now: the CAS refuses a second transition.
+        assert!(!fail_run_if_active("r1", "again", "unknown").expect("no-op"));
+        assert!(!fail_run_if_active("ghost", "x", "unknown").expect("missing"));
+    }
+
+    // ── tool projection: one-shot matrix ────────────────────────────────────
+
+    /// A tool event with an explicit (possibly absent) payload.
+    fn raw_tool_event(
+        run_id: &str,
+        event_type: &str,
+        payload: Option<&str>,
+        sequence: i64,
+    ) -> RunEventRecord {
+        RunEventRecord {
+            id: format!("e{sequence}"),
+            run_id: run_id.to_string(),
+            event_type: event_type.to_string(),
+            payload: payload.map(str::to_string),
+            sequence,
+            created_at: sequence,
+        }
+    }
+
+    #[test]
+    fn project_tool_calls_handles_announcements_edges() {
+        let events = vec![
+            // Stable id, then a no-content duplicate announce, then the
+            // enriched execution announce (input + name win).
+            tool_event("r", "toolcall_start", r#"{"tool_id":"a"}"#, 0),
+            tool_event(
+                "r",
+                "tool_start",
+                r#"{"tool_id":"a","tool_name":"read","tool_args":"{}"}"#,
+                1,
+            ),
+            // No tool_id: synthetic `{name}_{seq}`.
+            tool_event("r", "tool_start", r#"{"tool_name":"shell"}"#, 2),
+            // Unparseable payload: falls back to the event id.
+            tool_event("r", "tool_start", "{not json", 3),
+            // No payload at all: same fallback.
+            raw_tool_event("r", "tool_start", None, 4),
+            // Non-tool events are ignored.
+            tool_event("r", "text_chunk", "{}", 5),
+            // Ends: by stable id, and by synthetic id.
+            tool_event("r", "tool_end", r#"{"tool_id":"a","text":"done"}"#, 6),
+            tool_event("r", "tool_result", r#"{"text":"out"}"#, 7), // no id: no match
+        ];
+
+        let tools = project_tool_calls(&events);
+        assert_eq!(tools.len(), 4);
+        let by_id = |id: &str| tools.iter().find(|tool| tool.id == id).expect(id);
+        assert_eq!(by_id("a").name, "read");
+        assert_eq!(by_id("a").input.as_deref(), Some("{}"));
+        assert_eq!(by_id("a").status, "completed");
+        assert!(by_id("a").ended_at.is_some());
+        assert_eq!(by_id("shell_2").name, "shell");
+        assert_eq!(by_id("e3").name, "");
+        assert_eq!(by_id("e4").status, "running");
+    }
+
+    #[test]
+    fn tool_end_status_edge_inputs() {
+        // No payload / unparseable payload → completed.
+        assert_eq!(tool_end_status(None, None), "completed");
+        assert_eq!(tool_end_status(Some("{bad"), None), "completed");
+        // Footer exit 1 with no command context is a failure…
+        assert_eq!(
+            tool_end_status(Some(r#"{"text":"x\n[exit: 1]"}"#), None),
+            "failed"
+        );
+        // …but a soft-fail program exits 1 as a normal signal.
+        assert_eq!(
+            tool_end_status(Some(r#"{"text":"x\n[exit: 1]"}"#), Some("rg foo")),
+            "completed"
+        );
+    }
+
+    #[test]
+    fn soft_fail_command_classification() {
+        assert!(!is_soft_fail_command(None));
+        assert!(!is_soft_fail_command(Some("   ")));
+        assert!(!is_soft_fail_command(Some("grep a | wc")));
+        assert!(is_soft_fail_command(Some("/usr/bin/grep pattern")));
+        assert!(is_soft_fail_command(Some("C:\\tools\\findstr.exe x")));
+        assert!(is_soft_fail_command(Some("test -f x")));
+    }
+
+    #[test]
+    fn shell_command_from_input_decodes_doubly_encoded_json() {
+        assert_eq!(shell_command_from_input(None), None);
+        assert_eq!(shell_command_from_input(Some("{bad")), None);
+        assert_eq!(
+            shell_command_from_input(Some(r#"{"command":"ls"}"#)),
+            Some("ls".to_string())
+        );
+        // A JSON string *containing* the JSON object (double-encoded).
+        assert_eq!(
+            shell_command_from_input(Some(r#""{\"command\":\"pwd\"}""#)),
+            Some("pwd".to_string())
+        );
+        // A JSON string that doesn't itself parse: no command.
+        assert_eq!(shell_command_from_input(Some(r#""not json""#)), None);
+    }
+
+    #[test]
+    fn project_tool_outputs_synthetic_ids_and_empty_content() {
+        let events = vec![
+            // No tool_id anywhere: resolves to the event id…
+            tool_event("r", "tool_end", r#"{"text":"plain"}"#, 1),
+            // …or to `{name}_{seq}` when the payload names a tool…
+            tool_event("r", "tool_end", r#"{"tool_name":"shell","text":"named"}"#, 2),
+            // …and an empty payload object yields content None.
+            tool_event("r", "tool_end", r#"{"tool_id":"t3"}"#, 3),
+        ];
+
+        let by_event_id = project_tool_outputs(&events, "e1");
+        assert_eq!(by_event_id.len(), 1);
+        assert_eq!(by_event_id[0].kind, "text");
+
+        let by_name = project_tool_outputs(&events, "shell_2");
+        assert_eq!(by_name.len(), 1);
+
+        let empty = project_tool_outputs(&events, "t3");
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty[0].content, None);
+    }
+
+    // ── legacy JSONL disk log ───────────────────────────────────────────────
+
+    use crate::auth_store::test_support::HomeGuard;
+
+    fn text_event(run_id: &str, sequence: i64) -> AppendRunEventInput {
+        AppendRunEventInput {
+            run_id: run_id.to_string(),
+            event_type: "text_chunk".to_string(),
+            payload: Some(format!(r#"{{"text":"s{sequence}"}}"#)),
+            sequence,
+        }
+    }
+
+    #[test]
+    fn legacy_disk_log_roundtrip_and_clear() {
+        let _home = HomeGuard::new("runs_disk");
+        let run_id = format!("disk_{}", std::process::id());
+
+        // Flood the writer so the burst coalescer drains a backlog that ends
+        // in the Close message (the in-loop Close arm).
+        for sequence in 0..300 {
+            append_run_event(text_event(&run_id, sequence)).expect("append");
+        }
+        flush_run_event_log_for_test(&run_id);
+        // Force the disk readers (drop the in-memory copy).
+        clear_run_event_buffer(&run_id);
+
+        let all = list_run_events(&run_id).expect("read from disk");
+        assert_eq!(all.len(), 300);
+        let tail = list_run_events_since(&run_id, 250).expect("tail from disk");
+        assert_eq!(tail.len(), 49, "sequences 251..=299");
+
+        clear_all_run_events_files();
+        assert!(
+            !app_dir().expect("app dir").join("run_events").exists(),
+            "the whole run-events dir is reclaimed"
+        );
+    }
+
+    #[test]
+    fn readers_reject_unsafe_run_ids() {
+        let _home = HomeGuard::new("runs_bad_id");
+        assert!(list_run_events("../evil").expect("read").is_empty());
+        assert!(list_run_events("").expect("read").is_empty());
+        assert!(list_run_events_since("a/b", 0).expect("tail").is_empty());
+        // Persisting an event for an unusable id is dropped, not an error…
+        append_run_event(text_event("bad/slash", 0)).expect("append bad id");
+        clear_run_event_buffer("bad/slash");
+        // …and so is one whose log path is squatted by a directory.
+        let squat = app_dir()
+            .expect("app dir")
+            .join("run_events")
+            .join("squat.jsonl");
+        std::fs::create_dir_all(&squat).expect("squat a directory");
+        append_run_event(text_event("squat", 0)).expect("append squatted");
+        clear_run_event_buffer("squat");
+        assert!(list_run_events("squat").expect("read squatted").is_empty());
+    }
+
+    #[test]
+    fn append_dedup_tolerates_gaps_and_empty_buffer_entries() {
+        // A sparse buffer: a replay-window sequence that isn't present is
+        // appended, not mistaken for a duplicate.
+        let run_id = format!("test_gap_{}", std::process::id());
+        append_run_event(text_event(&run_id, 0)).expect("seq 0");
+        append_run_event(text_event(&run_id, 9)).expect("seq 9");
+        append_run_event(text_event(&run_id, 5)).expect("gap append");
+        let events = list_run_events(&run_id).expect("list");
+        assert_eq!(events.len(), 3);
+        clear_run_event_buffer(&run_id);
+
+        // An existing but EMPTY buffer entry (no last event to compare).
+        let empty_run = seed_event_buffer("empty", 0);
+        append_run_event(text_event(&empty_run, 3)).expect("append onto empty");
+        assert_eq!(list_run_events(&empty_run).expect("list").len(), 1);
+        clear_run_event_buffer(&empty_run);
+    }
+
+    #[test]
+    fn tool_call_input_legacy_fallback_paths() {
+        let run_id = format!("test_legacy_input_{}", std::process::id());
+
+        // No projection state at all → straight to the legacy log.
+        assert_eq!(
+            get_tool_call_input(&run_id, "anything").expect("no events"),
+            None
+        );
+
+        append_run_event(AppendRunEventInput {
+            run_id: run_id.clone(),
+            event_type: "tool_start".to_string(),
+            payload: Some(r#"{"tool_id":"good","tool_args":"{\"path\":\"/x\"}"}"#.to_string()),
+            sequence: 0,
+        })
+        .expect("good start");
+        append_run_event(AppendRunEventInput {
+            run_id: run_id.clone(),
+            event_type: "tool_start".to_string(),
+            payload: Some("{not json".to_string()),
+            sequence: 1,
+        })
+        .expect("bad start");
+
+        // The projection cache has no entry for this run, so every read falls
+        // through to the legacy scan (newest first).
+        assert_eq!(
+            get_tool_call_input(&run_id, "good").expect("legacy read"),
+            Some(r#"{"path":"/x"}"#.to_string())
+        );
+        // A matched tool_start whose payload lacks tool_args → None.
+        append_run_event(AppendRunEventInput {
+            run_id: run_id.clone(),
+            event_type: "tool_start".to_string(),
+            payload: Some(r#"{"tool_id":"bare"}"#.to_string()),
+            sequence: 2,
+        })
+        .expect("bare start");
+        assert_eq!(get_tool_call_input(&run_id, "bare").expect("bare"), None);
+
+        // With a cached projection that lacks the id, the legacy log answers.
+        advance_tool_projection(
+            &run_id,
+            &[tool_event(
+                &run_id,
+                "tool_start",
+                r#"{"tool_id":"cached","tool_name":"read"}"#,
+                10,
+            )],
+        );
+        assert_eq!(
+            get_tool_call_input(&run_id, "good").expect("legacy after cache"),
+            Some(r#"{"path":"/x"}"#.to_string())
+        );
+
+        clear_run_event_buffer(&run_id);
+        let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+        cache.remove(&run_id);
     }
 }

@@ -104,13 +104,11 @@ pub(super) fn get_or_create_user_workspace_in(
 
     let now = now_millis();
     let workspace_id = create_id("ws");
-    conn.execute(
-        "INSERT INTO workspaces (
+    const INSERT_SQL: &str = "INSERT INTO workspaces (
              id, name, kind, path, description, cleanup_status, last_opened_at,
              created_at, updated_at
-         ) VALUES (?1, ?2, 'user', ?3, ?4, 'active', ?5, ?5, ?5)",
-        params![workspace_id, name, normalized_path, description, now],
-    )?;
+         ) VALUES (?1, ?2, 'user', ?3, ?4, 'active', ?5, ?5, ?5)";
+    conn.execute(INSERT_SQL, params![workspace_id, name, normalized_path, description, now])?;
 
     loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
 }
@@ -173,12 +171,10 @@ pub(super) fn get_or_create_chat_workspace_in(
         "{} Workspace",
         title.unwrap_or_else(|| "New Chat".to_string())
     );
-    conn.execute(
-        "INSERT INTO workspaces (
+    const INSERT_SQL: &str = "INSERT INTO workspaces (
              id, name, kind, path, cleanup_status, created_at, updated_at
-         ) VALUES (?1, ?2, 'temporary', ?3, 'active', ?4, ?4)",
-        params![workspace_id, name, path.display().to_string(), now],
-    )?;
+         ) VALUES (?1, ?2, 'temporary', ?3, 'active', ?4, ?4)";
+    conn.execute(INSERT_SQL, params![workspace_id, name, path.display().to_string(), now])?;
 
     loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
 }
@@ -230,29 +226,23 @@ pub(super) fn delete_workspace_in(conn: &Connection, workspace_id: &str) -> rusq
     // cascade, so a crash cannot leave a deleted thread without delivery
     // intent for its Agent source of truth.
     let session_ids: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT COALESCE(NULLIF(TRIM(agent_session_id), ''), id)
-             FROM threads WHERE workspace_id = ?1",
-        )?;
+        const SQL: &str = "SELECT DISTINCT COALESCE(NULLIF(TRIM(agent_session_id), ''), id)
+             FROM threads WHERE workspace_id = ?1";
+        let mut stmt = conn.prepare(SQL)?;
         let ids = stmt
             .query_map(params![workspace_id], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         ids
     };
     for session_id in session_ids {
-        let owner_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM threads
-             WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?1",
-            [&session_id],
-            |row| row.get(0),
-        )?;
-        let deleting_here: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM threads
+        const OWNER_SQL: &str = "SELECT COUNT(*) FROM threads
+             WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?1";
+        let owner_count: i64 = conn.query_row(OWNER_SQL, [&session_id], |row| row.get(0))?;
+        const DELETING_SQL: &str = "SELECT COUNT(*) FROM threads
              WHERE workspace_id = ?1
-               AND COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?2",
-            params![workspace_id, session_id],
-            |row| row.get(0),
-        )?;
+               AND COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?2";
+        let args = params![workspace_id, session_id];
+        let deleting_here: i64 = conn.query_row(DELETING_SQL, args, |row| row.get(0))?;
         if owner_count == deleting_here {
             super::deletions::enqueue_agent_session_delete_in(conn, &session_id)?;
         }
@@ -266,36 +256,21 @@ pub(super) fn delete_workspace_in(conn: &Connection, workspace_id: &str) -> rusq
     for thread_id in &thread_ids {
         super::threads::delete_thread_children_in(conn, thread_id)?;
     }
-    conn.execute(
-        "DELETE FROM threads WHERE workspace_id = ?1",
-        params![workspace_id],
-    )?;
+    conn.execute("DELETE FROM threads WHERE workspace_id = ?1", params![workspace_id])?;
 
     // 2. Workspace-scoped rows, FK-safe (children before parents).
-    conn.execute(
-        "DELETE FROM artifacts WHERE workspace_id = ?1",
-        params![workspace_id],
-    )?;
-    conn.execute(
-        "DELETE FROM object_references WHERE reference_target_id IN (
+    conn.execute("DELETE FROM artifacts WHERE workspace_id = ?1", params![workspace_id])?;
+    const DELETE_LINKS_SQL: &str = "DELETE FROM object_references WHERE reference_target_id IN (
              SELECT id FROM reference_targets WHERE workspace_id = ?1
-         )",
-        params![workspace_id],
-    )?;
-    conn.execute(
-        "DELETE FROM reference_targets WHERE workspace_id = ?1",
-        params![workspace_id],
-    )?;
-    conn.execute(
-        "DELETE FROM workspace_files WHERE workspace_id = ?1",
-        params![workspace_id],
-    )?;
+         )";
+    conn.execute(DELETE_LINKS_SQL, params![workspace_id])?;
+    const DELETE_TARGETS_SQL: &str = "DELETE FROM reference_targets WHERE workspace_id = ?1";
+    conn.execute(DELETE_TARGETS_SQL, params![workspace_id])?;
+    const DELETE_FILES_SQL: &str = "DELETE FROM workspace_files WHERE workspace_id = ?1";
+    conn.execute(DELETE_FILES_SQL, params![workspace_id])?;
 
     // 3. The workspace row.
-    conn.execute(
-        "DELETE FROM workspaces WHERE id = ?1",
-        params![workspace_id],
-    )?;
+    conn.execute("DELETE FROM workspaces WHERE id = ?1", params![workspace_id])?;
     Ok(())
 }
 

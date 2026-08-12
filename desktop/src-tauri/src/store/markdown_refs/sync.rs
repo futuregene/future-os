@@ -19,11 +19,9 @@ pub fn sync_message_markdown_references(
     content: &str,
 ) -> Result<(), crate::AppError> {
     let references = extract_markdown_references(content);
-    conn.execute(
-        "DELETE FROM object_references
-         WHERE source_type = 'message' AND source_id = ?1",
-        params![message_id],
-    )?;
+    const DELETE_SQL: &str = "DELETE FROM object_references
+         WHERE source_type = 'message' AND source_id = ?1";
+    conn.execute(DELETE_SQL, params![message_id])?;
 
     if references.is_empty() {
         return Ok(());
@@ -36,21 +34,15 @@ pub fn sync_message_markdown_references(
     )?;
 
     let now = now_millis();
+    const INSERT_LINK_SQL: &str = "INSERT INTO object_references (
+                     id, source_type, source_id, reference_target_id, created_at
+                 ) VALUES (?1, 'message', ?2, ?3, ?4)";
     for reference in references {
         if let Some(target) = resolve_reference_target_metadata(conn, &reference, &workspace_id)? {
             let reference_target_id =
                 upsert_reference_target(conn, &reference, target, &workspace_id, now)?;
-            conn.execute(
-                "INSERT INTO object_references (
-                     id, source_type, source_id, reference_target_id, created_at
-                 ) VALUES (?1, 'message', ?2, ?3, ?4)",
-                params![
-                    create_id("object_ref"),
-                    message_id,
-                    reference_target_id,
-                    now
-                ],
-            )?;
+            let link_id = create_id("object_ref");
+            conn.execute(INSERT_LINK_SQL, params![link_id, message_id, reference_target_id, now])?;
         }
     }
 
@@ -193,38 +185,30 @@ fn upsert_reference_target(
         .optional()?;
 
     if let Some(existing_id) = existing_id {
-        conn.execute(
-            "UPDATE reference_targets
+        const UPDATE_SQL: &str = "UPDATE reference_targets
              SET title = ?1, subtitle = ?2, search_text = ?3, updated_at = ?4
-             WHERE id = ?5",
-            params![
-                metadata.title,
-                metadata.subtitle,
-                metadata.search_text,
-                now,
-                existing_id
-            ],
-        )?;
+             WHERE id = ?5";
+        let ReferenceMetadata {
+            title,
+            subtitle,
+            search_text,
+        } = metadata;
+        conn.execute(UPDATE_SQL, params![title, subtitle, search_text, now, existing_id])?;
         return Ok(existing_id);
     }
 
     let id = create_id("ref_target");
-    conn.execute(
-        "INSERT INTO reference_targets (
+    const INSERT_SQL: &str = "INSERT INTO reference_targets (
              id, target_type, target_id, scope, workspace_id, title, subtitle,
              search_text, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, 'workspace', ?4, ?5, ?6, ?7, ?8, ?8)",
-        params![
-            id,
-            reference.target_type,
-            reference.target_id,
-            workspace_id,
-            metadata.title,
-            metadata.subtitle,
-            metadata.search_text,
-            now
-        ],
-    )?;
+         ) VALUES (?1, ?2, ?3, 'workspace', ?4, ?5, ?6, ?7, ?8, ?8)";
+    let ReferenceMetadata {
+        title,
+        subtitle,
+        search_text,
+    } = metadata;
+    let (ty, tid, ws) = (&reference.target_type, &reference.target_id, workspace_id);
+    conn.execute(INSERT_SQL, params![id, ty, tid, ws, title, subtitle, search_text, now])?;
     Ok(id)
 }
 

@@ -304,13 +304,12 @@ fn live_thread_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
 /// session ids (current).  Directories under `~/.future/workspaces/chat/` are
 /// named after the thread id, but older ones may still use the session id.
 fn live_chat_workspace_dir_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT id FROM threads WHERE status != 'deleted'
+    const SQL: &str = "SELECT id FROM threads WHERE status != 'deleted'
          UNION
          SELECT agent_session_id FROM threads
          WHERE agent_session_id IS NOT NULL AND agent_session_id != ''
-           AND status != 'deleted'",
-    )?;
+           AND status != 'deleted'";
+    let mut stmt = conn.prepare(SQL)?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     rows.collect()
 }
@@ -376,15 +375,15 @@ pub fn get_thread_cleanup_summary(
     let thread = loaded(get_thread(thread_id)?, "Thread")?;
     let workspace = loaded(get_workspace(&thread.workspace_id)?, "Thread workspace")?;
     let conn = connect()?;
-    let artifact_count = conn.query_row(
-        "SELECT COUNT(*)
+    const ARTIFACT_COUNT_SQL: &str = "SELECT COUNT(*)
              FROM artifacts
              WHERE workspace_id = ?1
                AND (thread_id = ?2 OR ?3 = 'workspace')
-               AND deleted_at IS NULL",
-        params![workspace.id, thread.id, thread.mode],
-        |row| row.get(0),
-    )?;
+               AND deleted_at IS NULL";
+    let artifact_count = {
+        let (ws, tid, mode) = (&workspace.id, &thread.id, &thread.mode);
+        conn.query_row(ARTIFACT_COUNT_SQL, params![ws, tid, mode], |row| row.get(0))?
+    };
     let workspace_file_count = if workspace.kind == "temporary" {
         count_workspace_files(&workspace.path)?
     } else {

@@ -327,13 +327,26 @@ mod tests {
         let files = vec![
             walked("docs/my-report.md"), // name substring -> bucket 2
             walked("docs/report-final.md"), // name prefix   -> bucket 1
-            walked("docs/report.md"),    // exact name      -> bucket 0
+            walked("docs/report.md"),    // name prefix (tighter fuzzy score)
         ];
         let results = rank_files(files, "report", 10);
         assert_eq!(
             paths(&results),
             vec!["docs/report.md", "docs/report-final.md", "docs/my-report.md"]
         );
+
+        // A query equal to the full file name hits the exact-match bucket 0.
+        let exact = rank_files(vec![walked("docs/report.md")], "report.md", 10);
+        assert_eq!(paths(&exact), vec!["docs/report.md"]);
+    }
+
+    #[test]
+    fn walk_over_a_single_file_root_yields_nothing() {
+        // The walker yields the root itself; with a file root, stripping the
+        // root prefix leaves an empty relative path, which is skipped.
+        let tree = TempTree::new("walk-file-root");
+        tree.write("solo.txt", "");
+        assert!(walk_workspace_files(&tree.0.join("solo.txt")).is_empty());
     }
 
     #[test]

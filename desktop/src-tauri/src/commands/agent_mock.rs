@@ -22,11 +22,14 @@ use tonic::Code;
 use crate::agent_proto::future_agent_server::{FutureAgent, FutureAgentServer};
 use crate::agent_proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
 
-/// What the mock answers to `list_session_ids`.
-#[derive(Default)]
+/// What the mock answers. `down` answers every command *except* the
+/// connect-time health check with `Code::Unavailable` — indistinguishable from
+/// a dead agent for callers (`AppError::AgentUnavailable`), while still
+/// letting `connect_agent` latch its channel, so test outcomes don't depend on
+/// execution order.
+#[derive(Clone, Default)]
 pub(crate) struct MockScript {
-    /// Respond to every command (including the connect health check) with
-    /// `Unavailable` — indistinguishable from a dead agent.
+    /// Every command but the health check answers `Unavailable`.
     pub down: bool,
     /// `list_session_ids` returns `success = false` (enumeration failed).
     pub fail_list_session_ids: bool,
@@ -52,6 +55,16 @@ pub(crate) fn script_mock_agent(script: MockScript) {
     *SCRIPT.lock().unwrap_or_else(|poison| poison.into_inner()) = script;
 }
 
+/// The current script, cloned out from under the lock (sync helper — the
+/// async_trait method below gets mangled region spans, which strands the
+/// poison-recovery closure's zero-count region on the lock line).
+fn current_script() -> MockScript {
+    SCRIPT
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone()
+}
+
 struct MockAgent;
 
 #[tonic::async_trait]
@@ -61,8 +74,9 @@ impl FutureAgent for MockAgent {
         request: tonic::Request<RpcCommand>,
     ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
         let command = request.into_inner();
-        let script = SCRIPT.lock().unwrap_or_else(|poison| poison.into_inner());
-        if script.down {
+        let script = current_script();
+        // The health check stays up even in down mode (see MockScript docs).
+        if script.down && command.r#type != "list_streaming_sessions" {
             return Err(tonic::Status::new(Code::Unavailable, "mock agent is down"));
         }
         let response = match command.r#type.as_str() {
@@ -117,21 +131,24 @@ pub(crate) fn ensure_mock_agent() {
             .set_nonblocking(true)
             .expect("mock agent listener nonblocking");
         std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("mock agent runtime");
-            runtime.block_on(async move {
+            // Leaked: the runtime's workers keep driving the server for the
+            // rest of the process (the mock is process-wide by design).
+            let runtime = Box::leak(Box::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("mock agent runtime"),
+            ));
+            runtime.spawn(async move {
                 let listener =
                     tokio::net::TcpListener::from_std(listener).expect("mock agent listener");
                 let incoming = tonic::codegen::tokio_stream::wrappers::TcpListenerStream::new(
                     listener,
                 );
-                Server::builder()
-                    .add_service(FutureAgentServer::new(MockAgent))
-                    .serve_with_incoming(incoming)
-                    .await
-                    .expect("mock agent server");
+                let service = FutureAgentServer::new(MockAgent);
+                let server = Server::builder().add_service(service);
+                // Polled once (starts listening), never completes — by design.
+                server.serve_with_incoming(incoming).await.expect("serve mock")
             });
         });
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", format!("127.0.0.1:{port}"));
@@ -186,21 +203,29 @@ mod tests {
     async fn mock_down_mode_is_indistinguishable_from_a_dead_agent() {
         let _lock = mock_agent_lock();
         ensure_mock_agent();
+        // Latch the process-wide agent channel while the mock is up (the
+        // health check succeeds even in down mode, so this cannot fail once
+        // the mock is started).
+        script_mock_agent(MockScript::default());
+        let mut client = crate::agent_bridge::connect_agent()
+            .await
+            .expect("connect to mock agent");
+        // …then take it down: RPCs on the latched channel fail Unavailable,
+        // exactly like a dead agent.
         script_mock_agent(MockScript {
             down: true,
             ..Default::default()
         });
 
-        let unavailable = match crate::agent_bridge::connect_agent().await {
-            // Not-yet-latched channel: the health check itself fails.
-            Err(error) => matches!(error, crate::AppError::AgentUnavailable(_)),
-            // Latched channel: the failure surfaces on the first real RPC.
-            Ok(mut client) => {
-                let result = client.execute_command(typed_command("list_session_ids")).await;
-                matches!(result.expect_err("down mock").code(), Code::Unavailable)
-            }
-        };
-        assert!(unavailable);
+        let first = client.execute_command(typed_command("list_session_ids")).await;
+        assert_eq!(first.expect_err("down mock").code(), Code::Unavailable);
+
+        // A fresh connect reuses the latched channel — same failure.
+        let mut again = crate::agent_bridge::connect_agent()
+            .await
+            .expect("latched channel");
+        let second = again.execute_command(typed_command("list_session_ids")).await;
+        assert_eq!(second.expect_err("down mock").code(), Code::Unavailable);
 
         script_mock_agent(MockScript::default());
     }

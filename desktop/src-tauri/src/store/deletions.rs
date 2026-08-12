@@ -12,12 +12,10 @@ pub(super) fn enqueue_agent_session_delete_in(
     if session_id.trim().is_empty() {
         return Ok(());
     }
-    conn.execute(
-        "INSERT INTO agent_delete_outbox(session_id, requested_at, attempts, last_error)
+    const SQL: &str = "INSERT INTO agent_delete_outbox(session_id, requested_at, attempts, last_error)
          VALUES (?1, ?2, 0, NULL)
-         ON CONFLICT(session_id) DO NOTHING",
-        params![session_id, now_millis()],
-    )?;
+         ON CONFLICT(session_id) DO NOTHING";
+    conn.execute(SQL, params![session_id, now_millis()])?;
     Ok(())
 }
 
@@ -25,12 +23,10 @@ pub(super) fn enqueue_agent_session_delete_in(
 /// until the Agent acknowledges deletion, so a temporarily offline Agent can
 /// never cause a locally deleted session to reappear in the sidebar.
 pub fn is_agent_session_tombstoned(session_id: &str) -> Result<bool, crate::AppError> {
+    const SQL: &str =
+        "SELECT EXISTS(SELECT 1 FROM agent_delete_outbox WHERE session_id = ?1)";
     let conn = connect()?;
-    Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM agent_delete_outbox WHERE session_id = ?1)",
-        [session_id],
-        |row| row.get(0),
-    )?)
+    Ok(conn.query_row(SQL, [session_id], |row| row.get(0))?)
 }
 
 pub fn pending_agent_session_deletes() -> Result<Vec<String>, crate::AppError> {
@@ -70,12 +66,10 @@ pub(super) fn enqueue_all_agent_session_deletes_in(conn: &Connection) -> rusqlit
     // INSERT OR IGNORE, not `ON CONFLICT DO NOTHING`: the upsert clause is a
     // syntax error on INSERT…SELECT in SQLite's grammar (the ON reads as a
     // join constraint), and this path failing would break Debug ▸ Reset.
-    conn.execute(
-        "INSERT OR IGNORE INTO agent_delete_outbox(session_id, requested_at, attempts, last_error)
+    const SQL: &str = "INSERT OR IGNORE INTO agent_delete_outbox(session_id, requested_at, attempts, last_error)
          SELECT DISTINCT COALESCE(NULLIF(TRIM(agent_session_id), ''), id), ?1, 0, NULL
-         FROM threads",
-        [now],
-    )?;
+         FROM threads";
+    conn.execute(SQL, [now])?;
     Ok(())
 }
 

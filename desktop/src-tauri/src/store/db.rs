@@ -162,10 +162,8 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     // silently dropping artifacts. Idempotent: skip when already migrated.
     for (table, old, new) in RENAMED_COLUMNS {
         if column_exists(conn, table, old)? && !column_exists(conn, table, new)? {
-            conn.execute(
-                &format!("ALTER TABLE {table} RENAME COLUMN {old} TO {new}"),
-                [],
-            )?;
+            let sql = format!("ALTER TABLE {table} RENAME COLUMN {old} TO {new}");
+            conn.execute(&sql, [])?;
         }
     }
     // Add columns introduced after a table's initial creation. `CREATE TABLE
