@@ -351,6 +351,37 @@ pub enum Event {
         todo_id: String,
         ts: u64,
     },
+    /// P0-2①: post-delivery outcome signal — `delivered` (pending
+    /// verification) → `verified` / `failed` / `rework` (the three terminal
+    /// resolutions). Recorded automatically when an advancement todo
+    /// completes, and manually via `delivery record`. `delivered_turn` is the
+    /// run-turn counter at delivery time (0 = recorded without run context).
+    DeliveryOutcomeRecorded {
+        goal_id: String,
+        todo_id: String,
+        outcome: String,
+        note: Option<String>,
+        delivered_turn: u32,
+        /// Per-todo outcome sequence number (1-based, from the read model at
+        /// append time). Distinguishes cycles: a re-delivery after
+        /// failed/rework would otherwise content-collide with the earlier
+        /// `delivered` event (same todo/turn/note within one second) and be
+        /// swallowed by the G-3 idempotent-append dedupe.
+        #[serde(default)]
+        seq: u32,
+        ts: u64,
+    },
+    /// P0-2②: outcome_followthrough fired — a delivered-but-unverified work
+    /// item aged past the turn threshold, so a follow-up todo was
+    /// auto-created (the followup itself is the TodoAdded event; this event
+    /// stamps the source delivery so the follow-through fires exactly once).
+    FollowthroughCreated {
+        goal_id: String,
+        source_todo_id: String,
+        followup_todo_id: String,
+        turns_overdue: u32,
+        ts: u64,
+    },
     /// G-16: a supervisor proposed a decision for a target agent (LoopX
     /// SUPERVISOR_PROPOSED). Projection-only — supervisor state is read from
     /// the event log, not folded into goal state.
@@ -406,6 +437,8 @@ impl Event {
             | Event::TodoRenewed { goal_id, .. }
             | Event::TodoReleased { goal_id, .. }
             | Event::TodoExpired { goal_id, .. }
+            | Event::DeliveryOutcomeRecorded { goal_id, .. }
+            | Event::FollowthroughCreated { goal_id, .. }
             | Event::SupervisorProposed { goal_id, .. }
             | Event::SupervisorReceiptRecorded { goal_id, .. } => goal_id,
         }
@@ -1338,6 +1371,24 @@ fn apply(goal: &mut Goal, event: Event) {
                 }
             }
         }
+        // P0-2: delivery outcomes fold into the per-work-item delivery read
+        // model (latest wins; transitions are validated at the command layer
+        // before the event is appended).
+        Event::DeliveryOutcomeRecorded {
+            todo_id,
+            outcome,
+            note,
+            delivered_turn,
+            seq,
+            ts,
+            ..
+        } => goal.apply_delivery_outcome(&todo_id, &outcome, note, delivered_turn, seq, ts),
+        Event::FollowthroughCreated {
+            source_todo_id,
+            followup_todo_id,
+            ts,
+            ..
+        } => goal.apply_followthrough(&source_todo_id, &followup_todo_id, ts),
         // G-16: supervisor events are projection-only (read from the event
         // log by the supervisor domain; goal state is unchanged).
         Event::SupervisorProposed { .. } | Event::SupervisorReceiptRecorded { .. } => {}

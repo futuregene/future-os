@@ -622,6 +622,28 @@ pub fn delta_kind_changes_frontier(kind: &str) -> bool {
     )
 }
 
+/// P0-2: latest delivery-outcome state per work item — rebuilt by replay
+/// from `DeliveryOutcomeRecorded` / `FollowthroughCreated` events. The
+/// signal chain: `delivered` (pending verification) → `verified` / `failed`
+/// / `rework` (terminal resolutions). Domain rules live in
+/// [`crate::work_items::delivery_outcome`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeliveryState {
+    pub todo_id: String,
+    /// `delivered` (pending) | `verified` | `failed` | `rework`.
+    pub outcome: String,
+    pub note: Option<String>,
+    /// Run-turn counter at delivery time (0 = recorded without run context).
+    pub delivered_turn: u32,
+    /// Follow-up todo auto-created by outcome_followthrough (P0-2②) — the
+    /// dedupe stamp so the follow-through fires exactly once per cycle.
+    pub followthrough_todo_id: Option<String>,
+    /// Per-todo outcome sequence number of the latest event (audit ordering;
+    /// also what makes each cycle's events content-distinct).
+    pub seq: u32,
+    pub updated_at: u64,
+}
+
 /// Agent peer profile (LoopX: coordination.agent_profiles — a registered
 /// peer plus the capabilities it declares; the capability gate uses these to
 /// decide which todos an agent may run). `workspaces` is the P0-1 workspace
@@ -721,6 +743,9 @@ pub struct Goal {
     /// G-3: quota slots spent as recorded by QuotaSpent events (replay
     /// projection — the authoritative spend ledger stays runs.jsonl).
     pub quota_spent_slots: u32,
+    /// P0-2: per-work-item delivery outcome states (latest event wins —
+    /// folded from DeliveryOutcomeRecorded / FollowthroughCreated).
+    pub delivery_states: Vec<DeliveryState>,
     /// Per-tool quota read model (LoopX 对比改进项 ②): (ts, tool) pairs
     /// folded from accepted `CapabilityInvoked` events — the invocation
     /// count behind [`crate::quota::tool_quota`]. Rejected invocations are
@@ -761,6 +786,7 @@ impl Goal {
             created_at: now_epoch(),
             next_index: 0,
             quota_spent_slots: 0,
+            delivery_states: vec![],
             capability_invocations: vec![],
         }
     }
@@ -919,6 +945,66 @@ impl Goal {
             capabilities,
             workspaces: vec![],
         });
+    }
+
+    /// The latest delivery-outcome state for a work item (P0-2).
+    pub fn delivery_state(&self, todo_id: &str) -> Option<&DeliveryState> {
+        self.delivery_states.iter().find(|d| d.todo_id == todo_id)
+    }
+
+    /// Fold a `DeliveryOutcomeRecorded` event into the read model (latest
+    /// wins). A fresh `delivered` resets the cycle: the turn stamp moves and
+    /// the follow-through stamp clears, so a re-delivered item can fire its
+    /// own follow-through later. Resolutions keep the original turn stamp.
+    pub fn apply_delivery_outcome(
+        &mut self,
+        todo_id: &str,
+        outcome: &str,
+        note: Option<String>,
+        delivered_turn: u32,
+        seq: u32,
+        ts: u64,
+    ) {
+        let fresh_delivery = outcome == crate::work_items::delivery_outcome::OUTCOME_DELIVERED;
+        if let Some(d) = self
+            .delivery_states
+            .iter_mut()
+            .find(|d| d.todo_id == todo_id)
+        {
+            d.outcome = outcome.to_string();
+            if note.is_some() {
+                d.note = note;
+            }
+            if fresh_delivery {
+                d.delivered_turn = delivered_turn;
+                d.followthrough_todo_id = None;
+            }
+            d.seq = seq;
+            d.updated_at = ts;
+        } else {
+            self.delivery_states.push(DeliveryState {
+                todo_id: todo_id.to_string(),
+                outcome: outcome.to_string(),
+                note,
+                delivered_turn: if fresh_delivery { delivered_turn } else { 0 },
+                followthrough_todo_id: None,
+                seq,
+                updated_at: ts,
+            });
+        }
+    }
+
+    /// Fold a `FollowthroughCreated` event (P0-2②) — stamps the auto-created
+    /// follow-up todo on the pending delivery so it fires exactly once.
+    pub fn apply_followthrough(&mut self, source_todo_id: &str, followup_todo_id: &str, ts: u64) {
+        if let Some(d) = self
+            .delivery_states
+            .iter_mut()
+            .find(|d| d.todo_id == source_todo_id)
+        {
+            d.followthrough_todo_id = Some(followup_todo_id.to_string());
+            d.updated_at = ts;
+        }
     }
 
     /// Done advancement todos that declared NO successor and NO no-follow-up

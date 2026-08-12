@@ -152,6 +152,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "task-graph" => cmd_task_graph(&store, &args[1..]),
         "attention" => cmd_attention(&store, &args[1..]),
         "inbox" => cmd_inbox(&store, &args[1..]),
+        "delivery" => cmd_delivery(&mut store, &args[1..]),
         "registry" => cmd_registry(&registry, &args[1..]),
         "commands" => cmd_commands(&registry, &args[1..]),
         // ── P4 commands (G-18 / G-19 / G-20 / G-27) ───────────────────────
@@ -198,6 +199,7 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("scheduler", Journey::Daily),
     ("attention", Journey::Daily),
     ("inbox", Journey::Daily),
+    ("delivery", Journey::Daily),
     ("diagnose", Journey::Daily),
     ("evidence-log", Journey::Daily),
     ("todo-event", Journey::Daily),
@@ -471,7 +473,10 @@ fn build_cli_registry() -> CommandRegistry {
         "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N] [--force-workspace]",
     );
 
-    let work_items = r.group("work-items", "attention / operator inbox (G-15)");
+    let work_items = r.group(
+        "work-items",
+        "attention / operator inbox (G-15) / delivery outcome closure (P0-2)",
+    );
     r.command(
         work_items,
         "attention",
@@ -483,6 +488,12 @@ fn build_cli_registry() -> CommandRegistry {
         "inbox",
         "project the operator inbox urgency",
         "inbox --project DIR [--scope addressed_only|configured_chat_all] [--name NAME] [--format json]",
+    );
+    r.command(
+        work_items,
+        "delivery",
+        "post-delivery outcome closure (P0-2): delivered → verified/failed/rework + follow-through",
+        "delivery status --goal G [--format json] | record --goal G --todo-id T --outcome verified|failed|rework [--note N] | followthrough --goal G [--turns N]",
     );
 
     let handoff = r.group("handoff", "project handoff (G-17)");
@@ -1493,6 +1504,7 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
             );
         }
     }
+    let is_advancement = t.class == TaskClass::Advancement;
     let successors = successor.clone().into_iter().collect::<Vec<_>>();
     store.append(Event::TodoCompleted {
         goal_id: goal_id.clone(),
@@ -1502,6 +1514,25 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
         evidence: evidence.clone(),
         ts: now_epoch(),
     })?;
+    // P0-2①: a completed advancement todo is a delivery pending verification
+    // ("delivered ≠ succeeded") — record the outcome signal so it can be
+    // resolved (verified/failed/rework) and aged by the follow-through scan.
+    if is_advancement {
+        let delivered_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+        let seq = goal
+            .delivery_state(&todo_id)
+            .map(|d| d.seq + 1)
+            .unwrap_or(1);
+        store.append(Event::DeliveryOutcomeRecorded {
+            goal_id: goal_id.clone(),
+            todo_id: todo_id.clone(),
+            outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.to_string(),
+            note: None,
+            delivered_turn,
+            seq,
+            ts: now_epoch(),
+        })?;
+    }
     complete_todo(&mut goal, &todo_id, no_follow_up, successors);
     if let Some(ev) = &evidence {
         if let Some(t) = goal.todo_mut(&todo_id) {
@@ -2910,6 +2941,23 @@ async fn run_turns(
                 evidence: Some(record.evidence.clone()),
                 ts: now_epoch(),
             })?;
+            // P0-2①: a completed advancement todo is a delivery pending
+            // verification — record the outcome signal at this turn.
+            if g.todo(&todo_id)
+                .map(|t| t.class == crate::state::TaskClass::Advancement)
+                .unwrap_or(false)
+            {
+                let seq = g.delivery_state(&todo_id).map(|d| d.seq + 1).unwrap_or(1);
+                store.append(Event::DeliveryOutcomeRecorded {
+                    goal_id: goal_id.to_string(),
+                    todo_id: todo_id.clone(),
+                    outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.to_string(),
+                    note: None,
+                    delivered_turn: record.turn,
+                    seq,
+                    ts: now_epoch(),
+                })?;
+            }
         } else {
             // A missing todo (deleted mid-turn) carries no budget signal.
             let stop = g
@@ -2935,6 +2983,23 @@ async fn run_turns(
             if stop {
                 break;
             }
+        }
+        // P0-2②: outcome_followthrough — auto-derive a follow-up todo for any
+        // delivery left unverified past the threshold (fires once per cycle).
+        let followups = run_followthrough_check(
+            store,
+            goal_id,
+            crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS,
+        )?;
+        for followup in &followups {
+            println!("   ↻ follow-through: todo {followup} auto-created (unverified delivery)");
+        }
+        if !followups.is_empty() {
+            // The follow-up todo(s) joined the frontier — refresh the read
+            // model so the Next Action sync below cannot project a gap.
+            g = store.replay(goal_id)?.ok_or_else(|| {
+                anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
+            })?;
         }
         // Sync Next Action to the frontier (avoid projection gap).
         let next_text = g
@@ -4389,6 +4454,211 @@ fn cmd_inbox(store: &Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+// ── delivery (P0-2: post-delivery outcome closure) ────────────────────────
+
+/// `delivery <status|record|followthrough>` — the P0-2 signal chain:
+/// delivered → verified/failed/rework, plus the manual follow-through scan
+/// (the run path also scans automatically after every turn).
+fn cmd_delivery(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("status") => delivery_status(store, &args[1..]),
+        Some("record") => delivery_record(store, &args[1..]),
+        Some("followthrough") => delivery_followthrough(store, &args[1..]),
+        _ => bail!("delivery subcommand must be `status`, `record`, or `followthrough`"),
+    }
+}
+
+/// `delivery status --goal G [--format json]` — the per-work-item delivery
+/// outcome read model (state, age in turns, follow-through linkage).
+fn delivery_status(store: &Store, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    let mut goal_id = None;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let current_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+    if wants_json(args) {
+        let items: Vec<serde_json::Value> = goal
+            .delivery_states
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "todo_id": d.todo_id,
+                    "todo_text": goal.todo(&d.todo_id).map(|t| t.text.clone()),
+                    "outcome": d.outcome,
+                    "delivered_turn": d.delivered_turn,
+                    "turns_since_delivery": current_turn.saturating_sub(d.delivered_turn),
+                    "pending_verification": d.outcome
+                        == crate::work_items::delivery_outcome::OUTCOME_DELIVERED,
+                    "followthrough_todo_id": d.followthrough_todo_id,
+                    "note": d.note,
+                    "updated_at": d.updated_at,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
+    }
+    if goal.delivery_states.is_empty() {
+        println!(
+            "no deliveries recorded for goal {goal_id} (a delivery is recorded when an advancement todo completes)"
+        );
+        return Ok(());
+    }
+    println!(
+        "deliveries for {goal_id} (current turn {current_turn}, follow-through threshold {} turns):",
+        crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS
+    );
+    for d in &goal.delivery_states {
+        let age = current_turn.saturating_sub(d.delivered_turn);
+        let pending = d.outcome == crate::work_items::delivery_outcome::OUTCOME_DELIVERED;
+        let follow = d
+            .followthrough_todo_id
+            .as_deref()
+            .map(|f| format!(" follow-through={f}"))
+            .unwrap_or_default();
+        let age = if pending {
+            format!(" age={age}turns")
+        } else {
+            String::new()
+        };
+        let note = d
+            .note
+            .as_deref()
+            .map(|n| format!(" note={n}"))
+            .unwrap_or_default();
+        println!(
+            "  {} [{}] delivered_turn={}{}{}{}",
+            d.todo_id, d.outcome, d.delivered_turn, age, follow, note
+        );
+    }
+    Ok(())
+}
+
+/// `delivery record --goal G --todo-id T --outcome <delivered|verified|
+/// failed|rework> [--note ...]` — manual outcome writeback (the operator /
+/// validator verification signal). Transitions are validated against the
+/// current state before the event lands.
+fn delivery_record(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut outcome_raw = None;
+    let mut note = None;
+    reject_unknown_flags(args, &["--goal", "--note", "--outcome", "--todo-id"])?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--todo-id" => todo_id = Some(v),
+        "--outcome" => outcome_raw = Some(v),
+        "--note" => note = Some(v),
+        _ => {}
+    });
+    use crate::work_items::delivery_outcome as dov;
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let outcome_raw = outcome_raw.ok_or_else(|| anyhow::anyhow!("--outcome required"))?;
+    let outcome = dov::normalize_outcome(&outcome_raw).ok_or_else(|| {
+        anyhow::anyhow!(
+            "--outcome must be one of: {}",
+            dov::DELIVERY_OUTCOME_CHOICES.join(", ")
+        )
+    })?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if goal.todo(&todo_id).is_none() {
+        bail!("todo {todo_id} not found in goal {goal_id}");
+    }
+    dov::validate_transition(goal.delivery_state(&todo_id), outcome)
+        .map_err(|e| anyhow::anyhow!("delivery {todo_id}: {e}"))?;
+    let current_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+    let seq = goal
+        .delivery_state(&todo_id)
+        .map(|d| d.seq + 1)
+        .unwrap_or(1);
+    store.append(Event::DeliveryOutcomeRecorded {
+        goal_id: goal_id.clone(),
+        todo_id: todo_id.clone(),
+        outcome: outcome.to_string(),
+        note,
+        delivered_turn: current_turn,
+        seq,
+        ts: now_epoch(),
+    })?;
+    println!("delivery {todo_id} → {outcome} ✔");
+    Ok(())
+}
+
+/// `delivery followthrough --goal G [--turns N]` — manually run the
+/// outcome_followthrough scan (P0-2②); the run path calls the same driver
+/// automatically after every turn.
+fn delivery_followthrough(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut turns = crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS;
+    reject_unknown_flags(args, &["--goal", "--turns"])?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--turns" => turns = v.parse().unwrap_or(turns),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let created = run_followthrough_check(store, &goal_id, turns)?;
+    if created.is_empty() {
+        println!("no overdue deliveries (all deliveries resolved or under {turns} turns old)");
+    } else {
+        for id in created {
+            println!("follow-through todo {id} auto-created ✔ (unverified delivery aged past {turns} turns)");
+        }
+    }
+    Ok(())
+}
+
+/// P0-2② outcome_followthrough driver: scan delivered-but-unverified work
+/// items and auto-derive a follow-up todo for each one overdue by at least
+/// `threshold` turns. Fires exactly once per delivery cycle — the
+/// `FollowthroughCreated` event stamps the source delivery. Returns the ids
+/// of the follow-up todos created.
+fn run_followthrough_check(
+    store: &mut Store,
+    goal_id: &str,
+    threshold: u32,
+) -> Result<Vec<String>> {
+    use crate::work_items::delivery_outcome as dov;
+    let goal = store
+        .replay(goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let current_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+    let overdue = dov::overdue_deliveries(&goal, current_turn, threshold);
+    let mut created = Vec::new();
+    for od in overdue {
+        let followup_id = gen_id("todo");
+        let mut todo = Todo::advancement(&followup_id, &dov::followthrough_todo_text(&od));
+        todo.note = Some(format!(
+            "auto-created by outcome_followthrough (source {}, turn {current_turn}, threshold {threshold})",
+            od.todo_id
+        ));
+        store.append(Event::TodoAdded {
+            goal_id: goal_id.to_string(),
+            todo,
+            ts: now_epoch(),
+        })?;
+        store.append(Event::FollowthroughCreated {
+            goal_id: goal_id.to_string(),
+            source_todo_id: od.todo_id.clone(),
+            followup_todo_id: followup_id.clone(),
+            turns_overdue: od.turns_overdue,
+            ts: now_epoch(),
+        })?;
+        created.push(followup_id);
+    }
+    Ok(created)
+}
+
 // ── registry (G-26) ────────────────────────────────────────────────────────
 
 /// `loopx registry [--format json|--json] [--include-experimental]` — inspect
@@ -5461,6 +5731,20 @@ fn describe_event(event: &crate::store::Event) -> String {
         }
         Event::TodoExpired { todo_id, .. } => {
             return format!("todo_expired todo={todo_id}");
+        }
+        Event::DeliveryOutcomeRecorded {
+            todo_id, outcome, ..
+        } => {
+            return format!("delivery_outcome todo={todo_id} outcome={outcome}");
+        }
+        Event::FollowthroughCreated {
+            source_todo_id,
+            followup_todo_id,
+            ..
+        } => {
+            return format!(
+                "followthrough_created source={source_todo_id} followup={followup_todo_id}"
+            );
         }
         Event::SupervisorProposed {
             decision_id,
