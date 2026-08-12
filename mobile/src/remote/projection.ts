@@ -240,10 +240,9 @@ export interface ReplayEventWire {
 }
 
 /**
- * Normalize `get_events_since` replay events (which the RPC serializes with
- * snake_case `run_id`) into the mobile `StreamEvent` shape (`runId`). The NATS
- * live mirror uses camelCase, so events arriving over the socket need no
- * normalization — only this backfill path does.
+ * Normalize `get_events_since` replay events into the mobile `StreamEvent`
+ * shape. The NATS live mirror and the desktop replay RPC both use camelCase
+ * `runId`; legacy desktop bridges serialize snake_case `run_id` — accept both.
  */
 export function normalizeReplayEvents(events: ReplayEventWire[] | undefined | null): StreamEvent[] {
   return (events ?? [])
@@ -251,7 +250,12 @@ export function normalizeReplayEvents(events: ReplayEventWire[] | undefined | nu
     .map(event => ({
       type: typeof event.type === "string" ? event.type : "",
       data: typeof event.data === "string" ? event.data : "",
-      runId: typeof event.run_id === "string" ? event.run_id : "",
+      runId:
+        typeof event.runId === "string"
+          ? event.runId
+          : typeof event.run_id === "string"
+            ? event.run_id
+            : "",
       idx: typeof event.idx === "number" ? event.idx : undefined,
     }));
 }
@@ -312,6 +316,9 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
   const data = eventData(event);
   let items = state.items;
   let streaming = state.streaming;
+  // A `_truncated` marker (text_chunk with no text) short-circuits the run
+  // projection — see the text_chunk case below.
+  let runEvents = true;
 
   switch (event.type) {
     case "user_message": {
@@ -364,18 +371,30 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
           id: `error:${runId ?? "none"}:${event.idx ?? items.length}`,
           kind: "notice",
           tone: "danger",
-          text: textValue(data.error) || event.data,
+          // A `_truncated` relay-cap marker arrives as an error event too —
+          // render the friendly sentinel, never the raw JSON blob.
+          text: data._truncated === true ? "truncated" : textValue(data.error) || event.data,
           runId,
         },
       ];
       break;
+    case "text_chunk": {
+      // A relay-payload-cap truncation marker (`_truncated`, no text) must not
+      // be folded into the projection — surface it as a friendly notice and
+      // let the run keep streaming (later chunks merge into the bubble).
+      if (data._truncated === true) {
+        items = upsertTruncationNotice(items, runId);
+        runEvents = false;
+      }
+      break;
+    }
     default:
       break;
   }
 
   // Run events flow through the shared projector.
   let liveRuns = state.liveRuns;
-  if (isRunEvent(event.type)) {
+  if (runEvents && isRunEvent(event.type)) {
     const result = applyLiveEvent(state, runId, event, data);
     items = result.items;
     streaming = result.streaming;
@@ -591,4 +610,30 @@ export function markApprovalDecision(
         : item,
     ),
   };
+}
+
+/**
+ * Surface the `_truncated` wire marker (a replay event whose data exceeded the
+ * relay payload cap) as a muted notice in the timeline — the friendly
+ * `chat.truncated` text the desktop sends, not the raw JSON blob. Idempotent:
+ * one notice per run.
+ */
+export function upsertTruncationNotice(
+  items: TimelineItem[],
+  runId: string | undefined,
+): TimelineItem[] {
+  const id = `notice:truncated:${runId ?? "none"}`;
+  const marker = (item: TimelineItem): item is Extract<TimelineItem, { kind: "notice" }> =>
+    item.kind === "notice" && item.text === "truncated";
+  if (items.some(marker)) return items;
+  return [
+    ...items,
+    {
+      id,
+      kind: "notice",
+      tone: "warning",
+      text: "truncated",
+      runId,
+    },
+  ];
 }

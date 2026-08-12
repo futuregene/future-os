@@ -36,6 +36,10 @@ pub fn render_quota_projection(
     out.push_str(&render_decision_line(packet));
     out.push('\n');
     out.push_str(&format!("reason: {}\n", packet.reason));
+    // P1-1①: the machine-readable code next to the prose reason.
+    if !packet.reason_code.is_empty() {
+        out.push_str(&format!("reason_code: {}\n", packet.reason_code));
+    }
     if let Some(todo) = packet
         .interaction_contract
         .agent_channel

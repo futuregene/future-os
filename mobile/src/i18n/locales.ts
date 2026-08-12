@@ -18,6 +18,7 @@ export const resources = {
         manual: "Paste pairing code",
         manualPlaceholder: "futureos://remote/pair?code=...",
         manualSubmit: "Pair",
+        revoked: "This device was revoked on the desktop. Scan a new pairing code to reconnect.",
       },
       connection: {
         connected: "Connected",
@@ -70,6 +71,7 @@ export const resources = {
         tokens: "{{formattedCount}} tokens",
         loadFailed: "Could not load the conversation.",
         sendFailed: "Message failed to send.",
+        promptTooLarge: "That message is too long to send. Please shorten it to under 512 KB.",
         noHistory: "No messages yet.",
         model: "Model",
         thinkingLevel: "Thinking",
@@ -174,6 +176,7 @@ export const resources = {
         manual: "粘贴配对码",
         manualPlaceholder: "futureos://remote/pair?code=...",
         manualSubmit: "配对",
+        revoked: "此设备已在桌面端被撤销授权，请扫描新的配对码重新连接。",
       },
       connection: {
         connected: "已连接",
@@ -223,6 +226,7 @@ export const resources = {
         tokens: "{{formattedCount}} tokens",
         loadFailed: "无法加载会话。",
         sendFailed: "消息发送失败。",
+        promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",
         noHistory: "还没有消息。",
         model: "模型",
         thinkingLevel: "思考",

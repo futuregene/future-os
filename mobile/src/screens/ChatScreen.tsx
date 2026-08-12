@@ -317,9 +317,12 @@ export function ChatScreen() {
         setTransferProgress(total > 0 ? done / total : null),
       );
       setAttachments([]);
-    } catch {
+    } catch (error) {
+      // M9: sendMessage now throws for busy/streaming/disconnected instead of
+      // swallowing the input — always restore the draft so nothing vanishes.
       setMessage(value);
-      setAttachmentError(t("chat.sendFailed"));
+      const key = error instanceof Error ? error.message : "";
+      setAttachmentError(key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"));
     } finally {
       setTransferProgress(null);
     }
@@ -642,16 +645,6 @@ export function ChatScreen() {
                   </ScrollView>
                 )}
                 {!!attachmentError && <Text style={styles.attachmentError}>{attachmentError}</Text>}
-                {transferProgress != null && (
-                  <View pointerEvents="none" style={styles.transferTrack}>
-                    <View
-                      style={[
-                        styles.transferFill,
-                        { width: `${Math.max(2, transferProgress * 100)}%` },
-                      ]}
-                    />
-                  </View>
-                )}
                 <TextInput
                   accessibilityLabel={t("chat.placeholder")}
                   editable={remote.desktopOnline && !remote.timeline.streaming && !remote.busy}
@@ -749,6 +742,14 @@ export function ChatScreen() {
               </View>
             </View>
           </View>
+
+          {transferProgress != null && (
+            <View pointerEvents="none" style={styles.transferTrack}>
+              <View
+                style={[styles.transferFill, { width: `${Math.max(2, transferProgress * 100)}%` }]}
+              />
+            </View>
+          )}
         </View>
 
         <Modal
@@ -1040,12 +1041,10 @@ const styles = StyleSheet.create({
   transferTrack: {
     position: "absolute",
     top: 0,
-    left: spacing.md,
-    right: spacing.md,
+    left: 0,
+    right: 0,
     height: 2,
     overflow: "hidden",
-    borderRadius: radius.pill,
-    backgroundColor: colors.lineSoft,
   },
   transferFill: { height: 2, borderRadius: radius.pill, backgroundColor: colors.accent },
   attachmentButton: {

@@ -33,6 +33,13 @@ pub const BANNED_KEYS: &[&str] = &[
 
 /// Compact todo fields (reference _TODO_FIELDS; `decision` is our additive field
 /// so closed gate decisions replay deterministically).
+///
+/// P1-4: the snapshot now carries every per-todo input the decision kernel
+/// reads (priority / gate + capability blocks / repair + monitor counters /
+/// closure intent / resume + lease epochs / frontier index). Pre-P1-4 cases
+/// stored status/class only, so decisions depending on the missing counters
+/// (outcome floor, repair budget, monitor stall, succession replan) drifted
+/// on replay — the record→run mismatch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompactTodo {
     pub todo_id: String,
@@ -52,6 +59,37 @@ pub struct CompactTodo {
     pub resume_ready: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decision: Option<String>,
+    /// Frontier sort key (P0/P1/P2; absent = the P1 default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    /// Comma-joined predecessor ids (gates, blockers, todo→todo blocks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by_gate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_capability: Option<String>,
+    /// Repair-budget counter (absent = 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_attempts: Option<u32>,
+    /// Monitor stall counter (absent = 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consecutive_no_change: Option<u32>,
+    /// Completion contract: no-follow-up closure intent (absent = false).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_follow_up: Option<bool>,
+    /// Completion contract: declared successor ids (empty = none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub successor_ids: Vec<String>,
+    /// Monitor poll / deferred resume due time (epoch secs) — reconstructed
+    /// as a real `SystemTime` so due-ness replays deterministically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_when_epoch: Option<u64>,
+    /// Lease expiry (epoch secs) — a live lease hides the todo from other
+    /// agents' frontiers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at: Option<u64>,
+    /// Goal-relative ordering index (absent = enumeration order).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
 }
 
 /// The reduced decision fields (reference decision block).
@@ -108,6 +146,11 @@ pub struct DecisionCase {
     pub schema_version: String,
     pub case_id: String,
     pub agent_id: String,
+    /// P1-4: capabilities the recording agent declared (the capability gate
+    /// hides todos requiring an undeclared capability). Empty for anonymous
+    /// recordings and on legacy cases.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_capabilities: Vec<String>,
     pub decision: DecisionFields,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected_todo: Option<CompactTodo>,
@@ -117,6 +160,13 @@ pub struct DecisionCase {
     pub user_todos: Vec<CompactTodo>,
     pub interaction_contract: InteractionCase,
     pub expected: ExpectedCase,
+    /// P1-4: the decision context assembled at record time (run history /
+    /// outcome streak / quota status + the goal-boundary header). Replay
+    /// rebuilds the goal-level decision state from it; `None` on legacy
+    /// pre-P1-4 cases (replay then reconstructs todos only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_context:
+        Option<crate::capabilities::decision_context::packets::DecisionContextPacket>,
 }
 
 impl DecisionCase {
@@ -211,6 +261,22 @@ fn compact_todo(todo: &Todo, now_epoch: u64) -> CompactTodo {
                 .unwrap_or(false)
         }),
         decision: todo.decision.clone(),
+        priority: (todo.priority != crate::state::Priority::default())
+            .then(|| todo.priority.to_string()),
+        blocked_by_gate: todo.blocked_by_gate.clone(),
+        required_capability: todo.required_capability.clone(),
+        failed_attempts: (todo.failed_attempts > 0).then_some(todo.failed_attempts),
+        consecutive_no_change: (todo.consecutive_no_change > 0)
+            .then_some(todo.consecutive_no_change),
+        no_follow_up: todo.no_follow_up.then_some(true),
+        successor_ids: todo.successor_ids.clone(),
+        resume_when_epoch: todo.resume_when.and_then(|r| {
+            r.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs())
+        }),
+        lease_expires_at: todo.lease_expires_at,
+        index: Some(todo.index),
     }
 }
 
@@ -247,6 +313,9 @@ pub fn reduce_public_safe_decision(
         schema_version: PUBLIC_SAFE_DECISION_CASE_SCHEMA_VERSION.to_string(),
         case_id: case_id.to_string(),
         agent_id: agent_id.unwrap_or("replay-agent").to_string(),
+        agent_capabilities: agent_id
+            .map(|a| goal.agent_capabilities(a))
+            .unwrap_or_default(),
         decision: DecisionFields {
             should_run: packet.should_run,
             effective_action: packet.effective_action.clone(),
@@ -277,6 +346,12 @@ pub fn reduce_public_safe_decision(
             scheduler_interval_minutes: packet.scheduler_hint.next_due_ms.map(|ms| ms / 60_000),
             decision_scope_status: "consistent".to_string(),
         },
+        // P1-4: capture the assembled decision context (run history /
+        // outcome streak / quota status + goal boundary) so replay can
+        // rebuild the goal-level decision state the compact todos can't.
+        decision_context: Some(
+            crate::capabilities::decision_context::assembler::assemble_decision_context(goal),
+        ),
     }
 }
 
@@ -354,7 +429,10 @@ fn class_from_str(s: &str) -> TaskClass {
 /// Reconstruct a goal from a case's compact todos (LoopX
 /// `_source_todo_item` + `quota_status_payload`). The replayed kernel runs
 /// against this reconstructed state — the recording must capture everything
-/// the decision depends on.
+/// the decision depends on. P1-4: the per-todo counters/intent come from
+/// the compact todos; the goal-level state (status / outcome streak /
+/// floor threshold / open acceptance gaps) comes from the case's assembled
+/// decision context (absent on legacy pre-P1-4 cases).
 pub fn goal_from_case(case: &DecisionCase) -> Goal {
     let mut goal = Goal::new(&case.case_id, "decision replay", "/tmp");
     for (index, item) in case
@@ -366,13 +444,28 @@ pub fn goal_from_case(case: &DecisionCase) -> Goal {
         let mut todo = Todo::advancement(&item.todo_id, &format!("Replay item {}.", item.todo_id));
         todo.class = class_from_str(&item.task_class);
         todo.status = status_from_str(&item.status);
-        todo.index = index as u32;
+        todo.index = item.index.unwrap_or(index as u32);
         todo.action_kind = item.action_kind.clone();
         todo.claimed_by = item.claimed_by.clone();
         todo.goal_bound = item.goal_bound.unwrap_or(false);
         todo.global_gate = item.global_gate.unwrap_or(false);
         todo.resume_when_text = item.resume_when.clone();
         todo.decision = item.decision.clone();
+        todo.priority = match item.priority.as_deref() {
+            Some("P0") => crate::state::Priority::P0,
+            Some("P2") => crate::state::Priority::P2,
+            _ => crate::state::Priority::P1,
+        };
+        todo.blocked_by_gate = item.blocked_by_gate.clone();
+        todo.required_capability = item.required_capability.clone();
+        todo.failed_attempts = item.failed_attempts.unwrap_or(0);
+        todo.consecutive_no_change = item.consecutive_no_change.unwrap_or(0);
+        todo.no_follow_up = item.no_follow_up.unwrap_or(false);
+        todo.successor_ids = item.successor_ids.clone();
+        todo.lease_expires_at = item.lease_expires_at;
+        todo.resume_when = item
+            .resume_when_epoch
+            .map(|epoch| std::time::UNIX_EPOCH + std::time::Duration::from_secs(epoch));
         if let Some(role) = case
             .agent_todos
             .iter()
@@ -388,6 +481,23 @@ pub fn goal_from_case(case: &DecisionCase) -> Goal {
             todo.role = role;
         }
         goal.add(todo);
+    }
+    // P1-4: rebuild the goal-level decision state from the assembled
+    // context (the mismatch fix — without it an outcome-floor replan, a
+    // cancelled-goal skip, or an acceptance-gap replan replays as run /
+    // terminal because the fresh goal defaults to streak 0 / active / no
+    // gaps). Legacy cases without a context keep the pre-P1-4 behavior.
+    if let Some(context) = &case.decision_context {
+        goal.status = context.goal_status.clone();
+        goal.outcome_streak = context.outcome_streak.surface_streak;
+        goal.execution_profile.outcome_floor_streak_threshold = context.outcome_streak.threshold;
+        for gap_id in &context.open_acceptance_gaps {
+            goal.acceptance.push(crate::state::AcceptanceGap {
+                id: gap_id.clone(),
+                description: format!("Replay gap {gap_id}."),
+                satisfied: false,
+            });
+        }
     }
     goal
 }
@@ -413,9 +523,11 @@ pub fn replay_public_safe_decision_case(case: &DecisionCase) -> Result<ReplayCom
     validate_public_safe_decision_case(case)?;
     let mut goal = goal_from_case(case);
     // Register the replay agent (LoopX: coordination.registered_agents =
-    // [agent_id]) so the identity gate does not misfire on replay.
+    // [agent_id]) so the identity gate does not misfire on replay. P1-4:
+    // register with the capabilities the recording agent declared, so the
+    // capability gate sees the same frontier.
     if !goal.registered_agents.iter().any(|a| a == &case.agent_id) {
-        goal.register_agent(&case.agent_id, vec![]);
+        goal.register_agent(&case.agent_id, case.agent_capabilities.clone());
     }
     let now = std::time::SystemTime::now();
     let packet = crate::decision::decide_for(&goal, now, Some(&case.agent_id));
@@ -727,6 +839,193 @@ mod tests {
         assert_eq!(reconstructed.todo("G1").unwrap().status, TodoStatus::Done);
         // replay still matches because the recorded case captured the closure
         let comparison = replay_public_safe_decision_case(&case).unwrap();
+        assert!(comparison.matched, "{:?}", comparison.mismatches);
+    }
+
+    // ── P1-4: record→run mismatch regression tests ──────────────────────
+    // Each test pins one decision-input class the pre-P1-4 compact snapshot
+    // dropped (replay used to drift on it); the recorded case must now
+    // replay exactly.
+
+    fn reduce_and_replay(goal: &Goal, case_id: &str) -> ReplayComparison {
+        let packet = crate::decision::decide(goal, std::time::SystemTime::now());
+        let case = reduce_public_safe_decision(&packet, goal, case_id, None);
+        validate_public_safe_decision_case(&case).unwrap();
+        replay_public_safe_decision_case(&case).unwrap()
+    }
+
+    #[test]
+    fn replay_matches_outcome_floor_breach_replan() {
+        // Live: outcome floor breached → replan. Pre-P1-4 replay lost the
+        // streak + threshold → replayed as normal_run (MISMATCH).
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.add(Todo::advancement("T1", "work"));
+        goal.execution_profile.outcome_floor_streak_threshold = 2;
+        goal.outcome_streak = 2;
+        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
+        assert_eq!(packet.decision, "replan", "fixture must breach the floor");
+        let comparison = reduce_and_replay(&goal, "case-floor");
+        assert!(comparison.matched, "{:?}", comparison.mismatches);
+    }
+
+    #[test]
+    fn replay_matches_repair_budget_exhaustion_and_attempt_count() {
+        // failed_attempts drives both the retryable filter (repair budget)
+        // and the repair-attempt reason; pre-P1-4 replay reset it to 0.
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.add(Todo::advancement("T1", "work"));
+        goal.todo_mut("T1").unwrap().failed_attempts = crate::decision::MAX_REPAIR_ATTEMPTS + 1;
+        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
+        assert_eq!(packet.decision, "replan", "fixture must exhaust repair");
+        let comparison = reduce_and_replay(&goal, "case-repair");
+        assert!(comparison.matched, "{:?}", comparison.mismatches);
+    }
+
+    #[test]
+    fn replay_matches_stalled_monitor_replan() {
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.add(Todo::monitor(
+            "M1",
+            "watch",
+            std::time::Duration::from_secs(3600),
+        ));
+        goal.todo_mut("M1").unwrap().consecutive_no_change =
+            crate::decision::MONITOR_NO_CHANGE_REPLAN_THRESHOLD;
+        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
+        assert_eq!(packet.decision, "replan", "fixture must stall the monitor");
+        let comparison = reduce_and_replay(&goal, "case-stall");
+        assert!(comparison.matched, "{:?}", comparison.mismatches);
+    }
+
+    #[test]
+    fn replay_matches_due_monitor_poll() {
+        // A due monitor (resume_when in the past) must replay as due — the
+        // pre-P1-4 snapshot kept only the text form, so the reconstructed
+        // monitor was never due.
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.add(Todo::monitor(
+            "M1",
+            "watch",
+            std::time::Duration::from_secs(3600),
+        ));
+        goal.todo_mut("M1").unwrap().resume_when =
+            Some(std::time::SystemTime::now() - std::time::Duration::from_secs(60));
+        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
+        assert_eq!(packet.effective_action, "monitor_poll");
+        let comparison = reduce_and_replay(&goal, "case-due");
+        assert!(comparison.matched, "{:?}", comparison.mismatches);
+    }
+
+    #[test]
+    fn replay_matches_cancelled_goal_skip() {
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.add(Todo::advancement("T1", "work"));
+        goal.status = "cancelled".to_string();
+        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
+        assert_eq!(packet.decision, "skip");
+        let comparison = reduce_and_replay(&goal, "case-cancelled");
+        assert!(comparison.matched, "{:?}", comparison.mismatches);
+    }
+
+    #[test]
+    fn replay_matches_acceptance_gap_replan() {
+        // Open acceptance gap with no runnable work → replan; pre-P1-4
+        // replay had no gaps → terminal closure (MISMATCH).
+        let goal = Goal::new("g1", "objective", "/tmp").with_acceptance(vec![("A1", "match")]);
+        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
+        assert_eq!(packet.decision, "replan", "fixture must have an open gap");
+        let comparison = reduce_and_replay(&goal, "case-gap");
+        assert!(comparison.matched, "{:?}", comparison.mismatches);
+    }
+
+    #[test]
+    fn replay_matches_blocked_frontier_and_closure_intent() {
+        // T1 done with no-follow-up (closure intent), T2 blocked by T3
+        // (todo→todo block), T3 open at P0. Live: run T3. Pre-P1-4 replay
+        // lost the block (T2 also runnable), the priority, AND the closure
+        // intent (T1 looked unclosed → succession replan, MISMATCH).
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.add(Todo::advancement("T1", "first"));
+        goal.add(Todo::advancement("T2", "gated work").blocking(&["T3"]));
+        goal.add(Todo::advancement("T3", "predecessor"));
+        goal.todo_mut("T3").unwrap().priority = crate::state::Priority::P0;
+        goal.todo_mut("T1").unwrap().complete(true, vec![]);
+        let comparison = reduce_and_replay(&goal, "case-frontier");
+        assert!(comparison.matched, "{:?}", comparison.mismatches);
+        let reconstructed = goal_from_case(&reduce_public_safe_decision(
+            &crate::decision::decide(&goal, std::time::SystemTime::now()),
+            &goal,
+            "case-frontier",
+            None,
+        ));
+        assert!(reconstructed.todo("T1").unwrap().no_follow_up);
+        assert_eq!(
+            reconstructed.todo("T2").unwrap().blocked_by_gate.as_deref(),
+            Some("T3")
+        );
+        assert_eq!(
+            reconstructed.todo("T3").unwrap().priority,
+            crate::state::Priority::P0
+        );
+    }
+
+    #[test]
+    fn replay_matches_capability_gated_frontier() {
+        // T1 requires capability "shell"; the recording agent declared it →
+        // runnable live. Replay must register the same capabilities.
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.add(Todo::advancement("T1", "work").with_action_kind("shell"));
+        goal.todo_mut("T1").unwrap().required_capability = Some("shell".to_string());
+        goal.register_agent("agent-x", vec!["shell".to_string()]);
+        let packet =
+            crate::decision::decide_for(&goal, std::time::SystemTime::now(), Some("agent-x"));
+        assert!(
+            packet.should_run,
+            "fixture todo must be runnable for agent-x"
+        );
+        let case = reduce_public_safe_decision(&packet, &goal, "case-caps", Some("agent-x"));
+        assert_eq!(case.agent_capabilities, vec!["shell".to_string()]);
+        let comparison = replay_public_safe_decision_case(&case).unwrap();
+        assert!(comparison.matched, "{:?}", comparison.mismatches);
+    }
+
+    #[test]
+    fn legacy_case_without_context_still_loads_and_replays() {
+        // Pre-P1-4 recordings carry no decision_context and no P1-4 compact
+        // fields — they must keep deserializing and replaying (back-compat).
+        let goal = sample_goal();
+        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
+        let case = reduce_public_safe_decision(&packet, &goal, "case-legacy", None);
+        let mut value = serde_json::to_value(&case).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("decision_context");
+        obj.remove("agent_capabilities");
+        let strip = |t: &mut serde_json::Map<String, serde_json::Value>| {
+            for key in [
+                "priority",
+                "blocked_by_gate",
+                "required_capability",
+                "failed_attempts",
+                "consecutive_no_change",
+                "no_follow_up",
+                "successor_ids",
+                "resume_when_epoch",
+                "lease_expires_at",
+                "index",
+            ] {
+                t.remove(key);
+            }
+        };
+        for todo in value["agent_todos"].as_array_mut().unwrap().iter_mut() {
+            strip(todo.as_object_mut().unwrap());
+        }
+        for todo in value["user_todos"].as_array_mut().unwrap().iter_mut() {
+            strip(todo.as_object_mut().unwrap());
+        }
+        let legacy: DecisionCase = serde_json::from_value(value).unwrap();
+        assert!(legacy.decision_context.is_none());
+        assert!(legacy.agent_capabilities.is_empty());
+        let comparison = replay_public_safe_decision_case(&legacy).unwrap();
         assert!(comparison.matched, "{:?}", comparison.mismatches);
     }
 }

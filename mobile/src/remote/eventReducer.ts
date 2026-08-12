@@ -14,6 +14,7 @@ export {
   timelineFromEntries,
   timelineFromHistory,
   timelineFromProjection,
+  upsertTruncationNotice,
 } from "./projection";
 export type { ReplayEventWire } from "./projection";
 export type { TimelineState } from "./projection";

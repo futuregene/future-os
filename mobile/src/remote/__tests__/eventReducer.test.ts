@@ -333,6 +333,41 @@ describe("stream event reducer", () => {
     expect(second.items[0]).toMatchObject({ kind: "message", text: "hello world" });
   });
 
+  test("consumes a text_chunk truncation marker as a friendly notice instead of dropping it", () => {
+    const timeline = applyStreamEvent(emptyTimeline(), {
+      type: "text_chunk",
+      data: JSON.stringify({ _truncated: true, bytes: 1200000 }),
+      runId: "run-1",
+      idx: 5,
+    });
+    expect(timeline.items).toEqual([
+      expect.objectContaining({ kind: "notice", tone: "warning", text: "truncated", runId: "run-1" }),
+    ]);
+    // A second marker for the same run must not duplicate the notice.
+    const again = applyStreamEvent(timeline, {
+      type: "text_chunk",
+      data: JSON.stringify({ _truncated: true, bytes: 1200000 }),
+      runId: "run-1",
+      idx: 6,
+    });
+    expect(again.items).toHaveLength(1);
+  });
+
+  test("never renders the truncation marker's raw JSON as an error", () => {
+    const timeline = applyStreamEvent(emptyTimeline(), {
+      type: "error",
+      data: JSON.stringify({ _truncated: true, bytes: 1200000 }),
+      runId: "run-1",
+      idx: 7,
+    });
+    expect(timeline.items[0]).toMatchObject({
+      kind: "notice",
+      tone: "danger",
+      text: "truncated",
+      runId: "run-1",
+    });
+  });
+
   test("tracks streaming and approval state", () => {
     const started = applyStreamEvent(emptyTimeline(), {
       type: "agent_start",
