@@ -143,7 +143,11 @@ fn run_with_unknown_flag_and_model_env() {
         ..Default::default()
     });
     let gid = init_goal(&cr, "run zz");
-    cli_ok(&["run", "--goal", &gid, "--anonymous", "--zz", "1"]);
+    // P0-3 strictness: unknown flags hard-error instead of being swallowed.
+    let err = cli_err(&["run", "--goal", &gid, "--anonymous", "--zz", "1"]);
+    assert!(err.contains("unknown flag `--zz`"), "got: {err}");
+    // A well-formed anonymous run still succeeds against the mock agent.
+    cli_ok(&["run", "--goal", &gid, "--anonymous"]);
 }
 
 #[test]

@@ -95,6 +95,7 @@ function blockToFutureNode(node: RootContent, context: ParseContext): MarkdownNo
   switch (node.type) {
     case "blockquote":
       return [{ children: node.children.flatMap(child => blockToFutureNode(child, context)), type: "blockquote" }];
+    /* v8 ignore next 2 -- remark never emits a bare break as a block child */
     case "break":
       return [{ children: [{ type: "break" }], type: "paragraph" }];
     case "code": {
@@ -106,6 +107,7 @@ function blockToFutureNode(node: RootContent, context: ParseContext): MarkdownNo
     }
     case "definition":
       return [];
+    /* v8 ignore next 2 -- remark never emits delete (GFM strikethrough) as a block child */
     case "delete":
       return [{ children: [{ children: phrasingToInline(node.children, context), type: "delete" }], type: "paragraph" }];
     case "footnoteDefinition":
@@ -119,6 +121,7 @@ function blockToFutureNode(node: RootContent, context: ParseContext): MarkdownNo
       return [{ children: phrasingToInline(node.children, context), level: normalizeHeadingLevel(node.depth), type: "heading" }];
     case "html":
       return htmlToSafeParagraph(node);
+    /* v8 ignore start -- remark never emits phrasing nodes as block children */
     case "image":
       return [{ children: [imageToInline(node)], type: "paragraph" }];
     case "imageReference": {
@@ -127,20 +130,25 @@ function blockToFutureNode(node: RootContent, context: ParseContext): MarkdownNo
     }
     case "linkReference":
       return [{ children: [linkReferenceToInline(node, context)], type: "paragraph" }];
+    /* v8 ignore stop */
     case "list":
       return [listToFutureNode(node, context)];
     case "paragraph":
       return [{ children: phrasingToInline(node.children, context), type: "paragraph" }];
     case "table":
       return [tableToFutureNode(node, context)];
+    /* v8 ignore next 2 -- remark never emits a bare text node as a block child */
     case "text":
       return [{ children: textToInlineNodes(node), type: "paragraph" }];
     case "thematicBreak":
       return [{ type: "thematicBreak" }];
+    /* v8 ignore start -- the frontmatter plugin is not enabled, and the mdast
+       union is exhaustive, so the yaml arm and default are defensive only */
     case "yaml":
       return [{ code: node.value, language: "yaml", type: "code" }];
     default:
       return [];
+    /* v8 ignore stop */
   }
 }
 
@@ -174,6 +182,7 @@ function phrasingNodeToInline(node: PhrasingContent, context: ParseContext): Inl
       return [strongToInline(node, context)];
     case "text":
       return textToInlineNodes(node);
+    /* v8 ignore next 2 -- exhaustive over PhrasingContent; defensive only */
     default:
       return [];
   }
@@ -212,6 +221,7 @@ function linkToInline(node: Link, context: ParseContext): InlineNode {
 function linkReferenceToInline(node: LinkReference, context: ParseContext): InlineNode {
   const definition = context.definitions.get(normalizeIdentifier(node.identifier));
   const label = mdastText({ children: node.children, type: "paragraph" });
+  /* v8 ignore next 3 -- remark only creates reference nodes for defined identifiers */
   if (!definition) {
     return { text: label, type: "text" };
   }
@@ -225,6 +235,7 @@ function linkReferenceToInline(node: LinkReference, context: ParseContext): Inli
 
 function imageReferenceToInline(node: ImageReference, context: ParseContext): InlineNode | null {
   const definition = context.definitions.get(normalizeIdentifier(node.identifier));
+  /* v8 ignore next 2 -- remark only creates reference nodes for defined identifiers */
   if (!definition)
     return null;
 
@@ -315,6 +326,7 @@ function tableRowToCells(cells: TableCell[], context: ParseContext, length?: num
 
 function htmlToSafeParagraph(node: Html): MarkdownNode[] {
   const trimmed = node.value.trim();
+  /* v8 ignore next 2 -- remark html nodes always have non-whitespace content */
   if (!trimmed)
     return [];
   return [{ children: [{ text: trimmed, type: "text" }], type: "paragraph" }];
@@ -360,6 +372,8 @@ function parseDirectiveFields(lines: string[]) {
 
 function parseFutureLink(label: string, href: string): FutureReference | null {
   const parsed = parseFutureUrl(href);
+  /* v8 ignore start -- disabled minimal link mode: parseFutureUrl is always null
+     while isFutureReferenceType returns false */
   if (parsed) {
     return {
       label,
@@ -369,6 +383,7 @@ function parseFutureLink(label: string, href: string): FutureReference | null {
       view: parsed.view ?? "chip",
     };
   }
+  /* v8 ignore stop */
 
   // A plain markdown link whose destination is a local path becomes a `file`
   // reference — same display/menu pipeline as the old `futureos://file/…`, but
@@ -397,6 +412,8 @@ function parseFutureUrl(href: string) {
     if (!isFutureReferenceType(targetType))
       return null;
 
+    /* v8 ignore start -- unreachable while isFutureReferenceType returns false
+       (minimal link mode); retained for re-enabling app-object references */
     // `futureos://` carries only id-based internal objects (artifact/run/…);
     // local files use plain markdown-path links instead. Ids never start with a
     // slash, so stripping the single URL path separator is all that's needed.
@@ -409,12 +426,14 @@ function parseFutureUrl(href: string) {
       targetType,
       view: normalizeInlineView(url.searchParams.get("view") ?? undefined),
     };
+    /* v8 ignore stop */
   }
   catch {
     return null;
   }
 }
 
+/* v8 ignore start -- only called from the disabled futureos:// path */
 function safeDecodeURIComponent(value: string) {
   try {
     return decodeURIComponent(value);
@@ -423,6 +442,7 @@ function safeDecodeURIComponent(value: string) {
     return value;
   }
 }
+/* v8 ignore stop */
 
 function isFutureReferenceType(value: string): value is FutureReferenceType {
   // Minimal link mode: application-object references (approval/artifact/review/
@@ -439,6 +459,7 @@ function isFutureReferenceType(value: string): value is FutureReferenceType {
   //   || value === "run";
 }
 
+/* v8 ignore start -- only called from the disabled futureos:// path */
 function normalizeInlineView(view: string | undefined): FutureReferenceView | undefined {
   if (!view)
     return undefined;
@@ -452,6 +473,7 @@ function normalizeInlineView(view: string | undefined): FutureReferenceView | un
   }
   return undefined;
 }
+/* v8 ignore stop */
 
 function normalizeView(view: string | undefined): FutureReferenceView {
   if (view === "chip")

@@ -146,6 +146,15 @@ fn decision_replay_mismatch_groups() {
         .iter()
         .any(|m| m.contains("expected.scheduler_action")));
 
+    let mut t2b = case.clone();
+    t2b.expected.scheduler_interval_minutes =
+        Some(t2b.expected.scheduler_interval_minutes.unwrap_or(15) + 5);
+    let cmp = replay_public_safe_decision_case(&t2b).unwrap();
+    assert!(cmp
+        .mismatches
+        .iter()
+        .any(|m| m.contains("expected.scheduler_interval_minutes")));
+
     let mut t3 = case.clone();
     t3.interaction_contract.mode = "terminal".to_string();
     let cmp = replay_public_safe_decision_case(&t3).unwrap();

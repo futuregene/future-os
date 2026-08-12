@@ -60,6 +60,15 @@ pub struct StoredEvent {
     /// `local_private` / `private_pointer`).
     #[serde(default)]
     pub privacy: Option<String>,
+    /// Reserved fencing token (schema reservation only — NOT enforced): a
+    /// monotonically increasing per-ledger token a future fencing authority
+    /// will issue to writers so a stale/zombie writer can be fenced off in a
+    /// multi-replica deployment. Kernel appends never populate it and no
+    /// validation rejects missing/regressing tokens yet; old ledger lines
+    /// read as `None`, and `None` is omitted from serialization so the
+    /// on-disk line shape is byte-identical to pre-reservation ledgers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fencing_token: Option<u64>,
     #[serde(flatten)]
     pub event: Event,
 }
@@ -116,6 +125,10 @@ fn event_part(value: &serde_json::Value) -> serde_json::Value {
                     | "source_section"
                     | "source_line"
                     | "privacy"
+                    // Fencing tokens are writer metadata, not event content:
+                    // a re-append that differs only in the token stays an
+                    // idempotent no-op (same envelope rule as `producer`).
+                    | "fencing_token"
             ) {
                 map.insert(key.clone(), value.clone());
             }
@@ -484,6 +497,7 @@ impl Store {
             source_section,
             source_line,
             privacy,
+            fencing_token: None,
             event,
         };
         let line = format!("{}\n", serde_json::to_string(&stored)?);
@@ -582,6 +596,7 @@ impl Store {
                 source_section: None,
                 source_line: None,
                 privacy: None,
+                fencing_token: None,
                 event,
             };
             let line = format!("{}\n", serde_json::to_string(&stored)?);
@@ -727,10 +742,15 @@ impl Store {
         }
         copy_dir_if_present(&dir.join("scheduler-state"), &dest.join("scheduler-state"))?;
         // Registry snapshot (goal entry).
-        if let Some(entry) = self.registry.iter().find(|g| g.goal_id == goal_id) {
-            let json = serde_json::to_string_pretty(entry)?;
-            fs::write(dest.join("registry-entry.json"), json)?;
-        }
+        self.registry
+            .iter()
+            .find(|g| g.goal_id == goal_id)
+            .map(|entry| -> Result<()> {
+                let json = serde_json::to_string_pretty(entry)?;
+                fs::write(dest.join("registry-entry.json"), json)?;
+                Ok(())
+            })
+            .transpose()?;
         Ok(dest.to_string_lossy().into_owned())
     }
 

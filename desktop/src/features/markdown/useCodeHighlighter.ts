@@ -62,9 +62,12 @@ function getServerSnapshot(): number {
 }
 
 function getHighlighter(): Promise<CodeHighlighter> {
+  /* v8 ignore start -- the only caller (the mount effect) guards on
+     !cachedHighlighter, so this fast path is unreachable defense */
   if (cachedHighlighter) {
     return Promise.resolve(cachedHighlighter);
   }
+  /* v8 ignore stop */
 
   if (!highlighterPromise) {
     // Start with no grammars — each language's grammar is loaded on first use

@@ -509,6 +509,23 @@ fn turn_succeeded_matrix() {
 }
 
 #[test]
+fn writeback_surface_only_turn_accumulates_outcome_streak() {
+    let (mut goal, todo) = sample_goal_with_todo();
+    // No tools + empty evidence → surface-only turn → streak grows.
+    let mut record = sample_record("completed");
+    record.todo_id = todo.id.clone();
+    record.tools = vec![];
+    record.evidence = String::new();
+    writeback(&mut goal, &record, None, Some((true, vec![])));
+    assert_eq!(goal.outcome_streak, 1);
+    // A material turn (tools + evidence) resets the streak to zero.
+    let mut material = sample_record("completed");
+    material.todo_id = todo.id.clone();
+    writeback(&mut goal, &material, None, Some((true, vec![])));
+    assert_eq!(goal.outcome_streak, 0);
+}
+
+#[test]
 fn writeback_missing_todo_guards() {
     // monitor poll for a todo that does not exist → early return, no panic.
     let (mut goal, _) = sample_goal_with_todo();

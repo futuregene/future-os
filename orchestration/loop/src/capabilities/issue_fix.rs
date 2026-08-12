@@ -232,17 +232,16 @@ impl Capability for IssueFixCapability {
                 ),
                 "partial signal — investigate before any fix",
             )]
-        } else if word_count < 8 || score == 0 {
+        } else {
+            // Total: with score ∈ {0,1,2,3} the prior arms cover
+            // (score>=2 && wc>=8), (score==1 && wc>=8); what remains is
+            // word_count < 8 || score == 0.
             vec![TypedProposal::successor(
                 successor_todo(
                     "issue",
                     "Triage: request the missing context (exact error, repro steps, expected vs actual) before acting.",
                 ),
                 "issue lacks enough signal to act",
-            )]
-        } else {
-            vec![TypedProposal::no_followup(
-                "issue is not suitable for a fix PR path",
             )]
         }
     }
@@ -259,14 +258,12 @@ mod tests {
         let proposals = cap.propose(
             "title: crash on empty input\nerror: panicked at src/main.rs:42\nrepro: run with no args\nbody: the tool panics instead of printing usage\nexpected: prints usage and exits 0",
         );
-        let kinds: Vec<&str> = proposals
-            .iter()
-            .map(|p| match p.kind {
-                ProposalKind::SuccessorTodo => "successor",
-                _ => "other",
-            })
-            .collect();
-        assert_eq!(kinds, vec!["successor", "successor", "successor"]);
+        assert!(
+            proposals
+                .iter()
+                .all(|p| p.kind == ProposalKind::SuccessorTodo),
+            "full plan is three successor slices: {proposals:?}"
+        );
         assert!(proposals[0].reason.contains("investigate"));
         assert!(proposals[1].reason.contains("fix"));
         assert!(proposals[2].reason.contains("validate"));

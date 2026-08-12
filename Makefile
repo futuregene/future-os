@@ -78,8 +78,8 @@ else
 endif
 	@echo "Removed installed binaries from $(PREFIX)"
 
-# Symlink the built-in skill bundles into the agent's skills directory
-# (orphaned links are pruned), plus the /future-loop skill from the repo.
+# Symlink the built-in skill bundles (skills/builtin/*, incl. future-loop)
+# into the agent's skills directory (orphaned links are pruned).
 install-skills:
 	git submodule update --init --remote skills
 ifeq ($(OS),windows)
@@ -89,9 +89,6 @@ ifeq ($(OS),windows)
 		xcopy /e /i /y "%%d" "$(USERPROFILE)\.future\agent\skills\%%~nxd" >NUL & \
 		echo   ✓ %%~nxd \
 	)
-	@if not exist "%USERPROFILE%\.future\agent\skills\future-loop" mkdir "%USERPROFILE%\.future\agent\skills\future-loop"
-	@copy /y orchestration\loop\skill\future-loop\SKILL.md "%USERPROFILE%\.future\agent\skills\future-loop\SKILL.md" >NUL
-	@echo   ✓ future-loop skill
 else
 	@mkdir -p "$${HOME}/.future/agent/skills"
 	@for skill_dir in skills/builtin/*/; do \
@@ -103,14 +100,11 @@ else
 	@for link in "$${HOME}/.future/agent/skills"/*; do \
 		[ -L "$$link" ] || continue; \
 		name=$$(basename "$$link"); \
-		if [ ! -d "skills/builtin/$$name" ] && [ "$$name" != "future-loop" ]; then \
+		if [ ! -d "skills/builtin/$$name" ]; then \
 			rm -rf "$$link"; \
 			echo "  ✗ $$name (removed)"; \
 		fi; \
 	done
-	@mkdir -p "$${HOME}/.future/agent/skills/future-loop"
-	@ln -sf "$(CURDIR)/orchestration/loop/skill/future-loop/SKILL.md" "$${HOME}/.future/agent/skills/future-loop/SKILL.md"
-	@echo "  ✓ future-loop skill"
 endif
 
 # ─── Build ──────────────────────────────────────────────────────────────────

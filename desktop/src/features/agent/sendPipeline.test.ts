@@ -13,6 +13,7 @@ vi.mock("../../integrations/storage/threadStore", async (importOriginal) => {
     createRun: vi.fn(),
     getRun: vi.fn(),
     listRunEvents: vi.fn(),
+    listRunEventsSince: vi.fn(async () => []),
     updateRunStatus: vi.fn(),
   };
 });
@@ -24,6 +25,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 vi.mock("./threadAttachments", () => ({
   persistImageAttachments: vi.fn(async () => []),
+}));
+
+const emitFutureEvent = vi.fn();
+vi.mock("../../lib/futureEvents", () => ({
+  emitFutureEvent: (...args: unknown[]) => emitFutureEvent(...args),
 }));
 
 const thread = {
@@ -161,5 +167,127 @@ describe("runSendPipeline terminal-status handling", () => {
     // Pipeline start + the cancelled finalization; a fall-through into the
     // completion render would add a third.
     expect(deps.onThreadActivity).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("runSendPipeline stream/failure edges", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(createRun).mockResolvedValue(storedRun());
+    vi.mocked(listRunEvents).mockResolvedValue([]);
+  });
+
+  it("toasts when the agent recreated the session", async () => {
+    vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
+    vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
+      content: "answer",
+      complete: true,
+      sessionId: "session-2",
+      sessionRecreated: true,
+    });
+    const setMessages = vi.fn();
+    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    expect(emitFutureEvent).toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "info" }));
+  });
+
+  it("marks the run failed when the stream closes incomplete and the row is still active", async () => {
+    vi.mocked(getRun).mockResolvedValue(storedRun());
+    vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
+      content: "truncated",
+      complete: false,
+      sessionId: "session-1",
+      sessionRecreated: false,
+    });
+    const setMessages = vi.fn();
+    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    expect(updateRunStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", status: "failed" }),
+    );
+  });
+
+  it("finalizes the bubble in place when cancelled before any text landed", async () => {
+    vi.mocked(getRun).mockResolvedValue(storedRun({ status: "cancelled", endedAt: 2_000 }));
+    vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
+      content: "",
+      complete: false,
+      sessionId: "session-1",
+      sessionRecreated: false,
+    });
+    const setMessages = vi.fn();
+    const deps = makeDeps(setMessages);
+    await runSendPipeline(deps, { content: "hello", attachments: [] });
+    const assistant = foldMessages(setMessages).filter(m => m.role === "assistant").pop();
+    expect(assistant?.stopped).toBe(true);
+    expect(assistant?.thinkingActive).toBe(false);
+    expect(deps.onThreadActivity).toHaveBeenCalled();
+  });
+
+  it("marks the run failed and renders the failure when the invoke throws", async () => {
+    vi.mocked(getRun).mockResolvedValue(storedRun());
+    vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("transport down"));
+    const setMessages = vi.fn();
+    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    expect(updateRunStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", status: "failed" }),
+    );
+    const assistant = foldMessages(setMessages).filter(m => m.role === "assistant").pop();
+    expect(assistant?.status).toBe("failed");
+    expect(assistant?.content).toContain("transport down");
+  });
+
+  it("skips the status write in the failure path when the run already settled", async () => {
+    vi.mocked(getRun).mockResolvedValue(storedRun({ status: "failed", endedAt: 2_000 }));
+    vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("late failure"));
+    const setMessages = vi.fn();
+    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    expect(updateRunStatus).not.toHaveBeenCalled();
+  });
+
+  it("writes the failure when the run row is gone mid-flight", async () => {
+    vi.mocked(getRun).mockResolvedValue(null);
+    vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("gone"));
+    const setMessages = vi.fn();
+    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    expect(updateRunStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", status: "failed" }),
+    );
+  });
+
+  it("pushes stream updates into the pending bubble while the run streams", async () => {
+    const { listen } = await import("@tauri-apps/api/event");
+    let handler: ((event: { payload: Record<string, unknown> }) => void) | null = null;
+    vi.mocked(listen).mockImplementation(async (...args: unknown[]) => {
+      handler = args[1] as typeof handler;
+      return () => {};
+    });
+    let resolveReply!: (value: { content: string; complete: boolean; sessionId: string; sessionRecreated: boolean }) => void;
+    vi.mocked(sendPromptToFutureAgent).mockImplementation(
+      () => new Promise((resolve) => {
+        resolveReply = resolve;
+      }),
+    );
+    vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
+    vi.mocked(listRunEvents).mockResolvedValue([]);
+    const setMessages = vi.fn();
+    const send = runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    await vi.waitFor(() => {
+      expect(handler).not.toBeNull();
+    });
+    // Matching run: resetProjection variant + plain variant.
+    handler!({ payload: { runId: "run-1", resetProjection: true } });
+    handler!({ payload: { runId: "run-1", resetProjection: false } });
+    // A different run's event is ignored.
+    handler!({ payload: { runId: "run-other", resetProjection: true } });
+    const { listRunEventsSince } = await import("../../integrations/storage/threadStore");
+    await vi.waitFor(() => {
+      expect(listRunEventsSince).toHaveBeenCalled();
+    });
+    resolveReply({
+      content: "answer",
+      complete: true,
+      sessionId: "session-1",
+      sessionRecreated: false,
+    });
+    await send;
   });
 });

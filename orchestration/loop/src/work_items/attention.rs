@@ -156,6 +156,17 @@ mod tests {
     }
 
     #[test]
+    fn deferred_not_due_goal_has_no_attention_item() {
+        // A deferred-not-due todo is neither terminal nor actionable: no
+        // gate, no gap, no open advancement, no due monitor → None.
+        let mut t = Todo::advancement("t1", "later");
+        t.status = crate::state::TodoStatus::Deferred;
+        t.resume_when = Some(std::time::SystemTime::now() + std::time::Duration::from_secs(3600));
+        let goal = goal_with(vec![t]);
+        assert!(goal_attention_item(&goal).is_none());
+    }
+
+    #[test]
     fn gate_waits_on_user() {
         let goal = goal_with(vec![Todo::user_gate("g1", "approve?", &[])]);
         let item = goal_attention_item(&goal).unwrap();

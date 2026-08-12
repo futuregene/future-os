@@ -182,6 +182,3 @@ pub fn writeback(
     }
     goal.history.push(record.clone());
 }
-
-#[allow(dead_code)]
-fn _unused(_: &Result<RunSummary>) {}

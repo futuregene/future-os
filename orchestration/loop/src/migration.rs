@@ -223,6 +223,23 @@ pub struct MigrationChecks {
     pub event_projection_head_matches_store: bool,
 }
 
+impl MigrationChecks {
+    /// Look up a check flag by its manifest key (`None` for unknown keys).
+    fn get(&self, key: &str) -> Option<bool> {
+        Some(match key {
+            "event_read_path_ready" => self.event_read_path_ready,
+            "active_state_projection_ready" => self.active_state_projection_ready,
+            "dual_read_parity_clean" => self.dual_read_parity_clean,
+            "event_projection_head_matches_store" => self.event_projection_head_matches_store,
+            "rollback_plan_recorded" => self.rollback_plan_recorded,
+            "idempotency_conflicts_clean" => self.idempotency_conflicts_clean,
+            "public_boundary_clean" => self.public_boundary_clean,
+            "bounded_canary_passed" => self.bounded_canary_passed,
+            _ => return None,
+        })
+    }
+}
+
 /// Fail-closed migration bridge (LoopX `build_event_store_migration_bridge`):
 /// stage is derived from the checks; `promotion_allowed` is always false.
 #[derive(Debug, Clone, Serialize)]
@@ -277,17 +294,7 @@ pub fn build_migration_bridge(
         "public_boundary_clean",
         "bounded_canary_passed",
     ];
-    let is_set = |key: &str| match key {
-        "event_read_path_ready" => checks.event_read_path_ready,
-        "active_state_projection_ready" => checks.active_state_projection_ready,
-        "dual_read_parity_clean" => checks.dual_read_parity_clean,
-        "event_projection_head_matches_store" => checks.event_projection_head_matches_store,
-        "rollback_plan_recorded" => checks.rollback_plan_recorded,
-        "idempotency_conflicts_clean" => checks.idempotency_conflicts_clean,
-        "public_boundary_clean" => checks.public_boundary_clean,
-        "bounded_canary_passed" => checks.bounded_canary_passed,
-        _ => false,
-    };
+    let is_set = |key: &str| checks.get(key).unwrap_or(false);
     let missing = |required: &[&str]| -> Vec<String> {
         required
             .iter()
@@ -411,6 +418,24 @@ fn active_state_file(goal_dir: &Path, _cwd: Option<&str>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checks_get_covers_every_key_and_unknown() {
+        let checks = MigrationChecks::default();
+        for key in [
+            "event_read_path_ready",
+            "active_state_projection_ready",
+            "dual_read_parity_clean",
+            "event_projection_head_matches_store",
+            "rollback_plan_recorded",
+            "idempotency_conflicts_clean",
+            "public_boundary_clean",
+            "bounded_canary_passed",
+        ] {
+            assert_eq!(checks.get(key), Some(false), "{key}");
+        }
+        assert_eq!(checks.get("bogus"), None);
+    }
 
     #[test]
     fn steps_cover_the_p2_surface_change() {

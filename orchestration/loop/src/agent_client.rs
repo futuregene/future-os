@@ -80,19 +80,13 @@ impl AgentClient {
             .map_err(|e| anyhow!("gRPC '{cmd_type}' failed: {e}"))?
             .into_inner();
         if !response.success {
-            let code = if response.error_code.is_empty() {
-                "unknown".to_string()
-            } else {
-                response.error_code.clone()
-            };
-            return Err(anyhow!(
-                "Command '{cmd_type}' failed [{code}]: {}",
-                if response.error.is_empty() {
-                    "unknown error"
-                } else {
-                    &response.error
-                }
-            ));
+            let code = Some(response.error_code.as_str())
+                .filter(|c| !c.is_empty())
+                .unwrap_or("unknown");
+            let msg = Some(response.error.as_str())
+                .filter(|e| !e.is_empty())
+                .unwrap_or("unknown error");
+            return Err(anyhow!("Command '{cmd_type}' failed [{code}]: {msg}"));
         }
         if response.data.is_empty() {
             return Ok(Value::Null);
@@ -306,14 +300,14 @@ impl AgentClient {
                         line["tool"] = serde_json::Value::String(n.to_string());
                     }
                 }
-                if let Ok(mut f) = std::fs::OpenOptions::new()
+                let _ = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(path)
-                {
-                    use std::io::Write;
-                    let _ = writeln!(f, "{}", line);
-                }
+                    .map(|mut f| {
+                        use std::io::Write;
+                        let _ = writeln!(f, "{}", line);
+                    });
             }
             match ev.r#type.as_str() {
                 "tool_start" => {
