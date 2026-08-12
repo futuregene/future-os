@@ -288,19 +288,53 @@ pub async fn spawn_http_recording(
     routes: Vec<HttpRoute>,
     requests: Option<Arc<Mutex<Vec<String>>>>,
 ) -> String {
+    spawn_http_impl(routes, requests).await.0
+}
+
+/// Handle that stops a [`spawn_http`] server's accept loop, letting the
+/// server task run to completion in-test (spawned-task end lines only
+/// count when the task finishes).
+pub struct HttpShutdown {
+    notify: Arc<tokio::sync::Notify>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl HttpShutdown {
+    /// Stop accepting new connections and wait for the server task to
+    /// finish. In-flight connections are unaffected.
+    pub async fn stop(self) {
+        self.notify.notify_one();
+        self.task.await.expect("accept task completes");
+    }
+}
+
+/// [`spawn_http`] plus an [`HttpShutdown`] handle for the accept loop.
+pub async fn spawn_http_shutdownable(routes: Vec<HttpRoute>) -> (String, HttpShutdown) {
+    spawn_http_impl(routes, None).await
+}
+
+async fn spawn_http_impl(
+    routes: Vec<HttpRoute>,
+    requests: Option<Arc<Mutex<Vec<String>>>>,
+) -> (String, HttpShutdown) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let routes = Arc::new(routes);
-    tokio::spawn(async move {
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let accept_notify = notify.clone();
+    let task = tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                break;
-            };
-            let routes = routes.clone();
-            let requests = requests.clone();
-            tokio::spawn(async move {
+            tokio::select! {
+                _ = accept_notify.notified() => break,
+                accepted = listener.accept() => {
+                    // Invariant: accept on a live mock listener only fails
+                    // on OS-level resource exhaustion.
+                    let (mut socket, _) = accepted.expect("mock listener accept");
+                    let routes = routes.clone();
+                    let requests = requests.clone();
+                    tokio::spawn(async move {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let mut buf = Vec::new();
                 // Read until end of headers (these requests have no body, or
@@ -362,27 +396,43 @@ pub async fn spawn_http_recording(
                     500 => "Internal Server Error",
                     _ => "Status",
                 };
-                let mut head = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
-                    body.len()
-                );
-                for (name, value) in &extra_headers {
-                    head.push_str(&format!("{name}: {value}\r\n"));
+                        let mut head = format!(
+                            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
+                            body.len()
+                        );
+                        for (name, value) in &extra_headers {
+                            head.push_str(&format!("{name}: {value}\r\n"));
+                        }
+                        head.push_str("\r\n");
+                        let mut response = head.into_bytes();
+                        response.extend_from_slice(&body);
+                        let _ = socket.write_all(&response).await;
+                        let _ = socket.shutdown().await;
+                    });
                 }
-                head.push_str("\r\n");
-                let mut response = head.into_bytes();
-                response.extend_from_slice(&body);
-                let _ = socket.write_all(&response).await;
-                let _ = socket.shutdown().await;
-            });
+            }
         }
     });
-    format!("http://127.0.0.1:{}", addr.port())
+    (
+        format!("http://127.0.0.1:{}", addr.port()),
+        HttpShutdown { notify, task },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `HttpShutdown::stop` ends the accept loop: the server task observes
+    /// the notify, breaks, and runs to completion (its end lines count).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_shutdown_stops_accept_loop() {
+        let (base, shutdown) =
+            spawn_http_shutdownable(vec![HttpRoute::json("/s", 200, "{}")]).await;
+        let resp = reqwest::get(format!("{base}/s")).await.unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        shutdown.stop().await;
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn http_201_reason_and_aborted_connections() {

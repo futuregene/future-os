@@ -50,6 +50,21 @@ fn embedded_agent_run_failure_is_exit_1() {
 }
 
 #[test]
+fn embedded_agent_logfile_failure_returns_err() {
+    // A --log-file whose parent path is a regular FILE makes logfile::init
+    // fail → agent run_from_args returns Err → main's run_agent error arm
+    // (a serve failure instead exits the process from inside the agent, so
+    // it can never reach that arm).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "x").expect("write blocker");
+    let bad = blocker.join("agent.log");
+    let (code, _, stderr) = future(&["agent", "--log-file", bad.to_str().expect("utf8 path")]);
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains("Error:"), "stderr: {stderr}");
+}
+
+#[test]
 fn embedded_tui_version_and_unknown_option() {
     let (code, stdout, _) = future(&["tui", "--version"]);
     assert_eq!(code, Some(0));
