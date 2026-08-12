@@ -22,8 +22,19 @@ use tokio_stream::StreamExt;
 // sites keep their `proto::...` paths.
 pub use future_rpc::proto;
 
-/// Start a gRPC-only server (no HTTP).
+/// Start a gRPC-only server (no HTTP). Runs until process exit.
 pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
+    serve_with(state, host, port, std::future::pending()).await
+}
+
+/// `serve` with an injectable shutdown trigger so tests can drive the server
+/// to a clean `Ok(())` completion (production never exits).
+async fn serve_with(
+    state: AppState,
+    host: &str,
+    port: u16,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<()> {
     tracing::info!("gRPC server listening on {}:{}", host, port);
 
     // Build gRPC service
@@ -43,7 +54,7 @@ pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
                 .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE)
                 .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE),
         )
-        .serve(grpc_addr)
+        .serve_with_shutdown(grpc_addr, shutdown)
         .await?;
 
     Ok(())
@@ -482,6 +493,23 @@ mod tests {
     use std::sync::Arc;
     use tokio_stream::wrappers::ReceiverStream;
 
+    /// Provider double for the service harness: an immediately-empty stream.
+    struct NoopProvider;
+
+    #[async_trait::async_trait]
+    impl crate::types::LLMProvider for NoopProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<crate::types::Message>,
+            _tools: Vec<crate::types::ToolDef>,
+            _system_prompt: String,
+        ) -> anyhow::Result<ReceiverStream<crate::types::StreamEvent>> {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            Ok(ReceiverStream::new(rx))
+        }
+    }
+
     #[tokio::test]
     async fn broadcast_overflow_records_lag_through_grpc_mapper() {
         let broadcaster = SseBroadcaster::new();
@@ -529,20 +557,6 @@ mod tests {
         let session_manager = Arc::new(crate::session::Manager::new(session_dir));
         let approval_gate = crate::rpc::ApprovalGate::default();
         let queue_budget = Arc::new(crate::runtime::GlobalQueueBudget::defaults());
-        struct NoopProvider;
-        #[async_trait::async_trait]
-        impl crate::types::LLMProvider for NoopProvider {
-            async fn stream_chat(
-                &self,
-                _model: String,
-                _messages: Vec<crate::types::Message>,
-                _tools: Vec<crate::types::ToolDef>,
-                _system_prompt: String,
-            ) -> anyhow::Result<ReceiverStream<crate::types::StreamEvent>> {
-                let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                Ok(ReceiverStream::new(rx))
-            }
-        }
         let session = crate::rpc::ServerSession::new_with_queue_budget(
             "default".to_string(),
             Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
@@ -831,5 +845,68 @@ mod tests {
             .map(|_| ())
             .expect_err("expected an error");
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn nonempty_maps_empty_to_none() {
+        assert_eq!(nonempty(String::new()), None);
+        assert_eq!(nonempty("x".to_string()), Some("x".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serve_with_shutdown_completes_cleanly() {
+        let state = grpc_app_state(false);
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_with(state, "127.0.0.1", 0, async move {
+            let _ = rx.await;
+        }));
+        // Give the server a moment to bind, then trigger shutdown.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let _ = tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("server shuts down promptly")
+            .expect("server task did not panic")
+            .expect("clean shutdown is Ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_command_serializes_error_data() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        // prompt with an unknown busy policy → error_code + error_data.
+        let cmd = proto::RpcCommand {
+            id: "cmd-err".to_string(),
+            r#type: "prompt".to_string(),
+            session_id: "default".to_string(),
+            message: "hello".to_string(),
+            busy_policy: "frobnicate".to_string(),
+            ..Default::default()
+        };
+        let resp = service
+            .execute_command(tonic::Request::new(cmd))
+            .await
+            .expect("command executes")
+            .into_inner();
+        assert!(!resp.success);
+        assert_eq!(resp.error_code, "invalid_busy_policy");
+        assert!(
+            resp.error_data.contains("frobnicate"),
+            "error_data must be serialized onto the wire: {}",
+            resp.error_data
+        );
+    }
+
+    #[tokio::test]
+    async fn noop_provider_stream_chat_is_an_empty_stream() {
+        // Exercise the harness provider double's stream body directly.
+        use crate::types::LLMProvider;
+        use tokio_stream::StreamExt;
+        let mut stream = NoopProvider
+            .stream_chat("m".to_string(), vec![], vec![], String::new())
+            .await
+            .unwrap();
+        assert!(stream.next().await.is_none());
     }
 }

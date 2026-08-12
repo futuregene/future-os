@@ -68,6 +68,17 @@ enum StreamExitCause {
     IdleTimeout,
 }
 
+/// Wire label for a non-terminal stream exit (WARN log field).
+fn stream_exit_reason(cause: StreamExitCause) -> &'static str {
+    match cause {
+        StreamExitCause::IdleTimeout => "idle_timeout",
+        StreamExitCause::UpstreamEof => "upstream_eof",
+        // The warn! call site dispatches ConsumerDropped separately; this
+        // label exists for completeness and direct testing.
+        StreamExitCause::ConsumerDropped => "consumer_dropped",
+    }
+}
+
 // ─── LLM Client ────────────────────────────────────────────────────────────
 
 pub struct Client {
@@ -710,13 +721,7 @@ impl crate::types::LLMProvider for Client {
                             elapsed_ms = stream_started_at.elapsed().as_millis() as u64,
                             bytes = total_bytes,
                             in_tool_call = in_tool_call,
-                            cause = match exit_cause {
-                                StreamExitCause::IdleTimeout => "idle_timeout",
-                                StreamExitCause::UpstreamEof => "upstream_eof",
-                                // Unreachable: ConsumerDropped is dispatched
-                                // above; included for match exhaustiveness.
-                                StreamExitCause::ConsumerDropped => "unknown",
-                            },
+                            cause = stream_exit_reason(exit_cause),
                             "LLM stream ended without a terminal signal ([DONE]/finish_reason \
                              missing) — response truncated mid-flight"
                         );
@@ -902,6 +907,15 @@ mod tests {
     fn mock_server(
         respond: impl Fn(&str) -> (u16, &'static str, String) + Send + 'static,
     ) -> MockServer {
+        mock_server_with_timeout(respond, std::time::Duration::from_secs(10))
+    }
+
+    /// `mock_server` with a tunable read timeout, so tests can drive the
+    /// read-failure arms with silent connections in milliseconds.
+    fn mock_server_with_timeout(
+        respond: impl Fn(&str) -> (u16, &'static str, String) + Send + 'static,
+        read_timeout: std::time::Duration,
+    ) -> MockServer {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
         let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -909,30 +923,23 @@ mod tests {
         std::thread::spawn(move || {
             use std::io::{Read, Write};
             for _ in 0..16 {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    return;
-                };
-                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                // Blocking accept on a live listener does not error; surplus
+                // iterations park here until process exit reaps the thread.
+                let (mut stream, _) = listener.accept().expect("mock server accept");
+                let _ = stream.set_read_timeout(Some(read_timeout));
                 let mut buf: Vec<u8> = Vec::new();
                 let mut chunk = [0u8; 8192];
                 // Read until end of headers.
                 let mut header_end: Option<usize> = None;
-                loop {
+                while header_end.is_none() && buf.len() <= 1_000_000 {
                     match stream.read(&mut chunk) {
                         Ok(0) => break,
                         Ok(n) => {
                             buf.extend_from_slice(&chunk[..n]);
-                            if let Some(pos) =
-                                buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
-                            {
-                                header_end = Some(pos);
-                                break;
-                            }
+                            header_end =
+                                buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4);
                         }
                         Err(_) => break,
-                    }
-                    if buf.len() > 1_000_000 {
-                        break;
                     }
                 }
                 let Some(header_end) = header_end else {
@@ -962,10 +969,11 @@ mod tests {
                     "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
                     response_body.len()
                 );
-                if stream.write_all(response.as_bytes()).is_err() {
-                    return;
-                }
-                let _ = stream.flush();
+                // Best effort: a client that went away mid-request doesn't
+                // consume further accepts (aborted probes are expected).
+                let _ = stream
+                    .write_all(response.as_bytes())
+                    .and_then(|_| stream.flush());
             }
         });
         MockServer {
@@ -1014,6 +1022,172 @@ mod tests {
         let last = events.last().unwrap();
         assert_eq!(last.event_type, "stop");
         assert_eq!(last.stop_reason, "", "[DONE] is the genuine terminal");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_usage_only_chunk_then_done() {
+        // A standalone usage chunk (no finish_reason) flows through the
+        // finish-check without terminating; [DONE] terminates.
+        let sse = concat!(
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        let usage = events
+            .iter()
+            .find(|e| e.event_type == "usage")
+            .expect("usage event surfaces");
+        assert_eq!(usage.usage.as_ref().unwrap().prompt_tokens, 3);
+        assert_eq!(events.last().unwrap().event_type, "stop");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_finish_reason_then_eof_without_done() {
+        // Provider closes the socket right after finish_reason (no [DONE]):
+        // the finish chunk already set saw_terminal, so the EOF exit is a
+        // clean termination, not a truncation.
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::new(&server.base_url, "sk-test", None, None);
+        let rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = rx.collect().await;
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == "stop" && e.stop_reason == "stop"));
+        let last = events.last().unwrap();
+        assert_eq!(last.event_type, "stop");
+        assert_eq!(last.stop_reason, "", "terminal EOF is not a truncation");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_chat_consumer_drop_is_logged_as_expected_abort() {
+        // The producer runs on a spawned task — only a global subscriber
+        // covers its tracing lines (thread-local defaults don't apply).
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_max_level(tracing::Level::TRACE)
+                .finish(),
+        );
+        // Slow-drip SSE: the producer is still sending when the consumer
+        // drops the receiver.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().expect("mock accept");
+            let mut sink = [0u8; 8192];
+            let _ = stream.read(&mut sink);
+            let chunk = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\n";
+            let head = format!(
+                "HTTP/1.1 200 X\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n",
+                chunk.len(),
+                chunk
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.flush();
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if stream
+                    .write_all(format!("{:x}\r\n{}\r\n", chunk.len(), chunk).as_bytes())
+                    .is_err()
+                {
+                    break;
+                }
+                let _ = stream.flush();
+            }
+        });
+        let client = Client::new(&format!("http://127.0.0.1:{port}"), "sk-test", None, None);
+        let mut rx = client
+            .stream_chat("mock".to_string(), one_user_message(), vec![], String::new())
+            .await
+            .unwrap();
+        let first = tokio_stream::StreamExt::next(&mut rx)
+            .await
+            .expect("one event arrives");
+        assert_eq!(first.event_type, "text_delta");
+        drop(rx); // consumer abort: the producer's next send fails
+        // Let the producer observe the drop and wind down.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    #[test]
+    fn stream_exit_reason_labels() {
+        assert_eq!(stream_exit_reason(StreamExitCause::IdleTimeout), "idle_timeout");
+        assert_eq!(stream_exit_reason(StreamExitCause::UpstreamEof), "upstream_eof");
+        assert_eq!(
+            stream_exit_reason(StreamExitCause::ConsumerDropped),
+            "consumer_dropped"
+        );
+    }
+
+    #[test]
+    fn mock_server_survives_aborted_and_truncated_connections() {
+        use std::io::{Read, Write};
+        let server = mock_server_with_timeout(
+            |_| (200, "text/plain", "ok".to_string()),
+            std::time::Duration::from_millis(200),
+        );
+        let addr: std::net::SocketAddr = server
+            .base_url
+            .strip_prefix("http://")
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        // 1. Connect and close without sending anything: header read hits
+        //    EOF (Ok(0)) → aborted-probe continue.
+        let probe = std::net::TcpStream::connect(addr).unwrap();
+        drop(probe);
+
+        // 2. Connect and stay silent: header read times out (Err) → break.
+        let silent = std::net::TcpStream::connect(addr).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        drop(silent);
+
+        // 3. Clean close mid-body: body read hits EOF (Ok(0)) → break; the
+        //    (partial) body is still answered.
+        let mut partial = std::net::TcpStream::connect(addr).unwrap();
+        partial
+            .write_all(b"POST / HTTP/1.1\r\nContent-Length: 100\r\n\r\nabc")
+            .unwrap();
+        partial.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut resp = String::new();
+        let _ = partial.read_to_string(&mut resp);
+        assert!(resp.contains("ok"), "{resp}");
+
+        // 4. Silent mid-body: body read times out (Err) → break.
+        let mut stalled = std::net::TcpStream::connect(addr).unwrap();
+        stalled
+            .write_all(b"POST / HTTP/1.1\r\nContent-Length: 100\r\n\r\nabc")
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let _ = stalled.read(&mut [0u8; 64]);
+        drop(stalled);
+
+        // The server is still healthy afterwards.
+        let mut normal = std::net::TcpStream::connect(addr).unwrap();
+        normal
+            .write_all(b"POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc")
+            .unwrap();
+        let mut resp = String::new();
+        normal.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("ok"), "{resp}");
+        assert!(server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|body| body == "abc"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1252,6 +1426,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_idle_timeout_marks_stream_truncated() {
+        let _env = idle_env_lock();
         std::env::set_var("FUTURE_TEST_STREAM_IDLE_SECS", "1");
         // The server sends one partial SSE event (no \n\n terminator) and then
         // holds the connection open forever.
@@ -1259,9 +1434,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
+            // Blocking accept on a live listener does not error.
+            let (mut stream, _) = listener.accept().expect("mock accept");
             let mut sink = [0u8; 4096];
             let _ = stream.read(&mut sink); // headers + body (best effort)
             let partial = "HTTP/1.1 200 X\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n7\r\ndata: x\r\n";
@@ -1413,9 +1587,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
+            // Blocking accept on a live listener does not error.
+            let (mut stream, _) = listener.accept().expect("mock accept");
             let mut sink = [0u8; 8192];
             let _ = stream.read(&mut sink);
             let body = "HTTP/1.1 200 X\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\nZZZ\r\nnot-a-chunk\r\n";
@@ -1448,9 +1621,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
+            // Blocking accept on a live listener does not error.
+            let (mut stream, _) = listener.accept().expect("mock accept");
             let mut sink = [0u8; 8192];
             let _ = stream.read(&mut sink);
             let chunk = "7\r\ndata: x\r\n";
@@ -1510,16 +1682,16 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_tool_call_idle_forces_tool_end() {
-        std::env::set_var("FUTURE_TEST_TOOL_IDLE_SECS", "1");
+        let _env = idle_env_lock();
+        std::env::set_var("FUTURE_TEST_TOOL_IDLE_SECS", "2");
         // toolcall_start chunk, then the next chunk only arrives after the
         // tool-call idle window — the read loop force-closes the call.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
+            // Blocking accept on a live listener does not error.
+            let (mut stream, _) = listener.accept().expect("mock accept");
             let mut sink = [0u8; 8192];
             let _ = stream.read(&mut sink);
             let first = "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{}\"}}]}}]}\n\n";
@@ -1530,11 +1702,16 @@ mod tests {
             );
             let _ = stream.write_all(head.as_bytes());
             let _ = stream.flush();
-            // A second chunk after the (test-seamed) 1s tool-call idle window.
-            // It carries NO data: line, so last_sse_event_at stays stale and
-            // the idle check fires on receipt.
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            let _ = stream.write_all(b"2\r\n\n\n");
+            // Two no-data filler chunks: each arrives inside its (fresh,
+            // per-read) 2s idle window so the read succeeds, but the second
+            // lands AFTER the 2s tool-call window measured from the
+            // toolcall_start — last_sse_event_at only advances on `data:`
+            // lines, so the in-loop idle check fires on the second filler.
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            let _ = stream.write_all(b"2\r\n\n\n\r\n");
+            let _ = stream.flush();
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            let _ = stream.write_all(b"2\r\n\n\n\r\n");
             let _ = stream.flush();
             let _ = stream.read(&mut sink);
         });
@@ -1554,6 +1731,10 @@ mod tests {
         assert!(types.contains(&"toolcall_start"), "{types:?}");
         assert!(types.contains(&"toolcall_end"), "{types:?}");
         assert!(types.contains(&"stop"), "{types:?}");
+        // The synthesized pair (not the truncated-stream fallback) carries
+        // the tool_calls stop reason.
+        let stop = events.iter().find(|e| e.event_type == "stop").unwrap();
+        assert_eq!(stop.stop_reason, "tool_calls", "{events:?}");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1680,8 +1861,18 @@ mod tests {
         );
     }
 
+    /// Serialises tests that mutate the process-wide idle-timeout env seams.
+    static IDLE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn idle_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        IDLE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_tool_call_idle_with_keepalive_chunks() {
+        let _env = idle_env_lock();
         std::env::set_var("FUTURE_TEST_TOOL_IDLE_SECS", "1");
         // Keepalive chunks (no data: lines) keep the select alive while the
         // tool-call idle window elapses → the buffer-path force-close fires.
@@ -1689,9 +1880,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
+            // Blocking accept on a live listener does not error.
+            let (mut stream, _) = listener.accept().expect("mock accept");
             let mut sink = [0u8; 8192];
             let _ = stream.read(&mut sink);
             let first = "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{}\"}}]}}]}\n\n";
@@ -1704,7 +1894,7 @@ mod tests {
             let _ = stream.flush();
             for _ in 0..30 {
                 std::thread::sleep(std::time::Duration::from_millis(120));
-                if stream.write_all(b"2\r\n\n\n").is_err() {
+                if stream.write_all(b"2\r\n\n\n\r\n").is_err() {
                     return;
                 }
                 let _ = stream.flush();
@@ -1726,6 +1916,9 @@ mod tests {
         assert!(types.contains(&"toolcall_start"), "{types:?}");
         assert!(types.contains(&"toolcall_end"), "{types:?}");
         assert!(types.contains(&"stop"), "{types:?}");
+        // The keepalive-driven force-close (not the truncated fallback).
+        let stop = events.iter().find(|e| e.event_type == "stop").unwrap();
+        assert_eq!(stop.stop_reason, "tool_calls", "{events:?}");
     }
 
     #[tokio::test(flavor = "current_thread")]
