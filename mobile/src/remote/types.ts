@@ -34,6 +34,8 @@ export interface RemoteSession {
   title: string;
   mode?: "chat" | "workspace";
   workspaceId?: string;
+  /** Pinned to the top of the session list (desktop `threads.pinned`). */
+  pinned?: boolean;
   streaming: boolean;
   status?: string;
 }
@@ -51,6 +53,8 @@ export interface PresenceSession {
   title: string;
   mode?: "chat" | "workspace";
   workspaceId?: string;
+  /** Desktop `threads.pinned` — hoisted to the top of the session list. */
+  pinned?: boolean;
   streaming: boolean;
   status?: string;
 }
@@ -307,6 +311,9 @@ export interface RemoteCommand {
   name?: string;
   transferName?: string;
   workspaceId?: string;
+  /** Thread-scoped mutating commands (delete_session / set_session_pinned). */
+  threadId?: string;
+  pinned?: boolean;
   protocolVersion?: number;
   pairId?: string;
   deviceId?: string;

@@ -172,6 +172,18 @@ async function attemptPendingRevoke(pending: PendingRevoke): Promise<void> {
   });
 }
 
+/**
+ * Stable pinned-first reorder for optimistic pin/unpin. Pinned sessions move
+ * to the top in their original relative order; everything else keeps the
+ * incoming (desktop-sorted) order. Matches the desktop sidebar's `pinned DESC`
+ * grouping, which the pushed snapshot also converges on.
+ */
+function sortPinnedFirst(list: RemoteSession[]): RemoteSession[] {
+  const pinned = list.filter(session => session.pinned);
+  const rest = list.filter(session => !session.pinned);
+  return [...pinned, ...rest];
+}
+
 interface RemoteContextValue {
   phase: ConnectionPhase;
   error: string | null;
@@ -212,7 +224,9 @@ interface RemoteContextValue {
   abort(): Promise<void>;
   setModel(modelId: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<void>;
-  rename(name: string): Promise<void>;
+  rename(sessionId: string, name: string): Promise<void>;
+  deleteSession(sessionId: string, threadId: string): Promise<void>;
+  setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
 }
 
@@ -562,6 +576,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             title: overrides[s.sessionId] ?? s.title,
             mode: s.mode,
             workspaceId: s.workspaceId,
+            pinned: s.pinned,
             streaming: s.streaming,
             status: s.status,
           }));
@@ -1088,17 +1103,49 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     }
   }, []);
 
-  const rename = useCallback(async (name: string) => {
+  const rename = useCallback(async (sessionId: string, name: string) => {
     const client = clientRef.current;
-    const sessionId = selectedRef.current;
     if (!client || !sessionId || !name.trim()) return;
-    await client.request({ type: "set_session_name", sessionId, name: name.trim() }, sessionId);
+    const trimmed = name.trim();
+    await client.request({ type: "set_session_name", sessionId, name: trimmed }, sessionId);
+    setTitleOverrides(prev => ({ ...prev, [sessionId]: trimmed }));
     setSessions(current =>
       current.map(session =>
-        session.sessionId === sessionId ? { ...session, title: name.trim() } : session,
+        session.sessionId === sessionId ? { ...session, title: trimmed } : session,
       ),
     );
   }, []);
+
+  const deleteSession = useCallback(
+    async (sessionId: string, threadId: string) => {
+      const client = clientRef.current;
+      if (!client || !sessionId || !threadId) return;
+      await client.request({ type: "delete_session", sessionId, threadId }, sessionId);
+      setSessions(current => current.filter(session => session.sessionId !== sessionId));
+      if (selectedRef.current === sessionId) closeConversation();
+    },
+    [closeConversation],
+  );
+
+  const setSessionPinned = useCallback(
+    async (sessionId: string, threadId: string, pinned: boolean) => {
+      const client = clientRef.current;
+      if (!client || !sessionId || !threadId) return;
+      await client.request(
+        { type: "set_session_pinned", sessionId, threadId, pinned },
+        sessionId,
+      );
+      // Optimistic local reorder: pinned sessions stay on top, everything else
+      // keeps the desktop's recency order. The pushed snapshot converges on the
+      // same layout (the desktop sorts by `pinned DESC, last_message_at DESC`).
+      setSessions(current =>
+        sortPinnedFirst(current.map(session =>
+          session.sessionId === sessionId ? { ...session, pinned } : session,
+        )),
+      );
+    },
+    [],
+  );
 
   const decideApproval = useCallback(async (id: string, decision: "approved" | "rejected") => {
     const client = clientRef.current;
@@ -1167,6 +1214,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setModel,
       setThinkingLevel,
       rename,
+      deleteSession,
+      setSessionPinned,
       decideApproval,
     }),
     [
@@ -1177,6 +1226,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       closeConversation,
       decideApproval,
       desktopOnline,
+      deleteSession,
       draft,
       error,
       modelId,
@@ -1193,6 +1243,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedSessionId,
       selectedTitle,
       sendMessage,
+      setSessionPinned,
       prepareAttachment,
       cachedAttachment,
       downloadAttachment,

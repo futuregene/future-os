@@ -935,6 +935,7 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
             "title": t.title,
             "mode": t.mode,
             "workspaceId": t.workspace_id,
+            "pinned": t.pinned,
             "streaming": streaming,
             "status": status,
         }));
@@ -944,6 +945,7 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
         push_sig_field(&mut signature, &t.title);
         push_sig_field(&mut signature, &t.mode);
         push_sig_field(&mut signature, &t.workspace_id);
+        push_sig_field(&mut signature, if t.pinned { "1" } else { "0" });
         push_sig_field(&mut signature, if streaming { "1" } else { "0" });
         push_sig_field(&mut signature, status.unwrap_or(""));
     }
@@ -1009,6 +1011,7 @@ fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
             "title": t.title,
             "mode": t.mode,
             "workspaceId": t.workspace_id,
+            "pinned": t.pinned,
             "streaming": streaming,
             "status": status,
         }));
@@ -1017,6 +1020,7 @@ fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
         push_sig_field(&mut signature, &t.title);
         push_sig_field(&mut signature, &t.mode);
         push_sig_field(&mut signature, &t.workspace_id);
+        push_sig_field(&mut signature, if t.pinned { "1" } else { "0" });
         push_sig_field(&mut signature, if streaming { "1" } else { "0" });
         push_sig_field(&mut signature, status.unwrap_or(""));
     }

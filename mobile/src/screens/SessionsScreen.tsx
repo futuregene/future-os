@@ -4,8 +4,12 @@ import {
   Link2,
   LogOut,
   MessageCircle,
+  Pencil,
+  Pin,
+  PinOff,
   Plus,
   Settings,
+  Trash2,
   Unplug,
   X,
 } from "lucide-react-native";
@@ -20,6 +24,8 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
+  TouchableWithoutFeedback,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -98,6 +104,9 @@ export function SessionsScreen() {
   const [newMode, setNewMode] = useState<Tab>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [menuSession, setMenuSession] = useState<RemoteSession | null>(null);
+  const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
+  const [renameValue, setRenameValue] = useState("");
 
   const chats = useMemo(
     () => remote.sessions.filter(session => session.mode !== "workspace"),
@@ -132,10 +141,57 @@ export function SessionsScreen() {
     void remote.newConversation(newMode, workspaceId);
   };
 
+  const openRename = (session: RemoteSession) => {
+    setRenameTarget(session);
+    setRenameValue(session.title || "");
+  };
+
+  const submitRename = async () => {
+    const session = renameTarget;
+    const name = renameValue.trim();
+    if (!session || !name) return;
+    setRenameTarget(null);
+    try {
+      await remote.rename(session.sessionId, name);
+    } catch {
+      Alert.alert(t("common.error"));
+    }
+  };
+
+  const togglePin = (session: RemoteSession) => {
+    setMenuSession(null);
+    void remote
+      .setSessionPinned(session.sessionId, session.threadId, !session.pinned)
+      .catch(() => Alert.alert(t("common.error")));
+  };
+
+  const confirmDelete = (session: RemoteSession) => {
+    setMenuSession(null);
+    Alert.alert(
+      t("sessions.delete"),
+      t("sessions.deleteConfirm", {
+        title: session.title || t("sessions.unnamed"),
+      }),
+      [
+        { text: t("chat.cancel"), style: "cancel" },
+        {
+          text: t("sessions.delete"),
+          style: "destructive",
+          onPress: () => {
+            void remote
+              .deleteSession(session.sessionId, session.threadId)
+              .catch(() => Alert.alert(t("common.error")));
+          },
+        },
+      ],
+    );
+  };
+
   const renderSession = (item: RemoteSession, inWorkspace = false) => (
     <Pressable
       accessibilityRole="button"
       key={item.sessionId}
+      onLongPress={() => setMenuSession(item)}
       onPress={() => void remote.selectSession(item.sessionId)}
       style={({ pressed }) => [
         styles.session,
@@ -146,6 +202,13 @@ export function SessionsScreen() {
       <Text numberOfLines={1} style={styles.sessionTitle}>
         {item.title || t("sessions.unnamed")}
       </Text>
+      {item.pinned && (
+        <Pin
+          accessibilityLabel={t("sessions.pin")}
+          color={colors.accent}
+          size={14}
+        />
+      )}
       <SessionStatusIndicator
         status={item.status}
         streaming={item.streaming}
@@ -397,6 +460,118 @@ export function SessionsScreen() {
             </View>
           </View>
         </Modal>
+
+        <Modal
+          animationType="fade"
+          onRequestClose={() => setMenuSession(null)}
+          transparent
+          visible={menuSession !== null}
+        >
+          <TouchableWithoutFeedback onPress={() => setMenuSession(null)}>
+            <View style={styles.menuOverlay}>
+              <TouchableWithoutFeedback>
+                <View style={styles.menu}>
+                  <Text numberOfLines={1} style={styles.menuTitle}>
+                    {menuSession?.title || t("sessions.unnamed")}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      if (menuSession) togglePin(menuSession);
+                    }}
+                    style={({ pressed }) => [styles.menuOption, pressed && styles.pressed]}
+                  >
+                    {menuSession?.pinned ? (
+                      <PinOff color={colors.ink} size={18} />
+                    ) : (
+                      <Pin color={colors.ink} size={18} />
+                    )}
+                    <Text style={styles.menuOptionText}>
+                      {menuSession?.pinned ? t("sessions.unpin") : t("sessions.pin")}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      if (menuSession) {
+                        openRename(menuSession);
+                        setMenuSession(null);
+                      }
+                    }}
+                    style={({ pressed }) => [styles.menuOption, pressed && styles.pressed]}
+                  >
+                    <Pencil color={colors.ink} size={18} />
+                    <Text style={styles.menuOptionText}>{t("chat.rename")}</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      if (menuSession) confirmDelete(menuSession);
+                    }}
+                    style={({ pressed }) => [styles.menuOption, pressed && styles.pressed]}
+                  >
+                    <Trash2 color={colors.danger} size={18} />
+                    <Text style={[styles.menuOptionText, styles.menuOptionDanger]}>
+                      {t("sessions.delete")}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setMenuSession(null)}
+                    style={({ pressed }) => [
+                      styles.menuOption,
+                      styles.menuOptionCancel,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.menuOptionCancelText}>{t("chat.cancel")}</Text>
+                  </Pressable>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
+
+        <Modal
+          animationType="fade"
+          onRequestClose={() => setRenameTarget(null)}
+          transparent
+          visible={renameTarget !== null}
+        >
+          <View style={styles.overlay}>
+            <View style={styles.dialog}>
+              <Text style={styles.dialogTitle}>{t("chat.renameTitle")}</Text>
+              <TextInput
+                autoFocus
+                onChangeText={setRenameValue}
+                onSubmitEditing={() => void submitRename()}
+                placeholder={t("sessions.unnamed")}
+                placeholderTextColor={colors.inkMuted}
+                returnKeyType="done"
+                style={styles.nameInput}
+                value={renameValue}
+              />
+              <View style={styles.dialogActions}>
+                <View style={styles.dialogAction}>
+                  <Button
+                    compact
+                    label={t("chat.cancel")}
+                    onPress={() => setRenameTarget(null)}
+                    variant="secondary"
+                  />
+                </View>
+                <View style={styles.dialogAction}>
+                  <Button
+                    compact
+                    disabled={!renameValue.trim()}
+                    label={t("chat.save")}
+                    onPress={() => void submitRename()}
+                  />
+                </View>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
     </SafeAreaView>
   );
@@ -586,4 +761,47 @@ const styles = StyleSheet.create({
   workspaceOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   workspaceOptionName: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
   settingsPlaceholder: { color: colors.inkSoft, fontSize: 14, lineHeight: 20 },
+  menuOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: colors.overlay,
+  },
+  menu: {
+    gap: spacing.xs,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xl,
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+  },
+  menuTitle: {
+    color: colors.inkMuted,
+    fontSize: 13,
+    fontWeight: "600",
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.xs,
+  },
+  menuOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+  },
+  menuOptionText: { color: colors.ink, fontSize: 16, fontWeight: "500" },
+  menuOptionDanger: { color: colors.danger, fontWeight: "600" },
+  menuOptionCancel: { justifyContent: "center" },
+  menuOptionCancelText: { color: colors.inkSoft, fontSize: 16, fontWeight: "600" },
+  nameInput: {
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    color: colors.ink,
+    fontSize: 15,
+  },
+  dialogActions: { flexDirection: "row", gap: spacing.md },
+  dialogAction: { flex: 1 },
 });
