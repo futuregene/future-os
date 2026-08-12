@@ -412,6 +412,48 @@ pub enum Event {
         seq: u32,
         ts: u64,
     },
+    /// P1-1②: decision_summary projection — one compact quota decision
+    /// persisted per executed turn (LoopX `decision_summary.py` /
+    /// `compact_quota_decision`). Projection-only: replay ignores it; the
+    /// read model (`quota::decision_summary`) serves status/TUI/desktop and
+    /// `quota decisions` without re-running the kernel.
+    DecisionSummaryRecorded {
+        goal_id: String,
+        summary: crate::quota::decision_summary::DecisionSummary,
+        ts: u64,
+    },
+    /// P1-1③: heartbeat receipt — the per-turn heartbeat packet was issued
+    /// to a host executor with this decision (LoopX `heartbeat_receipt.py`).
+    /// `turn_instance_id` anchors the receipt the way LoopX keys on
+    /// (goal, agent, run/turn instance); `todo_id` is the selected todo when
+    /// the turn had one. Projection-only (audit trail).
+    HeartbeatReceiptRecorded {
+        goal_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        turn_instance_id: String,
+        #[serde(default)]
+        todo_id: Option<String>,
+        decision: String,
+        #[serde(default)]
+        reason_code: String,
+        ts: u64,
+    },
+    /// P1-1③: scheduler ack — the host scheduler acknowledged the cadence
+    /// hint it applied (LoopX `scheduler_ack.py`). Recorded via
+    /// `scheduler ack`; `source` identifies the acking surface
+    /// (`scheduler_cli`, `codex_app`, …). Projection-only (audit trail).
+    SchedulerAcked {
+        goal_id: String,
+        agent_id: String,
+        action: String,
+        #[serde(default)]
+        cadence_class: String,
+        #[serde(default)]
+        rrule: Option<String>,
+        source: String,
+        ts: u64,
+    },
     /// G-16: a supervisor proposed a decision for a target agent (LoopX
     /// SUPERVISOR_PROPOSED). Projection-only — supervisor state is read from
     /// the event log, not folded into goal state.
@@ -470,6 +512,9 @@ impl Event {
             | Event::DeliveryOutcomeRecorded { goal_id, .. }
             | Event::FollowthroughCreated { goal_id, .. }
             | Event::RewardSignalRecorded { goal_id, .. }
+            | Event::DecisionSummaryRecorded { goal_id, .. }
+            | Event::HeartbeatReceiptRecorded { goal_id, .. }
+            | Event::SchedulerAcked { goal_id, .. }
             | Event::SupervisorProposed { goal_id, .. }
             | Event::SupervisorReceiptRecorded { goal_id, .. } => goal_id,
         }
@@ -1422,8 +1467,13 @@ fn apply(goal: &mut Goal, event: Event) {
         } => goal.apply_followthrough(&source_todo_id, &followup_todo_id, ts),
         // P1-5: reward signals are projection-only (read from the event log
         // by the scoped-feedback query; goal state is unchanged) — same
-        // treatment as the G-16 supervisor events.
+        // treatment as the G-16 supervisor events and the P1-1 quota decision
+        // read model (decision summaries / heartbeat receipts / scheduler
+        // acks are served from the event log by `quota::decision_summary`).
         Event::RewardSignalRecorded { .. }
+        | Event::DecisionSummaryRecorded { .. }
+        | Event::HeartbeatReceiptRecorded { .. }
+        | Event::SchedulerAcked { .. }
         | Event::SupervisorProposed { .. }
         | Event::SupervisorReceiptRecorded { .. } => {}
     }

@@ -17,6 +17,7 @@ pub(crate) fn identity_gate(goal: &Goal, agent_id: Option<&str>) -> Option<Shoul
     // LoopX: state=blocked_health, status=quota_collection_failed, ok=false.
     let mut p = packet(
         goal,
+        crate::quota::error_codes::DecisionReasonCode::IdentityNotRegistered,
         "skip",
         false,
         "automation_prompt_upgrade_required",
@@ -61,6 +62,7 @@ mod tests {
         assert_eq!(p.status, "quota_collection_failed");
         assert_eq!(p.decision, "skip");
         assert_eq!(p.effective_action, "automation_prompt_upgrade_required");
+        assert_eq!(p.reason_code, "identity_not_registered");
         assert!(p.reason.contains("register this agent identity"));
     }
 }

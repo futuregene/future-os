@@ -423,6 +423,10 @@ fn legacy_packet(
         should_run,
         effective_action: effective_action.to_string(),
         reason: reason.to_string(),
+        // P1-1: the pre-split baseline predates machine-readable reason
+        // codes; the split-regression harness asserts the current packet
+        // carries one, then excludes it from the parity diff.
+        reason_code: String::new(),
         state: if should_run { "eligible".to_string() } else { "waiting".to_string() },
         waiting_on: "codex".to_string(),
         status: match mode {
