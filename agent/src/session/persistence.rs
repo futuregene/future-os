@@ -1296,7 +1296,9 @@ mod tests {
         let persistence = SessionPersistence::with_idle_timeout(
             manager,
             "session-1".to_string(),
-            Duration::from_millis(20),
+            // Generous idle timeout: the steal must land before the worker's
+            // timeout fires, even under instrumented (slow) test runs.
+            Duration::from_millis(500),
         );
         persistence
             .append(vec![SessionEntry::new_user(
@@ -1308,7 +1310,7 @@ mod tests {
         persistence.steal_worker_slot_for_test();
         // The timing-out worker sees a foreign generation in the slot and
         // leaves it alone (negative guard path), then exits.
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(900));
         let slot = persistence.inner.worker.lock();
         assert_eq!(slot.as_ref().map(|s| s.generation), Some(u64::MAX));
         drop(slot);

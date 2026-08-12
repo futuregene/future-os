@@ -116,10 +116,8 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
     #[cfg(not(windows))]
     let profiler_guard = match &profile_path {
         Some(_path) => {
-            tracing::info!(
-                "CPU profiling enabled → will write flamegraph to {}",
-                _path.display()
-            );
+            let profile_target = _path.display();
+            tracing::info!("CPU profiling enabled, writing flamegraph to {profile_target}");
             let build_result = if profiler_fail_at("build") {
                 Err(pprof::Error::CreatingError)
             } else {
@@ -391,13 +389,8 @@ async fn async_main(
     // Resolve base URL: models.json > auth.json baseUrl > built-in default
     let base_url = model_config
         .as_ref()
-        .and_then(|m| {
-            if m.base_url.is_empty() {
-                None
-            } else {
-                Some(m.base_url.clone())
-            }
-        })
+        .filter(|m| !m.base_url.is_empty())
+        .map(|m| m.base_url.clone())
         .or_else(|| auth_store.base_url(&resolved_model))
         .or_else(|| {
             model_config
@@ -420,13 +413,10 @@ async fn async_main(
                 .and_then(|m| auth_store.get(&m.provider))
         })
         .or_else(|| {
-            model_config.as_ref().and_then(|m| {
-                if m.api_key.is_empty() {
-                    None
-                } else {
-                    Some(m.api_key.clone())
-                }
-            })
+            model_config
+                .as_ref()
+                .filter(|m| !m.api_key.is_empty())
+                .map(|m| m.api_key.clone())
         })
         .or_else(|| auth_store.default_key())
         .unwrap_or_default();
