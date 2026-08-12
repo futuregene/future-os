@@ -425,6 +425,10 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = accept_async(stream).await.unwrap();
+            // Wait for the client's trigger frame: a broadcast receiver only
+            // sees frames sent AFTER subscribe, so sending blind races the
+            // client's subscribe (flaked on fast Linux CI runners).
+            let _ = ws.next().await;
             let _ = ws.send(Message::Binary(vec![1, 2, 3])).await;
             let _ = ws.send(Message::Ping(vec![9])).await;
             let _ = ws.send(Message::Text("{\"hello\":true}".to_string())).await;
@@ -436,6 +440,7 @@ mod tests {
             .await
             .unwrap();
         let mut rx = transport.subscribe();
+        transport.send("{\"ready\":true}");
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
             .await
             .unwrap()
