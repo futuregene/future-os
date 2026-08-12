@@ -3,20 +3,26 @@
 //
 // Three cases, all keyed off "is this a release tag":
 //   - on a `vX.Y.Z` tag    → release, version = "X.Y.Z"   (X must be ≥ 1)
-//   - other online build   → dev,    version = "0.0.<commit-count>-<hash>"
-//   - local build          → dev,    version = "0.0.<commit-count>-<hash>+local"
+//   - other online build   → dev,    version = "0.0.2-<hash>"
+//   - local build          → dev,    version = "0.0.2-<hash>+local"
 //                                      (…+local.dirty when the tree is dirty)
-//   - iOS TestFlight       → dev,    version = "0.0.<commit-count>"
+//   - iOS TestFlight       → dev,    version = "0.0.2"
 //                                      (plain number: TestFlight rejects suffixes;
 //                                      injected via FUTURE_VERSION by the workflow)
 //
-// The commit count (git rev-list --count HEAD) makes the version monotonic
-// across builds; the short hash pinpoints the exact code (`git show <hash>`) and
-// keeps distinct branches from colliding on the same 0.0.<count>. Local builds
-// add `+local` build metadata so they're never mistaken for the matching online
-// build, and `.dirty` when the working tree has uncommitted changes — a dirty
-// local build does NOT correspond to that commit, so the hash must not be
-// trusted verbatim.
+// The dev minor is pinned at `0.0.2` (DEV_VERSION below), NOT derived from git.
+// CI uses a shallow checkout (fetch-depth: 1), so `git rev-list --count HEAD`
+// always returns 1 there and a commit-count version would be frozen at 0.0.1.
+// The short hash still identifies the exact code; local builds add `+local` (and
+// `.dirty` when the tree is dirty) so a tester's laptop build is never mistaken
+// for the matching online build, and a dirty local build's hash must not be
+// trusted verbatim. Store build numbers (Android versionCode / iOS
+// CFBundleVersion) are injected separately by the workflows via github.run_number,
+// so the display version does not need to be monotonic.
+//
+// Bump DEV_VERSION (0.0.2 → 0.0.3) whenever the test-build version should
+// advance — e.g. TestFlight already accepted a larger build number under the
+// current marketing version, so a new marketing version must reset the sequence.
 //
 // The release/dev channel is DERIVED from the version string, not injected
 // separately: a version whose FIRST component is `0` is a dev build; anything
@@ -37,6 +43,9 @@ import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+/** Dev-build display version (semver core; the short hash is appended later). */
+const DEV_VERSION = "0.0.2";
+
 /** Resolve the display version string for this build. */
 export function resolveVersion() {
   // Explicit override (set by CI job env / Makefile) wins.
@@ -49,18 +58,18 @@ export function resolveVersion() {
   if (tag) {
     return tag[1];
   }
-  // Dev build: 0.0.<commit-count>-<hash>. The commit count is monotonic (build
-  // number for stores); the short hash locates the exact code and keeps branches
-  // from colliding on the same count.
-  const count = gitCommitCount();
+  // Dev build: pinned 0.0.2 + short hash. The hash locates the exact code and
+  // keeps distinct branches from colliding on the same display version. A
+  // commit-count scheme is useless in CI (shallow checkout → always 1), so the
+  // minor is fixed and advanced manually via DEV_VERSION.
   const hash = gitShortHash();
   // Online (CI) builds are reproducible from the pushed commit, so the hash
   // stands alone. Local builds add `+local` (and `.dirty` for an uncommitted
   // tree) so a tester's laptop build is never confused with the online one.
   if (process.env.GITHUB_ACTIONS || process.env.CI) {
-    return `0.0.${count}-${hash}`;
+    return `${DEV_VERSION}-${hash}`;
   }
-  return `0.0.${count}-${hash}+local${gitDirty() ? ".dirty" : ""}`;
+  return `${DEV_VERSION}-${hash}+local${gitDirty() ? ".dirty" : ""}`;
 }
 
 /** Short git hash, or "unknown" outside a git checkout (tarball build). */
@@ -72,18 +81,6 @@ function gitShortHash() {
   }
   catch {
     return "unknown";
-  }
-}
-
-/** Total commit count on HEAD, or 0 outside a git checkout. */
-function gitCommitCount() {
-  try {
-    return execSync("git rev-list --count HEAD", { stdio: ["ignore", "pipe", "ignore"] })
-      .toString()
-      .trim() || "0";
-  }
-  catch {
-    return "0";
   }
 }
 

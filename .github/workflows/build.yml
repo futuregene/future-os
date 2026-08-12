@@ -7,7 +7,7 @@ on:
 
 jobs:
   # Compute the build version once (single source of truth: scripts/version.mjs).
-  # Manual builds resolve to a development version (`0.0.0-dev.<hash>`).
+  # Manual builds resolve to a development version (`0.0.2-<hash>`).
   version:
     name: Resolve version
     runs-on: ubuntu-latest
