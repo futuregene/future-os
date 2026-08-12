@@ -1,5 +1,10 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  localStorage.removeItem("future.language");
+});
 
 describe("i18n language helpers", () => {
   it("reads a stored language at init", async () => {
@@ -9,11 +14,26 @@ describe("i18n language helpers", () => {
     expect(mod.getLanguage()).toBe("en");
   });
 
-  it("falls back to the default for an unrecognized stored value", async () => {
+  it("follows the OS language when no preference is stored (first run)", async () => {
+    vi.resetModules();
+    // jsdom's navigator.language defaults to "en-US" → the English bundle.
+    expect(navigator.language).toBe("en-US");
+    const mod = await import("./index");
+    expect(mod.getLanguage()).toBe("en");
+  });
+
+  it("detects a Chinese OS and picks zh on first run", async () => {
+    vi.resetModules();
+    vi.stubGlobal("navigator", { language: "zh-CN" });
+    const mod = await import("./index");
+    expect(mod.getLanguage()).toBe("zh");
+  });
+
+  it("falls back to the system language for an unrecognized stored value", async () => {
     vi.resetModules();
     localStorage.setItem("future.language", "fr");
     const mod = await import("./index");
-    expect(mod.getLanguage()).toBe("zh");
+    expect(mod.getLanguage()).toBe("en");
   });
 
   it("setLanguage persists the choice and switches the active language", async () => {
