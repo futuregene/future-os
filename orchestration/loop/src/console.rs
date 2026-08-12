@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use crate::cli::registry::CommandRegistry;
+use crate::cli::registry::{CommandRegistry, Journey};
 use crate::decision::{complete_todo, decide_for, MAX_REPAIR_ATTEMPTS};
 use crate::executor::{execute_turn, writeback};
 use crate::state::{now_epoch, Goal, RunRecord, TaskClass, Todo, TodoStatus};
@@ -153,6 +153,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "attention" => cmd_attention(&store, &args[1..]),
         "inbox" => cmd_inbox(&store, &args[1..]),
         "registry" => cmd_registry(&registry, &args[1..]),
+        "commands" => cmd_commands(&registry, &args[1..]),
         // ── P4 commands (G-18 / G-19 / G-20 / G-27) ───────────────────────
         "benchmark" => cmd_benchmark(&store, &args[1..]).await,
         "replay" => cmd_replay(&store, &args[1..]),
@@ -174,6 +175,64 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         }
     }
 }
+
+/// P1-9: operator journey assignments for the statically registered
+/// commands (`future loop commands` grouped view; LoopX `loopx commands`
+/// five-group presentation). Capability command hooks are not listed here —
+/// they keep the maintainer default as ecosystem/adapter surface. A test
+/// (`journey_assignments_cover_every_static_command`) keeps this table in
+/// sync with `build_cli_registry`.
+const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
+    // Start here — first goal, first status, install checks
+    ("goal", Journey::Starter),
+    ("status", Journey::Starter),
+    ("doctor", Journey::Starter),
+    ("agent", Journey::Starter),
+    // Daily operator — the day-to-day control surface
+    ("todo", Journey::Daily),
+    ("gate", Journey::Daily),
+    ("replan", Journey::Daily),
+    ("lease", Journey::Daily),
+    ("task-graph", Journey::Daily),
+    ("quota", Journey::Daily),
+    ("scheduler", Journey::Daily),
+    ("attention", Journey::Daily),
+    ("inbox", Journey::Daily),
+    ("diagnose", Journey::Daily),
+    ("evidence-log", Journey::Daily),
+    ("todo-event", Journey::Daily),
+    ("history", Journey::Daily),
+    ("handoff", Journey::Daily),
+    // Loop driver — per-turn execution surface for the driving agent
+    ("run", Journey::Driver),
+    ("turn", Journey::Driver),
+    ("heartbeat-prompt", Journey::Driver),
+    ("worker-bridge", Journey::Driver),
+    ("list", Journey::Driver),
+    ("scope", Journey::Driver),
+    ("lane", Journey::Driver),
+    ("supervisor", Journey::Driver),
+    // Setup & automation — one-time configuration
+    ("models", Journey::Setup),
+    ("authority", Journey::Setup),
+    ("profile", Journey::Setup),
+    ("store", Journey::Setup),
+    ("backfill", Journey::Setup),
+    ("privacy", Journey::Setup),
+    ("extension", Journey::Setup),
+    ("capability", Journey::Setup),
+    ("catalog", Journey::Setup),
+    ("serve-status", Journey::Setup),
+    // Maintainer & adapter — quality gates, retention, introspection
+    ("benchmark", Journey::Maintainer),
+    ("replay", Journey::Maintainer),
+    ("canary", Journey::Maintainer),
+    ("runs", Journey::Maintainer),
+    ("backup", Journey::Maintainer),
+    ("version", Journey::Maintainer),
+    ("registry", Journey::Maintainer),
+    ("commands", Journey::Maintainer),
+];
 
 /// G-26: build the command registry — groups + commands + capability command
 /// hooks (G-24), the aggregated help surface.
@@ -441,6 +500,12 @@ fn build_cli_registry() -> CommandRegistry {
         "inspect the CLI registry (groups/commands)",
         "registry [--format json|--json] [--include-experimental]",
     );
+    r.command(
+        cli,
+        "commands",
+        "grouped operator command reference (P1-9 journey view)",
+        "commands [--format json|--json] [--include-experimental]",
+    );
 
     let benchmark = r.group("benchmark", "benchmark closed loop (G-18)");
     r.command(
@@ -465,6 +530,12 @@ fn build_cli_registry() -> CommandRegistry {
         "run a smoke profile (release gate default)",
         "canary smoke [--profile core-control-plane|extension-runtime|release-gate] [--json]",
     );
+
+    // P1-9: journey metadata overlay (presentation only — the registry
+    // itself stays the flat machine catalog).
+    for (name, journey) in JOURNEY_ASSIGNMENTS {
+        r.set_journey(name, *journey);
+    }
 
     r
 }
@@ -4166,6 +4237,43 @@ fn cmd_registry(registry: &CommandRegistry, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// P1-9: `future loop commands` — the operator journey view (LoopX `loopx
+/// commands` five-group presentation). The registry stays the flat machine
+/// catalog; this is a pure presentation overlay over the same metadata.
+fn cmd_commands(registry: &CommandRegistry, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--format", "--json"])?;
+    let include_experimental = args.iter().any(|a| a == "--include-experimental");
+    if wants_json(args) {
+        let payload: Vec<serde_json::Value> = Journey::ALL
+            .iter()
+            .map(|j| {
+                let cmds: Vec<serde_json::Value> = registry
+                    .commands_in_journey(*j, include_experimental)
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "name": c.name,
+                            "summary": c.summary,
+                            "usage": c.usage,
+                            "experimental": c.experimental,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "journey": j.key(),
+                    "title": j.title(),
+                    "summary": j.summary(),
+                    "commands": cmds,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+    print!("{}", registry.render_journeys(include_experimental));
+    Ok(())
+}
+
 // ── P4: benchmark (G-18) ──────────────────────────────────────────────────
 
 /// `loopx benchmark protocol --route R [--json]` — the loop protocol
@@ -6137,6 +6245,67 @@ mod cli_quirks_tests {
         let registry = build_cli_registry();
         let help = render_command_help(&registry, "nope-not-a-command", false);
         assert!(help.contains("unknown command"), "got: {help}");
+    }
+
+    // P1-9: journey metadata + grouped command reference ──────────────────
+
+    #[test]
+    fn journey_assignments_cover_every_static_command() {
+        use std::collections::HashSet;
+        let registry = build_cli_registry();
+        // Capability command hooks are registered dynamically from the
+        // catalog and intentionally keep the maintainer default.
+        let hook_names: HashSet<String> =
+            crate::capabilities::catalog::CapabilityCatalog::with_builtin()
+                .records(true)
+                .iter()
+                .flat_map(|r| r.commands.iter().map(|c| c.name.clone()))
+                .collect();
+        let assigned: HashSet<&str> = JOURNEY_ASSIGNMENTS.iter().map(|(n, _)| *n).collect();
+        for c in registry.commands(true) {
+            if hook_names.contains(&c.name) {
+                continue;
+            }
+            assert!(
+                assigned.contains(c.name.as_str()),
+                "registered command `{}` has no journey assignment",
+                c.name
+            );
+        }
+        for name in &assigned {
+            assert!(
+                registry.find(name, true).is_some(),
+                "journey assignment `{name}` matches no registered command"
+            );
+        }
+    }
+
+    #[test]
+    fn commands_reference_groups_by_journey() {
+        let registry = build_cli_registry();
+        let text = registry.render_journeys(false);
+        for title in [
+            "Start here",
+            "Daily operator",
+            "Loop driver",
+            "Setup & automation",
+            "Maintainer & adapter",
+        ] {
+            assert!(text.contains(title), "missing journey `{title}`: {text}");
+        }
+        // spot-check placement
+        let starter = text.find("goal init --objective").unwrap();
+        let daily_pos = text.find("── Daily operator ──").unwrap();
+        assert!(starter < daily_pos, "goal must be in Start here: {text}");
+        let run_pos = text.find("run --goal G --agent-id A").unwrap();
+        assert!(run_pos > daily_pos, "run must come after daily: {text}");
+    }
+
+    #[test]
+    fn cmd_commands_rejects_unknown_flags() {
+        let registry = build_cli_registry();
+        let err = cmd_commands(&registry, &["--journey".to_string()]).unwrap_err();
+        assert!(format!("{err}").contains("unknown flag `--journey`"));
     }
 
     // ③ --format json detection + read-only JSON projections ───────────────
