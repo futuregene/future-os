@@ -32,6 +32,20 @@ export const LANGUAGE_LABELS: Record<Language, string> = {
 const STORAGE_KEY = "future.language";
 export const DEFAULT_LANGUAGE: Language = "zh";
 
+/**
+ * First-run default follows the OS: the webview mirrors the system locale, and
+ * we only ship zh/en bundles, so a Chinese system picks "zh" and any other
+ * language falls back to English. `navigator` is guarded for non-DOM contexts.
+ */
+function systemLanguage(): Language {
+  try {
+    return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+  }
+  catch {
+    return DEFAULT_LANGUAGE;
+  }
+}
+
 function readStoredLanguage(): Language {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -39,9 +53,9 @@ function readStoredLanguage(): Language {
       return stored;
   }
   catch {
-    // localStorage may be unavailable; fall through to the default.
+    // localStorage may be unavailable; fall through to the system language.
   }
-  return DEFAULT_LANGUAGE;
+  return systemLanguage();
 }
 
 const namespaces = Object.keys(resources[DEFAULT_LANGUAGE] ?? {});
