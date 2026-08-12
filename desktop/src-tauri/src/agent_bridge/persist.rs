@@ -1133,4 +1133,146 @@ mod tests {
             3,
         );
     }
+
+    #[test]
+    fn tool_input_string_layer_that_is_not_json_is_dropped() {
+        let fixture = fixture("persist-string-layer");
+        // tool_args is a JSON string whose content is NOT an object: the
+        // double-unwrap bails on the inner parse.
+        let not_an_object = serde_json::Value::String("plain text".to_string()).to_string();
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_start",
+            &json!({"tool_id": "tc-s", "tool_name": "write", "tool_args": not_an_object})
+                .to_string(),
+            0,
+        );
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "tool_id": "tc-s", "text": "Written"}).to_string(),
+            1,
+        );
+        assert!(artifacts(&fixture).is_empty());
+    }
+
+    #[test]
+    fn footer_exit_codes_above_one_are_failures() {
+        let fixture = fixture("persist-footer-fail");
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "shell", "tool_id": "tc-f", "text": "boom\n[exit: 2]"})
+                .to_string(),
+            0,
+        );
+        assert!(artifacts(&fixture).is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_command_is_not_soft_fail() {
+        assert!(!super::is_soft_fail_command(Some("   ")));
+        assert!(!super::is_soft_fail_command(Some("")));
+    }
+
+    #[test]
+    fn approval_persistence_failures_are_logged_not_raised() {
+        let fixture = fixture("persist-appr-errors");
+
+        // FK violation: the run does not exist, so the insert fails; the
+        // run-status CAS then matches nothing and the follow-up cancellation
+        // of the never-created row fails too. Everything is logged, nothing
+        // propagated.
+        persist_run_event(
+            Some("run-missing"),
+            "approval_request",
+            &json!({"approval_request_id": "appr-fk"}).to_string(),
+            0,
+        );
+        assert!(
+            crate::store::get_approval_request("appr-fk")
+                .expect("query")
+                .is_none()
+        );
+
+        // A decision for a never-persisted approval fails to record; the
+        // default "cancelled" status then fails its run-status CAS as well.
+        persist_run_event(
+            Some("run-missing"),
+            "approval_decision",
+            &json!({"approval_request_id": "appr-fk"}).to_string(),
+            1,
+        );
+        persist_run_event(
+            Some("run-missing"),
+            "approval_decision",
+            &json!({"approval_request_id": "appr-fk", "status": "approved"}).to_string(),
+            2,
+        );
+
+        // With the store fully unreadable every best-effort write logs and
+        // returns: approval request/decision, artifact, and tool artifact.
+        let prev = super::super::test_support::break_home();
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_request",
+            &json!({"approval_request_id": "appr-broken"}).to_string(),
+            3,
+        );
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_decision",
+            &json!({"approval_request_id": "appr-broken", "status": "cancelled"}).to_string(),
+            4,
+        );
+        persist_run_event(
+            Some(&fixture.run.id),
+            "approval_decision",
+            &json!({"approval_request_id": "appr-broken", "status": "approved"}).to_string(),
+            5,
+        );
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "target_path": "/tmp/x.md"}).to_string(),
+            6,
+        );
+        super::super::test_support::restore_home(prev);
+    }
+
+    #[test]
+    fn artifact_write_failures_are_logged_not_raised() {
+        let fixture = fixture("persist-artifact-locked");
+        let inside = touch(&std::path::Path::new(&fixture.workspace.path).join("locked.md"));
+
+        // Hold the write lock from a second connection: reads (the workspace
+        // allow check) still work under WAL, but the INSERT times out and is
+        // only logged.
+        let mut conn = rusqlite::Connection::open(
+            fixture._home.path().join(".future/app/app.db"),
+        )
+        .expect("open db");
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)
+            .expect("exclusive lock");
+
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "target_path": inside}).to_string(),
+            0,
+        );
+        persist_run_event(
+            Some(&fixture.run.id),
+            "artifact_created",
+            &json!({"title": "Inline", "content": "body"}).to_string(),
+            1,
+        );
+        tx.rollback().expect("rollback");
+
+        assert!(
+            artifacts(&fixture).is_empty(),
+            "locked-out writes record nothing"
+        );
+    }
 }

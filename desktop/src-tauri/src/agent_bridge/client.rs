@@ -500,25 +500,19 @@ mod tests {
     #[test]
     fn agent_endpoint_keeps_an_explicit_scheme() {
         let _mock = mock_agent();
-        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock sets the addr");
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "https://agent.example:9443");
         assert_eq!(agent_endpoint(), "https://agent.example:9443");
-        match prev {
-            Some(prev) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev),
-            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
-        }
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
     }
 
     #[tokio::test]
     async fn connect_agent_rejects_an_unparseable_endpoint() {
         let _mock = mock_agent();
-        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock sets the addr");
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
         let result = connect_agent().await;
-        match prev {
-            Some(prev) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev),
-            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
-        }
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
         let error = result.expect_err("invalid endpoint must fail");
         assert!(
             matches!(error, crate::AppError::AgentUnavailable(_)),
@@ -538,31 +532,20 @@ mod tests {
         let error = health_check(&mut client, "http://mock")
             .await
             .expect_err("health check surfaces the transport failure");
-        match error {
-            crate::AppError::AgentUnavailable(message) => {
-                assert!(message.contains("http://mock"), "message: {message}");
-                assert!(message.contains("mock agent down"), "message: {message}");
-            }
-            other => panic!("expected AgentUnavailable, got {other}"),
-        }
+        assert!(matches!(error, crate::AppError::AgentUnavailable(_)));
+        let message = error.to_string();
+        assert!(message.contains("http://mock"), "message: {message}");
+        assert!(message.contains("mock agent down"), "message: {message}");
     }
 
     #[test]
     fn map_rpc_error_distinguishes_unavailable_from_app_failures() {
         let unavailable = map_rpc_error("ctx", tonic::Status::unavailable("connection refused"));
-        match unavailable {
-            crate::AppError::AgentUnavailable(message) => {
-                assert_eq!(message, "ctx: connection refused");
-            }
-            other => panic!("expected AgentUnavailable, got {other}"),
-        }
+        assert!(matches!(unavailable, crate::AppError::AgentUnavailable(_)));
+        assert_eq!(unavailable.to_string(), "ctx: connection refused");
         let internal = map_rpc_error("ctx", tonic::Status::internal("boom"));
-        match internal {
-            crate::AppError::Message(message) => {
-                assert!(message.starts_with("ctx: "), "message: {message}");
-            }
-            other => panic!("expected Message, got {other}"),
-        }
+        assert!(matches!(internal, crate::AppError::Message(_)));
+        assert!(internal.to_string().starts_with("ctx: "));
     }
 
     #[test]

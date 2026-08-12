@@ -404,3 +404,22 @@ pub(crate) fn seed_approval(
         .expect("approval query")
         .expect("approval exists")
 }
+
+/// Point HOME at a regular FILE so every store call fails (its directories
+/// can never be created) — covers best-effort persistence error arms. The
+/// caller must hold the home lock (via [`TestHome`]); pair with
+/// [`restore_home`]. Returns the previous HOME value.
+pub(crate) fn break_home() -> Option<String> {
+    let prev = std::env::var("HOME").ok();
+    let file = std::env::temp_dir().join(format!("futureos-broken-home-{}", std::process::id()));
+    std::fs::write(&file, "not a directory").expect("write broken-home file");
+    std::env::set_var("HOME", &file);
+    prev
+}
+
+/// Undo [`break_home`].
+pub(crate) fn restore_home(prev: Option<String>) {
+    if let Some(prev) = prev {
+        std::env::set_var("HOME", prev);
+    }
+}

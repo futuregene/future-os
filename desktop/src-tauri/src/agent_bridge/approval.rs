@@ -212,26 +212,28 @@ pub async fn reconcile_pending_approvals() {
             if local_ids.contains(id) {
                 continue;
             }
-            heal_pending_approval_from_agent(active_run_id.as_deref(), payload);
+            heal_pending_approval_from_agent(active_run_id.as_deref(), id, payload);
         }
     }
 }
 
 /// Rebuild a locally-missing approval row from the payload the Agent serves
-/// for a still-parked request. Mirrors the field mapping in
-/// `persist::persist_approval_request` — the payload is the exact
+/// for a still-parked request. `approval_request_id` is pre-validated by the
+/// caller (it only calls here for payloads carrying one). Mirrors the field
+/// mapping in `persist::persist_approval_request` — the payload is the exact
 /// `approval_request` event data the Agent broadcast.
-fn heal_pending_approval_from_agent(active_run_id: Option<&str>, payload: &serde_json::Value) {
+fn heal_pending_approval_from_agent(
+    active_run_id: Option<&str>,
+    approval_request_id: &str,
+    payload: &serde_json::Value,
+) {
     let Some(run_id) = active_run_id else {
         return;
     };
     let Ok(Some(_run)) = store::get_run(run_id) else {
         return;
     };
-    let Some(approval_request_id) = payload["approval_request_id"].as_str().map(str::to_string)
-    else {
-        return;
-    };
+    let approval_request_id = approval_request_id.to_string();
     let tool_name = payload
         .get("tool_name")
         .and_then(|value| value.as_str())
@@ -651,8 +653,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_heal_requires_an_active_run_with_a_local_row() {
-        let home = TestHome::new("ap-reconcile-heal-guards");
+    async fn reconcile_heal_requires_an_active_run_with_a_local_row() {        let home = TestHome::new("ap-reconcile-heal-guards");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
@@ -701,6 +702,90 @@ mod tests {
                 .expect("query")
                 .is_none(),
             "unknown local run → no heal"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_returns_silently_when_the_store_is_unreadable() {
+        let _home = TestHome::new("ap-reconcile-broken");
+        let _mock = mock_agent();
+        let prev = super::super::test_support::break_home();
+        reconcile_pending_approvals().await;
+        super::super::test_support::restore_home(prev);
+    }
+
+    #[tokio::test]
+    async fn reconcile_skips_an_approval_whose_thread_vanished_midway() {
+        let home = TestHome::new("ap-reconcile-ghost");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-ghost"));
+        let run = seed_run(&thread.id);
+        seed_approval("appr-ghost", &run.id);
+
+        // Delete ONLY the thread row (raw connection, FK off) so the pending
+        // approval outlives its thread — the crash-window state the continue
+        // arm guards.
+        let conn = rusqlite::Connection::open(home.path().join(".future/app/app.db"))
+            .expect("open db");
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("fk off");
+        conn.execute("DELETE FROM threads WHERE id = ?1", [&thread.id])
+            .expect("delete thread row");
+        drop(conn);
+
+        reconcile_pending_approvals().await;
+        assert!(
+            mock.requests().is_empty(),
+            "a thread-less approval is skipped without agent traffic"
+        );
+        assert_eq!(
+            store::get_approval_request("appr-ghost")
+                .expect("query")
+                .expect("exists")
+                .status,
+            "pending",
+            "the row is left pending for the next tick"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_heal_logs_and_continues_when_the_write_fails() {
+        let home = TestHome::new("ap-reconcile-heal-locked");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run = seed_run(&thread.id);
+        seed_approval("appr-local", &run.id);
+
+        mock.push_data(
+            "get_state",
+            serde_json::json!({
+                "activeRun": {"runId": run.id},
+                "pendingApprovals": [
+                    {"approval_request_id": "appr-local"},
+                    {"approval_request_id": "appr-blocked", "tool_name": "shell"}
+                ]
+            }),
+        );
+
+        // Hold the write lock from a second connection: reads still work
+        // (WAL), but the heal's INSERT times out and is only logged.
+        let mut conn = rusqlite::Connection::open(home.path().join(".future/app/app.db"))
+            .expect("open db");
+        conn.execute_batch("PRAGMA busy_timeout = 100;")
+            .expect("busy timeout");
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)
+            .expect("exclusive lock");
+        reconcile_pending_approvals().await;
+        tx.rollback().expect("rollback");
+
+        assert!(
+            store::get_approval_request("appr-blocked")
+                .expect("query")
+                .is_none(),
+            "the failed heal did not create a row"
         );
     }
 }

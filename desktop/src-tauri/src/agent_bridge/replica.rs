@@ -67,9 +67,9 @@ impl AgentReplicaManager {
     /// before projecting a run: exactly one writer per run (the pipeline
     /// collector wins; the observer takes over runs nobody else owns).
     pub(super) fn is_owned_or_recently_released(&self, run_id: &str) -> bool {
-        let Ok(mut registry) = self.registry.lock() else {
-            return false;
-        };
+        // Best-effort probe: a poisoned lock (a panicking writer) still yields
+        // a consistent-enough registry for an ownership read.
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         if registry.active_runs.contains(run_id) {
             return true;
         }
@@ -211,5 +211,17 @@ mod tests {
             .await
             .is_err());
         assert!(manager.acquire("run-a").is_ok());
+    }
+
+    #[test]
+    fn bind_local_is_a_noop_without_a_local_run_id() {
+        let manager = Box::leak(Box::new(AgentReplicaManager {
+            registry: Mutex::new(ReplicaRegistry::default()),
+        }));
+        let lease = manager.acquire("run-a").unwrap().bind_local(None).unwrap();
+        assert!(manager.canonical_for_local("anything").is_none());
+        let lease = lease.bind_local(Some("")).unwrap();
+        assert!(manager.canonical_for_local("").is_none());
+        drop(lease);
     }
 }

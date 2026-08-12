@@ -391,6 +391,17 @@ mod tests {
         mark_run_completed_if_active(Some(&run2.id));
         let record = store::get_run(&run2.id).expect("run").expect("some");
         assert_eq!(record.status, "completed");
+
+        // Store failures are logged, never propagated.
+        let prev = super::super::test_support::break_home();
+        mark_run_failed_if_active(Some(&run.id), "boom again");
+        mark_run_completed_if_active(Some(&run.id));
+        super::super::test_support::restore_home(prev);
+        assert_eq!(
+            store::get_run(&run.id).expect("run").expect("some").status,
+            "failed",
+            "the broken-home writes changed nothing"
+        );
     }
 
     #[tokio::test]
