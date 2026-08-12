@@ -191,7 +191,7 @@ function InlineMarkdown({ text }: { text: string }) {
         if (/^`[^`]+`$/.test(part)) {
           return (
             <Text key={index} style={styles.inlineCode}>
-              {part.slice(1, -1)}
+              {"\u00A0" + part.slice(1, -1) + "\u00A0"}
             </Text>
           );
         }
@@ -222,11 +222,15 @@ function InlineMarkdown({ text }: { text: string }) {
 
 // iOS renders nested <Text> as an attributed string whose runs can't carry
 // padding/borderRadius (TextAttributes has no such fields), and the run
-// background fills the whole line fragment — so an inline code chip with
-// desktop parity is impossible inside one <Text>. Instead, code-bearing text
-// lays out as a wrapping flex row: prose chunks are Text items (wrapping
-// internally, CJK-safe at chunk level) and every code span is a real chip
-// view with genuine padding, rounding and line gaps.
+// background fills the whole line fragment — a decorated chip is impossible
+// inside one <Text>. Compromise that keeps the inline flow: SHORT code spans
+// become real chip views (they fit on a line, so the flow is undisturbed and
+// they get genuine padding/rounding/gaps); LONG code spans stay inline in the
+// prose run (wrapping mid-code, sharing lines with text) with nbsp padding —
+// the two properties iOS can't do inline (rounding, wrapped-line gap) are the
+// accepted platform cost.
+const CHIP_MAX = 24;
+
 function CodeFlow({
   text,
   containerStyle,
@@ -236,25 +240,38 @@ function CodeFlow({
   containerStyle: StyleProp<ViewStyle>;
   proseStyle: TextStyle;
 }) {
-  const chunks = text.split(/(`[^`]+`)/g);
+  const parts = text.split(/(`[^`]+`)/g);
+  const items: { kind: "prose" | "chip"; text: string }[] = [];
+  let buffer = "";
+  const flush = () => {
+    if (buffer) {
+      items.push({ kind: "prose", text: buffer });
+      buffer = "";
+    }
+  };
+  for (const part of parts) {
+    const code = part.match(/^`([^`]+)`$/)?.[1];
+    if (code && code.length <= CHIP_MAX) {
+      flush();
+      items.push({ kind: "chip", text: code });
+    } else {
+      buffer += part;
+    }
+  }
+  flush();
   return (
     <View style={containerStyle}>
-      {chunks.map((chunk, index) => {
-        const code = chunk.match(/^`([^`]+)`$/);
-        if (code) {
-          return (
-            <Text key={index} selectable style={styles.codeChip}>
-              {code[1]}
-            </Text>
-          );
-        }
-        if (!chunk) return null;
-        return (
-          <Text key={index} selectable style={proseStyle}>
-            <InlineMarkdown text={chunk} />
+      {items.map((item, index) =>
+        item.kind === "chip" ? (
+          <Text key={index} selectable style={styles.codeChip}>
+            {item.text}
           </Text>
-        );
-      })}
+        ) : (
+          <Text key={index} selectable style={proseStyle}>
+            <InlineMarkdown text={item.text} />
+          </Text>
+        ),
+      )}
     </View>
   );
 }
@@ -421,13 +438,15 @@ const styles = StyleSheet.create({
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
   inlineCode: {
-    // Fallback for code spans inside headings (paragraphs/list items use the
-    // CodeFlow chip instead): subtle bg, ~0.92em. iOS ignores per-run
-    // padding/borderRadius on nested Text, so chips live outside <Text>.
+    // Inline rendering for long code spans (and code inside headings): subtle
+    // bg, ~0.92em. Horizontal padding is an nbsp inside the run (InlineMarkdown)
+    // because iOS drops per-run padding; short code spans get the fully
+    // decorated chip view instead (see CodeFlow).
     color: colors.ink,
     backgroundColor: colors.surfaceSubtle,
     fontFamily: "monospace",
     fontSize: 13,
+    borderRadius: radius.sm,
   },
   link: { color: colors.accent, textDecorationLine: "underline" },
   rule: { height: 1, marginVertical: spacing.md, backgroundColor: colors.line },
