@@ -129,7 +129,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "profile" => cmd_profile(&mut store, &args[1..]),
         "status" => cmd_status(&store, &args[1..]),
         "quota" => cmd_quota(&store, &args[1..]),
-        "scheduler" => cmd_scheduler(&store, &args[1..]),
+        "scheduler" => cmd_scheduler(&mut store, &args[1..]),
         "store" => cmd_store(&mut store, &args[1..]),
         "backfill" => cmd_backfill(&mut store, &args[1..]),
         "privacy" => cmd_privacy(&store, &args[1..]),
@@ -417,14 +417,14 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "quota",
-        "quota should-run / usage / spend / tools",
-        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G | tools --goal G [--format json]",
+        "quota should-run / usage / spend / tools / decisions",
+        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G | tools --goal G [--format json] | decisions --goal G [--limit N]",
     );
     r.command(
         ops,
         "scheduler",
-        "scheduler tick/show/record-host-failure",
-        "scheduler tick|show|record-host-failure --goal G [--agent-id A] [--format json (show)]",
+        "scheduler tick/show/record-host-failure/ack",
+        "scheduler tick|show|record-host-failure|ack --goal G [--agent-id A] [--format json (show)]",
     );
     r.command(
         ops,
@@ -1928,8 +1928,53 @@ fn cmd_quota(store: &Store, args: &[String]) -> Result<()> {
         Some("usage") => quota_usage(store, &args[1..]),
         Some("spend") => quota_spend(store, &args[1..]),
         Some("tools") => quota_tools(store, &args[1..]),
-        _ => bail!("quota subcommand must be `should-run`, `usage`, `spend`, or `tools`"),
+        Some("decisions") => quota_decisions(store, &args[1..]),
+        _ => bail!(
+            "quota subcommand must be `should-run`, `usage`, `spend`, `tools`, or `decisions`"
+        ),
     }
+}
+
+/// `loopx quota decisions --goal G [--limit N] [--format json]` — the
+/// persisted decision_summary projection (P1-1②): recent compact decisions
+/// (newest first) read straight from the ledger, so status/TUI/desktop-style
+/// consumers reuse the kernel's decision without re-running it.
+fn quota_decisions(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut format_json = false;
+    let mut limit = 10usize;
+    reject_unknown_flags(args, &["--format", "--goal", "--limit"])?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--format" => format_json = v == "json",
+        "--limit" => limit = v.parse().unwrap_or(10),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let events = store.events(&goal_id)?;
+    let summaries = crate::quota::decision_summary::decision_summaries(&events);
+    let recent: Vec<_> = summaries.into_iter().rev().take(limit).collect();
+    if format_json {
+        println!("{}", serde_json::to_string_pretty(&recent)?);
+        return Ok(());
+    }
+    if recent.is_empty() {
+        println!("goal {goal_id}: no decision summaries recorded yet (run a turn first)");
+        return Ok(());
+    }
+    for s in recent {
+        println!(
+            "turn={} decision={} action={} code={} selected={} slots={}/{}",
+            s.turn,
+            s.decision,
+            s.effective_action,
+            s.reason_code,
+            s.selected_todo.as_deref().unwrap_or("-"),
+            s.spent_slots,
+            s.allowed_slots
+        );
+    }
+    Ok(())
 }
 
 /// `loopx quota should-run --goal G [--format json] [--agent-id A]` — emit
@@ -2102,13 +2147,68 @@ fn quota_tools(store: &Store, args: &[String]) -> Result<()> {
 
 /// `loopx scheduler <tick|show|record-host-failure> --goal G [--agent-id A]`
 /// — drive the persisted scheduler state machine across decision cycles.
-fn cmd_scheduler(store: &Store, args: &[String]) -> Result<()> {
+fn cmd_scheduler(store: &mut Store, args: &[String]) -> Result<()> {
     match args.first().map(|s| s.as_str()) {
         Some("tick") => scheduler_tick(store, &args[1..]),
         Some("show") => scheduler_show(store, &args[1..]),
         Some("record-host-failure") => scheduler_record_failure(store, &args[1..]),
-        _ => bail!("scheduler subcommand must be `tick`, `show`, or `record-host-failure`"),
+        Some("ack") => scheduler_ack(store, &args[1..]),
+        _ => bail!("scheduler subcommand must be `tick`, `show`, `record-host-failure`, or `ack`"),
     }
+}
+
+/// `loopx scheduler ack --goal G [--agent-id A] --action tick_next
+/// [--cadence-class C] [--rrule R] [--source S]` — record the host
+/// scheduler's acknowledgement that it applied the cadence hint (P1-1③;
+/// LoopX `scheduler_ack`). Projection-only audit event; scheduler state
+/// itself is still owned by `scheduler tick`.
+fn scheduler_ack(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut action = None;
+    let mut cadence_class = String::new();
+    let mut rrule = None;
+    let mut source = "scheduler_cli".to_string();
+    reject_unknown_flags(
+        args,
+        &[
+            "--action",
+            "--agent-id",
+            "--cadence-class",
+            "--goal",
+            "--rrule",
+            "--source",
+        ],
+    )?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--agent-id" => agent_id = Some(v),
+        "--action" => action = Some(v),
+        "--cadence-class" => cadence_class = v,
+        "--rrule" => rrule = Some(v),
+        "--source" => source = v,
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let action = action.ok_or_else(|| anyhow::anyhow!("--action required"))?;
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let agent = agent_id.unwrap_or_else(|| "codex-app".to_string());
+    store.append(Event::SchedulerAcked {
+        goal_id: goal_id.clone(),
+        agent_id: agent.clone(),
+        action: action.clone(),
+        cadence_class,
+        rrule: rrule.clone(),
+        source,
+        ts: now_epoch(),
+    })?;
+    println!(
+        "scheduler ack recorded: goal={goal_id} agent={agent} action={action} rrule={}",
+        rrule.as_deref().unwrap_or("-")
+    );
+    Ok(())
 }
 
 fn scheduler_scope(
@@ -2706,6 +2806,9 @@ async fn run_turns(
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
         let packet = decide_for(&goal, SystemTime::now(), agent_id);
+        // P1-1②③: persist the compact decision projection + the heartbeat
+        // receipt for this turn (projection-only; replay ignores both).
+        crate::quota::decision_summary::record_turn_decision(store, &packet, agent_id, turn)?;
         println!(
             "── turn {turn}: decision={} mode={} | {}",
             packet.decision,
@@ -5868,6 +5971,7 @@ fn event_touches_todo(event: &crate::store::Event, todo_id: &str) -> bool {
             ..
         } => source_todo_id == todo_id || followup_todo_id == todo_id,
         Event::RunRecorded { record, .. } => record.todo_id == todo_id,
+        Event::HeartbeatReceiptRecorded { todo_id: id, .. } => id.as_deref() == Some(todo_id),
         _ => false,
     }
 }
@@ -6039,6 +6143,36 @@ fn describe_event(event: &crate::store::Event) -> String {
         } => {
             let score = score.map(|v| format!(" score={v:.2}")).unwrap_or_default();
             return format!("reward_signal todo={todo_id} source={source} signal={signal}{score}");
+        }
+        Event::DecisionSummaryRecorded { summary, .. } => {
+            return format!(
+                "decision_summary decision={} action={} code={} turn={}",
+                summary.decision, summary.effective_action, summary.reason_code, summary.turn
+            );
+        }
+        Event::HeartbeatReceiptRecorded {
+            agent_id,
+            turn_instance_id,
+            todo_id,
+            ..
+        } => {
+            return format!(
+                "heartbeat_receipt agent={} turn={} todo={}",
+                agent_id.as_deref().unwrap_or("anonymous"),
+                turn_instance_id,
+                todo_id.as_deref().unwrap_or("-")
+            );
+        }
+        Event::SchedulerAcked {
+            agent_id,
+            action,
+            rrule,
+            ..
+        } => {
+            return format!(
+                "scheduler_ack agent={agent_id} action={action} rrule={}",
+                rrule.as_deref().unwrap_or("-")
+            );
         }
         Event::SupervisorProposed {
             decision_id,

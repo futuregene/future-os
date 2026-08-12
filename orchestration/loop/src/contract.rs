@@ -201,6 +201,10 @@ pub struct ShouldRunPacket {
     pub should_run: bool,
     pub effective_action: String,
     pub reason: String,
+    /// P1-1①: machine-readable decision reason code (typed-RPC oneof style;
+    /// wire values of `quota::error_codes::DecisionReasonCode`). The prose
+    /// `reason` stays human-facing; this is the stable machine contract.
+    pub reason_code: String,
     pub state: String,
     pub waiting_on: String,
     pub status: String,

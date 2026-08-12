@@ -15,7 +15,17 @@
 //!   - [`tool_quota`]      per-tool quota at the capability boundary
 //!     (invocation count / limit / trailing window) feeding the packet's
 //!     `capability_repair_allowed` predicate.
+//!
+//! P1-1 adds the quota decision read model:
+//!
+//!   - [`error_codes`]      machine-readable rejection/decision codes
+//!     (typed-RPC oneof style) stamped on every kernel packet;
+//!   - [`decision_summary`] the compact decision projection persisted to the
+//!     ledger per turn (+ heartbeat receipt), with the read model consumers
+//!     (status / TUI / desktop / `quota decisions`) share.
 
+pub mod decision_summary;
+pub mod error_codes;
 pub mod slot_accounting;
 pub mod stall_repair;
 pub mod tool_quota;
