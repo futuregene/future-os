@@ -104,9 +104,17 @@ pub(super) fn count_workspace_files(path: &str) -> Result<i64, crate::AppError> 
         return Ok(0);
     }
 
+    count_files_under(vec![root])
+}
+
+/// Iterative walk over `stack`, counting regular files. Split from
+/// [`count_workspace_files`] so tests can seed a stack that aliases one
+/// directory twice (real symlinked dirs are never pushed — entries report
+/// symlinks by their own type — so the canonical-dedup guard is otherwise
+/// unreachable from the public entry point).
+fn count_files_under(mut stack: Vec<PathBuf>) -> Result<i64, crate::AppError> {
     let mut count = 0_i64;
     let mut visited_dirs = HashSet::new();
-    let mut stack = vec![root];
     while let Some(dir) = stack.pop() {
         let canonical_dir = fs::canonicalize(&dir)?;
         if !visited_dirs.insert(canonical_dir) {
@@ -126,4 +134,133 @@ pub(super) fn count_workspace_files(path: &str) -> Result<i64, crate::AppError> 
         }
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qualify_columns_prefixes_each_column() {
+        assert_eq!(qualify_columns("r", "id, status"), "r.id, r.status");
+    }
+
+    #[test]
+    fn normalize_mode_accepts_known_modes() {
+        assert_eq!(normalize_mode("chat").unwrap(), "chat");
+        assert_eq!(normalize_mode("workspace").unwrap(), "workspace");
+    }
+
+    #[test]
+    fn normalize_mode_rejects_unknown_mode() {
+        let error = normalize_mode("party").unwrap_err();
+        assert!(error.to_string().contains("'chat' or 'workspace'"));
+    }
+
+    #[test]
+    fn expand_tilde_handles_bare_tilde() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("util_tilde");
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_tilde("~").unwrap(), PathBuf::from(home));
+    }
+
+    #[test]
+    fn expand_tilde_joins_suffix() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("util_tilde_join");
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            expand_tilde("~/docs/x.md").unwrap(),
+            PathBuf::from(home).join("docs/x.md")
+        );
+    }
+
+    #[test]
+    fn expand_tilde_passes_other_paths_through() {
+        assert_eq!(expand_tilde("/abs/path").unwrap(), PathBuf::from("/abs/path"));
+        assert_eq!(expand_tilde("rel/path").unwrap(), PathBuf::from("rel/path"));
+    }
+
+    #[test]
+    fn workspace_name_from_path_uses_last_component() {
+        assert_eq!(
+            workspace_name_from_path(Path::new("/home/u/projects/demo")),
+            "demo"
+        );
+    }
+
+    #[test]
+    fn workspace_name_from_path_falls_back_when_no_file_name() {
+        assert_eq!(workspace_name_from_path(Path::new("/")), "Workspace");
+    }
+
+    #[test]
+    fn catalog_dirty_flag_marks_and_drains() {
+        // Drain any mark left by earlier tests in this process.
+        let _ = take_catalog_dirty();
+        mark_catalog_dirty();
+        assert!(take_catalog_dirty(), "first take observes the mark");
+        assert!(!take_catalog_dirty(), "second take sees the drained flag");
+    }
+
+    #[test]
+    fn loaded_unwraps_some_and_errors_on_none() {
+        assert_eq!(loaded(Some(7), "Seven").unwrap(), 7);
+        let error = loaded::<i32>(None, "Created thread").unwrap_err();
+        assert_eq!(error.to_string(), "Created thread could not be loaded.");
+    }
+
+    #[test]
+    fn count_workspace_files_missing_path_is_zero() {
+        let missing = std::env::temp_dir().join(format!(
+            "futureos-util-missing-{}",
+            std::process::id()
+        ));
+        assert_eq!(count_workspace_files(missing.to_str().unwrap()).unwrap(), 0);
+    }
+
+    #[test]
+    fn count_workspace_files_plain_file_is_zero() {
+        let dir = std::env::temp_dir().join(format!("futureos-util-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("one.txt");
+        fs::write(&file, b"x").unwrap();
+        assert_eq!(count_workspace_files(file.to_str().unwrap()).unwrap(), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn count_workspace_files_walks_dirs_skipping_symlinks_and_cycles() {
+        let dir = std::env::temp_dir().join(format!("futureos-util-tree-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let sub = dir.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(dir.join("a.txt"), b"a").unwrap();
+        fs::write(sub.join("b.txt"), b"b").unwrap();
+        // A symlink to a file is skipped, not counted.
+        std::os::unix::fs::symlink(dir.join("a.txt"), dir.join("link-file")).unwrap();
+        // A symlinked directory is skipped entirely (its own files uncounted)…
+        std::os::unix::fs::symlink(&sub, dir.join("link-dir")).unwrap();
+        // …and a self-referential symlinked dir can't loop the walk. Hard links
+        // to dirs don't exist, so exercise the canonical-dedup continue via a
+        // symlink chain is not possible; instead ensure the count is exact.
+        assert_eq!(count_workspace_files(dir.to_str().unwrap()).unwrap(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn count_files_under_dedupes_aliased_dirs() {
+        let dir = std::env::temp_dir().join(format!("futureos-util-dup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.txt"), b"a").unwrap();
+        // The same directory twice on the stack: the canonical-dedup guard
+        // must count its files once.
+        assert_eq!(
+            count_files_under(vec![dir.clone(), dir.clone()]).unwrap(),
+            1
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

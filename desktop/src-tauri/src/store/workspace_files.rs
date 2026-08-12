@@ -80,6 +80,12 @@ pub fn search_workspace_files(
 
 /// Collect workspace files (relative path + mtime), honoring ignore rules.
 fn walk_workspace_files(root: &Path) -> Vec<WalkedFile> {
+    walk_workspace_files_up_to(root, MAX_WALK_ENTRIES)
+}
+
+/// The walk, parameterized on the entry cap so tests can exercise the
+/// truncation break without materializing 20k files.
+fn walk_workspace_files_up_to(root: &Path, max_entries: usize) -> Vec<WalkedFile> {
     let walker = WalkBuilder::new(root)
         .hidden(true) // skip dotfiles/dirs
         .parents(true) // honor ignore files in parent dirs too
@@ -92,7 +98,7 @@ fn walk_workspace_files(root: &Path) -> Vec<WalkedFile> {
 
     let mut files = Vec::new();
     for entry in walker.flatten() {
-        if files.len() >= MAX_WALK_ENTRIES {
+        if files.len() >= max_entries {
             break;
         }
         if !entry
@@ -101,9 +107,12 @@ fn walk_workspace_files(root: &Path) -> Vec<WalkedFile> {
         {
             continue;
         }
-        let Ok(relative) = entry.path().strip_prefix(root) else {
-            continue;
-        };
+        // Single-root walker entries are root-joined by construction, so the
+        // strip can't fail.
+        let relative = entry
+            .path()
+            .strip_prefix(root)
+            .expect("walker entries are under the walked root");
         let rel = relative.to_string_lossy().replace('\\', "/");
         if rel.is_empty() {
             continue;
@@ -307,5 +316,105 @@ mod tests {
         assert_eq!(p.first(), Some(&"docs/report.md"));
         assert_eq!(p.get(1), Some(&"reports/notes.md"));
         assert_eq!(p.get(2), Some(&"src/r_e_port.rs"));
+    }
+
+    #[test]
+    fn exact_and_prefix_name_matches_outrank_substring() {
+        let walked = |rel: &str| WalkedFile {
+            rel: rel.to_string(),
+            modified: SystemTime::UNIX_EPOCH,
+        };
+        let files = vec![
+            walked("docs/my-report.md"), // name substring -> bucket 2
+            walked("docs/report-final.md"), // name prefix   -> bucket 1
+            walked("docs/report.md"),    // exact name      -> bucket 0
+        ];
+        let results = rank_files(files, "report", 10);
+        assert_eq!(
+            paths(&results),
+            vec!["docs/report.md", "docs/report-final.md", "docs/my-report.md"]
+        );
+    }
+
+    #[test]
+    fn walk_truncates_at_the_entry_cap() {
+        let tree = TempTree::new("walk-cap");
+        tree.write("a.txt", "");
+        tree.write("b.txt", "");
+        tree.write("c.txt", "");
+        assert_eq!(walk_workspace_files_up_to(&tree.0, 2).len(), 2);
+    }
+
+    /// Initialized in-test database with one workspace row pointing at `path`.
+    fn workspace_conn(path: &Path) -> (super::super::db::PooledConnection, String) {
+        let conn = connect().expect("connect");
+        super::super::db::apply_schema(&conn).expect("apply schema");        conn.execute(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws_search', 'WS', 'user', ?1, 'active', 1, 1)",
+            params![path.to_string_lossy().into_owned()],
+        )
+        .expect("insert workspace");
+        (conn, "ws_search".to_string())
+    }
+
+    #[test]
+    fn search_with_missing_workspace_is_empty() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("wf_missing_ws");
+        let conn = connect().expect("connect");
+        super::super::db::apply_schema(&conn).expect("apply schema");
+        drop(conn);
+        let results = search_workspace_files(WorkspaceFileSearchInput {
+            workspace_id: "ghost".to_string(),
+            query: None,
+            limit: None,
+        })
+        .expect("search");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_with_non_directory_workspace_path_is_empty() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("wf_nondir");
+        let missing = std::env::temp_dir().join(format!(
+            "futureos-wf-nondir-{}",
+            std::process::id()
+        ));
+        let (conn, id) = workspace_conn(&missing);
+        drop(conn);
+        let results = search_workspace_files(WorkspaceFileSearchInput {
+            workspace_id: id,
+            query: None,
+            limit: None,
+        })
+        .expect("search");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_walks_the_workspace_and_clamps_the_limit() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("wf_search");
+        let tree = TempTree::new("wf-search");
+        tree.write("alpha.md", "");
+        tree.write("beta.md", "");
+        let (conn, id) = workspace_conn(&tree.0);
+        drop(conn);
+
+        // limit clamps into 1..=100: 0 becomes 1 result.
+        let one = search_workspace_files(WorkspaceFileSearchInput {
+            workspace_id: id.clone(),
+            query: Some("md".to_string()),
+            limit: Some(0),
+        })
+        .expect("search");
+        assert_eq!(one.len(), 1);
+
+        let all = search_workspace_files(WorkspaceFileSearchInput {
+            workspace_id: id,
+            query: None,
+            limit: Some(500),
+        })
+        .expect("search");
+        assert_eq!(all.len(), 2);
     }
 }
