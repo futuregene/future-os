@@ -109,18 +109,30 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 // The file path(s) an approval would touch — surfaced so the user can judge the
-// request. Read from the wire `action` (writes[].path, then paths[]); content
-// previews are intentionally omitted on the phone.
+// request. Read from the wire `action` (writes[].path / deletes[].path, then
+// paths[]); content previews are intentionally omitted on the phone.
+function pathEntries(action: Record<string, unknown>, key: string): string[] {
+  const entries = Array.isArray(action[key]) ? action[key] : [];
+  return entries
+    .map(entry => asRecord(entry)?.path as unknown as string)
+    .filter((path): path is string => typeof path === "string" && path.length > 0);
+}
+
 function approvalPaths(payload: ApprovalPayload): string[] {
   const action = asRecord(payload.action);
   if (!action) return [];
-  const writes = Array.isArray(action.writes) ? action.writes : [];
-  const fromWrites = writes
-    .map(entry => asRecord(entry)?.path as unknown as string)
-    .filter((path): path is string => typeof path === "string" && path.length > 0);
+  const fromWrites = pathEntries(action, "writes");
   if (fromWrites.length > 0) return fromWrites;
   const paths = Array.isArray(action.paths) ? action.paths : [];
   return paths.filter((path): path is string => typeof path === "string" && path.length > 0);
+}
+
+// Paths an approval would delete (action.deletes) — a delete request is judged
+// by what it removes, so deletes render independently from writes/paths.
+function approvalDeletes(payload: ApprovalPayload): string[] {
+  const action = asRecord(payload.action);
+  if (!action) return [];
+  return pathEntries(action, "deletes");
 }
 
 function approvalCommand(payload: ApprovalPayload): string | null {
@@ -152,20 +164,25 @@ export function PendingApprovalCard({
     : payload.title || payload.tool_name || t("approval.title");
   const summaryText = kindI18n?.summary ? t(kindI18n.summary) : payload.summary;
   const paths = approvalPaths(payload);
+  const deletes = approvalDeletes(payload);
   const command = approvalCommand(payload);
   const isWrite =
     paths.length > 0 &&
     (payload.kind === "file_write" || payload.kind === "outside_workspace_write");
   const detailLabel =
-    paths.length > 0
-      ? isWrite
-        ? paths.length === 1
-          ? t("approval.writeFile")
-          : t("approval.writeFiles", { count: paths.length })
-        : t("approval.readPath")
-      : command
-        ? t("approval.command")
-        : null;
+    deletes.length > 0
+      ? deletes.length === 1
+        ? t("approval.deleteFile")
+        : t("approval.deleteFiles", { count: deletes.length })
+      : paths.length > 0
+        ? isWrite
+          ? paths.length === 1
+            ? t("approval.writeFile")
+            : t("approval.writeFiles", { count: paths.length })
+          : t("approval.readPath")
+        : command
+          ? t("approval.command")
+          : null;
 
   return (
     <View style={styles.approval}>
@@ -180,12 +197,12 @@ export function PendingApprovalCard({
         <>
           <Text style={styles.approvalDetailLabel}>{detailLabel}</Text>
           <View style={styles.approvalDetail}>
-            {command ? (
+            {command && deletes.length === 0 ? (
               <Text selectable style={styles.approvalPath}>
                 {command}
               </Text>
             ) : (
-              paths.map((path, index) => (
+              (deletes.length > 0 ? deletes : paths).map((path, index) => (
                 <Text
                   key={`${path}-${index}`}
                   numberOfLines={2}

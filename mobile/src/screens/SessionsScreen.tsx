@@ -1,4 +1,5 @@
 import {
+  CircleAlert,
   Folder,
   Link2,
   LogOut,
@@ -47,10 +48,20 @@ function SessionStatusIndicator({
   // session the agent reports as streaming with no local run row (a prompt
   // started by the TUI/CLI/another machine) still reads as running.
   const effective = effectiveRunStatus(status, streaming);
-  if (effective === "queued" || effective === "running" || effective === "waiting_approval") {
+  if (effective === "running" || effective === "queued") {
     return (
       <View style={styles.indicator}>
         <ActivityIndicator color={colors.accent} size={14} />
+      </View>
+    );
+  }
+  // A session waiting for approval is distinguishable from a run in flight —
+  // the desktop sidebar flags it with a warning glyph so "running" and "waiting
+  // on you" don't read the same.
+  if (effective === "waiting_approval") {
+    return (
+      <View style={styles.indicator}>
+        <CircleAlert color={colors.warning} size={16} />
       </View>
     );
   }
