@@ -34,8 +34,9 @@ pub fn stale_latest_run(goal: &Goal, goal_dir: &Path) -> Option<StaleRunWarning>
         .ok()
         .and_then(|mtime| mtime.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
         .map(|secs| secs.as_secs());
-    state_updated_at =
-        na_mtime.map_or(state_updated_at, |e| Some(state_updated_at.map_or(e, |v| v.max(e))));
+    state_updated_at = na_mtime.map_or(state_updated_at, |e| {
+        Some(state_updated_at.map_or(e, |v| v.max(e)))
+    });
     let (Some(state_at), Some(run_at)) = (state_updated_at, latest_run) else {
         return None;
     };

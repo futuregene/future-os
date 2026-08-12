@@ -187,7 +187,10 @@ mod tests {
     fn batch_scale_unknown_when_no_state_or_evidence() {
         let mut r = run("");
         r.terminal_state = String::new();
-        assert_eq!(delivery_batch_scale_for_run(&r), DeliveryBatchScale::Unknown);
+        assert_eq!(
+            delivery_batch_scale_for_run(&r),
+            DeliveryBatchScale::Unknown
+        );
     }
 
     #[test]

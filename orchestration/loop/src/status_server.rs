@@ -118,7 +118,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_string_lossy().into_owned();
         let mut store = Store::open(&root).unwrap();
-        store.register(&Goal::new("g-ghost", "obj", "/tmp")).unwrap();
+        store
+            .register(&Goal::new("g-ghost", "obj", "/tmp"))
+            .unwrap();
         // No events were appended → replay yields None → entry is skipped.
         assert!(store.replay("g-ghost").unwrap().is_none());
         let out = render_dashboard(&store);

@@ -152,7 +152,11 @@ mod tests {
     #[test]
     fn monitor_below_threshold_raises_nothing() {
         let mut goal = Goal::new("g", "objective", "/tmp");
-        goal.add(Todo::monitor("m1", "watch", std::time::Duration::from_secs(60)));
+        goal.add(Todo::monitor(
+            "m1",
+            "watch",
+            std::time::Duration::from_secs(60),
+        ));
         assert!(detect_obligations(&goal)
             .iter()
             .all(|o| o.kind != "monitor_no_change_streak"));

@@ -653,7 +653,8 @@ fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
     })?;
     refresh_next_action(store, &goal_id)?;
     // Cancelled goals never run — surface that as the Next Action.
-    store.set_next_action(&goal_id, "goal cancelled — automation stopped, state retained")?;
+    let next_action = "goal cancelled — automation stopped, state retained";
+    store.set_next_action(&goal_id, next_action)?;
     sync_compat(store, &goal_id)?;
     println!("goal {goal_id} cancelled ✔ (automation stopped, state retained — reason: {reason})");
     Ok(())
@@ -2107,7 +2108,7 @@ async fn steer_todo_updates(events_path: std::path::PathBuf, todo_id: String, se
         .map(|m| m.len())
         .unwrap_or(0);
     let mut client: Option<crate::agent_client::AgentClient> = None;
-    #[allow(unused_mut)]
+    #[cfg(test)]
     let mut polls = 0usize;
     loop {
         tokio::time::sleep(steer_poll_interval()).await;
@@ -2138,7 +2139,8 @@ fn steer_poll_interval() -> std::time::Duration {
 /// Test seam: bounds the (otherwise infinite) steer watch loop so tests can
 /// drive one poll and observe a clean exit.
 #[cfg(test)]
-static STEER_TEST_MAX_POLLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static STEER_TEST_MAX_POLLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
 fn steer_test_should_stop(polls: usize) -> bool {
@@ -2176,7 +2178,9 @@ fn claim_selected_with_lease(
                     break;
                 }
                 println!("   ⚔ claim race lost on {tid} — re-deciding");
-                let fresh = store.replay(goal_id)?.ok_or_else(|| goal_vanished_error(goal_id))?;
+                let fresh = store
+                    .replay(goal_id)?
+                    .ok_or_else(|| goal_vanished_error(goal_id))?;
                 *packet = decide_for(&fresh, SystemTime::now(), agent_id);
                 if packet.interaction_contract.mode != crate::contract::TurnMode::BoundedDelivery
                     && packet.interaction_contract.mode != crate::contract::TurnMode::MonitorPoll
@@ -2745,7 +2749,11 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
             let _ = sync_compat(store, &goal_id);
             println!(
                 "todo {todo_id} lease acquired by {agent} until {expires} {}✔",
-                if op.steal { "(steal after expiry) " } else { "" }
+                if op.steal {
+                    "(steal after expiry) "
+                } else {
+                    ""
+                }
             );
         }
         "renew" => {
@@ -5239,12 +5247,18 @@ mod coverage_tests {
         std::env::set_var("FUTURE_LOOP_AGENT_ADDR", "127.0.0.1:1");
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
-        std::fs::write(&path, "{\"kind\":\"todo_updated\",\"todo_id\":\"t1\",\"text\":\"new\"}\n")
-            .unwrap();
+        std::fs::write(
+            &path,
+            "{\"kind\":\"todo_updated\",\"todo_id\":\"t1\",\"text\":\"new\"}\n",
+        )
+        .unwrap();
         let mut client = None;
         let off = steer_poll_once(&path, 0, "t1", &mut client, "sess").await;
         assert!(off > 0);
-        assert!(client.is_none(), "connect to a closed port fails → client None");
+        assert!(
+            client.is_none(),
+            "connect to a closed port fails → client None"
+        );
         std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
     }
 
@@ -5272,8 +5286,8 @@ mod coverage_tests {
         // No selection: the claim loop exits immediately, nothing claimed.
         let mut packet = decide_for(&g, SystemTime::now(), Some("racer"));
         packet.interaction_contract.agent_channel.selected_todo = None;
-        let r = claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600)
-            .unwrap();
+        let r =
+            claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600).unwrap();
         assert_eq!(r, None);
     }
 
@@ -5312,8 +5326,8 @@ mod coverage_tests {
         // Force a stale selection (as if t1 were free at decide time).
         packet.interaction_contract.agent_channel.selected_todo = Some("t1".to_string());
         packet.interaction_contract.mode = crate::contract::TurnMode::BoundedDelivery;
-        let r = claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600)
-            .unwrap();
+        let r =
+            claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600).unwrap();
         // The fresh decide filters other-claimed todos → mode change → stop.
         assert_eq!(r, None);
     }

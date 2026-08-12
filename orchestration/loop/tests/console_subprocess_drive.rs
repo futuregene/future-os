@@ -224,7 +224,11 @@ fn worker_bridge_successor_chain_on_non_final_todo() {
 fn worker_bridge_ignores_unknown_flags() {
     let root = tmp_root("bridge-bogus");
     let gid = init_goal(&root, "bridge bogus flag");
-    let (out, _, code) = run_stdin(&root, &["worker-bridge", "--goal", &gid, "--bogus", "x"], "");
+    let (out, _, code) = run_stdin(
+        &root,
+        &["worker-bridge", "--goal", &gid, "--bogus", "x"],
+        "",
+    );
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("BRIDGE packet:"), "{out}");
 }

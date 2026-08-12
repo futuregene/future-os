@@ -53,7 +53,12 @@ impl AgentScopeProjection {
 /// A todo is agent-owned work (advancement / monitor / blocker), not a user
 /// todo.
 fn is_agent_work(todo: &Todo) -> bool {
-    matches!(todo.class, TaskClass::Advancement | TaskClass::Monitor | TaskClass::Blocker)
+    [
+        TaskClass::Advancement,
+        TaskClass::Monitor,
+        TaskClass::Blocker,
+    ]
+    .contains(&todo.class)
 }
 
 /// Is the todo currently actionable for scoping (open or deferred-with-resume)?

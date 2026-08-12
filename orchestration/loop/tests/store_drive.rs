@@ -159,7 +159,10 @@ fn renew_and_release_on_unknown_todo_are_noops() {
 
 #[test]
 fn fingerprint_of_non_object_value_is_the_empty_object() {
-    assert_eq!(future_loop::store::event_fingerprint(&serde_json::json!("x")), "{}");
+    assert_eq!(
+        future_loop::store::event_fingerprint(&serde_json::json!("x")),
+        "{}"
+    );
 }
 
 #[test]

@@ -153,7 +153,11 @@ mod tests {
         g.execution_profile.outcome_floor_streak_threshold = 5;
         let runs = vec![run("small tweak"); 5];
         let contract = handoff_delivery_contract(&g, &runs).unwrap();
-        assert!(contract.summary.contains("small_threshold=5"), "{}", contract.summary);
+        assert!(
+            contract.summary.contains("small_threshold=5"),
+            "{}",
+            contract.summary
+        );
     }
 
     #[test]

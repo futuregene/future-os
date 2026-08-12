@@ -163,7 +163,9 @@ pub fn topological_sort(todos: &[Todo], edges: &[(String, String)]) -> (Vec<Stri
             for n in next {
                 // adj only holds ids that passed the ids.contains filter
                 // above, so every successor has an indegree entry.
-                let d = indegree.get_mut(n).expect("adjacency ids all have indegree entries");
+                let d = indegree
+                    .get_mut(n)
+                    .expect("adjacency ids all have indegree entries");
                 *d -= 1;
                 if *d == 0 {
                     queue.push(n.clone());
@@ -279,7 +281,15 @@ mod tests {
         ];
         let (order, path) = topological_sort(&todos, &edges);
         assert!(order.is_empty());
-        assert_eq!(path, vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()]);
+        assert_eq!(
+            path,
+            vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string()
+            ]
+        );
     }
 
     #[test]

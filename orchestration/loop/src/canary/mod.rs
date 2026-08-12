@@ -220,9 +220,8 @@ fn check_decision_determinism(store: &Store) -> SmokeCheckOutcome {
         mask_recorded_at(&mut bv);
         // then_some evaluates eagerly — the failure string is built (and its
         // line executed) whether or not a drift was detected.
-        failures.extend(
-            (av != bv).then_some(format!("{}: decision not deterministic", entry.goal_id)),
-        );
+        failures
+            .extend((av != bv).then_some(format!("{}: decision not deterministic", entry.goal_id)));
     }
     let detail = check_detail(
         checked,
@@ -468,10 +467,19 @@ mod tests {
 
     #[test]
     fn check_detail_covers_vacuous_healthy_and_failures() {
-        assert_eq!(check_detail(0, &[], "vacuous", "healthy".to_string()), "vacuous");
-        assert_eq!(check_detail(2, &[], "vacuous", "healthy".to_string()), "healthy");
+        assert_eq!(
+            check_detail(0, &[], "vacuous", "healthy".to_string()),
+            "vacuous"
+        );
+        assert_eq!(
+            check_detail(2, &[], "vacuous", "healthy".to_string()),
+            "healthy"
+        );
         let failures = vec!["a".to_string(), "b".to_string()];
-        assert_eq!(check_detail(2, &failures, "vacuous", "healthy".to_string()), "a; b");
+        assert_eq!(
+            check_detail(2, &failures, "vacuous", "healthy".to_string()),
+            "a; b"
+        );
     }
 
     #[test]

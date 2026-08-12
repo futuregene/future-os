@@ -210,7 +210,11 @@ mod tests {
         // ...and a pre-existing archive destination is left in place (no rename).
         let archive = runs.join("archive");
         std::fs::create_dir_all(&archive).unwrap();
-        std::fs::write(archive.join("2026-07-01T00-00-00-00-00.json"), "{\"old\":true}").unwrap();
+        std::fs::write(
+            archive.join("2026-07-01T00-00-00-00-00.json"),
+            "{\"old\":true}",
+        )
+        .unwrap();
         let cutoff = crate::scheduler::state::parse_epoch("2026-08-05T00:00:00+00:00").unwrap();
         let report = archive_runs_before(dir.path().to_str().unwrap(), "g1", cutoff).unwrap();
         assert_eq!(report.archived.len(), 1);
@@ -220,8 +224,7 @@ mod tests {
         assert!(rows[1].path.contains("archive/"));
         // The old run file stays put because the destination already existed.
         assert!(runs.join("2026-07-01T00-00-00-00-00.json").exists());
-        let kept =
-            std::fs::read_to_string(archive.join("2026-07-01T00-00-00-00-00.json")).unwrap();
+        let kept = std::fs::read_to_string(archive.join("2026-07-01T00-00-00-00-00.json")).unwrap();
         assert_eq!(kept, "{\"old\":true}");
     }
 

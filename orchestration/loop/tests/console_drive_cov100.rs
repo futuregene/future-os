@@ -32,7 +32,15 @@ fn parse_catch_all_arms_ignore_unknown_flags() {
     // quota tools unknown flag.
     cli_ok(&["quota", "tools", "--goal", &gid, "--bogus", "x"]);
     // replay run / corpus run unknown flags (load fails after parsing).
-    assert!(!cli_err(&["replay", "run", "--case", "/nonexistent.json", "--bogus", "y"]).is_empty());
+    assert!(!cli_err(&[
+        "replay",
+        "run",
+        "--case",
+        "/nonexistent.json",
+        "--bogus",
+        "y"
+    ])
+    .is_empty());
     assert!(!cli_err(&[
         "replay",
         "corpus",
@@ -106,7 +114,7 @@ fn serve_status_on_a_busy_port_errors() {
 
 #[test]
 fn benchmark_run_unknown_flag_and_adapter_failure() {
-    let cr = cli_root();
+    let _cr = cli_root();
     // Unknown flag is ignored; the run proceeds against the stub adapter.
     cli_ok(&[
         "benchmark",
@@ -256,7 +264,7 @@ fn supervisor_propose_append_fails_on_read_only_goal_dir() {
 
 #[test]
 fn benchmark_run_qualification_error_propagates() {
-    let cr = cli_root();
+    let _cr = cli_root();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

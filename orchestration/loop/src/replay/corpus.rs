@@ -459,8 +459,7 @@ pub fn run_model_behavior_qualification_pair(
     let semantic_complete = [&request_full, &request_candidate]
         .iter()
         .all(|r| semantic_contract_checks(r).iter().all(|(_, ok)| *ok));
-    let semantic_drift =
-        if semantic_complete { vec![] } else { semantic_drift_fields(&request_candidate) };
+    let semantic_drift = semantic_drift_for(semantic_complete, &request_candidate);
     let _ = (arm_order, semantic_contract_required);
     Ok(PairResult {
         status: "evaluated".to_string(),
@@ -492,6 +491,18 @@ pub fn semantic_contract_checks(request: &str) -> Vec<(&'static str, bool)> {
             request.contains("Complete the todo and report what you did and observed."),
         ),
     ]
+}
+
+/// Semantic drift selector: empty when the contract is complete, otherwise the
+/// drift fields of the candidate request. Extracted so both arms are directly
+/// unit-testable (`render_actor_request` always emits a complete contract, so
+/// the else arm is unreachable from the pair runner itself).
+fn semantic_drift_for(complete: bool, request_candidate: &str) -> Vec<String> {
+    if complete {
+        vec![]
+    } else {
+        semantic_drift_fields(request_candidate)
+    }
 }
 
 /// Semantic-contract drift fields for a rendered request (extracted so the
@@ -713,11 +724,22 @@ mod tests {
     fn corpus_load_rejects_bad_schema_and_empty_cases() {
         let dir = tempfile::tempdir().unwrap();
         let bad_schema = dir.path().join("bad.json");
-        std::fs::write(&bad_schema, r#"{"schema_version":"nope","cases":[],"persistence_boundary":{}}"#).unwrap();
+        std::fs::write(
+            &bad_schema,
+            r#"{"schema_version":"nope","cases":[],"persistence_boundary":{}}"#,
+        )
+        .unwrap();
         let err = ModelBehaviorCorpus::load(&bad_schema).unwrap_err();
-        assert!(format!("{err:#}").contains("model_behavior_corpus_v0"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("model_behavior_corpus_v0"),
+            "{err:#}"
+        );
         let empty = dir.path().join("empty.json");
-        std::fs::write(&empty, r#"{"schema_version":"model_behavior_corpus_v0","cases":[],"persistence_boundary":{}}"#).unwrap();
+        std::fs::write(
+            &empty,
+            r#"{"schema_version":"model_behavior_corpus_v0","cases":[],"persistence_boundary":{}}"#,
+        )
+        .unwrap();
         let err = ModelBehaviorCorpus::load(&empty).unwrap_err();
         assert!(format!("{err:#}").contains("at least one case"), "{err:#}");
     }
@@ -730,7 +752,14 @@ mod tests {
         // Unknown expected outcome.
         assert!(case("c1", "state_matrix", packet.clone(), None, "bogus").is_err());
         // Full packet fails the hard-invariant gate.
-        assert!(case("c1", "state_matrix", serde_json::json!({}), None, "equivalent").is_err());
+        assert!(case(
+            "c1",
+            "state_matrix",
+            serde_json::json!({}),
+            None,
+            "equivalent"
+        )
+        .is_err());
     }
 
     #[test]
@@ -764,6 +793,23 @@ mod tests {
     }
 
     #[test]
+    fn semantic_drift_for_covers_both_arms() {
+        // Complete contract → no drift regardless of the request.
+        assert!(semantic_drift_for(true, "nothing relevant here").is_empty());
+        // Incomplete contract → defer to the candidate's drift fields.
+        let drift = semantic_drift_for(false, "nothing relevant here");
+        assert!(drift.is_empty());
+        let request = format!(
+            "── {} ──\nComplete the todo and report what you did and observed.",
+            crate::turn_envelope::TURN_ENVELOPE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            semantic_drift_for(false, &request),
+            vec!["schema_header", "completion_contract"]
+        );
+    }
+
+    #[test]
     fn unknown_expected_outcome_fails_the_case() {
         let packet = serde_json::to_value(base_packet()).unwrap();
         let bogus = CorpusCase {
@@ -780,7 +826,10 @@ mod tests {
             persistence_boundary: serde_json::json!({}),
         };
         let result = run_model_behavior_corpus(&corpus, &StubActor, 2, 0).unwrap();
-        assert!(!result.cases[0].passed, "unknown expectation must fail closed");
+        assert!(
+            !result.cases[0].passed,
+            "unknown expectation must fail closed"
+        );
         assert!(!result.all_cases_passed);
     }
 

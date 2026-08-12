@@ -318,7 +318,10 @@ mod tests {
         // One binding for the shared capability, both todos attached to it.
         assert_eq!(gate.resolution_bindings.len(), 1);
         assert_eq!(gate.resolution_bindings[0].capability, "quantum");
-        assert_eq!(gate.resolution_bindings[0].blocked_todo_ids, vec!["t1", "t2"]);
+        assert_eq!(
+            gate.resolution_bindings[0].blocked_todo_ids,
+            vec!["t1", "t2"]
+        );
     }
 
     #[test]
