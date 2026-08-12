@@ -423,8 +423,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "scheduler",
-        "scheduler tick/show/record-host-failure/ack",
-        "scheduler tick|show|record-host-failure|ack --goal G [--agent-id A] [--format json (show)]",
+        "scheduler tick/show/record-host-failure/ack/liveness",
+        "scheduler tick|show|record-host-failure|ack|liveness --goal G [--agent-id A] [--threshold-secs N (liveness)] [--format json (show|liveness)]",
     );
     r.command(
         ops,
@@ -2153,7 +2153,10 @@ fn cmd_scheduler(store: &mut Store, args: &[String]) -> Result<()> {
         Some("show") => scheduler_show(store, &args[1..]),
         Some("record-host-failure") => scheduler_record_failure(store, &args[1..]),
         Some("ack") => scheduler_ack(store, &args[1..]),
-        _ => bail!("scheduler subcommand must be `tick`, `show`, `record-host-failure`, or `ack`"),
+        Some("liveness") => scheduler_liveness(store, &args[1..]),
+        _ => bail!(
+            "scheduler subcommand must be `tick`, `show`, `record-host-failure`, `ack`, or `liveness`"
+        ),
     }
 }
 
@@ -2235,7 +2238,9 @@ fn scheduler_scope(
 /// [--progression 15,30,60] [--action tick_next]` — load the persisted state
 /// (or bootstrap it from the cadence profile), advance the progression, and
 /// write the new state. Restart-safe: progression persists across cycles.
-fn scheduler_tick(store: &Store, args: &[String]) -> Result<()> {
+/// P1-3: each tick also lands a `SchedulerTicked` heartbeat (liveness) and
+/// projects the monitor poll plan (tick-driven poll policy executor).
+fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
     let mut cadence_class = "monitor_backoff".to_string();
     let mut progression: Vec<i64> = vec![];
     let mut action = "tick_next".to_string();
@@ -2300,6 +2305,8 @@ fn scheduler_tick(store: &Store, args: &[String]) -> Result<()> {
             "→ bootstrapped (initial rrule {}); next tick advances progression",
             initial_rrule
         );
+        record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
+        print_monitor_poll_plan(store, &goal_id)?;
         return Ok(());
     }
 
@@ -2311,7 +2318,211 @@ fn scheduler_tick(store: &Store, args: &[String]) -> Result<()> {
         Some(r) => println!("→ advanced progression to {r} (persisted)"),
         None => println!("→ no progression (single-execution cadence)"),
     }
+    record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
+    print_monitor_poll_plan(store, &goal_id)?;
     Ok(())
+}
+
+/// P1-3①: land the tick heartbeat event (the liveness check's data source).
+fn record_tick_heartbeat(
+    store: &mut Store,
+    goal_id: &str,
+    agent: &str,
+    action: &str,
+    state: &crate::scheduler::state::SchedulerState,
+) -> Result<()> {
+    store.append(Event::SchedulerTicked {
+        goal_id: goal_id.to_string(),
+        agent_id: agent.to_string(),
+        action: action.to_string(),
+        rrule: if state.last_applied_rrule.is_empty() {
+            None
+        } else {
+            Some(state.last_applied_rrule.clone())
+        },
+        ts: now_epoch(),
+    })?;
+    Ok(())
+}
+
+/// P1-3②: project the monitor poll plan after each tick (the tick-driven
+/// poll policy executor — due monitors with target/policy/cadence and
+/// no-spend eligibility; the run loop executes the actual observation).
+fn print_monitor_poll_plan(store: &Store, goal_id: &str) -> Result<()> {
+    let Some(goal) = store.replay(goal_id)? else {
+        return Ok(());
+    };
+    let plan = crate::scheduler::monitor_poll::build_poll_plan(&goal, std::time::SystemTime::now());
+    if plan.due_monitors.is_empty() && plan.stalled_monitors.is_empty() {
+        if let Some(next) = plan.next_due_at {
+            let wait = next.saturating_sub(now_epoch());
+            println!("→ monitor poll plan: none due (next poll in {wait}s)");
+        }
+        return Ok(());
+    }
+    println!(
+        "→ monitor poll plan: {} due, {} stalled",
+        plan.due_monitors.len(),
+        plan.stalled_monitors.len()
+    );
+    for item in &plan.due_monitors {
+        println!(
+            "   poll {} (target={}, policy={}, overdue {}s{})",
+            item.todo_id,
+            item.target.as_deref().unwrap_or("-"),
+            item.policy.as_deref().unwrap_or("default"),
+            item.overdue_secs,
+            if item.no_spend_if_unchanged {
+                ", no-spend on unchanged"
+            } else {
+                ""
+            }
+        );
+    }
+    for id in &plan.stalled_monitors {
+        println!("   stalled {id} (decision kernel replans)");
+    }
+    Ok(())
+}
+
+/// `loopx scheduler liveness --goal G [--agent-id A] [--threshold-secs N]
+/// [--format json]` — P1-3① automation liveness check: compare now against
+/// the latest tick heartbeat (event log ∪ persisted scheduler state). A
+/// breach records an `AutomationLivenessAlert` (cooldown-deduped) and drops
+/// an operator-inbox alert file; the attention projection escalates the
+/// goal until a fresh heartbeat recovers the automation.
+fn scheduler_liveness(store: &mut Store, args: &[String]) -> Result<()> {
+    use crate::scheduler::liveness as lv;
+    let mut threshold = lv::DEFAULT_LIVENESS_THRESHOLD_SECS;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--format",
+            "--goal",
+            "--json",
+            "--threshold-secs",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--threshold-secs" {
+            if let Ok(n) = v.parse::<u64>() {
+                if n > 0 {
+                    threshold = n;
+                }
+            }
+        }
+    });
+    let (goal_id, agent) = scheduler_scope(store, args, "codex-app")?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let now = now_epoch();
+    // Last heartbeat = max(heartbeat event ts, persisted state updated_at)
+    // — the state file predates heartbeat events (back-compat).
+    let mut last_tick = goal.scheduler_heartbeats.get(&agent).copied();
+    use crate::scheduler::state as st;
+    if let Some(s) = st::load_scheduler_state(
+        &store.goal_dir(&goal_id),
+        &agent,
+        st::CODEX_APP_SURFACE,
+        st::CODEX_APP_STATEFUL_BACKOFF_STATE_KEY,
+    ) {
+        last_tick = Some(last_tick.map_or(s.updated_at, |t| t.max(s.updated_at)));
+    }
+    let eval = lv::evaluate_liveness(&goal_id, &agent, last_tick, now, threshold);
+    let mut alert_note = String::new();
+    if eval.state == lv::LIVENESS_BREACH {
+        let alerts: Vec<u64> = goal
+            .liveness_alerts
+            .iter()
+            .filter(|a| a.agent_id == agent)
+            .map(|a| a.ts)
+            .collect();
+        if lv::alert_due(alerts.iter().max().copied(), now) {
+            store.append(Event::AutomationLivenessAlert {
+                goal_id: goal_id.clone(),
+                agent_id: agent.clone(),
+                elapsed_secs: eval.elapsed_secs.unwrap_or(0),
+                threshold_secs: threshold,
+                consecutive: alerts.len() as u32 + 1,
+                ts: now,
+            })?;
+            write_liveness_inbox_alert(&goal, &agent, &eval);
+            alert_note =
+                " → alert recorded (attention escalates; operator inbox notified)".to_string();
+        } else {
+            alert_note = " (alert suppressed: cooldown)".to_string();
+        }
+    }
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&eval)?);
+        return Ok(());
+    }
+    match eval.state.as_str() {
+        lv::LIVENESS_BREACH => println!(
+            "liveness: BREACH goal={goal_id} agent={agent} silent={}s threshold={}s{alert_note}",
+            eval.elapsed_secs.unwrap_or(0),
+            threshold
+        ),
+        lv::LIVENESS_NO_HEARTBEAT => println!(
+            "liveness: no heartbeat for goal={goal_id} agent={agent} (automation never ticked — run `scheduler tick` to install)"
+        ),
+        _ => println!(
+            "liveness: alive goal={goal_id} agent={agent} last tick {}s ago (threshold {}s)",
+            eval.elapsed_secs.unwrap_or(0),
+            threshold
+        ),
+    }
+    Ok(())
+}
+
+/// Best-effort operator-inbox alert file (LoopX: breach → operator_inbox).
+/// Written under the goal's project `.future/loop/inbox/` so the `inbox`
+/// urgency projection surfaces it as a direct mention.
+fn write_liveness_inbox_alert(
+    goal: &crate::state::Goal,
+    agent: &str,
+    eval: &crate::scheduler::liveness::LivenessEvaluation,
+) {
+    let inbox = std::path::Path::new(&goal.cwd)
+        .join(".future")
+        .join("loop")
+        .join("inbox");
+    if std::fs::create_dir_all(&inbox).is_err() {
+        return;
+    }
+    let clean = |s: &str| {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+    };
+    let path = inbox.join(format!(
+        "liveness-{}-{}-{}.json",
+        clean(&goal.goal_id),
+        clean(agent),
+        now_epoch()
+    ));
+    let payload = serde_json::json!({
+        "message_id": format!("liveness-{}-{}", clean(&goal.goal_id), now_epoch()),
+        "create_time": now_epoch().to_string(),
+        "content": format!(
+            "@operator automation liveness breach: goal {} agent {} silent {}s (> {}s threshold) — check/restart the host automation",
+            goal.goal_id,
+            agent,
+            eval.elapsed_secs.unwrap_or(0),
+            eval.threshold_secs
+        ),
+    });
+    if let Ok(text) = serde_json::to_string_pretty(&payload) {
+        let _ = std::fs::write(path, format!("{text}\n"));
+    }
 }
 
 /// `loopx scheduler show --goal G [--agent-id A] [--format json]` — print the
@@ -6245,6 +6456,28 @@ fn describe_event(event: &crate::store::Event) -> String {
             return format!(
                 "scheduler_ack agent={agent_id} action={action} rrule={}",
                 rrule.as_deref().unwrap_or("-")
+            );
+        }
+        Event::SchedulerTicked {
+            agent_id,
+            action,
+            rrule,
+            ..
+        } => {
+            return format!(
+                "scheduler_tick agent={agent_id} action={action} rrule={}",
+                rrule.as_deref().unwrap_or("-")
+            );
+        }
+        Event::AutomationLivenessAlert {
+            agent_id,
+            elapsed_secs,
+            threshold_secs,
+            consecutive,
+            ..
+        } => {
+            return format!(
+                "liveness_alert agent={agent_id} silent={elapsed_secs}s threshold={threshold_secs}s alert#{consecutive}"
             );
         }
         Event::SupervisorProposed {

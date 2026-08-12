@@ -8,4 +8,6 @@
 //! progression, and atomic persistence. The decision kernel stays pure; the
 //! CLI layer (`loopx scheduler`) drives persistence across decision cycles.
 
+pub mod liveness;
+pub mod monitor_poll;
 pub mod state;
