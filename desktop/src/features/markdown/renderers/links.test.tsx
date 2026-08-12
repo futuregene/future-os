@@ -53,6 +53,7 @@ beforeEach(() => {
 
 describe("safeLink", () => {
   it("renders inert text for disallowed protocols", () => {
+    // eslint-disable-next-line react/dom-no-script-url -- intentionally testing the sanitizer
     const html = renderToStaticMarkup(<SafeLink href="javascript:alert(1)">x</SafeLink>);
     expect(html).toContain("<span");
     expect(html).not.toContain("<a");
@@ -91,9 +92,9 @@ describe("safeLink", () => {
 
   it("suppresses the custom menu in preview mode", () => {
     const { container, cleanup } = mount(
-      <PreviewMarkdownContext.Provider value={{ basePath: "/w/doc.md" }}>
+      <PreviewMarkdownContext value={{ basePath: "/w/doc.md" }}>
         <SafeLink href="https://example.com">site</SafeLink>
-      </PreviewMarkdownContext.Provider>,
+      </PreviewMarkdownContext>,
     );
     rightClick(container.querySelector("a")!);
     expect(document.querySelectorAll(".fixed button").length).toBe(0);
@@ -316,9 +317,9 @@ describe("fileLink", () => {
   it("preview mode opens every target with the OS handler and has no menu", () => {
     const md: StoredFile = { path: "/w/doc.md", name: "doc.md", relativePath: "doc.md", insideWorkspace: true };
     const { container, cleanup } = mount(
-      <PreviewMarkdownContext.Provider value={{ basePath: "/w/other.md" }}>
+      <PreviewMarkdownContext value={{ basePath: "/w/other.md" }}>
         <FileLink file={md} />
-      </PreviewMarkdownContext.Provider>,
+      </PreviewMarkdownContext>,
     );
     click(container.querySelector("a")!);
     expect(invokeMock).toHaveBeenCalledWith("open_path", { path: "/w/doc.md" });

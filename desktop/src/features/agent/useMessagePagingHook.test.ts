@@ -1,7 +1,7 @@
-// @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "./agentThreadTypes";
 import { act } from "react";
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "../../test/renderHook";
 import { computePageStart, useMessagePaging } from "./useMessagePaging";
 
@@ -11,12 +11,18 @@ function msg(id: string, role: "user" | "assistant"): AgentMessage {
 
 /** 6 exchanges: u1 a1 … u6 a6. */
 const MESSAGES = [
-  msg("u1", "user"), msg("a1", "assistant"),
-  msg("u2", "user"), msg("a2", "assistant"),
-  msg("u3", "user"), msg("a3", "assistant"),
-  msg("u4", "user"), msg("a4", "assistant"),
-  msg("u5", "user"), msg("a5", "assistant"),
-  msg("u6", "user"), msg("a6", "assistant"),
+  msg("u1", "user"),
+  msg("a1", "assistant"),
+  msg("u2", "user"),
+  msg("a2", "assistant"),
+  msg("u3", "user"),
+  msg("a3", "assistant"),
+  msg("u4", "user"),
+  msg("a4", "assistant"),
+  msg("u5", "user"),
+  msg("a5", "assistant"),
+  msg("u6", "user"),
+  msg("a6", "assistant"),
 ];
 
 beforeEach(() => {
@@ -252,6 +258,43 @@ describe("useMessagePaging", () => {
     h.unmount();
     await settle();
     // No post-unmount setState warning/crash.
+  });
+
+  it("skips elements above the viewport when capturing the anchor", () => {
+    const { container, h } = setup();
+    const above = document.createElement("div");
+    above.setAttribute("data-message-id", "above");
+    const visible = document.createElement("div");
+    visible.setAttribute("data-message-id", "u5");
+    container.append(above, visible);
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue({ top: 100, bottom: 500 } as DOMRect);
+    // Fully above the viewport top → not a candidate.
+    vi.spyOn(above, "getBoundingClientRect").mockReturnValue({ top: 40, bottom: 90 } as DOMRect);
+    vi.spyOn(visible, "getBoundingClientRect").mockReturnValue({ top: 110, bottom: 160 } as DOMRect);
+    container.scrollTop = 20;
+    act(() => {
+      h.current.loadOlder();
+    });
+    // The visible element anchored the restore (not the above-viewport one).
+    expect(container.scrollTop).not.toBe(0);
+    h.unmount();
+  });
+
+  it("does not attach the wheel listener when the container is gone", async () => {
+    const { container, scrollRef, h } = setup();
+    container.scrollTop = 0;
+    act(() => {
+      h.current.handleScroll();
+    });
+    // Container vanishes before the settle completes: the wheel effect runs
+    // with no container and attaches nothing.
+    scrollRef.current = null;
+    await settle();
+    act(() => {
+      container.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+    });
+    expect(h.current.visibleMessages[0]?.id).toBe("u5");
+    h.unmount();
   });
 
   it("captures no anchor from an empty container", () => {

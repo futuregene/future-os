@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { buildReferencePrompt } from "./buildReferencePrompt";
+
 const resolveMock = vi.fn<(w: string, refs: unknown[]) => Promise<Array<Record<string, unknown>>>>();
 
 vi.mock("../../integrations/storage/markdownReferences", () => ({
   resolveMarkdownReferences: (w: string, refs: unknown[]) => resolveMock(w, refs),
 }));
-
-import { buildReferencePrompt } from "./buildReferencePrompt";
 
 beforeEach(() => {
   resolveMock.mockReset();

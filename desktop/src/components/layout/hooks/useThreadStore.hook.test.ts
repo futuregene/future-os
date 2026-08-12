@@ -1,8 +1,10 @@
+import type { StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
+import { act } from "react";
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act } from "react";
 import { flushAsync, renderHook } from "../../../test/renderHook";
-import type { StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
+
+import { useThreadStore } from "./useThreadStore";
 
 const listThreads = vi.fn();
 const listWorkspaces = vi.fn();
@@ -34,8 +36,6 @@ vi.mock("@tauri-apps/api/event", () => ({
     return Promise.resolve(() => {});
   },
 }));
-
-import { useThreadStore } from "./useThreadStore";
 
 function thread(id: string, workspaceId = "w1", status = "active") {
   return { id, workspaceId, status } as unknown as StoredThread;

@@ -84,6 +84,7 @@ async function projectRunForLivePreview(
   liveProjectionCache.set(runId, entry);
   while (liveProjectionCache.size > LIVE_PROJECTION_CACHE_MAX) {
     const oldest = liveProjectionCache.keys().next().value;
+    /* v8 ignore next 2 -- size > MAX (>= 1) guarantees a first key exists */
     if (oldest === undefined)
       break;
     liveProjectionCache.delete(oldest);
@@ -263,6 +264,8 @@ export async function buildStreamingPreview(
   runStartedAt: number | null = null,
 ): Promise<AgentMessage | null> {
   const projection = await projectRunForLivePreview(runId, () => true);
+  /* v8 ignore next 2 -- shouldApply is always true here, so the projection
+     only fails to materialize via a throw (which propagates) */
   if (!projection)
     return null;
   if (

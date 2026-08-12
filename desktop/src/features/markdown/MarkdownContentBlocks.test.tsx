@@ -1,9 +1,11 @@
-// @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from "vitest";
 import { flushAsync } from "../../test/renderHook";
+
+import { MarkdownContent } from "./MarkdownContent";
 
 const resolveReferencesMock = vi.fn<(w: string, refs: unknown[]) => Promise<Array<Record<string, unknown>>>>(
   () => Promise.resolve([]),
@@ -25,8 +27,6 @@ vi.mock("../../integrations/storage/files", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: () => Promise.resolve(() => {}),
 }));
-
-import { MarkdownContent } from "./MarkdownContent";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -53,7 +53,7 @@ function mount(node: React.ReactElement) {
   };
 }
 
-describe("MarkdownContent block rendering", () => {
+describe("markdownContent block rendering", () => {
   it("renders headings, lists, blockquotes, tables and breaks", () => {
     const html = renderToStaticMarkup(createElement(MarkdownContent, {
       content: [
@@ -120,7 +120,7 @@ describe("MarkdownContent block rendering", () => {
   });
 });
 
-describe("MarkdownContent reference resolution", () => {
+describe("markdownContent reference resolution", () => {
   it("resolves a file reference into a FileLink once the store resolves", async () => {
     resolveReferencesMock.mockResolvedValue([{
       targetType: "file",
