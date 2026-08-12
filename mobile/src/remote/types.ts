@@ -151,6 +151,8 @@ export interface HistoryEntry {
   output_tokens?: number;
   /** Reply wall-clock duration in ms — paired with `output_tokens`. */
   duration_ms?: number;
+  /** RFC3339 entry time; preserved across re-saves so history keeps real times. */
+  timestamp?: string;
 }
 
 export interface StreamEvent {
@@ -170,6 +172,36 @@ export interface ApprovalPayload {
   /** Agent-built action object (writes/paths/command) — path is surfaced to the user. */
   action?: unknown;
 }
+
+/**
+ * A tool activity row — mirrors the shared `AgentActivityItem` status surface.
+ * `complete` is kept for the legacy flat-tool-row path; `status` is the
+ * authoritative tool state (drives the failed style).
+ */
+export interface TimelineToolRow {
+  name: string;
+  complete: boolean;
+  /** The call's display target (desktop parity): the shell command or
+   *  file path, shown on the row and expandable on tap. */
+  detail?: string;
+  /** Authoritative tool state — "failed" renders a danger-styled row. */
+  status?: "running" | "completed" | "failed";
+  /** Present on a collapsed same-kind burst ("Edited 3 files") — the child
+   *  calls the summary row stands for. */
+  count?: number;
+  children?: TimelineToolRow[];
+}
+
+/**
+ * One ordered slice of an assistant reply bubble (shared `MessageSegment`
+ * parity). Text/tool/thinking/compaction are kept in the chronological order
+ * the agent produced them instead of being flattened.
+ */
+export type TimelineSegment =
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "tool"; tool: TimelineToolRow }
+  | { kind: "compaction"; tokensBefore?: number };
 
 export type TimelineItem =
   | {
@@ -193,6 +225,21 @@ export type TimelineItem =
       /** Output tokens for the reply (real provider usage). */
       outputTokens?: number;
       attachments?: HistoryAttachment[];
+      /**
+       * Ordered inline slices of an assistant reply — thinking/tool rows and
+       * compaction markers render *inside* the bubble in stream order (desktop
+       * parity), instead of the old merged-bubble-with-rows-above layout. Falls
+       * back to `text` when absent (optimistic, legacy, plain history).
+       */
+      segments?: TimelineSegment[];
+      /** A tool row in this reply failed (shell non-zero exit / error) — the
+       *  bubble gets a danger affordance. */
+      failed?: boolean;
+      /** The user cancelled this run (agent_end state "cancelled"). */
+      stopped?: boolean;
+      /** The stream ended before the model finished (agent_end reason
+       *  "incomplete") — the text is a truncated prefix, not a clean answer. */
+      truncated?: boolean;
     }
   | {
       id: string;

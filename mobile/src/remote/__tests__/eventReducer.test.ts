@@ -125,10 +125,10 @@ describe("entry reducer", () => {
     });
   });
 
-  test("projects thinking and tool rows above the merged reply per exchange", () => {
+  test("projects thinking and tool rows inline in the reply per exchange (D2)", () => {
     // History must read like the live transcript (desktop entryProjection
-    // parity): user bubble, then the run's thinking/tool rows, then the merged
-    // reply with its run stats.
+    // parity): the run's thinking/tool rows and streamed text render inline
+    // inside the reply bubble, in stream order.
     const timeline = timelineFromEntries([
       { id: "u1", role: "user", content: "check this" },
       {
@@ -149,25 +149,8 @@ describe("entry reducer", () => {
       },
       { id: "u2", role: "user", content: "thanks" },
     ]);
-    expect(timeline.items.map(item => item.kind)).toEqual([
-      "message",
-      "thinking",
-      "tool",
-      "message",
-      "message",
-    ]);
-    expect(timeline.items[1]).toMatchObject({
-      kind: "thinking",
-      text: "reasoning…",
-      complete: true,
-    });
-    expect(timeline.items[2]).toMatchObject({
-      kind: "tool",
-      name: "read",
-      complete: true,
-      detail: "/tmp/x",
-    });
-    const reply = timeline.items[3];
+    expect(timeline.items.map(item => item.kind)).toEqual(["message", "message", "message"]);
+    const reply = timeline.items[1];
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply).toMatchObject({
       role: "assistant",
@@ -176,6 +159,12 @@ describe("entry reducer", () => {
       durationMs: 3400,
       outputTokens: 12,
     });
+    expect(reply.segments).toEqual([
+      { kind: "thinking", text: "reasoning…" },
+      { kind: "text", text: "interim analysis" },
+      { kind: "tool", tool: { name: "read", status: "completed", complete: true, detail: "/tmp/x" } },
+      { kind: "text", text: "done" },
+    ]);
     // A reply-less run (empty assistant entry) renders nothing extra.
     const divider = timelineFromEntries([
       { id: "u3", role: "user", content: "next" },
@@ -206,9 +195,15 @@ describe("projection reducer", () => {
       { type: "text_chunk", data: JSON.stringify({ text: "answer" }), runId: "run-1", idx: 3 },
       { type: "agent_end", data: "{}", runId: "run-1", idx: 4 },
     ]);
-    expect(timeline.items.map(item => item.kind)).toEqual(["tool", "message"]);
-    const reply = timeline.items.find(item => item.kind === "message");
+    expect(timeline.items.map(item => item.kind)).toEqual(["message"]);
+    const reply = timeline.items[0];
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply).toMatchObject({ kind: "message", role: "assistant", text: "answer" });
+    // The tool row renders inline inside the bubble, in stream order.
+    expect(reply.segments).toEqual([
+      { kind: "tool", tool: { name: "read", status: "completed", complete: true } },
+      { kind: "text", text: "answer" },
+    ]);
     expect(timeline.streaming).toBe(false);
   });
 
@@ -429,8 +424,9 @@ describe("stream event reducer", () => {
     if (!host || host.kind !== "message") throw new Error("assistant host bubble missing");
     expect(host.streaming).toBe(true);
     expect(host.text).toBe("");
-    // Chronological order: reasoning first, the answer bubble below it.
-    expect(thinking.items.map(item => item.kind)).toEqual(["thinking", "message"]);
+    // Chronological order: the reasoning renders inline inside the bubble.
+    expect(host.segments).toEqual([{ kind: "thinking", text: "reasoning…" }]);
+    expect(thinking.items.map(item => item.kind)).toEqual(["message"]);
 
     // The reply text merges into that same bubble — no duplicate assistant row.
     const text = applyStreamEvent(thinking, {
@@ -444,7 +440,7 @@ describe("stream event reducer", () => {
     );
     expect(assistants).toHaveLength(1);
     expect(assistants[0]).toMatchObject({ text: "answer", streaming: true });
-    expect(text.items.map(item => item.kind)).toEqual(["thinking", "message"]);
+    expect(text.items.map(item => item.kind)).toEqual(["message"]);
   });
 
   test("keeps thinking and tool rows above the answer bubble in event order", () => {
@@ -475,16 +471,19 @@ describe("stream event reducer", () => {
       runId: "run-1",
       idx: 3,
     });
-    expect(state.items.map(item => item.kind)).toEqual(["thinking", "tool", "message"]);
-    const answer = state.items[2];
+    expect(state.items.map(item => item.kind)).toEqual(["message"]);
+    const answer = state.items[0];
     if (!answer || answer.kind !== "message") throw new Error("assistant message missing");
     expect(answer).toMatchObject({ text: "answer", streaming: true });
+    // D2: the reasoning and tool work render inline inside the bubble, in the
+    // chronological order the agent produced them.
+    expect(answer.segments?.map(segment => segment.kind)).toEqual(["thinking", "tool", "text"]);
   });
 
-  test("keeps tool rows above the reply when text streams before the first tool call", () => {
+  test("keeps tool rows in stream order when text streams before the first tool call", () => {
     // Regression: a model may stream an interim remark ahead of its first tool
-    // call; the merged reply bubble must still settle below the run's tool
-    // rows, not above them (the desktop shows the final answer last).
+    // call; the tool row must sit between the two text blocks inside the
+    // bubble (desktop shows the final answer last).
     let state = applyStreamEvent(emptyTimeline(), {
       type: "agent_start",
       data: "{}",
@@ -515,10 +514,12 @@ describe("stream event reducer", () => {
       runId: "run-1",
       idx: 4,
     });
-    expect(state.items.map(item => item.kind)).toEqual(["tool", "message"]);
-    const answer = state.items[1];
+    const answer = state.items.find(item => item.kind === "message" && item.role === "assistant");
     if (!answer || answer.kind !== "message") throw new Error("assistant message missing");
-    expect(answer.text).toBe("interim answer");
+    // The copyable text joins the bubble's text blocks; the tool row sits
+    // between them inside the bubble (stream order).
+    expect(answer.text).toBe("interim \n\nanswer");
+    expect(answer.segments?.map(segment => segment.kind)).toEqual(["text", "tool", "text"]);
   });
 
   test("settle prefers the authoritative agent_end totals over partial late-join stats", () => {
@@ -556,17 +557,32 @@ describe("stream event reducer", () => {
       runId: "run-1",
       idx: 0,
     });
-    expect(state.items[0]).toMatchObject({ kind: "tool", detail: "ls -la" });
+    const shell = state.items.find(item => item.kind === "message");
+    if (!shell || shell.kind !== "message") throw new Error("shell bubble missing");
+    expect(shell.segments).toEqual([
+      { kind: "tool", tool: { name: "shell", status: "running", complete: false, detail: "ls -la" } },
+    ]);
     state = applyStreamEvent(state, {
       type: "tool_start",
       data: JSON.stringify({ tool_id: "t2", tool_name: "read", tool_args: '{"path":"/tmp/x"}' }),
       runId: "run-1",
       idx: 1,
     });
-    expect(state.items[1]).toMatchObject({ kind: "tool", detail: "/tmp/x" });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.segments).toEqual([
+      {
+        kind: "tool",
+        tool: { name: "shell", status: "running", complete: false, detail: "ls -la" },
+      },
+      {
+        kind: "tool",
+        tool: { name: "read", status: "running", complete: false, detail: "/tmp/x" },
+      },
+    ]);
   });
 
-  test("agent_end closes an unfinished thinking row", () => {
+  test("agent_end leaves the thinking slice inline in the settled reply", () => {
     let state = applyStreamEvent(emptyTimeline(), {
       type: "thinking_delta",
       data: JSON.stringify({ text: "hmm" }),
@@ -574,9 +590,11 @@ describe("stream event reducer", () => {
       idx: 0,
     });
     state = applyStreamEvent(state, { type: "agent_end", data: "{}", runId: "run-1", idx: 1 });
-    const thinking = state.items.find(item => item.kind === "thinking");
-    if (!thinking || thinking.kind !== "thinking") throw new Error("thinking row missing");
-    expect(thinking.complete).toBe(true);
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    // The thinking slice stays inline in the bubble; the settled reply keeps it.
+    expect(reply.segments).toEqual([{ kind: "thinking", text: "hmm" }]);
+    expect(reply.streaming).toBe(false);
   });
 
   test("settle falls back to receipt-clock duration and accumulated usage on older agents", () => {
@@ -602,5 +620,146 @@ describe("stream event reducer", () => {
     if (!settled || settled.kind !== "message") throw new Error("assistant message missing");
     expect(settled.durationMs).toEqual(expect.any(Number));
     expect(settled.outputTokens).toBe(42);
+  });
+});
+
+describe("shared-projection semantic flags", () => {
+  test("a shell exit-code footer marks the tool row failed (G1)", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", tool_args: { command: "future nosuch" } }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({
+        tool_id: "t1",
+        tool_name: "shell",
+        text: "bash: future: command not found\n\n[exit: 127]",
+      }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.failed).toBe(true);
+    const toolSegment = reply.segments?.find(segment => segment.kind === "tool");
+    expect(toolSegment && toolSegment.kind === "tool" && toolSegment.tool.status).toBe("failed");
+  });
+
+  test("a bare grep exit-1 is a soft fail, not a tool failure (G1 exemption)", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", tool_args: { command: "grep foo file" } }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", text: "[exit: 1]" }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.failed).toBeUndefined();
+  });
+
+  test("a cancelled run marks the bubble stopped (G15)", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "partial" }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "agent_end",
+      data: JSON.stringify({ state: "cancelled" }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.stopped).toBe(true);
+    expect(reply.truncated).toBeUndefined();
+  });
+
+  test("an incomplete stream marks the bubble truncated (G13)", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "cut off" }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "agent_end",
+      data: JSON.stringify({ reason: "incomplete" }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.truncated).toBe(true);
+    expect(reply.stopped).toBeUndefined();
+  });
+
+  test("a clean agent_end is neither stopped nor truncated", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "full" }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, { type: "agent_end", data: "{}", runId: "run-1", idx: 1 });
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.stopped).toBeUndefined();
+    expect(reply.truncated).toBeUndefined();
+  });
+
+  test("a compaction_end renders an inline divider segment (G3)", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "compaction_end",
+      data: JSON.stringify({ tokens_before: 190_000, aborted: false }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "Continuing." }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.segments).toEqual([
+      { kind: "compaction", tokensBefore: 190_000 },
+      { kind: "text", text: "Continuing." },
+    ]);
+  });
+
+  test("the settled totals prefer agent_end usage over the late-join partial sum", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "tail" }),
+      runId: "run-1",
+      idx: 1998,
+    });
+    state = applyStreamEvent(state, {
+      type: "usage",
+      data: JSON.stringify({ usage: { completion_tokens: 273 } }),
+      runId: "run-1",
+      idx: 1999,
+    });
+    state = applyStreamEvent(state, {
+      type: "agent_end",
+      data: JSON.stringify({ usage: { output_tokens: 2965 } }),
+      runId: "run-1",
+      idx: 2000,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.outputTokens).toBe(2965);
   });
 });

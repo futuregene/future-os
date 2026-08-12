@@ -21,7 +21,7 @@ import {
   approvalPaths,
 } from "@future-os/thread-projection";
 import { MarkdownText } from "./MarkdownText";
-import type { ApprovalPayload, HistoryAttachment, TimelineItem } from "../remote/types";
+import type { ApprovalPayload, HistoryAttachment, TimelineItem, TimelineSegment } from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
 
@@ -259,6 +259,66 @@ function useCopyState(resetMs = 1400) {
   return { copied, copy };
 }
 
+// Inline divider marking where the agent auto-compacted the conversation
+// (history summarized to fit the context window). A hairline rule with a small
+// muted label — the only surfacing of compaction in the UI, since the agent
+// otherwise continues silently. Shows the pre-compaction token count when known.
+function CompactionDivider({ tokensBefore }: { tokensBefore?: number }) {
+  const { t, i18n } = useTranslation();
+  const label =
+    tokensBefore && tokensBefore > 0
+      ? t("chat.compactedTokens", {
+          formattedCount: new Intl.NumberFormat(i18n.language).format(tokensBefore),
+        })
+      : t("chat.compacted");
+  return (
+    <View style={styles.compactionDivider}>
+      <View style={styles.compactionLine} />
+      <Text style={styles.compactionLabel}>{label}</Text>
+      <View style={styles.compactionLine} />
+    </View>
+  );
+}
+
+/** One inline slice of an assistant reply, in stream order (desktop parity). */
+function SegmentBlock({ segment }: { segment: TimelineSegment }) {
+  const { t } = useTranslation();
+  if (segment.kind === "text") {
+    return <MarkdownText text={segment.text} />;
+  }
+  if (segment.kind === "thinking") {
+    return (
+      <View style={styles.inlineThinking}>
+        <Text style={styles.inlineThinkingLabel}>{t("chat.thoughtCompleted")}</Text>
+        <Text style={styles.inlineThinkingText}>{segment.text}</Text>
+      </View>
+    );
+  }
+  if (segment.kind === "tool") {
+    const { tool } = segment;
+    const kind = toolKind(tool.name);
+    const failed = tool.status === "failed";
+    const detail = tool.detail?.trim() ? tool.detail.trim() : null;
+    return (
+      <View style={[styles.inlineTool, failed ? styles.inlineToolFailed : null]}>
+        <View style={styles.toolHeader}>
+          <ToolGlyph kind={kind} />
+          <Text style={[styles.toolText, failed ? styles.toolTextFailed : null]}>
+            {toolLabel(t, kind, tool.complete)}
+          </Text>
+          {detail ? (
+            <Text selectable style={styles.inlineToolDetail}>
+              {detail}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+    );
+  }
+  // compaction
+  return <CompactionDivider tokensBefore={segment.tokensBefore} />;
+}
+
 export function TimelineCard({ item, onOpenAttachment }: TimelineCardProps) {
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -280,7 +340,15 @@ export function TimelineCard({ item, onOpenAttachment }: TimelineCardProps) {
         .join(" · ");
       return (
         <View style={styles.assistantMessage}>
-          {item.text.trim().length > 0 && <MarkdownText text={item.text} />}
+          {item.segments && item.segments.length > 0 ? (
+            <View style={styles.segmentList}>
+              {item.segments.map(segment => (
+                <SegmentBlock key={`${item.id}:${segment.kind}`} segment={segment} />
+              ))}
+            </View>
+          ) : item.text.trim().length > 0 ? (
+            <MarkdownText text={item.text} />
+          ) : null}
           {item.streaming && item.startedAt != null ? (
             // In-flight: the generating indicator occupies the same footer slot
             // the copy button uses once settled (desktop parity), so a streaming
@@ -288,6 +356,12 @@ export function TimelineCard({ item, onOpenAttachment }: TimelineCardProps) {
             <RunIndicator startedAt={item.startedAt} />
           ) : (
             <View style={styles.messageFooter}>
+              {item.stopped ? (
+                <Text style={styles.stoppedMarker}>{t("chat.runStopped")}</Text>
+              ) : null}
+              {item.truncated ? (
+                <Text style={styles.truncatedMarker}>{t("chat.responseInterrupted")}</Text>
+              ) : null}
               <Pressable
                 accessibilityLabel={t("chat.copyResponse")}
                 accessibilityRole="button"
@@ -442,6 +516,44 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     marginTop: -spacing.xs,
   },
+  stoppedMarker: { color: colors.inkMuted, fontSize: 12, fontStyle: "italic" },
+  truncatedMarker: { color: colors.warning, fontSize: 12 },
+  segmentList: { gap: spacing.sm, marginTop: spacing.xs },
+  inlineThinking: {
+    borderLeftWidth: 2,
+    borderLeftColor: colors.line,
+    paddingLeft: spacing.md,
+    gap: 2,
+  },
+  inlineThinkingLabel: { color: colors.inkSoft, fontSize: 12, fontWeight: "600" },
+  inlineThinkingText: { color: colors.inkSoft, fontSize: 13, lineHeight: 19 },
+  inlineTool: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 2,
+  },
+  inlineToolFailed: {
+    backgroundColor: colors.dangerSoft,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+  },
+  toolTextFailed: { color: colors.danger },
+  inlineToolDetail: {
+    marginLeft: spacing.sm,
+    flexShrink: 1,
+    color: colors.inkSoft,
+    fontFamily: "monospace",
+    fontSize: 12,
+  },
+  compactionDivider: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingVertical: 4,
+  },
+  compactionLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.line },
+  compactionLabel: { color: colors.inkMuted, fontSize: 12 },
   messageDuration: { color: colors.inkMuted, fontSize: 12 },
   copyButton: {
     flexDirection: "row",

@@ -311,6 +311,29 @@ describe("buildAssistantRunProjection truncated", () => {
   });
 });
 
+describe("buildAssistantRunProjection stopped", () => {
+  it("flags a run the user cancelled (agent_end state cancelled)", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "partial answer" }],
+        ["agent_end", { type: "agent_end", state: "cancelled" }],
+      ]),
+    );
+
+    expect(projection.stopped).toBe(true);
+    expect(projection.truncated).toBe(false);
+  });
+
+  it("stays unstopped for a clean or truncated end", () => {
+    expect(buildAssistantRunProjection(
+      events([["text_chunk", { text: "full" }], ["agent_end", { type: "agent_end" }]]),
+    ).stopped).toBe(false);
+    expect(buildAssistantRunProjection(
+      events([["text_chunk", { text: "cut" }], ["agent_end", { type: "agent_end", reason: "incomplete" }]]),
+    ).stopped).toBe(false);
+  });
+});
+
 // The agent appends the exit code as a "[exit: N]" footer on the LAST line, not
 // a "[exit code: N]" prefix. Parsing the wrong shape silently dropped every
 // failure to exit 0 → a failed shell command rendered as "completed".

@@ -17,7 +17,6 @@ import {
   normalizeReplayEvents,
   timelineFromEntries,
   timelineFromHistory,
-  timelineFromProjection,
   stripRunItems,
   type ReplayEventWire,
   type TimelineState,
@@ -708,19 +707,20 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         // the run's partial items — the cache's live events for this run (the
         // replayed ones carry the run_id) and history's partial entries alike.
         // User bubbles survive stripRunItems, so the transcript order holds.
+        // Fold the projection through the normal reducer ONTO the stripped base
+        // so the run's shared projector (liveRuns) is rebuilt from the full
+        // replay — a run still streaming after this backfill keeps projecting
+        // correctly instead of restarting from an empty accumulator.
         const baseStripped = stripRunItems(baseForReplay, activeRunId);
         const projectionEvents = normalizeReplayEvents(response.projection.events);
-        const projected = timelineFromProjection(projectionEvents);
+        let next = baseStripped;
+        for (const ev of projectionEvents) next = applyStreamEvent(next, ev);
         const cursorIdx =
           response.projection.cursor ??
           projectionEvents.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
         advanceCursor(cursor, activeRunId, cursorIdx);
         const settled = projectionEvents.some(ev => ev.type === "agent_end");
-        return {
-          ...baseStripped,
-          items: [...baseStripped.items, ...projected.items],
-          streaming: !settled,
-        };
+        return { ...next, streaming: !settled };
       }
       let next = baseForReplay;
       const events = normalizeReplayEvents(response.events);

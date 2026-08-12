@@ -78,6 +78,10 @@ export const resources = {
         save: "Save",
         truncated: "The beginning of this run is no longer available in the live buffer.",
         backToLatest: "Back to latest",
+        runStopped: "Stopped",
+        responseInterrupted: "The response was interrupted before it finished.",
+        compacted: "Context compacted",
+        compactedTokens: "Context compacted · {{formattedCount}} tokens",
       },
       approval: {
         title: "Approval required",
@@ -226,6 +230,10 @@ export const resources = {
         save: "保存",
         truncated: "本轮开头已超出实时缓冲，无法回放。",
         backToLatest: "回到最新",
+        runStopped: "已停止",
+        responseInterrupted: "回复在完成前被中断。",
+        compacted: "上下文已压缩",
+        compactedTokens: "上下文已压缩 · {{formattedCount}} tokens",
       },
       approval: {
         title: "需要审批",
