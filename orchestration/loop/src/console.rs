@@ -154,6 +154,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "inbox" => cmd_inbox(&store, &args[1..]),
         "delivery" => cmd_delivery(&mut store, &args[1..]),
         "reward-memory" => cmd_reward_memory(&mut store, &args[1..]),
+        "decision-context" => cmd_decision_context(&mut store, &args[1..]),
         "registry" => cmd_registry(&registry, &args[1..]),
         "commands" => cmd_commands(&registry, &args[1..]),
         // ── P4 commands (G-18 / G-19 / G-20 / G-27) ───────────────────────
@@ -202,6 +203,7 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("inbox", Journey::Daily),
     ("delivery", Journey::Daily),
     ("reward-memory", Journey::Daily),
+    ("decision-context", Journey::Daily),
     ("diagnose", Journey::Daily),
     ("evidence-log", Journey::Daily),
     ("todo-event", Journey::Daily),
@@ -502,6 +504,12 @@ fn build_cli_registry() -> CommandRegistry {
         "reward-memory",
         "reward memory (P1-5): validator/delivery/evidence signal ingestion + scoped feedback",
         "reward-memory query --goal G [--agent-id A] [--todo-id T] [--source S] [--format json] | record --goal G --todo-id T --score 0.0..1.0 [--source evidence] [--note N] [--agent-id A]",
+    );
+    r.command(
+        work_items,
+        "decision-context",
+        "decision context (P1-4): assembler read model + audited outcome-feedback writeback",
+        "decision-context assemble --goal G [--format json] | outcomes --goal G [--format json] | feedback --goal G --turn N --status verified|refuted|inconclusive [--note N] [--agent-id A] [--context-digest D]",
     );
 
     let handoff = r.group("handoff", "project handoff (G-17)");
@@ -5323,6 +5331,173 @@ fn reward_memory_record(store: &mut Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+// ── decision-context (P1-4: assembler + outcome feedback) ─────────────────
+
+/// `decision-context <assemble|outcomes|feedback>` — the P1-4 surface:
+/// the decision-context assembler read model plus the audited
+/// outcome-feedback writeback (LoopX `capabilities/decision_context/cli.py`,
+/// compact set).
+fn cmd_decision_context(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("assemble") => decision_context_assemble(store, &args[1..]),
+        Some("outcomes") => decision_context_outcomes(store, &args[1..]),
+        Some("feedback") => decision_context_feedback(store, &args[1..]),
+        _ => bail!("decision-context subcommand must be `assemble`, `outcomes` or `feedback`"),
+    }
+}
+
+/// `decision-context assemble --goal G [--format json]` — assemble the
+/// decision context for the goal's current state (run history / outcome
+/// streak / quota status providers + the goal-boundary header).
+fn decision_context_assemble(store: &Store, args: &[String]) -> Result<()> {
+    use crate::capabilities::decision_context::assembler::assemble_decision_context;
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let packet = assemble_decision_context(&goal);
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&packet)?);
+        return Ok(());
+    }
+    println!(
+        "decision context for {goal_id} (digest {}):",
+        packet.digest()
+    );
+    println!(
+        "  goal_status={} providers=[{}]",
+        packet.goal_status,
+        packet.providers.join(", ")
+    );
+    println!(
+        "  run_history: runs={} material={} recent=[{}]",
+        packet.run_history.run_count,
+        packet.run_history.material_runs,
+        packet.run_history.recent_terminal_states.join(", ")
+    );
+    println!(
+        "  outcome_streak: streak={} threshold={} floor_breached={}",
+        packet.outcome_streak.surface_streak,
+        packet.outcome_streak.threshold,
+        packet.outcome_streak.floor_breached
+    );
+    println!(
+        "  quota: spent={}/{} (projected {})",
+        packet.quota.spent_slots, packet.quota.allowed_slots, packet.quota.projected_spent_slots
+    );
+    if !packet.open_acceptance_gaps.is_empty() {
+        println!(
+            "  open_acceptance_gaps: [{}]",
+            packet.open_acceptance_gaps.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// `decision-context outcomes --goal G [--format json]` — the outcome
+/// feedback read model: settled receipts in ledger order.
+fn decision_context_outcomes(store: &Store, args: &[String]) -> Result<()> {
+    use crate::capabilities::decision_context::outcome_feedback::decision_outcomes;
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let events = store.events(&goal_id)?;
+    let receipts = decision_outcomes(&events);
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&receipts)?);
+        return Ok(());
+    }
+    if receipts.is_empty() {
+        println!(
+            "no decision outcome feedback for goal {goal_id} (settle one via `decision-context feedback`)"
+        );
+        return Ok(());
+    }
+    println!(
+        "decision outcome feedback for {goal_id} ({} receipt(s)):",
+        receipts.len()
+    );
+    for r in receipts {
+        println!(
+            "  {} {} → {} (decision={}, code={}, seq={})",
+            r.receipt_id,
+            r.decision_id,
+            r.verification_status,
+            r.accepted_decision,
+            r.reason_code,
+            r.seq
+        );
+    }
+    Ok(())
+}
+
+/// `decision-context feedback --goal G --turn N --status
+/// verified|refuted|inconclusive [--note N] [--agent-id A]
+/// [--context-digest D]` — settle an outcome against the persisted decision
+/// for turn N. Audited: fails closed when no decision summary anchors the
+/// turn. Decisive outcomes also ingest a `decision_outcome` reward signal.
+fn decision_context_feedback(store: &mut Store, args: &[String]) -> Result<()> {
+    use crate::capabilities::decision_context::outcome_feedback::record_outcome_feedback;
+    let mut goal_id = None;
+    let mut turn_raw = None;
+    let mut status = None;
+    let mut note = None;
+    let mut agent_id = None;
+    let mut context_digest = None;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--context-digest",
+            "--goal",
+            "--note",
+            "--status",
+            "--turn",
+        ],
+    )?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--turn" => turn_raw = Some(v),
+        "--status" => status = Some(v),
+        "--note" => note = Some(v),
+        "--agent-id" => agent_id = Some(v),
+        "--context-digest" => context_digest = Some(v),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let turn: u32 = turn_raw
+        .ok_or_else(|| anyhow::anyhow!("--turn required"))?
+        .parse()
+        .map_err(|_| anyhow::anyhow!("--turn must be a run-turn number"))?;
+    let status = status.ok_or_else(|| anyhow::anyhow!("--status required"))?;
+    let receipt = record_outcome_feedback(
+        store,
+        &goal_id,
+        turn,
+        &status,
+        note,
+        agent_id,
+        context_digest.as_deref().unwrap_or(""),
+    )?;
+    println!(
+        "decision outcome recorded: {} turn-{turn} → {} ✔",
+        receipt.receipt_id, receipt.verification_status
+    );
+    Ok(())
+}
+
 // ── registry (G-26) ────────────────────────────────────────────────────────
 
 /// `loopx registry [--format json|--json] [--include-experimental]` — inspect
@@ -6502,6 +6677,12 @@ fn describe_event(event: &crate::store::Event) -> String {
         } => {
             return format!(
                 "projection_repaired projection={projection} drift={drift_count} rows_written={rows_written}"
+            );
+        }
+        Event::DecisionOutcomeRecorded { receipt, .. } => {
+            return format!(
+                "decision_outcome {} {} → {}",
+                receipt.receipt_id, receipt.decision_id, receipt.verification_status
             );
         }
     };
