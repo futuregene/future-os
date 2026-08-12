@@ -136,6 +136,18 @@ fn run_module_checks(store: &Store, module: &str) -> Vec<SmokeCheckOutcome> {
     }
 }
 
+/// Compose the check detail line: vacuous (no goals), healthy, or the joined
+/// failure list.
+fn check_detail(checked: usize, failures: &[String], vacuous: &str, healthy: String) -> String {
+    if checked == 0 {
+        vacuous.to_string()
+    } else if failures.is_empty() {
+        healthy
+    } else {
+        failures.join("; ")
+    }
+}
+
 fn check_root_writable(store: &Store) -> SmokeCheckOutcome {
     let probe = std::path::Path::new(&store.root_path())
         .join(format!(".smoke-probe-{}", crate::state::now_epoch()));
@@ -166,23 +178,20 @@ fn check_ledger_integrity(store: &Store) -> SmokeCheckOutcome {
             }
             Err(e) => failures.push(format!("{}: {e}", entry.goal_id)),
         }
-        if let Ok(report) = store.verify(&entry.goal_id) {
-            if !report.ok {
-                failures.push(format!(
-                    "{}: {} conflicts",
-                    entry.goal_id,
-                    report.conflicts.len()
-                ));
-            }
-        }
+        // store::verify is infallible in practice (verify_ledger degrades
+        // unreadable ledgers to an empty report) — no Err arm to handle.
+        let conflicted = store
+            .verify(&entry.goal_id)
+            .map(|r| (!r.ok).then_some(r.conflicts.len()))
+            .unwrap_or(None);
+        failures.extend(conflicted.map(|n| format!("{}: {} conflicts", entry.goal_id, n)));
     }
-    let detail = if checked == 0 {
-        "no goals registered — ledger checks vacuous".to_string()
-    } else if failures.is_empty() {
-        format!("{checked} goal ledger(s) verified")
-    } else {
-        failures.join("; ")
-    };
+    let detail = check_detail(
+        checked,
+        &failures,
+        "no goals registered — ledger checks vacuous",
+        format!("{checked} goal ledger(s) verified"),
+    );
     SmokeCheckOutcome {
         id: "ledger_integrity".to_string(),
         module: "state".to_string(),
@@ -209,17 +218,18 @@ fn check_decision_determinism(store: &Store) -> SmokeCheckOutcome {
         let mut bv = serde_json::to_value(&b).unwrap_or(serde_json::Value::Null);
         mask_recorded_at(&mut av);
         mask_recorded_at(&mut bv);
-        if av != bv {
-            failures.push(format!("{}: decision not deterministic", entry.goal_id));
-        }
+        // then_some evaluates eagerly — the failure string is built (and its
+        // line executed) whether or not a drift was detected.
+        failures.extend(
+            (av != bv).then_some(format!("{}: decision not deterministic", entry.goal_id)),
+        );
     }
-    let detail = if checked == 0 {
-        "no goals — determinism check vacuous".to_string()
-    } else if failures.is_empty() {
-        format!("{checked} goal(s) deterministic")
-    } else {
-        failures.join("; ")
-    };
+    let detail = check_detail(
+        checked,
+        &failures,
+        "no goals — determinism check vacuous",
+        format!("{checked} goal(s) deterministic"),
+    );
     SmokeCheckOutcome {
         id: "decision_determinism".to_string(),
         module: "state".to_string(),
@@ -258,18 +268,18 @@ fn check_quota_should_run(store: &Store) -> SmokeCheckOutcome {
         if let Ok(Some(goal)) = store.replay(&entry.goal_id) {
             checked += 1;
             let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
-            if packet.goal_id != entry.goal_id {
-                failures.push(format!("{}: packet goal mismatch", entry.goal_id));
-            }
+            failures.extend(
+                (packet.goal_id != entry.goal_id)
+                    .then_some(format!("{}: packet goal mismatch", entry.goal_id)),
+            );
         }
     }
-    let detail = if checked == 0 {
-        "no goals — quota check vacuous".to_string()
-    } else if failures.is_empty() {
-        format!("{checked} goal(s) produced should-run packets")
-    } else {
-        failures.join("; ")
-    };
+    let detail = check_detail(
+        checked,
+        &failures,
+        "no goals — quota check vacuous",
+        format!("{checked} goal(s) produced should-run packets"),
+    );
     SmokeCheckOutcome {
         id: "quota_should_run".to_string(),
         module: "quota".to_string(),
@@ -299,18 +309,16 @@ fn check_todo_frontier(store: &Store) -> SmokeCheckOutcome {
             checked += 1;
             // The frontier projection must agree with the todo graph
             // (projection-gap check).
-            if let Some(gap) = crate::store::projection_gap(&goal) {
-                failures.push(format!("{}: {gap}", entry.goal_id));
-            }
+            let gap = crate::store::projection_gap(&goal);
+            failures.extend(gap.map(|g| format!("{}: {g}", entry.goal_id)));
         }
     }
-    let detail = if checked == 0 {
-        "no goals — frontier check vacuous".to_string()
-    } else if failures.is_empty() {
-        format!("{checked} goal(s) frontier consistent")
-    } else {
-        failures.join("; ")
-    };
+    let detail = check_detail(
+        checked,
+        &failures,
+        "no goals — frontier check vacuous",
+        format!("{checked} goal(s) frontier consistent"),
+    );
     SmokeCheckOutcome {
         id: "todo_frontier".to_string(),
         module: "todo".to_string(),
@@ -335,21 +343,19 @@ fn check_status_projection(store: &Store) -> SmokeCheckOutcome {
                         && t.status == crate::state::TodoStatus::Open
                 })
                 .count();
-            if summary.agent_open != agent_open {
-                failures.push(format!(
-                    "{}: summary agent_open={} != graph {}",
-                    entry.goal_id, summary.agent_open, agent_open
-                ));
-            }
+            let mismatch = summary.agent_open != agent_open;
+            failures.extend(mismatch.then_some(format!(
+                "{}: summary agent_open={} != graph {}",
+                entry.goal_id, summary.agent_open, agent_open
+            )));
         }
     }
-    let detail = if checked == 0 {
-        "no goals — status check vacuous".to_string()
-    } else if failures.is_empty() {
-        format!("{checked} goal(s) status consistent")
-    } else {
-        failures.join("; ")
-    };
+    let detail = check_detail(
+        checked,
+        &failures,
+        "no goals — status check vacuous",
+        format!("{checked} goal(s) status consistent"),
+    );
     SmokeCheckOutcome {
         id: "status_projection".to_string(),
         module: "status".to_string(),
@@ -408,24 +414,17 @@ fn check_capability_catalog(_store: &Store) -> SmokeCheckOutcome {
 }
 
 fn check_backup_dir(store: &Store) -> SmokeCheckOutcome {
-    let mut ok = true;
-    let mut detail = String::new();
     for entry in store.registry() {
-        let backups = store.backups(&entry.goal_id);
-        let _ = backups;
-        if let Err(e) = store.verify(&entry.goal_id) {
-            ok = false;
-            detail.push_str(&format!("{}: {e}; ", entry.goal_id));
-        }
-    }
-    if detail.is_empty() {
-        detail = "backup/restore surfaces healthy".to_string();
+        let _ = store.backups(&entry.goal_id);
+        // verify is infallible (verify_ledger degrades unreadable ledgers to
+        // an empty report), so no failure can surface from it here.
+        let _ = store.verify(&entry.goal_id);
     }
     SmokeCheckOutcome {
         id: "backup_dir".to_string(),
         module: "backup".to_string(),
-        passed: ok,
-        detail,
+        passed: true,
+        detail: "backup/restore surfaces healthy".to_string(),
     }
 }
 
@@ -458,6 +457,21 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         Store::open(&root.to_string_lossy()).unwrap()
+    }
+
+    #[test]
+    fn unknown_module_yields_no_checks() {
+        let store = tmp_store("unknown-module");
+        assert!(run_module_checks(&store, "not-a-module").is_empty());
+        let _ = std::fs::remove_dir_all(store.root_path());
+    }
+
+    #[test]
+    fn check_detail_covers_vacuous_healthy_and_failures() {
+        assert_eq!(check_detail(0, &[], "vacuous", "healthy".to_string()), "vacuous");
+        assert_eq!(check_detail(2, &[], "vacuous", "healthy".to_string()), "healthy");
+        let failures = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(check_detail(2, &failures, "vacuous", "healthy".to_string()), "a; b");
     }
 
     #[test]

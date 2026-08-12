@@ -122,9 +122,9 @@ fn read_state(path: &Path) -> Result<ExtensionState, String> {
 }
 
 fn write_state(path: &Path, state: &ExtensionState) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
+    path.parent()
+        .map(|parent| std::fs::create_dir_all(parent).map_err(|e| e.to_string()))
+        .transpose()?;
     let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, format!("{json}\n")).map_err(|e| e.to_string())?;
@@ -569,6 +569,39 @@ mod tests {
         assert!(op.changed);
         let rows = extension_status(&path, None).unwrap();
         assert!(rows[0].enabled);
+    }
+
+    #[test]
+    fn enable_dry_run_does_not_write_state() {
+        let path = tmp_file("dry-enable");
+        let m = manifest("ext-dry", "1.0.0");
+        install_extension(&m, &path, "install", true).unwrap();
+        disable_extension("ext-dry", &path, true).unwrap();
+        let op = enable_extension("ext-dry", &path, false).unwrap();
+        assert!(op.ok && op.dry_run && !op.changed);
+        // State on disk is unchanged: still disabled.
+        let rows = extension_status(&path, None).unwrap();
+        assert!(!rows[0].enabled);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn retain_revisions_keeps_required_revision_outside_the_window() {
+        let mk = |r: &str| ExtensionRevision {
+            revision: r.to_string(),
+            version: "1".to_string(),
+            manifest: manifest("ext-r", "1.0.0"),
+        };
+        let six = || (1..=6).map(|i| mk(&format!("r{i}"))).collect::<Vec<_>>();
+        // 6 old + 1 new = 7 > MAX_REVISIONS; required r1 falls off the tail
+        // window and must be re-pinned at the front.
+        let retained = retain_revisions(six(), mk("r7"), Some("r1"));
+        assert_eq!(retained.len(), MAX_REVISIONS);
+        assert_eq!(retained[0].revision, "r1");
+        // Without a required revision the window is a plain tail cut.
+        let retained = retain_revisions(six(), mk("r7"), None);
+        assert_eq!(retained.len(), MAX_REVISIONS);
+        assert_eq!(retained[0].revision, "r3");
     }
 
     #[test]

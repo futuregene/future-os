@@ -53,10 +53,7 @@ impl AgentScopeProjection {
 /// A todo is agent-owned work (advancement / monitor / blocker), not a user
 /// todo.
 fn is_agent_work(todo: &Todo) -> bool {
-    matches!(
-        todo.class,
-        TaskClass::Advancement | TaskClass::Monitor | TaskClass::Blocker
-    )
+    matches!(todo.class, TaskClass::Advancement | TaskClass::Monitor | TaskClass::Blocker)
 }
 
 /// Is the todo currently actionable for scoping (open or deferred-with-resume)?
@@ -172,6 +169,20 @@ mod tests {
         let mut goal = Goal::new("g1", "objective", "/tmp");
         goal.todos = todos;
         goal
+    }
+
+    #[test]
+    fn unclaimed_and_other_class_user_todos_are_not_other_bound() {
+        // A user action with NO owner is not diagnostic-bound to anyone.
+        let mut free_action = Todo::user_gate("u1", "pick", &[]);
+        free_action.class = TaskClass::UserAction;
+        free_action.claimed_by = None;
+        // A user-role todo whose class is not gate/action falls through.
+        let mut odd = Todo::user_gate("u2", "note", &[]);
+        odd.class = TaskClass::Monitor;
+        let goal = goal_with(vec![free_action, odd]);
+        let frontier = identity_scoped_frontier(&goal, "agent-a", &[]);
+        assert!(frontier.other_agent_bound_user_action_ids.is_empty());
     }
 
     #[test]

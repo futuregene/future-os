@@ -459,6 +459,21 @@ mod tests {
     }
 
     #[test]
+    fn open_skips_blank_lines() {
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-bench-blank-{}",
+            crate::state::now_epoch()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = build_benchmark_run_ledger_entry(&sample_run(), 1);
+        let line = serde_json::to_string(&entry).unwrap();
+        std::fs::write(dir.join(LEDGER_FILE), format!("\n  \n{line}\n\n")).unwrap();
+        let ledger = BenchmarkLedger::open(&dir).unwrap();
+        assert_eq!(ledger.entries().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn query_and_aggregate() {
         let mut ledger = BenchmarkLedger::open(&std::env::temp_dir().join(format!(
             "future-loop-bench-agg-{}",

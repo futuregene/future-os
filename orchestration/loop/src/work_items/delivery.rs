@@ -67,7 +67,11 @@ const MULTI_SURFACE_HINTS: [&str; 4] = [
 const IMPLEMENTATION_HINTS: [&str; 2] = ["implementation", "implemented"];
 
 fn evidence_text(run: &RunRecord) -> String {
-    format!("{} {}", run.terminal_state, run.evidence).to_lowercase()
+    // Trim so a run with neither terminal_state nor evidence is genuinely
+    // empty (and classifies as Unknown rather than SingleSurface).
+    format!("{} {}", run.terminal_state, run.evidence)
+        .trim()
+        .to_lowercase()
 }
 
 /// Classify a run's delivery batch scale from its evidence (LoopX
@@ -177,6 +181,13 @@ mod tests {
             spend_source: None,
             validation: None,
         }
+    }
+
+    #[test]
+    fn batch_scale_unknown_when_no_state_or_evidence() {
+        let mut r = run("");
+        r.terminal_state = String::new();
+        assert_eq!(delivery_batch_scale_for_run(&r), DeliveryBatchScale::Unknown);
     }
 
     #[test]

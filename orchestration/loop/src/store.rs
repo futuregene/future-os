@@ -727,10 +727,15 @@ impl Store {
         }
         copy_dir_if_present(&dir.join("scheduler-state"), &dest.join("scheduler-state"))?;
         // Registry snapshot (goal entry).
-        if let Some(entry) = self.registry.iter().find(|g| g.goal_id == goal_id) {
-            let json = serde_json::to_string_pretty(entry)?;
-            fs::write(dest.join("registry-entry.json"), json)?;
-        }
+        self.registry
+            .iter()
+            .find(|g| g.goal_id == goal_id)
+            .map(|entry| -> Result<()> {
+                let json = serde_json::to_string_pretty(entry)?;
+                fs::write(dest.join("registry-entry.json"), json)?;
+                Ok(())
+            })
+            .transpose()?;
         Ok(dest.to_string_lossy().into_owned())
     }
 

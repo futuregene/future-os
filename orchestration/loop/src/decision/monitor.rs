@@ -90,10 +90,10 @@ mod tests {
         g.todo_mut("M1").unwrap().consecutive_no_change = MONITOR_NO_CHANGE_REPLAN_THRESHOLD;
         // Due AND stalled — the stall replan must win (pipeline order).
         g.todo_mut("M1").unwrap().resume_when = Some(n - Duration::from_secs(60));
-        match monitor_outcome(&g, n) {
-            MonitorOutcome::Stalled(m) => assert_eq!(m.id, "M1"),
-            _ => panic!("stall must take precedence over due"),
-        }
+        assert!(
+            matches!(monitor_outcome(&g, n), MonitorOutcome::Stalled(m) if m.id == "M1"),
+            "stall must take precedence over due"
+        );
     }
 
     #[test]
@@ -102,13 +102,10 @@ mod tests {
         let n = now();
         g.add(Todo::monitor("M1", "watch", Duration::from_secs(3600)));
         g.todo_mut("M1").unwrap().resume_when = Some(n - Duration::from_secs(60));
-        match monitor_outcome(&g, n) {
-            MonitorOutcome::Due(due) => {
-                assert_eq!(due.len(), 1);
-                assert_eq!(due[0].id, "M1");
-            }
-            _ => panic!("expected Due"),
-        }
+        assert!(
+            matches!(monitor_outcome(&g, n), MonitorOutcome::Due(ref due) if due.len() == 1 && due[0].id == "M1"),
+            "expected Due"
+        );
     }
 
     #[test]
@@ -117,15 +114,9 @@ mod tests {
         let n = now();
         g.add(Todo::monitor("M1", "watch", Duration::from_secs(3600)));
         g.todo_mut("M1").unwrap().resume_when = Some(n + Duration::from_secs(3600));
-        match monitor_outcome(&g, n) {
-            MonitorOutcome::Waiting(ms) => {
-                let ms = ms.expect("backoff must be present");
-                assert!(
-                    (3_599_000..=3_600_000).contains(&ms),
-                    "next-due backoff ~3600s, got {ms}ms"
-                );
-            }
-            _ => panic!("expected Waiting"),
-        }
+        assert!(
+            matches!(monitor_outcome(&g, n), MonitorOutcome::Waiting(Some(ms)) if (3_599_000..=3_600_000).contains(&ms)),
+            "expected Waiting with next-due backoff ~3600s"
+        );
     }
 }

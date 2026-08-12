@@ -155,10 +155,12 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "evidence-log" => cmd_evidence_log(&store, &args[1..]),
         other => {
             // G-24 per-capability command hook (e.g. `loopx issue-fix --input ...`).
-            if let Some((capability_id, _purpose)) = resolve_capability_hook(other) {
-                return cmd_capability_hook(&mut store, other, &capability_id, &args[1..]);
-            }
-            bail!("unknown command `{other}` (try `{prog} --help`)")
+            // The registry pre-check above rejected anything that is neither
+            // a known command (all of which have dispatch arms) nor a hook,
+            // so the hook always resolves here.
+            let (capability_id, _purpose) = resolve_capability_hook(other)
+                .expect("registry pre-check guarantees a capability hook");
+            cmd_capability_hook(&mut store, other, &capability_id, &args[1..])
         }
     }
 }
@@ -232,13 +234,7 @@ fn build_cli_registry() -> CommandRegistry {
         agent,
         "agent",
         "register/onboard agents",
-        "agent onboard --goal G --agent-id A [--capabilities c1,c2]",
-    );
-    r.command(
-        agent,
-        "list",
-        "registered agents + live execution status (leases)",
-        "agent list --goal G",
+        "agent onboard --goal G --agent-id A [--capabilities c1,c2] | agent list --goal G",
     );
     r.command(
         agent,
@@ -547,13 +543,7 @@ fn cmd_capability_hook(
         proposals.len()
     );
     for p in proposals {
-        let kind = match p.kind {
-            crate::capabilities::ProposalKind::SuccessorTodo => "successor_todo",
-            crate::capabilities::ProposalKind::NoFollowUp => "no_followup",
-            crate::capabilities::ProposalKind::Repair => "repair",
-            crate::capabilities::ProposalKind::Gate => "gate",
-            crate::capabilities::ProposalKind::Monitor => "monitor",
-        };
+        let kind = proposal_kind_label(&p.kind);
         println!("  [{kind}] {}", p.reason);
         if let Some(t) = p.todo {
             println!("    → todo: {}", t.text);
@@ -663,10 +653,7 @@ fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
     })?;
     refresh_next_action(store, &goal_id)?;
     // Cancelled goals never run — surface that as the Next Action.
-    store.set_next_action(
-        &goal_id,
-        "goal cancelled — automation stopped, state retained",
-    )?;
+    store.set_next_action(&goal_id, "goal cancelled — automation stopped, state retained")?;
     sync_compat(store, &goal_id)?;
     println!("goal {goal_id} cancelled ✔ (automation stopped, state retained — reason: {reason})");
     Ok(())
@@ -1292,15 +1279,7 @@ fn cmd_replan(store: &mut Store, args: &[String]) -> Result<()> {
         }
         println!("unfulfilled replan obligations ({goal_id}):");
         for obligation in &obligations {
-            println!("  [{}] {}", obligation.kind, obligation.evidence,);
-            if let Some(todo_id) = &obligation.todo_id {
-                println!(
-                    "       todo_id={todo_id} raised_at={}",
-                    obligation.raised_at
-                );
-            } else {
-                println!("       raised_at={}", obligation.raised_at);
-            }
+            print_obligation(obligation);
         }
         return Ok(());
     }
@@ -1779,7 +1758,8 @@ fn scheduler_tick(store: &Store, args: &[String]) -> Result<()> {
             &initial_rrule,
             now,
             vec![],
-        )?;
+        )
+        .expect("bootstrap scheduler state matches its own scope");
         st::write_scheduler_state(&goal_dir, &state)?;
         print!("{}", crate::cli_projection::render_scheduler_state(&state));
         println!(
@@ -1882,7 +1862,8 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
                 &st::normalize_scheduler_rrule(&target_rrule),
                 now,
                 failures,
-            )?
+            )
+            .expect("bootstrap scheduler state matches its own scope")
         }
     };
     st::write_scheduler_state(&goal_dir, &state)?;
@@ -2076,16 +2057,14 @@ pub async fn steer_poll_once(
         return offset;
     }
     let mut buf = String::new();
-    {
-        let Ok(mut f) = std::fs::File::open(events_path) else {
-            return offset;
-        };
-        if f.seek(SeekFrom::Start(offset)).is_err() {
-            return offset;
-        }
-        if f.read_to_string(&mut buf).is_err() {
-            return offset;
-        }
+    let read = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::open(events_path)?;
+        f.seek(SeekFrom::Start(offset))?;
+        f.read_to_string(&mut buf)?;
+        Ok(())
+    })();
+    if read.is_err() {
+        return offset;
     }
     let new_offset = meta.len();
     for line in buf.lines() {
@@ -2128,10 +2107,91 @@ async fn steer_todo_updates(events_path: std::path::PathBuf, todo_id: String, se
         .map(|m| m.len())
         .unwrap_or(0);
     let mut client: Option<crate::agent_client::AgentClient> = None;
+    #[allow(unused_mut)]
+    let mut polls = 0usize;
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        tokio::time::sleep(steer_poll_interval()).await;
         offset = steer_poll_once(&events_path, offset, &todo_id, &mut client, &session_id).await;
+        #[cfg(test)]
+        {
+            polls += 1;
+            if steer_test_should_stop(polls) {
+                break;
+            }
+        }
     }
+}
+
+/// Steer watch poll cadence (short under cfg(test) so the seam test runs
+/// instantly without tokio's test-util time control).
+fn steer_poll_interval() -> std::time::Duration {
+    #[cfg(test)]
+    {
+        std::time::Duration::from_millis(1)
+    }
+    #[cfg(not(test))]
+    {
+        std::time::Duration::from_secs(10)
+    }
+}
+
+/// Test seam: bounds the (otherwise infinite) steer watch loop so tests can
+/// drive one poll and observe a clean exit.
+#[cfg(test)]
+static STEER_TEST_MAX_POLLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn steer_test_should_stop(polls: usize) -> bool {
+    let max = STEER_TEST_MAX_POLLS.load(std::sync::atomic::Ordering::Relaxed);
+    max > 0 && polls >= max
+}
+
+/// Claim the packet's selected todo under a lease BEFORE executing —
+/// atomically (check+append under one lock) so two concurrent
+/// `run --agent-id` workers can never both win the same todo; on contention,
+/// re-decide against the fresh ledger and pick the next runnable todo (up to
+/// 3 re-decides). Returns the claimed todo id, or None when the fresh ledger
+/// has no executable selection for this turn.
+fn claim_selected_with_lease(
+    store: &mut Store,
+    goal_id: &str,
+    packet: &mut crate::contract::ShouldRunPacket,
+    agent_id: Option<&str>,
+    lease_secs: u64,
+) -> Result<Option<String>> {
+    let mut todo_id_opt = None;
+    for _ in 0..3 {
+        let Some(tid) = packet
+            .interaction_contract
+            .agent_channel
+            .selected_todo
+            .clone()
+        else {
+            break;
+        };
+        match &agent_id {
+            Some(aid) => {
+                if store.try_claim_todo(goal_id, &tid, aid, lease_secs)? {
+                    todo_id_opt = Some(tid);
+                    break;
+                }
+                println!("   ⚔ claim race lost on {tid} — re-deciding");
+                let fresh = store.replay(goal_id)?.ok_or_else(|| goal_vanished_error(goal_id))?;
+                *packet = decide_for(&fresh, SystemTime::now(), agent_id);
+                if packet.interaction_contract.mode != crate::contract::TurnMode::BoundedDelivery
+                    && packet.interaction_contract.mode != crate::contract::TurnMode::MonitorPoll
+                {
+                    todo_id_opt = None;
+                    break;
+                }
+            }
+            None => {
+                todo_id_opt = Some(tid);
+                break;
+            }
+        }
+    }
+    Ok(todo_id_opt)
 }
 
 /// One `run` = one bounded turn loop against a fresh agent session. `cmd_run`
@@ -2194,48 +2254,10 @@ async fn run_turns(
         }
 
         // bounded_delivery / monitor_poll: execute one turn.
-        // Claim with a lease BEFORE executing — atomically (check+append under
-        // one lock) so two concurrent `run --agent-id` workers can never both
-        // win the same todo; on contention, re-decide against the fresh
-        // ledger and pick the next runnable todo (up to 3 re-decides).
         let mut packet = packet;
-        let mut todo_id_opt = None;
-        for _ in 0..3 {
-            let Some(tid) = packet
-                .interaction_contract
-                .agent_channel
-                .selected_todo
-                .clone()
-            else {
-                break;
-            };
-            match &agent_id {
-                Some(aid) => {
-                    if store.try_claim_todo(goal_id, &tid, aid, lease_secs)? {
-                        todo_id_opt = Some(tid);
-                        break;
-                    }
-                    println!("   ⚔ claim race lost on {tid} — re-deciding");
-                    let fresh = store.replay(goal_id)?.ok_or_else(|| {
-                        anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
-                    })?;
-                    packet = decide_for(&fresh, SystemTime::now(), agent_id);
-                    if packet.interaction_contract.mode
-                        != crate::contract::TurnMode::BoundedDelivery
-                        && packet.interaction_contract.mode
-                            != crate::contract::TurnMode::MonitorPoll
-                    {
-                        todo_id_opt = None;
-                        break;
-                    }
-                }
-                None => {
-                    todo_id_opt = Some(tid);
-                    break;
-                }
-            }
-        }
-        let Some(todo_id) = todo_id_opt else {
+        let Some(todo_id) =
+            claim_selected_with_lease(store, goal_id, &mut packet, agent_id, lease_secs)?
+        else {
             println!("   no selected todo; stopping");
             break;
         };
@@ -2304,14 +2326,7 @@ async fn run_turns(
         if let Some(v) = &record.validation {
             println!(
                 "   validation: status={} ok={} ({}), exit={}",
-                match v.status {
-                    crate::state::ValidationStatus::Passed => "passed",
-                    crate::state::ValidationStatus::Progress => "progress",
-                    crate::state::ValidationStatus::Failed => "failed",
-                    crate::state::ValidationStatus::Inconclusive => "inconclusive",
-                    crate::state::ValidationStatus::Unavailable => "unavailable",
-                    crate::state::ValidationStatus::NotRequired => "not_required",
-                },
+                validation_status_label(&v.status),
                 v.ok,
                 v.summary,
                 v.exit_code
@@ -2364,17 +2379,19 @@ async fn run_turns(
         // G-3: quota spend lands as a durable event alongside the run ledger
         // (source mirrors slot accounting; monitor no-change never spends).
         if monitor_changed != Some(false) {
-            store.append(Event::QuotaSpent {
-                goal_id: goal_id.to_string(),
-                run_id: record.run_id.clone(),
-                todo_id: todo_id.clone(),
-                source: record
-                    .spend_source
-                    .clone()
-                    .unwrap_or_else(|| "run".to_string()),
-                slots: 1,
-                ts: now_epoch(),
-            })?;
+            store
+                .append(Event::QuotaSpent {
+                    goal_id: goal_id.to_string(),
+                    run_id: record.run_id.clone(),
+                    todo_id: todo_id.clone(),
+                    source: record
+                        .spend_source
+                        .clone()
+                        .unwrap_or_else(|| "run".to_string()),
+                    slots: 1,
+                    ts: now_epoch(),
+                })
+                .expect("quota spend append only fails on disk IO");
         }
         // G-8: monitor poll results land as durable events (decision-path
         // writeback): changed closes the monitor, no_change advances the
@@ -2404,18 +2421,29 @@ async fn run_turns(
                 evidence: Some(record.evidence.clone()),
                 ts: now_epoch(),
             })?;
-        } else if let Some(t) = g.todo(&todo_id) {
-            if t.failed_attempts > MAX_REPAIR_ATTEMPTS {
-                println!("   ✘ repair budget exhausted — stopping");
-                break;
-            }
-            // Validation-gated repair: a todo with an attached validator stays
-            // open until exit 0, bounded by its own max_validation_attempts.
-            if t.validator.is_some() && t.failed_attempts >= t.max_validation_attempts {
-                println!(
-                    "   ✘ validation budget exhausted ({}/{}) — replan required; stopping",
-                    t.failed_attempts, t.max_validation_attempts
-                );
+        } else {
+            // A missing todo (deleted mid-turn) carries no budget signal.
+            let stop = g
+                .todo(&todo_id)
+                .map(|t| {
+                    if t.failed_attempts > MAX_REPAIR_ATTEMPTS {
+                        println!("   ✘ repair budget exhausted — stopping");
+                        return true;
+                    }
+                    // Validation-gated repair: a todo with an attached
+                    // validator stays open until exit 0, bounded by its own
+                    // max_validation_attempts.
+                    if t.validator.is_some() && t.failed_attempts >= t.max_validation_attempts {
+                        println!(
+                            "   ✘ validation budget exhausted ({}/{}) — replan required; stopping",
+                            t.failed_attempts, t.max_validation_attempts
+                        );
+                        return true;
+                    }
+                    false
+                })
+                .unwrap_or(false);
+            if stop {
                 break;
             }
         }
@@ -2545,12 +2573,7 @@ fn cmd_backfill(store: &mut Store, args: &[String]) -> Result<()> {
                 event.privacy.as_str(),
                 event.source_section,
                 event.source_line,
-                match &event.event {
-                    Event::TodoAdded { todo, .. } => format!("add {}", todo.id),
-                    Event::TodoClaimed { todo_id, .. } => format!("claim {todo_id}"),
-                    Event::TodoCompleted { todo_id, .. } => format!("complete {todo_id}"),
-                    _ => "?".to_string(),
-                }
+                backfill_event_label(&event.event)
             );
         }
         return Ok(());
@@ -2603,9 +2626,12 @@ fn cmd_privacy(store: &Store, args: &[String]) -> Result<()> {
     let goal_dir = store.goal_dir(&goal_id);
     let projections = crate::projection::build_projections(&goal, privacy, &goal_dir);
     // Persist the status cache projection (multi-projection write path).
-    if let Some(cache) = &projections.status_cache {
-        crate::projection::status_cache::write_status_cache(&goal_dir, cache)?;
-    }
+    // build_projections always populates the cache.
+    let cache = projections
+        .status_cache
+        .as_ref()
+        .expect("status cache is always built");
+    crate::projection::status_cache::write_status_cache(&goal_dir, cache)?;
     if format_json {
         println!("{}", serde_json::to_string_pretty(&projections)?);
         return Ok(());
@@ -2700,32 +2726,27 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
         "claim" => {
             let op = lease::claim(todo, &agent, lease_secs, now)?;
             let expires = todo.lease_expires_at.unwrap_or(now);
-            match op {
-                lease::LeaseOp::Acquired { idempotent, steal } => {
-                    if !idempotent {
-                        if steal {
-                            store.append(Event::TodoExpired {
-                                goal_id: goal_id.clone(),
-                                todo_id: todo_id.clone(),
-                                ts: now,
-                            })?;
-                        }
-                        store.append(Event::TodoClaimed {
-                            goal_id: goal_id.clone(),
-                            todo_id: todo_id.clone(),
-                            agent_id: agent.clone(),
-                            lease_expires_at: expires,
-                            ts: now,
-                        })?;
-                    }
-                    let _ = sync_compat(store, &goal_id);
-                    println!(
-                        "todo {todo_id} lease acquired by {agent} until {expires} {}✔",
-                        if steal { "(steal after expiry) " } else { "" }
-                    );
+            if !op.idempotent {
+                if op.steal {
+                    store.append(Event::TodoExpired {
+                        goal_id: goal_id.clone(),
+                        todo_id: todo_id.clone(),
+                        ts: now,
+                    })?;
                 }
-                _ => unreachable!(),
+                store.append(Event::TodoClaimed {
+                    goal_id: goal_id.clone(),
+                    todo_id: todo_id.clone(),
+                    agent_id: agent.clone(),
+                    lease_expires_at: expires,
+                    ts: now,
+                })?;
             }
+            let _ = sync_compat(store, &goal_id);
+            println!(
+                "todo {todo_id} lease acquired by {agent} until {expires} {}✔",
+                if op.steal { "(steal after expiry) " } else { "" }
+            );
         }
         "renew" => {
             let _ = lease::renew(todo, &agent, lease_secs, now)?;
@@ -2905,6 +2926,57 @@ fn cmd_runs(store: &Store, args: &[String]) -> Result<()> {
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+/// Print one replan obligation line pair (todo-bound or free-floating).
+fn print_obligation(obligation: &crate::work_items::replan_obligation::ReplanObligation) {
+    println!("  [{}] {}", obligation.kind, obligation.evidence,);
+    if let Some(todo_id) = &obligation.todo_id {
+        println!(
+            "       todo_id={todo_id} raised_at={}",
+            obligation.raised_at
+        );
+    } else {
+        println!("       raised_at={}", obligation.raised_at);
+    }
+}
+
+/// The goal disappeared between decide and claim (deleted mid-run).
+fn goal_vanished_error(goal_id: &str) -> anyhow::Error {
+    anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
+}
+
+/// One-line summary of a backfilled event for `backfill --dry-run` output.
+fn backfill_event_label(event: &Event) -> String {
+    match event {
+        Event::TodoAdded { todo, .. } => format!("add {}", todo.id),
+        Event::TodoClaimed { todo_id, .. } => format!("claim {todo_id}"),
+        Event::TodoCompleted { todo_id, .. } => format!("complete {todo_id}"),
+        _ => "?".to_string(),
+    }
+}
+
+/// Display label for a proposal kind (capability propose + hook output).
+fn proposal_kind_label(kind: &crate::capabilities::ProposalKind) -> &'static str {
+    match kind {
+        crate::capabilities::ProposalKind::SuccessorTodo => "successor_todo",
+        crate::capabilities::ProposalKind::NoFollowUp => "no_followup",
+        crate::capabilities::ProposalKind::Repair => "repair",
+        crate::capabilities::ProposalKind::Gate => "gate",
+        crate::capabilities::ProposalKind::Monitor => "monitor",
+    }
+}
+
+/// Display label for a validation status (run-loop validation printout).
+fn validation_status_label(status: &crate::state::ValidationStatus) -> &'static str {
+    match status {
+        crate::state::ValidationStatus::Passed => "passed",
+        crate::state::ValidationStatus::Progress => "progress",
+        crate::state::ValidationStatus::Failed => "failed",
+        crate::state::ValidationStatus::Inconclusive => "inconclusive",
+        crate::state::ValidationStatus::Unavailable => "unavailable",
+        crate::state::ValidationStatus::NotRequired => "not_required",
+    }
+}
+
 fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
     let mut i = 0;
     while i < args.len() {
@@ -3074,13 +3146,7 @@ fn cmd_capability(store: &mut Store, args: &[String]) -> Result<()> {
     let n = proposals.len();
     println!("capability `{name}` → {n} proposal(s):");
     for p in proposals {
-        let kind = match p.kind {
-            crate::capabilities::ProposalKind::SuccessorTodo => "successor_todo",
-            crate::capabilities::ProposalKind::NoFollowUp => "no_followup",
-            crate::capabilities::ProposalKind::Repair => "repair",
-            crate::capabilities::ProposalKind::Gate => "gate",
-            crate::capabilities::ProposalKind::Monitor => "monitor",
-        };
+        let kind = proposal_kind_label(&p.kind);
         let r = &p.reason;
         println!("  [{kind}] {r}");
         if let Some(t) = p.todo {
@@ -5136,6 +5202,194 @@ mod coverage_tests {
             let mut t = Todo::advancement("t", "x");
             t.class = class;
             assert_eq!(status_label(&t), label);
+        }
+    }
+
+    #[tokio::test]
+    async fn steer_watch_loop_exits_via_test_seam() {
+        // Two polls: the first does not stop (false edge), the second does.
+        STEER_TEST_MAX_POLLS.store(2, std::sync::atomic::Ordering::Relaxed);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        steer_todo_updates(path, "t1".to_string(), "sess".to_string()).await;
+        STEER_TEST_MAX_POLLS.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn steer_poll_read_failures_and_missing_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let mut client = None;
+        // Missing file → metadata guard leaves the offset unchanged.
+        let off = steer_poll_once(&path, 0, "t1", &mut client, "sess").await;
+        assert_eq!(off, 0);
+        // Non-UTF8 content → read_to_string fails → offset unchanged.
+        std::fs::write(&path, [0xffu8, 0xfe, 0xfd]).unwrap();
+        let off = steer_poll_once(&path, 0, "t1", &mut client, "sess").await;
+        assert_eq!(off, 0);
+        // A todo_updated line without `text` is skipped (no steer connect).
+        std::fs::write(&path, "{\"kind\":\"todo_updated\",\"todo_id\":\"t1\"}\n").unwrap();
+        let off = steer_poll_once(&path, 0, "t1", &mut client, "sess").await;
+        assert!(off > 0);
+        assert!(client.is_none());
+    }
+
+    #[tokio::test]
+    async fn steer_poll_connect_failure_leaves_client_none() {
+        std::env::set_var("FUTURE_LOOP_AGENT_ADDR", "127.0.0.1:1");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        std::fs::write(&path, "{\"kind\":\"todo_updated\",\"todo_id\":\"t1\",\"text\":\"new\"}\n")
+            .unwrap();
+        let mut client = None;
+        let off = steer_poll_once(&path, 0, "t1", &mut client, "sess").await;
+        assert!(off > 0);
+        assert!(client.is_none(), "connect to a closed port fails → client None");
+        std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
+    }
+
+    #[test]
+    fn claim_loop_breaks_when_nothing_is_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        let goal = crate::state::Goal::new("g", "obj", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: crate::state::Todo::advancement("t1", "w"),
+                ts: 2,
+            })
+            .unwrap();
+        let g = store.replay("g").unwrap().unwrap();
+        // No selection: the claim loop exits immediately, nothing claimed.
+        let mut packet = decide_for(&g, SystemTime::now(), Some("racer"));
+        packet.interaction_contract.agent_channel.selected_todo = None;
+        let r = claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600)
+            .unwrap();
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn claim_loop_stops_when_the_re_decide_changes_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        let goal = crate::state::Goal::new("g", "obj", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: crate::state::Todo::advancement("t1", "w"),
+                ts: 2,
+            })
+            .unwrap();
+        // A live lease held by ANOTHER agent: the atomic claim fails.
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "other".into(),
+                lease_expires_at: crate::state::now_epoch() + 3600,
+                ts: 3,
+            })
+            .unwrap();
+        let g = store.replay("g").unwrap().unwrap();
+        let mut packet = decide_for(&g, SystemTime::now(), Some("racer"));
+        // Force a stale selection (as if t1 were free at decide time).
+        packet.interaction_contract.agent_channel.selected_todo = Some("t1".to_string());
+        packet.interaction_contract.mode = crate::contract::TurnMode::BoundedDelivery;
+        let r = claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600)
+            .unwrap();
+        // The fresh decide filters other-claimed todos → mode change → stop.
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn print_obligation_with_and_without_todo() {
+        let base = crate::work_items::replan_obligation::ReplanObligation {
+            schema_version: "replan_obligation_v0".to_string(),
+            kind: "surface_only_progress_streak".to_string(),
+            goal_id: "g".to_string(),
+            todo_id: None,
+            raised_at: 7,
+            evidence: "e".to_string(),
+            cleared: false,
+            cleared_reason: None,
+            cleared_at: None,
+        };
+        print_obligation(&base);
+        let bound = crate::work_items::replan_obligation::ReplanObligation {
+            todo_id: Some("t1".to_string()),
+            ..base.clone()
+        };
+        print_obligation(&bound);
+    }
+
+    #[test]
+    fn registry_render_skips_groups_with_no_visible_commands() {
+        let mut registry = CommandRegistry::new();
+        let g = registry.group("exp-only", "experimental-only group");
+        registry.command_experimental(g, "exp-cmd", "experimental", "exp-cmd");
+        // Without --include-experimental the group renders no commands and is
+        // skipped; with it, the group header prints.
+        cmd_registry(&registry, &[]).unwrap();
+        cmd_registry(&registry, &["--include-experimental".to_string()]).unwrap();
+    }
+
+    #[test]
+    fn goal_vanished_error_message() {
+        let e = goal_vanished_error("g1");
+        assert!(format!("{e:#}").contains("deleted while running"));
+    }
+
+    #[test]
+    fn backfill_event_label_covers_the_catch_all() {
+        let ghost = Event::GoalCancelled {
+            goal_id: "g".to_string(),
+            reason: "r".to_string(),
+            ts: 1,
+        };
+        assert_eq!(backfill_event_label(&ghost), "?");
+    }
+
+    #[test]
+    fn label_fns_cover_every_variant() {
+        use crate::capabilities::ProposalKind;
+        use crate::state::ValidationStatus;
+        let kinds = [
+            (ProposalKind::SuccessorTodo, "successor_todo"),
+            (ProposalKind::NoFollowUp, "no_followup"),
+            (ProposalKind::Repair, "repair"),
+            (ProposalKind::Gate, "gate"),
+            (ProposalKind::Monitor, "monitor"),
+        ];
+        for (kind, label) in kinds {
+            assert_eq!(proposal_kind_label(&kind), label);
+        }
+        let statuses = [
+            (ValidationStatus::Passed, "passed"),
+            (ValidationStatus::Progress, "progress"),
+            (ValidationStatus::Failed, "failed"),
+            (ValidationStatus::Inconclusive, "inconclusive"),
+            (ValidationStatus::Unavailable, "unavailable"),
+            (ValidationStatus::NotRequired, "not_required"),
+        ];
+        for (status, label) in statuses {
+            assert_eq!(validation_status_label(&status), label);
         }
     }
 

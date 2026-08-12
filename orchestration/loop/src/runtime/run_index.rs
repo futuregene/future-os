@@ -197,6 +197,44 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_requires_a_runs_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = rebuild_index(dir.path().to_str().unwrap(), "g-missing").unwrap_err();
+        assert!(format!("{err:#}").contains("no run-history dir"), "{err:#}");
+    }
+
+    #[test]
+    fn rebuild_recurses_subdirs_and_skips_unreadable_and_invalid_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("goals").join("g1").join("runs");
+        let archive = runs.join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(
+            archive.join("old.json"),
+            "{\"goal_id\":\"g1\",\"timestamp\":\"2026-07-01T00:00:00+00:00\",\"turn\":1}",
+        )
+        .unwrap();
+        // An unreadable *.json file fails read_to_string → skipped.
+        let unreadable = runs.join("unreadable.json");
+        std::fs::write(&unreadable, "{}").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&unreadable).unwrap().permissions();
+            perms.set_mode(0o000);
+            std::fs::set_permissions(&unreadable, perms).unwrap();
+        }
+        #[cfg(not(unix))]
+        std::fs::remove_file(&unreadable).unwrap();
+        // Invalid JSON → skipped.
+        std::fs::write(runs.join("garbage.json"), "not json").unwrap();
+        // Non-json extension → skipped.
+        std::fs::write(runs.join("notes.txt"), "ignored").unwrap();
+        let report = rebuild_index(dir.path().to_str().unwrap(), "g1").unwrap();
+        assert_eq!(report.rows_written, 1);
+    }
+
+    #[test]
     fn rebuild_rescans_run_files() {
         let dir = tempfile::tempdir().unwrap();
         let runs = dir.path().join("goals").join("g1").join("runs");

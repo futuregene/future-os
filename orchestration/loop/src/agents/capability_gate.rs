@@ -300,6 +300,28 @@ mod tests {
     }
 
     #[test]
+    fn no_open_advancement_candidates_no_gate() {
+        let mut done = Todo::advancement("t0", "finished");
+        done.status = crate::state::TodoStatus::Done;
+        let todos = vec![done, Todo::user_gate("u1", "decide", &[])];
+        assert!(build_capability_gate(&todos, &[]).is_none());
+    }
+
+    #[test]
+    fn shared_missing_capability_reuses_one_binding() {
+        let mut a = Todo::advancement("t1", "x");
+        a.required_capability = Some("quantum".into());
+        let mut b = Todo::advancement("t2", "y");
+        b.required_capability = Some("quantum".into());
+        let gate = build_capability_gate(&[a, b], &[]).unwrap();
+        assert_eq!(gate.blocked_todo_ids, vec!["t1", "t2"]);
+        // One binding for the shared capability, both todos attached to it.
+        assert_eq!(gate.resolution_bindings.len(), 1);
+        assert_eq!(gate.resolution_bindings[0].capability, "quantum");
+        assert_eq!(gate.resolution_bindings[0].blocked_todo_ids, vec!["t1", "t2"]);
+    }
+
+    #[test]
     fn runnable_when_capability_available() {
         let mut t = Todo::advancement("t1", "fix");
         t.required_capability = Some("github".into());

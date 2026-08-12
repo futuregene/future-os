@@ -281,13 +281,20 @@ pub fn build_model_behavior_corpus(
     for path in candidate_ablations {
         let mut candidate = base.clone();
         delete_path(&mut candidate, path)?;
-        cases.push(case(
-            &format!("ablation-{}", path.replace('.', "-")),
-            "candidate_ablation",
-            base.clone(),
-            Some(candidate),
-            "fail_closed",
-        )?);
+        // The full arm is the serialized ShouldRunPacket itself: every
+        // hard-invariant path is a non-skipped field, so case() cannot fail
+        // here (user-controlled packets fail in the state_matrix /
+        // counterfactual / retained arms above).
+        cases.push(
+            case(
+                &format!("ablation-{}", path.replace('.', "-")),
+                "candidate_ablation",
+                base.clone(),
+                Some(candidate),
+                "fail_closed",
+            )
+            .expect("ablation full arm is the base packet (always gate-valid)"),
+        );
     }
     let ids: std::collections::HashSet<&str> = cases.iter().map(|c| c.case_id.as_str()).collect();
     if ids.len() != cases.len() {
@@ -452,19 +459,8 @@ pub fn run_model_behavior_qualification_pair(
     let semantic_complete = [&request_full, &request_candidate]
         .iter()
         .all(|r| semantic_contract_checks(r).iter().all(|(_, ok)| *ok));
-    let semantic_drift: Vec<String> = if semantic_complete {
-        vec![]
-    } else {
-        MODEL_BEHAVIOR_SEMANTIC_CONTRACT_FIELDS
-            .iter()
-            .filter(|field| {
-                !semantic_contract_checks(&request_candidate)
-                    .iter()
-                    .any(|(name, ok)| name == *field && !ok)
-            })
-            .map(|f| f.to_string())
-            .collect()
-    };
+    let semantic_drift =
+        if semantic_complete { vec![] } else { semantic_drift_fields(&request_candidate) };
     let _ = (arm_order, semantic_contract_required);
     Ok(PairResult {
         status: "evaluated".to_string(),
@@ -496,6 +492,21 @@ pub fn semantic_contract_checks(request: &str) -> Vec<(&'static str, bool)> {
             request.contains("Complete the todo and report what you did and observed."),
         ),
     ]
+}
+
+/// Semantic-contract drift fields for a rendered request (extracted so the
+/// computation is unit-testable even though the rendered request currently
+/// satisfies every contract dimension).
+fn semantic_drift_fields(request_candidate: &str) -> Vec<String> {
+    MODEL_BEHAVIOR_SEMANTIC_CONTRACT_FIELDS
+        .iter()
+        .filter(|field| {
+            !semantic_contract_checks(request_candidate)
+                .iter()
+                .any(|(name, ok)| name == *field && !ok)
+        })
+        .map(|f| f.to_string())
+        .collect()
 }
 
 /// Render the actor request for a packet (the envelope the actor sees).
@@ -696,6 +707,81 @@ mod tests {
         let mut g = crate::state::Goal::new("g1", "Ship it", "/tmp");
         g.add(Todo::advancement("T1", "Implement"));
         crate::decision::decide(&g, std::time::SystemTime::now())
+    }
+
+    #[test]
+    fn corpus_load_rejects_bad_schema_and_empty_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_schema = dir.path().join("bad.json");
+        std::fs::write(&bad_schema, r#"{"schema_version":"nope","cases":[],"persistence_boundary":{}}"#).unwrap();
+        let err = ModelBehaviorCorpus::load(&bad_schema).unwrap_err();
+        assert!(format!("{err:#}").contains("model_behavior_corpus_v0"), "{err:#}");
+        let empty = dir.path().join("empty.json");
+        std::fs::write(&empty, r#"{"schema_version":"model_behavior_corpus_v0","cases":[],"persistence_boundary":{}}"#).unwrap();
+        let err = ModelBehaviorCorpus::load(&empty).unwrap_err();
+        assert!(format!("{err:#}").contains("at least one case"), "{err:#}");
+    }
+
+    #[test]
+    fn case_validation_rejects_bad_inputs() {
+        let packet = serde_json::to_value(base_packet()).unwrap();
+        // Unknown source kind.
+        assert!(case("c1", "bogus_kind", packet.clone(), None, "equivalent").is_err());
+        // Unknown expected outcome.
+        assert!(case("c1", "state_matrix", packet.clone(), None, "bogus").is_err());
+        // Full packet fails the hard-invariant gate.
+        assert!(case("c1", "state_matrix", serde_json::json!({}), None, "equivalent").is_err());
+    }
+
+    #[test]
+    fn builder_propagates_retained_and_counterfactual_validation_errors() {
+        let packet = base_packet();
+        // A retained packet that fails the hard-invariant gate.
+        let retained = RetainedPacket {
+            case_id: "r1".to_string(),
+            packet: serde_json::json!({}),
+        };
+        assert!(build_model_behavior_corpus(&packet, &[], &[], &[], &[retained]).is_err());
+        // A counterfactual patch that nulls the interaction contract breaks
+        // the hard-invariant gate on the merged full packet.
+        let breaking = PatchCase::new("break", serde_json::json!({"interaction_contract": null}));
+        assert!(build_model_behavior_corpus(&packet, &[], &[breaking], &[], &[]).is_err());
+    }
+
+    #[test]
+    fn semantic_drift_fields_lists_non_failing_dimensions() {
+        // Reference semantics: the drift list carries the dimensions that did
+        // NOT fail. A request missing only the instruction marker lists the
+        // two passing dimensions.
+        let request = format!(
+            "── {} ──\nComplete the todo and report what you did and observed.",
+            crate::turn_envelope::TURN_ENVELOPE_SCHEMA_VERSION
+        );
+        let drift = semantic_drift_fields(&request);
+        assert_eq!(drift, vec!["schema_header", "completion_contract"]);
+        // Everything failing → no dimension listed.
+        assert!(semantic_drift_fields("nothing relevant here").is_empty());
+    }
+
+    #[test]
+    fn unknown_expected_outcome_fails_the_case() {
+        let packet = serde_json::to_value(base_packet()).unwrap();
+        let bogus = CorpusCase {
+            schema_version: MODEL_BEHAVIOR_CORPUS_CASE_SCHEMA_VERSION.to_string(),
+            case_id: "c1".to_string(),
+            source_kind: "state_matrix".to_string(),
+            expected_outcome: "bogus".to_string(),
+            full_packet: packet,
+            candidate_packet: None,
+        };
+        let corpus = ModelBehaviorCorpus {
+            schema_version: MODEL_BEHAVIOR_CORPUS_SCHEMA_VERSION.to_string(),
+            cases: vec![bogus],
+            persistence_boundary: serde_json::json!({}),
+        };
+        let result = run_model_behavior_corpus(&corpus, &StubActor, 2, 0).unwrap();
+        assert!(!result.cases[0].passed, "unknown expectation must fail closed");
+        assert!(!result.all_cases_passed);
     }
 
     #[test]

@@ -91,15 +91,13 @@ impl CapabilityCatalog {
         if record.id.trim().is_empty() {
             return Err("capability requires a non-empty id".into());
         }
-        for field in ["id", "title", "status", "user_value", "next_real_step"] {
-            let value = match field {
-                "id" => &record.id,
-                "title" => &record.title,
-                "status" => &record.status,
-                "user_value" => &record.user_value,
-                "next_real_step" => &record.next_real_step,
-                _ => unreachable!(),
-            };
+        for (field, value) in [
+            ("id", &record.id),
+            ("title", &record.title),
+            ("status", &record.status),
+            ("user_value", &record.user_value),
+            ("next_real_step", &record.next_real_step),
+        ] {
             if value.trim().is_empty() {
                 return Err(format!(
                     "capability `{}` requires non-empty `{field}`",
@@ -460,5 +458,29 @@ mod tests {
             packets: vec![],
         };
         assert!(catalog.register_capability(record).is_err());
+    }
+
+    #[test]
+    fn duplicate_capability_id_is_rejected() {
+        let mut catalog = CapabilityCatalog::new();
+        catalog
+            .register_provider(CapabilityProvider::builtin("p"))
+            .unwrap();
+        let record = || CapabilityRecord {
+            id: "c".into(),
+            title: "t".into(),
+            status: CAPABILITY_STATUS_ACTIVE_PREVIEW.into(),
+            stage: 0,
+            provider_id: "p".into(),
+            origin: "builtin".into(),
+            visibility: "public".into(),
+            user_value: "v".into(),
+            next_real_step: "n".into(),
+            commands: vec![],
+            packets: vec![],
+        };
+        catalog.register_capability(record()).unwrap();
+        let err = catalog.register_capability(record()).unwrap_err();
+        assert!(err.contains("duplicate capability"), "{err}");
     }
 }
