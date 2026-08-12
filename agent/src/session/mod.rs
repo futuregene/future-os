@@ -180,15 +180,12 @@ where
     D: serde::Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
-    // Standard ISO 8601 (with timezone).
+    // Standard ISO 8601 (with timezone). chrono's `parse_from_rfc3339` is
+    // lenient about the date/time separator, so the common space-separated
+    // variant ("2024-01-02 03:04:05+08:00", with or without a fraction)
+    // already parses here — a dedicated space-separator branch would be
+    // unreachable (verified empirically against the pinned chrono).
     if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
-        return Ok(dt.with_timezone(&chrono::Local));
-    }
-    // ISO 8601 with space separator (common variant). chrono's `%.f` consumes
-    // the fraction only when present, so this single pattern covers both the
-    // fractional and the fraction-less spellings (a dedicated fraction-less
-    // branch would be unreachable).
-    if let Ok(dt) = DateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f%:z") {
         return Ok(dt.with_timezone(&chrono::Local));
     }
     // Try appending local timezone offset.
@@ -3957,6 +3954,48 @@ mod tests {
         use serde::de::IntoDeserializer;
         let de: serde::de::value::StrDeserializer<serde::de::value::Error> = ts.into_deserializer();
         deserialize_timestamp_lenient(de).unwrap()
+    }
+
+    #[test]
+    fn summary_from_session_reads_session_info_name() {
+        // The full-load fallback path: a session_info entry whose content
+        // carries a non-empty session_name supplies the summary name when the
+        // Session's own name field is empty ("last non-empty wins").
+        let info = SessionEntry::session_info(
+            serde_json::json!({"session_name": "  Renamed Chat  "}),
+            "m".to_string(),
+            String::new(),
+        );
+        let older = SessionEntry::session_info(
+            serde_json::json!({"session_name": "First Name"}),
+            "m".to_string(),
+            String::new(),
+        );
+        let sess = Session::snapshot(
+            "s".to_string(),
+            "/x".to_string(),
+            "m".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                older,
+                SessionEntry::new_user("user", serde_json::json!("hi")),
+                info,
+            ],
+        );
+        let summary = Manager::summary_from_session(&sess);
+        assert_eq!(summary.name.as_deref(), Some("Renamed Chat"));
+        assert_eq!(summary.query_count, 1);
+    }
+
+    #[test]
+    fn try_push_summary_ignores_non_jsonl_directly() {
+        // list_all pre-filters by extension, so this guard never fires through
+        // the public path; call the helper directly to pin the defense.
+        let (_dir, manager) = temp_manager("push-non-jsonl");
+        let mut summaries = vec![];
+        manager.try_push_summary(Path::new("notes.txt"), &mut summaries);
+        assert!(summaries.is_empty());
     }
 
     #[test]

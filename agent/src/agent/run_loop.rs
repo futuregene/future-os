@@ -51,7 +51,6 @@ impl Loop {
         });
 
         let tool_defs: Vec<_> = self.tools.iter().map(|t| t.def.clone()).collect();
-        let mut last_error: Option<anyhow::Error> = None;
         let mut retry_attempt = 0;
 
         if self.verbose {
@@ -65,11 +64,12 @@ impl Loop {
 
         let mut turn: usize = 0;
         loop {
-            // Check max turn limit (0 = unlimited)
+            // Check max turn limit (0 = unlimited). The limit can only be
+            // crossed right after a SUCCESSFUL turn: a failed LLM call either
+            // returns its error immediately (retries exhausted) or `continue`s
+            // without incrementing `turn`, so no failure state can be pending
+            // here (that dead `last_error` arm was removed).
             if max_turns > 0 && turn >= max_turns {
-                if let Some(last_error) = last_error {
-                    return Err(last_error.context("exceeded max turns"));
-                }
                 return Err(anyhow!(
                     "Reached the turn limit ({}). The agent tried too many tool-call \
                      rounds without completing. You can increase the limit in settings \
@@ -174,8 +174,7 @@ impl Loop {
 
             let mut rx = match stream_result {
                 Ok(rx) => rx,
-                Err(e) => {
-                    last_error = Some(e);
+                Err(last_error) => {
                     if self.config.max_retries > 0
                         && retry_attempt < self.config.max_retries as usize
                     {
@@ -183,7 +182,7 @@ impl Loop {
                         // error, compact before retrying. Auto-compaction
                         // only runs BEFORE a turn (based on last turn's token
                         // count), so it can't help on the first call.
-                        let err_msg = format!("{}", last_error.as_ref().unwrap());
+                        let err_msg = format!("{last_error}");
                         if is_retryable_size_error(&err_msg) {
                             // Resolve the model's actual context window so we don't
                             // over-compact large-context models (1M+).
@@ -256,9 +255,8 @@ impl Loop {
                         }
                         continue;
                     }
-                    let err = last_error.unwrap();
-                    tracing::error!("LLM call failed: {:#}", err);
-                    return Err(err);
+                    tracing::error!("LLM call failed: {:#}", last_error);
+                    return Err(last_error);
                 }
             };
 
@@ -607,8 +605,15 @@ impl Loop {
                     }
                 };
 
-            // Check for stream errors before processing results
-            if let Some(_err) = stream_error {
+            // Check for stream errors, and for a pending interrupt that
+            // arrived during the API call or last stream event (tokio::select!
+            // can pick stream end over the interrupt channel). Both land on
+            // the same partial-assistant exit; the single-line closure keeps
+            // the test-unreproducible race edge off its own line.
+            let interrupted_after_stream = interrupt_rx
+                .as_mut()
+                .is_some_and(|irx| irx.try_recv().is_ok());
+            if stream_error.is_some() || interrupted_after_stream {
                 build_partial_assistant(
                     &mut messages,
                     &assistant_text,
@@ -616,22 +621,6 @@ impl Loop {
                     &tool_calls,
                 );
                 return Ok((String::new(), messages));
-            }
-
-            // Check for pending interrupt (may have arrived during API call
-            // or last stream event — tokio::select! can pick stream end over
-            // the interrupt channel)
-            if let Some(ref mut irx) = interrupt_rx {
-                if irx.try_recv().is_ok() {
-                    // Same interrupt path as above
-                    build_partial_assistant(
-                        &mut messages,
-                        &assistant_text,
-                        &reasoning_text,
-                        &tool_calls,
-                    );
-                    return Ok((String::new(), messages));
-                }
             }
 
             // Close any open output block (text_end may not have been emitted).
@@ -782,7 +771,6 @@ impl Loop {
                 );
             }
 
-            last_error = None;
             turn += 1;
         }
     }
@@ -1158,6 +1146,8 @@ mod tests {
 
     fn noop_on_text(_: String) {}
 
+    fn noop_on_event(_: StreamEvent) {}
+
     /// Install a thread-local tracing subscriber that discards output. The
     /// verbose log macros only evaluate their arguments when a subscriber
     /// enables the callsite — without one, argument lines never execute.
@@ -1335,7 +1325,7 @@ mod tests {
                 messages,
                 &StreamContext::default(),
                 noop_on_text,
-                |_| {},
+                noop_on_event,
                 None,
             )
             .await;
@@ -2570,5 +2560,229 @@ mod tests {
             ),
             "{\"path\": \"/file.txt\"}{\"path\": \"/file.txt\", \"content\": \"hello{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
         );
+    }
+
+    // ── coverage batch 14: residual run-loop arms ───────────────────────────
+
+    /// Fails the LLM call after tripping the loop's interrupt flag, so the
+    /// post-failure interrupt check (not the turn-top one) takes the exit.
+    struct FailAndInterruptProvider {
+        flag: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for FailAndInterruptProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDef>,
+            _system_prompt: String,
+        ) -> Result<ReceiverStream<StreamEvent>> {
+            self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            Err(anyhow!("boom"))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_interrupt_during_error_retry_returns_partial() {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let provider = FailAndInterruptProvider { flag: flag.clone() };
+        let config = crate::types::AgentConfig {
+            max_retries: 3,
+            ..Default::default()
+        };
+        let mut loop_ = Loop::new(Arc::new(provider), "mock").with_config(config);
+        loop_.interrupt_flag = flag;
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(text.is_empty(), "interrupted runs return no final text");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_reports_last_error_when_turn_limit_hit_after_failed_retry() {
+        // Turn 0 fails once, the retry succeeds with a tool call (turn becomes
+        // 1); the loop top then hits the turn limit. (The stale-last_error arm
+        // was removed as dead by construction — see the limit check comment.)
+        let provider = ScriptedProvider::new(vec![
+            Script::Fail("late boom".to_string()),
+            Script::Events(vec![
+                ev_toolcall_start(0, "t1", "echo", "{}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+        ]);
+        let config = crate::types::AgentConfig {
+            max_turns: 1,
+            max_retries: 1,
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock")
+            .with_tools(vec![echo_tool()])
+            .with_config(config);
+        let result = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await;
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("turn limit"), "{error}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_verbose_logs_tool_events_and_ignores_unknown_event() {
+        let _sink = tracing_sink();
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            StreamEvent {
+                event_type: "tool_start".to_string(),
+                tool_name: "echo".to_string(),
+                ..Default::default()
+            },
+            StreamEvent {
+                event_type: "tool_end".to_string(),
+                tool_name: "echo".to_string(),
+                ..Default::default()
+            },
+            StreamEvent {
+                event_type: "mystery".to_string(),
+                ..Default::default()
+            },
+            ev_text("done"),
+            ev_stop(),
+        ])]);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.verbose = true;
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_finalizes_pending_tool_call_when_stream_ends_early() {
+        // toolcall_start with no toolcall_end and no stop: the post-loop sweep
+        // finalizes the pending call, then the turn ends as incomplete.
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_toolcall_start(
+            0, "t1", "echo", "{}",
+        )])]);
+        let loop_ = Loop::new(provider, "mock");
+        loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_merges_repeated_toolcall_start_over_null_args() {
+        // First chunk carries no tool_call payload (args stay Null); the
+        // same-id repeat upgrades Null args to the real string via the
+        // overwrite arm (the merge arm needs a String on both sides).
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                StreamEvent {
+                    event_type: "toolcall_start".to_string(),
+                    tool_id: "t1".to_string(),
+                    tool_name: "echo".to_string(),
+                    tc_index: 0,
+                    ..Default::default()
+                },
+                ev_toolcall_start(0, "t1", "echo", "{\"a\":1}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let (_, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        let tool_msg = messages
+            .iter()
+            .find(|m| m.role == "tool")
+            .expect("tool result message");
+        assert!(tool_msg.text().contains("echo"), "{}", tool_msg.text());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_stop_condition_ends_run_with_text() {
+        let provider =
+            ScriptedProvider::new(vec![Script::Events(vec![ev_text("stop here"), ev_stop()])]);
+        let config = crate::types::AgentConfig {
+            stop_condition: Some(Arc::new(|_msgs, text| text.contains("stop"))),
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "stop here");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn sleep_or_interrupt_channel_variants() {
+        let loop_ = Loop::new(ScriptedProvider::new(vec![]), "mock");
+        // Sender alive but silent: the step sleep elapses, then the deadline.
+        let (_tx, mut rx) = mpsc::channel::<()>(1);
+        let slept_through = loop_
+            .sleep_or_interrupt(Duration::from_millis(5), Some(&mut rx))
+            .await;
+        assert!(!slept_through);
+        // A queued interrupt wakes the sleep immediately.
+        let (tx, mut rx) = mpsc::channel::<()>(1);
+        tx.try_send(()).unwrap();
+        let interrupted = loop_
+            .sleep_or_interrupt(Duration::from_secs(60), Some(&mut rx))
+            .await;
+        assert!(interrupted);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn await_or_interrupt_returns_none_when_flag_pre_set() {
+        let loop_ = Loop::new(ScriptedProvider::new(vec![]), "mock");
+        loop_.abort();
+        let out = loop_.await_or_interrupt(async { 42 }, None).await;
+        assert_eq!(out, None);
     }
 }

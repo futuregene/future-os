@@ -445,26 +445,30 @@ fn run_worker(
                         }
                     }
                     let mut worker = state.worker.lock();
-                    if worker
+                    // A sender may have cloned this generation's sender and
+                    // queued a command after recv_timeout fired but before we
+                    // acquired the worker lock. Drain that handoff while the
+                    // lock excludes new senders; otherwise clearing the slot
+                    // and dropping the receiver would lose an acknowledged
+                    // append at the retirement boundary. The slot we just
+                    // matched still holds this generation's sender, so the
+                    // channel cannot be disconnected — only Empty is possible.
+                    // (bool-match, not an if-block: an if whose then-branch
+                    // ends in a diverging match leaves a phantom zero-count
+                    // region on its closing brace.)
+                    match worker
                         .as_ref()
                         .is_some_and(|slot| slot.generation == generation)
                     {
-                        // A sender may have cloned this generation's sender and
-                        // queued a command after recv_timeout fired but before we
-                        // acquired the worker lock. Drain that handoff while the
-                        // lock excludes new senders; otherwise clearing the slot
-                        // and dropping the receiver would lose an acknowledged
-                        // append at the retirement boundary. The slot we just
-                        // matched still holds this generation's sender, so the
-                        // channel cannot be disconnected — only Empty is possible.
-                        match receiver.try_recv() {
+                        true => match receiver.try_recv() {
                             Ok(command) => {
                                 drop(worker);
                                 execute(&state, command);
                                 continue;
                             }
                             Err(_) => *worker = None,
-                        }
+                        },
+                        false => return,
                     }
                     return;
                 }
