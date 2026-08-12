@@ -44,10 +44,57 @@ fn profile_manifest_is_stable() {
     let ids: Vec<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(
         ids,
-        vec!["core-control-plane", "extension-runtime", "release-gate"]
+        vec![
+            "core-control-plane",
+            "extension-runtime",
+            "release-gate",
+            "premerge"
+        ]
     );
     assert!(future_loop::canary::resolve_smoke_profile("release-gate").is_ok());
+    assert!(future_loop::canary::resolve_smoke_profile("premerge").is_ok());
     assert!(future_loop::canary::resolve_smoke_profile("nope").is_err());
+}
+
+/// ── P1-6: premerge gate (CI merge gate) ──────────────────────────────────
+
+#[test]
+fn premerge_gate_isolated_passes_and_is_non_vacuous() {
+    let report = future_loop::canary::run_premerge_gate_isolated().unwrap();
+    assert_eq!(report.schema_version, "canary_premerge_gate_v0");
+    assert_eq!(report.run.profile_id, "premerge");
+    assert!(report.gate.passed, "{}", report.gate.reason);
+    // Non-vacuity: the seeded fixture goal must have been checked.
+    assert_eq!(report.gate.goals_checked, 1);
+    assert!(report.gate.failed_checks.is_empty());
+}
+
+#[test]
+fn premerge_gate_fails_on_corrupt_ledger() {
+    let root = tmp_root("premerge-corrupt");
+    let mut store = Store::open(&root).unwrap();
+    let goal_id = future_loop::canary::seed_premerge_fixture(&mut store).unwrap();
+    let ledger = store.goal_dir(&goal_id).join("events.jsonl");
+    std::fs::write(&ledger, "garbage-line\n").unwrap();
+    let run = run_smoke(&store, "premerge").unwrap();
+    let gate = future_loop::canary::evaluate_gate(&run, "premerge", store.registry().len());
+    assert!(!gate.passed);
+    assert!(gate.failed_checks.contains(&"ledger_integrity".to_string()));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn premerge_gate_rejects_vacuous_run() {
+    // A smoke run over zero goals must NOT pass the gate (CI would otherwise
+    // go green on an empty/broken root).
+    let root = tmp_root("premerge-vacuous");
+    let store = Store::open(&root).unwrap();
+    let run = run_smoke(&store, "premerge").unwrap();
+    assert!(run.all_passed, "{:?}", run.checks);
+    let gate = future_loop::canary::evaluate_gate(&run, "premerge", store.registry().len());
+    assert!(!gate.passed);
+    assert!(gate.reason.contains("vacuous"));
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

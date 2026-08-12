@@ -554,8 +554,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         canary,
         "canary",
-        "run a smoke profile (release gate default)",
-        "canary smoke [--profile core-control-plane|extension-runtime|release-gate] [--json]",
+        "run a smoke profile (release gate default) or the premerge CI gate",
+        "canary smoke [--profile core-control-plane|extension-runtime|release-gate|premerge] [--json] | canary premerge [--json]",
     );
 
     // P1-9: journey metadata overlay (presentation only — the registry
@@ -6062,7 +6062,22 @@ fn cmd_replay(store: &Store, args: &[String]) -> Result<()> {
 
 /// `loopx canary smoke [--profile X] [--json]` — run a smoke profile
 /// (default release-gate). Fails closed when any check fails.
+/// `loopx canary premerge [--json]` — P1-6 CI merge gate (isolated root).
 fn cmd_canary(store: &Store, args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("premerge") => cmd_canary_premerge(&args[1..]),
+        Some("smoke") => cmd_canary_smoke(store, &args[1..]),
+        Some(other) if !other.starts_with('-') => {
+            anyhow::bail!("unknown canary subcommand `{other}` (expected `smoke` or `premerge`)")
+        }
+        // Legacy bare `canary` (or flags first) keeps the smoke default.
+        _ => cmd_canary_smoke(store, args),
+    }
+}
+
+/// `loopx canary smoke [--profile X] [--json]` — run a smoke profile
+/// (default release-gate). Fails closed when any check fails.
+fn cmd_canary_smoke(store: &Store, args: &[String]) -> Result<()> {
     let mut profile = None;
     let mut json = false;
     reject_unknown_flags(args, &["--json", "--profile"])?;
@@ -6105,6 +6120,48 @@ fn cmd_canary(store: &Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `loopx canary premerge [--json]` — the P1-6 CI merge gate. Runs against an
+/// isolated temporary state root (never the operator's live root) with a
+/// seeded fixture goal so the run is non-vacuous, then applies the release
+/// gate's all-passed rule. Exits non-zero when the gate fails.
+fn cmd_canary_premerge(args: &[String]) -> Result<()> {
+    let mut json = false;
+    reject_unknown_flags(args, &["--json"])?;
+    parse_pairs(args, |k, _v| {
+        if k == "--json" {
+            json = true;
+        }
+    });
+    let report = crate::canary::run_premerge_gate_isolated()?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "canary premerge (suite {}): {} check(s) over {} goal(s)",
+            report.run.suite,
+            report.run.checks.len(),
+            report.gate.goals_checked
+        );
+        for check in &report.run.checks {
+            println!(
+                "  [{}] {:<24} {}",
+                if check.passed { "ok" } else { "FAIL" },
+                check.id,
+                check.detail
+            );
+        }
+        println!(
+            "gate: {} — {}",
+            if report.gate.passed { "PASS" } else { "FAIL" },
+            report.gate.reason
+        );
+    }
+    if !report.gate.passed {
+        anyhow::bail!("canary premerge gate failed: {}", report.gate.reason);
+    }
+    Ok(())
+}
+
 // ── P4: diagnostics & command surface (G-27) ───────────────────────────────
 
 /// `loopx version` — version + schema surface.
@@ -6117,6 +6174,7 @@ fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
     println!("  public_safe_decision_replay_v0 (G-19)");
     println!("  model_behavior_corpus_v0 (G-19)");
     println!("  canary_smoke_run_v0 (G-20)");
+    println!("  canary_premerge_gate_v0 (P1-6)");
     println!("  future_loop_turn_envelope_v0 (G-9)");
     println!("  scheduler_arbitration_v0 (G-2/G-11)");
     let _ = store;
