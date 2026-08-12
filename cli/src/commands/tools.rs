@@ -2693,6 +2693,12 @@ mod tests {
             stderr.contains("cannot read mask file: /no/such/mask.png"),
             "{stderr}"
         );
+
+        // Unknown tool: the catalog pre-check is skipped (the None path of
+        // the `find_tool_entry` if-let) and the call falls through to the
+        // remote path, failing on the missing API key.
+        let (result, _, _) = run(&["no_such_tool"]).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
