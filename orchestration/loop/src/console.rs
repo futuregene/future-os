@@ -5854,12 +5854,14 @@ mod coverage_tests {
             Event::AgentRegistered {
                 goal_id: "g".into(),
                 agent_id: "a".into(),
+                workspaces: vec![],
                 ts: 1,
             },
             Event::AgentOnboarded {
                 goal_id: "g".into(),
                 agent_id: "a".into(),
                 capabilities: vec!["shell".into()],
+                workspaces: vec![],
                 ts: 1,
             },
             Event::ReplanAcked {
