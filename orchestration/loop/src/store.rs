@@ -221,9 +221,14 @@ pub enum Event {
         ts: u64,
     },
     /// Register an agent peer for the goal (LoopX: coordination.registered_agents).
+    /// `workspaces` is the P0-1 workspace-guard declaration (normalized
+    /// absolute paths the agent writes into; empty = undeclared/fail-open).
+    /// Old events without the field deserialize as empty.
     AgentRegistered {
         goal_id: String,
         agent_id: String,
+        #[serde(default)]
+        workspaces: Vec<String>,
         ts: u64,
     },
     /// Onboard an agent with declared capabilities (LoopX: agent_profiles).
@@ -231,6 +236,21 @@ pub enum Event {
         goal_id: String,
         agent_id: String,
         capabilities: Vec<String>,
+        #[serde(default)]
+        workspaces: Vec<String>,
+        ts: u64,
+    },
+    /// P0-1: advisory write-lock record — an agent with declared workspaces
+    /// claimed a todo and now occupies its workspace set. `forced` marks a
+    /// claim that overrode a live workspace conflict via `--force`.
+    /// Projection-only: occupancy is derived from profiles + live leases;
+    /// this event is the audit trail (agent list / history / todo-event).
+    WorkspaceLockAcquired {
+        goal_id: String,
+        agent_id: String,
+        todo_id: String,
+        paths: Vec<String>,
+        forced: bool,
         ts: u64,
     },
     /// Replan acknowledgment with frontier-delta kinds (vision patch /
@@ -374,6 +394,7 @@ impl Event {
             | Event::TodoClaimed { goal_id, .. }
             | Event::AgentRegistered { goal_id, .. }
             | Event::AgentOnboarded { goal_id, .. }
+            | Event::WorkspaceLockAcquired { goal_id, .. }
             | Event::ReplanAcked { goal_id, .. }
             | Event::ProfileSet { goal_id, .. }
             | Event::AuthoritySet { goal_id, .. }
@@ -1166,7 +1187,11 @@ fn apply(goal: &mut Goal, event: Event) {
                 t.lease_expires_at = Some(lease_expires_at);
             }
         }
-        Event::AgentRegistered { agent_id, .. } => {
+        Event::AgentRegistered {
+            agent_id,
+            workspaces,
+            ..
+        } => {
             if !goal.registered_agents.iter().any(|a| a == &agent_id) {
                 goal.registered_agents.push(agent_id.clone());
             }
@@ -1174,11 +1199,13 @@ fn apply(goal: &mut Goal, event: Event) {
             goal.agent_profiles.push(crate::state::AgentProfile {
                 id: agent_id,
                 capabilities: vec![],
+                workspaces,
             });
         }
         Event::AgentOnboarded {
             agent_id,
             capabilities,
+            workspaces,
             ..
         } => {
             if !goal.registered_agents.iter().any(|a| a == &agent_id) {
@@ -1188,8 +1215,13 @@ fn apply(goal: &mut Goal, event: Event) {
             goal.agent_profiles.push(crate::state::AgentProfile {
                 id: agent_id,
                 capabilities,
+                workspaces,
             });
         }
+        // P0-1: advisory write-lock records are projection-only — occupancy
+        // is derived from profiles + live leases; the event is the audit
+        // trail (like the supervisor events below).
+        Event::WorkspaceLockAcquired { .. } => {}
         Event::ReplanAcked {
             delta_kinds, ts, ..
         } => {

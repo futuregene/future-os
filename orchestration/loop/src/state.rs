@@ -624,11 +624,15 @@ pub fn delta_kind_changes_frontier(kind: &str) -> bool {
 
 /// Agent peer profile (LoopX: coordination.agent_profiles — a registered
 /// peer plus the capabilities it declares; the capability gate uses these to
-/// decide which todos an agent may run).
+/// decide which todos an agent may run). `workspaces` is the P0-1 workspace
+/// guard declaration: the normalized absolute path set this agent writes
+/// into (empty = undeclared → the guard is fail-open for this agent).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentProfile {
     pub id: String,
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub workspaces: Vec<String>,
 }
 
 impl AgentProfile {
@@ -913,6 +917,7 @@ impl Goal {
         self.agent_profiles.push(AgentProfile {
             id: agent_id.to_string(),
             capabilities,
+            workspaces: vec![],
         });
     }
 
