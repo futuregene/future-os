@@ -191,7 +191,11 @@ export function SessionsScreen() {
     <Pressable
       accessibilityRole="button"
       key={item.sessionId}
-      onLongPress={() => setMenuSession(item)}
+      onLongPress={() => {
+        // Session management goes through the desktop bridge — with the link
+        // down every action would just fail, so don't offer the menu.
+        if (remote.desktopOnline) setMenuSession(item);
+      }}
       onPress={() => void remote.selectSession(item.sessionId)}
       style={({ pressed }) => [
         styles.session,
@@ -211,7 +215,7 @@ export function SessionsScreen() {
         <Pin
           accessibilityLabel={t("sessions.pin")}
           color={colors.accent}
-          size={14}
+          size={16}
         />
       )}
     </Pressable>
