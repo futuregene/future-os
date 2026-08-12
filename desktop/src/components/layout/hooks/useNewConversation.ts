@@ -1,5 +1,5 @@
+import type { MessageAttachment } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
-import type { MessageAttachment } from "../../../features/agent/agentThreadTypes";
 import type { NewConversationStart } from "../../../features/agent/NewConversation";
 import type { ActivitySection } from "../ActivityRail";
 import { useState } from "react";

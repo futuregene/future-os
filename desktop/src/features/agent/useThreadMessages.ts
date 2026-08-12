@@ -1,13 +1,12 @@
+import type { AgentMessage } from "@future-os/thread-projection";
 import type { StoredRun } from "../../integrations/storage/threadStore";
-import type { AgentMessage } from "./agentThreadTypes";
+import { entriesToMessages, matchesSettledRun } from "@future-os/thread-projection";
 import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
 import { getLatestRun, getRun, getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { matchesSettledRun } from "./agentMessageFormatters";
-import { entriesToMessages } from "./entryProjection";
 import { applyRunMetadata, buildStreamingPreview, mergeStreamingPreview, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
@@ -137,7 +136,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       const entries = result?.entries ?? [];
       if (!entries.length)
         return { status: "empty" };
-      const messages = entriesToMessages(entries as unknown as import("./entryProjection").SessionEntry[]);
+      const messages = entriesToMessages(entries as unknown as import("@future-os/thread-projection").SessionEntry[]);
       if (!messages.length)
         return { status: "empty" };
       // Agent JSONL doesn't record a run's GUI-side outcome (failed/cancelled/

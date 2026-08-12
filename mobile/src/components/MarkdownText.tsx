@@ -336,9 +336,15 @@ const styles = StyleSheet.create({
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
   inlineCode: {
-    color: colors.inkStrong,
+    // Parity with the desktop inline <code>: rounded, subtle bg, ~0.92em, text-ink.
+    color: colors.ink,
     backgroundColor: colors.surfaceSubtle,
     fontFamily: "monospace",
+    fontSize: 13,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: radius.sm,
+    overflow: "hidden",
   },
   link: { color: colors.accent, textDecorationLine: "underline" },
   rule: { height: 1, marginVertical: spacing.md, backgroundColor: colors.line },

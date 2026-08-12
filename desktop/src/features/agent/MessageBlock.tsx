@@ -1,4 +1,4 @@
-import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
+import type { AgentMessage, MessageAttachment } from "@future-os/thread-projection";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { FileText, GitBranch, Paperclip, RotateCcw, StepForward } from "lucide-react";
 import { memo, useState } from "react";

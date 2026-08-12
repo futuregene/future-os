@@ -1,14 +1,14 @@
+import type { ApprovalAction } from "@future-os/thread-projection";
 import type {
-  ApprovalAction,
   StoredApprovalRequest,
 } from "../../integrations/storage/types";
+import { formatRequestedAction, parseAction, parseSaveSuggestion } from "@future-os/thread-projection";
 import { AlertTriangle, Check, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { TextInput } from "../../components/ui/TextInput";
 import { saveApprovalRule } from "../../integrations/storage/runs";
-import { formatRequestedAction, parseAction, parseSaveSuggestion } from "./approvalPayload";
 
 // Localized title/summary per approval kind (the agent sends English). An
 // unmapped kind falls back to the agent-provided strings.

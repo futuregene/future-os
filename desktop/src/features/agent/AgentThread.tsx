@@ -1,8 +1,8 @@
+import type { AgentMessage, MessageAttachment } from "@future-os/thread-projection";
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
-import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
 import { ArrowDown, History } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";

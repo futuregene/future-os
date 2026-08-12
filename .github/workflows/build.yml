@@ -140,6 +140,15 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      # The desktop frontend imports the shared thread-projection package via a
+      # `file:` dep whose entry points at dist/ (gitignored) — compile it before
+      # `vite build` (tauri:build's beforeBuildCommand) resolves the import.
+      - name: Build thread-projection
+        working-directory: thread-projection
+        run: |
+          npm ci
+          npm run build
+
       # Windows Defender real-time scanning inspects every intermediate file the
       # Rust compiler and linker emit — thousands of them — and is the single
       # biggest drag on the Windows job. Turn it off for the runner (which has

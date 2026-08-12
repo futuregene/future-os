@@ -1,9 +1,9 @@
+import type { AgentMessage } from "@future-os/thread-projection";
 import type { StoredRunEvent, StoredToolCall, StoredToolOutput } from "../../integrations/storage/threadStore";
-import type { AgentMessage } from "./agentThreadTypes";
+import { previousUserMessageBefore } from "@future-os/thread-projection";
 import { listRunEvents, listToolCalls, listToolOutputs } from "../../integrations/storage/threadStore";
 import { truncate } from "../../lib/objects";
 import { toolCommand } from "../runs/toolInput";
-import { previousUserMessageBefore } from "./agentMessageFormatters";
 
 /**
  * Prompt construction for the "continue / retry a run" recovery flows. Kept out

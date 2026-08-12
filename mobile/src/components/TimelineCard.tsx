@@ -15,8 +15,19 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  approvalCommand,
+  approvalDeletes,
+  approvalPaths,
+} from "@future-os/thread-projection";
 import { MarkdownText } from "./MarkdownText";
-import type { ApprovalPayload, HistoryAttachment, TimelineItem } from "../remote/types";
+import type {
+  ApprovalPayload,
+  HistoryAttachment,
+  TimelineItem,
+  TimelineSegment,
+  TimelineToolRow,
+} from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
 
@@ -97,38 +108,6 @@ const APPROVAL_KIND_I18N: Record<string, { title: string; summary?: string }> = 
   sandbox_escalation: { title: "approval.escalationTitle" },
 };
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value === "string") {
-    try {
-      value = JSON.parse(value);
-    } catch {
-      return null;
-    }
-  }
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-}
-
-// The file path(s) an approval would touch — surfaced so the user can judge the
-// request. Read from the wire `action` (writes[].path, then paths[]); content
-// previews are intentionally omitted on the phone.
-function approvalPaths(payload: ApprovalPayload): string[] {
-  const action = asRecord(payload.action);
-  if (!action) return [];
-  const writes = Array.isArray(action.writes) ? action.writes : [];
-  const fromWrites = writes
-    .map(entry => asRecord(entry)?.path as unknown as string)
-    .filter((path): path is string => typeof path === "string" && path.length > 0);
-  if (fromWrites.length > 0) return fromWrites;
-  const paths = Array.isArray(action.paths) ? action.paths : [];
-  return paths.filter((path): path is string => typeof path === "string" && path.length > 0);
-}
-
-function approvalCommand(payload: ApprovalPayload): string | null {
-  const action = asRecord(payload.action);
-  const command = action && typeof action.command === "string" ? action.command : null;
-  return command && command.length > 0 ? command : null;
-}
-
 interface PendingApprovalCardProps {
   payload: ApprovalPayload;
   submitting: boolean;
@@ -152,20 +131,25 @@ export function PendingApprovalCard({
     : payload.title || payload.tool_name || t("approval.title");
   const summaryText = kindI18n?.summary ? t(kindI18n.summary) : payload.summary;
   const paths = approvalPaths(payload);
+  const deletes = approvalDeletes(payload);
   const command = approvalCommand(payload);
   const isWrite =
     paths.length > 0 &&
     (payload.kind === "file_write" || payload.kind === "outside_workspace_write");
   const detailLabel =
-    paths.length > 0
-      ? isWrite
-        ? paths.length === 1
-          ? t("approval.writeFile")
-          : t("approval.writeFiles", { count: paths.length })
-        : t("approval.readPath")
-      : command
-        ? t("approval.command")
-        : null;
+    deletes.length > 0
+      ? deletes.length === 1
+        ? t("approval.deleteFile")
+        : t("approval.deleteFiles", { count: deletes.length })
+      : paths.length > 0
+        ? isWrite
+          ? paths.length === 1
+            ? t("approval.writeFile")
+            : t("approval.writeFiles", { count: paths.length })
+          : t("approval.readPath")
+        : command
+          ? t("approval.command")
+          : null;
 
   return (
     <View style={styles.approval}>
@@ -180,12 +164,12 @@ export function PendingApprovalCard({
         <>
           <Text style={styles.approvalDetailLabel}>{detailLabel}</Text>
           <View style={styles.approvalDetail}>
-            {command ? (
+            {command && deletes.length === 0 ? (
               <Text selectable style={styles.approvalPath}>
                 {command}
               </Text>
             ) : (
-              paths.map((path, index) => (
+              (deletes.length > 0 ? deletes : paths).map((path, index) => (
                 <Text
                   key={`${path}-${index}`}
                   numberOfLines={2}
@@ -281,6 +265,134 @@ function useCopyState(resetMs = 1400) {
   return { copied, copy };
 }
 
+// Inline divider marking where the agent auto-compacted the conversation
+// (history summarized to fit the context window). A hairline rule with a small
+// muted label — the only surfacing of compaction in the UI, since the agent
+// otherwise continues silently. Shows the pre-compaction token count when known.
+function CompactionDivider({ tokensBefore }: { tokensBefore?: number }) {
+  const { t, i18n } = useTranslation();
+  const label =
+    tokensBefore && tokensBefore > 0
+      ? t("chat.compactedTokens", {
+          formattedCount: new Intl.NumberFormat(i18n.language).format(tokensBefore),
+        })
+      : t("chat.compacted");
+  return (
+    <View style={styles.compactionDivider}>
+      <View style={styles.compactionLine} />
+      <Text style={styles.compactionLabel}>{label}</Text>
+      <View style={styles.compactionLine} />
+    </View>
+  );
+}
+
+/**
+ * The inline tool-activity row inside a reply bubble (desktop parity:
+ * AgentActivityLine). A failed tool (shell non-zero exit / error) renders
+ * danger-styled; a collapsed same-kind burst carries its child calls on
+ * `tool.children` and its count — the row reads "Ran N commands", and tapping
+ * it reveals the individual targets.
+ */
+function ToolRow({ tool }: { tool: TimelineToolRow }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const kind = toolKind(tool.name);
+  const failed = tool.status === "failed";
+  const detail = tool.detail?.trim() ? tool.detail.trim() : null;
+  const children = tool.children && tool.children.length > 0 ? tool.children : null;
+  const expandable = Boolean(detail || children);
+  const label =
+    tool.count != null && tool.count > 1
+      ? t("chat.runCount", {
+          count: tool.count,
+          action: toolLabel(t, kind, true),
+        })
+      : toolLabel(t, kind, tool.complete);
+  return (
+    <View style={[styles.inlineTool, failed ? styles.inlineToolFailed : null]}>
+      <Pressable
+        accessibilityRole="button"
+        disabled={!expandable}
+        onPress={() => setExpanded(value => !value)}
+        style={styles.toolHeader}
+      >
+        <ToolGlyph kind={kind} />
+        <Text style={[styles.toolText, failed ? styles.toolTextFailed : null]}>{label}</Text>
+        {expandable ? (
+          expanded ? (
+            <ChevronUp color={colors.inkMuted} size={14} />
+          ) : (
+            <ChevronDown color={colors.inkMuted} size={14} />
+          )
+        ) : null}
+        {/* Desktop parity: a single call's target unfolds inline to the right of
+            the label on tap, monospace + truncated, rather than as a block below. */}
+        {expanded && detail && !children ? (
+          <Text numberOfLines={1} selectable style={styles.inlineToolTarget}>
+            {detail}
+          </Text>
+        ) : null}
+      </Pressable>
+      {expanded && children ? (
+        <View style={styles.inlineToolChildren}>
+          {children.map((child, index) => (
+            <Text key={`${child.name}:${child.detail ?? ""}:${index}`} style={styles.inlineToolChild}>
+              {child.detail ?? toolLabel(t, toolKind(child.name), child.complete)}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Inline thinking block inside a reply bubble. The mobile product decision
+ * (audit D4) is that reasoning always renders collapsed — a muted one-line
+ * label, expandable on tap — so long reasoning never floods the bubble or the
+ * FlatList. The shared projection captures the full text; the collapse is a
+ * render concern only. The label reads "thinking" while the run is streaming
+ * (the block is still mid-reasoning) and "thought completed" once settled.
+ */
+function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <View style={styles.inlineThinking}>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => setExpanded(value => !value)}
+        style={styles.inlineThinkingHeader}
+      >
+        <Text style={styles.inlineThinkingLabel}>
+          {t(streaming ? "chat.thinking" : "chat.thoughtCompleted")}
+        </Text>
+        {expanded ? (
+          <ChevronUp color={colors.inkMuted} size={14} />
+        ) : (
+          <ChevronDown color={colors.inkMuted} size={14} />
+        )}
+      </Pressable>
+      {expanded && <Text style={styles.inlineThinkingText}>{text}</Text>}
+    </View>
+  );
+}
+
+/** One inline slice of an assistant reply, in stream order (desktop parity). */
+function SegmentBlock({ segment, streaming }: { segment: TimelineSegment; streaming?: boolean }) {
+  if (segment.kind === "text") {
+    return <MarkdownText text={segment.text} />;
+  }
+  if (segment.kind === "thinking") {
+    return <ThinkingRow streaming={streaming} text={segment.text} />;
+  }
+  if (segment.kind === "tool") {
+    return <ToolRow tool={segment.tool} />;
+  }
+  // compaction
+  return <CompactionDivider tokensBefore={segment.tokensBefore} />;
+}
+
 export function TimelineCard({ item, onOpenAttachment }: TimelineCardProps) {
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -300,16 +412,37 @@ export function TimelineCard({ item, onOpenAttachment }: TimelineCardProps) {
       ]
         .filter((part): part is string => !!part)
         .join(" · ");
+      // A compaction-only message is a standalone divider (the agent replaced
+      // summarized history with a marker) — render just the hairline rule, no
+      // copy footer, mirroring the desktop's MessageBlock special case.
+      const dividerOnly =
+        !item.streaming &&
+        item.segments?.length === 1 &&
+        item.segments[0]?.kind === "compaction";
       return (
         <View style={styles.assistantMessage}>
-          {item.text.trim().length > 0 && <MarkdownText text={item.text} />}
-          {item.streaming && item.startedAt != null ? (
+          {item.segments && item.segments.length > 0 ? (
+            <View style={styles.segmentList}>
+              {item.segments.map(segment => (
+                <SegmentBlock key={segment.id} segment={segment} streaming={item.streaming} />
+              ))}
+            </View>
+          ) : item.text.trim().length > 0 ? (
+            <MarkdownText text={item.text} />
+          ) : null}
+          {dividerOnly ? null : item.streaming && item.startedAt != null ? (
             // In-flight: the generating indicator occupies the same footer slot
             // the copy button uses once settled (desktop parity), so a streaming
             // reply never shows a copy button.
             <RunIndicator startedAt={item.startedAt} />
           ) : (
             <View style={styles.messageFooter}>
+              {item.stopped ? (
+                <Text style={styles.stoppedMarker}>{t("chat.runStopped")}</Text>
+              ) : null}
+              {item.truncated ? (
+                <Text style={styles.truncatedMarker}>{t("chat.responseInterrupted")}</Text>
+              ) : null}
               <Pressable
                 accessibilityLabel={t("chat.copyResponse")}
                 accessibilityRole="button"
@@ -464,6 +597,56 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     marginTop: -spacing.xs,
   },
+  stoppedMarker: { color: colors.inkMuted, fontSize: 12, fontStyle: "italic" },
+  truncatedMarker: { color: colors.warning, fontSize: 12 },
+  segmentList: { gap: spacing.sm, marginTop: spacing.xs },
+  inlineThinking: {
+    borderLeftWidth: 2,
+    borderLeftColor: colors.line,
+    paddingLeft: spacing.md,
+    paddingVertical: spacing.xs,
+    gap: 2,
+  },
+  inlineThinkingHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  inlineThinkingLabel: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
+  inlineThinkingText: { color: colors.inkSoft, fontSize: 13, lineHeight: 19, marginTop: 2 },
+  inlineTool: {
+    paddingVertical: 2,
+    gap: 2,
+  },
+  inlineToolFailed: {
+    backgroundColor: colors.dangerSoft,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+  },
+  toolTextFailed: { color: colors.danger },
+  inlineToolTarget: {
+    marginLeft: spacing.sm,
+    flexShrink: 1,
+    color: colors.inkSoft,
+    fontFamily: "monospace",
+    fontSize: 12,
+  },
+  inlineToolChildren: { gap: 2, marginTop: 2, paddingLeft: spacing.md + spacing.sm },
+  inlineToolChild: {
+    color: colors.inkSoft,
+    fontFamily: "monospace",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  compactionDivider: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingVertical: 4,
+  },
+  compactionLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.line },
+  compactionLabel: { color: colors.inkMuted, fontSize: 12 },
   messageDuration: { color: colors.inkMuted, fontSize: 12 },
   copyButton: {
     flexDirection: "row",
