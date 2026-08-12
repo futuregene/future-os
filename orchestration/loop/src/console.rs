@@ -128,7 +128,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "heartbeat-prompt" => cmd_heartbeat(&store, &args[1..]),
         "worker-bridge" => cmd_worker_bridge(&mut store, &args[1..]).await,
         "serve-status" => cmd_serve_status(&store, &args[1..]),
-        "capability" => cmd_capability(&store, &args[1..]),
+        "capability" => cmd_capability(&mut store, &args[1..]),
         "models" => cmd_models(&args[1..]).await,
         "diagnose" => cmd_diagnose(&store, &args[1..]),
         "run" => cmd_run(&mut store, &args[1..]).await,
@@ -156,7 +156,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         other => {
             // G-24 per-capability command hook (e.g. `loopx issue-fix --input ...`).
             if let Some((capability_id, _purpose)) = resolve_capability_hook(other) {
-                return cmd_capability_hook(other, &capability_id, &args[1..]);
+                return cmd_capability_hook(&mut store, other, &capability_id, &args[1..]);
             }
             bail!("unknown command `{other}` (try `{prog} --help`)")
         }
@@ -264,7 +264,7 @@ fn build_cli_registry() -> CommandRegistry {
         capability,
         "capability",
         "list / propose / commands for capabilities",
-        "capability list|propose|commands [--name X] [--input \"...\"]",
+        "capability list|propose|commands [--name X] [--input \"...\"] [--goal G]",
     );
     r.command(
         capability,
@@ -342,8 +342,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "quota",
-        "quota should-run / usage / spend",
-        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G",
+        "quota should-run / usage / spend / tools",
+        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G | tools --goal G [--format json]",
     );
     r.command(
         ops,
@@ -471,15 +471,65 @@ fn resolve_capability_hook(command: &str) -> Option<(String, String)> {
     None
 }
 
+/// Per-tool quota enforcement at the capability boundary (LoopX 对比改进项
+/// ②): with a goal context, the invocation is counted against the tool's
+/// quota (accepted invocations ledgered, over-limit refused + the refusal
+/// ledgered). Without `--goal` there is no ledger to count into — the
+/// invocation proceeds uncounted (back-compat for goal-less exploration).
+fn enforce_capability_quota(
+    store: &mut Store,
+    goal_id: &str,
+    capability_id: &str,
+    command: &str,
+) -> Result<()> {
+    let goal = store
+        .replay(goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let now = now_epoch();
+    let decision = crate::quota::tool_quota::evaluate_default(
+        capability_id,
+        &goal.capability_invocations,
+        now,
+    );
+    let outcome = if decision.allowed {
+        crate::quota::tool_quota::OUTCOME_ACCEPTED
+    } else {
+        crate::quota::tool_quota::OUTCOME_REJECTED
+    };
+    store.append(crate::store::Event::CapabilityInvoked {
+        goal_id: goal_id.to_string(),
+        capability: capability_id.to_string(),
+        command: command.to_string(),
+        outcome: outcome.to_string(),
+        invocation_id: uuid::Uuid::new_v4().simple().to_string(),
+        ts: now,
+    })?;
+    if !decision.allowed {
+        bail!(
+            "per-tool quota exceeded: `{capability_id}` used {}/{} invocations in the trailing {}s window — retry after the window slides",
+            decision.used,
+            decision.limit,
+            decision.window_secs
+        );
+    }
+    Ok(())
+}
+
 /// Run a per-capability command hook: `loopx <cap-command> --input "..."` —
 /// the capability's propose pipeline, printed like `capability propose`.
-fn cmd_capability_hook(command: &str, capability_id: &str, args: &[String]) -> Result<()> {
+fn cmd_capability_hook(
+    store: &mut Store,
+    command: &str,
+    capability_id: &str,
+    args: &[String],
+) -> Result<()> {
     let registry = crate::capabilities::CapabilityRegistry::with_builtin();
     let mut input = None;
-    parse_pairs(args, |k, v| {
-        if k == "--input" {
-            input = Some(v)
-        }
+    let mut goal_id = None;
+    parse_pairs(args, |k, v| match k {
+        "--input" => input = Some(v),
+        "--goal" => goal_id = Some(v),
+        _ => {}
     });
     let input = input.unwrap_or_default();
     let Some(cap) = registry.get(capability_id) else {
@@ -488,6 +538,9 @@ fn cmd_capability_hook(command: &str, capability_id: &str, args: &[String]) -> R
             prog()
         );
     };
+    if let Some(g) = goal_id.as_deref() {
+        enforce_capability_quota(store, g, capability_id, command)?;
+    }
     let proposals = cap.propose(&input);
     println!(
         "capability hook `{command}` ({capability_id}) → {} proposal(s):",
@@ -1475,7 +1528,8 @@ fn cmd_quota(store: &Store, args: &[String]) -> Result<()> {
         Some("should-run") => quota_should_run(store, &args[1..]),
         Some("usage") => quota_usage(store, &args[1..]),
         Some("spend") => quota_spend(store, &args[1..]),
-        _ => bail!("quota subcommand must be `should-run`, `usage`, or `spend`"),
+        Some("tools") => quota_tools(store, &args[1..]),
+        _ => bail!("quota subcommand must be `should-run`, `usage`, `spend`, or `tools`"),
     }
 }
 
@@ -1589,6 +1643,55 @@ fn quota_spend(store: &Store, args: &[String]) -> Result<()> {
         b.source_count(crate::quota::slot_accounting::SlotSpendSource::Agent),
         b.source_count(crate::quota::slot_accounting::SlotSpendSource::Heartbeat),
     );
+    Ok(())
+}
+
+/// `loopx quota tools --goal G [--format json]` — per-tool quota status at
+/// the capability boundary (LoopX 对比改进项 ②): invocations used / limit /
+/// trailing window per capability tool, plus the resulting
+/// `capability_repair_allowed` packet predicate.
+fn quota_tools(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut format_json = false;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--format" => format_json = v == "json",
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let now = now_epoch();
+    let rows = crate::quota::tool_quota::usage_rows(&goal.capability_invocations, now);
+    let repair_allowed = crate::quota::tool_quota::capability_repair_allowed(&goal, now);
+    if format_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "goal_id": goal_id,
+                "capability_repair_allowed": repair_allowed,
+                "tools": rows,
+            }))?
+        );
+        return Ok(());
+    }
+    if rows.is_empty() {
+        println!("tool quota: no capability invocations recorded");
+    } else {
+        println!("tool quota (limit/window per capability):");
+        for d in &rows {
+            println!(
+                "  {:<24} used={}/{} window={}s {}",
+                d.tool,
+                d.used,
+                d.limit,
+                d.window_secs,
+                if d.allowed { "ok" } else { "EXCEEDED" }
+            );
+        }
+    }
+    println!("capability_repair_allowed: {repair_allowed}");
     Ok(())
 }
 
@@ -2883,7 +2986,7 @@ fn cmd_serve_status(store: &Store, args: &[String]) -> Result<()> {
 }
 
 /// `loopx capability list` / `loopx capability propose --name issue_fix --input "..."`.
-fn cmd_capability(store: &Store, args: &[String]) -> Result<()> {
+fn cmd_capability(store: &mut Store, args: &[String]) -> Result<()> {
     let registry = crate::capabilities::CapabilityRegistry::with_builtin();
     if args.first().map(|s| s.as_str()) == Some("list") {
         println!("capabilities:");
@@ -2950,9 +3053,11 @@ fn cmd_capability(store: &Store, args: &[String]) -> Result<()> {
     }
     let mut name = None;
     let mut input = None;
+    let mut goal_id = None;
     parse_pairs(&args[1..], |k, v| match k {
         "--name" => name = Some(v),
         "--input" => input = Some(v),
+        "--goal" => goal_id = Some(v),
         _ => {}
     });
     let name = name.ok_or_else(|| anyhow::anyhow!("--name required"))?;
@@ -2960,6 +3065,11 @@ fn cmd_capability(store: &Store, args: &[String]) -> Result<()> {
     let Some(cap) = registry.get(&name) else {
         bail!("unknown capability `{name}` (see `future-loop capability list`)");
     };
+    // Per-tool quota (LoopX 对比改进项 ②): with a goal context the
+    // invocation is quota-checked and ledgered at the capability boundary.
+    if let Some(g) = goal_id.as_deref() {
+        enforce_capability_quota(store, g, &name, "propose")?;
+    }
     let proposals = cap.propose(&input);
     let n = proposals.len();
     println!("capability `{name}` → {n} proposal(s):");
@@ -2981,7 +3091,6 @@ fn cmd_capability(store: &Store, args: &[String]) -> Result<()> {
             println!("    → gate: {q}");
         }
     }
-    let _ = store;
     Ok(())
 }
 
@@ -4491,6 +4600,16 @@ fn describe_event(event: &crate::store::Event) -> String {
                 "quota_spent run={run_id} todo={todo_id} source={source} slots={slots}"
             );
         }
+        Event::CapabilityInvoked {
+            capability,
+            command,
+            outcome,
+            ..
+        } => {
+            return format!(
+                "capability_invoked capability={capability} command={command} outcome={outcome}"
+            );
+        }
         Event::EvidenceAttached { todo_id, .. } => {
             return format!("evidence_attached todo={todo_id}");
         }
@@ -4941,6 +5060,14 @@ mod coverage_tests {
                 rollback_ref: None,
                 ts: 1,
             },
+            Event::CapabilityInvoked {
+                goal_id: "g".into(),
+                capability: "issue_fix".into(),
+                command: "propose".into(),
+                outcome: "accepted".into(),
+                invocation_id: "inv-1".into(),
+                ts: 1,
+            },
         ]
     }
 
@@ -5092,7 +5219,17 @@ mod coverage_tests {
 
     #[test]
     fn capability_hook_unknown_capability_bails() {
-        let err = cmd_capability_hook("ghost-cmd", "ghost_cap", &[]).unwrap_err();
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-caphook-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        let err = cmd_capability_hook(&mut store, "ghost-cmd", "ghost_cap", &[]).unwrap_err();
         assert!(format!("{err:#}").contains("unknown capability"));
     }
 

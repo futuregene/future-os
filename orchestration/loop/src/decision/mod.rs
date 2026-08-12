@@ -417,7 +417,12 @@ fn packet(
         normal_delivery_allowed: mode == TurnMode::BoundedDelivery,
         recovery_delivery_allowed: false,
         self_repair_allowed: mode == TurnMode::Replan,
-        capability_repair_allowed: false,
+        // Per-tool quota (LoopX 对比改进项 ②): the capability-repair lane
+        // stays allowed only while no capability tool is over its quota.
+        capability_repair_allowed: crate::quota::tool_quota::capability_repair_allowed(
+            goal,
+            crate::state::now_epoch(),
+        ),
         workspace_repair_allowed: false,
         actionable_by_codex: should_run,
         requires_user_action: mode == TurnMode::AskUser,

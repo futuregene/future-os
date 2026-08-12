@@ -270,6 +270,24 @@ pub enum Event {
         slots: u32,
         ts: u64,
     },
+    /// Per-tool quota ledger (LoopX 对比改进项 ②): a capability-boundary
+    /// tool invocation. Appended at the capability invocation boundary
+    /// (`capability propose` / per-capability command hooks) when a goal
+    /// context is present. `outcome` is `accepted` (counted against the
+    /// tool's quota, folded into the goal's invocation projection) or
+    /// `rejected` (over-limit refusal — audit trail only, never counted).
+    /// `invocation_id` makes each invocation's content unique: every CLI
+    /// call is a distinct logical invocation (non-retryable side-effect
+    /// boundary), so content-derived-id idempotency must NOT collapse two
+    /// invocations that land in the same second.
+    CapabilityInvoked {
+        goal_id: String,
+        capability: String,
+        command: String,
+        outcome: String,
+        invocation_id: String,
+        ts: u64,
+    },
     /// G-3: evidence attached to a todo independently of completion (LoopX
     /// EVIDENCE_ATTACHED).
     EvidenceAttached {
@@ -349,6 +367,7 @@ impl Event {
             | Event::TodoArchived { goal_id, .. }
             | Event::MonitorPolled { goal_id, .. }
             | Event::QuotaSpent { goal_id, .. }
+            | Event::CapabilityInvoked { goal_id, .. }
             | Event::EvidenceAttached { goal_id, .. }
             | Event::TodoRenewed { goal_id, .. }
             | Event::TodoReleased { goal_id, .. }
@@ -1201,6 +1220,22 @@ fn apply(goal: &mut Goal, event: Event) {
         }
         Event::QuotaSpent { slots, .. } => {
             goal.quota_spent_slots = goal.quota_spent_slots.saturating_add(slots);
+        }
+        Event::CapabilityInvoked {
+            capability,
+            outcome,
+            ts,
+            ..
+        } => {
+            // Only accepted invocations consume quota; rejected ones stay in
+            // the ledger as the enforcement audit trail.
+            if outcome == crate::quota::tool_quota::OUTCOME_ACCEPTED {
+                let invocations = &mut goal.capability_invocations;
+                if invocations.len() >= crate::state::CAPABILITY_INVOCATION_PROJECTION_CAP {
+                    invocations.remove(0);
+                }
+                invocations.push((ts, capability));
+            }
         }
         Event::EvidenceAttached {
             todo_id,
