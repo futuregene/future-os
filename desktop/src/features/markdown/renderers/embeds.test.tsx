@@ -1,10 +1,3 @@
-// @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { act } from "react";
-import { createRoot } from "react-dom/client";
-import type { FutureReference } from "../futureMarkdownTypes";
 import type {
   StoredApprovalRequest,
   StoredArtifact,
@@ -12,12 +5,18 @@ import type {
   StoredReviewChangeset,
   StoredRun,
 } from "../../../integrations/storage/types";
+import type { FutureReference } from "../futureMarkdownTypes";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { referenceKey } from "../futureMarkdownTypes";
+import { renderFileReference } from "./fileReference";
 import { FutureEmbed } from "./FutureEmbed";
 import { MissingReference } from "./MissingReference";
 import { PendingReference } from "./PendingReference";
 import { ReferenceChip } from "./ReferenceChip";
-import { renderFileReference } from "./fileReference";
-import { referenceKey } from "../futureMarkdownTypes";
 
 const invokeMock = vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>(() => Promise.resolve(null));
 
@@ -40,24 +39,49 @@ function ref(overrides: Partial<FutureReference> = {}): FutureReference {
 const storedFile: StoredFile = { path: "/w/a.md", name: "a.md", relativePath: "a.md", insideWorkspace: true };
 
 const storedRun: StoredRun = {
-  id: "run_abc_1", threadId: "t", status: "completed", createdAt: 1_000, updatedAt: 2_000,
+  id: "run_abc_1",
+  threadId: "t",
+  status: "completed",
+  createdAt: 1_000,
+  updatedAt: 2_000,
 };
 
 const storedArtifact: StoredArtifact = {
-  id: "art-1", workspaceId: "w", title: "Report", artifactType: "report",
-  path: "/w/report.md", createdAt: 1_000, updatedAt: 2_000,
+  id: "art-1",
+  workspaceId: "w",
+  title: "Report",
+  artifactType: "report",
+  path: "/w/report.md",
+  createdAt: 1_000,
+  updatedAt: 2_000,
 };
 
-const storedApproval: StoredApprovalRequest = {
-  id: "ap-1", threadId: "t", kind: "shell", status: "pending", title: "Run ls",
-  createdAt: 1_000, updatedAt: 2_000,
-};
+const storedApproval = {
+  id: "ap-1",
+  threadId: "t",
+  kind: "shell",
+  status: "pending",
+  title: "Run ls",
+  createdAt: 1_000,
+  updatedAt: 2_000,
+} as StoredApprovalRequest;
 
 const storedReview: StoredReviewChangeset = {
-  id: "rev-1", threadId: "t", title: "Changes", status: "pending",
-  filesChanged: 2, additions: 10, deletions: 3, sourceKind: "git",
-  binaryFiles: 0, omittedFiles: 0, completeness: "complete", confidence: "normal",
-  overlapped: false, createdAt: 1_000, updatedAt: 2_000,
+  id: "rev-1",
+  threadId: "t",
+  title: "Changes",
+  status: "pending",
+  filesChanged: 2,
+  additions: 10,
+  deletions: 3,
+  sourceKind: "git",
+  binaryFiles: 0,
+  omittedFiles: 0,
+  completeness: "complete",
+  confidence: "normal",
+  overlapped: false,
+  createdAt: 1_000,
+  updatedAt: 2_000,
 } as StoredReviewChangeset;
 
 beforeEach(() => {
@@ -70,14 +94,14 @@ describe("referenceKey", () => {
   });
 });
 
-describe("PendingReference", () => {
+describe("pendingReference", () => {
   it("shows the label or target id", () => {
     expect(renderToStaticMarkup(createElement(PendingReference, { reference: ref({ label: "L" }) }))).toContain("L");
     expect(renderToStaticMarkup(createElement(PendingReference, { reference: ref() }))).toContain("id-1");
   });
 });
 
-describe("MissingReference", () => {
+describe("missingReference", () => {
   it("renders the red badge with the error as title when present", () => {
     const html = renderToStaticMarkup(
       createElement(MissingReference, { reference: ref(), error: "gone" }),
@@ -91,7 +115,7 @@ describe("MissingReference", () => {
   });
 });
 
-describe("ReferenceChip", () => {
+describe("referenceChip", () => {
   it("renders a pending placeholder while resolving", () => {
     const html = renderToStaticMarkup(createElement(ReferenceChip, { reference: ref() }));
     expect(html).toContain("id-1");
@@ -129,7 +153,10 @@ describe("renderFileReference", () => {
 
   it("renders a FileLink for a resolved file", () => {
     const node = renderFileReference(ref({ targetType: "file" }), {
-      targetType: "file", targetId: "id-1", status: "resolved", data: storedFile,
+      targetType: "file",
+      targetId: "id-1",
+      status: "resolved",
+      data: storedFile,
     });
     const html = renderToStaticMarkup(createElement("div", null, node));
     expect(html).toContain("file:///w/a.md");
@@ -139,20 +166,26 @@ describe("renderFileReference", () => {
     const pending = renderFileReference(ref({ targetType: "file", label: "F" }));
     expect(renderToStaticMarkup(createElement("div", null, pending))).toContain("F");
     const malformed = renderFileReference(ref({ targetType: "file", label: "F" }), {
-      targetType: "file", targetId: "id-1", status: "resolved", data: { bogus: true },
+      targetType: "file",
+      targetId: "id-1",
+      status: "resolved",
+      data: { bogus: true } as never,
     });
     expect(renderToStaticMarkup(createElement("div", null, malformed))).toContain("F");
   });
 });
 
-describe("FutureEmbed", () => {
+describe("futureEmbed", () => {
   function renderEmbed(reference: FutureReference, resolved?: Parameters<typeof FutureEmbed>[0]["resolved"]) {
     return renderToStaticMarkup(createElement(FutureEmbed, { reference, resolved }));
   }
 
   it("renders file references as links", () => {
     const html = renderEmbed(ref({ targetType: "file" }), {
-      targetType: "file", targetId: "id-1", status: "resolved", data: storedFile,
+      targetType: "file",
+      targetId: "id-1",
+      status: "resolved",
+      data: storedFile,
     });
     expect(html).toContain("<a");
   });
@@ -165,34 +198,52 @@ describe("FutureEmbed", () => {
 
   it("renders each resolved payload type", () => {
     expect(renderEmbed(ref({ targetType: "artifact" }), {
-      targetType: "artifact", targetId: "id-1", status: "resolved", data: storedArtifact,
+      targetType: "artifact",
+      targetId: "id-1",
+      status: "resolved",
+      data: storedArtifact,
     })).toContain("Report");
     expect(renderEmbed(ref({ targetType: "run" }), {
-      targetType: "run", targetId: "id-1", status: "resolved", data: storedRun,
+      targetType: "run",
+      targetId: "id-1",
+      status: "resolved",
+      data: storedRun,
     })).toContain("run_abc");
     expect(renderEmbed(ref({ targetType: "approval" }), {
-      targetType: "approval", targetId: "id-1", status: "resolved", data: storedApproval,
+      targetType: "approval",
+      targetId: "id-1",
+      status: "resolved",
+      data: storedApproval,
     })).toContain("Run ls");
     expect(renderEmbed(ref({ targetType: "review" }), {
-      targetType: "review", targetId: "id-1", status: "resolved", data: storedReview,
+      targetType: "review",
+      targetId: "id-1",
+      status: "resolved",
+      data: storedReview,
     })).toContain("Changes");
   });
 
   it("renders the missing badge for malformed payloads and type mismatches", () => {
     for (const targetType of ["artifact", "run", "approval", "review"] as const) {
       const html = renderEmbed(ref({ targetType }), {
-        targetType, targetId: "id-1", status: "resolved", data: null,
+        targetType,
+        targetId: "id-1",
+        status: "resolved",
+        data: null,
       });
       expect(html).toContain("bg-danger-soft");
     }
     const mismatch = renderEmbed(ref({ targetType: "run" }), {
-      targetType: "artifact", targetId: "id-1", status: "resolved", data: storedArtifact,
+      targetType: "artifact",
+      targetId: "id-1",
+      status: "resolved",
+      data: storedArtifact,
     });
     expect(mismatch).toContain("bg-danger-soft");
   });
 });
 
-describe("RunEmbed interactions", () => {
+describe("runEmbed interactions", () => {
   function mount(run: StoredRun) {
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -210,7 +261,10 @@ describe("RunEmbed interactions", () => {
     const events: CustomEvent[] = [];
     window.addEventListener("futureos:inspect-run", e => events.push(e as CustomEvent));
     const { container, root } = mount({
-      ...storedRun, startedAt: 500, errorMessage: "boom", modelId: "m1",
+      ...storedRun,
+      startedAt: 500,
+      errorMessage: "boom",
+      modelId: "m1",
     });
     const html = container.innerHTML;
     expect(html).toContain("boom");
@@ -225,7 +279,7 @@ describe("RunEmbed interactions", () => {
   });
 });
 
-describe("ArtifactEmbed variants", () => {
+describe("artifactEmbed variants", () => {
   function renderArtifact(artifact: StoredArtifact) {
     return createElement(FutureEmbed, {
       reference: ref({ targetType: "artifact" }),
@@ -235,7 +289,10 @@ describe("ArtifactEmbed variants", () => {
 
   it("renders the content (no path) variant with summary", () => {
     const html = renderToStaticMarkup(renderArtifact({
-      ...storedArtifact, path: null, content: "body", summary: "sum",
+      ...storedArtifact,
+      path: null,
+      content: "body",
+      summary: "sum",
     }));
     expect(html).toContain("body");
     expect(html).toContain("sum");
@@ -259,12 +316,19 @@ describe("ArtifactEmbed variants", () => {
     const buttons = [...container.querySelectorAll("button")];
     // details, copy path, open
     expect(buttons.length).toBe(3);
+    const [detailsButton, copyButton, openButton] = buttons as unknown as [Element, Element, Element];
+    const events: CustomEvent[] = [];
+    window.addEventListener("futureos:inspect-artifact", e => events.push(e as CustomEvent));
     await act(async () => {
-      buttons[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      detailsButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(events.map(e => e.detail)).toEqual([{ artifactId: "art-1" }]);
+    await act(async () => {
+      copyButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(exec).toHaveBeenCalledWith("copy");
     await act(async () => {
-      buttons[2].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(invokeMock).toHaveBeenCalledWith("open_path", { path: "/w/report.md" });
     act(() => root.unmount());
@@ -272,12 +336,14 @@ describe("ArtifactEmbed variants", () => {
   });
 });
 
-describe("Approval/Review embeds", () => {
+describe("approval/Review embeds", () => {
   it("renders approval with summary and requested action", () => {
     const html = renderToStaticMarkup(createElement(FutureEmbed, {
       reference: ref({ targetType: "approval" }),
       resolved: {
-        targetType: "approval", targetId: "ap-1", status: "resolved",
+        targetType: "approval",
+        targetId: "ap-1",
+        status: "resolved",
         data: { ...storedApproval, summary: "why", requestedAction: "ls -la", title: "" },
       },
     }));
@@ -296,7 +362,9 @@ describe("Approval/Review embeds", () => {
       root.render(createElement(FutureEmbed, {
         reference: ref({ targetType: "review" }),
         resolved: {
-          targetType: "review", targetId: "rev-1", status: "resolved",
+          targetType: "review",
+          targetId: "rev-1",
+          status: "resolved",
           data: { ...storedReview, summary: "s", title: "" },
         },
       }));

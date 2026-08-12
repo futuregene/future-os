@@ -10,7 +10,12 @@ import {
 describe("storage type guards", () => {
   it("isStoredArtifact", () => {
     expect(isStoredArtifact({
-      id: "a", workspaceId: "w", title: "t", artifactType: "report", createdAt: 1, updatedAt: 2,
+      id: "a",
+      workspaceId: "w",
+      title: "t",
+      artifactType: "report",
+      createdAt: 1,
+      updatedAt: 2,
     })).toBe(true);
     expect(isStoredArtifact({ id: "a" })).toBe(false);
     expect(isStoredArtifact("nope")).toBe(false);

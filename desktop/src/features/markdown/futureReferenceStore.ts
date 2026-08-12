@@ -287,9 +287,8 @@ async function reresolveRunRecords(runId: string) {
 
 function pruneReferenceRecords() {
   while (records.size > maxReferenceRecords) {
-    const oldest = records.keys().next().value;
-    if (!oldest)
-      return;
+    // size > maxReferenceRecords (>= 1) guarantees a first key exists.
+    const oldest = records.keys().next().value!;
     records.delete(oldest);
     retryAfter.delete(oldest);
     pendingRetry.delete(oldest);

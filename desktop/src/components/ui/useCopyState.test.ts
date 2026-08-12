@@ -1,15 +1,15 @@
+import { act } from "react";
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act } from "react";
 import { renderHook } from "../../test/renderHook";
+
+import { useCopyState } from "./useCopyState";
 
 const copyTextMock = vi.fn<(text: string) => Promise<void>>();
 
 vi.mock("../../lib/clipboard", () => ({
   copyText: (text: string) => copyTextMock(text),
 }));
-
-import { useCopyState } from "./useCopyState";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -52,7 +52,7 @@ describe("useCopyState", () => {
     });
     expect(h.current.copiedKey).toBeNull();
     expect(events).toHaveLength(1);
-    expect(events[0].detail.tone).toBe("error");
+    expect(events[0]?.detail.tone).toBe("error");
     h.unmount();
   });
 

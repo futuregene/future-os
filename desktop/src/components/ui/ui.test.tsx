@@ -1,9 +1,8 @@
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { act } from "react";
-import { createRoot } from "react-dom/client";
 import { Badge } from "./Badge";
 import { Button } from "./Button";
 import { IconButton } from "./IconButton";
@@ -12,7 +11,7 @@ import { Overlay } from "./Overlay";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-describe("Badge", () => {
+describe("badge", () => {
   it("renders each tone with its styling and children", () => {
     const html = renderToStaticMarkup(
       createElement(Badge, { tone: "success", className: "extra" }, "done"),
@@ -23,13 +22,13 @@ describe("Badge", () => {
   });
 });
 
-describe("Button", () => {
+describe("button", () => {
   it("renders variant/size classes with a left icon", () => {
     const html = renderToStaticMarkup(
       createElement(Button, {
-        variant: "primary",
-        size: "xs",
-        leftIcon: createElement("span", { "data-icon": true }),
+        "variant": "primary",
+        "size": "xs",
+        "leftIcon": createElement("span", { "data-icon": true }),
         "aria-label": "go",
       }, "Go"),
     );
@@ -40,7 +39,7 @@ describe("Button", () => {
   });
 });
 
-describe("IconButton", () => {
+describe("iconButton", () => {
   it("renders the active state and aria label", () => {
     const html = renderToStaticMarkup(
       createElement(IconButton, { icon: createElement("i"), label: "Refresh", active: true }),
@@ -50,10 +49,10 @@ describe("IconButton", () => {
   });
 });
 
-describe("MenuPanel", () => {
+describe("menuPanel", () => {
   it("renders the panel surface with style and children", () => {
     const html = renderToStaticMarkup(
-      createElement(MenuPanel, { className: "w-40", style: { top: 4 } }, "menu"),
+      <MenuPanel className="w-40" style={{ top: 4 }}>menu</MenuPanel>,
     );
     expect(html).toContain("shadow-panel");
     expect(html).toContain("w-40");
@@ -62,13 +61,13 @@ describe("MenuPanel", () => {
   });
 });
 
-describe("Overlay", () => {
+describe("overlay", () => {
   function mountOverlay(open: boolean, onClose: () => void) {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
     act(() => {
-      root.render(createElement(Overlay, { open, onClose }, createElement("div", null, "body")));
+      root.render(<Overlay onClose={onClose} open={open}><div>body</div></Overlay>);
     });
     return { container, root };
   }
@@ -97,10 +96,12 @@ describe("Overlay", () => {
     document.body.appendChild(container);
     const root = createRoot(container);
     act(() => {
-      root.render(createElement("div", null,
-        createElement(Overlay, { open: true, onClose: parentClose }),
-        createElement(Overlay, { open: true, onClose: childClose }),
-      ));
+      root.render(
+        <div>
+          <Overlay onClose={parentClose} open>{null}</Overlay>
+          <Overlay onClose={childClose} open>{null}</Overlay>
+        </div>,
+      );
     });
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));

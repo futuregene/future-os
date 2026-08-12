@@ -1,8 +1,7 @@
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { createElement, useRef } from "react";
-import { act } from "react";
-import { createRoot } from "react-dom/client";
 import { useDismissableLayer } from "./useDismissableLayer";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;

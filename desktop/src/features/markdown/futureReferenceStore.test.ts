@@ -1,144 +1,201 @@
+import { act } from "react";
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { renderHook } from "../../test/renderHook";
 
-const invokeCommand = vi.fn();
-const { runtimeHandlers } = vi.hoisted(() => ({
-  runtimeHandlers: [] as Array<(event: { payload: Record<string, unknown> }) => void>,
+import {
+  peekFutureReference,
+  queueFutureReferenceLoad,
+  useFutureReference,
+  useFutureReferences,
+} from "./futureReferenceStore";
+
+const resolveMock = vi.fn<(workspaceId: string, refs: unknown[]) => Promise<Array<Record<string, unknown>>>>();
+
+vi.mock("../../integrations/storage/markdownReferences", () => ({
+  resolveMarkdownReferences: (workspaceId: string, refs: unknown[]) => resolveMock(workspaceId, refs),
 }));
 
-vi.mock("../../integrations/tauri/invoke", () => ({
-  invokeCommand: (...args: unknown[]) => invokeCommand(...args),
-}));
+type Listener = (event: { payload: { runId?: string; status?: string } }) => void;
+let terminalListener: Listener | null = null;
+const listenMock = vi.fn((_name: string, handler: Listener) => {
+  terminalListener = handler;
+  return Promise.resolve(() => {});
+});
 
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async (name: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
-    if (name === "thread-runtime-updated")
-      runtimeHandlers.push(handler);
-    return () => {};
-  }),
+  listen: (name: string, handler: Listener) => listenMock(name, handler),
 }));
 
+beforeEach(() => {
+  vi.useFakeTimers();
+  // Records persist across tests (module-level cache) — each test uses its own
+  // workspace id; only the call counts reset.
+  resolveMock.mockClear();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+const RUN = { targetType: "run" as const, targetId: "run-1" };
+
+/** Advance fake time in 1s steps until the resolve call count reaches n. */
+async function advanceUntilCalls(expected: number, maxMs: number) {
+  for (let elapsed = 0; elapsed < maxMs; elapsed += 1_000) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    await flush();
+    if (resolveMock.mock.calls.length >= expected)
+      return;
+  }
+  throw new Error(`timed out waiting for ${expected} resolve calls`);
+}
+
+function resolvedRecord(targetId = "run-1") {
+  return { targetType: "run", targetId, status: "resolved", data: null };
+}
+
+/** Flush the 0ms batching timer + the (multi-tick) resolve promise chain. */
+async function flush() {
+  // The async advance variant awaits timer callbacks' promise chains; two
+  // rounds cover flush-then-store (and any re-queued 0ms flush).
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+  });
+}
+
 describe("futureReferenceStore", () => {
-  beforeEach(() => {
-    invokeCommand.mockReset();
-    runtimeHandlers.length = 0;
-    vi.resetModules();
-    vi.useFakeTimers();
+  it("ignores empty load requests", () => {
+    queueFutureReferenceLoad("w1", []);
+    expect(resolveMock).not.toHaveBeenCalled();
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
+  it("resolves, caches, and skips re-resolving resolved records", async () => {
+    resolveMock.mockResolvedValue([resolvedRecord()]);
+    queueFutureReferenceLoad("w1", [RUN]);
+    await flush();
+    expect(resolveMock).toHaveBeenCalledTimes(1);
+    expect(peekFutureReference("w1", RUN)).toMatchObject({ status: "resolved" });
+    // Resolved records never re-resolve.
+    queueFutureReferenceLoad("w1", [RUN]);
+    await flush();
+    expect(resolveMock).toHaveBeenCalledTimes(1);
   });
 
-  it("actively retries a failed resolution after the backoff, without any re-render", async () => {
-    invokeCommand.mockRejectedValueOnce(new Error("ipc down"));
-    const { queueFutureReferenceLoad, peekFutureReference } = await import("./futureReferenceStore");
-    const identity = { targetId: "run_retry", targetType: "run" as const };
+  it("returns undefined for a null workspace and unknown records", () => {
+    expect(peekFutureReference(null, RUN)).toBeUndefined();
+    expect(peekFutureReference("w1", { targetType: "run", targetId: "nope" })).toBeUndefined();
+  });
 
-    queueFutureReferenceLoad("ws_retry", [identity]);
-    await vi.advanceTimersByTimeAsync(1);
+  it("marks failures and retries on an escalating backoff until parked", async () => {
+    resolveMock.mockImplementation((_w: string, refs: any[]) =>
+      Promise.resolve(refs.map((r: any) => ({ ...r, status: "missing", data: undefined }))));
+    queueFutureReferenceLoad("w2", [RUN]);
+    await flush();
+    expect(resolveMock).toHaveBeenCalledTimes(1);
+    expect(peekFutureReference("w2", RUN)).toMatchObject({ status: "missing" });
 
-    expect(invokeCommand).toHaveBeenCalledTimes(1);
-    expect(peekFutureReference("ws_retry", identity)?.status).toBe("failed");
+    // Not due yet: an explicit re-queue is ignored.
+    queueFutureReferenceLoad("w2", [RUN]);
+    await flush();
+    expect(resolveMock).toHaveBeenCalledTimes(1);
 
-    invokeCommand.mockResolvedValueOnce([
-      { targetType: "run", targetId: "run_retry", status: "resolved", data: { id: "run_retry" } },
-    ]);
-    // Nothing re-renders or re-queues: the scheduled sweep alone must heal
-    // the record (the row-not-yet-committed race, a transient IPC error).
-    await vi.advanceTimersByTimeAsync(31_000);
-
-    expect(invokeCommand).toHaveBeenCalledTimes(2);
-    expect(peekFutureReference("ws_retry", identity)).toMatchObject({
-      status: "resolved",
-      targetId: "run_retry",
+    // A second record with a later deadline: the first sweep re-queues w2 but
+    // skips w2b (not due) and re-arms.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
     });
-  });
+    queueFutureReferenceLoad("w2b", [{ targetType: "run", targetId: "run-2" }]);
+    await flush();
+    expect(resolveMock).toHaveBeenCalledTimes(2);
 
-  it("does not retry before the backoff elapses", async () => {
-    invokeCommand.mockRejectedValueOnce(new Error("ipc down"));
-    const { queueFutureReferenceLoad } = await import("./futureReferenceStore");
+    // Advance until each retry lands (deadline-boundary agnostic).
+    await advanceUntilCalls(3, 25_000); // w2 first retry (~30s mark)
+    await advanceUntilCalls(4, 15_000); // w2b first retry (~40s mark)
+    await advanceUntilCalls(5, 70_000); // w2 second retry (60s backoff) → parked
+    await advanceUntilCalls(6, 70_000); // w2b second retry → parked
 
-    queueFutureReferenceLoad("ws_wait", [{ targetId: "run_wait", targetType: "run" }]);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(invokeCommand).toHaveBeenCalledTimes(1);
-
-    await vi.advanceTimersByTimeAsync(29_000);
-    expect(invokeCommand).toHaveBeenCalledTimes(1);
-  });
-
-  it("re-resolves a run record in place when the run settles", async () => {
-    invokeCommand.mockResolvedValueOnce([
-      { targetType: "run", targetId: "run_settle", status: "resolved", data: { id: "run_settle", status: "running" } },
-    ]);
-    const { queueFutureReferenceLoad, peekFutureReference } = await import("./futureReferenceStore");
-    const identity = { targetId: "run_settle", targetType: "run" as const };
-
-    queueFutureReferenceLoad("ws_settle", [identity]);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(peekFutureReference("ws_settle", identity)).toMatchObject({
-      status: "resolved",
-      data: { status: "running" },
+    // Parked: no further IPC even after a long wait + explicit requeue.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600_000);
     });
-
-    invokeCommand.mockResolvedValueOnce([
-      { targetType: "run", targetId: "run_settle", status: "resolved", data: { id: "run_settle", status: "completed" } },
-    ]);
-    const handler = runtimeHandlers[runtimeHandlers.length - 1];
-    expect(handler).toBeDefined();
-    handler?.({ payload: { runId: "run_settle", status: "completed", threadId: "thread_1" } });
-    await vi.advanceTimersByTimeAsync(1);
-
-    expect(invokeCommand).toHaveBeenCalledTimes(2);
-    expect(peekFutureReference("ws_settle", identity)).toMatchObject({
-      status: "resolved",
-      data: { status: "completed" },
-    });
+    await flush();
+    queueFutureReferenceLoad("w2", [RUN]);
+    queueFutureReferenceLoad("w2b", [{ targetType: "run", targetId: "run-2" }]);
+    await flush();
+    expect(resolveMock).toHaveBeenCalledTimes(6);
   });
 
-  it("parks a permanently missing reference instead of retrying forever", async () => {
-    invokeCommand.mockResolvedValue([
-      { targetType: "run", targetId: "run_gone", status: "missing", error: "run was not found" },
-    ]);
-    const { queueFutureReferenceLoad, peekFutureReference } = await import("./futureReferenceStore");
-    const identity = { targetId: "run_gone", targetType: "run" as const };
-
-    queueFutureReferenceLoad("ws_gone", [identity]);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(invokeCommand).toHaveBeenCalledTimes(1);
-
-    // Attempt 2 after the first backoff (30s)...
-    await vi.advanceTimersByTimeAsync(31_000);
-    expect(invokeCommand).toHaveBeenCalledTimes(2);
-    // ...attempt 3 after the escalated one (60s)...
-    await vi.advanceTimersByTimeAsync(61_000);
-    expect(invokeCommand).toHaveBeenCalledTimes(3);
-
-    // ...then it parks: no further IPC no matter how long the page sits,
-    // and the record keeps its terminal missing status for the chip.
-    await vi.advanceTimersByTimeAsync(3_600_000);
-    expect(invokeCommand).toHaveBeenCalledTimes(3);
-    expect(peekFutureReference("ws_gone", identity)).toMatchObject({
-      status: "missing",
-      targetId: "run_gone",
-    });
+  it("stores a failed record when the resolve IPC rejects", async () => {
+    resolveMock.mockRejectedValue(new Error("ipc down"));
+    queueFutureReferenceLoad("w3", [RUN]);
+    await flush();
+    expect(peekFutureReference("w3", RUN)).toMatchObject({ status: "failed", error: "ipc down" });
   });
 
-  it("keeps resolved records final across streaming-delta re-queues", async () => {
-    invokeCommand.mockResolvedValue([
-      { targetType: "run", targetId: "run_final", status: "resolved", data: { id: "run_final" } },
-    ]);
-    const { queueFutureReferenceLoad } = await import("./futureReferenceStore");
-    const identity = { targetId: "run_final", targetType: "run" as const };
+  it("loads via the useFutureReferences hook only with a workspace and references", async () => {
+    resolveMock.mockResolvedValue([resolvedRecord("run-hook")]);
+    const hookRef = { source: "inline" as const, targetType: "run" as const, targetId: "run-hook", view: "chip" as const };
+    let workspaceId: string | null = null;
+    const h = renderHook(() => useFutureReferences(workspaceId, [hookRef]));
+    await flush();
+    expect(resolveMock).not.toHaveBeenCalled();
+    workspaceId = "w4";
+    h.rerender();
+    await flush();
+    expect(resolveMock).toHaveBeenCalledWith("w4", [{ targetType: "run", targetId: "run-hook" }]);
+    h.unmount();
+  });
 
-    queueFutureReferenceLoad("ws_final", [identity]);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(invokeCommand).toHaveBeenCalledTimes(1);
+  it("useFutureReference subscribes to cache updates", async () => {
+    resolveMock.mockResolvedValue([resolvedRecord("run-sub")]);
+    const subRef = { targetType: "run" as const, targetId: "run-sub" };
+    const h = renderHook(() => useFutureReference("w5", subRef));
+    expect(h.current).toBeUndefined();
+    queueFutureReferenceLoad("w5", [subRef]);
+    await flush();
+    expect(h.current).toMatchObject({ status: "resolved" });
+    h.unmount();
+  });
 
-    // The parsed references array gets a fresh identity on every streaming
-    // delta; already-resolved records must not re-fire IPC.
-    queueFutureReferenceLoad("ws_final", [identity]);
-    queueFutureReferenceLoad("ws_final", [identity]);
-    await vi.advanceTimersByTimeAsync(31_000);
-    expect(invokeCommand).toHaveBeenCalledTimes(1);
+  it("installs the terminal-run listener once and re-resolves settled runs in place", async () => {
+    resolveMock.mockResolvedValue([resolvedRecord("run-term")]);
+    queueFutureReferenceLoad("w6", [{ targetType: "run", targetId: "run-term" }]);
+    await flush();
+    const listenCalls = listenMock.mock.calls.length;
+    queueFutureReferenceLoad("w6b", [{ targetType: "run", targetId: "run-other" }]);
+    await flush();
+    expect(listenMock.mock.calls.length).toBe(listenCalls);
+
+    // Non-terminal payloads are ignored.
+    const callsBefore = resolveMock.mock.calls.length;
+    terminalListener!({ payload: { runId: "run-term", status: "running" } });
+    terminalListener!({ payload: { status: "completed" } });
+    await flush();
+    expect(resolveMock.mock.calls.length).toBe(callsBefore);
+
+    // Terminal status re-resolves exactly that run's records.
+    resolveMock.mockResolvedValue([resolvedRecord("run-term")]);
+    await act(async () => {
+      terminalListener!({ payload: { runId: "run-term", status: "completed" } });
+      await Promise.resolve();
+    });
+    await flush();
+    expect(resolveMock).toHaveBeenCalledWith("w6", [{ targetType: "run", targetId: "run-term" }]);
+  });
+
+  it("prunes records past the 1000-entry cap", async () => {
+    const many = Array.from({ length: 1005 }, (_, i) => ({ targetType: "artifact" as const, targetId: `art-${i}` }));
+    resolveMock.mockResolvedValue(
+      many.map(r => ({ targetType: r.targetType, targetId: r.targetId, status: "resolved", data: null })),
+    );
+    queueFutureReferenceLoad("w7", many);
+    await flush();
+    // Oldest entries evicted: art-0..art-4 gone, the rest present.
+    expect(peekFutureReference("w7", { targetType: "artifact", targetId: "art-0" })).toBeUndefined();
+    expect(peekFutureReference("w7", { targetType: "artifact", targetId: "art-5" })).toBeDefined();
   });
 });

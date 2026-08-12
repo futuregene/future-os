@@ -1,15 +1,14 @@
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { act } from "react";
-import { createRoot } from "react-dom/client";
 import { flushAsync } from "../../test/renderHook";
 import { FilePreviewOverlay } from "./FilePreviewOverlay";
 import { ImagePreview } from "./ImagePreview";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { PreviewNotice } from "./PreviewNotice";
 import { imageMimeForPath, previewKindForPath } from "./previewKind";
+import { PreviewNotice } from "./PreviewNotice";
 
 const invokeMock = vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>(() => Promise.resolve(null));
 
@@ -58,17 +57,19 @@ describe("previewKind", () => {
   });
 });
 
-describe("PreviewNotice", () => {
+describe("previewNotice", () => {
   it("renders the message", () => {
     expect(renderToStaticMarkup(createElement(PreviewNotice, { message: "Loading…" }))).toContain("Loading…");
   });
 });
 
-describe("ImagePreview", () => {
+describe("imagePreview", () => {
   it("shows a loading notice, then the image", async () => {
     invokeMock.mockResolvedValue("QUJD");
     const { container, cleanup } = mount(createElement(ImagePreview, {
-      path: "/w/pic.png", name: "pic.png", onError: vi.fn(),
+      path: "/w/pic.png",
+      name: "pic.png",
+      onError: vi.fn(),
     }));
     expect(container.textContent).toContain("Loading");
     await flushAsync();
@@ -81,7 +82,9 @@ describe("ImagePreview", () => {
     invokeMock.mockRejectedValue(new Error("too large"));
     const onError = vi.fn();
     const { cleanup } = mount(createElement(ImagePreview, {
-      path: "/w/pic.png", name: "pic.png", onError,
+      path: "/w/pic.png",
+      name: "pic.png",
+      onError,
     }));
     await flushAsync();
     expect(onError).toHaveBeenCalledTimes(1);
@@ -92,7 +95,9 @@ describe("ImagePreview", () => {
     invokeMock.mockResolvedValue("QUJD");
     const onError = vi.fn();
     const { container, cleanup } = mount(createElement(ImagePreview, {
-      path: "/w/pic.png", name: "pic.png", onError,
+      path: "/w/pic.png",
+      name: "pic.png",
+      onError,
     }));
     await flushAsync();
     act(() => {
@@ -103,11 +108,12 @@ describe("ImagePreview", () => {
   });
 });
 
-describe("MarkdownPreview", () => {
+describe("markdownPreview", () => {
   it("renders the file content through the markdown renderer", async () => {
     invokeMock.mockResolvedValue({ content: "# Title\n\nbody", size: 14, truncated: false });
     const { container, cleanup } = mount(createElement(MarkdownPreview, {
-      path: "/w/doc.md", onError: vi.fn(),
+      path: "/w/doc.md",
+      onError: vi.fn(),
     }));
     await flushAsync();
     expect(container.querySelector("h1")?.textContent).toBe("Title");
@@ -124,10 +130,14 @@ describe("MarkdownPreview", () => {
   });
 });
 
-describe("FilePreviewOverlay", () => {
+describe("filePreviewOverlay", () => {
   it("renders nothing when closed", () => {
     const { container, cleanup } = mount(createElement(FilePreviewOverlay, {
-      path: "/w/a.png", name: "a.png", kind: "image", open: false, onClose: vi.fn(),
+      path: "/w/a.png",
+      name: "a.png",
+      kind: "image",
+      open: false,
+      onClose: vi.fn(),
     }));
     expect(container.innerHTML).toBe("");
     cleanup();
@@ -137,7 +147,11 @@ describe("FilePreviewOverlay", () => {
     invokeMock.mockResolvedValue("QUJD");
     const onClose = vi.fn();
     const { container, cleanup } = mount(createElement(FilePreviewOverlay, {
-      path: "/w/a.png", name: "a.png", kind: "image", open: true, onClose,
+      path: "/w/a.png",
+      name: "a.png",
+      kind: "image",
+      open: true,
+      onClose,
     }));
     await flushAsync();
     expect(container.querySelector("img")).not.toBeNull();
@@ -152,7 +166,11 @@ describe("FilePreviewOverlay", () => {
   it("renders the markdown preview", async () => {
     invokeMock.mockResolvedValue({ content: "hello", size: 5, truncated: false });
     const { container, cleanup } = mount(createElement(FilePreviewOverlay, {
-      path: "/w/a.md", name: "a.md", kind: "markdown", open: true, onClose: vi.fn(),
+      path: "/w/a.md",
+      name: "a.md",
+      kind: "markdown",
+      open: true,
+      onClose: vi.fn(),
     }));
     await flushAsync();
     expect(container.textContent).toContain("hello");
@@ -166,7 +184,12 @@ describe("FilePreviewOverlay", () => {
     const onClose = vi.fn();
     const onOpenExternal = vi.fn();
     const { cleanup } = mount(createElement(FilePreviewOverlay, {
-      path: "/w/a.md", name: "a.md", kind: "markdown", open: true, onClose, onOpenExternal,
+      path: "/w/a.md",
+      name: "a.md",
+      kind: "markdown",
+      open: true,
+      onClose,
+      onOpenExternal,
     }));
     await flushAsync();
     await flushAsync();
@@ -181,12 +204,16 @@ describe("FilePreviewOverlay", () => {
     const events: CustomEvent[] = [];
     window.addEventListener("futureos:toast", e => events.push(e as CustomEvent));
     const { cleanup } = mount(createElement(FilePreviewOverlay, {
-      path: "/w/a.md", name: "a.md", kind: "markdown", open: true,
-      onClose: vi.fn(), unavailableMessage: "original gone",
+      path: "/w/a.md",
+      name: "a.md",
+      kind: "markdown",
+      open: true,
+      onClose: vi.fn(),
+      unavailableMessage: "original gone",
     }));
     await flushAsync();
     await flushAsync();
-    expect(events[0].detail.message).toBe("original gone");
+    expect(events[0]?.detail.message).toBe("original gone");
     cleanup();
   });
 });

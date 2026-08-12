@@ -1,11 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const invokeMock = vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>();
-
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: (cmd: string, args?: unknown) => invokeMock(cmd, args),
-}));
-
 import { invokeCommand } from "../tauri/invoke";
 import { initializeAppStore, storedTimeToIso } from "./app";
 import {
@@ -79,6 +73,12 @@ import {
   updateThreadThinkingLevel,
 } from "./threads";
 
+const invokeMock = vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>();
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (cmd: string, args?: unknown) => invokeMock(cmd, args),
+}));
+
 beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockResolvedValue(null);
@@ -103,7 +103,7 @@ describe("invokeCommand error normalization", () => {
     await expect(invokeCommand("cmd")).rejects.toThrow("e");
   });
 
-  it("JSON-stringifies other objects and falls back to a generic message", async () => {
+  it("jSON-stringifies other objects and falls back to a generic message", async () => {
     invokeMock.mockRejectedValueOnce({ code: 7 });
     await expect(invokeCommand("cmd")).rejects.toThrow("{\"code\":7}");
     invokeMock.mockRejectedValueOnce(null);

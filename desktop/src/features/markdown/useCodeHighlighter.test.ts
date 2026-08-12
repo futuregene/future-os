@@ -1,9 +1,10 @@
-// @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act } from "react";
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAsync, renderHook } from "../../test/renderHook";
+
+import { useCodeHighlighter } from "./useCodeHighlighter";
 
 // A fully controllable fake Shiki highlighter.
 const loadedLanguages: string[] = [];
@@ -25,8 +26,6 @@ vi.mock("shiki", () => ({
   createHighlighter: () => Promise.resolve(fakeHighlighter),
 }));
 
-import { useCodeHighlighter } from "./useCodeHighlighter";
-
 beforeEach(() => {
   fakeHighlighter.loadLanguage.mockClear();
   fakeHighlighter.codeToTokens.mockClear();
@@ -45,7 +44,7 @@ describe("useCodeHighlighter", () => {
   it("returns null for missing or unmapped languages", async () => {
     const h = renderHook(() => useCodeHighlighter());
     await flushAsync();
-    expect(h.current.highlight("code")).toBeNull();
+    expect(h.current.highlight("code", undefined)).toBeNull();
     expect(h.current.highlight("code", "not-a-lang")).toBeNull();
     h.unmount();
   });
@@ -59,9 +58,9 @@ describe("useCodeHighlighter", () => {
     await flushAsync();
     const result = h.current.highlight("const a = 1", "ts");
     expect(result).not.toBeNull();
-    expect(result!.lines[0].tokens[0]).toEqual({ content: "const a = 1", color: "#111", fontStyle: 1 });
+    expect(result!.lines[0]!.tokens[0]).toEqual({ content: "const a = 1", color: "#111", fontStyle: 1 });
     // Missing color/fontStyle fall back to the theme foreground / undefined.
-    expect(result!.lines[0].tokens[1]).toEqual({ content: "!", color: "#000000", fontStyle: undefined });
+    expect(result!.lines[0]!.tokens[1]).toEqual({ content: "!", color: "#000000", fontStyle: undefined });
     // Non-string theme colors fall back to defaults.
     expect(result!.bgColor).toBe("#ffffff");
     expect(result!.fgColor).toBe("#000000");

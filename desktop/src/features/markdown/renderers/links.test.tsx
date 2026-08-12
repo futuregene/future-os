@@ -1,10 +1,9 @@
+import type { StoredFile } from "../../../integrations/storage/types";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { act } from "react";
-import { createRoot } from "react-dom/client";
-import type { StoredFile } from "../../../integrations/storage/types";
 import { PreviewMarkdownContext } from "../PreviewMarkdownContext";
 import { FileLink } from "./FileLink";
 import { LinkContextMenu } from "./LinkContextMenu";
@@ -52,20 +51,20 @@ beforeEach(() => {
   invokeMock.mockClear();
 });
 
-describe("SafeLink", () => {
+describe("safeLink", () => {
   it("renders inert text for disallowed protocols", () => {
-    const html = renderToStaticMarkup(createElement(SafeLink, { href: "javascript:alert(1)" }, "x"));
+    const html = renderToStaticMarkup(<SafeLink href="javascript:alert(1)">x</SafeLink>);
     expect(html).toContain("<span");
     expect(html).not.toContain("<a");
   });
 
   it("renders inert text for malformed URLs", () => {
-    const html = renderToStaticMarkup(createElement(SafeLink, { href: "not a url" }, "x"));
+    const html = renderToStaticMarkup(<SafeLink href="not a url">x</SafeLink>);
     expect(html).toContain("<span");
   });
 
   it("opens the URL in the system handler on click", () => {
-    const { container, cleanup } = mount(createElement(SafeLink, { href: "https://example.com" }, "site"));
+    const { container, cleanup } = mount(<SafeLink href="https://example.com">site</SafeLink>);
     click(container.querySelector("a")!);
     expect(invokeMock).toHaveBeenCalledWith("open_external_url", { url: "https://example.com" });
     cleanup();
@@ -74,35 +73,35 @@ describe("SafeLink", () => {
   it("opens the context menu on right click and runs menu actions", async () => {
     const exec = vi.fn().mockReturnValue(true);
     Object.defineProperty(document, "execCommand", { value: exec, configurable: true });
-    const { container, cleanup } = mount(createElement(SafeLink, { href: "https://example.com" }, "site"));
+    const { container, cleanup } = mount(<SafeLink href="https://example.com">site</SafeLink>);
     rightClick(container.querySelector("a")!);
     const menuButtons = [...document.querySelectorAll(".fixed button")];
     expect(menuButtons.length).toBe(2);
     // visit
-    click(menuButtons[0]);
+    click(menuButtons[0]!);
     expect(invokeMock).toHaveBeenCalledWith("open_external_url", { url: "https://example.com" });
     // menu closed after selection
     expect(document.querySelectorAll(".fixed button").length).toBe(0);
     // copy link
     rightClick(container.querySelector("a")!);
-    click([...document.querySelectorAll(".fixed button")][1]);
+    click([...document.querySelectorAll(".fixed button")][1]!);
     expect(exec).toHaveBeenCalledWith("copy");
     cleanup();
   });
 
   it("suppresses the custom menu in preview mode", () => {
-    const { container, cleanup } = mount(createElement(
-      PreviewMarkdownContext.Provider,
-      { value: { basePath: "/w/doc.md" } },
-      createElement(SafeLink, { href: "https://example.com" }, "site"),
-    ));
+    const { container, cleanup } = mount(
+      <PreviewMarkdownContext.Provider value={{ basePath: "/w/doc.md" }}>
+        <SafeLink href="https://example.com">site</SafeLink>
+      </PreviewMarkdownContext.Provider>,
+    );
     rightClick(container.querySelector("a")!);
     expect(document.querySelectorAll(".fixed button").length).toBe(0);
     cleanup();
   });
 });
 
-describe("SafeImage", () => {
+describe("safeImage", () => {
   it("renders the fallback chip for disallowed protocols", () => {
     const html = renderToStaticMarkup(createElement(SafeImage, { alt: "pic", src: "data:image/png;base64,x" }));
     expect(html).toContain("pic");
@@ -123,7 +122,7 @@ describe("SafeImage", () => {
   });
 });
 
-describe("LinkContextMenu", () => {
+describe("linkContextMenu", () => {
   function controller(position: { x: number; y: number } | null) {
     return { close: vi.fn(), layerRef: { current: null }, position };
   }
@@ -149,8 +148,8 @@ describe("LinkContextMenu", () => {
     const buttons = [...document.querySelectorAll("button")];
     expect(buttons.length).toBe(2);
     expect(document.querySelector(".border-t")).not.toBeNull();
-    expect(buttons[1].className).toContain("text-danger");
-    click(buttons[0]);
+    expect(buttons[1]!.className).toContain("text-danger");
+    click(buttons[0]!);
     expect(close).toHaveBeenCalled();
     expect(onSelect).toHaveBeenCalled();
     cleanup();
@@ -158,7 +157,14 @@ describe("LinkContextMenu", () => {
 
   it("clamps the menu inside the viewport once measured", () => {
     const rect = {
-      width: 200, height: 100, top: 0, left: 0, right: 200, bottom: 100, x: 0, y: 0,
+      width: 200,
+      height: 100,
+      top: 0,
+      left: 0,
+      right: 200,
+      bottom: 100,
+      x: 0,
+      y: 0,
       toJSON: () => ({}),
     } as DOMRect;
     const spy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(rect);
@@ -213,7 +219,7 @@ describe("useLinkContextMenu", () => {
   });
 });
 
-describe("FileLink", () => {
+describe("fileLink", () => {
   const file: StoredFile = { path: "/w/src/a.bin", name: "a.bin", relativePath: "src/a.bin", insideWorkspace: true };
 
   it("shows the workspace-relative path and opens with the OS handler on click", () => {
@@ -250,7 +256,7 @@ describe("FileLink", () => {
       await Promise.resolve();
     });
     expect(events).toHaveLength(1);
-    expect(events[0].detail.tone).toBe("error");
+    expect(events[0]?.detail.tone).toBe("error");
     cleanup();
   });
 
@@ -262,6 +268,34 @@ describe("FileLink", () => {
     rightClick(container.querySelector("a")!);
     const labels = [...document.querySelectorAll(".fixed button")].map(b => b.textContent);
     expect(labels.length).toBe(5); // preview, copy path, copy relative, copy name, open
+
+    // Each copy action writes its slice of the path to the clipboard.
+    click([...document.querySelectorAll(".fixed button")][1]!); // copy path
+    rightClick(container.querySelector("a")!);
+    click([...document.querySelectorAll(".fixed button")][2]!); // copy relative path
+    rightClick(container.querySelector("a")!);
+    click([...document.querySelectorAll(".fixed button")][3]!); // copy filename
+    expect(exec).toHaveBeenCalledTimes(3);
+
+    // The preview action opens the in-app overlay.
+    rightClick(container.querySelector("a")!);
+    click([...document.querySelectorAll(".fixed button")][0]!);
+    expect(document.querySelector(".fixed.inset-0")).not.toBeNull();
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    cleanup();
+  });
+
+  it("outside pointerdown dismisses an open context menu", () => {
+    const md: StoredFile = { path: "/w/doc.md", name: "doc.md", relativePath: "doc.md", insideWorkspace: true };
+    const { container, cleanup } = mount(createElement(FileLink, { file: md }));
+    rightClick(container.querySelector("a")!);
+    expect(document.querySelectorAll(".fixed button").length).toBeGreaterThan(0);
+    act(() => {
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(document.querySelectorAll(".fixed button").length).toBe(0);
     cleanup();
   });
 
@@ -281,11 +315,11 @@ describe("FileLink", () => {
 
   it("preview mode opens every target with the OS handler and has no menu", () => {
     const md: StoredFile = { path: "/w/doc.md", name: "doc.md", relativePath: "doc.md", insideWorkspace: true };
-    const { container, cleanup } = mount(createElement(
-      PreviewMarkdownContext.Provider,
-      { value: { basePath: "/w/other.md" } },
-      createElement(FileLink, { file: md }),
-    ));
+    const { container, cleanup } = mount(
+      <PreviewMarkdownContext.Provider value={{ basePath: "/w/other.md" }}>
+        <FileLink file={md} />
+      </PreviewMarkdownContext.Provider>,
+    );
     click(container.querySelector("a")!);
     expect(invokeMock).toHaveBeenCalledWith("open_path", { path: "/w/doc.md" });
     expect(document.querySelector(".fixed.inset-0")).toBeNull();

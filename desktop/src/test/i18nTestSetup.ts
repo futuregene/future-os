@@ -18,7 +18,8 @@ if (typeof globalThis.localStorage === "undefined") {
     getItem: key => (store.has(key) ? store.get(key)! : null),
     key: (index) => {
       const keys = [...store.keys()];
-      return index >= 0 && index < keys.length ? keys[index] : null;
+      const found = index >= 0 && index < keys.length ? keys[index] : undefined;
+      return found ?? null;
     },
     removeItem: key => void store.delete(key),
     setItem: (key, value) => void store.set(key, String(value)),

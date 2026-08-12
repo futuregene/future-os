@@ -1,6 +1,6 @@
-// @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
 import { act } from "react";
+// @vitest-environment jsdom
+import { describe, expect, it } from "vitest";
 import { flushAsync, renderHook } from "../test/renderHook";
 import { useAsyncResource } from "./useAsyncResource";
 
@@ -21,6 +21,7 @@ describe("useAsyncResource", () => {
   });
 
   it("stringifies non-Error rejections", async () => {
+    // eslint-disable-next-line prefer-promise-reject-errors -- deliberately non-Error rejection
     const h = renderHook(() => useAsyncResource(() => Promise.reject("raw"), [], "init"));
     await flushAsync();
     expect(h.current.error).toBe("raw");
@@ -73,7 +74,7 @@ describe("useAsyncResource", () => {
   });
 
   it("applies a new load after an isEqual-skip when the previous value is the initial data", async () => {
-    let value = 1;
+    const value = 1;
     const h = renderHook(() => useAsyncResource(
       () => Promise.resolve(value),
       [],

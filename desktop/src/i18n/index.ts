@@ -16,7 +16,9 @@ for (const [path, mod] of Object.entries(modules)) {
   // The glob pattern guarantees "./locales/<lang>/<namespace>.json", so the
   // match and both capture groups always exist (invariant, not a guess).
   const match = /\.\/locales\/([^/]+)\/([^/]+)\.json$/.exec(path)!;
-  (resources[match[1]] ??= {})[match[2]] = mod.default;
+  const lang = match[1]!;
+  const namespace = match[2]!;
+  (resources[lang] ??= {})[namespace] = mod.default;
 }
 
 export const SUPPORTED_LANGUAGES = ["zh", "en"] as const;

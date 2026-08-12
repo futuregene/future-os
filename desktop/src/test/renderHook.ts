@@ -4,8 +4,7 @@
  * like the real app. Each test file using this must opt into jsdom via
  * `// @vitest-environment jsdom` at the top.
  */
-import { act } from "react";
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;

@@ -1,6 +1,6 @@
+import { act } from "react";
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act } from "react";
 import { renderHook } from "../test/renderHook";
 import { usePolling } from "./usePolling";
 
