@@ -1,4 +1,4 @@
-import type { AgentMessage } from "./agentThreadTypes";
+import type { AgentMessage } from "@future-os/thread-projection";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 import { formatDuration } from "../../lib/date";

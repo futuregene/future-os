@@ -1,6 +1,6 @@
-import type { SessionEntry } from "./entryProjection";
+import type { SessionEntry } from "@future-os/thread-projection";
+import { entriesToMessages } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { entriesToMessages } from "./entryProjection";
 
 describe("entriesToMessages", () => {
   it("carries per-entry timestamps onto user and assistant messages", () => {

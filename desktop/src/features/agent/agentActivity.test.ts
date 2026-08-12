@@ -1,6 +1,6 @@
 import type { StoredRunEvent } from "../../integrations/storage/threadStore";
+import { buildAssistantRunProjection, createRunProjector, isSoftExit, nonZeroExitCode } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { buildAssistantRunProjection, createRunProjector, isSoftExit, nonZeroExitCode } from "./agentActivity";
 
 function events(list: Array<[string, Record<string, unknown>]>): StoredRunEvent[] {
   return list.map(([eventType, payload], index) => ({

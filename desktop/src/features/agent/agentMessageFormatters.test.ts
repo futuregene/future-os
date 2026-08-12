@@ -1,5 +1,5 @@
+import { classifyAgentError } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { classifyAgentError } from "./agentMessageFormatters";
 
 describe("classifyAgentError", () => {
   it("maps an HTTP 402 insufficient-credit rejection to the balance guidance", () => {
