@@ -454,6 +454,31 @@ pub enum Event {
         source: String,
         ts: u64,
     },
+    /// P1-3①: scheduler heartbeat — every `scheduler tick` lands one (LoopX
+    /// automation_liveness heartbeat). `rrule` is the cadence in effect
+    /// after the tick. Folded into `goal.scheduler_heartbeats`; the
+    /// liveness check compares now against the latest heartbeat per
+    /// (goal, agent).
+    SchedulerTicked {
+        goal_id: String,
+        agent_id: String,
+        action: String,
+        #[serde(default)]
+        rrule: Option<String>,
+        ts: u64,
+    },
+    /// P1-3①: automation liveness breach alert — the tick heartbeat went
+    /// silent past the threshold. Folded into `goal.liveness_alerts`; the
+    /// attention projection escalates the goal to the operator until a
+    /// fresh heartbeat recovers the automation.
+    AutomationLivenessAlert {
+        goal_id: String,
+        agent_id: String,
+        elapsed_secs: u64,
+        threshold_secs: u64,
+        consecutive: u32,
+        ts: u64,
+    },
     /// G-16: a supervisor proposed a decision for a target agent (LoopX
     /// SUPERVISOR_PROPOSED). Projection-only — supervisor state is read from
     /// the event log, not folded into goal state.
@@ -533,6 +558,8 @@ impl Event {
             | Event::DecisionSummaryRecorded { goal_id, .. }
             | Event::HeartbeatReceiptRecorded { goal_id, .. }
             | Event::SchedulerAcked { goal_id, .. }
+            | Event::SchedulerTicked { goal_id, .. }
+            | Event::AutomationLivenessAlert { goal_id, .. }
             | Event::SupervisorProposed { goal_id, .. }
             | Event::SupervisorReceiptRecorded { goal_id, .. }
             | Event::ProjectionRepaired { goal_id, .. } => goal_id,
@@ -1412,10 +1439,16 @@ fn apply(goal: &mut Goal, event: Event) {
                     m.status = crate::state::TodoStatus::Done;
                 } else {
                     m.consecutive_no_change = no_change_count;
-                    let backoff = crate::decision::monitor::MONITOR_NO_CHANGE_BACKOFF_SECS;
+                    // P1-3②: cadence-aware reschedule (the same derivation
+                    // the run path uses) with the fixed G-8 backoff as the
+                    // no-cadence fallback — replay stays exact.
+                    let next_due = crate::scheduler::monitor_poll::next_poll_due_epoch(
+                        ts,
+                        m.monitor_cadence.as_deref(),
+                    );
                     m.resume_when = Some(
                         std::time::SystemTime::UNIX_EPOCH
-                            + std::time::Duration::from_secs(ts + backoff),
+                            + std::time::Duration::from_secs(next_due),
                     );
                 }
                 m.updated_at = ts;
@@ -1507,11 +1540,28 @@ fn apply(goal: &mut Goal, event: Event) {
             ts,
             ..
         } => goal.apply_followthrough(&source_todo_id, &followup_todo_id, ts),
-        // P1-5: reward signals are projection-only (read from the event log
-        // by the scoped-feedback query; goal state is unchanged) — same
-        // treatment as the G-16 supervisor events and the P1-1 quota decision
-        // read model (decision summaries / heartbeat receipts / scheduler
-        // acks are served from the event log by `quota::decision_summary`).
+        // P1-3①: liveness heartbeat / alert fold into goal state (they ARE
+        // the state the liveness check + attention escalation read).
+        Event::SchedulerTicked { agent_id, ts, .. } => {
+            let entry = goal.scheduler_heartbeats.entry(agent_id).or_insert(ts);
+            *entry = (*entry).max(ts);
+        }
+        Event::AutomationLivenessAlert {
+            agent_id,
+            elapsed_secs,
+            threshold_secs,
+            consecutive,
+            ts,
+            ..
+        } => goal.liveness_alerts.push(crate::state::LivenessAlert {
+            agent_id,
+            elapsed_secs,
+            threshold_secs,
+            consecutive,
+            ts,
+        }),
+        // P1-5 + P1-1 + G-16 projection-only events: read from the event log
+        // by their read models; goal state is unchanged on replay.
         Event::RewardSignalRecorded { .. }
         | Event::DecisionSummaryRecorded { .. }
         | Event::HeartbeatReceiptRecorded { .. }
