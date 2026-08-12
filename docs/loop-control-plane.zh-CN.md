@@ -188,6 +188,83 @@ future loop attention --all
 future loop inbox --project .
 ```
 
+## 部署拓扑（推荐）
+
+控制面刻意保持**无守护进程**（daemonless）：每个 `future loop` 命令都是短生命周期进程——加载账本、做一件有界的事、持久化、退出。因此可用性来自**外部调度器**按你选定的节奏调用 `future loop run`，而不是一个需要你维持存活的常驻 loop 进程。
+
+```
+cron / systemd timer / CI 定时流水线        （可用性来源）
+   │  每次 tick 一次调用
+   ▼
+future loop run --goal <id> --agent-id <name> --max-turns 1
+   │  有界切片：决策 → 执行一个回合 → 写回 → 退出
+   ▼
+<cwd>/.future/loop/                         （事件账本——唯一状态）
+```
+
+为什么可以安全地用外部方式驱动：
+
+- **有界调用**——每次 tick 受 `--max-turns` / `--max-turn-secs` 上限约束；卡住的回合会优雅停止而不是占住目标，下一次 tick 从账本继续。
+- **重启安全的状态**——事件账本采用内容寻址、幂等追加；崩溃或重叠的 tick 重放后仍然干净，冲突时 fail-closed，而不是重复消耗额度。
+- **租约协调**——`run` 在租约下认领 todo（默认 4 小时，`--lease-secs`），两个调度器不会静默抢占同一个 todo。务必传稳定的 `--agent-id`（首次使用自动注册）；`--anonymous` 放弃协调、可能发生竞争。
+- **fail-closed 内核**——已取消的目标永不运行；状态歧义时停止而不是继续消耗。
+
+示例驱动方式：
+
+```cron
+# cron——每 15 分钟一个有界回合
+*/15 * * * * cd /path/to/project && future loop run --goal <id> --agent-id cron-worker --max-turns 1 >> .future/loop/cron.log 2>&1
+```
+
+```ini
+# /etc/systemd/system/loop-worker.service
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/project
+ExecStart=/usr/local/bin/future loop run --goal <id> --agent-id systemd-worker --max-turns 1
+
+# /etc/systemd/system/loop-worker.timer
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+```
+
+```yaml
+# CI 定时 tick（GitHub Actions）。CI runner 是临时的：跨运行持久化
+# .future/loop/（例如 actions/cache），否则每次 tick 都从空账本重新开始。
+on:
+  schedule: [{ cron: "*/30 * * * *" }]
+  workflow_dispatch:
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: future loop run --goal <id> --agent-id ci-worker --max-turns 1
+```
+
+调度状态机是对外部驱动器的补充：`future loop scheduler tick|show`
+维护重启安全的节奏递进（驱动器需要退避状态时有用），
+`future loop scheduler record-host-failure` 记录宿主错过/延迟的 tick，
+让存活缺口浮现在状态里而不是无声消失。
+
+### 可选：常驻 runner
+
+守护进程从不是必需的，但有两个常驻便利设施：
+
+- **包装循环**（工作站）：`while true; do future loop run --goal <id>
+  --agent-id local-runner --max-turns 1; sleep 300; done`——与 cron 相同
+  的有界回合语义，只是不依赖 cron。
+- **`future loop serve-status [--port 8791]`**——零依赖、仅 GET 的 HTTP
+  仪表盘（`GET /`、`GET /goals.json`）。它是只读投影，永远不是第二真相
+  源；可与任何拓扑并行运行，用于可观测性。
+
+完全自定义的 runner 可以用 `future loop worker-bridge`——参考 stdio
+契约：bridge 每 tick 向 stdout 输出一行带类型的回合数据包，你的 worker
+在自己的运行时里执行有界回合，再写回一行 JSON 结果。每个目标选择
+**一个驱动器**（多 agent 场景下每个 `(goal, agent-id)` 一个）——租约
+让重叠安全，但单一驱动器让节奏与额度记账可预测。
+
 ## 状态布局
 
 ```

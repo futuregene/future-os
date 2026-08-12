@@ -271,7 +271,9 @@ waits (unresolved `--blocks`), or max-turns/max-turn-secs is reached.
 ### 7. Handle replan gates — resolve routine ones yourself
 
 **PLAN_REVIEW gates** (kernel-injected when validation budget is exhausted,
-outcome floor hit, or acceptance gaps remain) are the agent's to resolve:
+outcome floor hit, acceptance gaps remain, or the oscillation guard fires —
+delivery outcomes flip-flopping accept/reject A→V→A→V across the post-ACK
+run history) are the agent's to resolve:
 review (`status` / `diagnose --goal G`) → adjust todos via CLI → resolve and
 resume:
 
