@@ -11,9 +11,10 @@ function futureVersion(): string {
 const version = futureVersion();
 const bundleVersion = version.split(/[-+]/)[0];
 // Store build numbers (CFBundleVersion / Android versionCode) must be monotonic
-// integers. CI injects FUTURE_BUILD_NUMBER (a repo-wide counter that never
-// resets); local dev builds just use a constant — TestFlight/Play enforce
-// monotonicity only, not that the number corresponds to any git commit.
+// integers. CI injects FUTURE_BUILD_NUMBER (this workflow's own per-repo
+// counter, starting at 1 — kept small because Android versionCode is an int32);
+// local dev builds just use a constant — TestFlight/Play enforce monotonicity
+// only, not that the number corresponds to any git commit.
 const buildNumber = process.env.FUTURE_BUILD_NUMBER || "1";
 
 const config: ExpoConfig = {
