@@ -9,6 +9,7 @@
 |---|---|
 | [构建与安装](build-and-install.zh-CN.md)（[English](build-and-install.md)） | 前置要求、各平台工具链（macOS / Linux / Windows）、`make` 目标、GUI 打包、`future-loop` 安装、技能安装 |
 | [Loop 控制面](loop-control-plane.zh-CN.md)（[English](loop-control-plane.md)） | `future-loop`——目标/todos/门禁/监控、should-run 内核、额度、事件溯源、扩展与多 agent、交接 |
+| [长程运行证据台账](long-run-evidence-ledger.zh-CN.md)（[English](long-run-evidence-ledger.md)） | 长程 loop 目标的问责记录——每个已关闭目标的墙钟、花费、验证结果与显式边界 |
 | [TUI](tui.zh-CN.md)（[English](tui.md)） | 终端界面（`future-tui`）：斜杠命令、键盘快捷键、设置 |
 | [目录布局](directory-layout.zh-CN.md)（[English](directory-layout.md)） | `~/.future/` 下各目录的职责（agent、channels、TUI、GUI、loop） |
 | [渠道配置](channels-config.zh-CN.md)（[English](channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / 飞书 / 钉钉 各块与默认值） |

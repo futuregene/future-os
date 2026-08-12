@@ -148,7 +148,8 @@ pub struct MockCdp {
     /// `ws://` URL of the CDP WebSocket endpoint.
     pub ws_url: String,
     pub state: Arc<Mutex<MockCdpState>>,
-    _accept: tokio::task::JoinHandle<()>,
+    shutdown: Arc<tokio::sync::Notify>,
+    accept: tokio::task::JoinHandle<()>,
 }
 
 impl MockCdp {
@@ -171,31 +172,38 @@ impl MockCdp {
         }));
 
         let server_state = state.clone();
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let accept_shutdown = shutdown.clone();
         let accept = tokio::spawn(async move {
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    break;
-                };
-                let conn_state = server_state.clone();
-                tokio::spawn(async move {
-                    let Ok(mut ws) = accept_async(stream).await else {
-                        return;
-                    };
-                    while let Some(frame) = ws.next().await {
-                        let Ok(Message::Text(text)) = frame else {
-                            break;
-                        };
-                        let Some(replies) = handle_cdp_message(&conn_state, &text) else {
-                            // close_connection_on triggered — drop the socket.
-                            return;
-                        };
-                        for reply in replies {
-                            if ws.send(Message::Text(reply.to_string())).await.is_err() {
+                tokio::select! {
+                    _ = accept_shutdown.notified() => break,
+                    accepted = listener.accept() => {
+                        // Invariant: accept on a live mock listener only
+                        // fails on OS-level resource exhaustion.
+                        let (stream, _) = accepted.expect("mock ws listener accept");
+                        let conn_state = server_state.clone();
+                        tokio::spawn(async move {
+                            let Ok(mut ws) = accept_async(stream).await else {
                                 return;
+                            };
+                            while let Some(frame) = ws.next().await {
+                                let Ok(Message::Text(text)) = frame else {
+                                    break;
+                                };
+                                let Some(replies) = handle_cdp_message(&conn_state, &text) else {
+                                    // close_connection_on triggered — drop the socket.
+                                    return;
+                                };
+                                for reply in replies {
+                                    if ws.send(Message::Text(reply.to_string())).await.is_err() {
+                                        return;
+                                    }
+                                }
                             }
-                        }
+                        });
                     }
-                });
+                }
             }
         });
 
@@ -217,8 +225,17 @@ impl MockCdp {
             http_url,
             ws_url,
             state,
-            _accept: accept,
+            shutdown,
+            accept,
         }
+    }
+
+    /// Stop accepting new connections and wait for the accept task to run
+    /// to completion (its end lines only count when the task finishes
+    /// inside the test). In-flight connections are unaffected.
+    pub async fn shutdown(self) {
+        self.shutdown.notify_one();
+        self.accept.await.expect("accept task completes");
     }
 
     /// Recorded commands of the given method.
@@ -594,6 +611,20 @@ pub fn target_kind(id: &str, url: &str, title: &str, kind: &str) -> MockTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `shutdown()` ends the accept loop: the accept task observes the
+    /// notify, breaks, and runs to completion (its end lines count).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn accept_task_completes_on_shutdown() {
+        let mock = MockCdp::start().await;
+        // A connection still works right up to the shutdown.
+        let conn =
+            crate::browser::chromium::cdp_connection::CdpConnection::connect(&mock.ws_url, 5_000)
+                .await
+                .unwrap();
+        conn.disconnect().await;
+        mock.shutdown().await;
+    }
 
     #[test]
     fn handle_cdp_message_frame_edge_shapes() {
