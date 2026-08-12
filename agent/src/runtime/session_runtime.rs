@@ -552,7 +552,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn cancellation_watchdog_marks_stuck_after_timeout() {
         let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
-        let lease = runtime.begin(Some("run-a"), None).unwrap();
+        runtime.begin(Some("run-a"), None).unwrap();
         runtime.request_abort(None).unwrap();
         assert_eq!(
             runtime.snapshot().unwrap().phase,

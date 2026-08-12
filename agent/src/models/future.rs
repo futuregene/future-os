@@ -926,8 +926,6 @@ mod tests {
     }
 
     /// Serializes tests that touch the process-global future-models statics.
-    static FUTURE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn future_test_lock() -> std::sync::MutexGuard<'static, ()> {
         super::future_models_test_lock()
     }
