@@ -1817,6 +1817,7 @@ fn quota_spend(store: &Store, args: &[String]) -> Result<()> {
 fn quota_tools(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut format_json = false;
+    reject_unknown_flags(args, &["--goal", "--format"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--format" => format_json = v == "json",
@@ -5525,14 +5526,12 @@ mod coverage_tests {
             Event::AgentRegistered {
                 goal_id: "g".into(),
                 agent_id: "a".into(),
-                workspaces: vec![],
                 ts: 1,
             },
             Event::AgentOnboarded {
                 goal_id: "g".into(),
                 agent_id: "a".into(),
                 capabilities: vec!["shell".into()],
-                workspaces: vec![],
                 ts: 1,
             },
             Event::ReplanAcked {
@@ -6216,6 +6215,7 @@ mod cli_quirks_tests {
             source_section: None,
             source_line: None,
             privacy: None,
+            fencing_token: None,
             event,
         };
         let events = vec![
