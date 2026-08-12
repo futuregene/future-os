@@ -584,7 +584,10 @@ export function ChatScreen() {
             {showOffline && (
               <Text style={styles.offlineComposer}>{t("connection.offlineHint")}</Text>
             )}
-            {!remote.draft && remote.desktopOnline && remote.models.length === 0 && (
+            {!remote.draft &&
+              remote.desktopOnline &&
+              remote.models.length === 0 &&
+              !remote.modelId && (
               <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
             )}
             {pendingApprovals.map(item => (

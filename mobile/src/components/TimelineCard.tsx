@@ -300,6 +300,7 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
   const failed = tool.status === "failed";
   const detail = tool.detail?.trim() ? tool.detail.trim() : null;
   const children = tool.children && tool.children.length > 0 ? tool.children : null;
+  const expandable = Boolean(detail || children);
   const label =
     tool.count != null && tool.count > 1
       ? t("chat.runCount", {
@@ -311,18 +312,13 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
     <View style={[styles.inlineTool, failed ? styles.inlineToolFailed : null]}>
       <Pressable
         accessibilityRole="button"
-        disabled={!detail && !children}
+        disabled={!expandable}
         onPress={() => setExpanded(value => !value)}
         style={styles.toolHeader}
       >
         <ToolGlyph kind={kind} />
         <Text style={[styles.toolText, failed ? styles.toolTextFailed : null]}>{label}</Text>
-        {detail && !children ? (
-          <Text selectable style={styles.inlineToolDetail}>
-            {detail}
-          </Text>
-        ) : null}
-        {children ? (
+        {expandable ? (
           expanded ? (
             <ChevronUp color={colors.inkMuted} size={14} />
           ) : (
@@ -330,14 +326,22 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
           )
         ) : null}
       </Pressable>
-      {expanded && children ? (
-        <View style={styles.inlineToolChildren}>
-          {children.map((child, index) => (
-            <Text key={`${child.name}:${child.detail ?? ""}:${index}`} style={styles.inlineToolChild}>
-              {child.detail ?? toolLabel(t, toolKind(child.name), child.complete)}
+      {expanded ? (
+        children ? (
+          <View style={styles.inlineToolChildren}>
+            {children.map((child, index) => (
+              <Text key={`${child.name}:${child.detail ?? ""}:${index}`} style={styles.inlineToolChild}>
+                {child.detail ?? toolLabel(t, toolKind(child.name), child.complete)}
+              </Text>
+            ))}
+          </View>
+        ) : detail ? (
+          <View style={styles.inlineToolChildren}>
+            <Text selectable style={styles.inlineToolChild}>
+              {detail}
             </Text>
-          ))}
-        </View>
+          </View>
+        ) : null
       ) : null}
     </View>
   );
@@ -596,11 +600,12 @@ const styles = StyleSheet.create({
   },
   stoppedMarker: { color: colors.inkMuted, fontSize: 12, fontStyle: "italic" },
   truncatedMarker: { color: colors.warning, fontSize: 12 },
-  segmentList: { gap: spacing.sm, marginTop: spacing.xs },
+  segmentList: { gap: spacing.md, marginTop: spacing.xs },
   inlineThinking: {
     borderLeftWidth: 2,
     borderLeftColor: colors.line,
     paddingLeft: spacing.md,
+    paddingVertical: spacing.xs,
     gap: 2,
   },
   inlineThinkingHeader: {
@@ -608,10 +613,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.sm,
   },
-  inlineThinkingLabel: { color: colors.inkSoft, fontSize: 12, fontWeight: "600" },
+  inlineThinkingLabel: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
   inlineThinkingText: { color: colors.inkSoft, fontSize: 13, lineHeight: 19, marginTop: 2 },
   inlineTool: {
-    paddingVertical: 2,
+    paddingVertical: spacing.xs,
     gap: 2,
   },
   inlineToolFailed: {
@@ -621,13 +626,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   toolTextFailed: { color: colors.danger },
-  inlineToolDetail: {
-    marginLeft: spacing.sm,
-    flexShrink: 1,
-    color: colors.inkSoft,
-    fontFamily: "monospace",
-    fontSize: 12,
-  },
   inlineToolChildren: { gap: 2, marginTop: 2, paddingLeft: spacing.md + spacing.sm },
   inlineToolChild: {
     color: colors.inkSoft,
