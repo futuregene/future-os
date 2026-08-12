@@ -381,36 +381,17 @@ fn start_failure(error: crate::AppError) -> Result<RemoteStatus, crate::AppError
     }
 }
 
-/// Assert the NATS endpoint is reached over TLS (`wss://`). A cleartext
-/// endpoint is refused unless the host is loopback — a local dev bridge whose
-/// traffic never leaves the machine. Mirrors the mobile client's
-/// `assertSecureNatsUrl`: without the assertion, a platform that hands out a
-/// plaintext `nats://…` URL makes the phone fail loudly while the desktop
-/// silently runs its full traffic (messages, thinking, tool args/results,
-/// workspace paths, attachment bytes) in the clear for anyone on the link.
-fn assert_secure_nats_url(url: &str) -> Result<(), crate::AppError> {
-    let lower = url.trim().to_ascii_lowercase();
-    if lower.starts_with("wss://") {
-        return Ok(());
-    }
-    let host = url
-        .split_once("://")
-        .and_then(|(_, rest)| rest.split(['/', ':']).next())
-        .unwrap_or("");
-    let loopback =
-        host.eq_ignore_ascii_case("localhost") || matches!(host, "127.0.0.1" | "[::1]" | "::1");
-    if loopback {
-        return Ok(());
-    }
-    Err(crate::AppError::Message(format!(
-        "Refusing to connect to a non-TLS NATS endpoint ({url}); expected wss://"
-    )))
-}
-
+/// The desktop bridge talks NATS **directly** (`nats://…`) to the operator's
+/// own server over a trusted path; the server is this deployment's own
+/// infrastructure. TLS on this hop is the operator's choice, not something we
+/// can hard-assert here — the remote-link TLS invariant lives on the *mobile
+/// / web* side (`wss://`, enforced in the mobile client's `assertSecureNatsUrl`
+/// and the web server's own URL construction). Do NOT reintroduce a `wss://`
+/// assertion on this hop: the platform hands the desktop a `nats://` URL by
+/// design.
 async fn connect_nats(
     creds: &pairing::PairingCreds,
 ) -> Result<async_nats::Client, crate::AppError> {
-    assert_secure_nats_url(&creds.nats_url)?;
     let key_pair = std::sync::Arc::new(
         nkeys::KeyPair::from_seed(&creds.nkey_seed)
             .map_err(|error| crate::AppError::Message(format!("Invalid desktop NKey: {error}")))?,
@@ -1304,20 +1285,5 @@ mod contract_tests {
         assert_eq!(body["runId"], "");
         assert_eq!(body["sessionIdx"], 4);
         assert_eq!(body["runSequence"], -1);
-    }
-
-    #[test]
-    fn secure_nats_url_asserts_tls() {
-        assert!(assert_secure_nats_url("wss://relay.example.com:443").is_ok());
-        assert!(assert_secure_nats_url("WSS://relay.example.com").is_ok());
-
-        // Loopback is exempt — a local dev bridge never leaves the machine.
-        assert!(assert_secure_nats_url("nats://127.0.0.1:4222").is_ok());
-        assert!(assert_secure_nats_url("nats://localhost:4222").is_ok());
-
-        // Any other cleartext endpoint is refused.
-        let error = assert_secure_nats_url("nats://relay.example.com:4222").unwrap_err();
-        assert!(error.to_string().contains("wss://"));
-        assert!(assert_secure_nats_url("tls://relay.example.com").is_err());
     }
 }
