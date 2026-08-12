@@ -98,8 +98,7 @@ pub fn spawn_delete_outbox_worker() {
 }
 
 #[cfg(test)]
-static TEST_OUTBOX_STOP: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static TEST_OUTBOX_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Outbox retry interval; tests shrink it via env (a cfg(test)-only seam).
 fn delete_outbox_interval() -> std::time::Duration {
@@ -1590,27 +1589,45 @@ mod bridge_tests {
     async fn session_read_wrappers_decode_or_default() {
         let mock = mock_agent();
 
-        mock.push_data("get_messages", serde_json::json!({"messages": [{"role": "user"}]}));
-        let value = get_session_messages("sess-1".to_string()).await.expect("messages");
+        mock.push_data(
+            "get_messages",
+            serde_json::json!({"messages": [{"role": "user"}]}),
+        );
+        let value = get_session_messages("sess-1".to_string())
+            .await
+            .expect("messages");
         assert_eq!(value["messages"][0]["role"], "user");
 
         // Empty data payloads fall back to empty envelopes.
         mock.push("get_messages", Reply::Data(String::new()));
-        let value = get_session_messages("sess-1".to_string()).await.expect("messages");
+        let value = get_session_messages("sess-1".to_string())
+            .await
+            .expect("messages");
         assert_eq!(value, serde_json::json!({"messages": []}));
 
-        mock.push_data("get_session_entries", serde_json::json!({"entries": [{"id": "e1"}]}));
-        let value = get_session_entries("sess-1".to_string()).await.expect("entries");
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [{"id": "e1"}]}),
+        );
+        let value = get_session_entries("sess-1".to_string())
+            .await
+            .expect("entries");
         assert_eq!(value["entries"][0]["id"], "e1");
         mock.push("get_session_entries", Reply::Data(String::new()));
-        let value = get_session_entries("sess-1".to_string()).await.expect("entries");
+        let value = get_session_entries("sess-1".to_string())
+            .await
+            .expect("entries");
         assert_eq!(value, serde_json::json!({"entries": []}));
 
         mock.push_data("get_state", serde_json::json!({"isStreaming": true}));
-        let value = get_session_state("sess-1".to_string()).await.expect("state");
+        let value = get_session_state("sess-1".to_string())
+            .await
+            .expect("state");
         assert_eq!(value["isStreaming"], true);
         mock.push("get_state", Reply::Data(String::new()));
-        let value = get_session_state("sess-1".to_string()).await.expect("state");
+        let value = get_session_state("sess-1".to_string())
+            .await
+            .expect("state");
         assert_eq!(value, serde_json::json!({}));
 
         mock.push_data("list_models", serde_json::json!({"models": [{"id": "m"}]}));
@@ -1626,29 +1643,50 @@ mod bridge_tests {
         let mock = mock_agent();
 
         mock.push("get_messages", Reply::Status(tonic::Code::Internal, "boom"));
-        let error = get_session_messages("s".to_string()).await.expect_err("transport");
+        let error = get_session_messages("s".to_string())
+            .await
+            .expect_err("transport");
         assert!(error.to_string().contains("get_messages failed"), "{error}");
         mock.push("get_messages", Reply::Reject("bad".to_string()));
-        let error = get_session_messages("s".to_string()).await.expect_err("reject");
+        let error = get_session_messages("s".to_string())
+            .await
+            .expect_err("reject");
         assert_eq!(error.to_string(), "bad");
 
-        mock.push("get_session_entries", Reply::Status(tonic::Code::Internal, "boom"));
-        let error = get_session_entries("s".to_string()).await.expect_err("transport");
-        assert!(error.to_string().contains("get_session_entries failed"), "{error}");
+        mock.push(
+            "get_session_entries",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
+        let error = get_session_entries("s".to_string())
+            .await
+            .expect_err("transport");
+        assert!(
+            error.to_string().contains("get_session_entries failed"),
+            "{error}"
+        );
         mock.push("get_session_entries", Reply::Reject(String::new()));
-        let error = get_session_entries("s".to_string()).await.expect_err("reject");
+        let error = get_session_entries("s".to_string())
+            .await
+            .expect_err("reject");
         assert_eq!(error.to_string(), "get_session_entries returned an error");
 
         mock.push("get_state", Reply::Status(tonic::Code::Internal, "boom"));
-        let error = get_session_state("s".to_string()).await.expect_err("transport");
+        let error = get_session_state("s".to_string())
+            .await
+            .expect_err("transport");
         assert!(error.to_string().contains("get_state failed"), "{error}");
         mock.push("get_state", Reply::Reject("bad".to_string()));
-        let error = get_session_state("s".to_string()).await.expect_err("reject");
+        let error = get_session_state("s".to_string())
+            .await
+            .expect_err("reject");
         assert_eq!(error.to_string(), "bad");
 
         mock.push("list_models", Reply::Status(tonic::Code::Internal, "boom"));
         let error = get_available_models().await.expect_err("transport");
-        assert!(error.to_string().contains("get_available_models failed"), "{error}");
+        assert!(
+            error.to_string().contains("get_available_models failed"),
+            "{error}"
+        );
         mock.push("list_models", Reply::Reject("bad".to_string()));
         let error = get_available_models().await.expect_err("reject");
         assert_eq!(error.to_string(), "bad");
@@ -1677,13 +1715,28 @@ mod bridge_tests {
         assert_eq!(error.to_string(), "bad");
 
         mock.push("set_default_model", Reply::Data("{}".to_string()));
-        set_default_model("future/k3".to_string()).await.expect("default");
-        assert_eq!(mock.requests_of("set_default_model")[0].model_id, "future/k3");
-        mock.push("set_default_model", Reply::Status(tonic::Code::Internal, "boom"));
-        let error = set_default_model("m".to_string()).await.expect_err("transport");
-        assert!(error.to_string().contains("set_default_model failed"), "{error}");
+        set_default_model("future/k3".to_string())
+            .await
+            .expect("default");
+        assert_eq!(
+            mock.requests_of("set_default_model")[0].model_id,
+            "future/k3"
+        );
+        mock.push(
+            "set_default_model",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
+        let error = set_default_model("m".to_string())
+            .await
+            .expect_err("transport");
+        assert!(
+            error.to_string().contains("set_default_model failed"),
+            "{error}"
+        );
         mock.push("set_default_model", Reply::Reject("bad".to_string()));
-        let error = set_default_model("m".to_string()).await.expect_err("reject");
+        let error = set_default_model("m".to_string())
+            .await
+            .expect_err("reject");
         assert_eq!(error.to_string(), "bad");
 
         mock.push("set_thinking_level", Reply::Data("{}".to_string()));
@@ -1691,11 +1744,17 @@ mod bridge_tests {
             .await
             .expect("thinking");
         assert_eq!(mock.requests_of("set_thinking_level")[0].level, "high");
-        mock.push("set_thinking_level", Reply::Status(tonic::Code::Internal, "boom"));
+        mock.push(
+            "set_thinking_level",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
         let error = set_session_thinking_level("s".to_string(), "l".to_string())
             .await
             .expect_err("transport");
-        assert!(error.to_string().contains("set_thinking_level failed"), "{error}");
+        assert!(
+            error.to_string().contains("set_thinking_level failed"),
+            "{error}"
+        );
         mock.push("set_thinking_level", Reply::Reject("bad".to_string()));
         let error = set_session_thinking_level("s".to_string(), "l".to_string())
             .await
@@ -1730,11 +1789,17 @@ mod bridge_tests {
             .await
             .expect("rename");
 
-        mock.push("set_session_name", Reply::Status(tonic::Code::Internal, "boom"));
+        mock.push(
+            "set_session_name",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
         let error = rename_session("sess-1".to_string(), "T".to_string())
             .await
             .expect_err("transport");
-        assert!(error.to_string().contains("set_session_name failed"), "{error}");
+        assert!(
+            error.to_string().contains("set_session_name failed"),
+            "{error}"
+        );
         mock.push("set_session_name", Reply::Reject("bad".to_string()));
         let error = rename_session("sess-1".to_string(), "T".to_string())
             .await
@@ -1785,9 +1850,15 @@ mod bridge_tests {
         assert!(!result.synced);
         assert_eq!(result.model_count, 0);
 
-        mock.push("sync_future_models", Reply::Status(tonic::Code::Unavailable, "gone"));
+        mock.push(
+            "sync_future_models",
+            Reply::Status(tonic::Code::Unavailable, "gone"),
+        );
         let error = sync_future_models().await.expect_err("transport");
-        assert!(matches!(error, crate::AppError::AgentUnavailable(_)), "{error}");
+        assert!(
+            matches!(error, crate::AppError::AgentUnavailable(_)),
+            "{error}"
+        );
         mock.push("sync_future_models", Reply::Reject("bad".to_string()));
         let error = sync_future_models().await.expect_err("reject");
         assert_eq!(error.to_string(), "bad");
@@ -1819,7 +1890,10 @@ mod bridge_tests {
             .map(|event| event["idx"].as_i64().unwrap_or_default())
             .collect();
         assert_eq!(idxs, vec![1, 2, 3]);
-        assert!(merged.get("hasMore").is_none(), "merged envelope drops hasMore");
+        assert!(
+            merged.get("hasMore").is_none(),
+            "merged envelope drops hasMore"
+        );
 
         let requests = mock.requests_of("get_events_since");
         assert_eq!(requests.len(), 2);
@@ -1851,11 +1925,17 @@ mod bridge_tests {
         assert_eq!(merged["events"].as_array().expect("array").len(), 1);
 
         // Transport failure and rejection.
-        mock.push("get_events_since", Reply::Status(tonic::Code::Internal, "boom"));
+        mock.push(
+            "get_events_since",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
         let error = get_events_since("s".to_string(), "r".to_string(), 0)
             .await
             .expect_err("transport");
-        assert!(error.to_string().contains("get_events_since failed"), "{error}");
+        assert!(
+            error.to_string().contains("get_events_since failed"),
+            "{error}"
+        );
         mock.push("get_events_since", Reply::Reject("stale run".to_string()));
         let error = get_events_since("s".to_string(), "r".to_string(), 0)
             .await
@@ -1885,7 +1965,7 @@ mod bridge_tests {
             crate::store::get_thread(&thread.id)
                 .expect("thread")
                 .expect("exists")
-            .agent_session_id
+                .agent_session_id
                 .as_deref(),
             Some("sess-prov")
         );
@@ -1893,7 +1973,10 @@ mod bridge_tests {
         assert_eq!(created.cwd, workspace.path);
         assert_eq!(created.model_id, "future/k3");
         assert_eq!(created.level, "high");
-        assert_eq!(mock.requests_of("set_permission_level")[0].level, "workspace");
+        assert_eq!(
+            mock.requests_of("set_permission_level")[0].level,
+            "workspace"
+        );
         assert_eq!(mock.requests_of("set_sandbox_policy").len(), 1);
 
         // Unknown thread → workspace path resolution fails first.
@@ -1908,8 +1991,8 @@ mod bridge_tests {
     fn enqueue_delete(home: &TestHome, session_id: &str) {
         // Distinct, increasing requested_at keeps delivery order deterministic.
         static SEQ: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
-        let conn = rusqlite::Connection::open(home.path().join(".future/app/app.db"))
-            .expect("open db");
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
         conn.execute(
             "INSERT INTO agent_delete_outbox(session_id, requested_at, attempts) VALUES (?1, ?2, 0)",
             rusqlite::params![
@@ -1940,21 +2023,33 @@ mod bridge_tests {
 
         // "session not found" counts as delivered (idempotent).
         enqueue_delete(&home, "sess-del-gone");
-        mock.push("delete_session", Reply::Reject("session not found: sess-del-gone".to_string()));
+        mock.push(
+            "delete_session",
+            Reply::Reject("session not found: sess-del-gone".to_string()),
+        );
         reconcile_delete_outbox().await;
         assert!(!crate::store::is_agent_session_tombstoned("sess-del-gone").expect("query"));
 
         // A real rejection is noted, not acknowledged.
         enqueue_delete(&home, "sess-del-busy");
-        mock.push("delete_session", Reply::Reject("session is running".to_string()));
+        mock.push(
+            "delete_session",
+            Reply::Reject("session is running".to_string()),
+        );
         reconcile_delete_outbox().await;
         assert!(crate::store::is_agent_session_tombstoned("sess-del-busy").expect("query"));
 
         // Transport failure is noted too. The still-pending busy row is
         // retried first (FIFO), so it gets a scripted reply as well.
         enqueue_delete(&home, "sess-del-down");
-        mock.push("delete_session", Reply::Reject("session is running".to_string()));
-        mock.push("delete_session", Reply::Status(tonic::Code::Unavailable, "down"));
+        mock.push(
+            "delete_session",
+            Reply::Reject("session is running".to_string()),
+        );
+        mock.push(
+            "delete_session",
+            Reply::Status(tonic::Code::Unavailable, "down"),
+        );
         reconcile_delete_outbox().await;
         assert!(crate::store::is_agent_session_tombstoned("sess-del-down").expect("query"));
         assert!(crate::store::is_agent_session_tombstoned("sess-del-busy").expect("query"));
@@ -2004,18 +2099,21 @@ mod bridge_tests {
 
         // Aged past the grace window: the agent has no marker and the run is
         // below the orphan age → Skip (row untouched), but the probe went out.
-        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_run_state(&run.id, serde_json::json!({"isStreaming": false}));
         let aged_now = run.created_at + (WATCHDOG_GRACE_SECS as i64 + 1) * 1000;
         active_run_watchdog_pass(aged_now).await;
         assert_eq!(mock.requests_of("get_state").len(), 1);
         assert_eq!(mock.requests_of("get_state")[0].run_id, run.id);
         assert_eq!(
-            crate::store::get_run(&run.id).expect("run").expect("some").status,
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status,
             "running"
         );
 
         // Past the orphan age with no marker → settled failed.
-        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_run_state(&run.id, serde_json::json!({"isStreaming": false}));
         let orphan_now = run.created_at + (WATCHDOG_ORPHAN_SECS as i64) * 1000;
         active_run_watchdog_pass(orphan_now).await;
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
@@ -2065,8 +2163,8 @@ mod bridge_tests {
         };
 
         // Agent still streaming this run → observer ensured (attach action).
-        mock.push_data(
-            "get_state",
+        mock.push_run_state(
+            &run.id,
             serde_json::json!({"isStreaming": true, "activeRun": {"runId": run.id}}),
         );
         reconcile_active_run_once(&active, &run.id, 120)
@@ -2074,29 +2172,1130 @@ mod bridge_tests {
             .expect("attach");
 
         // Durable terminal marker → mirrored onto the row.
-        mock.push_data(
-            "get_state",
+        mock.push_run_state(
+            &run.id,
             serde_json::json!({"requestedRun": {"state": "completed"}}),
         );
         reconcile_active_run_once(&active, &run.id, 120)
             .await
             .expect("settle");
         assert_eq!(
-            crate::store::get_run(&run.id).expect("run").expect("some").status,
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status,
             "completed"
         );
 
         // get_state rejected → row untouched, Ok.
-        mock.push("get_state", Reply::Reject("unknown session".to_string()));
+        mock.push(
+            &format!("get_state#{}", run.id),
+            Reply::Reject("unknown session".to_string()),
+        );
         reconcile_active_run_once(&active, &run.id, 120)
             .await
             .expect("rejected is ok");
 
         // Transport failure → Err (the watchdog logs it).
-        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "down"));
+        mock.push(
+            &format!("get_state#{}", run.id),
+            Reply::Status(tonic::Code::Unavailable, "down"),
+        );
         let error = reconcile_active_run_once(&active, &run.id, 120)
             .await
             .expect_err("transport");
         assert!(error.contains("get_run_state"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod pipeline_tests {
+    use super::test_support::{
+        mock_agent, seed_run, seed_thread, seed_workspace, stream_event, MockAgentGuard, Reply,
+        StreamScript, TestHome,
+    };
+    use super::*;
+
+    struct PipelineFixture {
+        _home: TestHome,
+        mock: MockAgentGuard,
+        workspace: crate::store::WorkspaceRecord,
+        thread: crate::store::ThreadRecord,
+        run: crate::store::RunRecord,
+    }
+
+    /// Thread + run with a fresh (unstored) agent session; the observer the
+    /// pipeline spawns parks on the default plain Hang stream.
+    fn pipeline_fixture(tag: &str, title: &str) -> PipelineFixture {
+        let home = TestHome::new(tag);
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let mut thread = seed_thread(&workspace.id, None);
+        thread.title = title.to_string();
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: title.to_string(),
+        })
+        .expect("rename");
+        let run = seed_run(&thread.id);
+        PipelineFixture {
+            _home: home,
+            mock,
+            workspace,
+            thread,
+            run,
+        }
+    }
+
+    fn prompt_args(fixture: &PipelineFixture) -> (String, String, String) {
+        (
+            "hello from the test".to_string(),
+            fixture.thread.id.clone(),
+            fixture.run.id.clone(),
+        )
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_new_session_full_pipeline() {
+        let fixture = pipeline_fixture("pipe-new", "New Chat");
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-p1"}));
+        fixture.mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event(&run_id, 0, "text_chunk", r#"{"text":"hi there"}"#),
+                stream_event(&run_id, 1, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+
+        let response = agent_prompt(
+            message.clone(),
+            None,
+            thread_id.clone(),
+            None,
+            Some(run_id.clone()),
+            Some("future/k3".to_string()),
+            Some("high".to_string()),
+        )
+        .await
+        .expect("prompt");
+
+        assert!(response.complete);
+        assert_eq!(response.content, "hi there");
+        assert_eq!(response.session_id, "sess-p1");
+        assert!(!response.session_recreated);
+
+        // Session id persisted; thread auto-named from the first message.
+        let thread = crate::store::get_thread(&thread_id)
+            .expect("thread")
+            .expect("exists");
+        assert_eq!(thread.agent_session_id.as_deref(), Some("sess-p1"));
+        assert_eq!(thread.title, message);
+        assert_eq!(
+            crate::store::get_run(&run_id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "completed",
+            "the backend settles the run row"
+        );
+
+        // A freshly created session receives the caller's model + thinking.
+        let new_session = &fixture.mock.requests_of("new_session")[0];
+        assert_eq!(new_session.cwd, fixture.workspace.path);
+        assert_eq!(
+            fixture.mock.requests_of("set_model")[0].model_id,
+            "future/k3"
+        );
+        assert_eq!(
+            fixture.mock.requests_of("set_thinking_level")[0].level,
+            "high"
+        );
+        let prompt = &fixture.mock.requests_of("prompt")[0];
+        assert_eq!(prompt.message, message);
+        assert_eq!(prompt.requested_run_id, run_id);
+        assert_eq!(prompt.session_id, "sess-p1");
+        // The observer was registered before the prompt reached the agent.
+        assert!(
+            observer::OBSERVERS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key("sess-p1"),
+            "session observer registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_existing_session_reuses_without_model_reapply() {
+        let home = TestHome::new("pipe-existing");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-existing"));
+        let run = seed_run(&thread.id);
+
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"sessionId": "sess-existing", "cwd": workspace.path}),
+        );
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                &run.id,
+                0,
+                "agent_end",
+                r#"{"reason":"incomplete"}"#,
+            )],
+            None,
+        ));
+
+        let response = agent_prompt(
+            "follow-up".to_string(),
+            Some(vec![AttachmentInput {
+                path: "/tmp/a.txt".to_string(),
+                kind: "file".to_string(),
+                name: "a.txt".to_string(),
+                thumbnail: None,
+            }]),
+            thread.id.clone(),
+            None, // falls back to the thread's stored session id
+            Some(run.id.clone()),
+            Some("future/other".to_string()),
+            None,
+        )
+        .await
+        .expect("prompt");
+
+        assert!(!response.complete, "incomplete agent_end is not clean");
+        assert_eq!(response.session_id, "sess-existing");
+        assert!(!response.session_recreated);
+        assert!(
+            mock.requests_of("new_session").is_empty(),
+            "the stored session was reused"
+        );
+        assert!(
+            mock.requests_of("set_model").is_empty(),
+            "an existing session keeps its authoritative model"
+        );
+        assert_eq!(
+            mock.requests_of("prompt")[0].attachments.len(),
+            1,
+            "attachments forwarded"
+        );
+        let record = crate::store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(
+            record.status, "failed",
+            "an interrupted stream fails the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_recreated_session_reports_context_loss() {
+        let home = TestHome::new("pipe-recreated");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-old"));
+        let run = seed_run(&thread.id);
+
+        // The agent lost the session's cwd → ensure recreates.
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"sessionId": "sess-old", "cwd": "/moved/elsewhere"}),
+        );
+        mock.push_data("new_session", serde_json::json!({"sessionId": "sess-p3"}));
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                &run.id,
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let response = agent_prompt(
+            "hi".to_string(),
+            None,
+            thread.id.clone(),
+            Some("sess-old".to_string()),
+            Some(run.id.clone()),
+            Some("future/k3".to_string()),
+            None,
+        )
+        .await
+        .expect("prompt");
+
+        assert!(response.session_recreated);
+        assert_eq!(response.session_id, "sess-p3");
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .agent_session_id
+                .as_deref(),
+            Some("sess-p3")
+        );
+        // A recreated session is a fresh session: the model is applied.
+        assert_eq!(mock.requests_of("set_model").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_transport_and_rejection_failures_settle_the_run() {
+        let fixture = pipeline_fixture("pipe-prompt-fail", "t");
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-pf"}));
+
+        fixture.mock.push(
+            "prompt",
+            Reply::Status(tonic::Code::Internal, "write failed"),
+        );
+        let error = agent_prompt(
+            message.clone(),
+            None,
+            thread_id.clone(),
+            None,
+            Some(run_id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("transport");
+        assert!(
+            error
+                .to_string()
+                .contains("Unable to send prompt to Future Agent"),
+            "{error}"
+        );
+        assert_eq!(
+            crate::store::get_run(&run_id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "failed"
+        );
+
+        // Release the first fixture before building the second: each fixture
+        // holds the process-global TEST_HOME_LOCK + MOCK_LOCK guards, so two
+        // live fixtures on one test thread would self-deadlock.
+        drop(fixture);
+        let fixture2 = pipeline_fixture("pipe-prompt-reject", "t");
+        fixture2
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-pr"}));
+        fixture2
+            .mock
+            .push("prompt", Reply::Reject("busy".to_string()));
+        let error = agent_prompt(
+            message,
+            None,
+            fixture2.thread.id.clone(),
+            None,
+            Some(fixture2.run.id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("reject");
+        assert_eq!(error.to_string(), "busy");
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_ack_must_carry_the_requested_run_id() {
+        let fixture = pipeline_fixture("pipe-ack", "t");
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-pa"}));
+
+        // Ack without run_id.
+        fixture
+            .mock
+            .push("prompt", Reply::Data(r#"{"ok":true}"#.to_string()));
+        let error = agent_prompt(
+            message.clone(),
+            None,
+            thread_id.clone(),
+            None,
+            Some(run_id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("missing run id");
+        assert_eq!(
+            error.to_string(),
+            "Future Agent prompt acknowledgement omitted run_id."
+        );
+
+        // Ack with a DIFFERENT run id. Release the first fixture first: two
+        // live fixtures on one test thread self-deadlock on the
+        // process-global TEST_HOME_LOCK + MOCK_LOCK guards.
+        drop(fixture);
+        let fixture2 = pipeline_fixture("pipe-ack-mismatch", "t");
+        fixture2
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-pam"}));
+        fixture2.mock.push(
+            "prompt",
+            Reply::Data(r#"{"run_id":"run-other"}"#.to_string()),
+        );
+        let error = agent_prompt(
+            message,
+            None,
+            fixture2.thread.id.clone(),
+            None,
+            Some(fixture2.run.id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("mismatch");
+        assert!(
+            error.to_string().contains("adopted run id run-other"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_generates_a_run_id_when_absent() {
+        let fixture = pipeline_fixture("pipe-gen-run", "t");
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-pg"}));
+        // First attach closes with zero events: the collector treats a stream
+        // that ends before a terminal event as a drop and reattaches. The
+        // reattach then delivers an unclean agent_end → complete = false.
+        fixture.mock.push_stream(StreamScript::Events(vec![], None));
+        fixture.mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"incomplete"}"#,
+            )],
+            None,
+        ));
+        // No run_id: the pipeline generates one; the mock's default prompt
+        // reply echoes the requested_run_id.
+        let response = agent_prompt(
+            "hi".to_string(),
+            None,
+            fixture.thread.id.clone(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("prompt");
+        assert!(!response.complete, "an instantly-closed stream is a prefix");
+        let prompt = &fixture.mock.requests_of("prompt")[0];
+        assert!(
+            prompt.requested_run_id.starts_with("run-"),
+            "generated id: {}",
+            prompt.requested_run_id
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_rejects_when_the_run_already_has_a_collector() {
+        let fixture = pipeline_fixture("pipe-lease", "t");
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-pl"}));
+
+        let lease = AGENT_REPLICAS.acquire(&run_id).expect("pre-acquire");
+        let error = agent_prompt(
+            message,
+            None,
+            thread_id,
+            None,
+            Some(run_id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("lease conflict");
+        assert!(
+            error.to_string().contains("already owns Agent run"),
+            "{error}"
+        );
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_run_gone_reconciles_from_the_journal() {
+        let fixture = pipeline_fixture("pipe-rungone", "t");
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-prg"}));
+        fixture.mock.push_stream(StreamScript::AttachError(
+            tonic::Code::FailedPrecondition,
+            "no such run",
+        ));
+        // The journal holds a durable completed marker for the run.
+        fixture.mock.push_run_state(
+            &run_id,
+            serde_json::json!({"requestedRun": {"state": "completed"}}),
+        );
+        let error = agent_prompt(
+            message,
+            None,
+            thread_id,
+            None,
+            Some(run_id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("run gone");
+        assert!(
+            error
+                .to_string()
+                .contains("run ended before the stream attached"),
+            "{error}"
+        );
+        assert_eq!(
+            crate::store::get_run(&run_id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "completed",
+            "the journal marker settles the row"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_run_gone_with_a_failed_reconcile_reports_both() {
+        let fixture = pipeline_fixture("pipe-rungone-fail", "t");
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-prgf"}));
+        fixture.mock.push_stream(StreamScript::AttachError(
+            tonic::Code::NotFound,
+            "unknown run",
+        ));
+        fixture.mock.push(
+            &format!("get_state#{run_id}"),
+            Reply::Status(tonic::Code::Unavailable, "agent restarting"),
+        );
+        let error = agent_prompt(
+            message,
+            None,
+            thread_id,
+            None,
+            Some(run_id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("run gone");
+        let message = error.to_string();
+        assert!(message.contains("unknown run"), "{message}");
+        assert!(
+            message.contains("terminal reconciliation failed"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_stream_error_aborts_the_agent_run() {
+        let fixture = pipeline_fixture("pipe-stream-err", "t");
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-pse"}));
+        fixture.mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                &run_id,
+                0,
+                "error",
+                r#"{"error":"provider down"}"#,
+            )],
+            None,
+        ));
+        let error = agent_prompt(
+            message,
+            None,
+            thread_id,
+            None,
+            Some(run_id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("stream error");
+        assert_eq!(error.to_string(), "provider down");
+        // The orphaned agent-side run is aborted best-effort.
+        let aborts = fixture.mock.requests_of("abort");
+        assert_eq!(aborts.len(), 1);
+        assert_eq!(aborts[0].run_id, run_id);
+        assert_eq!(aborts[0].session_id, "sess-pse");
+        assert_eq!(
+            crate::store::get_run(&run_id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_requires_a_real_thread() {
+        let _home = TestHome::new("pipe-no-thread");
+        let _mock = mock_agent();
+        let error = agent_prompt(
+            "hi".to_string(),
+            None,
+            "no-such-thread".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("missing thread");
+        assert_eq!(error.to_string(), "Thread could not be loaded.");
+    }
+
+    // ── auto_name_thread ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn auto_name_thread_variants() {
+        let home = TestHome::new("pipe-autoname");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+
+        // Missing thread: silent.
+        auto_name_thread("no-such-thread", "hello");
+
+        // Default-titled variants are renamed; the agent is told (fire-and-forget).
+        // (rename_thread rejects empty titles, so the empty-titled row is made
+        // through create_thread, which takes the caller's title verbatim.)
+        let empty_titled = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: Some(String::new()),
+            workspace_id: Some(workspace.id.clone()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-an-empty".to_string()),
+        })
+        .expect("empty-titled thread");
+        auto_name_thread(&empty_titled.id, "  a fresh question  ");
+        assert_eq!(
+            crate::store::get_thread(&empty_titled.id)
+                .expect("thread")
+                .expect("exists")
+                .title,
+            "a fresh question",
+            "an empty title is auto-named"
+        );
+        for (tag, title) in [("zh", "新对话"), ("newchat", "New Chat")] {
+            let thread = seed_thread(&workspace.id, Some(&format!("sess-an-{tag}")));
+            crate::store::rename_thread(crate::store::RenameThreadInput {
+                thread_id: thread.id.clone(),
+                title: title.to_string(),
+            })
+            .expect("rename");
+            auto_name_thread(&thread.id, "  a fresh question  ");
+            assert_eq!(
+                crate::store::get_thread(&thread.id)
+                    .expect("thread")
+                    .expect("exists")
+                    .title,
+                "a fresh question",
+                "title {title:?} is auto-named"
+            );
+        }
+
+        // Long messages truncate to 40 chars + ellipsis.
+        let thread = seed_thread(&workspace.id, Some("sess-an-long"));
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "New Chat".to_string(),
+        })
+        .expect("rename");
+        let long = "x".repeat(50);
+        auto_name_thread(&thread.id, &long);
+        let titled = crate::store::get_thread(&thread.id)
+            .expect("thread")
+            .expect("exists")
+            .title;
+        assert!(titled.ends_with('…'), "truncated: {titled}");
+        assert_eq!(titled.chars().count(), 41);
+
+        // User-set titles are never overwritten.
+        let thread = seed_thread(&workspace.id, Some("sess-an-custom"));
+        auto_name_thread(&thread.id, "new message");
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .title,
+            "test thread"
+        );
+
+        // Blank messages never rename (empty-titled row via create_thread —
+        // rename_thread rejects empty titles).
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: Some(String::new()),
+            workspace_id: Some(workspace.id.clone()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-an-blank".to_string()),
+        })
+        .expect("empty-titled thread");
+        auto_name_thread(&thread.id, "   ");
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .title,
+            ""
+        );
+    }
+
+    // ── crash recovery ────────────────────────────────────────────────
+
+    fn mark_interrupted(run_id: &str) {
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: run_id.to_string(),
+            status: "cancelled".to_string(),
+            error_message: Some("Interrupted because Future Agent restarted.".to_string()),
+            error_type: Some("interrupted".to_string()),
+        })
+        .expect("mark interrupted");
+    }
+
+    #[tokio::test]
+    async fn reconcile_interrupted_runs_edge_cases() {
+        let _home = TestHome::new("pipe-reconcile-empty");
+        let mock = mock_agent();
+
+        // Empty list → no traffic.
+        reconcile_interrupted_runs().await;
+        assert!(mock.requests().is_empty());
+
+        // Store unreadable → silent return.
+        let prev = test_support::break_home();
+        reconcile_interrupted_runs().await;
+        test_support::restore_home(prev);
+    }
+
+    #[tokio::test]
+    async fn reanimate_still_streaming_run_attaches_an_observer() {
+        let home = TestHome::new("pipe-reanimate");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-re"));
+        let run = seed_run(&thread.id);
+        mark_interrupted(&run.id);
+
+        mock.push_run_state(
+            &run.id,
+            serde_json::json!({"isStreaming": true, "activeRun": {"runId": run.id}}),
+        );
+        reconcile_interrupted_runs().await;
+        assert_eq!(
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "running",
+            "reanimated back to running"
+        );
+        assert!(
+            observer::OBSERVERS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key("sess-re"),
+            "observer attached for the live run"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_and_reanimate_run_variants() {
+        let home = TestHome::new("pipe-check-variants");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-cv"));
+
+        // Agent cannot resolve the session → leave interrupted, Ok.
+        let run = seed_run(&thread.id);
+        mark_interrupted(&run.id);
+        mock.push(
+            &format!("get_state#{}", run.id),
+            Reply::Reject("unknown session".to_string()),
+        );
+        check_and_reanimate_run("sess-cv", &run.id, &thread.id)
+            .await
+            .expect("unresolved is ok");
+        assert_eq!(
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "cancelled"
+        );
+
+        // Streaming THIS run but the row is no longer interrupted → skip.
+        let run2 = seed_run(&thread.id); // still "running" — never interrupted
+        mock.push_run_state(
+            &run2.id,
+            serde_json::json!({"isStreaming": true, "activeRun": {"runId": run2.id}}),
+        );
+        check_and_reanimate_run("sess-cv", &run2.id, &thread.id)
+            .await
+            .expect("skip");
+        assert!(
+            !observer::OBSERVERS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key("sess-cv"),
+            "no observer for the skipped reanimation"
+        );
+
+        // Interrupted-by-restart marker → left cancelled.
+        let run3 = seed_run(&thread.id);
+        mark_interrupted(&run3.id);
+        mock.push_run_state(
+            &run3.id,
+            serde_json::json!({"interruptedRun": {"runId": run3.id}}),
+        );
+        check_and_reanimate_run("sess-cv", &run3.id, &thread.id)
+            .await
+            .expect("interrupted");
+        assert_eq!(
+            crate::store::get_run(&run3.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "cancelled"
+        );
+
+        // Durable terminal marker → mirrored.
+        let run4 = seed_run(&thread.id);
+        mark_interrupted(&run4.id);
+        mock.push_run_state(
+            &run4.id,
+            serde_json::json!({"requestedRun": {"state": "error", "error": "boom"}}),
+        );
+        check_and_reanimate_run("sess-cv", &run4.id, &thread.id)
+            .await
+            .expect("settle");
+        let record = crate::store::get_run(&run4.id).expect("run").expect("some");
+        assert_eq!(record.status, "failed");
+        assert_eq!(record.error_message.as_deref(), Some("boom"));
+
+        // No markers at all → conservatively left interrupted.
+        let run5 = seed_run(&thread.id);
+        mark_interrupted(&run5.id);
+        mock.push_run_state(&run5.id, serde_json::json!({"isStreaming": false}));
+        check_and_reanimate_run("sess-cv", &run5.id, &thread.id)
+            .await
+            .expect("leave");
+        assert_eq!(
+            crate::store::get_run(&run5.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "cancelled"
+        );
+
+        // Transport failure → Err.
+        mock.push(
+            &format!("get_state#{}", run5.id),
+            Reply::Status(tonic::Code::Unavailable, "down"),
+        );
+        let error = check_and_reanimate_run("sess-cv", &run5.id, &thread.id)
+            .await
+            .expect_err("transport");
+        assert!(error.contains("get_state"), "{error}");
+
+        // Connect failure → Err.
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        let error = check_and_reanimate_run("sess-cv", &run5.id, &thread.id)
+            .await
+            .expect_err("connect");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        assert!(error.contains("connect"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn reconcile_run_gone_marker_precedence() {
+        let home = TestHome::new("pipe-rungone-precedence");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-rgp"));
+
+        // Still active agent-side (attach raced start_run) → left running.
+        let run = seed_run(&thread.id);
+        mock.push_run_state(&run.id, serde_json::json!({"activeRun": {"runId": run.id}}));
+        reconcile_run_gone(&run.id, &run.id, "sess-rgp", "test")
+            .await
+            .expect("still active");
+        assert_eq!(
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "running"
+        );
+
+        // Interrupted marker → cancelled/interrupted.
+        let run2 = seed_run(&thread.id);
+        mock.push_run_state(
+            &run2.id,
+            serde_json::json!({"interruptedRun": {"runId": run2.id}}),
+        );
+        reconcile_run_gone(&run2.id, &run2.id, "sess-rgp", "test")
+            .await
+            .expect("interrupted");
+        let record = crate::store::get_run(&run2.id).expect("run").expect("some");
+        assert_eq!(record.status, "cancelled");
+        assert_eq!(record.error_type.as_deref(), Some("interrupted"));
+
+        // No marker at all → settled failed.
+        let run3 = seed_run(&thread.id);
+        mock.push_run_state(&run3.id, serde_json::json!({}));
+        reconcile_run_gone(&run3.id, &run3.id, "sess-rgp", "vanished")
+            .await
+            .expect("failed");
+        let record = crate::store::get_run(&run3.id).expect("run").expect("some");
+        assert_eq!(record.status, "failed");
+        assert!(
+            record
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("vanished"),
+            "message: {:?}",
+            record.error_message
+        );
+
+        // get_state itself failed → state treated as empty (no marker) → failed.
+        let run4 = seed_run(&thread.id);
+        mock.push(
+            &format!("get_state#{}", run4.id),
+            Reply::Reject("gone".to_string()),
+        );
+        reconcile_run_gone(&run4.id, &run4.id, "sess-rgp", "gone")
+            .await
+            .expect("failed");
+        assert_eq!(
+            crate::store::get_run(&run4.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "failed"
+        );
+
+        // Connect failure → Err.
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        let error = reconcile_run_gone(&run4.id, &run4.id, "sess-rgp", "test")
+            .await
+            .expect_err("connect");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        assert!(error.contains("reconcile connect"), "{error}");
+    }
+
+    #[test]
+    fn settle_from_agent_terminal_maps_all_states() {
+        let home = TestHome::new("pipe-settle");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-s"));
+
+        let cases = [
+            ("completed", "completed", None, None),
+            (
+                "cancelled",
+                "cancelled",
+                Some("cancelled"),
+                Some("Run was cancelled."),
+            ),
+            (
+                "error",
+                "failed",
+                Some("agent_error"),
+                Some("Future Agent run failed."),
+            ),
+            (
+                "mystery",
+                "failed",
+                Some("stream_interrupted"),
+                Some("Future Agent response ended before a clean terminal."),
+            ),
+        ];
+        for (agent_state, status, error_type, default_message) in cases {
+            let run = seed_run(&thread.id);
+            settle_from_agent_terminal(&run.id, agent_state, None).expect("settle");
+            let record = crate::store::get_run(&run.id).expect("run").expect("some");
+            assert_eq!(record.status, status, "agent state {agent_state}");
+            assert_eq!(record.error_type.as_deref(), error_type);
+            assert_eq!(record.error_message.as_deref(), default_message);
+        }
+
+        // The agent's own error message wins over the default.
+        let run = seed_run(&thread.id);
+        settle_from_agent_terminal(&run.id, "error", Some("provider exploded")).expect("settle");
+        assert_eq!(
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .error_message
+                .as_deref(),
+            Some("provider exploded")
+        );
+    }
+
+    // ── attach_remote_stream ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn attach_remote_stream_variants() {
+        let home = TestHome::new("pipe-attach");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+
+        // Missing thread / missing session.
+        let error = attach_remote_stream("no-such-thread")
+            .await
+            .expect_err("missing");
+        assert_eq!(error, "Thread not found");
+        let no_session = seed_thread(&workspace.id, None);
+        let error = attach_remote_stream(&no_session.id)
+            .await
+            .expect_err("no session");
+        assert_eq!(error, "Thread has no agent session");
+
+        // An active local run short-circuits (no get_state round-trip).
+        let thread = seed_thread(&workspace.id, Some("sess-at"));
+        let active = seed_run(&thread.id);
+        let run_id = attach_remote_stream(&thread.id).await.expect("attach");
+        assert_eq!(run_id, active.id);
+        assert!(mock.requests_of("get_state").is_empty());
+
+        // Same for a run parked on an approval.
+        let thread2 = seed_thread(&workspace.id, Some("sess-at2"));
+        let parked = seed_run(&thread2.id);
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: parked.id.clone(),
+            status: "waiting_approval".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("park");
+        let run_id = attach_remote_stream(&thread2.id).await.expect("attach");
+        assert_eq!(run_id, parked.id);
+
+        // No local run: the agent's active run gets a local row + observer.
+        let thread3 = seed_thread(&workspace.id, Some("sess-at3"));
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-remote-1"}}),
+        );
+        let run_id = attach_remote_stream(&thread3.id).await.expect("attach");
+        assert_eq!(run_id, "run-remote-1");
+        let row = crate::store::get_run("run-remote-1")
+            .expect("run")
+            .expect("some");
+        assert_eq!(row.thread_id, thread3.id);
+
+        // No active run agent-side → error.
+        let thread4 = seed_thread(&workspace.id, Some("sess-at4"));
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        let error = attach_remote_stream(&thread4.id)
+            .await
+            .expect_err("no active");
+        assert_eq!(error, "Agent session has no active canonical run");
+
+        // Transport failure → error.
+        let thread5 = seed_thread(&workspace.id, Some("sess-at5"));
+        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "down"));
+        let error = attach_remote_stream(&thread5.id)
+            .await
+            .expect_err("transport");
+        assert!(error.contains("get_state"), "{error}");
+    }
+
+    // ── reconcile_thread_workspace ────────────────────────────────────
+
+    #[tokio::test]
+    async fn reconcile_thread_workspace_variants() {
+        let home = TestHome::new("pipe-reconcile-ws");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+
+        let error = reconcile_thread_workspace("sess-missing", "/tmp/x").expect_err("no thread");
+        assert_eq!(error, "No thread found for this session");
+
+        // Empty cwd is a no-op.
+        let thread = seed_thread(&workspace.id, Some("sess-rw"));
+        reconcile_thread_workspace("sess-rw", "   ").expect("empty ok");
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .workspace_id,
+            workspace.id
+        );
+
+        // Chat cwd → rename the chat thread's temporary workspace in place.
+        // The rename only applies to threads created in chat mode (their
+        // workspace row is the per-thread temporary one).
+        let chat_thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: None,
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-rwc".to_string()),
+        })
+        .expect("chat thread");
+        let chat_cwd = format!("{}/.future/workspaces/chat/sess-rwc", home.path().display());
+        reconcile_thread_workspace("sess-rwc", &chat_cwd).expect("chat");
+        let moved = crate::store::get_thread(&chat_thread.id)
+            .expect("thread")
+            .expect("exists");
+        let moved_ws = crate::store::get_workspace(&moved.workspace_id)
+            .expect("ws")
+            .expect("exists");
+        assert_eq!(moved_ws.path, chat_cwd);
+
+        // Project cwd matching an existing workspace → move there.
+        let target = seed_workspace(home.path(), "target");
+        let thread2 = seed_thread(&workspace.id, Some("sess-rw2"));
+        reconcile_thread_workspace("sess-rw2", &target.path).expect("move");
+        assert_eq!(
+            crate::store::get_thread(&thread2.id)
+                .expect("thread")
+                .expect("exists")
+                .workspace_id,
+            target.id
+        );
+
+        // Brand-new project cwd → a workspace is created, then moved to.
+        let thread3 = seed_thread(&workspace.id, Some("sess-rw3"));
+        let new_dir = home.path().join("brand-new");
+        std::fs::create_dir_all(&new_dir).expect("mkdir");
+        reconcile_thread_workspace("sess-rw3", &new_dir.display().to_string())
+            .expect("create+move");
+        let moved = crate::store::get_thread(&thread3.id)
+            .expect("thread")
+            .expect("exists");
+        assert_ne!(moved.workspace_id, workspace.id);
+        let created = crate::store::get_workspace(&moved.workspace_id)
+            .expect("ws")
+            .expect("exists");
+        assert_eq!(created.path, new_dir.display().to_string());
+        assert_eq!(created.name, "brand-new");
     }
 }

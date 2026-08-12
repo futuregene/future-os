@@ -80,18 +80,18 @@ const FORWARDED_EVENTS: &[&str] = &[
     "config_reloaded",
 ];
 
-struct ObserverHandle {
+pub(super) struct ObserverHandle {
     cancel: oneshot::Sender<()>,
-    shared: Arc<ObserverShared>,
+    pub(super) shared: Arc<ObserverShared>,
 }
 
 /// State shared between the manager and one observer task: eviction inputs
 /// (activity, active-run flag), the immutable session→thread owner, and the
 /// canonical→local run bindings the task builds as it projects runs.
-struct ObserverShared {
-    last_activity_ms: AtomicI64,
-    has_active_run: AtomicBool,
-    thread_id: String,
+pub(super) struct ObserverShared {
+    pub(super) last_activity_ms: AtomicI64,
+    pub(super) has_active_run: AtomicBool,
+    pub(super) thread_id: String,
     run_bindings: Mutex<HashMap<String, String>>,
 }
 
@@ -120,7 +120,7 @@ impl ObserverShared {
 }
 
 /// Live observers keyed by agent session id.
-static OBSERVERS: LazyLock<Mutex<HashMap<String, ObserverHandle>>> =
+pub(super) static OBSERVERS: LazyLock<Mutex<HashMap<String, ObserverHandle>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn now_millis() -> i64 {

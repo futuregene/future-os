@@ -73,6 +73,22 @@ fn rpc_response(cmd: &RpcCommand, success: bool, data: String, error: String) ->
 
 struct MockAgent;
 
+/// Default reply for an unscripted command: a generic success, so incidental
+/// calls (observer replays, health checks) always work. `prompt` echoes the
+/// requested run id so tests that let the pipeline generate one still get a
+/// consistent acknowledgement.
+fn default_reply(cmd: &RpcCommand) -> Reply {
+    if cmd.r#type == "prompt" {
+        let run_id = if cmd.requested_run_id.is_empty() {
+            "mock-run"
+        } else {
+            cmd.requested_run_id.as_str()
+        };
+        return Reply::Data(format!(r#"{{"run_id":"{run_id}"}}"#));
+    }
+    Reply::Data("{}".to_string())
+}
+
 #[tonic::async_trait]
 impl FutureAgent for MockAgent {
     async fn execute_command(
@@ -83,32 +99,47 @@ impl FutureAgent for MockAgent {
         let reply = {
             let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.requests.push(cmd.clone());
+            // get_run_state (get_state with a run id) has its own queues keyed
+            // by run id: spawned session observers fire plain get_state probes
+            // concurrently, and a shared FIFO would let them steal run-scoped
+            // replies.
+            let key = if cmd.r#type == "get_state" && !cmd.run_id.is_empty() {
+                format!("get_state#{}", cmd.run_id)
+            } else {
+                cmd.r#type.clone()
+            };
             state
                 .replies
-                .get_mut(&cmd.r#type)
+                .get_mut(&key)
                 .and_then(VecDeque::pop_front)
-                // Unscripted commands get a generic success so incidental
-                // calls (observer replays, health checks) always work.
-                .unwrap_or_else(|| Reply::Data("{}".to_string()))
+                .unwrap_or_else(|| default_reply(&cmd))
         };
         match reply {
-            Reply::Data(data) => Ok(tonic::Response::new(rpc_response(&cmd, true, data, String::new()))),
-            Reply::Reject(error) => {
-                Ok(tonic::Response::new(rpc_response(&cmd, false, String::new(), error)))
-            }
+            Reply::Data(data) => Ok(tonic::Response::new(rpc_response(
+                &cmd,
+                true,
+                data,
+                String::new(),
+            ))),
+            Reply::Reject(error) => Ok(tonic::Response::new(rpc_response(
+                &cmd,
+                false,
+                String::new(),
+                error,
+            ))),
             Reply::Status(code, message) => Err(tonic::Status::new(code, message)),
         }
     }
 
-    type StreamEventsStream = std::pin::Pin<
-        Box<dyn futures::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>,
-    >;
+    type StreamEventsStream =
+        std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent, tonic::Status>> + Send>>;
 
     async fn stream_events(
         &self,
         request: tonic::Request<StreamRequest>,
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
         let req = request.into_inner();
+        let attach_run_id = req.run_id.clone();
         let script = {
             let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
             let atomic = req.atomic_attach;
@@ -130,8 +161,19 @@ impl FutureAgent for MockAgent {
                 Ok(tonic::Response::new(Box::pin(futures::stream::pending())))
             }
             Some(StreamScript::Events(events, terminal)) => {
-                let mut items: Vec<Result<StreamEvent, tonic::Status>> =
-                    events.into_iter().map(Ok).collect();
+                // `@attach` is a run-id placeholder for tests where the
+                // canonical run id is only chosen once the pipeline runs
+                // (e.g. prompt-generated ids): bind it to the attach's
+                // requested run id.
+                let mut items: Vec<Result<StreamEvent, tonic::Status>> = events
+                    .into_iter()
+                    .map(|mut event| {
+                        if event.run_id == "@attach" {
+                            event.run_id.clone_from(&attach_run_id);
+                        }
+                        Ok(event)
+                    })
+                    .collect();
                 if let Some((code, message)) = terminal {
                     items.push(Err(tonic::Status::new(code, message)));
                 }
@@ -155,14 +197,13 @@ fn ensure_mock_server() {
                         .expect("bind mock agent listener");
                     let addr = listener.local_addr().expect("mock agent local addr");
                     addr_tx.send(addr).expect("report mock agent addr");
-                    let incoming = futures::stream::poll_fn(move |cx| {
-                        match listener.poll_accept(cx) {
-                            std::task::Poll::Ready(result) => std::task::Poll::Ready(Some(
-                                result.map(|(stream, _)| stream),
-                            )),
+                    let incoming =
+                        futures::stream::poll_fn(move |cx| match listener.poll_accept(cx) {
+                            std::task::Poll::Ready(result) => {
+                                std::task::Poll::Ready(Some(result.map(|(stream, _)| stream)))
+                            }
                             std::task::Poll::Pending => std::task::Poll::Pending,
-                        }
-                    });
+                        });
                     tonic::transport::Server::builder()
                         .add_service(FutureAgentServer::new(MockAgent))
                         .serve_with_incoming(incoming)
@@ -234,6 +275,15 @@ impl MockAgentGuard {
         self.push(command_type, Reply::Data(value.to_string()));
     }
 
+    /// Queue a `get_run_state` reply (get_state carrying a run id) for one
+    /// canonical run id.
+    pub(crate) fn push_run_state(&self, run_id: &str, value: serde_json::Value) {
+        self.push(
+            &format!("get_state#{run_id}"),
+            Reply::Data(value.to_string()),
+        );
+    }
+
     /// Queue one atomic-attach (`atomic_attach: true`) stream outcome — the
     /// kind prompt collectors and active-run probes open.
     pub(crate) fn push_stream(&self, script: StreamScript) {
@@ -303,7 +353,9 @@ pub(crate) struct TestHome {
 impl TestHome {
     pub(crate) fn new(tag: &str) -> Self {
         static SEQ: AtomicU64 = AtomicU64::new(0);
-        let lock = crate::TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "futureos-bridge-test-{}-{}-{}",
             std::process::id(),
