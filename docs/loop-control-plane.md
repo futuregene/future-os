@@ -244,6 +244,99 @@ future loop attention --all
 future loop inbox --project .
 ```
 
+## Deployment topology (recommended)
+
+The control plane is deliberately **daemonless**: every `future loop` command
+is a short-lived process that loads the ledger, does one bounded thing,
+persists, and exits. Availability therefore comes from an **external
+scheduler** invoking `future loop run` at your chosen cadence — not from a
+long-running loop process you have to keep alive.
+
+```
+cron / systemd timer / CI schedule          (the availability source)
+   │  one invocation per tick
+   ▼
+future loop run --goal <id> --agent-id <name> --max-turns 1
+   │  bounded slice: decide → execute one turn → writeback → exit
+   ▼
+<cwd>/.future/loop/                         (event ledger — the only state)
+```
+
+Why this is safe to drive externally:
+
+- **Bounded invocations** — each tick is capped by `--max-turns` /
+  `--max-turn-secs`; a wedged turn stops gracefully instead of holding the
+  goal, and the next tick resumes from the ledger.
+- **Restart-safe state** — the event ledger uses content-addressed, idempotent
+  appends; a crashed or overlapping tick replays cleanly, and conflicts fail
+  closed rather than double-spending quota.
+- **Lease coordination** — `run` claims todos under a lease (default 4h,
+  `--lease-secs`), so two schedulers cannot silently race the same todo.
+  Always pass a stable `--agent-id` (auto-registered on first use);
+  `--anonymous` opts out of coordination and can race.
+- **Fail-closed kernel** — a cancelled goal never runs; an ambiguous state
+  stops instead of spending.
+
+Example drivers:
+
+```cron
+# cron — one bounded turn every 15 minutes
+*/15 * * * * cd /path/to/project && future loop run --goal <id> --agent-id cron-worker --max-turns 1 >> .future/loop/cron.log 2>&1
+```
+
+```ini
+# /etc/systemd/system/loop-worker.service
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/project
+ExecStart=/usr/local/bin/future loop run --goal <id> --agent-id systemd-worker --max-turns 1
+
+# /etc/systemd/system/loop-worker.timer
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+```
+
+```yaml
+# CI scheduled tick (GitHub Actions). CI runners are ephemeral: persist
+# .future/loop/ across runs (e.g. actions/cache) or every tick restarts
+# from an empty ledger.
+on:
+  schedule: [{ cron: "*/30 * * * *" }]
+  workflow_dispatch:
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: future loop run --goal <id> --agent-id ci-worker --max-turns 1
+```
+
+The scheduler state machine complements the external driver:
+`future loop scheduler tick|show` keeps a restart-safe cadence progression
+(useful when the driver wants backoff state), and
+`future loop scheduler record-host-failure` records missed/late host ticks so
+liveness gaps surface in state instead of going silent.
+
+### Optional persistent runner
+
+A daemon is never required, but two long-running conveniences exist:
+
+- **Wrapper loop** (workstations): `while true; do future loop run --goal <id>
+  --agent-id local-runner --max-turns 1; sleep 300; done` — the same
+  bounded-turn semantics without cron.
+- **`future loop serve-status [--port 8791]`** — a zero-dependency, GET-only
+  HTTP dashboard (`GET /`, `GET /goals.json`). It is a read-only projection
+  and never a second source of truth; run it alongside any topology for
+  observability.
+
+For a fully custom runner, `future loop worker-bridge` exposes the reference
+stdio contract: the bridge emits one typed turn packet per line on stdout,
+your worker executes the bounded turn in its own runtime, and writes one JSON
+result line back. Pick **one driver per goal** (or one per
+`(goal, agent-id)` in multi-agent setups) — leases make overlaps safe, but a
+single driver keeps cadence and quota accounting predictable.
+
 ## State layout
 
 ```

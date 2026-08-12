@@ -60,6 +60,15 @@ pub struct StoredEvent {
     /// `local_private` / `private_pointer`).
     #[serde(default)]
     pub privacy: Option<String>,
+    /// Reserved fencing token (schema reservation only — NOT enforced): a
+    /// monotonically increasing per-ledger token a future fencing authority
+    /// will issue to writers so a stale/zombie writer can be fenced off in a
+    /// multi-replica deployment. Kernel appends never populate it and no
+    /// validation rejects missing/regressing tokens yet; old ledger lines
+    /// read as `None`, and `None` is omitted from serialization so the
+    /// on-disk line shape is byte-identical to pre-reservation ledgers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fencing_token: Option<u64>,
     #[serde(flatten)]
     pub event: Event,
 }
@@ -116,6 +125,10 @@ fn event_part(value: &serde_json::Value) -> serde_json::Value {
                     | "source_section"
                     | "source_line"
                     | "privacy"
+                    // Fencing tokens are writer metadata, not event content:
+                    // a re-append that differs only in the token stays an
+                    // idempotent no-op (same envelope rule as `producer`).
+                    | "fencing_token"
             ) {
                 map.insert(key.clone(), value.clone());
             }
@@ -270,6 +283,24 @@ pub enum Event {
         slots: u32,
         ts: u64,
     },
+    /// Per-tool quota ledger (LoopX 对比改进项 ②): a capability-boundary
+    /// tool invocation. Appended at the capability invocation boundary
+    /// (`capability propose` / per-capability command hooks) when a goal
+    /// context is present. `outcome` is `accepted` (counted against the
+    /// tool's quota, folded into the goal's invocation projection) or
+    /// `rejected` (over-limit refusal — audit trail only, never counted).
+    /// `invocation_id` makes each invocation's content unique: every CLI
+    /// call is a distinct logical invocation (non-retryable side-effect
+    /// boundary), so content-derived-id idempotency must NOT collapse two
+    /// invocations that land in the same second.
+    CapabilityInvoked {
+        goal_id: String,
+        capability: String,
+        command: String,
+        outcome: String,
+        invocation_id: String,
+        ts: u64,
+    },
     /// G-3: evidence attached to a todo independently of completion (LoopX
     /// EVIDENCE_ATTACHED).
     EvidenceAttached {
@@ -349,6 +380,7 @@ impl Event {
             | Event::TodoArchived { goal_id, .. }
             | Event::MonitorPolled { goal_id, .. }
             | Event::QuotaSpent { goal_id, .. }
+            | Event::CapabilityInvoked { goal_id, .. }
             | Event::EvidenceAttached { goal_id, .. }
             | Event::TodoRenewed { goal_id, .. }
             | Event::TodoReleased { goal_id, .. }
@@ -465,6 +497,7 @@ impl Store {
             source_section,
             source_line,
             privacy,
+            fencing_token: None,
             event,
         };
         let line = format!("{}\n", serde_json::to_string(&stored)?);
@@ -563,6 +596,7 @@ impl Store {
                 source_section: None,
                 source_line: None,
                 privacy: None,
+                fencing_token: None,
                 event,
             };
             let line = format!("{}\n", serde_json::to_string(&stored)?);
@@ -708,10 +742,15 @@ impl Store {
         }
         copy_dir_if_present(&dir.join("scheduler-state"), &dest.join("scheduler-state"))?;
         // Registry snapshot (goal entry).
-        if let Some(entry) = self.registry.iter().find(|g| g.goal_id == goal_id) {
-            let json = serde_json::to_string_pretty(entry)?;
-            fs::write(dest.join("registry-entry.json"), json)?;
-        }
+        self.registry
+            .iter()
+            .find(|g| g.goal_id == goal_id)
+            .map(|entry| -> Result<()> {
+                let json = serde_json::to_string_pretty(entry)?;
+                fs::write(dest.join("registry-entry.json"), json)?;
+                Ok(())
+            })
+            .transpose()?;
         Ok(dest.to_string_lossy().into_owned())
     }
 
@@ -1201,6 +1240,22 @@ fn apply(goal: &mut Goal, event: Event) {
         }
         Event::QuotaSpent { slots, .. } => {
             goal.quota_spent_slots = goal.quota_spent_slots.saturating_add(slots);
+        }
+        Event::CapabilityInvoked {
+            capability,
+            outcome,
+            ts,
+            ..
+        } => {
+            // Only accepted invocations consume quota; rejected ones stay in
+            // the ledger as the enforcement audit trail.
+            if outcome == crate::quota::tool_quota::OUTCOME_ACCEPTED {
+                let invocations = &mut goal.capability_invocations;
+                if invocations.len() >= crate::state::CAPABILITY_INVOCATION_PROJECTION_CAP {
+                    invocations.remove(0);
+                }
+                invocations.push((ts, capability));
+            }
         }
         Event::EvidenceAttached {
             todo_id,

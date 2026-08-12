@@ -1188,6 +1188,26 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn list_without_skills_dir_skips_installed_scan() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // The skills dir is deliberately NOT created → read_dir fails and
+        // the installed-scan block is skipped (the if-let's false path).
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("future-alpha", Some("1.0"), "Alpha skill")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        list_skills(&out).await;
+        assert_eq!(out.exit_code(), 0);
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("future-alpha"), "stdout: {stdout}");
+    }
+
     // ── install / download / unzip ──────────────────────────────────
 
     #[tokio::test]

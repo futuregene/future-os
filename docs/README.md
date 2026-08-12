@@ -10,6 +10,7 @@
 |---|---|
 | [Build & Install](build-and-install.md) ([中文](build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-loop` install, skills install |
 | [Loop Control Plane](loop-control-plane.md) ([中文](loop-control-plane.zh-CN.md)) | `future-loop` — goals/todos/gates/monitors, should-run kernel, quota, event sourcing, extensions & multi-agent, handoff |
+| [Long-Run Evidence Ledger](long-run-evidence-ledger.md) ([中文](long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range loop goals — wall clock, spend, validation results, explicit boundaries per closed goal |
 | [TUI](tui.md) ([中文](tui.zh-CN.md)) | The terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
 | [Directory layout](directory-layout.md) ([中文](directory-layout.zh-CN.md)) | What lives where under `~/.future/` (agent, channels, TUI, GUI, loop) |
 | [Channels configuration](channels-config.md) ([中文](channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / Feishu / DingTalk blocks, defaults) |

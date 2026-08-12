@@ -31,6 +31,17 @@ pub struct DeliveryContract {
     pub instruction: String,
 }
 
+/// Human-facing label for a must-include marker (unknown markers pass
+/// through unchanged).
+fn marker_label(v: &str) -> &str {
+    match v {
+        "coherent_artifact" => "artifact",
+        "targeted_validation" => "targeted validation",
+        "state_writeback" => "state writeback",
+        other => other,
+    }
+}
+
 /// Build the delivery contract from the goal's execution profile and its
 /// newest-first run history (LoopX handoff_delivery_contract).
 pub fn handoff_delivery_contract(goal: &Goal, runs: &[RunRecord]) -> Option<DeliveryContract> {
@@ -85,12 +96,7 @@ pub fn handoff_delivery_contract(goal: &Goal, runs: &[RunRecord]) -> Option<Deli
         "下一轮回到 active state P0/P1 outcome 做 audit，选连贯段，至少 {minimum_scale}；含真实 {}；禁止 isolated test/surface-only propagation；若只能小步/表面，blocker，不 spend。",
         must_include
             .iter()
-            .map(|v| match v.as_str() {
-                "coherent_artifact" => "artifact",
-                "targeted_validation" => "targeted validation",
-                "state_writeback" => "state writeback",
-                other => other,
-            })
+            .map(|v| marker_label(v))
             .collect::<Vec<_>>()
             .join("、")
     );
@@ -133,6 +139,25 @@ mod tests {
 
     fn goal() -> Goal {
         Goal::new("g1", "objective", "/tmp")
+    }
+
+    #[test]
+    fn marker_label_passthrough_for_unknown_markers() {
+        assert_eq!(marker_label("coherent_artifact"), "artifact");
+        assert_eq!(marker_label("custom_marker"), "custom_marker");
+    }
+
+    #[test]
+    fn profile_threshold_overrides_the_default() {
+        let mut g = goal();
+        g.execution_profile.outcome_floor_streak_threshold = 5;
+        let runs = vec![run("small tweak"); 5];
+        let contract = handoff_delivery_contract(&g, &runs).unwrap();
+        assert!(
+            contract.summary.contains("small_threshold=5"),
+            "{}",
+            contract.summary
+        );
     }
 
     #[test]

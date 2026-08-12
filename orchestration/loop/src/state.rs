@@ -717,7 +717,20 @@ pub struct Goal {
     /// G-3: quota slots spent as recorded by QuotaSpent events (replay
     /// projection — the authoritative spend ledger stays runs.jsonl).
     pub quota_spent_slots: u32,
+    /// Per-tool quota read model (LoopX 对比改进项 ②): (ts, tool) pairs
+    /// folded from accepted `CapabilityInvoked` events — the invocation
+    /// count behind [`crate::quota::tool_quota`]. Rejected invocations are
+    /// ledgered for audit but never folded in. Bounded by
+    /// [`CAPABILITY_INVOCATION_PROJECTION_CAP`] (oldest dropped).
+    pub capability_invocations: Vec<(u64, String)>,
 }
+
+/// Safety bound on the per-tool invocation projection folded into
+/// [`Goal::capability_invocations`]. Boundary enforcement already caps
+/// accepted invocations at the per-tool limit, so this only guards against
+/// ledgers written by other means; deterministic (a pure function of event
+/// order — oldest entries drop first).
+pub const CAPABILITY_INVOCATION_PROJECTION_CAP: usize = 4096;
 
 /// Default goal lifecycle status.
 pub fn default_goal_status() -> String {
@@ -744,6 +757,7 @@ impl Goal {
             created_at: now_epoch(),
             next_index: 0,
             quota_spent_slots: 0,
+            capability_invocations: vec![],
         }
     }
 

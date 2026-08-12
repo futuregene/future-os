@@ -15,6 +15,7 @@
 //!   - [`self`]    pipeline orchestration (`decide` / `decide_for` / `packet`)
 //!   - [`arbitration`] G-2/G-11 scheduler arbitration: 9 dispositions + consistency repair
 //!   - [`identity`]     fail-closed identity gate (registered peers only)
+//!   - [`oscillation`]  A→V→A→V signature-pair detection over run history (③)
 //!   - [`stall`]        stall semantics: outcome floor, repair budget, monitor stall
 //!   - [`monitor`]      monitor evaluation (stalled / due / quiet-wait backoff)
 //!   - [`frontier`]     runnable sort, work lane, frontier projection
@@ -30,6 +31,7 @@ mod goal_boundary;
 mod heartbeat_recommendation;
 mod identity;
 pub(crate) mod monitor;
+pub(crate) mod oscillation;
 mod primary_action;
 pub(crate) mod stall;
 
@@ -49,6 +51,7 @@ use self::goal_boundary::goal_boundary_json;
 use self::heartbeat_recommendation::recommendation;
 use self::identity::identity_gate;
 use self::monitor::{monitor_outcome, MonitorOutcome};
+use self::oscillation::oscillation_replan_reason;
 use self::primary_action::agent_channel;
 use self::stall::{is_monitor_stalled, outcome_floor_breach, repair_exhausted};
 
@@ -58,6 +61,7 @@ pub use self::arbitration::{
 };
 pub use self::goal_boundary::compose_goal_boundary;
 pub use self::monitor::{monitor_poll_classification, MONITOR_NO_CHANGE_BACKOFF_SECS};
+pub use self::oscillation::OSCILLATION_PATTERN_LEN;
 pub use self::stall::{MAX_REPAIR_ATTEMPTS, MONITOR_NO_CHANGE_REPLAN_THRESHOLD};
 pub use crate::quota::slot_accounting::QUOTA_ALLOWED_SLOTS;
 pub use crate::state::now_epoch;
@@ -162,6 +166,13 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     // ── 2b. Outcome floor (LoopX: surface-only progress loop). ──────────
     if let Some(todo) = retryable.first() {
         if let Some(reason) = outcome_floor_breach(goal) {
+            return replan_packet(goal, &reason);
+        }
+        // Oscillation guard (LoopX 对比改进项 ③): the goal's recent delivery
+        // outcomes strictly alternate accept/reject (A→V→A→V) — the
+        // action/verify flip-flop that burns spend without converging.
+        // Force a frontier-changing replan instead of the next delivery.
+        if let Some(reason) = oscillation_replan_reason(goal) {
             return replan_packet(goal, &reason);
         }
         let attempt = todo.failed_attempts + 1;
@@ -417,7 +428,12 @@ fn packet(
         normal_delivery_allowed: mode == TurnMode::BoundedDelivery,
         recovery_delivery_allowed: false,
         self_repair_allowed: mode == TurnMode::Replan,
-        capability_repair_allowed: false,
+        // Per-tool quota (LoopX 对比改进项 ②): the capability-repair lane
+        // stays allowed only while no capability tool is over its quota.
+        capability_repair_allowed: crate::quota::tool_quota::capability_repair_allowed(
+            goal,
+            crate::state::now_epoch(),
+        ),
         workspace_repair_allowed: false,
         actionable_by_codex: should_run,
         requires_user_action: mode == TurnMode::AskUser,
