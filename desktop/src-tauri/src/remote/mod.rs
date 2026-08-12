@@ -769,7 +769,32 @@ fn spawn_credential_refresh(
             let Some(creds) = pairing::load_creds().filter(|creds| creds.pair_id == pair_id) else {
                 return;
             };
-            tokio::time::sleep(pairing::refresh_delay(&creds)).await;
+            // Tick instead of sleeping until the refresh deadline: the same
+            // generation swap that rotates the JWT also heals a dead
+            // command/transfer loop or a wedged connection (status() derives
+            // real health), so the bridge recovers without a manual
+            // stop/start. Two consecutive unhealthy ticks (30s) debounce
+            // transient NATS reconnects.
+            let mut unhealthy_ticks = 0u8;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                if status().connected {
+                    unhealthy_ticks = 0;
+                } else {
+                    unhealthy_ticks += 1;
+                }
+                let refresh_due =
+                    pairing::refresh_delay(&creds) < std::time::Duration::from_secs(15);
+                if refresh_due || unhealthy_ticks >= 2 {
+                    if unhealthy_ticks >= 2 {
+                        eprintln!(
+                            "remote: bridge unhealthy for {}s; swapping connection",
+                            unhealthy_ticks as u64 * 15
+                        );
+                    }
+                    break;
+                }
+            }
             let refreshed = match pairing::refresh_bridge_jwt(creds).await {
                 Ok(creds) => creds,
                 Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
