@@ -69,6 +69,8 @@ struct PersistenceInner {
     dead_spawns: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     close_on_retry: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    drain_on_timeout: std::sync::atomic::AtomicBool,
 }
 
 /// Ordered, lazily-started persistence queue for one session.
@@ -107,6 +109,8 @@ impl SessionPersistence {
                 dead_spawns: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(test)]
                 close_on_retry: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                drain_on_timeout: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -268,6 +272,13 @@ impl SessionPersistence {
         gate
     }
 
+    /// Test-only: the timing-out worker finds a queued append between the
+    /// timeout and the worker lock, exercising the retirement drain handoff.
+    #[cfg(test)]
+    pub(crate) fn drain_on_timeout_for_test(&self) {
+        self.inner.drain_on_timeout.store(true, Ordering::Release);
+    }
+
     /// Test-only: replace the worker slot with a foreign generation so a
     /// timing-out worker observes the "slot stolen" guard's negative path.
     #[cfg(test)]
@@ -417,35 +428,47 @@ fn run_worker(
         let Some(state) = inner.upgrade() else {
             return;
         };
-        let command = match receiver.recv_timeout(state.idle_timeout) {
-            Ok(command) => command,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let mut worker = state.worker.lock();
-                if worker
-                    .as_ref()
-                    .is_some_and(|slot| slot.generation == generation)
-                {
-                    // A sender may have cloned this generation's sender and
-                    // queued a command after recv_timeout fired but before we
-                    // acquired the worker lock. Drain that handoff while the
-                    // lock excludes new senders; otherwise clearing the slot
-                    // and dropping the receiver would lose an acknowledged
-                    // append at the retirement boundary. The slot we just
-                    // matched still holds this generation's sender, so the
-                    // channel cannot be disconnected — only Empty is possible.
-                    match receiver.try_recv() {
-                        Ok(command) => {
-                            drop(worker);
-                            execute(&state, command);
-                            continue;
+        let command =
+            match receiver.recv_timeout(state.idle_timeout) {
+                Ok(command) => command,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    #[cfg(test)]
+                    if state.drain_on_timeout.swap(false, Ordering::AcqRel) {
+                        // Test-only handoff simulation: a command lands after the
+                        // timeout fired but before the worker lock is acquired.
+                        let sender = state.worker.lock().as_ref().map(|slot| slot.sender.clone());
+                        if let Some(sender) = sender {
+                            let _ = sender.send(PersistenceCommand::Append(vec![
+                                SessionEntry::new_user("user", serde_json::json!("drained")),
+                            ]));
                         }
-                        Err(_) => *worker = None,
                     }
+                    let mut worker = state.worker.lock();
+                    if worker
+                        .as_ref()
+                        .is_some_and(|slot| slot.generation == generation)
+                    {
+                        // A sender may have cloned this generation's sender and
+                        // queued a command after recv_timeout fired but before we
+                        // acquired the worker lock. Drain that handoff while the
+                        // lock excludes new senders; otherwise clearing the slot
+                        // and dropping the receiver would lose an acknowledged
+                        // append at the retirement boundary. The slot we just
+                        // matched still holds this generation's sender, so the
+                        // channel cannot be disconnected — only Empty is possible.
+                        match receiver.try_recv() {
+                            Ok(command) => {
+                                drop(worker);
+                                execute(&state, command);
+                                continue;
+                            }
+                            Err(_) => *worker = None,
+                        }
+                    }
+                    return;
                 }
-                return;
-            }
-        };
+            };
         #[cfg(test)]
         let die_gate = match &command {
             PersistenceCommand::Die(gate) => Some(gate.clone()),
@@ -1311,5 +1334,63 @@ mod tests {
         let error = save_with_retry(&manager, &session).unwrap_err();
         assert!(error.to_string().contains("injected session save failure"));
         let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn timeout_drain_handoff_executes_queued_command() {
+        let (dir, manager, _session) = fixture();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            "session-1".to_string(),
+            Duration::from_millis(20),
+        );
+        persistence
+            .append(vec![SessionEntry::new_user(
+                "user",
+                serde_json::json!("hi"),
+            )])
+            .unwrap();
+        persistence.barrier().unwrap();
+        persistence.drain_on_timeout_for_test();
+        // The next idle timeout finds the injected append in the drain window,
+        // executes it, and only then retires.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(persistence.inner.worker.lock().is_none());
+        let loaded = manager.load("session-1").unwrap();
+        assert!(loaded
+            .entries
+            .iter()
+            .any(|entry| entry.content.as_ref() == Some(&serde_json::json!("drained"))));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn commit_without_prior_session_info_skips_merge() {
+        let dir = std::env::temp_dir().join(format!(
+            "future-session-writer-{}",
+            crate::utils::generate_id()
+        ));
+        let manager = Arc::new(Manager::new(dir.clone()));
+        // Session file exists but carries no session_info entry, so
+        // latest_session_info_content returns None and the merge is skipped.
+        let session = Session::snapshot(
+            "brand-new".to_string(),
+            "/old".to_string(),
+            "old-model".to_string(),
+            "name".to_string(),
+            String::new(),
+            vec![SessionEntry::new_user("user", serde_json::json!("hi"))],
+        );
+        manager.save(&session).unwrap();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager,
+            "brand-new".to_string(),
+            Duration::from_secs(60),
+        );
+        let terminal =
+            SessionEntry::run_terminal("run-x", super::super::RUN_STATE_COMPLETED, 0, 0, None);
+        persistence.commit_run(vec![terminal]).unwrap();
+        persistence.close().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
