@@ -363,6 +363,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const handleEvent = useCallback(
     (event: StreamEvent, sessionId: string) => {
       const sid = sessionId || "";
+      // TEMP-DEBUG: live event feed trace.
+      console.log("[sync] evt", sid, event.type, event.runId, event.idx);
       if (!sid) return;
       // Side effects that read event payloads directly (not timeline writes):
       // these stay outside the lane because they don't mutate the session
@@ -505,6 +507,16 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       },
     });
     const unsubscribe = engine.subscribe(commit => {
+      // TEMP-DEBUG: item-level streaming flags to trace the stuck run indicator.
+      console.log(
+        "[sync] commit",
+        commit.sessionId,
+        "streaming:",
+        commit.timeline.streaming,
+        commit.timeline.items
+          .map(item => `${item.id}[${"streaming" in item && item.streaming ? "S" : "f"}]`)
+          .join(","),
+      );
       // Atomic cursor + timeline commit from the lane.
       setTimelines(prev => {
         const existing = prev[commit.sessionId];

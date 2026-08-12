@@ -234,6 +234,15 @@ export class SyncEngine {
       const targetRunId = request.runId || activeRunId;
 
       const full = this.isFullReplay(lane, targetRunId, request);
+      // TEMP-DEBUG: reconcile shape trace.
+      console.log(
+        "[sync] reconcile",
+        lane.sessionId,
+        request.reason,
+        "target:",
+        targetRunId || "(none)",
+        full ? "FULL" : "TAIL",
+      );
       if (full) {
         await this.fullReconcile(lane, activeRunId, targetRunId);
       } else {
