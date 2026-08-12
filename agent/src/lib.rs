@@ -117,7 +117,7 @@ pub(crate) mod test_support {
 
     /// Put an env var back to its pre-test state: restore the saved value, or
     /// remove the var when it was absent before the test redirected it.
-    fn restore_env(key: &str, previous: &Option<std::ffi::OsString>) {
+    pub(crate) fn restore_env(key: &str, previous: &Option<std::ffi::OsString>) {
         match previous {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),

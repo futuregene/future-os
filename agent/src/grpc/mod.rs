@@ -65,6 +65,18 @@ struct FutureAgentService {
     state: AppState,
 }
 
+/// Test seam driving execute_command's two transport-failure arms:
+/// "__test_panic__" makes the blocking command task panic (JoinError), and
+/// "__test_bad_json__" makes it return a non-JSON payload.
+#[cfg(test)]
+fn execute_command_test_override(cmd_type: &str) -> Option<String> {
+    match cmd_type {
+        "__test_panic__" => panic!("injected command task panic"),
+        "__test_bad_json__" => Some("not json".to_string()),
+        _ => None,
+    }
+}
+
 #[allow(clippy::result_large_err)] // tonic stream items require `tonic::Status` directly.
 fn map_broadcast_event(
     result: Result<crate::rpc::SseEvent, BroadcastStreamRecvError>,
@@ -279,6 +291,10 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         // session ordered persistence worker is introduced incrementally.
         let command_state = self.state.clone();
         let resp_str = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(override_resp) = execute_command_test_override(&internal_cmd.cmd_type) {
+                return override_resp;
+            }
             handle_command_internal(&command_state, internal_cmd)
         })
         .await
@@ -896,6 +912,116 @@ mod tests {
             "error_data must be serialized onto the wire: {}",
             resp.error_data
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_command_maps_task_panic_and_bad_json_to_internal() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        // The command task itself panicked → JoinError → internal status.
+        let err = service
+            .execute_command(tonic::Request::new(proto::RpcCommand {
+                id: "cmd-panic".to_string(),
+                r#type: "__test_panic__".to_string(),
+                session_id: "default".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("panic surfaces as an error");
+        assert_eq!(err.code(), tonic::Code::Internal);
+        assert!(err.message().contains("command task failed"), "{err}");
+
+        // The dispatcher returned non-JSON → parse failure → internal status.
+        let err = service
+            .execute_command(tonic::Request::new(proto::RpcCommand {
+                id: "cmd-badjson".to_string(),
+                r#type: "__test_bad_json__".to_string(),
+                session_id: "default".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("bad json surfaces as an error");
+        assert_eq!(err.code(), tonic::Code::Internal);
+        assert!(err.message().contains("Failed to parse response"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_events_atomic_attach_includes_projection_snapshot_events() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let session = service.state.get_session("default").unwrap();
+        {
+            let mut sess = session.write();
+            // A journal-less broadcaster: a truncated attach then has no disk
+            // to fall back on and returns the projection snapshot instead.
+            sess.broadcaster = std::sync::Arc::new(SseBroadcaster::new());
+            sess.broadcaster.start_run("run-long".to_string(), 1);
+            // Overflow the in-memory ring (MAX_RUN_EVENTS) so an attach at
+            // after_idx=-1 is truncated → projection snapshot path.
+            for idx in 0..2100 {
+                sess.broadcaster.broadcast(SseEvent::new(
+                    "text_chunk",
+                    serde_json::json!({"text": format!("tok{idx} ")}),
+                ));
+            }
+        }
+        let response = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                session_id: "default".to_string(),
+                atomic_attach: true,
+                run_id: "run-long".to_string(),
+                after_idx: -1,
+                ..Default::default()
+            }))
+            .await
+            .expect("truncated attach succeeds");
+        let mut stream = response.into_inner();
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.r#type, "run_snapshot");
+        assert!(first.projection_snapshot);
+        assert!(
+            !first.snapshot_events.is_empty(),
+            "projection carries the coalesced event stream"
+        );
+        assert_eq!(first.snapshot_events[0].r#type, "text_chunk");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_events_lag_bypasses_type_filter_as_dataloss() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        // Subscribe with a type filter, then overflow the broadcast channel
+        // (capacity 256) without draining: the next poll yields Lagged,
+        // which must bypass the filter and surface as DataLoss.
+        let response = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                session_id: "default".to_string(),
+                event_types: vec!["text_chunk".to_string()],
+                ..Default::default()
+            }))
+            .await
+            .expect("filtered subscribe succeeds");
+        {
+            let sess = service.state.get_session("default").unwrap();
+            let sess = sess.read();
+            sess.broadcaster.start_run("run-flood".to_string(), 1);
+            for idx in 0..300 {
+                sess.broadcaster.broadcast(SseEvent::new(
+                    "text_chunk",
+                    serde_json::json!({"text": idx.to_string()}),
+                ));
+            }
+        }
+        let mut stream = response.into_inner();
+        let item = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .expect("lagged item arrives")
+            .expect("stream yields the lag");
+        let status = item.expect_err("lag maps to an error status");
+        assert_eq!(status.code(), tonic::Code::DataLoss);
     }
 
     #[tokio::test]

@@ -1027,8 +1027,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn stream_chat_usage_only_chunk_then_done() {
         // A standalone usage chunk (no finish_reason) flows through the
-        // finish-check without terminating; [DONE] terminates.
+        // finish-check without terminating; [DONE] terminates. An
+        // unparseable data line is skipped without killing the stream.
         let sse = concat!(
+            "data: {this is not json\n\n",
             "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n",
             "data: [DONE]\n\n"
         );
@@ -1163,6 +1165,17 @@ mod tests {
         partial.shutdown(std::net::Shutdown::Write).unwrap();
         let mut resp = String::new();
         let _ = partial.read_to_string(&mut resp);
+        assert!(resp.contains("ok"), "{resp}");
+
+        // 3b. Body arriving in a second read: the body loop's Ok(n) arm.
+        let mut split = std::net::TcpStream::connect(addr).unwrap();
+        split
+            .write_all(b"POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\na")
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        split.write_all(b"bc").unwrap();
+        let mut resp = String::new();
+        split.read_to_string(&mut resp).unwrap();
         assert!(resp.contains("ok"), "{resp}");
 
         // 4. Silent mid-body: body read times out (Err) → break.

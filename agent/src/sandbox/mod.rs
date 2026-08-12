@@ -1279,10 +1279,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     impl Drop for ShellEnvGuard {
         fn drop(&mut self) {
-            match &self.0 {
-                Some(value) => std::env::set_var("SHELL", value),
-                None => std::env::remove_var("SHELL"),
-            }
+            crate::test_support::restore_env("SHELL", &self.0);
         }
     }
 
@@ -1314,10 +1311,7 @@ mod tests {
             hydrate_from_login_shell(); // dump lacks the marker → nothing applied
         }
         // Leave the process env as we found it (parallel suites read $SHELL).
-        match original {
-            Some(value) => std::env::set_var("SHELL", value),
-            None => std::env::remove_var("SHELL"),
-        }
+        crate::test_support::restore_env("SHELL", &original);
     }
 
     #[cfg(not(target_os = "windows"))]
