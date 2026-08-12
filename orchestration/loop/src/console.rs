@@ -429,8 +429,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "store",
-        "event-store schema migration / ledger integrity",
-        "store migrate|verify|bridge --goal G",
+        "event-store schema migration / ledger integrity / read-model repair",
+        "store migrate|verify|bridge --goal G [--repair|--format json (verify)]",
     );
     r.command(
         ops,
@@ -2797,6 +2797,22 @@ async fn run_turns(
     force_workspace: bool,
 ) -> Result<()> {
     let mut turn = 0u32;
+    // P1-2③: read-model self-healing — a drifted run index means run-history
+    // consumers (status, stale-latest-run, run history projection) read stale
+    // state; rebuild it from the run files before the first decision and
+    // record the ProjectionRepaired audit event.
+    if let Some(outcome) = crate::runtime::run_index::repair_index_if_drifted(store, goal_id)? {
+        println!(
+            "⚒ projection self-heal: run_index drifted ({} rows) — rebuilt {} rows (backup {})",
+            outcome.drift.drift_count,
+            outcome.rebuilt.rows_written,
+            if outcome.rebuilt.backup_path.is_empty() {
+                "none".to_string()
+            } else {
+                outcome.rebuilt.backup_path
+            }
+        );
+    }
     loop {
         turn += 1;
         if turn > max_turns {
@@ -3147,8 +3163,38 @@ fn cmd_store(store: &mut Store, args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("verify") => {
-            let goal_id = goal_arg(args)?;
+            let mut goal_id = None;
+            let mut repair = false;
+            reject_unknown_flags(args, &["--format", "--goal", "--json", "--repair"])?;
+            parse_pairs(args, |k, v| match k {
+                "--goal" => goal_id = Some(v),
+                "--repair" => repair = true,
+                _ => {}
+            });
+            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
             let report = store.verify(&goal_id)?;
+            // P1-2①: run-index drift detection (read-model self-diagnosis)
+            // alongside the ledger integrity check.
+            let drift =
+                crate::runtime::run_index::detect_index_drift(&store.root_path(), &goal_id)?;
+            // P1-2③: `--repair` rebuilds a drifted index (non-destructive)
+            // and records the ProjectionRepaired audit event.
+            let repaired = if repair {
+                crate::runtime::run_index::repair_index_if_drifted(store, &goal_id)?
+            } else {
+                None
+            };
+            if wants_json(args) {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ledger": report,
+                        "run_index_drift": drift,
+                        "repaired": repaired,
+                    }))?
+                );
+                return Ok(());
+            }
             println!(
                 "ledger {goal_id}: schema={} events={} unique={} idempotent_dups={} legacy_without_id={} conflicts={:?} → {}",
                 report.schema_version,
@@ -3159,6 +3205,33 @@ fn cmd_store(store: &mut Store, args: &[String]) -> Result<()> {
                 report.conflicts,
                 if report.ok { "ok" } else { "CONFLICT" }
             );
+            println!(
+                "run_index {goal_id}: rows={} files={} missing={} stale={} duplicates={} → {}",
+                drift.index_rows,
+                drift.run_files,
+                drift.missing_rows,
+                drift.stale_rows,
+                drift.duplicate_rows,
+                if drift.repair_recommended {
+                    "DRIFT (repair with `store verify --repair`)"
+                } else {
+                    "ok"
+                }
+            );
+            if let Some(outcome) = repaired {
+                println!(
+                    "repaired run_index {goal_id}: {} drift rows → rebuilt {} rows (backup {})",
+                    outcome.drift.drift_count,
+                    outcome.rebuilt.rows_written,
+                    if outcome.rebuilt.backup_path.is_empty() {
+                        "none (index was missing)"
+                    } else {
+                        outcome.rebuilt.backup_path.as_str()
+                    }
+                );
+            } else if repair {
+                println!("repair: no drift — nothing to rebuild");
+            }
             Ok(())
         }
         Some("bridge") => {
@@ -6188,6 +6261,16 @@ fn describe_event(event: &crate::store::Event) -> String {
         } => {
             return format!("supervisor_receipt decision={decision_id} outcome={outcome}");
         }
+        Event::ProjectionRepaired {
+            projection,
+            drift_count,
+            rows_written,
+            ..
+        } => {
+            return format!(
+                "projection_repaired projection={projection} drift={drift_count} rows_written={rows_written}"
+            );
+        }
     };
     kind.to_string()
 }
@@ -7789,6 +7872,32 @@ mod workspace_guard_cli_tests {
         // todo-event filtering picks the lock event up for its todo.
         assert!(event_touches_todo(&event, "t1"));
         assert!(!event_touches_todo(&event, "t2"));
+    }
+}
+
+#[cfg(test)]
+mod read_model_repair_cli_tests {
+    use super::*;
+
+    #[test]
+    fn describe_event_renders_projection_repair() {
+        let event = Event::ProjectionRepaired {
+            goal_id: "g1".to_string(),
+            projection: "run_index".to_string(),
+            drift_count: 2,
+            missing_rows: 1,
+            stale_rows: 1,
+            duplicate_rows: 0,
+            rows_written: 3,
+            backup_path: "/tmp/backup.jsonl".to_string(),
+            ts: 1,
+        };
+        let text = describe_event(&event);
+        assert!(text.contains("projection_repaired"), "got: {text}");
+        assert!(text.contains("run_index"), "got: {text}");
+        assert!(text.contains("drift=2"), "got: {text}");
+        // The repair audit is goal-scoped, not todo-scoped.
+        assert!(!event_touches_todo(&event, "t1"));
     }
 }
 

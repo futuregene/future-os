@@ -268,4 +268,9 @@ pub struct ShouldRunPacket {
     pub scheduler_arbitration: Option<SchedulerArbitration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_closure: Option<TerminalClosure>,
+    /// P1-2②: freshness of the event ledger this decision was compiled
+    /// from (max seq / newest event ts / replay time — LoopX
+    /// `decision_freshness`). `None` for decisions over hand-built state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_freshness: Option<crate::state::DecisionFreshness>,
 }

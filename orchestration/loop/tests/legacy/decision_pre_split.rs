@@ -631,6 +631,8 @@ fn legacy_packet(
                 .count(),
         },
         terminal_closure: None,
+        // P1-2②: hand-built pre-split goals have no replay stamp.
+        decision_freshness: None,
         // G-2/G-11 delta (the ONLY struct change since the pre-split baseline):
         // the arbitration record is added post-hoc by `apply_arbitration`.
         scheduler_arbitration: None,
